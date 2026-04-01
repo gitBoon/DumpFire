@@ -27,7 +27,7 @@ Built with SvelteKit and SQLite. The whole thing fits in a single database file.
 
 ```bash
 git clone https://github.com/gitBoon/DumpFire.git
-cd dumpfire
+cd DumpFire
 npm install
 npm run dev
 ```
@@ -46,7 +46,7 @@ If you'd rather not install Node on the host machine, or you want to deploy this
 
 ```bash
 git clone https://github.com/gitBoon/DumpFire.git
-cd dumpfire
+cd DumpFire
 
 docker build -t dumpfire .
 
