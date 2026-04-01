@@ -1,0 +1,1 @@
+ALTER TABLE cards ADD COLUMN completed_at TEXT DEFAULT NULL;

@@ -1,0 +1,12 @@
+node_modules
+.svelte-kit
+build
+.git
+.gitignore
+.vscode
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+README.md

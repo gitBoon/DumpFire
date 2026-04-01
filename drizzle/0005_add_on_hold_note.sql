@@ -1,0 +1,1 @@
+ALTER TABLE cards ADD COLUMN on_hold_note TEXT DEFAULT '';
