@@ -1,92 +1,145 @@
 # 🔥 DumpFire
 
-**Blazingly fast local Kanban board with real-time collaboration.**
+A stupidly fast Kanban board that runs on your local network. No cloud, no accounts, no subscriptions — just drag, drop, and get stuff done.
 
-Built with SvelteKit + SQLite. No cloud, no accounts — just pure speed on your local network.
+Built with SvelteKit and SQLite. The whole thing fits in a single database file.
 
-## Features
+---
 
-- **📋 Kanban Boards** — Create unlimited boards with draggable columns and cards
-- **🔴 Real-Time Sync** — SSE-powered live updates across all connected clients
-- **✅ Subtasks** — Break tasks down with full-detail subtasks (priority, description, due dates)
-- **🎆 Celebrations** — Fireworks animation plays on every screen when a task hits Complete
-- **🚫 Completion Guard** — Cards with incomplete subtasks can't be dragged to Complete
-- **🏷️ Categories** — Tag cards with colour-coded categories per board
-- **🎨 Infinite Colours** — Preset swatches + native colour picker for any hex value
-- **📅 Optional Due Dates** — Toggle on/off for cards and subtasks with smart labels
-- **🌓 Light/Dark Mode** — System-aware with manual toggle
-- **🗂️ Default Columns** — New boards auto-seed with To Do, In Progress, Complete
-- **🛡️ Confirmation Modals** — All destructive actions require explicit confirmation
-- **⚙️ Admin Panel** — Database overview, selective cleanup, vacuum, and full reset
-- **🌐 LAN Access** — Other computers on your network can connect and collaborate
+## What you get
 
-## Quick Start
+- **Kanban boards** with draggable columns and cards
+- **Live sync** across every browser on your network (SSE, not polling)
+- **Subtasks** with their own priorities, descriptions, and due dates
+- **Fireworks** when you complete a task (yes, on every connected screen)
+- **Categories & labels** with colour pickers
+- **Dark mode** that respects your system preference
+- **Admin panel** for database management and cleanup
+- **Card pinning** to keep important items at the top
+- **Markdown support** in card descriptions
+- **Context menus** and card duplication
+
+---
+
+## Getting started
+
+### Option 1: Run locally
 
 ```bash
-# Install dependencies
+git clone https://github.com/your-username/dumpfire.git
+cd dumpfire
 npm install
-
-# Start dev server (accessible on LAN)
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) or use your machine's LAN IP.
+That's it. Open [localhost:5173](http://localhost:5173) and start dumping tasks.
 
-## Tech Stack
+Other machines on your network can connect using the LAN IP shown in the terminal output.
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | SvelteKit 5, Svelte Runes |
-| Database | SQLite via better-sqlite3 |
-| ORM | Drizzle ORM |
-| Realtime | Server-Sent Events (SSE) |
-| Drag & Drop | svelte-dnd-action |
+---
 
-## Project Structure
+### Option 2: Docker
+
+If you'd rather not install Node on the host machine, or you want to deploy this somewhere more permanent:
+
+**Build and run:**
+
+```bash
+git clone https://github.com/your-username/dumpfire.git
+cd dumpfire
+
+docker build -t dumpfire .
+
+docker run -d \
+  --name dumpfire \
+  -p 3000:3000 \
+  -e DB_PATH=/app/data/dumpfire.db \
+  -e ORIGIN=http://localhost:3000 \
+  -v dumpfire-data:/app/data \
+  --restart unless-stopped \
+  dumpfire
+```
+
+Then open [localhost:3000](http://localhost:3000).
+
+**Breaking that down:**
+
+| Flag | What it does |
+|------|-------------|
+| `-p 3000:3000` | Maps port 3000 on your machine to the container |
+| `-e DB_PATH=...` | Tells the app where to put the SQLite database |
+| `-e ORIGIN=...` | Required by SvelteKit for CSRF protection — set this to the URL you'll access the app from |
+| `-v dumpfire-data:/app/data` | Persists your data in a Docker volume so it survives container rebuilds |
+| `--restart unless-stopped` | Auto-starts the container after reboots |
+
+> **Deploying on a server?** Change `ORIGIN` to match whatever URL or IP users will hit, e.g. `http://192.168.1.50:3000` or `https://kanban.yourdomain.com`.
+
+**Updating to a new version:**
+
+```bash
+git pull
+docker build -t dumpfire .
+docker stop dumpfire && docker rm dumpfire
+
+# Same run command as above
+docker run -d \
+  --name dumpfire \
+  -p 3000:3000 \
+  -e DB_PATH=/app/data/dumpfire.db \
+  -e ORIGIN=http://localhost:3000 \
+  -v dumpfire-data:/app/data \
+  --restart unless-stopped \
+  dumpfire
+```
+
+Migrations run automatically on startup. Only new migrations are applied — your data stays intact.
+
+---
+
+## Project structure
 
 ```
 src/
 ├── lib/
 │   ├── components/
-│   │   ├── CardModal.svelte      # Card editor with subtask management
-│   │   ├── SubtaskModal.svelte   # Subtask create/edit modal
-│   │   └── ConfirmModal.svelte   # Reusable confirmation dialog
+│   │   ├── CardModal.svelte        # Card editor with subtask management
+│   │   ├── SubtaskModal.svelte     # Subtask create/edit modal
+│   │   └── ConfirmModal.svelte     # Reusable confirmation dialog
 │   ├── server/
 │   │   ├── db/
-│   │   │   ├── schema.ts         # Drizzle schema (boards, columns, cards, subtasks, categories)
-│   │   │   ├── index.ts          # DB connection & migration runner
-│   │   │   └── migrate.ts        # Auto-migration on startup
-│   │   └── events.ts             # SSE event bus for live updates
+│   │   │   ├── schema.ts           # Drizzle schema definitions
+│   │   │   ├── index.ts            # DB connection setup
+│   │   │   └── migrate.ts          # Auto-migration on startup
+│   │   └── events.ts               # SSE event bus
 │   └── stores/
-│       └── theme.ts              # Theme store (dark/light)
+│       └── theme.ts                # Dark/light mode
 ├── routes/
-│   ├── +page.svelte              # Dashboard — board list
-│   ├── board/[id]/
-│   │   ├── +page.server.ts       # Board data loader
-│   │   └── +page.svelte          # Kanban board view
-│   ├── admin/
-│   │   ├── +page.server.ts       # Admin data loader
-│   │   └── +page.svelte          # Admin panel
-│   └── api/                      # REST API endpoints
-│       ├── boards/               # CRUD + SSE events endpoint
-│       ├── columns/              # CRUD + reorder
-│       ├── cards/                 # CRUD + reorder (with celebration detection)
-│       ├── categories/           # CRUD
-│       ├── subtasks/             # CRUD
-│       └── admin/                # Cleanup, vacuum, reset
-└── app.css                       # Design system & global styles
+│   ├── +page.svelte                # Dashboard
+│   ├── board/[id]/+page.svelte     # Kanban board view
+│   ├── admin/+page.svelte          # Admin panel
+│   └── api/                        # REST endpoints
+│       ├── boards/
+│       ├── columns/
+│       ├── cards/
+│       ├── categories/
+│       ├── subtasks/
+│       └── admin/
+└── app.css                         # Global styles
 ```
 
-## Admin Panel
+## Tech stack
 
-Access at [/admin](/admin) — manage boards, clear data selectively, vacuum the database to reset auto-increment IDs, or perform a full reset.
+| | |
+|---|---|
+| **Frontend** | SvelteKit 5 with Runes |
+| **Database** | SQLite via better-sqlite3 |
+| **ORM** | Drizzle |
+| **Realtime** | Server-Sent Events |
+| **Drag & drop** | svelte-dnd-action |
 
-## Collaboration
+## Admin panel
 
-1. Start the server on one machine
-2. Find your LAN IP in the terminal output (e.g. `http://192.168.x.x:5173/`)
-3. Open the same board URL on other machines
-4. Changes sync instantly — drag a card to Complete and everyone sees fireworks 🎉
+Head to [/admin](/admin) to view database stats, clean up specific boards, vacuum the DB, or nuke everything and start fresh.
 
 ## License
 
