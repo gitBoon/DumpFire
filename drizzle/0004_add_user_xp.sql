@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS user_xp (
+    name TEXT PRIMARY KEY,
+    xp INTEGER NOT NULL DEFAULT 0,
+    emoji TEXT DEFAULT '👤'
+);
