@@ -432,7 +432,7 @@
 	/* ─── Header ─────────────────────────────────────────────────── */
 	.dashboard-header {
 		display: flex; align-items: center; justify-content: space-between;
-		margin-bottom: var(--space-xl); padding-bottom: var(--space-xl);
+		margin-bottom: var(--space-xl); padding-bottom: calc(var(--space-xl) + 18px);
 		border-bottom: 1px solid var(--glass-border);
 	}
 	.header-nav {
@@ -463,14 +463,18 @@
 		background: var(--accent-rose); color: white;
 		font-size: 0.65rem; font-weight: 800; line-height: 1;
 	}
-	.brand { display: flex; align-items: center; gap: var(--space-lg); }
+	.brand { display: flex; align-items: center; gap: var(--space-lg); flex-shrink: 0; }
+	.brand > div { position: relative; }
 	.brand-icon { font-size: 2.5rem; filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.4)); }
 	.brand h1 {
 		font-size: 1.75rem;
 		background: linear-gradient(135deg, var(--text-primary), var(--accent-purple));
 		-webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
 	}
-	.brand-tagline { color: var(--text-secondary); font-size: 0.85rem; font-weight: 400; min-height: 1.3em; }
+	.brand-tagline {
+		color: var(--text-secondary); font-size: 0.85rem; font-weight: 400;
+		position: absolute; left: 0; top: 100%; white-space: nowrap;
+	}
 	.typewriter-cursor {
 		display: inline-block; margin-left: 1px;
 		color: var(--accent-indigo); font-weight: 300;
