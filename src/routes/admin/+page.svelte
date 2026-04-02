@@ -1,4 +1,11 @@
 <script lang="ts">
+	/**
+	 * Admin Page — Database management and maintenance tools.
+	 *
+	 * Provides board management (delete, clear cards/categories),
+	 * database operations (reset, vacuum), and import/export
+	 * backup functionality.
+	 */
 	import type { PageData } from './$types';
 	import { invalidateAll } from '$app/navigation';
 	import { theme } from '$lib/stores/theme';
@@ -8,6 +15,7 @@
 	let currentTheme = $state('dark');
 	theme.subscribe((v) => (currentTheme = v));
 
+	/** Confirm modal state for destructive admin actions. */
 	let confirmAction = $state<{ show: boolean; title: string; message: string; action: () => Promise<void> }>({
 		show: false, title: '', message: '', action: async () => {}
 	});
@@ -17,45 +25,53 @@
 	let importing = $state(false);
 	let exporting = $state(false);
 
+	/** Shows a temporary toast notification that auto-dismisses after 4s. */
 	function showToast(msg: string, type: 'success' | 'error' = 'success') {
 		toast = msg;
 		toastType = type;
 		setTimeout(() => (toast = ''), 4000);
 	}
 
+	/** Opens the confirm modal for a destructive action. */
 	function confirm(title: string, message: string, action: () => Promise<void>) {
 		confirmAction = { show: true, title, message, action };
 	}
 
+	/** Deletes a board and all its content. */
 	async function deleteBoard(id: number) {
 		await fetch(`/api/boards/${id}`, { method: 'DELETE' });
 		await invalidateAll();
 		showToast('Board deleted');
 	}
 
+	/** Removes all cards from a board but keeps the board and columns. */
 	async function clearBoardCards(id: number) {
 		await fetch(`/api/admin/boards/${id}/clear-cards`, { method: 'POST' });
 		await invalidateAll();
 		showToast('All cards cleared from board');
 	}
 
+	/** Removes all categories from a board. */
 	async function clearBoardCategories(id: number) {
 		await fetch(`/api/admin/boards/${id}/clear-categories`, { method: 'POST' });
 		await invalidateAll();
 		showToast('All categories cleared from board');
 	}
 
+	/** Drops and recreates all tables. Destroys all data. */
 	async function resetDatabase() {
 		await fetch('/api/admin/reset', { method: 'POST' });
 		await invalidateAll();
 		showToast('Database reset — all boards deleted');
 	}
 
+	/** Runs SQLite VACUUM to reclaim disk space and reset auto-increment. */
 	async function vacuumDatabase() {
 		await fetch('/api/admin/vacuum', { method: 'POST' });
 		showToast('Database vacuumed — IDs will restart from 1 for new records');
 	}
 
+	/** Downloads the full database as a JSON backup file. */
 	async function exportDatabase() {
 		exporting = true;
 		try {
@@ -79,10 +95,12 @@
 
 	let fileInput: HTMLInputElement;
 
+	/** Opens the file picker for importing a backup. */
 	async function importDatabase() {
 		fileInput?.click();
 	}
 
+	/** Handles the selected backup file — validates, uploads, and refreshes. */
 	async function handleFileSelected(e: Event) {
 		const file = (e.target as HTMLInputElement).files?.[0];
 		if (!file) return;
