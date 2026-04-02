@@ -15,6 +15,7 @@
 		categories = [],
 		labels = [],
 		boardId,
+		boardUsers = [],
 		onSave,
 		onDelete,
 		onClose,
@@ -27,7 +28,8 @@
 		categories: CategoryType[];
 		labels: LabelType[];
 		boardId: number;
-		onSave: (data: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; pendingSubtasks?: string[] }) => void;
+		boardUsers?: { id: number; username: string; email?: string; emoji: string }[];
+		onSave: (data: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; pendingSubtasks?: string[]; pendingAssigneeIds?: number[] }) => void;
 		onDelete?: () => void;
 		onClose: () => void;
 		onCreateSubBoard?: (name: string) => void;
@@ -36,9 +38,11 @@
 		availableBoards?: { id: number; name: string; emoji: string }[];
 	} = $props();
 
+	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
 	let newSubBoardName = $state(card?.title || '');
 	let showLinkPicker = $state(false);
 
+	// svelte-ignore state_referenced_locally
 	let cardLabelIds = $state<number[]>((card as any)?.labelIds || []);
 
 	async function toggleLabel(labelId: number) {
@@ -68,10 +72,12 @@
 	let pendingSubtasks = $state<PendingSubtask[]>([]);
 	let pendingIdCounter = $state(-1); // negative IDs for temp items
 
+	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
 	let title = $state(card?.title || '');
 	let description = $state(card?.description || '');
 	let priority = $state(card?.priority || 'medium');
 
+	// svelte-ignore state_referenced_locally
 	let categoryId = $state<number | null>(card?.categoryId ?? null);
 	let dueDate = $state(card?.dueDate || '');
 	let showDueDate = $state(!!card?.dueDate);
@@ -79,6 +85,44 @@
 	let onHoldNote = $state(card?.onHoldNote || '');
 	let editingOnHold = $state(false);
 	let cardSubtasks = $state<SubtaskType[]>(card?.subtasks || []);
+
+	// svelte-ignore state_referenced_locally
+	let cardAssignees = $state<{ id: number; username: string; emoji: string }[]>(card?.assignees || []);
+
+	async function assignUser(userId: number) {
+		const user = boardUsers.find(u => u.id === userId);
+		if (!user) return;
+
+		if (card) {
+			// Existing card — assign via API
+			const res = await fetch(`/api/cards/${card.id}/assignees`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ userId })
+			});
+			if (res.ok) {
+				cardAssignees = [...cardAssignees, { id: user.id, username: user.username, emoji: user.emoji }];
+			}
+		} else {
+			// New card — queue locally
+			cardAssignees = [...cardAssignees, { id: user.id, username: user.username, emoji: user.emoji }];
+		}
+	}
+
+	async function unassignUser(userId: number) {
+		if (card) {
+			await fetch(`/api/cards/${card.id}/assignees`, {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ userId })
+			});
+		}
+		cardAssignees = cardAssignees.filter(a => a.id !== userId);
+	}
+
+	let availableAssignees = $derived(
+		boardUsers.filter(u => !cardAssignees.some(a => a.id === u.id))
+	);
 
 	// Subtask modal state
 	let showSubtaskModal = $state(false);
@@ -94,6 +138,9 @@
 			dueDate: dueDate || null, onHoldNote: onHoldNote || undefined,
 			pendingSubtasks: pendingSubtasks.length > 0
 				? pendingSubtasks.map(s => JSON.stringify({ title: s.title, description: s.description, priority: s.priority, colorTag: s.colorTag, dueDate: s.dueDate }))
+				: undefined,
+			pendingAssigneeIds: !card && cardAssignees.length > 0
+				? cardAssignees.map(a => a.id)
 				: undefined
 		});
 	}
@@ -315,6 +362,30 @@
 				</div>
 			</div>
 		{/if}
+
+		<!-- Assignees -->
+			<div class="assignees-section">
+				<label>Assignees</label>
+				<div class="assignees-list">
+					{#each cardAssignees as assignee}
+						<div class="assignee-chip">
+							<span class="assignee-emoji">{assignee.emoji}</span>
+							<span class="assignee-name">{assignee.username}</span>
+							<button class="assignee-remove" onclick={() => unassignUser(assignee.id)} title="Remove">
+								<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+							</button>
+						</div>
+					{/each}
+					{#if availableAssignees.length > 0}
+						<select class="assignee-add" onchange={(e) => { const v = Number((e.target as HTMLSelectElement).value); if (v) assignUser(v); (e.target as HTMLSelectElement).value = ''; }}>
+							<option value="">+ Assign...</option>
+							{#each availableAssignees as u}
+								<option value={u.id}>{u.emoji} {u.username}</option>
+							{/each}
+						</select>
+					{/if}
+				</div>
+			</div>
 
 		<!-- On Hold Note -->
 		{#if card?.onHoldNote}
@@ -841,4 +912,29 @@
 	.desc-preview :global(a) { color: var(--accent-indigo); }
 	.desc-preview :global(strong) { font-weight: 700; }
 	.desc-empty { color: var(--text-tertiary); font-style: italic; }
+
+	/* Assignees */
+	.assignees-section { margin-bottom: var(--space-md); }
+	.assignees-section label { display: block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); margin-bottom: var(--space-xs); }
+	.assignees-list { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+	.assignee-chip {
+		display: flex; align-items: center; gap: 4px;
+		padding: 3px 8px 3px 4px; border-radius: var(--radius-full);
+		background: rgba(99, 102, 241, 0.12); border: 1px solid rgba(99, 102, 241, 0.2);
+		font-size: 0.75rem; font-weight: 500;
+	}
+	.assignee-emoji { font-size: 0.85rem; }
+	.assignee-name { color: var(--text-primary); }
+	.assignee-remove {
+		width: 16px; height: 16px; border-radius: 50%; border: none; background: transparent;
+		color: var(--text-tertiary); cursor: pointer; display: flex; align-items: center; justify-content: center;
+		opacity: 0.5; transition: all 0.15s; padding: 0; margin-left: 2px;
+	}
+	.assignee-remove:hover { opacity: 1; color: var(--accent-rose); background: rgba(244, 63, 94, 0.15); }
+	.assignee-add {
+		padding: 3px 8px; border-radius: var(--radius-full); border: 1px dashed var(--glass-border);
+		background: transparent; color: var(--text-tertiary); font-size: 0.72rem;
+		cursor: pointer; font-family: var(--font-family);
+	}
+	.assignee-add:hover { border-color: var(--accent-indigo); color: var(--text-secondary); }
 </style>

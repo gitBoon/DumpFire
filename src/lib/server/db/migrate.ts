@@ -1,6 +1,5 @@
 import { db, sqlite } from './index';
 import { boards, columns } from './schema';
-import { eq } from 'drizzle-orm';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -47,26 +46,5 @@ export function runMigrations() {
 		}
 	} catch {
 		console.log('[DB] No migrations directory found, skipping.');
-	}
-}
-
-export function seedDefaultBoard() {
-	const existingBoards = db.select().from(boards).all();
-	if (existingBoards.length === 0) {
-		const board = db
-			.insert(boards)
-			.values({ name: 'My First Board', emoji: '🚀' })
-			.returning()
-			.get();
-
-		const defaultColumns = [
-			{ boardId: board.id, title: 'To Do', position: 1, color: '#6366f1' },
-			{ boardId: board.id, title: 'On Hold', position: 2, color: '#ef4444' },
-			{ boardId: board.id, title: 'In Progress', position: 3, color: '#f59e0b' },
-			{ boardId: board.id, title: 'Complete', position: 4, color: '#10b981' }
-		];
-
-		db.insert(columns).values(defaultColumns).run();
-		console.log('[DB] Seeded default board with columns.');
 	}
 }

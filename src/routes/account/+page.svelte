@@ -1,0 +1,284 @@
+<script lang="ts">
+	/**
+	 * My Account — View profile info and change password.
+	 */
+	import type { PageData } from './$types';
+	import { theme } from '$lib/stores/theme';
+
+	let { data }: { data: PageData } = $props();
+
+	let currentTheme = $state('light');
+	theme.subscribe((v) => (currentTheme = v));
+
+	// Password change
+	let currentPassword = $state('');
+	let newPassword = $state('');
+	let confirmPassword = $state('');
+	let showPasswords = $state(false);
+	let changingPassword = $state(false);
+	let passwordMessage = $state('');
+	let passwordError = $state(false);
+
+	async function changePassword() {
+		if (!currentPassword || !newPassword || !confirmPassword) return;
+		if (newPassword.length < 8) {
+			passwordMessage = 'New password must be at least 8 characters';
+			passwordError = true;
+			return;
+		}
+		if (newPassword !== confirmPassword) {
+			passwordMessage = 'Passwords do not match';
+			passwordError = true;
+			return;
+		}
+
+		changingPassword = true;
+		passwordMessage = '';
+		passwordError = false;
+
+		const res = await fetch('/api/account/password', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ currentPassword, newPassword })
+		});
+
+		if (res.ok) {
+			passwordMessage = 'Password changed successfully!';
+			passwordError = false;
+			currentPassword = '';
+			newPassword = '';
+			confirmPassword = '';
+		} else {
+			const errData = await res.json().catch(() => ({ message: 'Failed to change password' }));
+			passwordMessage = errData.message || 'Failed to change password';
+			passwordError = true;
+		}
+		changingPassword = false;
+	}
+
+	function getRoleBadge(role: string) {
+		const styles: Record<string, string> = {
+			superadmin: 'role-superadmin',
+			admin: 'role-admin',
+			user: 'role-user'
+		};
+		return styles[role] || 'role-user';
+	}
+</script>
+
+<svelte:head>
+	<title>My Account — DumpFire</title>
+</svelte:head>
+
+<div class="account-page">
+	<header class="account-header">
+		<a href="/" class="back-btn btn-ghost">
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+			</svg>
+		</a>
+		<h1>⚙️ My Account</h1>
+		<button class="theme-toggle btn-ghost" onclick={() => theme.toggle()}>
+			{#if currentTheme === 'dark'}
+				<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+					<circle cx="9" cy="9" r="4" stroke="currentColor" stroke-width="1.5"/>
+					<path d="M9 1v2M9 15v2M1 9h2M15 9h2M3.3 3.3l1.4 1.4M13.3 13.3l1.4 1.4M3.3 14.7l1.4-1.4M13.3 4.7l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+				</svg>
+			{:else}
+				<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+					<path d="M15.5 10.1A6.5 6.5 0 017.9 2.5 7 7 0 1015.5 10.1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			{/if}
+		</button>
+	</header>
+
+	<main class="account-content">
+		<!-- Profile section -->
+		<section class="account-card glass fade-in-up">
+			<h2>👤 Profile</h2>
+			<div class="profile-info">
+				<div class="profile-avatar">{data.user.emoji}</div>
+				<div class="profile-details">
+					<div class="profile-row">
+						<span class="profile-label">Username</span>
+						<span class="profile-value">{data.user.username}</span>
+					</div>
+					<div class="profile-row">
+						<span class="profile-label">Email</span>
+						<span class="profile-value">{data.user.email}</span>
+					</div>
+					<div class="profile-row">
+						<span class="profile-label">Role</span>
+						<span class="profile-value">
+							<span class="role-badge {getRoleBadge(data.user.role)}">{data.user.role}</span>
+						</span>
+					</div>
+				</div>
+			</div>
+		</section>
+
+		<!-- Password change section -->
+		<section class="account-card glass fade-in-up" style="animation-delay: 0.1s">
+			<h2>🔒 Change Password</h2>
+
+			{#if passwordMessage}
+				<div class="password-msg" class:error={passwordError} class:success={!passwordError}>
+					{passwordMessage}
+				</div>
+			{/if}
+
+			<div class="password-form">
+				<div class="form-group">
+					<label for="current-pass">Current Password</label>
+					<div class="password-wrapper">
+						<input
+							id="current-pass"
+							type={showPasswords ? 'text' : 'password'}
+							bind:value={currentPassword}
+							placeholder="Enter current password"
+							autocomplete="current-password"
+						/>
+					</div>
+				</div>
+
+				<div class="form-group">
+					<label for="new-pass">New Password</label>
+					<div class="password-wrapper">
+						<input
+							id="new-pass"
+							type={showPasswords ? 'text' : 'password'}
+							bind:value={newPassword}
+							placeholder="Minimum 8 characters"
+							autocomplete="new-password"
+							minlength="8"
+						/>
+					</div>
+				</div>
+
+				<div class="form-group">
+					<label for="confirm-pass">Confirm New Password</label>
+					<div class="password-wrapper">
+						<input
+							id="confirm-pass"
+							type={showPasswords ? 'text' : 'password'}
+							bind:value={confirmPassword}
+							placeholder="Re-enter new password"
+							autocomplete="new-password"
+							minlength="8"
+							onkeydown={(e) => e.key === 'Enter' && changePassword()}
+						/>
+					</div>
+				</div>
+
+				<div class="password-actions">
+					<label class="show-password-check">
+						<input type="checkbox" bind:checked={showPasswords} />
+						Show passwords
+					</label>
+					<button
+						class="btn-primary"
+						onclick={changePassword}
+						disabled={!currentPassword || !newPassword || !confirmPassword || changingPassword}
+					>
+						{changingPassword ? 'Changing...' : 'Change Password'}
+					</button>
+				</div>
+			</div>
+		</section>
+	</main>
+</div>
+
+<style>
+	.account-page { min-height: 100vh; }
+
+	.account-header {
+		display: flex; align-items: center; gap: var(--space-md);
+		padding: var(--space-md) var(--space-xl);
+		border-bottom: 1px solid var(--glass-border);
+	}
+	.account-header h1 { flex: 1; font-size: 1.25rem; }
+	.back-btn { padding: var(--space-sm); }
+
+	.account-content {
+		max-width: 600px; margin: 0 auto;
+		padding: var(--space-2xl);
+		display: flex; flex-direction: column; gap: var(--space-xl);
+	}
+
+	.fade-in-up {
+		animation: fadeInUp 0.5s ease-out both;
+	}
+	@keyframes fadeInUp {
+		from { opacity: 0; transform: translateY(16px); }
+		to { opacity: 1; transform: translateY(0); }
+	}
+
+	.account-card {
+		padding: var(--space-xl); border-radius: var(--radius-lg);
+	}
+	.account-card h2 {
+		font-size: 1.05rem; margin-bottom: var(--space-xl);
+		padding-bottom: var(--space-md);
+		border-bottom: 1px solid var(--glass-border);
+	}
+
+	/* Profile */
+	.profile-info { display: flex; gap: var(--space-xl); align-items: flex-start; }
+	.profile-avatar {
+		font-size: 3rem; width: 72px; height: 72px;
+		display: flex; align-items: center; justify-content: center;
+		background: var(--bg-base); border-radius: var(--radius-lg);
+		border: 2px solid var(--glass-border); flex-shrink: 0;
+	}
+	.profile-details { flex: 1; display: flex; flex-direction: column; gap: var(--space-md); }
+	.profile-row { display: flex; align-items: center; gap: var(--space-md); }
+	.profile-label {
+		font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+		letter-spacing: 0.05em; color: var(--text-tertiary); width: 80px; flex-shrink: 0;
+	}
+	.profile-value { font-size: 0.9rem; font-weight: 500; }
+
+	.role-badge {
+		font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.05em; padding: 2px 8px; border-radius: var(--radius-sm);
+	}
+	.role-superadmin { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
+	.role-admin { background: rgba(99, 102, 241, 0.15); color: var(--accent-indigo); }
+	.role-user { background: rgba(100, 116, 139, 0.15); color: var(--text-secondary); }
+
+	/* Password form */
+	.password-form { display: flex; flex-direction: column; gap: var(--space-lg); }
+	.form-group label {
+		display: block; font-size: 0.72rem; font-weight: 600;
+		color: var(--text-secondary); text-transform: uppercase;
+		letter-spacing: 0.05em; margin-bottom: var(--space-xs);
+	}
+	.password-wrapper { position: relative; }
+
+	.password-msg {
+		padding: var(--space-sm) var(--space-md);
+		border-radius: var(--radius-sm);
+		font-size: 0.82rem; font-weight: 500;
+		margin-bottom: var(--space-md);
+	}
+	.password-msg.error {
+		background: rgba(244, 63, 94, 0.1); border: 1px solid rgba(244, 63, 94, 0.3);
+		color: var(--accent-rose);
+	}
+	.password-msg.success {
+		background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3);
+		color: var(--accent-emerald);
+	}
+
+	.password-actions {
+		display: flex; align-items: center; justify-content: space-between;
+		margin-top: var(--space-sm);
+	}
+	.show-password-check {
+		display: flex; align-items: center; gap: var(--space-xs);
+		font-size: 0.78rem; color: var(--text-tertiary); cursor: pointer;
+		text-transform: none !important; letter-spacing: 0 !important;
+		font-weight: 400 !important;
+	}
+	.show-password-check input { cursor: pointer; }
+</style>

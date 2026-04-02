@@ -1,11 +1,28 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, categories, subtasks, labels, cardLabels } from '$lib/server/db/schema';
-import { asc, inArray } from 'drizzle-orm';
+import { boards, columns, cards, categories, subtasks, labels, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
+import { asc, inArray, eq } from 'drizzle-orm';
+import { getAccessibleBoardIds } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async () => {
-	const allBoards = db.select().from(boards).all();
-	const allColumns = db.select().from(columns).orderBy(asc(columns.position)).all();
+export const load: PageServerLoad = async ({ locals }) => {
+	const user = locals.user!;
+
+	// Get board IDs this user can access (null = admin, sees all)
+	const accessibleIds = getAccessibleBoardIds(user);
+
+	let allBoards: (typeof boards.$inferSelect)[];
+	if (accessibleIds === null) {
+		allBoards = db.select().from(boards).all();
+	} else if (accessibleIds.length === 0) {
+		allBoards = [];
+	} else {
+		allBoards = db.select().from(boards).all().filter(b => accessibleIds.includes(b.id));
+	}
+
+	const accessibleBoardIds = allBoards.map(b => b.id);
+	const allColumns = accessibleBoardIds.length > 0
+		? db.select().from(columns).where(inArray(columns.boardId, accessibleBoardIds)).orderBy(asc(columns.position)).all()
+		: [];
 
 	const columnIds = allColumns.map(c => c.id);
 	const allCards = columnIds.length > 0
@@ -21,8 +38,19 @@ export const load: PageServerLoad = async () => {
 		? db.select().from(cardLabels).where(inArray(cardLabels.cardId, cardIds)).all()
 		: [];
 
-	const allCategories = db.select().from(categories).orderBy(asc(categories.name)).all();
-	const allLabels = db.select().from(labels).all();
+	// Fetch assignees for all cards
+	const allAssignments = cardIds.length > 0
+		? db.select().from(cardAssignees).where(inArray(cardAssignees.cardId, cardIds)).all()
+		: [];
+	const allUsers = db.select({ id: users.id, username: users.username, emoji: users.emoji }).from(users).all();
+	const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+	const allCategories = accessibleBoardIds.length > 0
+		? db.select().from(categories).where(inArray(categories.boardId, accessibleBoardIds)).orderBy(asc(categories.name)).all()
+		: [];
+	const allLabels = accessibleBoardIds.length > 0
+		? db.select().from(labels).where(inArray(labels.boardId, accessibleBoardIds)).all()
+		: [];
 
 	// Build a map of column id -> column info (with board name)
 	const columnMap = new Map<number, { title: string; boardId: number }>();
@@ -48,10 +76,15 @@ export const load: PageServerLoad = async () => {
 	const enrichedCards = allCards.map(card => {
 		const colInfo = columnMap.get(card.columnId);
 		const boardInfo = colInfo ? boardMap.get(colInfo.boardId) : null;
+		const assignees = allAssignments
+			.filter(a => a.cardId === card.id)
+			.map(a => userMap.get(a.userId))
+			.filter(Boolean) as { id: number; username: string; emoji: string | null }[];
 		return {
 			...card,
 			subtasks: allSubtasks.filter(st => st.cardId === card.id),
 			labelIds: allCardLabels.filter(cl => cl.cardId === card.id).map(cl => cl.labelId),
+			assignees,
 			boardName: boardInfo?.name || 'Unknown',
 			boardEmoji: boardInfo?.emoji || '📋',
 			boardId: colInfo?.boardId || 0,
@@ -76,3 +109,4 @@ export const load: PageServerLoad = async () => {
 		completedCards: enrichedCards.filter(c => c.bucket === 'Complete').length
 	};
 };
+

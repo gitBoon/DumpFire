@@ -1,11 +1,64 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, primaryKey } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
+
+// ─── Users & Auth ────────────────────────────────────────────────────────────
+
+export const users = sqliteTable('users', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	username: text('username').notNull().unique(),
+	email: text('email').notNull().unique(),
+	passwordHash: text('password_hash').notNull(),
+	emoji: text('emoji').default('👤'),
+	role: text('role').notNull().default('user'), // 'superadmin' | 'admin' | 'user'
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export const sessions = sqliteTable('sessions', {
+	id: text('id').primaryKey(), // UUID token
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	expiresAt: text('expires_at').notNull(),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+// ─── Teams ───────────────────────────────────────────────────────────────────
+
+export const teams = sqliteTable('teams', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	name: text('name').notNull(),
+	emoji: text('emoji').default('🏢'),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export const teamMembers = sqliteTable('team_members', {
+	teamId: integer('team_id')
+		.notNull()
+		.references(() => teams.id, { onDelete: 'cascade' }),
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	role: text('role').notNull().default('member') // 'owner' | 'member'
+}, (table) => [
+	primaryKey({ columns: [table.teamId, table.userId] })
+]);
+
+// ─── Boards ──────────────────────────────────────────────────────────────────
 
 export const boards = sqliteTable('boards', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	name: text('name').notNull(),
 	emoji: text('emoji').default('📋'),
 	parentCardId: integer('parent_card_id'),
+	isPublic: integer('is_public', { mode: 'boolean' }).notNull().default(false),
+	createdBy: integer('created_by')
+		.references(() => users.id, { onDelete: 'set null' }),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
@@ -13,6 +66,34 @@ export const boards = sqliteTable('boards', {
 		.notNull()
 		.default(sql`(datetime('now'))`)
 });
+
+// ─── Board Access Control ────────────────────────────────────────────────────
+
+export const boardMembers = sqliteTable('board_members', {
+	boardId: integer('board_id')
+		.notNull()
+		.references(() => boards.id, { onDelete: 'cascade' }),
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	role: text('role').notNull().default('viewer') // 'owner' | 'editor' | 'viewer'
+}, (table) => [
+	primaryKey({ columns: [table.boardId, table.userId] })
+]);
+
+export const boardTeams = sqliteTable('board_teams', {
+	boardId: integer('board_id')
+		.notNull()
+		.references(() => boards.id, { onDelete: 'cascade' }),
+	teamId: integer('team_id')
+		.notNull()
+		.references(() => teams.id, { onDelete: 'cascade' }),
+	role: text('role').notNull().default('viewer') // 'editor' | 'viewer'
+}, (table) => [
+	primaryKey({ columns: [table.boardId, table.teamId] })
+]);
+
+// ─── Columns & Cards ─────────────────────────────────────────────────────────
 
 export const columns = sqliteTable('columns', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
@@ -27,8 +108,7 @@ export const columns = sqliteTable('columns', {
 export const categories = sqliteTable('categories', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	boardId: integer('board_id')
-		.notNull()
-		.references(() => boards.id, { onDelete: 'cascade' }),
+		.references(() => boards.id, { onDelete: 'set null' }),
 	name: text('name').notNull(),
 	color: text('color').notNull().default('#6366f1')
 });
@@ -84,6 +164,8 @@ export const activityLog = sqliteTable('activity_log', {
 		.references(() => boards.id, { onDelete: 'cascade' }),
 	cardId: integer('card_id')
 		.references(() => cards.id, { onDelete: 'set null' }),
+	userId: integer('user_id')
+		.references(() => users.id, { onDelete: 'set null' }),
 	action: text('action').notNull(),
 	detail: text('detail').default(''),
 	userName: text('user_name').default(''),
@@ -111,7 +193,51 @@ export const cardLabels = sqliteTable('card_labels', {
 		.references(() => labels.id, { onDelete: 'cascade' })
 });
 
+// ─── Settings ────────────────────────────────────────────────────────────────
+
+export const settings = sqliteTable('settings', {
+	key: text('key').primaryKey(),
+	value: text('value').notNull()
+});
+
+// ─── Card Assignees ──────────────────────────────────────────────────────────
+
+export const cardAssignees = sqliteTable('card_assignees', {
+	cardId: integer('card_id')
+		.notNull()
+		.references(() => cards.id, { onDelete: 'cascade' }),
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' })
+}, (table) => [
+	primaryKey({ columns: [table.cardId, table.userId] })
+]);
+
+// ─── Invite Tokens ───────────────────────────────────────────────────────────
+
+export const inviteTokens = sqliteTable('invite_tokens', {
+	token: text('token').primaryKey(),
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	expiresAt: text('expires_at').notNull(),
+	used: integer('used', { mode: 'boolean' }).notNull().default(false),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+// ─── Type Exports ────────────────────────────────────────────────────────────
+
+export type User = typeof users.$inferSelect;
+export type NewUser = typeof users.$inferInsert;
+export type Session = typeof sessions.$inferSelect;
+export type Team = typeof teams.$inferSelect;
+export type NewTeam = typeof teams.$inferInsert;
+export type TeamMember = typeof teamMembers.$inferSelect;
 export type Board = typeof boards.$inferSelect;
+export type BoardMember = typeof boardMembers.$inferSelect;
+export type BoardTeam = typeof boardTeams.$inferSelect;
 export type Column = typeof columns.$inferSelect;
 export type Card = typeof cards.$inferSelect;
 export type Category = typeof categories.$inferSelect;
@@ -119,6 +245,37 @@ export type Subtask = typeof subtasks.$inferSelect;
 export type UserXp = typeof userXp.$inferSelect;
 export type ActivityLog = typeof activityLog.$inferSelect;
 export type Label = typeof labels.$inferSelect;
+export type Setting = typeof settings.$inferSelect;
+export type CardAssignee = typeof cardAssignees.$inferSelect;
+export type InviteToken = typeof inviteTokens.$inferSelect;
+
+// ─── Task Requests ───────────────────────────────────────────────────────────
+
+export const taskRequests = sqliteTable('task_requests', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	targetType: text('target_type').notNull().default('team'), // 'user' | 'team'
+	targetId: integer('target_id').notNull(),
+	requesterName: text('requester_name').notNull().default('Anonymous'),
+	requesterEmail: text('requester_email'),
+	requesterUserId: integer('requester_user_id').references(() => users.id, { onDelete: 'set null' }),
+	title: text('title').notNull(),
+	description: text('description').default(''),
+	priority: text('priority').notNull().default('medium'),
+	status: text('status').notNull().default('pending'), // 'pending' | 'accepted' | 'rejected'
+	resolvedBy: integer('resolved_by').references(() => users.id, { onDelete: 'set null' }),
+	resolvedCardId: integer('resolved_card_id').references(() => cards.id, { onDelete: 'set null' }),
+	rejectReason: text('reject_reason'),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	resolvedAt: text('resolved_at')
+});
+
+export type TaskRequest = typeof taskRequests.$inferSelect;
+export type NewTaskRequest = typeof taskRequests.$inferInsert;
+
+// ─── Insert Types ────────────────────────────────────────────────────────────
+
 export type NewBoard = typeof boards.$inferInsert;
 export type NewColumn = typeof columns.$inferInsert;
 export type NewCard = typeof cards.$inferInsert;

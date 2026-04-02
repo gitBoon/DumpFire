@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { cards, columns, userXp } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
+import { notifyCardMoved } from '$lib/server/notifications';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ request }) => {
@@ -46,10 +47,23 @@ export const PUT: RequestHandler = async ({ request }) => {
 	}
 
 	for (const update of updates) {
+		// Track column changes for notifications
+		const existingCard = db.select().from(cards).where(eq(cards.id, update.id)).get();
+		const movedColumn = existingCard && existingCard.columnId !== update.columnId;
+
 		db.update(cards)
 			.set({ columnId: update.columnId, position: update.position })
 			.where(eq(cards.id, update.id))
 			.run();
+
+		// Fire move notification if card changed columns
+		if (movedColumn && existingCard && boardId) {
+			const fromCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, existingCard.columnId)).get();
+			const toCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, update.columnId)).get();
+			if (fromCol && toCol) {
+				notifyCardMoved(boardId, update.id, existingCard.title, userName || 'Someone', fromCol.title, toCol.title);
+			}
+		}
 	}
 
 	// Set completedAt timestamp when moved to Complete (only if not already set)

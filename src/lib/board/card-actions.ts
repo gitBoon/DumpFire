@@ -31,7 +31,7 @@ export async function saveCard(
 		onHoldNote?: string;
 		pendingSubtasks?: string[];
 	}
-): Promise<{ isNew: boolean; title: string }> {
+): Promise<{ isNew: boolean; title: string; cardId?: number }> {
 	const { pendingSubtasks, ...rest } = cardData;
 	if (editingCard) {
 		// Update existing card
@@ -47,24 +47,28 @@ export async function saveCard(
 			boardId,
 			...rest
 		});
+		let newCardId: number | undefined;
 		// Create pending subtasks for the new card
-		if (res.ok && pendingSubtasks && pendingSubtasks.length > 0) {
+		if (res.ok) {
 			const newCard = await res.json();
-			for (let i = 0; i < pendingSubtasks.length; i++) {
-				const stData = JSON.parse(pendingSubtasks[i]);
-				await api.createSubtask({
-					cardId: newCard.id,
-					title: stData.title,
-					description: stData.description || '',
-					priority: stData.priority || 'medium',
-					colorTag: stData.colorTag || '',
-					dueDate: stData.dueDate || null,
-					completed: false,
-					boardId
-				});
+			newCardId = newCard.id;
+			if (pendingSubtasks && pendingSubtasks.length > 0) {
+				for (let i = 0; i < pendingSubtasks.length; i++) {
+					const stData = JSON.parse(pendingSubtasks[i]);
+					await api.createSubtask({
+						cardId: newCard.id,
+						title: stData.title,
+						description: stData.description || '',
+						priority: stData.priority || 'medium',
+						colorTag: stData.colorTag || '',
+						dueDate: stData.dueDate || null,
+						completed: false,
+						boardId
+					});
+				}
 			}
 		}
-		return { isNew: true, title: cardData.title };
+		return { isNew: true, title: cardData.title, cardId: newCardId };
 	}
 	return { isNew: false, title: '' };
 }
