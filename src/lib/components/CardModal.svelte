@@ -14,6 +14,14 @@
 		position: number;
 	};
 
+	type SubBoardType = {
+		id: number;
+		name: string;
+		emoji: string;
+		done: number;
+		total: number;
+	};
+
 	type CardType = {
 		id: number;
 		columnId: number;
@@ -28,6 +36,7 @@
 		createdAt: string;
 		updatedAt: string;
 		subtasks: SubtaskType[];
+		subBoards?: SubBoardType[];
 	};
 
 	type CategoryType = {
@@ -51,7 +60,11 @@
 		boardId,
 		onSave,
 		onDelete,
-		onClose
+		onClose,
+		onCreateSubBoard,
+		onDeleteSubBoard,
+		onLinkSubBoard,
+		availableBoards = []
 	}: {
 		card: CardType | null;
 		categories: CategoryType[];
@@ -60,7 +73,14 @@
 		onSave: (data: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; pendingSubtasks?: string[] }) => void;
 		onDelete?: () => void;
 		onClose: () => void;
+		onCreateSubBoard?: (name: string) => void;
+		onDeleteSubBoard?: (boardId: number) => void;
+		onLinkSubBoard?: (boardId: number) => void;
+		availableBoards?: { id: number; name: string; emoji: string }[];
 	} = $props();
+
+	let newSubBoardName = $state(card?.title || '');
+	let showLinkPicker = $state(false);
 
 	let cardLabelIds = $state<number[]>((card as any)?.labelIds || []);
 
@@ -468,6 +488,82 @@
 			</div>
 		{/if}
 
+		<!-- Sub-boards section -->
+		{#if card}
+			<div class="subboard-section">
+				<div class="subtask-header">
+					<label>
+						Sub-boards
+						{#if card.subBoards && card.subBoards.length > 0}
+							<span class="subtask-counter">{card.subBoards.length}</span>
+						{/if}
+					</label>
+				</div>
+
+				{#if card.subBoards && card.subBoards.length > 0}
+					<div class="subboard-list">
+						{#each card.subBoards as sb}
+							<div class="subboard-row">
+								<a href="/board/{sb.id}" class="subboard-link">
+									<span class="subboard-link-icon">{sb.emoji}</span>
+									<div class="subboard-link-info">
+										<span class="subboard-link-name">{sb.name}</span>
+										<span class="subboard-link-progress">{sb.done}/{sb.total} complete</span>
+									</div>
+									<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+										<path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+									</svg>
+								</a>
+								{#if onDeleteSubBoard}
+								<button class="subboard-delete-btn" title="Delete sub-board" onclick={() => onDeleteSubBoard!(sb.id)}>
+									<svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+								</button>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				{/if}
+
+				{#if onCreateSubBoard}
+					<div class="subboard-create-row">
+						<input
+							type="text"
+							class="subboard-name-input"
+							placeholder="Sub-board name..."
+							bind:value={newSubBoardName}
+							onkeydown={(e) => e.key === 'Enter' && newSubBoardName.trim() && onCreateSubBoard!(newSubBoardName.trim())}
+						/>
+						<button class="btn-ghost subboard-add-btn" onclick={() => { if (newSubBoardName.trim()) onCreateSubBoard!(newSubBoardName.trim()); }} disabled={!newSubBoardName.trim()}>
+							<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+							Create
+						</button>
+					</div>
+				{/if}
+
+				{#if onLinkSubBoard && availableBoards.length > 0}
+					<div class="subboard-link-section">
+						{#if showLinkPicker}
+							<div class="link-picker">
+								{#each availableBoards as ab}
+									<button class="link-picker-item" onclick={() => { onLinkSubBoard!(ab.id); showLinkPicker = false; }}>
+										{ab.emoji} {ab.name}
+									</button>
+								{/each}
+							</div>
+						{:else}
+							<button class="btn-ghost subboard-link-btn" onclick={() => (showLinkPicker = true)}>
+								🔗 Link existing board
+							</button>
+						{/if}
+					</div>
+				{/if}
+
+				{#if (!card.subBoards || card.subBoards.length === 0) && !onCreateSubBoard}
+					<p class="empty-subtasks">No sub-boards yet.</p>
+				{/if}
+			</div>
+		{/if}
+
 		{#if card}
 			<div class="card-timestamp">
 				Created {new Date(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
@@ -514,7 +610,7 @@
 {/if}
 
 <style>
-	.card-modal-content { max-width: 560px; }
+	.card-modal-content { max-width: 840px; }
 
 	.modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-lg); }
 	.modal-header h2 { font-size: 1.2rem; }
@@ -598,6 +694,98 @@
 	.empty-subtasks { font-size: 0.82rem; color: var(--text-tertiary); text-align: center; padding: var(--space-lg) 0; }
 
 	.card-timestamp { font-size: 0.72rem; color: var(--text-tertiary); margin-bottom: var(--space-lg); }
+
+	/* Sub-boards section */
+	.subboard-section {
+		border-top: 1px solid var(--glass-border);
+		padding-top: var(--space-lg);
+		margin-bottom: var(--space-lg);
+	}
+
+	.subboard-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		margin-bottom: var(--space-md);
+	}
+
+	.subboard-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.subboard-row .subboard-link { flex: 1; min-width: 0; }
+
+	.subboard-delete-btn {
+		flex-shrink: 0;
+		width: 28px; height: 28px;
+		display: flex; align-items: center; justify-content: center;
+		border-radius: var(--radius-sm);
+		background: transparent; border: 1px solid transparent;
+		color: var(--text-tertiary); cursor: pointer;
+		transition: all 0.15s;
+	}
+	.subboard-delete-btn:hover { color: var(--accent-rose); background: rgba(244, 63, 94, 0.1); border-color: rgba(244, 63, 94, 0.2); }
+	.subboard-link {
+		display: flex; align-items: center; gap: var(--space-md);
+		padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md);
+		background: rgba(99, 102, 241, 0.06); border: 1px solid rgba(99, 102, 241, 0.15);
+		text-decoration: none; color: var(--text-primary);
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.subboard-link:hover {
+		background: rgba(99, 102, 241, 0.12);
+		border-color: rgba(99, 102, 241, 0.3);
+		transform: translateX(2px);
+	}
+	.subboard-link-icon { font-size: 1rem; flex-shrink: 0; }
+	.subboard-link-info { flex: 1; min-width: 0; }
+	.subboard-link-name { display: block; font-size: 0.82rem; font-weight: 600; }
+	.subboard-link-progress { display: block; font-size: 0.68rem; color: var(--text-secondary); margin-top: 1px; }
+	.subboard-link svg { color: var(--text-tertiary); flex-shrink: 0; }
+
+	.subboard-create-row {
+		display: flex; gap: var(--space-sm); margin-bottom: var(--space-sm);
+	}
+	.subboard-name-input {
+		flex: 1; padding: 6px var(--space-sm);
+		border-radius: var(--radius-sm);
+		background: var(--bg-base); border: 1px solid var(--glass-border);
+		color: var(--text-primary); font-family: var(--font-family);
+		font-size: 0.8rem;
+	}
+	.subboard-name-input:focus { outline: none; border-color: rgba(99, 102, 241, 0.5); }
+	.subboard-add-btn {
+		display: flex; align-items: center; gap: 4px;
+		font-size: 0.75rem !important; white-space: nowrap;
+		padding: 4px var(--space-sm) !important;
+	}
+	.subboard-add-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+	.subboard-link-section { margin-top: var(--space-xs); }
+	.subboard-link-btn {
+		font-size: 0.75rem !important;
+		color: var(--text-tertiary) !important;
+		padding: 4px var(--space-sm) !important;
+	}
+	.subboard-link-btn:hover { color: #818cf8 !important; }
+
+	.link-picker {
+		display: flex; flex-direction: column; gap: 2px;
+		max-height: 150px; overflow-y: auto;
+		padding: var(--space-xs); border-radius: var(--radius-sm);
+		background: var(--bg-base); border: 1px solid var(--glass-border);
+	}
+	.link-picker-item {
+		padding: 6px var(--space-sm);
+		border: none; background: transparent;
+		color: var(--text-primary); font-size: 0.8rem;
+		text-align: left; cursor: pointer;
+		border-radius: var(--radius-sm);
+		transition: background 0.1s;
+	}
+	.link-picker-item:hover { background: var(--glass-bg); }
 
 	.modal-actions { display: flex; align-items: center; gap: var(--space-md); padding-top: var(--space-lg); border-top: 1px solid var(--glass-border); }
 

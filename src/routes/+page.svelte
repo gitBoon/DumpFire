@@ -60,6 +60,9 @@
 		await invalidateAll();
 		deleting = null;
 	}
+	// Computed totals across all boards
+	let totalCards = $derived(data.boards.reduce((t, b) => t + b.totalCards, 0));
+	let completedCards = $derived(data.boards.reduce((t, b) => t + b.completedCards, 0));
 </script>
 
 <svelte:head>
@@ -104,43 +107,84 @@
 	</header>
 
 	<main class="boards-grid stagger-children">
-		{#each data.boards as board (board.id)}
-			<a href="/board/{board.id}" class="board-card glass" id="board-{board.id}">
-				<div class="board-card-emoji">{board.emoji}</div>
+		{#if data.boards.length > 0}
+			<a href="/all" class="board-card glass all-tasks-card" id="all-tasks">
+				<div class="board-card-emoji">🌐</div>
 				<div class="board-card-info">
-					<h3>{board.name}</h3>
+					<h3>All Tasks</h3>
 					<div class="board-card-stats">
 						<span class="board-card-count">
-							{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}
+							{totalCards} card{totalCards !== 1 ? 's' : ''} · {data.boards.length} board{data.boards.length !== 1 ? 's' : ''}
 						</span>
-						{#if board.totalCards > 0}
+						{#if totalCards > 0}
 							<div class="board-card-progress">
-								<div class="board-card-progress-fill" style="width: {(board.completedCards / board.totalCards) * 100}%"></div>
+								<div class="board-card-progress-fill all-progress" style="width: {(completedCards / totalCards) * 100}%"></div>
 							</div>
-							<span class="board-card-pct">{Math.round((board.completedCards / board.totalCards) * 100)}%</span>
+							<span class="board-card-pct">{Math.round((completedCards / totalCards) * 100)}%</span>
 						{/if}
 					</div>
 				</div>
-				<button
-					class="board-delete-btn"
-					title="Delete board"
-					onclick={(e) => {
-						e.preventDefault();
-						e.stopPropagation();
-						confirmDeleteBoard(board.id, board.name);
-					}}
-					disabled={deleting === board.id}
-				>
-					{#if deleting === board.id}
-						<span class="spinner"></span>
-					{:else}
-						<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-							<path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-						</svg>
-					{/if}
-				</button>
-				<div class="board-card-glow"></div>
+				<div class="board-card-glow all-glow"></div>
 			</a>
+		{/if}
+		{#each data.boards as board (board.id)}
+			<div class="board-card-wrapper">
+				<a href="/board/{board.id}" class="board-card glass" id="board-{board.id}">
+					<div class="board-card-emoji">{board.emoji}</div>
+					<div class="board-card-info">
+						<h3>{board.name}</h3>
+						<div class="board-card-stats">
+							<span class="board-card-count">
+								{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}
+							</span>
+							{#if board.totalCards > 0}
+								<div class="board-card-progress">
+									<div class="board-card-progress-fill" style="width: {(board.completedCards / board.totalCards) * 100}%"></div>
+								</div>
+								<span class="board-card-pct">{Math.round((board.completedCards / board.totalCards) * 100)}%</span>
+							{/if}
+						</div>
+					</div>
+					<button
+						class="board-delete-btn"
+						title="Delete board"
+						onclick={(e) => {
+							e.preventDefault();
+							e.stopPropagation();
+							confirmDeleteBoard(board.id, board.name);
+						}}
+						disabled={deleting === board.id}
+					>
+						{#if deleting === board.id}
+							<span class="spinner"></span>
+						{:else}
+							<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+								<path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+							</svg>
+						{/if}
+					</button>
+					<div class="board-card-glow"></div>
+				</a>
+				{#if board.subBoards && board.subBoards.length > 0}
+					<div class="sub-boards-list">
+						{#each board.subBoards as sb}
+							<a href="/board/{sb.id}" class="sub-board-item" title="{sb.parentCardTitle}">
+								<span class="sub-board-connector"></span>
+								<span class="sub-board-emoji">{sb.emoji}</span>
+								<span class="sub-board-name">{sb.name}</span>
+								{#if sb.total > 0}
+									<span class="sub-board-progress" class:complete={sb.done === sb.total}>{sb.done}/{sb.total}</span>
+								{:else}
+									<span class="sub-board-progress empty">empty</span>
+								{/if}
+								<button class="sub-board-delete" title="Delete sub-board" onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(sb.id, sb.name); }}>
+									<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+								</button>
+							</a>
+						{/each}
+					</div>
+				{/if}
+			</div>
 		{:else}
 			<div class="empty-state">
 				<span class="empty-icon">🗂️</span>
@@ -322,6 +366,124 @@
 	.board-card-pct {
 		font-size: 0.6rem; font-weight: 700; color: var(--accent-indigo); white-space: nowrap;
 	}
+
+	.all-tasks-card {
+		grid-column: 1 / -1;
+		background: linear-gradient(135deg, var(--glass-bg), rgba(99, 102, 241, 0.06)) !important;
+		border: 1px solid rgba(99, 102, 241, 0.2);
+	}
+
+	.all-tasks-card:hover {
+		border-color: rgba(99, 102, 241, 0.4);
+	}
+
+	.all-glow {
+		background: linear-gradient(90deg, #6366f1, #a855f7, #06b6d4) !important;
+		opacity: 0.6 !important;
+	}
+
+	.all-tasks-card:hover .all-glow {
+		opacity: 1 !important;
+	}
+
+	.all-progress {
+		background: linear-gradient(90deg, #6366f1, #a855f7) !important;
+	}
+
+	.board-card-wrapper {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.sub-boards-list {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		padding-left: var(--space-xl);
+		margin-top: -2px;
+	}
+
+	.sub-board-item {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		padding: 6px var(--space-md);
+		border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+		text-decoration: none;
+		color: var(--text-secondary);
+		font-size: 0.75rem;
+		transition: all var(--duration-fast) var(--ease-out);
+		background: var(--glass-bg);
+		border: 1px solid var(--glass-border);
+		border-top: none;
+	}
+
+	.sub-board-item:first-child {
+		border-top: 1px solid var(--glass-border);
+		border-radius: 0;
+	}
+
+	.sub-board-item:last-child {
+		border-radius: 0 0 var(--radius-md) var(--radius-md);
+	}
+
+	.sub-board-item:hover {
+		background: rgba(99, 102, 241, 0.06);
+		color: var(--text-primary);
+	}
+
+	.sub-board-connector {
+		width: 12px;
+		height: 1px;
+		background: var(--glass-border);
+		flex-shrink: 0;
+	}
+
+	.sub-board-emoji {
+		font-size: 0.8rem;
+		flex-shrink: 0;
+	}
+
+	.sub-board-name {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-weight: 500;
+	}
+
+	.sub-board-progress {
+		font-size: 0.65rem;
+		font-weight: 700;
+		padding: 1px 6px;
+		border-radius: var(--radius-full);
+		background: rgba(99, 102, 241, 0.1);
+		color: #818cf8;
+		white-space: nowrap;
+	}
+
+	.sub-board-progress.complete {
+		background: rgba(16, 185, 129, 0.1);
+		color: #10b981;
+	}
+
+	.sub-board-progress.empty {
+		background: var(--glass-bg);
+		color: var(--text-tertiary);
+	}
+
+	.sub-board-delete {
+		flex-shrink: 0;
+		width: 24px; height: 24px;
+		display: flex; align-items: center; justify-content: center;
+		border-radius: var(--radius-sm);
+		background: transparent; border: none;
+		color: var(--text-tertiary); cursor: pointer;
+		opacity: 0.4; transition: all 0.15s;
+	}
+	.sub-board-item:hover .sub-board-delete { opacity: 0.8; }
+	.sub-board-delete:hover { opacity: 1 !important; color: var(--accent-rose); background: rgba(244, 63, 94, 0.15); }
 
 	.board-delete-btn {
 		position: absolute;

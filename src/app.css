@@ -332,7 +332,7 @@ textarea {
 	border-radius: var(--radius-xl);
 	padding: var(--space-2xl);
 	width: 90%;
-	max-width: 480px;
+	max-width: 640px;
 	max-height: 85vh;
 	overflow-y: auto;
 	box-shadow: var(--shadow-lg);
@@ -375,6 +375,7 @@ textarea {
 	color: var(--priority-low);
 	border: 1px solid rgba(34, 197, 94, 0.25);
 }
+
 
 /* === Color Tag Dots === */
 .color-dot {
