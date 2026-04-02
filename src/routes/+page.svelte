@@ -8,7 +8,7 @@
 	import type { PageData } from './$types';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { theme } from '$lib/stores/theme';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
@@ -31,12 +31,68 @@
 	let expandedBoards = $state<Set<number>>(new Set());
 	let showCompletedSubs = $state(false);
 
+	// Typewriter straplines
+	const straplines = [
+		'Blazingly fast local Kanban',
+		'No cloud. No latency. Just speed.',
+		'Ship faster, stress less.',
+		'Your tasks, your rules.',
+		'Drag. Drop. Done.',
+		'Organise chaos, beautifully.',
+		'Built for makers & doers.',
+		'Zero distractions, maximum flow.',
+		'Where ideas become actions.',
+		'Move fast. Break nothing.'
+	];
+	let typedText = $state('');
+	let typewriterTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function runTypewriter() {
+		let lineIdx = 0;
+		let charIdx = 0;
+		let deleting = false;
+		const TYPE_SPEED = 55;
+		const DELETE_SPEED = 30;
+		const PAUSE_AFTER_TYPE = 2500;
+		const PAUSE_AFTER_DELETE = 400;
+
+		function tick() {
+			const currentLine = straplines[lineIdx];
+			if (!deleting) {
+				typedText = currentLine.slice(0, charIdx + 1);
+				charIdx++;
+				if (charIdx >= currentLine.length) {
+					deleting = true;
+					typewriterTimer = setTimeout(tick, PAUSE_AFTER_TYPE);
+				} else {
+					typewriterTimer = setTimeout(tick, TYPE_SPEED);
+				}
+			} else {
+				charIdx--;
+				typedText = currentLine.slice(0, charIdx);
+				if (charIdx <= 0) {
+					deleting = false;
+					lineIdx = (lineIdx + 1) % straplines.length;
+					typewriterTimer = setTimeout(tick, PAUSE_AFTER_DELETE);
+				} else {
+					typewriterTimer = setTimeout(tick, DELETE_SPEED);
+				}
+			}
+		}
+		tick();
+	}
+
 	onMount(async () => {
+		runTypewriter();
 		const res = await fetch('/api/requests');
 		if (res.ok) {
 			const requests = await res.json();
 			inboxCount = requests.filter((r: any) => r.status === 'pending').length;
 		}
+	});
+
+	onDestroy(() => {
+		if (typewriterTimer) clearTimeout(typewriterTimer);
 	});
 
 	async function createBoard() {
@@ -97,52 +153,66 @@
 			<span class="brand-icon">🔥</span>
 			<div>
 				<h1>DumpFire</h1>
-				<p class="brand-tagline">Blazingly fast local Kanban</p>
+				<p class="brand-tagline"><span class="typewriter-text">{typedText}</span><span class="typewriter-cursor">|</span></p>
 			</div>
 		</div>
-		<div class="header-actions">
-			<a href="/teams" class="btn-ghost" title="My Teams" style="font-size: 0; padding: var(--space-sm);">
-				<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-					<path d="M6 9a3 3 0 100-6 3 3 0 000 6zM2 16v-1a4 4 0 014-4h0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-					<path d="M12 9a3 3 0 100-6 3 3 0 000 6zM16 16v-1a4 4 0 00-3-3.87" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+		<nav class="header-nav">
+			<a href="/all" class="nav-pill">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+				All Tasks
+			</a>
+			<a href="/teams" class="nav-pill">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<path d="M5.5 8a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM1.5 14v-1a3.5 3.5 0 013.5-3.5h1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+					<path d="M10.5 8a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM14.5 14v-1a3.5 3.5 0 00-2.5-3.37" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
 				</svg>
+				Teams
 			</a>
 			{#if isAdmin}
-			<a href="/admin" class="btn-ghost" title="Admin panel" style="font-size: 0; padding: var(--space-sm);">
-				<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-					<path d="M9 1.5l1.3 2.6 2.9.4-2.1 2 .5 2.9L9 7.9l-2.6 1.5.5-2.9-2.1-2 2.9-.4L9 1.5z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-					<path d="M4.5 11v3.5a1 1 0 001 1h7a1 1 0 001-1V11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+			<a href="/admin" class="nav-pill">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<path d="M8 1l1.1 2.2 2.4.35-1.75 1.7.4 2.4L8 6.6l-2.15 1.05.4-2.4-1.75-1.7 2.4-.35L8 1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+					<path d="M3.5 9.5v3a1 1 0 001 1h7a1 1 0 001-1v-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
 				</svg>
+				Admin
 			</a>
 			{/if}
-			<a href="/inbox" class="btn-ghost nav-btn" title="Inbox">
-				📥 Inbox
+			<a href="/inbox" class="nav-pill">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<path d="M2 4l6 5 6-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+					<rect x="1.5" y="3" width="13" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+				</svg>
+				Inbox
 				{#if inboxCount > 0}
 					<span class="inbox-count-badge">{inboxCount}</span>
 				{/if}
 			</a>
-			<a href="/request" class="btn-ghost nav-btn" title="Submit a Request">
-				📋 Request
+			<a href="/request" class="nav-pill">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+					<path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+				</svg>
+				Request
 			</a>
-			<button class="theme-toggle btn-ghost" onclick={() => theme.toggle()} title="Toggle theme">
+			<button class="nav-pill theme-pill" onclick={() => theme.toggle()} title="Toggle theme">
 				{#if currentTheme === 'dark'}
-					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<circle cx="9" cy="9" r="4" stroke="currentColor" stroke-width="1.5"/>
-						<path d="M9 1v2M9 15v2M1 9h2M15 9h2M3.3 3.3l1.4 1.4M13.3 13.3l1.4 1.4M3.3 14.7l1.4-1.4M13.3 4.7l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+						<circle cx="8" cy="8" r="3.5" stroke="currentColor" stroke-width="1.2"/>
+						<path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3 3l1 1M12 12l1 1M3 13l1-1M12 4l1-1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
 					</svg>
 				{:else}
-					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<path d="M15.5 10.1A6.5 6.5 0 017.9 2.5 7 7 0 1015.5 10.1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+						<path d="M13.5 9A5.5 5.5 0 017 2.5 6 6 0 1013.5 9z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
 					</svg>
 				{/if}
 			</button>
-			<button class="btn-primary" onclick={() => (showCreate = true)} id="create-board-btn">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+			<button class="btn-primary create-btn" onclick={() => (showCreate = true)} id="create-board-btn">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+					<path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
 				</svg>
 				New Board
 			</button>
-		</div>
+		</nav>
 	</header>
 
 	<!-- ─── Analytics Section ────────────────────────────────────────────── -->
@@ -365,13 +435,27 @@
 		margin-bottom: var(--space-xl); padding-bottom: var(--space-xl);
 		border-bottom: 1px solid var(--glass-border);
 	}
-	.header-actions { display: flex; align-items: center; gap: var(--space-sm); }
-	.nav-btn {
-		position: relative; display: inline-flex; align-items: center; gap: 5px;
-		font-size: 0.82rem !important; font-weight: 600;
-		text-decoration: none; color: var(--text-secondary);
+	.header-nav {
+		display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
 	}
-	.nav-btn:hover { color: var(--text-primary); }
+	.nav-pill {
+		display: inline-flex; align-items: center; gap: 6px;
+		padding: 6px 14px; border-radius: var(--radius-full);
+		font-size: 0.78rem; font-weight: 600; font-family: var(--font-family);
+		color: var(--text-secondary); text-decoration: none;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		cursor: pointer; transition: all var(--duration-fast) var(--ease-out);
+		white-space: nowrap; position: relative;
+	}
+	.nav-pill:hover {
+		color: var(--text-primary); border-color: var(--accent-indigo);
+		background: rgba(99, 102, 241, 0.06); transform: translateY(-1px);
+		box-shadow: 0 2px 8px rgba(99, 102, 241, 0.1);
+	}
+	.nav-pill svg { flex-shrink: 0; opacity: 0.7; }
+	.nav-pill:hover svg { opacity: 1; }
+	.theme-pill { padding: 7px 10px; }
+	.create-btn { border-radius: var(--radius-full); padding: 6px 16px; font-size: 0.78rem; }
 	.inbox-count-badge {
 		display: inline-flex; align-items: center; justify-content: center;
 		min-width: 18px; height: 18px; padding: 0 5px;
@@ -379,7 +463,6 @@
 		background: var(--accent-rose); color: white;
 		font-size: 0.65rem; font-weight: 800; line-height: 1;
 	}
-	.theme-toggle { font-size: 0; }
 	.brand { display: flex; align-items: center; gap: var(--space-lg); }
 	.brand-icon { font-size: 2.5rem; filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.4)); }
 	.brand h1 {
@@ -387,7 +470,13 @@
 		background: linear-gradient(135deg, var(--text-primary), var(--accent-purple));
 		-webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
 	}
-	.brand-tagline { color: var(--text-secondary); font-size: 0.85rem; font-weight: 400; }
+	.brand-tagline { color: var(--text-secondary); font-size: 0.85rem; font-weight: 400; min-height: 1.3em; }
+	.typewriter-cursor {
+		display: inline-block; margin-left: 1px;
+		color: var(--accent-indigo); font-weight: 300;
+		animation: blink-cursor 0.75s step-end infinite;
+	}
+	@keyframes blink-cursor { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
 	/* ─── Analytics ──────────────────────────────────────────────── */
 	.analytics { margin-bottom: var(--space-2xl); }
