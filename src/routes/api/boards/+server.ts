@@ -10,10 +10,10 @@ export const GET: RequestHandler = async () => {
 };
 
 export const POST: RequestHandler = async ({ request }) => {
-	const { name, emoji } = await request.json();
+	const { name, emoji, parentCardId } = await request.json();
 	const board = db
 		.insert(boards)
-		.values({ name: name || 'Untitled Board', emoji: emoji || '📋' })
+		.values({ name: name || 'Untitled Board', emoji: emoji || '📋', parentCardId: parentCardId || null })
 		.returning()
 		.get();
 

@@ -34,6 +34,14 @@
 		color: string;
 	};
 
+	type SubBoardType = {
+		id: number;
+		name: string;
+		emoji: string;
+		done: number;
+		total: number;
+	};
+
 	type CardType = {
 		id: number;
 		columnId: number;
@@ -50,6 +58,7 @@
 		labelIds: number[];
 		pinned: boolean;
 		onHoldNote: string;
+		subBoards: SubBoardType[];
 	};
 
 	type LabelType = {
@@ -255,6 +264,64 @@
 		contextMenu = { ...contextMenu, show: false };
 	}
 
+	async function createSubBoard(card: CardType, name?: string) {
+		contextMenu = { ...contextMenu, show: false };
+		const res = await fetch('/api/boards', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				name: name || card.title,
+				emoji: '🗂️',
+				parentCardId: card.id
+			})
+		});
+		if (res.ok) {
+			const board = await res.json();
+			window.location.href = `/board/${board.id}`;
+		}
+	}
+
+	async function linkSubBoard(cardId: number, boardId: number) {
+		await fetch(`/api/boards/${boardId}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ parentCardId: cardId })
+		});
+		await invalidateAll();
+		toasts.add('Board linked as sub-board');
+	}
+
+	function deleteSubBoard(boardId: number) {
+		// Find the sub-board name for the confirm message
+		let sbName = 'this sub-board';
+		for (const col of boardColumns) {
+			for (const card of col.cards) {
+				const sb = card.subBoards.find(s => s.id === boardId);
+				if (sb) { sbName = sb.name; break; }
+			}
+		}
+		showConfirm(
+			'Delete Sub-board',
+			`Delete "${sbName}" and all its cards? This cannot be undone.`,
+			'Delete',
+			async () => {
+				const res = await fetch(`/api/boards/${boardId}`, { method: 'DELETE' });
+				if (res.ok) {
+					await invalidateAll();
+					// Refresh editingCard from updated data
+					if (editingCard) {
+						const cardId = editingCard.id;
+						for (const col of boardColumns) {
+							const found = col.cards.find(c => c.id === cardId);
+							if (found) { editingCard = found; break; }
+						}
+					}
+					toasts.add('Sub-board deleted');
+				}
+			}
+		);
+	}
+
 	// Column sort state (per-column, independent)
 	type SortOption = 'none' | 'date-asc' | 'date-desc' | 'priority' | 'category';
 	let columnSorts = $state<Record<number, SortOption>>({});
@@ -332,7 +399,8 @@
 		show: boolean;
 		card: CardType | null;
 		incomplete: number;
-	}>({ show: false, card: null, incomplete: 0 });
+		reason: 'subtasks' | 'subboard';
+	}>({ show: false, card: null, incomplete: 0, reason: 'subtasks' });
 
 	// On Hold note prompt
 	let onHoldState = $state<{
@@ -364,11 +432,16 @@
 	let showUserSetup = $state(false);
 	user.subscribe((v) => (currentUser = v));
 
+	// Live-updating tick for relative timestamps (every 15s)
+	let tick = $state(0);
+	let tickInterval: ReturnType<typeof setInterval> | null = null;
+
 	onMount(() => {
 		if (browser && !currentUser.name) {
 			showUserSetup = true;
 		}
 		fetchXp();
+		tickInterval = setInterval(() => { tick++; }, 15000);
 	});
 
 	// XP system
@@ -417,6 +490,7 @@
 			eventSource.close();
 			eventSource = null;
 		}
+		if (tickInterval) clearInterval(tickInterval);
 	});
 
 	function connectSSE() {
@@ -466,8 +540,20 @@
 		return card.subtasks && card.subtasks.some((st) => !st.completed);
 	}
 
+	function hasIncompleteSubBoard(card: CardType) {
+		return card.subBoards && card.subBoards.some(sb => sb.total > 0 && sb.done < sb.total);
+	}
+
+	function isCardBlocked(card: CardType) {
+		return hasIncompleteSubtasks(card) || hasIncompleteSubBoard(card);
+	}
+
 	function incompleteCount(card: CardType) {
 		return card.subtasks ? card.subtasks.filter((st) => !st.completed).length : 0;
+	}
+
+	function subBoardIncompleteCount(card: CardType) {
+		return card.subBoards.reduce((sum, sb) => sum + (sb.total - sb.done), 0);
 	}
 
 	// Confirm helper
@@ -508,17 +594,19 @@
 
 		const newItems: CardType[] = e.detail.items;
 
-		// Check if a card was moved INTO a "Complete" column and has incomplete subtasks
+		// Check if a card was moved INTO a "Complete" column and has incomplete work
 		if (isCompleteColumn(targetCol)) {
 			for (const card of newItems) {
-				if (card.columnId !== columnId && hasIncompleteSubtasks(card)) {
-					// REVERT — restore from server data
+				if (card.columnId !== columnId && isCardBlocked(card)) {
+					// Determine why it's blocked
+					const reason = hasIncompleteSubBoard(card) ? 'subboard' as const : 'subtasks' as const;
+					const count = reason === 'subboard' ? subBoardIncompleteCount(card) : incompleteCount(card);
 					blockedState = {
 						show: true,
 						card,
-						incomplete: incompleteCount(card)
+						incomplete: count,
+						reason
 					};
-					// Force refresh to snap card back
 					await invalidateAll();
 					return;
 				}
@@ -870,6 +958,16 @@
 		return { done, total: card.subtasks.length };
 	}
 
+	// SQLite datetime('now') stores UTC without a Z suffix.
+	// Without the Z, JavaScript interprets it as local time — off by the timezone offset.
+	function parseUTC(dateStr: string): Date {
+		if (!dateStr) return new Date();
+		// If it already has timezone info (Z or +/-), parse as-is
+		if (/[Zz]|[+-]\d{2}:\d{2}$/.test(dateStr)) return new Date(dateStr);
+		// Otherwise it's a bare SQLite UTC timestamp — append Z
+		return new Date(dateStr + 'Z');
+	}
+
 	// Due date status for color coding
 	function getDueStatus(card: CardType): 'overdue' | 'today' | 'soon' | null {
 		if (!card.dueDate) return null;
@@ -884,12 +982,33 @@
 		return null;
 	}
 
-	// Relative age string
+	// Relative time until/since due date
+	function getDueRelative(dueDate: string): string {
+		void tick;
+		const due = new Date(dueDate);
+		const now = new Date();
+		now.setHours(0, 0, 0, 0);
+		due.setHours(0, 0, 0, 0);
+		const diffDays = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+		if (diffDays === 0) return 'today';
+		if (diffDays === 1) return 'tomorrow';
+		if (diffDays === -1) return '1d overdue';
+		if (diffDays < -1) return `${Math.abs(diffDays)}d overdue`;
+		if (diffDays < 7) return `in ${diffDays}d`;
+		if (diffDays < 30) return `in ${Math.floor(diffDays / 7)}w`;
+		return `in ${Math.floor(diffDays / 30)}mo`;
+	}
+
+	// Relative age string (reads `tick` to stay reactive)
 	function getRelativeAge(dateStr: string): string {
+		void tick; // reactive dependency — forces re-evaluation every 15s
 		const now = Date.now();
-		const created = new Date(dateStr).getTime();
-		const mins = Math.floor((now - created) / 60000);
-		if (mins < 60) return 'just now';
+		const created = parseUTC(dateStr).getTime();
+		const secs = Math.floor((now - created) / 1000);
+		if (secs < 30) return 'just now';
+		if (secs < 60) return `${secs}s`;
+		const mins = Math.floor(secs / 60);
+		if (mins < 60) return `${mins}m`;
 		const hrs = Math.floor(mins / 60);
 		if (hrs < 24) return `${hrs}h`;
 		const days = Math.floor(hrs / 24);
@@ -901,7 +1020,7 @@
 	}
 
 	function isStale(dateStr: string): boolean {
-		const days = Math.floor((Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24));
+		const days = Math.floor((Date.now() - parseUTC(dateStr).getTime()) / (1000 * 60 * 60 * 24));
 		return days >= 7;
 	}
 
@@ -978,11 +1097,22 @@
 <div class="board-page">
 	<header class="board-header">
 		<div class="board-header-left">
-			<a href="/" class="back-btn btn-ghost" id="back-to-dashboard">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-				</svg>
-			</a>
+			{#if data.breadcrumbs && data.breadcrumbs.length > 0}
+				<nav class="breadcrumbs">
+					<a href="/" class="breadcrumb-link" title="Dashboard">🔥</a>
+					<span class="breadcrumb-sep">›</span>
+					{#each data.breadcrumbs as crumb}
+						<a href={crumb.href} class="breadcrumb-link">{crumb.emoji} {crumb.label}</a>
+						<span class="breadcrumb-sep">›</span>
+					{/each}
+				</nav>
+			{:else}
+				<a href="/" class="back-btn btn-ghost" id="back-to-dashboard">
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+						<path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+				</a>
+			{/if}
 			<div class="emoji-picker-wrapper">
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
 				<span class="board-emoji clickable" onclick={(e) => { e.stopPropagation(); showEmojiPicker = !showEmojiPicker; }} role="button" tabindex="0" title="Change icon">{boardEmoji}</span>
@@ -1064,6 +1194,17 @@
 			<button class="btn-ghost" class:active-panel-btn={showStatsPanel} onclick={toggleStatsPanel} title="Board statistics">
 				📊
 			</button>
+			{#if data.breadcrumbs && data.breadcrumbs.length > 0}
+				<button class="btn-ghost btn-delete-subboard" onclick={() => {
+					showConfirm('Delete Sub-board', `Delete "${boardName}" and all its cards? This cannot be undone.`, 'Delete', async () => {
+						const parentHref = data.breadcrumbs[data.breadcrumbs.length - 1]?.href || '/';
+						await fetch(`/api/boards/${data.board.id}`, { method: 'DELETE' });
+						window.location.href = parentHref;
+					});
+				}} title="Delete this sub-board">
+					🗑️
+				</button>
+			{/if}
 			<button class="btn-ghost" class:active-panel-btn={selectionMode} onclick={() => { selectionMode = !selectionMode; if (!selectionMode) clearSelection(); }} title="Bulk select">
 				☑️
 			</button>
@@ -1307,14 +1448,21 @@
 											{prog.done}/{prog.total}
 										</span>
 									{/if}
+									{#if card.subBoards.length > 0}
+										{#each card.subBoards as sb}
+											<a href="/board/{sb.id}" class="subboard-badge" class:all-done={sb.total > 0 && sb.done === sb.total} title="{sb.emoji} {sb.name} — {sb.done}/{sb.total} complete" onclick={(e) => e.stopPropagation()}>
+												🗂️ {sb.name} {sb.done}/{sb.total}
+											</a>
+										{/each}
+									{/if}
 									{#if card.dueDate}
 										{@const dueStatus = getDueStatus(card)}
-										<span class="due-badge" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'}>
+										<span class="due-badge" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {new Date(card.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">
 											{#if dueStatus === 'overdue'}⚠️{:else if dueStatus === 'today'}🔥{:else if dueStatus === 'soon'}📅{:else}📅{/if}
-											{new Date(card.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+											Due {getDueRelative(card.dueDate)}
 										</span>
 									{/if}
-									<span class="card-date" title="Created {new Date(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">{getRelativeAge(card.createdAt)}</span>
+									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt)}</span>
 								</div>
 								{#if card.labelIds && card.labelIds.length > 0}
 									<div class="card-labels">
@@ -1501,6 +1649,12 @@
 			{contextMenu.card.pinned ? '📌 Unpin' : '📌 Pin to top'}
 		</button>
 		<button class="ctx-item" onclick={() => duplicateCard(contextMenu.card!)}>📋 Duplicate</button>
+		<button class="ctx-item" onclick={() => createSubBoard(contextMenu.card!)}>🗂️ Add Sub-board</button>
+		{#if contextMenu.card.subBoards.length > 0}
+			{#each contextMenu.card.subBoards as sb}
+				<button class="ctx-item" onclick={() => { window.location.href = `/board/${sb.id}`; }}>→ {sb.emoji} {sb.name}</button>
+			{/each}
+		{/if}
 		<div class="ctx-divider"></div>
 		<button class="ctx-item ctx-danger" onclick={() => { confirmDeleteCard(contextMenu.card!.id); contextMenu = { ...contextMenu, show: false }; }}>🗑️ Delete</button>
 	</div>
@@ -1518,6 +1672,10 @@
 		onSave={saveCard}
 		onDelete={editingCard ? () => confirmDeleteCard(editingCard!.id) : undefined}
 		onClose={() => { showCardModal = false; editingCard = null; }}
+		onCreateSubBoard={editingCard ? (name) => createSubBoard(editingCard!, name) : undefined}
+		onDeleteSubBoard={editingCard ? (boardId) => deleteSubBoard(boardId) : undefined}
+		onLinkSubBoard={editingCard ? (boardId) => linkSubBoard(editingCard!.id, boardId) : undefined}
+		availableBoards={data.linkableBoards.map(b => ({ id: b.id, name: b.name, emoji: b.emoji || '📋' }))}
 	/>
 {/if}
 
@@ -1527,21 +1685,31 @@
 		title={confirmState.title}
 		message={confirmState.message}
 		confirmText={confirmState.confirmText}
-		onConfirm={confirmState.onConfirm}
+		onConfirm={() => { confirmState.show = false; confirmState.onConfirm(); }}
 		onCancel={() => (confirmState.show = false)}
 	/>
 {/if}
 
-<!-- Blocked by subtasks modal -->
+<!-- Blocked by subtasks/sub-board modal -->
 {#if blockedState.show}
 	<ConfirmModal
 		title="Cannot Complete"
-		message="This card has {blockedState.incomplete} incomplete subtask{blockedState.incomplete > 1 ? 's' : ''}. All subtasks must be completed before moving it to the Complete column."
-		confirmText="Open Card"
+		message={blockedState.reason === 'subboard'
+			? `This card has ${blockedState.incomplete} incomplete task${blockedState.incomplete > 1 ? 's' : ''} on its sub-board. All sub-board tasks must be completed first.`
+			: `This card has ${blockedState.incomplete} incomplete subtask${blockedState.incomplete > 1 ? 's' : ''}. All subtasks must be completed before moving it to the Complete column.`
+		}
+		confirmText={blockedState.reason === 'subboard' ? 'Open Sub-board' : 'Open Card'}
 		confirmDanger={false}
 		onConfirm={() => {
 			blockedState.show = false;
-			if (blockedState.card) openCardModal(blockedState.card);
+			if (blockedState.card) {
+				if (blockedState.reason === 'subboard' && blockedState.card.subBoards.length > 0) {
+					const firstIncomplete = blockedState.card.subBoards.find(sb => sb.done < sb.total);
+					if (firstIncomplete) window.location.href = `/board/${firstIncomplete.id}`;
+				} else {
+					openCardModal(blockedState.card);
+				}
+			}
 		}}
 		onCancel={() => (blockedState.show = false)}
 	/>
@@ -1712,6 +1880,35 @@
 	.board-header-left { display: flex; align-items: center; gap: var(--space-md); min-width: 0; }
 	.board-header-right { display: flex; align-items: center; gap: var(--space-sm); flex-shrink: 0; }
 	.back-btn { padding: var(--space-sm); }
+	.btn-delete-subboard { opacity: 0.5; }
+	.btn-delete-subboard:hover { opacity: 1; background: rgba(244, 63, 94, 0.1) !important; }
+
+	.breadcrumbs {
+		display: flex;
+		align-items: center;
+		gap: var(--space-xs);
+		font-size: 0.8rem;
+		flex-shrink: 1;
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	.breadcrumb-link {
+		color: var(--text-secondary);
+		text-decoration: none;
+		white-space: nowrap;
+		transition: color var(--duration-fast) var(--ease-out);
+	}
+
+	.breadcrumb-link:hover {
+		color: var(--text-primary);
+	}
+
+	.breadcrumb-sep {
+		color: var(--text-tertiary);
+		font-weight: 300;
+		flex-shrink: 0;
+	}
 	.emoji-picker-wrapper { position: relative; }
 	.board-emoji { font-size: 1.5rem; }
 	.board-emoji.clickable { cursor: pointer; transition: transform 0.15s; }
@@ -2002,6 +2199,23 @@
 		border-color: rgba(16, 185, 129, 0.2);
 	}
 
+	.subboard-badge {
+		display: inline-flex; align-items: center; gap: 3px;
+		padding: 1px 8px; border-radius: var(--radius-full);
+		font-size: 0.68rem; font-weight: 600;
+		background: rgba(99, 102, 241, 0.1); color: #818cf8;
+		border: 1px solid rgba(99, 102, 241, 0.2);
+		text-decoration: none;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.subboard-badge:hover {
+		background: rgba(99, 102, 241, 0.2);
+		border-color: rgba(99, 102, 241, 0.4);
+	}
+	.subboard-badge.all-done {
+		background: rgba(16, 185, 129, 0.1); color: var(--accent-emerald);
+		border-color: rgba(16, 185, 129, 0.2);
+	}
 	.add-card-btn {
 		display: flex; align-items: center; gap: var(--space-sm);
 		width: calc(100% - var(--space-md) * 2); margin: 0 var(--space-md) var(--space-sm);

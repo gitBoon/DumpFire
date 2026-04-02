@@ -1,0 +1,1 @@
+ALTER TABLE boards ADD COLUMN parent_card_id INTEGER REFERENCES cards(id) ON DELETE CASCADE;

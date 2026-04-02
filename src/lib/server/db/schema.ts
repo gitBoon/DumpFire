@@ -5,6 +5,7 @@ export const boards = sqliteTable('boards', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	name: text('name').notNull(),
 	emoji: text('emoji').default('📋'),
+	parentCardId: integer('parent_card_id'),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
