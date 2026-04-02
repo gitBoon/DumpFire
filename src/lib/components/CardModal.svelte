@@ -1,57 +1,14 @@
 <script lang="ts">
+	/**
+	 * CardModal — The full card editor modal.
+	 *
+	 * Handles editing card properties (title, description, priority, colour,
+	 * category, due date), managing subtasks, labels, and sub-boards.
+	 * Supports both create and edit modes.
+	 */
 	import SubtaskModal from './SubtaskModal.svelte';
 	import { marked } from 'marked';
-
-	type SubtaskType = {
-		id: number;
-		cardId: number;
-		title: string;
-		description: string;
-		priority: string;
-		colorTag: string;
-		dueDate: string | null;
-		completed: boolean;
-		position: number;
-	};
-
-	type SubBoardType = {
-		id: number;
-		name: string;
-		emoji: string;
-		done: number;
-		total: number;
-	};
-
-	type CardType = {
-		id: number;
-		columnId: number;
-		categoryId: number | null;
-		title: string;
-		description: string;
-		position: number;
-		priority: string;
-		colorTag: string;
-		dueDate: string | null;
-		onHoldNote: string;
-		createdAt: string;
-		updatedAt: string;
-		subtasks: SubtaskType[];
-		subBoards?: SubBoardType[];
-	};
-
-	type CategoryType = {
-		id: number;
-		boardId: number;
-		name: string;
-		color: string;
-	};
-
-	type LabelType = {
-		id: number;
-		boardId: number;
-		name: string;
-		color: string;
-	};
+	import type { CardType, CategoryType, LabelType, SubtaskType } from '$lib/types';
 
 	let {
 		card = null,

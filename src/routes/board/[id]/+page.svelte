@@ -2,9 +2,15 @@
 	/**
 	 * Board Page — The main Kanban board view.
 	 *
-	 * Orchestrates columns, cards, drag-and-drop, modals, side panels,
-	 * bulk operations, and real-time SSE updates. Heavy logic and types
-	 * are delegated to shared utility modules and child components.
+	 * This file is a thin orchestration layer: it declares reactive state,
+	 * delegates all business logic to extracted modules, and wires up the
+	 * template. Heavy lifting lives in:
+	 *   - board-actions.ts (board/column/category CRUD)
+	 *   - card-actions.ts  (card CRUD, duplicate, pin, sub-boards)
+	 *   - dnd-handlers.ts  (drag-and-drop orchestration)
+	 *   - bulk-actions.ts  (multi-select operations)
+	 *   - xp-utils.ts      (XP levelling calculations)
+	 *   - sse.ts           (Server-Sent Events connection)
 	 */
 	import type { PageData } from './$types';
 	import { invalidateAll } from '$app/navigation';
@@ -16,24 +22,28 @@
 	import { user, type UserProfile } from '$lib/stores/user';
 	import { toasts } from '$lib/stores/toast';
 
-	// Shared types — no more inline type declarations
-	import type { CardType, ColumnType, CategoryType, LabelType, ActivityType, SortOption, XpEntry, ConfirmState, BlockedState, OnHoldState, ContextMenuState } from '$lib/types';
+	// Shared types
+	import type { CardType, ColumnType, CategoryType, LabelType, ActivityType, SortOption, XpEntry, BlockedState, OnHoldState } from '$lib/types';
 
 	// Shared utilities
 	import { COLUMN_COLORS, COMMON_EMOJIS, FLIP_DURATION_MS } from '$lib/utils/constants';
 	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, isStale } from '$lib/utils/date-utils';
-	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, hasIncompleteSubtasks, hasIncompleteSubBoard, isCardBlocked, incompleteCount, subBoardIncompleteCount, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel, getActionLabel, getVisibleCount } from '$lib/utils/card-utils';
+	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel, getActionLabel, getVisibleCount } from '$lib/utils/card-utils';
 
-	// API client
+	// Board-specific modules
 	import * as api from '$lib/api';
+	import * as boardActions from '$lib/board/board-actions';
+	import * as cardActions from '$lib/board/card-actions';
+	import * as dndHandlers from '$lib/board/dnd-handlers';
+	import * as bulkOps from '$lib/board/bulk-actions';
+	import { getLevel, getXpProgress, loadXp as fetchXpData } from '$lib/board/xp-utils';
+	import { connectSSE } from '$lib/board/sse';
 
-	// Existing components
+	// Components
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import UserSetup from '$lib/components/UserSetup.svelte';
 	import Toast from '$lib/components/Toast.svelte';
-
-	// New extracted components
 	import KanbanCard from '$lib/components/board/KanbanCard.svelte';
 	import ActivityPanel from '$lib/components/board/ActivityPanel.svelte';
 	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
@@ -44,21 +54,23 @@
 	import CategoryModal from '$lib/components/board/CategoryModal.svelte';
 	import OnHoldModal from '$lib/components/board/OnHoldModal.svelte';
 
+	// ─── Props & Core State ──────────────────────────────────────────────────
+
 	let { data }: { data: PageData } = $props();
 
 	let boardColumns = $state<ColumnType[]>(data.columns as unknown as ColumnType[]);
 	let boardCategories = $state<CategoryType[]>(data.categories as CategoryType[]);
 	let boardLabels = $state<LabelType[]>((data.labels || []) as LabelType[]);
 
-	// Activity log state
+	// ─── Panel State ─────────────────────────────────────────────────────────
+
 	let showActivityPanel = $state(false);
 	let activities = $state<ActivityType[]>([]);
 	let loadingActivities = $state(false);
-
-	// Stats panel state
 	let showStatsPanel = $state(false);
 
-	// Bulk selection state
+	// ─── Bulk Selection ──────────────────────────────────────────────────────
+
 	let selectionMode = $state(false);
 	let selectedCards = $state<Set<number>>(new Set());
 
@@ -74,570 +86,30 @@
 		selectedCards = new Set();
 	}
 
-	async function bulkMove(targetColumnId: number) {
-		const updates: { id: number; columnId: number; position: number }[] = [];
+	async function handleBulkMove(targetColumnId: number) {
 		const targetCol = boardColumns.find(c => c.id === targetColumnId);
 		if (!targetCol) return;
-		let pos = targetCol.cards.length;
-		for (const cardId of selectedCards) {
-			updates.push({ id: cardId, columnId: targetColumnId, position: pos++ });
-		}
-		await fetch('/api/cards/reorder', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ updates, boardId: data.board.id, userName: currentUser.name, userEmoji: currentUser.emoji })
-		});
+		await bulkOps.bulkMove(selectedCards, targetColumnId, targetCol.cards.length, data.board.id, currentUser.name, currentUser.emoji);
 		clearSelection();
 		await invalidateAll();
 	}
 
-	async function bulkDelete() {
-		for (const cardId of selectedCards) {
-			await fetch(`/api/cards/${cardId}`, {
-				method: 'DELETE',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ boardId: data.board.id })
-			});
-		}
+	async function handleBulkDelete() {
+		await bulkOps.bulkDelete(selectedCards, data.board.id);
 		clearSelection();
 		await invalidateAll();
 	}
 
-	async function bulkPriority(priority: string) {
-		for (const cardId of selectedCards) {
-			await fetch(`/api/cards/${cardId}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ priority, boardId: data.board.id })
-			});
-		}
+	async function handleBulkPriority(priority: string) {
+		await bulkOps.bulkPriority(selectedCards, priority, data.board.id);
 		clearSelection();
 		await invalidateAll();
 	}
+
+	// ─── Column Editing ──────────────────────────────────────────────────────
+
 	let editingColumn = $state<number | null>(null);
 	let editColumnTitle = $state('');
-
-	// Card modal
-	let showCardModal = $state(false);
-	let editingCard = $state<CardType | null>(null);
-	let cardModalColumnId = $state<number | null>(null);
-
-	// Board name editing
-	let editingBoardName = $state(false);
-	let boardName = $state(data.board.name);
-	let boardEmoji = $state(data.board.emoji || '📋');
-	let showEmojiPicker = $state(false);
-
-	// Add column modal
-	let showAddColumnModal = $state(false);
-	let newColumnTitle = $state('');
-	let newColumnColor = $state('#6366f1');
-	let newColumnPosition = $state('end');
-
-	// Category management
-	let showCategoryModal = $state(false);
-	let newCategoryName = $state('');
-	let newCategoryColor = $state('#6366f1');
-
-	// Confirm modals
-	let confirmState = $state<{
-		show: boolean;
-		title: string;
-		message: string;
-		confirmText: string;
-		onConfirm: () => void;
-	}>({ show: false, title: '', message: '', confirmText: '', onConfirm: () => {} });
-
-	// Column dropdown menus (click-based)
-	let openDropdown = $state<string | null>(null);
-	function toggleDropdown(id: string) {
-		openDropdown = openDropdown === id ? null : id;
-	}
-	function closeDropdowns() {
-		openDropdown = null;
-		showEmojiPicker = false;
-		contextMenu = { ...contextMenu, show: false };
-	}
-
-	// Context menu state
-	let contextMenu = $state<{ show: boolean; x: number; y: number; card: CardType | null; columnId: number }>({ show: false, x: 0, y: 0, card: null, columnId: 0 });
-
-	function openContextMenu(e: MouseEvent, card: CardType, columnId: number) {
-		e.preventDefault();
-		e.stopPropagation();
-		contextMenu = { show: true, x: e.clientX, y: e.clientY, card, columnId };
-	}
-
-	async function duplicateCard(card: CardType) {
-		const col = boardColumns.find(c => c.cards.some(cc => cc.id === card.id));
-		if (!col) return;
-		const maxPos = col.cards.length;
-		const res = await fetch('/api/cards', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				columnId: col.id, position: maxPos, boardId: data.board.id,
-				title: `${card.title} (Copy)`, description: card.description,
-				priority: card.priority, colorTag: card.colorTag,
-				categoryId: card.categoryId, dueDate: card.dueDate
-			})
-		});
-		if (res.ok && card.subtasks?.length > 0) {
-			const newCard = await res.json();
-			for (const st of card.subtasks) {
-				await fetch('/api/subtasks', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						cardId: newCard.id, title: st.title, description: st.description,
-						priority: st.priority, colorTag: st.colorTag, dueDate: st.dueDate,
-						completed: false, boardId: data.board.id
-					})
-				});
-			}
-		}
-		logActivity('card_created', `${card.title} (Copy)`);
-		toasts.add(`Duplicated "${card.title}"`);
-		contextMenu = { ...contextMenu, show: false };
-		await invalidateAll();
-	}
-
-	async function togglePin(card: CardType) {
-		const newPinned = !card.pinned;
-		await fetch(`/api/cards/${card.id}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ pinned: newPinned, boardId: data.board.id })
-		});
-		card.pinned = newPinned;
-		boardColumns = [...boardColumns];
-		toasts.add(newPinned ? `Pinned "${card.title}"` : `Unpinned "${card.title}"`);
-		contextMenu = { ...contextMenu, show: false };
-	}
-
-	async function createSubBoard(card: CardType, name?: string) {
-		contextMenu = { ...contextMenu, show: false };
-		const res = await fetch('/api/boards', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				name: name || card.title,
-				emoji: '🗂️',
-				parentCardId: card.id
-			})
-		});
-		if (res.ok) {
-			const board = await res.json();
-			window.location.href = `/board/${board.id}`;
-		}
-	}
-
-	async function linkSubBoard(cardId: number, boardId: number) {
-		await fetch(`/api/boards/${boardId}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ parentCardId: cardId })
-		});
-		await invalidateAll();
-		toasts.add('Board linked as sub-board');
-	}
-
-	function deleteSubBoard(boardId: number) {
-		// Find the sub-board name for the confirm message
-		let sbName = 'this sub-board';
-		for (const col of boardColumns) {
-			for (const card of col.cards) {
-				const sb = card.subBoards.find(s => s.id === boardId);
-				if (sb) { sbName = sb.name; break; }
-			}
-		}
-		showConfirm(
-			'Delete Sub-board',
-			`Delete "${sbName}" and all its cards? This cannot be undone.`,
-			'Delete',
-			async () => {
-				const res = await fetch(`/api/boards/${boardId}`, { method: 'DELETE' });
-				if (res.ok) {
-					await invalidateAll();
-					// Refresh editingCard from updated data
-					if (editingCard) {
-						const cardId = editingCard.id;
-						for (const col of boardColumns) {
-							const found = col.cards.find(c => c.id === cardId);
-							if (found) { editingCard = found; break; }
-						}
-					}
-					toasts.add('Sub-board deleted');
-				}
-			}
-		);
-	}
-
-	// Column sort state (per-column, independent)
-	let columnSorts = $state<Record<number, SortOption>>({});
-
-	/** Applies a sort to a column and updates the board state. */
-	function setColumnSort(columnId: number, sort: SortOption) {
-		columnSorts = { ...columnSorts, [columnId]: sort };
-		if (sort !== 'none') {
-			const col = boardColumns.find(c => c.id === columnId);
-			if (col) {
-				col.cards = sortCards([...col.cards], sort, boardCategories);
-				boardColumns = [...boardColumns];
-			}
-		}
-		openDropdown = null;
-	}
-
-	// Search state
-	let searchQuery = $state('');
-
-	// Subtask blocked modal
-	let blockedState = $state<BlockedState>({ show: false, card: null, incomplete: 0, reason: 'subtasks' });
-
-	// On Hold note prompt
-	let onHoldState = $state<OnHoldState>({ show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 });
-
-	let currentTheme = $state('dark');
-	theme.subscribe((v) => (currentTheme = v));
-
-	// Firework celebration
-	let showFireworks = $state(false);
-	let celebrateCardTitle = $state('');
-	let celebrateUserName = $state('');
-	let celebrateUserEmoji = $state('');
-	let celebrateXpGained = $state(0);
-
-	// User profile
-	let currentUser = $state<UserProfile>({ name: '', emoji: '👤' });
-	let showUserSetup = $state(false);
-	user.subscribe((v) => (currentUser = v));
-
-	// Live-updating tick for relative timestamps (every 15s)
-	let tick = $state(0);
-	let tickInterval: ReturnType<typeof setInterval> | null = null;
-
-	onMount(() => {
-		if (browser && !currentUser.name) {
-			showUserSetup = true;
-		}
-		loadXp();
-		tickInterval = setInterval(() => { tick++; }, 15000);
-	});
-
-	// XP system
-	let xpLeaderboard = $state<XpEntry[]>([]);
-
-	/** Fetches the XP leaderboard from the server. */
-	async function loadXp() {
-		try {
-			const res = await api.fetchXp();
-			if (res.ok) xpLeaderboard = await res.json();
-		} catch {}
-	}
-
-	/** Returns the level number for a given XP total (500 XP per level). */
-	function getLevel(xp: number) { return Math.floor(xp / 500) + 1; }
-
-	/** Returns the XP needed to reach a given level. */
-	function getXpForLevel(level: number) { return (level - 1) * 500; }
-
-	/** Returns the progress percentage within the current level (0-100). */
-	function getXpProgress(xp: number) {
-		const level = getLevel(xp);
-		const base = getXpForLevel(level);
-		return ((xp - base) / 500) * 100;
-	}
-
-	// SSE for live updates
-	let eventSource: EventSource | null = null;
-
-	onMount(() => {
-		if (browser) {
-			connectSSE();
-		}
-	});
-
-	onDestroy(() => {
-		if (eventSource) {
-			eventSource.close();
-			eventSource = null;
-		}
-		if (tickInterval) clearInterval(tickInterval);
-	});
-
-	function connectSSE() {
-		eventSource = new EventSource(`/api/boards/${data.board.id}/events`);
-		eventSource.addEventListener('update', () => {
-			invalidateAll();
-		});
-		eventSource.addEventListener('celebrate', (e) => {
-			try {
-				const data = JSON.parse(e.data);
-				celebrateCardTitle = data.cardTitle || '';
-				celebrateUserName = data.userName || 'Someone';
-				celebrateUserEmoji = data.userEmoji || '👤';
-				celebrateXpGained = data.xpGained || 0;
-			} catch {
-				celebrateCardTitle = '';
-				celebrateUserName = 'Someone';
-				celebrateUserEmoji = '👤';
-			}
-			showFireworks = true;
-			setTimeout(() => (showFireworks = false), 3000);
-		});
-		eventSource.addEventListener('xp-update', () => {
-			fetchXp();
-		});
-		eventSource.onerror = () => {
-			// Reconnect after 3s on error
-			if (eventSource) eventSource.close();
-			setTimeout(connectSSE, 3000);
-		};
-	}
-
-	$effect(() => {
-		boardColumns = data.columns as unknown as ColumnType[];
-		boardCategories = data.categories as CategoryType[];
-		boardLabels = (data.labels || []) as LabelType[];
-		boardName = data.board.name;
-		boardEmoji = data.board.emoji || '📋';
-	});
-
-
-	// Confirm helper
-	function showConfirm(title: string, message: string, confirmText: string, onConfirm: () => void) {
-		confirmState = { show: true, title, message, confirmText, onConfirm };
-	}
-
-	// Column DnD
-	function handleColumnDndConsider(e: CustomEvent) {
-		boardColumns = e.detail.items;
-	}
-
-	async function handleColumnDndFinalize(e: CustomEvent) {
-		boardColumns = e.detail.items;
-		const updates = boardColumns.map((col, i) => ({ id: col.id, position: i }));
-		await fetch('/api/columns/reorder', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ updates, boardId: data.board.id })
-		});
-	}
-
-	// Card DnD — with subtask validation for Complete column
-	function handleCardDndConsider(columnId: number, e: CustomEvent) {
-		const col = boardColumns.find((c) => c.id === columnId);
-		if (col) col.cards = e.detail.items;
-		boardColumns = [...boardColumns];
-	}
-
-	async function handleCardDndFinalize(columnId: number, e: CustomEvent) {
-		const targetCol = boardColumns.find((c) => c.id === columnId);
-		if (!targetCol) return;
-
-		// Clear sort on manual drag — user is reordering
-		if (columnSorts[columnId]) {
-			columnSorts = { ...columnSorts, [columnId]: 'none' };
-		}
-
-		const newItems: CardType[] = e.detail.items;
-
-		// Check if a card was moved INTO a "Complete" column and has incomplete work
-		if (isCompleteColumn(targetCol)) {
-			for (const card of newItems) {
-				if (card.columnId !== columnId && isCardBlocked(card)) {
-					// Determine why it's blocked
-					const reason = hasIncompleteSubBoard(card) ? 'subboard' as const : 'subtasks' as const;
-					const count = reason === 'subboard' ? subBoardIncompleteCount(card) : incompleteCount(card);
-					blockedState = {
-						show: true,
-						card,
-						incomplete: count,
-						reason
-					};
-					await invalidateAll();
-					return;
-				}
-			}
-		}
-
-		// Detect if any card moved TO the complete column (for fireworks)
-		let movedToComplete = false;
-		if (isCompleteColumn(targetCol)) {
-			for (const card of newItems) {
-				if (card.columnId !== columnId) {
-					movedToComplete = true;
-				}
-			}
-		}
-
-		// Detect if a card was moved OUT of an "On Hold" column — purge the note
-		if (!isOnHoldColumn(targetCol.title)) {
-			for (const card of newItems) {
-				if (card.columnId !== columnId) {
-					const oldCol = boardColumns.find((c) => c.id === card.columnId);
-					if (oldCol && isOnHoldColumn(oldCol.title) && card.onHoldNote) {
-						card.onHoldNote = '';
-						fetch(`/api/cards/${card.id}`, {
-							method: 'PUT',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({ onHoldNote: '', boardId: data.board.id })
-						});
-					}
-				}
-			}
-		}
-
-		// Detect if a card was moved INTO an "On Hold" column
-		if (isOnHoldColumn(targetCol.title)) {
-			for (const card of newItems) {
-				if (card.columnId !== columnId) {
-					// Pause and prompt for a note
-					const allUpdates: { id: number; columnId: number; position: number }[] = [];
-					for (const column of boardColumns) {
-						for (let i = 0; i < column.cards.length; i++) {
-							allUpdates.push({ id: column.cards[i].id, columnId: column.id, position: i });
-						}
-					}
-					targetCol.cards = newItems;
-					boardColumns = [...boardColumns];
-					onHoldState = {
-						show: true,
-						cardId: card.id,
-						cardTitle: card.title,
-						note: card.onHoldNote || '',
-						pendingUpdates: allUpdates,
-						pendingColumnId: columnId
-					};
-					return;
-				}
-			}
-		}
-
-		targetCol.cards = newItems;
-		boardColumns = [...boardColumns];
-
-		// Track which cards actually moved columns for activity log
-		const movedCards = newItems.filter(card => card.columnId !== columnId);
-
-		const updates: { id: number; columnId: number; position: number }[] = [];
-		for (const column of boardColumns) {
-			for (let i = 0; i < column.cards.length; i++) {
-				updates.push({ id: column.cards[i].id, columnId: column.id, position: i });
-			}
-		}
-
-		await fetch('/api/cards/reorder', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				updates,
-				boardId: data.board.id,
-				userName: currentUser.name,
-				userEmoji: currentUser.emoji
-			})
-		});
-
-		// Log activity for each card that moved columns
-		for (const card of movedCards) {
-			const fromCol = boardColumns.find(c => c.id === card.columnId);
-			const fromName = fromCol?.title || '?';
-			const toName = targetCol.title;
-			if (isCompleteColumn(targetCol)) {
-				logActivity('card_completed', `${card.title} (${fromName} → ${toName})`, card.id);
-			} else {
-				logActivity('card_moved', `${card.title} (${fromName} → ${toName})`, card.id);
-			}
-		}
-	}
-
-	// Add column
-	async function confirmOnHold() {
-		// Save the on hold note
-		await fetch(`/api/cards/${onHoldState.cardId}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ onHoldNote: onHoldState.note })
-		});
-		// Now commit the reorder
-		await fetch('/api/cards/reorder', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				updates: onHoldState.pendingUpdates,
-				boardId: data.board.id,
-				userName: currentUser.name,
-				userEmoji: currentUser.emoji
-			})
-		});
-		logActivity('card_moved', `${onHoldState.cardTitle} → On Hold`, onHoldState.cardId);
-		onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
-	}
-
-	async function cancelOnHold() {
-		onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
-		await invalidateAll();
-	}
-
-	async function addColumn() {
-		let position: number;
-		if (newColumnPosition === 'end') {
-			position = boardColumns.length > 0 ? Math.max(...boardColumns.map((c) => c.position)) + 1 : 0;
-		} else if (newColumnPosition === 'start') {
-			position = boardColumns.length > 0 ? Math.min(...boardColumns.map((c) => c.position)) - 1 : 0;
-		} else {
-			const afterId = Number(newColumnPosition.replace('after-', ''));
-			const afterCol = boardColumns.find((c) => c.id === afterId);
-			const afterIdx = boardColumns.indexOf(afterCol!);
-			if (afterIdx < boardColumns.length - 1) {
-				position = (afterCol!.position + boardColumns[afterIdx + 1].position) / 2;
-			} else {
-				position = afterCol!.position + 1;
-			}
-		}
-
-		await fetch('/api/columns', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				boardId: data.board.id,
-				title: newColumnTitle.trim() || 'New Column',
-				position,
-				color: newColumnColor
-			})
-		});
-		showAddColumnModal = false;
-		newColumnTitle = '';
-		newColumnPosition = 'end';
-		await invalidateAll();
-	}
-
-	// Update column
-	async function updateColumn(colId: number, updates: Record<string, unknown>) {
-		await fetch(`/api/columns/${colId}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ ...updates, boardId: data.board.id })
-		});
-	}
-
-	function confirmDeleteColumn(colId: number, colTitle: string) {
-		showConfirm(
-			'Delete Column',
-			`Are you sure you want to delete "${colTitle}" and all its cards? This cannot be undone.`,
-			'Delete Column',
-			async () => {
-				await fetch(`/api/columns/${colId}`, {
-					method: 'DELETE',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ boardId: data.board.id })
-				});
-				confirmState.show = false;
-				await invalidateAll();
-			}
-		);
-	}
 
 	function startEditColumn(col: ColumnType) {
 		editingColumn = col.id;
@@ -646,14 +118,19 @@
 
 	async function finishEditColumn(colId: number) {
 		if (editColumnTitle.trim()) {
-			await updateColumn(colId, { title: editColumnTitle.trim() });
+			await boardActions.updateColumn(colId, { title: editColumnTitle.trim() }, data.board.id);
 			const col = boardColumns.find((c) => c.id === colId);
 			if (col) col.title = editColumnTitle.trim();
 		}
 		editingColumn = null;
 	}
 
-	// Card modal
+	// ─── Card Modal ──────────────────────────────────────────────────────────
+
+	let showCardModal = $state(false);
+	let editingCard = $state<CardType | null>(null);
+	let cardModalColumnId = $state<number | null>(null);
+
 	function openCardModal(card: CardType) {
 		editingCard = card;
 		cardModalColumnId = card.columnId;
@@ -667,53 +144,12 @@
 	}
 
 	async function saveCard(cardData: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; pendingSubtasks?: string[] }) {
-		const { pendingSubtasks, ...rest } = cardData;
-		if (editingCard) {
-			await fetch(`/api/cards/${editingCard.id}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ ...rest, boardId: data.board.id })
-			});
-		} else if (cardModalColumnId) {
-			const col = boardColumns.find((c) => c.id === cardModalColumnId);
-			const maxPos = col && col.cards.length > 0 ? Math.max(...col.cards.map((c) => c.position)) + 1 : 0;
-			const res = await fetch('/api/cards', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					columnId: cardModalColumnId,
-					position: maxPos,
-					boardId: data.board.id,
-					...rest
-				})
-			});
-			// Create pending subtasks for the new card
-			if (res.ok && pendingSubtasks && pendingSubtasks.length > 0) {
-				const newCard = await res.json();
-				for (let i = 0; i < pendingSubtasks.length; i++) {
-					const stData = JSON.parse(pendingSubtasks[i]);
-					await fetch('/api/subtasks', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({
-							cardId: newCard.id,
-							title: stData.title,
-							description: stData.description || '',
-							priority: stData.priority || 'medium',
-							colorTag: stData.colorTag || '',
-							dueDate: stData.dueDate || null,
-							completed: false,
-							boardId: data.board.id
-						})
-					});
-				}
-			}
-		}
+		const result = await cardActions.saveCard(editingCard, cardModalColumnId, data.board.id, boardColumns, cardData);
 		showCardModal = false;
-		if (!editingCard && cardData.title) {
+		if (result.isNew && cardData.title) {
 			logActivity('card_created', cardData.title);
 			toasts.add(`Created "${cardData.title}"`);
-		} else if (editingCard) {
+		} else if (!result.isNew && editingCard) {
 			toasts.add('Card updated');
 		}
 		editingCard = null;
@@ -727,11 +163,7 @@
 			'Delete Card',
 			async () => {
 				const card = boardColumns.flatMap(c => c.cards).find(c => c.id === cardId);
-				await fetch(`/api/cards/${cardId}`, {
-					method: 'DELETE',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ boardId: data.board.id })
-				});
+				await cardActions.deleteCard(cardId, data.board.id);
 				if (card) logActivity('card_deleted', card.title, cardId);
 				toasts.add('Card deleted', 'info');
 				confirmState.show = false;
@@ -742,56 +174,272 @@
 		);
 	}
 
-	// Board name
+	// ─── Board Identity ──────────────────────────────────────────────────────
+
+	let editingBoardName = $state(false);
+	let boardName = $state(data.board.name);
+	let boardEmoji = $state(data.board.emoji || '📋');
+	let showEmojiPicker = $state(false);
+
 	async function saveBoardName() {
-		if (boardName.trim()) {
-			await fetch(`/api/boards/${data.board.id}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name: boardName.trim() })
-			});
-		}
+		await boardActions.saveBoardName(data.board.id, boardName);
 		editingBoardName = false;
 	}
 
 	async function saveBoardEmoji(emoji: string) {
 		boardEmoji = emoji;
 		showEmojiPicker = false;
-		await fetch(`/api/boards/${data.board.id}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ emoji })
-		});
+		await boardActions.saveBoardEmoji(data.board.id, emoji);
 	}
 
-	// Categories
+	// ─── Add Column Modal ────────────────────────────────────────────────────
+
+	let showAddColumnModal = $state(false);
+	let newColumnTitle = $state('');
+	let newColumnColor = $state('#6366f1');
+	let newColumnPosition = $state('end');
+
+	async function addColumn() {
+		await boardActions.addColumn(data.board.id, newColumnTitle, newColumnColor, newColumnPosition, boardColumns);
+		showAddColumnModal = false;
+		newColumnTitle = '';
+		newColumnPosition = 'end';
+		await invalidateAll();
+	}
+
+	async function updateColumn(colId: number, updates: Record<string, unknown>) {
+		await boardActions.updateColumn(colId, updates, data.board.id);
+	}
+
+	function confirmDeleteColumn(colId: number, colTitle: string) {
+		showConfirm(
+			'Delete Column',
+			`Are you sure you want to delete "${colTitle}" and all its cards? This cannot be undone.`,
+			'Delete Column',
+			async () => {
+				await boardActions.deleteColumn(colId, data.board.id);
+				confirmState.show = false;
+				await invalidateAll();
+			}
+		);
+	}
+
+	// ─── Category Management ─────────────────────────────────────────────────
+
+	let showCategoryModal = $state(false);
+	let newCategoryName = $state('');
+	let newCategoryColor = $state('#6366f1');
+
 	async function addCategory() {
-		if (!newCategoryName.trim()) return;
-		await fetch('/api/categories', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				boardId: data.board.id,
-				name: newCategoryName.trim(),
-				color: newCategoryColor
-			})
-		});
+		await boardActions.addCategory(data.board.id, newCategoryName, newCategoryColor);
 		newCategoryName = '';
 		newCategoryColor = '#6366f1';
 		await invalidateAll();
 	}
 
 	async function deleteCategory(id: number) {
-		await fetch(`/api/categories/${id}`, { method: 'DELETE' });
+		await boardActions.deleteCategory(id);
 		await invalidateAll();
 	}
 
-	/** Logs an activity event for this board using the API client. */
+	// ─── Confirm Modal ───────────────────────────────────────────────────────
+
+	let confirmState = $state<{
+		show: boolean; title: string; message: string;
+		confirmText: string; onConfirm: () => void;
+	}>({ show: false, title: '', message: '', confirmText: '', onConfirm: () => {} });
+
+	function showConfirm(title: string, message: string, confirmText: string, onConfirm: () => void) {
+		confirmState = { show: true, title, message, confirmText, onConfirm };
+	}
+
+	// ─── Dropdown & Context Menu ─────────────────────────────────────────────
+
+	let openDropdown = $state<string | null>(null);
+	let contextMenu = $state<{ show: boolean; x: number; y: number; card: CardType | null; columnId: number }>({ show: false, x: 0, y: 0, card: null, columnId: 0 });
+
+	function toggleDropdown(id: string) { openDropdown = openDropdown === id ? null : id; }
+	function closeDropdowns() { openDropdown = null; showEmojiPicker = false; contextMenu = { ...contextMenu, show: false }; }
+
+	function openContextMenu(e: MouseEvent, card: CardType, columnId: number) {
+		e.preventDefault();
+		e.stopPropagation();
+		contextMenu = { show: true, x: e.clientX, y: e.clientY, card, columnId };
+	}
+
+	async function duplicateCard(card: CardType) {
+		const title = await cardActions.duplicateCard(card, boardColumns, data.board.id);
+		if (title) {
+			logActivity('card_created', `${title} (Copy)`);
+			toasts.add(`Duplicated "${title}"`);
+		}
+		contextMenu = { ...contextMenu, show: false };
+		await invalidateAll();
+	}
+
+	async function togglePin(card: CardType) {
+		const newPinned = await cardActions.togglePin(card, data.board.id);
+		card.pinned = newPinned;
+		boardColumns = [...boardColumns];
+		toasts.add(newPinned ? `Pinned "${card.title}"` : `Unpinned "${card.title}"`);
+		contextMenu = { ...contextMenu, show: false };
+	}
+
+	async function createSubBoard(card: CardType, name?: string) {
+		contextMenu = { ...contextMenu, show: false };
+		const boardId = await cardActions.createSubBoard(card.id, name || card.title);
+		if (boardId) window.location.href = `/board/${boardId}`;
+	}
+
+	async function linkSubBoard(cardId: number, boardId: number) {
+		await cardActions.linkSubBoard(cardId, boardId);
+		await invalidateAll();
+		toasts.add('Board linked as sub-board');
+	}
+
+	function deleteSubBoard(boardId: number) {
+		const sbName = cardActions.findSubBoardName(boardId, boardColumns);
+		showConfirm(
+			'Delete Sub-board',
+			`Delete "${sbName}" and all its cards? This cannot be undone.`,
+			'Delete',
+			async () => {
+				const ok = await cardActions.deleteSubBoard(boardId);
+				if (ok) {
+					await invalidateAll();
+					if (editingCard) {
+						const cardId = editingCard.id;
+						for (const col of boardColumns) {
+							const found = col.cards.find(c => c.id === cardId);
+							if (found) { editingCard = found; break; }
+						}
+					}
+					toasts.add('Sub-board deleted');
+				}
+			}
+		);
+	}
+
+	// ─── Column Sort ─────────────────────────────────────────────────────────
+
+	let columnSorts = $state<Record<number, SortOption>>({});
+
+	function setColumnSort(columnId: number, sort: SortOption) {
+		columnSorts = { ...columnSorts, [columnId]: sort };
+		if (sort !== 'none') {
+			const col = boardColumns.find(c => c.id === columnId);
+			if (col) {
+				col.cards = sortCards([...col.cards], sort, boardCategories);
+				boardColumns = [...boardColumns];
+			}
+		}
+		openDropdown = null;
+	}
+
+	// ─── Search ──────────────────────────────────────────────────────────────
+
+	let searchQuery = $state('');
+
+	// ─── Blocked & On Hold Modals ────────────────────────────────────────────
+
+	let blockedState = $state<BlockedState>({ show: false, card: null, incomplete: 0, reason: 'subtasks' });
+	let onHoldState = $state<OnHoldState>({ show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 });
+
+	async function confirmOnHold() {
+		await dndHandlers.confirmOnHold(onHoldState, data.board.id, currentUser.name, currentUser.emoji);
+		logActivity('card_moved', `${onHoldState.cardTitle} → On Hold`, onHoldState.cardId);
+		onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
+	}
+
+	async function cancelOnHold() {
+		onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
+		await invalidateAll();
+	}
+
+	// ─── Theme & User ────────────────────────────────────────────────────────
+
+	let currentTheme = $state('dark');
+	theme.subscribe((v) => (currentTheme = v));
+
+	let currentUser = $state<UserProfile>({ name: '', emoji: '👤' });
+	let showUserSetup = $state(false);
+	user.subscribe((v) => (currentUser = v));
+
+	// ─── Fireworks ───────────────────────────────────────────────────────────
+
+	let showFireworks = $state(false);
+	let celebrateCardTitle = $state('');
+	let celebrateUserName = $state('');
+	let celebrateUserEmoji = $state('');
+	let celebrateXpGained = $state(0);
+
+	// ─── XP Leaderboard ──────────────────────────────────────────────────────
+
+	let xpLeaderboard = $state<XpEntry[]>([]);
+
+	async function refreshXp() {
+		xpLeaderboard = await fetchXpData();
+	}
+
+	// ─── Live Timestamps ─────────────────────────────────────────────────────
+
+	let tick = $state(0);
+	let tickInterval: ReturnType<typeof setInterval> | null = null;
+
+	// ─── Drag & Drop ─────────────────────────────────────────────────────────
+
+	function handleColumnDndConsider(e: CustomEvent) {
+		boardColumns = e.detail.items;
+	}
+
+	async function handleColumnDndFinalize(e: CustomEvent) {
+		boardColumns = e.detail.items;
+		await dndHandlers.handleColumnDndFinalize(boardColumns, data.board.id);
+	}
+
+	function handleCardDndConsider(columnId: number, e: CustomEvent) {
+		const col = boardColumns.find((c) => c.id === columnId);
+		if (col) col.cards = e.detail.items;
+		boardColumns = [...boardColumns];
+	}
+
+	async function handleCardDndFinalize(columnId: number, e: CustomEvent) {
+		// Clear sort on manual drag
+		if (columnSorts[columnId]) {
+			columnSorts = { ...columnSorts, [columnId]: 'none' };
+		}
+		const result = await dndHandlers.handleCardDndFinalize(
+			columnId, e.detail.items, boardColumns,
+			data.board.id, currentUser.name, currentUser.emoji
+		);
+		switch (result.action) {
+			case 'blocked':
+				blockedState = result.blockedState;
+				await invalidateAll();
+				break;
+			case 'on-hold':
+				onHoldState = result.onHoldState;
+				boardColumns = result.updatedColumns;
+				break;
+			case 'committed':
+				boardColumns = result.updatedColumns;
+				for (const entry of result.movedCards) {
+					if (entry.isComplete) {
+						logActivity('card_completed', `${entry.card.title} (${entry.fromName} → ${entry.toName})`, entry.card.id);
+					} else {
+						logActivity('card_moved', `${entry.card.title} (${entry.fromName} → ${entry.toName})`, entry.card.id);
+					}
+				}
+				break;
+		}
+	}
+
+	// ─── Activity Logging ────────────────────────────────────────────────────
+
 	function logActivity(action: string, detail: string, cardId?: number) {
 		api.logActivity(data.board.id, action, detail, currentUser.name, currentUser.emoji, cardId);
 	}
 
-	/** Fetches the activity log for the current board. */
 	async function loadActivities() {
 		loadingActivities = true;
 		const res = await api.loadActivities(data.board.id);
@@ -799,18 +447,56 @@
 		loadingActivities = false;
 	}
 
-	/** Toggles the activity panel and closes the stats panel. */
+	// ─── Panel Toggles ───────────────────────────────────────────────────────
+
 	async function toggleActivityPanel() {
 		showActivityPanel = !showActivityPanel;
 		showStatsPanel = false;
 		if (showActivityPanel) await loadActivities();
 	}
 
-	/** Toggles the stats panel and closes the activity panel. */
 	function toggleStatsPanel() {
 		showStatsPanel = !showStatsPanel;
 		showActivityPanel = false;
 	}
+
+	// ─── Lifecycle ───────────────────────────────────────────────────────────
+
+	let cleanupSSE: (() => void) | null = null;
+
+	onMount(() => {
+		if (browser && !currentUser.name) showUserSetup = true;
+		refreshXp();
+		tickInterval = setInterval(() => { tick++; }, 15000);
+		if (browser) {
+			cleanupSSE = connectSSE(data.board.id, {
+				onUpdate: () => invalidateAll(),
+				onCelebrate: (d) => {
+					celebrateCardTitle = d.cardTitle;
+					celebrateUserName = d.userName;
+					celebrateUserEmoji = d.userEmoji;
+					celebrateXpGained = d.xpGained;
+					showFireworks = true;
+					setTimeout(() => (showFireworks = false), 3000);
+				},
+				onXpUpdate: () => refreshXp()
+			});
+		}
+	});
+
+	onDestroy(() => {
+		if (cleanupSSE) cleanupSSE();
+		if (tickInterval) clearInterval(tickInterval);
+	});
+
+	/** Sync board state when page data changes (e.g. after invalidateAll). */
+	$effect(() => {
+		boardColumns = data.columns as unknown as ColumnType[];
+		boardCategories = data.categories as CategoryType[];
+		boardLabels = (data.labels || []) as LabelType[];
+		boardName = data.board.name;
+		boardEmoji = data.board.emoji || '📋';
+	});
 </script>
 
 <svelte:head>
