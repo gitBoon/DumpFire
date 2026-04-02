@@ -1,14 +1,25 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, categories, subtasks, labels, cardLabels } from '$lib/server/db/schema';
+import { boards, columns, cards, categories, subtasks, labels, cardLabels, boardMembers, boardTeams, users, teams, cardAssignees, teamMembers } from '$lib/server/db/schema';
 import { eq, asc, inArray, isNull } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
+import { getBoardRole } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ params }) => {
+export const load: PageServerLoad = async ({ params, locals }) => {
 	const boardId = Number(params.id);
+	const user = locals.user!;
 
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) throw error(404, 'Board not found');
+
+	// Access check — admins and board members/teams can view
+	const userBoardRole = getBoardRole(user, boardId);
+	if (!userBoardRole) {
+		throw error(403, 'You do not have access to this board');
+	}
+
+	const canEdit = userBoardRole === 'admin' || userBoardRole === 'owner' || userBoardRole === 'editor';
+	const canManage = userBoardRole === 'admin' || userBoardRole === 'owner';
 
 	// Build ancestry chain for breadcrumbs
 	type BreadcrumbItem = { label: string; emoji: string; href: string };
@@ -103,7 +114,21 @@ export const load: PageServerLoad = async ({ params }) => {
 		subBoardMap.set(sb.parentCardId, existing);
 	}
 
-	// Group cards by column with their subtasks, labels, and sub-board info
+	// Get card assignees
+	const allAssignees = cardIds.length > 0
+		? db.select({
+			cardId: cardAssignees.cardId,
+			userId: cardAssignees.userId,
+			username: users.username,
+			emoji: users.emoji
+		})
+		.from(cardAssignees)
+		.innerJoin(users, eq(cardAssignees.userId, users.id))
+		.where(inArray(cardAssignees.cardId, cardIds))
+		.all()
+		: [];
+
+	// Group cards by column with their subtasks, labels, sub-board info, and assignees
 	const columnsWithCards = boardColumns.map((col) => ({
 		...col,
 		cards: allCards
@@ -112,14 +137,16 @@ export const load: PageServerLoad = async ({ params }) => {
 				...card,
 				subtasks: allSubtasks.filter((st) => st.cardId === card.id),
 				labelIds: allCardLabels.filter((cl) => cl.cardId === card.id).map((cl) => cl.labelId),
-				subBoards: subBoardMap.get(card.id) || []
+				subBoards: subBoardMap.get(card.id) || [],
+				assignees: allAssignees
+					.filter(a => a.cardId === card.id)
+					.map(a => ({ id: a.userId, username: a.username, emoji: a.emoji || '👤' }))
 			}))
 	}));
 
 	const boardCategories = db
 		.select()
 		.from(categories)
-		.where(eq(categories.boardId, boardId))
 		.orderBy(asc(categories.name))
 		.all();
 
@@ -136,12 +163,57 @@ export const load: PageServerLoad = async ({ params }) => {
 		.all()
 		.filter(b => b.id !== boardId);
 
+	// Get users who have access to this board (for assignee picker)
+	const boardUserIds = new Set<number>();
+
+	// Board creator
+	if (board.createdBy) boardUserIds.add(board.createdBy);
+
+	// Direct board members
+	const directMembers = db.select({ userId: boardMembers.userId })
+		.from(boardMembers)
+		.where(eq(boardMembers.boardId, boardId))
+		.all();
+	directMembers.forEach(m => boardUserIds.add(m.userId));
+
+	// Team-based access — get all team members from teams shared with this board
+	const sharedTeams = db.select({ teamId: boardTeams.teamId })
+		.from(boardTeams)
+		.where(eq(boardTeams.boardId, boardId))
+		.all();
+
+	if (sharedTeams.length > 0) {
+		const teamUserRows = db.select({ userId: teamMembers.userId })
+			.from(teamMembers)
+			.where(inArray(teamMembers.teamId, sharedTeams.map(t => t.teamId)))
+			.all();
+		teamUserRows.forEach(r => boardUserIds.add(r.userId));
+	}
+
+	// Always include admins/superadmins
+	const adminUsers = db.select({ id: users.id })
+		.from(users)
+		.where(inArray(users.role, ['admin', 'superadmin']))
+		.all();
+	adminUsers.forEach(a => boardUserIds.add(a.id));
+
+	const boardUsers = boardUserIds.size > 0
+		? db.select({ id: users.id, username: users.username, email: users.email, emoji: users.emoji })
+			.from(users)
+			.where(inArray(users.id, Array.from(boardUserIds)))
+			.all()
+		: [];
+
 	return {
 		board,
 		breadcrumbs,
 		columns: columnsWithCards,
 		categories: boardCategories,
 		labels: boardLabels,
-		linkableBoards
+		linkableBoards,
+		canEdit,
+		canManage,
+		userBoardRole,
+		boardUsers
 	};
 };

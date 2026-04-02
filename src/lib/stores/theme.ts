@@ -2,7 +2,7 @@ import { writable } from 'svelte/store';
 import { browser } from '$app/environment';
 
 function createThemeStore() {
-	const initial = browser ? (localStorage.getItem('dumpfire-theme') as 'dark' | 'light') || 'dark' : 'dark';
+	const initial = browser ? (localStorage.getItem('dumpfire-theme') as 'dark' | 'light') || 'light' : 'light';
 	const { subscribe, set, update } = writable<'dark' | 'light'>(initial);
 
 	return {

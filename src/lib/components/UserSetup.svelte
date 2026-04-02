@@ -1,5 +1,8 @@
 <script lang="ts">
-	import { user } from '$lib/stores/user';
+	/**
+	 * @deprecated — This component is no longer used. User setup is handled
+	 * by the server-side /setup route. Kept for reference only.
+	 */
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 
 	let { onComplete }: { onComplete: () => void } = $props();
@@ -9,7 +12,6 @@
 
 	function save() {
 		if (!name.trim()) return;
-		user.setProfile({ name: name.trim(), emoji: selectedEmoji });
 		onComplete();
 	}
 </script>

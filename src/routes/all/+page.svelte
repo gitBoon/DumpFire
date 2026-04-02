@@ -8,29 +8,21 @@
 	 */
 	import type { PageData } from './$types';
 	import { theme } from '$lib/stores/theme';
-	import { user, type UserProfile } from '$lib/stores/user';
 	import { onMount } from 'svelte';
-	import { browser } from '$app/environment';
-	import UserSetup from '$lib/components/UserSetup.svelte';
 
 	// Shared utilities — avoid duplicating date/card logic
 	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC } from '$lib/utils/date-utils';
 	import { subtaskProgress } from '$lib/utils/card-utils';
 
 	let { data }: { data: PageData } = $props();
-	let currentTheme = $state('dark');
+	let currentTheme = $state('light');
 	theme.subscribe((v) => (currentTheme = v));
-
-	let currentUser = $state<UserProfile>({ name: '', emoji: '👤' });
-	let showUserSetup = $state(false);
-	user.subscribe((v) => (currentUser = v));
 
 	/** Live tick counter — forces re-evaluation of relative timestamps every 15s. */
 	let tick = $state(0);
 	let tickInterval: ReturnType<typeof setInterval> | null = null;
 
 	onMount(() => {
-		if (browser && !currentUser.name) showUserSetup = true;
 		tickInterval = setInterval(() => { tick++; }, 15000);
 		return () => { if (tickInterval) clearInterval(tickInterval); };
 	});
@@ -115,7 +107,7 @@
 		<div class="kanban-track">
 			{#each data.buckets as bucket}
 				{@const filteredCards = bucket.cards.filter(matchesFilters)}
-				<div class="column glass">
+				<div class="column">
 					<div class="column-header">
 						<div class="column-title-row">
 							<span class="column-color-dot" style="background: {bucketColors[bucket.title]}"></span>
@@ -125,7 +117,10 @@
 					</div>
 					<div class="card-list">
 						{#each filteredCards as card (card.id)}
-							<a href="/board/{card.boardId}" class="card glass" class:card-pinned={card.pinned}>
+							<a href="/board/{card.boardId}" class="card" class:card-pinned={card.pinned}>
+								{#if card.colorTag}
+									<div class="card-color-bar" style="background: {card.colorTag}"></div>
+								{/if}
 								{#if card.pinned}
 									<span class="pin-badge" title="Pinned">📌</span>
 								{/if}
@@ -140,8 +135,14 @@
 									<span class="priority-badge priority-{card.priority}">
 										{priorityEmoji[card.priority] || '🟡'} {card.priority.toUpperCase()}
 									</span>
-									{#if subtaskProgress(card)}
-										{@const prog = subtaskProgress(card)!}
+									{#if card.categoryId}
+										{@const cat = data.categories.find((c: any) => c.id === card.categoryId)}
+										{#if cat}
+											<span class="category-badge" style="background: {cat.color}20; color: {cat.color}; border: 1px solid {cat.color}40">{cat.name}</span>
+										{/if}
+									{/if}
+									{#if subtaskProgress(card as any)}
+										{@const prog = subtaskProgress(card as any)!}
 										{@const pct = prog.done / prog.total}
 										<span class="subtask-badge" class:all-done={prog.done === prog.total}>
 											<svg class="progress-ring" width="14" height="14" viewBox="0 0 14 14">
@@ -172,6 +173,23 @@
 										<span>{card.onHoldNote}</span>
 									</div>
 								{/if}
+								{#if card.labelIds && card.labelIds.length > 0}
+									<div class="card-labels">
+										{#each card.labelIds as labelId}
+											{@const label = data.labels.find((l: any) => l.id === labelId)}
+											{#if label}
+												<span class="label-chip" style="background: {label.color}25; color: {label.color}; border: 1px solid {label.color}40">{label.name}</span>
+											{/if}
+										{/each}
+									</div>
+								{/if}
+								{#if card.assignees && card.assignees.length > 0}
+									<div class="card-assignees">
+										{#each card.assignees as assignee}
+											<span class="assignee-chip">{assignee.emoji || '👤'} {assignee.username}</span>
+										{/each}
+									</div>
+								{/if}
 							</a>
 						{:else}
 							<div class="column-empty">No tasks</div>
@@ -183,9 +201,7 @@
 	</div>
 </div>
 
-{#if showUserSetup}
-	<UserSetup onComplete={() => (showUserSetup = false)} />
-{/if}
+
 
 <style>
 	.all-page {
@@ -315,6 +331,8 @@
 		border-radius: var(--radius-lg);
 		overflow: hidden;
 		height: 100%;
+		background: var(--bg-surface);
+		border: 1px solid var(--glass-border);
 	}
 
 	.column-header {
@@ -372,15 +390,18 @@
 		position: relative;
 		overflow: hidden;
 		flex-shrink: 0;
+		background: var(--bg-card);
+		border: 1px solid var(--glass-border);
 	}
 
 	.card:hover {
 		transform: translateY(-1px);
-		box-shadow: var(--shadow-lg);
+		box-shadow: var(--shadow-md);
+		border-color: var(--glass-border);
 	}
 
 	.card-pinned {
-		border-left: 3px solid var(--accent-amber);
+		border-top: 2px solid var(--accent-indigo);
 	}
 
 	.pin-badge {
@@ -433,18 +454,19 @@
 	}
 
 	.priority-badge {
-		font-size: 0.6rem;
-		font-weight: 700;
-		padding: 1px 6px;
-		border-radius: var(--radius-sm);
+		display: inline-flex; align-items: center; gap: 4px;
+		font-size: 0.65rem;
+		font-weight: 600;
+		padding: 2px 8px;
+		border-radius: var(--radius-full);
 		text-transform: uppercase;
-		letter-spacing: 0.02em;
+		letter-spacing: 0.04em;
 	}
 
-	.priority-critical { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
-	.priority-high { background: rgba(249, 115, 22, 0.12); color: #f97316; }
-	.priority-medium { background: rgba(234, 179, 8, 0.12); color: #eab308; }
-	.priority-low { background: rgba(34, 197, 94, 0.12); color: #22c55e; }
+	.priority-critical { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.25); }
+	.priority-high { background: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249, 115, 22, 0.25); }
+	.priority-medium { background: rgba(234, 179, 8, 0.15); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.25); }
+	.priority-low { background: rgba(34, 197, 94, 0.15); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.25); }
 
 	.subtask-badge {
 		font-size: 0.65rem;
@@ -500,6 +522,7 @@
 		text-overflow: ellipsis;
 		display: -webkit-box;
 		-webkit-line-clamp: 2;
+		line-clamp: 2;
 		-webkit-box-orient: vertical;
 	}
 
@@ -511,4 +534,37 @@
 	}
 
 	.theme-toggle { font-size: 0; }
+
+	/* Color tag bar */
+	.card-color-bar {
+		position: absolute; top: 0; left: 0; right: 0; height: 3px;
+		border-radius: var(--radius-md) var(--radius-md) 0 0;
+	}
+
+	/* Category badge */
+	.category-badge {
+		font-size: 0.6rem; font-weight: 600; padding: 1px 6px;
+		border-radius: var(--radius-sm);
+	}
+
+	/* Label chips */
+	.card-labels {
+		display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px;
+	}
+	.label-chip {
+		font-size: 0.58rem; font-weight: 600; padding: 1px 5px;
+		border-radius: var(--radius-sm); white-space: nowrap;
+	}
+
+	/* Assignee chips */
+	.card-assignees {
+		display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px;
+	}
+	.assignee-chip {
+		display: inline-flex; align-items: center; gap: 2px;
+		font-size: 0.6rem; font-weight: 600;
+		padding: 1px 6px; border-radius: var(--radius-full);
+		background: rgba(99, 102, 241, 0.1); color: #818cf8;
+		border: 1px solid rgba(99, 102, 241, 0.2);
+	}
 </style>

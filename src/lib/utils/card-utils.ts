@@ -95,6 +95,7 @@ export function matchesSearch(card: CardType, searchQuery: string, categories: C
 		card.title.toLowerCase().includes(q) ||
 		card.description?.toLowerCase().includes(q) ||
 		categories.find(cat => cat.id === card.categoryId)?.name.toLowerCase().includes(q) ||
+		card.assignees?.some(a => a.username.toLowerCase().includes(q)) ||
 		false
 	);
 }
@@ -132,6 +133,13 @@ export function sortCards(cards: CardType[], sort: SortOption, categories: Categ
 					const catA = categories.find(c => c.id === a.categoryId)?.name || 'zzz';
 					const catB = categories.find(c => c.id === b.categoryId)?.name || 'zzz';
 					return catA.localeCompare(catB);
+				});
+				break;
+			case 'assignee':
+				sorted.sort((a, b) => {
+					const nameA = a.assignees?.[0]?.username || 'zzz';
+					const nameB = b.assignees?.[0]?.username || 'zzz';
+					return nameA.localeCompare(nameB);
 				});
 				break;
 		}
@@ -188,6 +196,7 @@ export function getSortLabel(sort: SortOption): string {
 		case 'date-desc': return '↓ Newest';
 		case 'priority': return '⚡ Priority';
 		case 'category': return '🏷 Category';
+		case 'assignee': return '👤 Assignee';
 		default: return '';
 	}
 }

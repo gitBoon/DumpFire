@@ -1,19 +1,22 @@
 <script lang="ts">
 	/**
-	 * Admin Page — Database management and maintenance tools.
+	 * Admin Page — Database management, user management, and team management.
 	 *
 	 * Provides board management (delete, clear cards/categories),
-	 * database operations (reset, vacuum), and import/export
-	 * backup functionality.
+	 * user management (create, roles, delete), team management,
+	 * database operations (reset, vacuum), and import/export.
 	 */
 	import type { PageData } from './$types';
-	import { invalidateAll } from '$app/navigation';
+	import { invalidateAll, goto } from '$app/navigation';
 	import { theme } from '$lib/stores/theme';
+	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 
 	let { data }: { data: PageData } = $props();
 
-	let currentTheme = $state('dark');
+	let currentTheme = $state('light');
 	theme.subscribe((v) => (currentTheme = v));
+
+	let isSuperadmin = $derived(data.currentUser?.role === 'superadmin');
 
 	/** Confirm modal state for destructive admin actions. */
 	let confirmAction = $state<{ show: boolean; title: string; message: string; action: () => Promise<void> }>({
@@ -37,41 +40,39 @@
 		confirmAction = { show: true, title, message, action };
 	}
 
-	/** Deletes a board and all its content. */
+	// ─── Board Management ─────────────────────────────────────────────────
+
 	async function deleteBoard(id: number) {
 		await fetch(`/api/boards/${id}`, { method: 'DELETE' });
 		await invalidateAll();
 		showToast('Board deleted');
 	}
 
-	/** Removes all cards from a board but keeps the board and columns. */
 	async function clearBoardCards(id: number) {
 		await fetch(`/api/admin/boards/${id}/clear-cards`, { method: 'POST' });
 		await invalidateAll();
 		showToast('All cards cleared from board');
 	}
 
-	/** Removes all categories from a board. */
 	async function clearBoardCategories(id: number) {
 		await fetch(`/api/admin/boards/${id}/clear-categories`, { method: 'POST' });
 		await invalidateAll();
 		showToast('All categories cleared from board');
 	}
 
-	/** Drops and recreates all tables. Destroys all data. */
 	async function resetDatabase() {
-		await fetch('/api/admin/reset', { method: 'POST' });
-		await invalidateAll();
-		showToast('Database reset — all boards deleted');
+		const res = await fetch('/api/admin/reset', { method: 'POST' });
+		const data = await res.json();
+		if (data.redirect) {
+			window.location.href = data.redirect;
+		}
 	}
 
-	/** Runs SQLite VACUUM to reclaim disk space and reset auto-increment. */
 	async function vacuumDatabase() {
 		await fetch('/api/admin/vacuum', { method: 'POST' });
 		showToast('Database vacuumed — IDs will restart from 1 for new records');
 	}
 
-	/** Downloads the full database as a JSON backup file. */
 	async function exportDatabase() {
 		exporting = true;
 		try {
@@ -95,12 +96,10 @@
 
 	let fileInput: HTMLInputElement;
 
-	/** Opens the file picker for importing a backup. */
 	async function importDatabase() {
 		fileInput?.click();
 	}
 
-	/** Handles the selected backup file — validates, uploads, and refreshes. */
 	async function handleFileSelected(e: Event) {
 		const file = (e.target as HTMLInputElement).files?.[0];
 		if (!file) return;
@@ -134,6 +133,260 @@
 			importing = false;
 			if (fileInput) fileInput.value = '';
 		}
+	}
+
+	// ─── User Management ──────────────────────────────────────────────────
+
+	let showCreateUser = $state(false);
+	let newUsername = $state('');
+	let newEmail = $state('');
+	let newPassword = $state('');
+	let newUserRole = $state('user');
+	let newUserEmoji = $state('👤');
+	let creatingUser = $state(false);
+
+
+
+	async function createUser() {
+		if (!newUsername.trim() || !newEmail.trim()) return;
+		// Password required if non-empty, must be 8+ chars
+		if (newPassword && newPassword.length < 8) {
+			showToast('Password must be at least 8 characters', 'error');
+			return;
+		}
+		creatingUser = true;
+		try {
+			const body: Record<string, unknown> = {
+				username: newUsername.trim(),
+				email: newEmail.trim(),
+				emoji: newUserEmoji,
+				role: newUserRole
+			};
+			if (newPassword) body.password = newPassword;
+			const res = await fetch('/api/users', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			});
+			if (res.ok) {
+				const result = await res.json();
+				showCreateUser = false;
+				newUsername = ''; newEmail = ''; newPassword = ''; newUserRole = 'user'; newUserEmoji = '👤';
+				await invalidateAll();
+				showToast(result.invited ? 'User created — invite email sent!' : 'User created');
+			} else {
+				const err = await res.json();
+				showToast(err.message || 'Failed to create user', 'error');
+			}
+		} catch {
+			showToast('Failed to create user', 'error');
+		}
+		creatingUser = false;
+	}
+
+	async function changeUserRole(userId: number, newRole: string) {
+		const res = await fetch(`/api/users/${userId}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ role: newRole })
+		});
+		if (res.ok) {
+			await invalidateAll();
+			showToast('Role updated');
+		} else {
+			const err = await res.json();
+			showToast(err.message || 'Failed to update role', 'error');
+		}
+	}
+
+	let resetPasswordUserId = $state<number | null>(null);
+	let resetPasswordValue = $state('');
+
+	async function resetPassword() {
+		if (!resetPasswordUserId || !resetPasswordValue || resetPasswordValue.length < 8) return;
+		const res = await fetch(`/api/users/${resetPasswordUserId}/password`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ password: resetPasswordValue })
+		});
+		if (res.ok) {
+			resetPasswordUserId = null;
+			resetPasswordValue = '';
+			showToast('Password reset');
+		} else {
+			showToast('Failed to reset password', 'error');
+		}
+	}
+
+	async function deleteUser(userId: number) {
+		const res = await fetch(`/api/users/${userId}`, { method: 'DELETE' });
+		if (res.ok) {
+			await invalidateAll();
+			showToast('User deleted');
+		} else {
+			const err = await res.json();
+			showToast(err.message || 'Failed to delete user', 'error');
+		}
+	}
+
+	async function resendInvite(userId: number) {
+		const res = await fetch(`/api/users/${userId}/invite`, { method: 'POST' });
+		if (res.ok) {
+			const result = await res.json();
+			showToast(result.message || 'Invite sent!');
+		} else {
+			const err = await res.json();
+			showToast(err.message || 'Failed to send invite', 'error');
+		}
+	}
+
+	// ─── Team Management ──────────────────────────────────────────────────
+
+	let showCreateTeam = $state(false);
+	let newTeamName = $state('');
+	let newTeamEmoji = $state('🏢');
+
+	async function createTeam() {
+		if (!newTeamName.trim()) return;
+		const res = await fetch('/api/teams', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name: newTeamName.trim(), emoji: newTeamEmoji })
+		});
+		if (res.ok) {
+			showCreateTeam = false;
+			newTeamName = ''; newTeamEmoji = '🏢';
+			await invalidateAll();
+			showToast('Team created');
+		} else {
+			showToast('Failed to create team', 'error');
+		}
+	}
+
+	async function deleteTeam(teamId: number) {
+		await fetch(`/api/teams/${teamId}`, { method: 'DELETE' });
+		await invalidateAll();
+		showToast('Team deleted');
+	}
+
+	let addMemberTeamId = $state<number | null>(null);
+	let addMemberUserId = $state<number | null>(null);
+	let addMemberRole = $state('member');
+
+	async function addTeamMember() {
+		if (!addMemberTeamId || !addMemberUserId) return;
+		const res = await fetch(`/api/teams/${addMemberTeamId}/members/${addMemberUserId}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ userId: addMemberUserId, role: addMemberRole })
+		});
+		if (res.ok) {
+			addMemberTeamId = null;
+			addMemberUserId = null;
+			await invalidateAll();
+			showToast('Member added');
+		}
+	}
+
+	async function removeTeamMember(teamId: number, userId: number) {
+		await fetch(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE' });
+		await invalidateAll();
+		showToast('Member removed');
+	}
+
+	// ─── SMTP Configuration ───────────────────────────────────────────────
+
+	let smtpHost = $state('');
+	let smtpPort = $state(587);
+	let smtpSecure = $state(false);
+	let smtpUser = $state('');
+	let smtpPass = $state('');
+	let smtpFromAddress = $state('');
+	let smtpFromName = $state('DumpFire');
+	let appUrl = $state('');
+	let smtpLoading = $state(true);
+	let smtpSaving = $state(false);
+	let smtpTesting = $state(false);
+	let smtpMessage = $state('');
+	let smtpIsError = $state(false);
+
+	$effect(() => {
+		loadSmtpConfig();
+	});
+
+	async function loadSmtpConfig() {
+		smtpLoading = true;
+		try {
+			const res = await fetch('/api/admin/smtp');
+			if (res.ok) {
+				const data = await res.json();
+				if (data.configured) {
+					smtpHost = data.host || '';
+					smtpPort = data.port || 587;
+					smtpSecure = data.secure || false;
+					smtpUser = data.user || '';
+					smtpPass = data.pass || '';
+					smtpFromAddress = data.fromAddress || '';
+				smtpFromName = data.fromName || 'DumpFire';
+				appUrl = data.appUrl || '';
+				}
+			}
+		} catch {}
+		smtpLoading = false;
+	}
+
+	async function saveSmtp() {
+		smtpSaving = true;
+		smtpMessage = '';
+		try {
+			const res = await fetch('/api/admin/smtp', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					host: smtpHost, port: smtpPort, secure: smtpSecure,
+					user: smtpUser, pass: smtpPass,
+					fromAddress: smtpFromAddress, fromName: smtpFromName,
+					appUrl
+				})
+			});
+			if (res.ok) {
+				smtpMessage = 'SMTP settings saved!';
+				smtpIsError = false;
+			} else {
+				smtpMessage = 'Failed to save SMTP settings';
+				smtpIsError = true;
+			}
+		} catch {
+			smtpMessage = 'Failed to save SMTP settings';
+			smtpIsError = true;
+		}
+		smtpSaving = false;
+		setTimeout(() => (smtpMessage = ''), 5000);
+	}
+
+	async function testSmtp() {
+		smtpTesting = true;
+		smtpMessage = '';
+		try {
+			const res = await fetch('/api/admin/smtp', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ to: data.currentUser?.email })
+			});
+			const result = await res.json();
+			if (res.ok) {
+				smtpMessage = result.message || 'Test email sent!';
+				smtpIsError = false;
+			} else {
+				smtpMessage = result.message || 'Test email failed';
+				smtpIsError = true;
+			}
+		} catch {
+			smtpMessage = 'Test email failed';
+			smtpIsError = true;
+		}
+		smtpTesting = false;
+		setTimeout(() => (smtpMessage = ''), 8000);
 	}
 </script>
 
@@ -187,6 +440,14 @@
 				<div class="stat-item">
 					<span class="stat-value">{data.boards.reduce((s, b) => s + b.categoryCount, 0)}</span>
 					<span class="stat-label">Categories</span>
+				</div>
+				<div class="stat-item">
+					<span class="stat-value">{data.users.length}</span>
+					<span class="stat-label">Users</span>
+				</div>
+				<div class="stat-item">
+					<span class="stat-value">{data.teams.length}</span>
+					<span class="stat-label">Teams</span>
 				</div>
 			</div>
 		</section>
@@ -279,6 +540,182 @@
 			{/if}
 		</section>
 
+		<!-- User Management -->
+		<section class="admin-card glass fade-in-up" style="animation-delay: 200ms">
+			<div class="section-header">
+				<h2>👥 User Management</h2>
+				<button class="btn-primary btn-sm" onclick={() => (showCreateUser = true)}>+ Add User</button>
+			</div>
+
+			{#if showCreateUser}
+				<div class="inline-form">
+					<div class="form-row">
+						<input type="text" placeholder="Username" bind:value={newUsername} class="form-input" />
+						<input type="email" placeholder="Email" bind:value={newEmail} class="form-input" />
+						<input type="password" placeholder="Password (blank = send invite)" bind:value={newPassword} class="form-input" />
+					</div>
+					<div class="form-row">
+						<EmojiPicker value={newUserEmoji} onSelect={(e) => (newUserEmoji = e)} />
+						<select bind:value={newUserRole} class="form-input">
+							<option value="user">User</option>
+							{#if isSuperadmin}<option value="admin">Admin</option>{/if}
+						</select>
+						<button class="btn-primary btn-sm" onclick={createUser} disabled={creatingUser || !newUsername || !newEmail}>
+							{creatingUser ? 'Creating...' : 'Create'}
+						</button>
+						<button class="btn-ghost btn-sm" onclick={() => (showCreateUser = false)}>Cancel</button>
+					</div>
+				</div>
+			{/if}
+
+			{#if data.users.length === 0}
+				<p class="empty-msg">No users yet.</p>
+			{:else}
+				<div class="user-list">
+					{#each data.users as u (u.id)}
+						<div class="user-row">
+							<span class="user-row-emoji">{u.emoji}</span>
+							<div class="user-row-info">
+								<span class="user-row-name">{u.username}</span>
+								<span class="user-row-email">{u.email}</span>
+							</div>
+							<span class="role-badge role-{u.role}">{u.role}</span>
+							{#if u.role !== 'superadmin'}
+								<select
+									value={u.role}
+									onchange={(e) => changeUserRole(u.id, (e.target as HTMLSelectElement).value)}
+									class="role-select"
+								>
+									<option value="user">User</option>
+									{#if isSuperadmin}<option value="admin">Admin</option>{/if}
+								</select>
+								<button class="btn-ghost btn-sm" onclick={() => { resetPasswordUserId = u.id; resetPasswordValue = ''; }} title="Reset password">🔑</button>
+								<button class="btn-ghost btn-sm" onclick={() => resendInvite(u.id)} title="Resend invite email">📧</button>
+								<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete User', `Delete user "${u.username}"? This removes them from all teams and boards.`, () => deleteUser(u.id))} title="Delete user">🗑️</button>
+							{:else}
+								<span class="superadmin-lock" title="Superadmin cannot be modified">🔒</span>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</section>
+
+		<!-- Password Reset Modal (inline) -->
+		{#if resetPasswordUserId}
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
+			<div class="modal-overlay" onclick={() => (resetPasswordUserId = null)} role="dialog" aria-modal="true">
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<div class="modal-content" onclick={(e) => e.stopPropagation()} role="document">
+					<h2>🔑 Reset Password</h2>
+					<p>Enter a new password for {data.users.find(u => u.id === resetPasswordUserId)?.username || 'user'}.</p>
+					<input type="password" placeholder="New password (min 8 chars)" bind:value={resetPasswordValue} class="form-input" style="width: 100%; margin: var(--space-md) 0;" />
+					<div class="modal-actions">
+						<button class="btn-ghost" onclick={() => (resetPasswordUserId = null)}>Cancel</button>
+						<button class="btn-primary" onclick={resetPassword} disabled={resetPasswordValue.length < 8}>Reset Password</button>
+					</div>
+				</div>
+			</div>
+		{/if}
+
+		<!-- Team Management -->
+		<section class="admin-card glass fade-in-up" style="animation-delay: 280ms">
+			<div class="section-header">
+				<h2>🏢 Team Management</h2>
+				<button class="btn-primary btn-sm" onclick={() => (showCreateTeam = true)}>+ Add Team</button>
+			</div>
+
+			{#if showCreateTeam}
+				<div class="inline-form">
+					<div class="form-row">
+						<input type="text" placeholder="Team name" bind:value={newTeamName} class="form-input" />
+						<EmojiPicker value={newTeamEmoji} onSelect={(e) => (newTeamEmoji = e)} />
+						<button class="btn-primary btn-sm" onclick={createTeam} disabled={!newTeamName.trim()}>Create</button>
+						<button class="btn-ghost btn-sm" onclick={() => (showCreateTeam = false)}>Cancel</button>
+					</div>
+				</div>
+			{/if}
+
+			{#if data.teams.length === 0}
+				<p class="empty-msg">No teams yet.</p>
+			{:else}
+				<div class="team-list">
+					{#each data.teams as team (team.id)}
+						<div class="team-card">
+							<div class="team-card-header">
+								<span class="team-emoji">{team.emoji}</span>
+								<span class="team-name">{team.name}</span>
+								<span class="team-count">{team.members.length} member{team.members.length !== 1 ? 's' : ''}</span>
+								<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete Team', `Delete team "${team.name}"?`, () => deleteTeam(team.id))} title="Delete team">🗑️</button>
+							</div>
+							<div class="team-members">
+								{#each team.members as member}
+									<div class="team-member">
+										<span>{member.emoji} {member.username}</span>
+										<span class="member-role">{member.role}</span>
+										<button class="btn-ghost btn-xs" onclick={() => removeTeamMember(team.id, member.userId)} title="Remove from team">✕</button>
+									</div>
+								{:else}
+									<span class="empty-msg" style="padding: var(--space-sm)">No members</span>
+								{/each}
+							</div>
+							<div class="add-member-row">
+								<select class="form-input" onchange={(e) => { addMemberTeamId = team.id; addMemberUserId = Number((e.target as HTMLSelectElement).value); }}>
+									<option value="">Add member...</option>
+									{#each data.users.filter(u => !team.members.some(m => m.userId === u.id)) as u}
+										<option value={u.id}>{u.emoji} {u.username}</option>
+									{/each}
+								</select>
+								{#if addMemberTeamId === team.id && addMemberUserId}
+									<button class="btn-primary btn-xs" onclick={addTeamMember}>Add</button>
+								{/if}
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</section>
+
+		<!-- SMTP Configuration -->
+		<section class="admin-card glass fade-in-up" style="animation-delay: 220ms">
+			<h2>📧 Email / SMTP</h2>
+			<p class="section-desc">Configure SMTP to enable email notifications, user invites, and task alerts.</p>
+
+			{#if smtpLoading}
+				<p class="empty-msg">Loading SMTP config...</p>
+			{:else}
+				<div class="inline-form">
+					<div class="form-row">
+						<input type="text" placeholder="SMTP Host" bind:value={smtpHost} class="form-input" />
+						<input type="number" placeholder="Port" bind:value={smtpPort} class="form-input" style="width: 80px; flex: none" />
+					</div>
+					<div class="form-row">
+						<input type="text" placeholder="Username" bind:value={smtpUser} class="form-input" />
+						<input type="password" placeholder="Password" bind:value={smtpPass} class="form-input" />
+					</div>
+					<div class="form-row">
+						<input type="email" placeholder="From Email" bind:value={smtpFromAddress} class="form-input" />
+						<input type="text" placeholder="From Name" bind:value={smtpFromName} class="form-input" />
+					</div>
+					<div class="form-row">
+						<input type="url" placeholder="App URL (e.g. https://kanban.example.com)" bind:value={appUrl} class="form-input" style="flex: 2" />
+						<span style="font-size: 0.68rem; color: var(--text-tertiary); white-space: nowrap">Used in invite links</span>
+					</div>
+					<div class="form-row">
+						<label style="display: flex; align-items: center; gap: var(--space-xs); font-size: 0.78rem; color: var(--text-secondary); cursor: pointer">
+							<input type="checkbox" bind:checked={smtpSecure} /> Use SSL/TLS
+						</label>
+						<div style="flex: 1"></div>
+						<button class="btn-ghost btn-sm" onclick={testSmtp} disabled={!smtpHost || smtpTesting}>🧪 {smtpTesting ? 'Sending...' : 'Send Test'}</button>
+						<button class="btn-primary btn-sm" onclick={saveSmtp} disabled={!smtpHost || smtpSaving}>{smtpSaving ? 'Saving...' : 'Save SMTP'}</button>
+					</div>
+					{#if smtpMessage}
+						<p class="smtp-msg" class:smtp-error={smtpIsError} class:smtp-success={!smtpIsError}>{smtpMessage}</p>
+					{/if}
+				</div>
+			{/if}
+		</section>
+
 		<!-- Danger zone -->
 		<section class="admin-card glass danger-zone fade-in-up" style="animation-delay: 240ms">
 			<h2>⚠️ Danger Zone</h2>
@@ -296,10 +733,10 @@
 				</div>
 				<div class="danger-item">
 					<div>
-						<strong>Reset Database</strong>
-						<p>Deletes ALL boards, columns, cards, subtasks, and categories. Requires re-seeding.</p>
+						<strong>Reset Everything</strong>
+						<p>Deletes ALL data including boards, users, teams, and sessions. You will be redirected to initial setup.</p>
 					</div>
-					<button class="btn-danger-solid" onclick={() => confirm('Reset Entire Database', 'This will DELETE EVERYTHING. All boards, cards, subtasks, and categories will be permanently removed. Are you absolutely sure?', resetDatabase)}>
+					<button class="btn-danger-solid" onclick={() => confirm('Reset Everything', 'This will DELETE EVERYTHING — all boards, users, teams, and settings. You will need to set up DumpFire from scratch. Are you absolutely sure?', resetDatabase)}>
 						Reset Everything
 					</button>
 				</div>
@@ -505,4 +942,122 @@
 		from { opacity: 0; transform: translateX(-50%) translateY(30px) scale(0.9); }
 		to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 	}
+
+	/* Section header with title + action */
+	.section-header {
+		display: flex; align-items: center; justify-content: space-between;
+		margin-bottom: var(--space-lg);
+	}
+	.section-header h2 { margin-bottom: 0; }
+
+	/* Inline form */
+	.inline-form {
+		padding: var(--space-lg); background: var(--bg-base);
+		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+		margin-bottom: var(--space-lg);
+		display: flex; flex-direction: column; gap: var(--space-sm);
+	}
+	.form-row {
+		display: flex; gap: var(--space-sm); align-items: center; flex-wrap: wrap;
+	}
+	.form-input {
+		padding: var(--space-sm) var(--space-md);
+		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+		background: var(--bg-elevated); color: var(--text-primary);
+		font-size: 0.82rem; font-family: var(--font-family);
+		flex: 1; min-width: 120px;
+	}
+	.form-input:focus { border-color: var(--accent-indigo); outline: none; }
+
+	.emoji-row { display: flex; gap: 4px; flex-wrap: wrap; }
+	.emoji-pick {
+		width: 30px; height: 30px; font-size: 1rem;
+		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+		background: var(--bg-base); cursor: pointer; transition: all 0.15s;
+		display: flex; align-items: center; justify-content: center;
+	}
+	.emoji-pick:hover { border-color: var(--accent-purple); transform: scale(1.1); }
+	.emoji-pick.active {
+		border-color: var(--accent-purple); background: var(--accent-purple-glow);
+		box-shadow: var(--shadow-glow-purple); transform: scale(1.1);
+	}
+
+	.btn-sm { font-size: 0.78rem !important; padding: var(--space-xs) var(--space-md) !important; }
+	.btn-xs { font-size: 0.7rem !important; padding: 2px var(--space-sm) !important; }
+
+	/* User list */
+	.user-list { display: flex; flex-direction: column; gap: var(--space-xs); }
+	.user-row {
+		display: flex; align-items: center; gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md);
+		background: var(--bg-base); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); transition: border-color 0.15s;
+	}
+	.user-row:hover { border-color: var(--accent-indigo); }
+	.user-row-emoji { font-size: 1.2rem; flex-shrink: 0; }
+	.user-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+	.user-row-name { font-weight: 600; font-size: 0.85rem; }
+	.user-row-email { font-size: 0.72rem; color: var(--text-tertiary); }
+
+	.role-badge {
+		font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.05em; padding: 2px 8px; border-radius: var(--radius-sm);
+	}
+	.role-superadmin { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
+	.role-admin { background: rgba(99, 102, 241, 0.15); color: var(--accent-indigo); }
+	.role-user { background: rgba(100, 116, 139, 0.15); color: var(--text-secondary); }
+
+	.role-select {
+		padding: 2px var(--space-sm); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-sm); background: var(--bg-base);
+		color: var(--text-secondary); font-size: 0.72rem; font-weight: 600;
+		cursor: pointer; font-family: var(--font-family);
+	}
+
+	.superadmin-lock { font-size: 0.9rem; opacity: 0.5; }
+
+	/* Team management */
+	.team-list { display: flex; flex-direction: column; gap: var(--space-md); }
+	.team-card {
+		background: var(--bg-base); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); overflow: hidden;
+		transition: border-color 0.15s;
+	}
+	.team-card:hover { border-color: var(--accent-indigo); }
+	.team-card-header {
+		display: flex; align-items: center; gap: var(--space-sm);
+		padding: var(--space-md) var(--space-lg);
+		border-bottom: 1px solid var(--glass-border);
+	}
+	.team-emoji { font-size: 1.2rem; }
+	.team-name { font-weight: 600; font-size: 0.9rem; flex: 1; }
+	.team-count { font-size: 0.72rem; color: var(--text-tertiary); }
+
+	.team-members {
+		padding: var(--space-sm) var(--space-lg);
+		display: flex; flex-direction: column; gap: 2px;
+	}
+	.team-member {
+		display: flex; align-items: center; gap: var(--space-sm);
+		padding: var(--space-xs) 0; font-size: 0.82rem;
+	}
+	.team-member span:first-child { flex: 1; }
+	.member-role { font-size: 0.65rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; }
+
+	.add-member-row {
+		display: flex; gap: var(--space-sm); align-items: center;
+		padding: var(--space-sm) var(--space-lg);
+		border-top: 1px solid var(--glass-border);
+	}
+	.add-member-row select { flex: 1; }
+
+	.danger { color: var(--accent-rose) !important; }
+
+	/* SMTP */
+	.smtp-msg {
+		font-size: 0.78rem; font-weight: 500; padding: var(--space-sm) var(--space-md);
+		border-radius: var(--radius-sm); margin-top: var(--space-sm);
+	}
+	.smtp-success { background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: var(--accent-emerald); }
+	.smtp-error { background: rgba(244, 63, 94, 0.1); border: 1px solid rgba(244, 63, 94, 0.3); color: var(--accent-rose); }
 </style>

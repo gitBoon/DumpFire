@@ -16,10 +16,10 @@
 	import { invalidateAll } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
 	import { browser } from '$app/environment';
+	import { page } from '$app/stores';
 	import { dndzone } from 'svelte-dnd-action';
 	import { flip } from 'svelte/animate';
 	import { theme } from '$lib/stores/theme';
-	import { user, type UserProfile } from '$lib/stores/user';
 	import { toasts } from '$lib/stores/toast';
 
 	// Shared types
@@ -42,7 +42,7 @@
 	// Components
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import UserSetup from '$lib/components/UserSetup.svelte';
+	import ShareModal from '$lib/components/ShareModal.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import KanbanCard from '$lib/components/board/KanbanCard.svelte';
 	import ActivityPanel from '$lib/components/board/ActivityPanel.svelte';
@@ -89,7 +89,7 @@
 	async function handleBulkMove(targetColumnId: number) {
 		const targetCol = boardColumns.find(c => c.id === targetColumnId);
 		if (!targetCol) return;
-		await bulkOps.bulkMove(selectedCards, targetColumnId, targetCol.cards.length, data.board.id, currentUser.name, currentUser.emoji);
+		await bulkOps.bulkMove(selectedCards, targetColumnId, targetCol.cards.length, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
 		clearSelection();
 		await invalidateAll();
 	}
@@ -131,6 +131,21 @@
 	let editingCard = $state<CardType | null>(null);
 	let cardModalColumnId = $state<number | null>(null);
 
+	onMount(() => {
+		const targetCardId = $page.url.searchParams.get('card');
+		if (targetCardId) {
+			const cid = parseInt(targetCardId, 10);
+			const card = boardColumns.flatMap(c => c.cards).find(c => c.id === cid);
+			if (card) {
+				// Strip query param from URL without reloading
+				const newUrl = new URL($page.url);
+				newUrl.searchParams.delete('card');
+				window.history.replaceState({}, '', newUrl.toString());
+				openCardModal(card);
+			}
+		}
+	});
+
 	function openCardModal(card: CardType) {
 		editingCard = card;
 		cardModalColumnId = card.columnId;
@@ -143,12 +158,23 @@
 		showCardModal = true;
 	}
 
-	async function saveCard(cardData: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; pendingSubtasks?: string[] }) {
+	async function saveCard(cardData: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; pendingSubtasks?: string[]; pendingAssigneeIds?: number[] }) {
 		const result = await cardActions.saveCard(editingCard, cardModalColumnId, data.board.id, boardColumns, cardData);
 		showCardModal = false;
 		if (result.isNew && cardData.title) {
 			logActivity('card_created', cardData.title);
 			toasts.add(`Created "${cardData.title}"`);
+
+			// Assign pending users to the newly created card
+			if (result.cardId && cardData.pendingAssigneeIds?.length) {
+				await Promise.all(cardData.pendingAssigneeIds.map(userId =>
+					fetch(`/api/cards/${result.cardId}/assignees`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ userId })
+					})
+				));
+			}
 		} else if (!result.isNew && editingCard) {
 			toasts.add('Card updated');
 		}
@@ -339,6 +365,7 @@
 	// ─── Search ──────────────────────────────────────────────────────────────
 
 	let searchQuery = $state('');
+	let filterAssigneeId = $state<number | null>(null);
 
 	// ─── Blocked & On Hold Modals ────────────────────────────────────────────
 
@@ -346,7 +373,7 @@
 	let onHoldState = $state<OnHoldState>({ show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 });
 
 	async function confirmOnHold() {
-		await dndHandlers.confirmOnHold(onHoldState, data.board.id, currentUser.name, currentUser.emoji);
+		await dndHandlers.confirmOnHold(onHoldState, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
 		logActivity('card_moved', `${onHoldState.cardTitle} → On Hold`, onHoldState.cardId);
 		onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
 	}
@@ -358,12 +385,13 @@
 
 	// ─── Theme & User ────────────────────────────────────────────────────────
 
-	let currentTheme = $state('dark');
+	let currentTheme = $state('light');
 	theme.subscribe((v) => (currentTheme = v));
 
-	let currentUser = $state<UserProfile>({ name: '', emoji: '👤' });
-	let showUserSetup = $state(false);
-	user.subscribe((v) => (currentUser = v));
+	// User from server-side auth
+	let currentUser = $derived($page.data.user);
+	let canManage = $derived(data.canManage);
+	let showShareModal = $state(false);
 
 	// ─── Fireworks ───────────────────────────────────────────────────────────
 
@@ -410,7 +438,7 @@
 		}
 		const result = await dndHandlers.handleCardDndFinalize(
 			columnId, e.detail.items, boardColumns,
-			data.board.id, currentUser.name, currentUser.emoji
+			data.board.id, currentUser?.username || '', currentUser?.emoji || '👤'
 		);
 		switch (result.action) {
 			case 'blocked':
@@ -437,7 +465,7 @@
 	// ─── Activity Logging ────────────────────────────────────────────────────
 
 	function logActivity(action: string, detail: string, cardId?: number) {
-		api.logActivity(data.board.id, action, detail, currentUser.name, currentUser.emoji, cardId);
+		api.logActivity(data.board.id, action, detail, currentUser?.username || '', currentUser?.emoji || '👤', cardId);
 	}
 
 	async function loadActivities() {
@@ -465,7 +493,6 @@
 	let cleanupSSE: (() => void) | null = null;
 
 	onMount(() => {
-		if (browser && !currentUser.name) showUserSetup = true;
 		refreshXp();
 		tickInterval = setInterval(() => { tick++; }, 15000);
 		if (browser) {
@@ -593,6 +620,12 @@
 				</button>
 			{/if}
 		</div>
+		<select class="assignee-filter" bind:value={filterAssigneeId}>
+			<option value={null}>All assignees</option>
+			{#each data.boardUsers as u}
+				<option value={u.id}>{u.emoji || '👤'} {u.username}</option>
+			{/each}
+		</select>
 
 		<div class="board-header-right">
 			<span class="board-stats">
@@ -633,6 +666,23 @@
 				</svg>
 				Add Column
 			</button>
+			{#if canManage}
+				<button class="btn-ghost" onclick={() => (showShareModal = true)} title="Share board">
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+						<circle cx="12" cy="4" r="2" stroke="currentColor" stroke-width="1.5"/>
+						<circle cx="4" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/>
+						<circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="1.5"/>
+						<path d="M5.8 7l4.4-2M5.8 9l4.4 2" stroke="currentColor" stroke-width="1.5"/>
+					</svg>
+					Share
+				</button>
+			{/if}
+			<a href="/inbox" class="btn-ghost nav-btn" title="Inbox">
+				📥 Inbox
+			</a>
+			<a href="/request" class="btn-ghost nav-btn" title="Submit a Request">
+				📋 Request
+			</a>
 			<button class="theme-toggle btn-ghost" onclick={() => theme.toggle()} title="Toggle theme">
 				{#if currentTheme === 'dark'}
 					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -645,13 +695,6 @@
 					</svg>
 				{/if}
 			</button>
-			{#if currentUser.name}
-				<!-- svelte-ignore a11y_click_events_have_key_events -->
-				<div class="user-badge" onclick={() => (showUserSetup = true)} role="button" tabindex="0" title="Change profile">
-					<span class="user-emoji">{currentUser.emoji}</span>
-					<span class="user-name">{currentUser.name}</span>
-				</div>
-			{/if}
 		</div>
 	</header>
 
@@ -688,7 +731,7 @@
 									{column.title}
 								</h3>
 							{/if}
-							<span class="column-count">{#if searchQuery.trim()}{getVisibleCount(column, searchQuery, boardCategories)}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}</span>
+							<span class="column-count">{#if searchQuery.trim() || filterAssigneeId !== null}{column.cards.filter(c => matchesSearch(c, searchQuery, boardCategories) && (filterAssigneeId === null || c.assignees?.some(a => a.id === filterAssigneeId))).length}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}</span>
 							{#if columnSorts[column.id] && columnSorts[column.id] !== 'none'}
 								<button class="sort-badge" onclick={() => setColumnSort(column.id, 'none')} title="Clear sort">
 									{getSortLabel(columnSorts[column.id])} ✕
@@ -748,6 +791,9 @@
 										<button class="column-menu-item" class:active-sort={columnSorts[column.id] === 'category'} onclick={() => setColumnSort(column.id, 'category')}>
 											🏷 Category
 										</button>
+										<button class="column-menu-item" class:active-sort={columnSorts[column.id] === 'assignee'} onclick={() => setColumnSort(column.id, 'assignee')}>
+											👤 Assignee
+										</button>
 										{#if columnSorts[column.id] && columnSorts[column.id] !== 'none'}
 											<button class="column-menu-item" onclick={() => setColumnSort(column.id, 'none')}>
 												✕ Clear sort
@@ -793,7 +839,7 @@
 								class="kanban-card"
 								class:card-completed={isCompleteColumn(column)}
 								class:card-on-hold={isOnHoldColumn(column.title)}
-								class:card-hidden={!matchesSearch(card, searchQuery, boardCategories)}
+								class:card-hidden={!matchesSearch(card, searchQuery, boardCategories) || (filterAssigneeId !== null && !card.assignees?.some(a => a.id === filterAssigneeId))}
 								class:card-stale={isStale(card.createdAt) && !isCompleteColumn(column)}
 								class:card-selected={selectedCards.has(card.id)}
 								class:card-pinned={card.pinned}
@@ -885,6 +931,13 @@
 										{/each}
 									</div>
 								{/if}
+								{#if card.assignees && card.assignees.length > 0}
+									<div class="card-assignees">
+										{#each card.assignees as assignee}
+											<span class="assignee-chip">{assignee.emoji} {assignee.username}</span>
+										{/each}
+									</div>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -918,9 +971,9 @@
 	<BulkActionBar
 		selectedCount={selectedCards.size}
 		columns={boardColumns}
-		onMove={bulkMove}
-		onPriority={bulkPriority}
-		onDelete={bulkDelete}
+		onMove={handleBulkMove}
+		onPriority={handleBulkPriority}
+		onDelete={handleBulkDelete}
 		onClear={clearSelection}
 	/>
 {/if}
@@ -966,6 +1019,7 @@
 		categories={boardCategories}
 		labels={boardLabels}
 		boardId={data.board.id}
+		boardUsers={data.boardUsers.map(u => ({ ...u, emoji: u.emoji || '👤' }))}
 		onSave={saveCard}
 		onDelete={editingCard ? () => confirmDeleteCard(editingCard!.id) : undefined}
 		onClose={() => { showCardModal = false; editingCard = null; }}
@@ -1062,9 +1116,9 @@
 	/>
 {/if}
 
-<!-- User setup prompt -->
-{#if showUserSetup}
-	<UserSetup onComplete={() => (showUserSetup = false)} />
+<!-- Share modal -->
+{#if showShareModal}
+	<ShareModal boardId={data.board.id} boardName={boardName} canManage={data.canManage} onClose={() => (showShareModal = false)} />
 {/if}
 
 <style>
@@ -1135,6 +1189,12 @@
 	.board-name-input { font-size: 1.25rem; font-weight: 700; padding: 2px var(--space-sm); background: var(--bg-surface); width: 300px; }
 	.board-stats { font-size: 0.8rem; color: var(--text-tertiary); font-weight: 500; white-space: nowrap; }
 	.theme-toggle { font-size: 0; }
+	.nav-btn {
+		display: inline-flex; align-items: center; gap: 4px;
+		font-size: 0.78rem !important; font-weight: 600;
+		text-decoration: none; color: var(--text-secondary);
+	}
+	.nav-btn:hover { color: var(--text-primary); }
 
 	/* Search bar */
 	.search-wrapper {
@@ -1159,6 +1219,13 @@
 		opacity: 0.5;
 	}
 	.search-clear:hover { opacity: 1; }
+	.assignee-filter {
+		padding: 6px 10px; background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-full); color: var(--text-primary);
+		font-family: var(--font-family); font-size: 0.78rem; cursor: pointer;
+		transition: border-color var(--duration-fast) var(--ease-out);
+	}
+	.assignee-filter:focus { outline: none; border-color: var(--accent-indigo); }
 
 	/* Sort badge */
 	.sort-badge {
@@ -1333,7 +1400,7 @@
 		box-shadow: 2px 0 8px var(--strip-color, transparent);
 	}
 	.card-title { font-size: 0.85rem; font-weight: 500; line-height: 1.4; margin-bottom: var(--space-xs); }
-	.card-description { font-size: 0.75rem; color: var(--text-tertiary); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: var(--space-sm); }
+	.card-description { font-size: 0.75rem; color: var(--text-tertiary); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: var(--space-sm); }
 	.card-meta { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
 	.card-date { font-size: 0.65rem; color: var(--text-secondary); margin-left: auto; flex-shrink: 0; }
 	.category-badge { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: var(--radius-full); font-size: 0.68rem; font-weight: 600; }
@@ -1388,6 +1455,14 @@
 	/* Card labels */
 	.card-labels { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
 	.label-chip { display: inline-flex; align-items: center; padding: 0px 6px; border-radius: var(--radius-full); font-size: 0.58rem; font-weight: 600; white-space: nowrap; }
+	.card-assignees { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+	.assignee-chip {
+		display: inline-flex; align-items: center; gap: 3px;
+		padding: 1px 8px; border-radius: var(--radius-full);
+		font-size: 0.65rem; font-weight: 600; white-space: nowrap;
+		background: rgba(99, 102, 241, 0.08); color: var(--accent-indigo);
+		border: 1px solid rgba(99, 102, 241, 0.2);
+	}
 
 	/* Selection checkbox */
 	.select-checkbox {

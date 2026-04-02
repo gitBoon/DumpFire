@@ -153,6 +153,14 @@
       {/each}
     </div>
   {/if}
+  <!-- Assignee avatars -->
+  {#if card.assignees && card.assignees.length > 0}
+    <div class="card-assignees">
+      {#each card.assignees as assignee}
+        <span class="assignee-avatar" title={assignee.username}>{assignee.emoji}</span>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -187,7 +195,7 @@
     box-shadow: 2px 0 8px var(--strip-color, transparent);
   }
   .card-title { font-size: 0.85rem; font-weight: 500; line-height: 1.4; margin-bottom: var(--space-xs); }
-  .card-description { font-size: 0.75rem; color: var(--text-tertiary); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: var(--space-sm); }
+  .card-description { font-size: 0.75rem; color: var(--text-tertiary); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: var(--space-sm); }
   .card-meta { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
   .card-date { font-size: 0.65rem; color: var(--text-secondary); margin-left: auto; flex-shrink: 0; }
   .category-badge { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: var(--radius-full); font-size: 0.68rem; font-weight: 600; }
@@ -248,6 +256,20 @@
     padding: 0px 6px; border-radius: var(--radius-full);
     font-size: 0.58rem; font-weight: 600; white-space: nowrap;
   }
+
+  .card-assignees {
+    display: flex; align-items: center; margin-top: 4px;
+  }
+  .assignee-avatar {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    font-size: 0.72rem; line-height: 1;
+    background: var(--bg-surface); border: 2px solid var(--bg-card);
+    margin-left: -6px; cursor: default;
+    transition: transform 0.15s ease;
+  }
+  .assignee-avatar:first-child { margin-left: 0; }
+  .assignee-avatar:hover { transform: scale(1.2); z-index: 1; }
 
   :global(.kanban-card[aria-grabbed="true"]) {
     transform: rotate(2deg) scale(1.03);

@@ -1,9 +1,10 @@
 import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
-import { boards, columns, cards, subtasks, categories } from '$lib/server/db/schema';
+import { boards, columns, cards, subtasks, categories, users, teams, teamMembers } from '$lib/server/db/schema';
 import { count, eq } from 'drizzle-orm';
 
-export const load: PageServerLoad = async () => {
+export const load: PageServerLoad = async ({ locals }) => {
+	// Board stats
 	const allBoards = db.select().from(boards).all();
 	const stats = allBoards.map((board) => {
 		const colCount = db.select({ count: count() }).from(columns).where(eq(columns.boardId, board.id)).get();
@@ -22,5 +23,36 @@ export const load: PageServerLoad = async () => {
 		};
 	});
 
-	return { boards: stats };
+	// All users
+	const allUsers = db.select({
+		id: users.id,
+		username: users.username,
+		email: users.email,
+		emoji: users.emoji,
+		role: users.role,
+		createdAt: users.createdAt
+	}).from(users).all();
+
+	// All teams with member counts
+	const allTeams = db.select().from(teams).all();
+	const teamsWithMembers = allTeams.map(team => {
+		const members = db.select({
+			userId: teamMembers.userId,
+			role: teamMembers.role,
+			username: users.username,
+			emoji: users.emoji
+		})
+		.from(teamMembers)
+		.innerJoin(users, eq(teamMembers.userId, users.id))
+		.where(eq(teamMembers.teamId, team.id))
+		.all();
+		return { ...team, members };
+	});
+
+	return {
+		boards: stats,
+		users: allUsers,
+		teams: teamsWithMembers,
+		currentUser: locals.user
+	};
 };

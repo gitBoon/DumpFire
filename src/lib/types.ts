@@ -38,7 +38,7 @@ export type SubBoardType = {
 	total: number;
 };
 
-/** A Kanban card with all its nested data (subtasks, labels, sub-boards). */
+/** A Kanban card with all its nested data (subtasks, labels, sub-boards, assignees). */
 export type CardType = {
 	id: number;
 	columnId: number;
@@ -56,6 +56,7 @@ export type CardType = {
 	pinned: boolean;
 	onHoldNote: string;
 	subBoards: SubBoardType[];
+	assignees: { id: number; username: string; emoji: string }[];
 };
 
 /** A label that can be attached to cards for tagging/filtering. */
@@ -91,7 +92,7 @@ export type ColumnType = {
 // ─── UI State Types ──────────────────────────────────────────────────────────
 
 /** Available sort options for columns. 'none' means manual/default order. */
-export type SortOption = 'none' | 'date-asc' | 'date-desc' | 'priority' | 'category';
+export type SortOption = 'none' | 'date-asc' | 'date-desc' | 'priority' | 'category' | 'assignee';
 
 /** A user's XP entry for the leaderboard display. */
 export type XpEntry = {

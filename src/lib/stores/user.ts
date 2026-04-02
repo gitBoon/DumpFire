@@ -1,42 +1,37 @@
-import { writable } from 'svelte/store';
-import { browser } from '$app/environment';
+/**
+ * user.ts — Reactive user store derived from SvelteKit page data.
+ *
+ * The authenticated user's profile is passed server-side via the layout
+ * load function. This module provides a reactive reference for components
+ * that need to check the current user, and a helper for user identity.
+ */
 
-export type UserProfile = {
-	name: string;
+import { page } from '$app/stores';
+import { derived } from 'svelte/store';
+
+export type SessionUser = {
+	id: number;
+	username: string;
+	email: string;
 	emoji: string;
+	role: string;
 };
 
-const defaultProfile: UserProfile = { name: '', emoji: '👤' };
+/**
+ * Reactive store for the authenticated user.
+ * Reads from $page.data.user (set by +layout.server.ts).
+ * Returns null if not authenticated.
+ */
+export const currentUser = derived(page, ($page) => {
+	return ($page.data?.user as SessionUser) ?? null;
+});
 
-const emojiOptions = ['👤', '🦊', '🐱', '🐶', '🦁', '🐼', '🐸', '🦉', '🐙', '🦄', '🐝', '🐳', '🚀', '⚡', '🔥', '💎'];
-
-function createUserStore() {
-	let stored: UserProfile = defaultProfile;
-	if (browser) {
-		try {
-			const raw = localStorage.getItem('dumpfire-user');
-			if (raw) stored = JSON.parse(raw);
-		} catch {}
-	}
-
-	const { subscribe, set, update } = writable<UserProfile>(stored);
-
-	return {
-		subscribe,
-		emojiOptions,
-		setProfile(profile: UserProfile) {
-			set(profile);
-			if (browser) {
-				localStorage.setItem('dumpfire-user', JSON.stringify(profile));
-			}
-		},
-		clear() {
-			set(defaultProfile);
-			if (browser) {
-				localStorage.removeItem('dumpfire-user');
-			}
-		}
-	};
+/** Check if user is admin or superadmin. */
+export function isAdmin(user: SessionUser | null): boolean {
+	return user?.role === 'admin' || user?.role === 'superadmin';
 }
 
-export const user = createUserStore();
+/** Check if user is the superadmin. */
+export function isSuperadmin(user: SessionUser | null): boolean {
+	return user?.role === 'superadmin';
+}

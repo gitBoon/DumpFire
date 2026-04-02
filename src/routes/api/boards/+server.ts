@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { boards, columns } from '$lib/server/db/schema';
+import { boards, columns, boardMembers } from '$lib/server/db/schema';
 import { desc } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 
@@ -9,11 +9,18 @@ export const GET: RequestHandler = async () => {
 	return json(allBoards);
 };
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
 	const { name, emoji, parentCardId } = await request.json();
+	const userId = locals.user?.id || null;
+
 	const board = db
 		.insert(boards)
-		.values({ name: name || 'Untitled Board', emoji: emoji || '📋', parentCardId: parentCardId || null })
+		.values({
+			name: name || 'Untitled Board',
+			emoji: emoji || '📋',
+			parentCardId: parentCardId || null,
+			createdBy: userId
+		})
 		.returning()
 		.get();
 
@@ -26,6 +33,13 @@ export const POST: RequestHandler = async ({ request }) => {
 			{ boardId: board.id, title: 'Complete', position: 3, color: '#10b981' }
 		])
 		.run();
+
+	// Auto-add the creator as board owner
+	if (userId) {
+		db.insert(boardMembers)
+			.values({ boardId: board.id, userId, role: 'owner' })
+			.run();
+	}
 
 	return json(board, { status: 201 });
 };

@@ -1,15 +1,5 @@
 <script lang="ts">
-	type SubtaskType = {
-		id: number;
-		cardId: number;
-		title: string;
-		description: string;
-		priority: string;
-		colorTag: string;
-		dueDate: string | null;
-		completed: boolean;
-		position: number;
-	};
+	import type { SubtaskType } from '$lib/types';
 
 	let {
 		subtask = null,
@@ -27,6 +17,7 @@
 		onClose: () => void;
 	} = $props();
 
+	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
 	let title = $state(subtask?.title || '');
 	let description = $state(subtask?.description || '');
 	let priority = $state(subtask?.priority || 'medium');
