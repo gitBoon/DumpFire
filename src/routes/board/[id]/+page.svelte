@@ -1,4 +1,11 @@
 <script lang="ts">
+	/**
+	 * Board Page — The main Kanban board view.
+	 *
+	 * Orchestrates columns, cards, drag-and-drop, modals, side panels,
+	 * bulk operations, and real-time SSE updates. Heavy logic and types
+	 * are delegated to shared utility modules and child components.
+	 */
 	import type { PageData } from './$types';
 	import { invalidateAll } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
@@ -7,90 +14,41 @@
 	import { flip } from 'svelte/animate';
 	import { theme } from '$lib/stores/theme';
 	import { user, type UserProfile } from '$lib/stores/user';
+	import { toasts } from '$lib/stores/toast';
+
+	// Shared types — no more inline type declarations
+	import type { CardType, ColumnType, CategoryType, LabelType, ActivityType, SortOption, XpEntry, ConfirmState, BlockedState, OnHoldState, ContextMenuState } from '$lib/types';
+
+	// Shared utilities
+	import { COLUMN_COLORS, COMMON_EMOJIS, FLIP_DURATION_MS } from '$lib/utils/constants';
+	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, isStale } from '$lib/utils/date-utils';
+	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, hasIncompleteSubtasks, hasIncompleteSubBoard, isCardBlocked, incompleteCount, subBoardIncompleteCount, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel, getActionLabel, getVisibleCount } from '$lib/utils/card-utils';
+
+	// API client
+	import * as api from '$lib/api';
+
+	// Existing components
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import UserSetup from '$lib/components/UserSetup.svelte';
 	import Toast from '$lib/components/Toast.svelte';
-	import { toasts } from '$lib/stores/toast';
+
+	// New extracted components
+	import KanbanCard from '$lib/components/board/KanbanCard.svelte';
+	import ActivityPanel from '$lib/components/board/ActivityPanel.svelte';
+	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
+	import BulkActionBar from '$lib/components/board/BulkActionBar.svelte';
+	import ContextMenu from '$lib/components/board/ContextMenu.svelte';
+	import FireworksCelebration from '$lib/components/board/FireworksCelebration.svelte';
+	import AddColumnModal from '$lib/components/board/AddColumnModal.svelte';
+	import CategoryModal from '$lib/components/board/CategoryModal.svelte';
+	import OnHoldModal from '$lib/components/board/OnHoldModal.svelte';
 
 	let { data }: { data: PageData } = $props();
 
-	type SubtaskType = {
-		id: number;
-		cardId: number;
-		title: string;
-		description: string;
-		priority: string;
-		colorTag: string;
-		dueDate: string | null;
-		completed: boolean;
-		position: number;
-	};
-
-	type CategoryType = {
-		id: number;
-		boardId: number;
-		name: string;
-		color: string;
-	};
-
-	type SubBoardType = {
-		id: number;
-		name: string;
-		emoji: string;
-		done: number;
-		total: number;
-	};
-
-	type CardType = {
-		id: number;
-		columnId: number;
-		categoryId: number | null;
-		title: string;
-		description: string;
-		position: number;
-		priority: string;
-		colorTag: string;
-		dueDate: string | null;
-		createdAt: string;
-		updatedAt: string;
-		subtasks: SubtaskType[];
-		labelIds: number[];
-		pinned: boolean;
-		onHoldNote: string;
-		subBoards: SubBoardType[];
-	};
-
-	type LabelType = {
-		id: number;
-		boardId: number;
-		name: string;
-		color: string;
-	};
-
-	type ActivityType = {
-		id: number;
-		boardId: number;
-		cardId: number | null;
-		action: string;
-		detail: string;
-		userName: string;
-		userEmoji: string;
-		createdAt: string;
-	};
-
-	type ColumnType = {
-		id: number;
-		boardId: number;
-		title: string;
-		position: number;
-		color: string;
-		cards: CardType[];
-	};
-
-	let boardColumns = $state<ColumnType[]>(data.columns);
-	let boardCategories = $state<CategoryType[]>(data.categories);
-	let boardLabels = $state<LabelType[]>(data.labels || []);
+	let boardColumns = $state<ColumnType[]>(data.columns as unknown as ColumnType[]);
+	let boardCategories = $state<CategoryType[]>(data.categories as CategoryType[]);
+	let boardLabels = $state<LabelType[]>((data.labels || []) as LabelType[]);
 
 	// Activity log state
 	let showActivityPanel = $state(false);
@@ -169,13 +127,6 @@
 	let boardName = $state(data.board.name);
 	let boardEmoji = $state(data.board.emoji || '📋');
 	let showEmojiPicker = $state(false);
-
-	const commonEmojis = [
-		'📋', '🚀', '💡', '🎯', '🔥', '⚡', '🎨', '🛠️',
-		'📦', '🏗️', '🧪', '📊', '🎮', '🎵', '📸', '🛒',
-		'💼', '🏠', '✈️', '🎓', '💪', '🌟', '🐛', '🔧',
-		'📝', '🎉', '🤖', '🧠', '💎', '🌈', '🍕', '☕'
-	];
 
 	// Add column modal
 	let showAddColumnModal = $state(false);
@@ -323,100 +274,30 @@
 	}
 
 	// Column sort state (per-column, independent)
-	type SortOption = 'none' | 'date-asc' | 'date-desc' | 'priority' | 'category';
 	let columnSorts = $state<Record<number, SortOption>>({});
 
-	const priorityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
-
+	/** Applies a sort to a column and updates the board state. */
 	function setColumnSort(columnId: number, sort: SortOption) {
 		columnSorts = { ...columnSorts, [columnId]: sort };
 		if (sort !== 'none') {
 			const col = boardColumns.find(c => c.id === columnId);
 			if (col) {
-				col.cards = sortCards([...col.cards], sort);
+				col.cards = sortCards([...col.cards], sort, boardCategories);
 				boardColumns = [...boardColumns];
 			}
 		}
 		openDropdown = null;
 	}
 
-	function sortCards(cards: CardType[], sort: SortOption): CardType[] {
-		// Pinned cards always come first
-		const pinned = cards.filter(c => c.pinned);
-		const unpinned = cards.filter(c => !c.pinned);
-		if (sort === 'none' || !sort) return [...pinned, ...unpinned];
-		const doSort = (arr: CardType[]) => {
-			const sorted = [...arr];
-			switch (sort) {
-				case 'date-asc':
-					sorted.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-					break;
-				case 'date-desc':
-					sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-					break;
-				case 'priority':
-					sorted.sort((a, b) => (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9));
-					break;
-				case 'category':
-					sorted.sort((a, b) => {
-						const catA = boardCategories.find(c => c.id === a.categoryId)?.name || 'zzz';
-						const catB = boardCategories.find(c => c.id === b.categoryId)?.name || 'zzz';
-						return catA.localeCompare(catB);
-					});
-					break;
-			}
-			return sorted;
-		};
-		return [...doSort(pinned), ...doSort(unpinned)];
-	}
-
 	// Search state
 	let searchQuery = $state('');
 
-	function matchesSearch(card: CardType): boolean {
-		if (!searchQuery.trim()) return true;
-		const q = searchQuery.toLowerCase();
-		return (
-			card.title.toLowerCase().includes(q) ||
-			card.description?.toLowerCase().includes(q) ||
-			boardCategories.find(cat => cat.id === card.categoryId)?.name.toLowerCase().includes(q) ||
-			false
-		);
-	}
-
-	function getSortLabel(sort: SortOption): string {
-		switch (sort) {
-			case 'date-asc': return '↑ Oldest';
-			case 'date-desc': return '↓ Newest';
-			case 'priority': return '⚡ Priority';
-			case 'category': return '🏷 Category';
-			default: return '';
-		}
-	}
-
 	// Subtask blocked modal
-	let blockedState = $state<{
-		show: boolean;
-		card: CardType | null;
-		incomplete: number;
-		reason: 'subtasks' | 'subboard';
-	}>({ show: false, card: null, incomplete: 0, reason: 'subtasks' });
+	let blockedState = $state<BlockedState>({ show: false, card: null, incomplete: 0, reason: 'subtasks' });
 
 	// On Hold note prompt
-	let onHoldState = $state<{
-		show: boolean;
-		cardId: number;
-		cardTitle: string;
-		note: string;
-		pendingUpdates: any[];
-		pendingColumnId: number;
-	}>({ show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 });
+	let onHoldState = $state<OnHoldState>({ show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 });
 
-	function isOnHoldColumn(title: string) {
-		return title.toLowerCase() === 'on hold';
-	}
-
-	const flipDurationMs = 200;
 	let currentTheme = $state('dark');
 	theme.subscribe((v) => (currentTheme = v));
 
@@ -440,41 +321,33 @@
 		if (browser && !currentUser.name) {
 			showUserSetup = true;
 		}
-		fetchXp();
+		loadXp();
 		tickInterval = setInterval(() => { tick++; }, 15000);
 	});
 
 	// XP system
-	type XpEntry = { name: string; xp: number; emoji: string };
 	let xpLeaderboard = $state<XpEntry[]>([]);
 
-	async function fetchXp() {
+	/** Fetches the XP leaderboard from the server. */
+	async function loadXp() {
 		try {
-			const res = await fetch('/api/xp');
+			const res = await api.fetchXp();
 			if (res.ok) xpLeaderboard = await res.json();
 		} catch {}
 	}
 
-	function getLevel(xp: number) {
-		return Math.floor(xp / 500) + 1;
-	}
+	/** Returns the level number for a given XP total (500 XP per level). */
+	function getLevel(xp: number) { return Math.floor(xp / 500) + 1; }
 
-	function getXpForLevel(level: number) {
-		return (level - 1) * 500;
-	}
+	/** Returns the XP needed to reach a given level. */
+	function getXpForLevel(level: number) { return (level - 1) * 500; }
 
+	/** Returns the progress percentage within the current level (0-100). */
 	function getXpProgress(xp: number) {
 		const level = getLevel(xp);
 		const base = getXpForLevel(level);
 		return ((xp - base) / 500) * 100;
 	}
-
-	const columnColors = [
-		'#6366f1', '#8b5cf6', '#a855f7', '#d946ef',
-		'#ec4899', '#f43f5e', '#ef4444', '#f97316',
-		'#f59e0b', '#eab308', '#84cc16', '#22c55e',
-		'#10b981', '#14b8a6', '#06b6d4', '#0ea5e9'
-	];
 
 	// SSE for live updates
 	let eventSource: EventSource | null = null;
@@ -524,37 +397,13 @@
 	}
 
 	$effect(() => {
-		boardColumns = data.columns;
-		boardCategories = data.categories;
-		boardLabels = data.labels || [];
+		boardColumns = data.columns as unknown as ColumnType[];
+		boardCategories = data.categories as CategoryType[];
+		boardLabels = (data.labels || []) as LabelType[];
 		boardName = data.board.name;
 		boardEmoji = data.board.emoji || '📋';
 	});
 
-	// Helpers
-	function isCompleteColumn(col: ColumnType) {
-		return col.title.toLowerCase() === 'complete';
-	}
-
-	function hasIncompleteSubtasks(card: CardType) {
-		return card.subtasks && card.subtasks.some((st) => !st.completed);
-	}
-
-	function hasIncompleteSubBoard(card: CardType) {
-		return card.subBoards && card.subBoards.some(sb => sb.total > 0 && sb.done < sb.total);
-	}
-
-	function isCardBlocked(card: CardType) {
-		return hasIncompleteSubtasks(card) || hasIncompleteSubBoard(card);
-	}
-
-	function incompleteCount(card: CardType) {
-		return card.subtasks ? card.subtasks.filter((st) => !st.completed).length : 0;
-	}
-
-	function subBoardIncompleteCount(card: CardType) {
-		return card.subBoards.reduce((sum, sb) => sum + (sb.total - sb.done), 0);
-	}
 
 	// Confirm helper
 	function showConfirm(title: string, message: string, confirmText: string, onConfirm: () => void) {
@@ -937,155 +786,31 @@
 		await invalidateAll();
 	}
 
-	function getCategoryById(id: number | null) {
-		if (!id) return null;
-		return boardCategories.find((c) => c.id === id) || null;
-	}
-
-	function getPriorityLabel(priority: string) {
-		const labels: Record<string, string> = {
-			critical: '🔴 Critical',
-			high: '🟠 High',
-			medium: '🟡 Medium',
-			low: '🟢 Low'
-		};
-		return labels[priority] || priority;
-	}
-
-	function subtaskProgress(card: CardType) {
-		if (!card.subtasks || card.subtasks.length === 0) return null;
-		const done = card.subtasks.filter((st) => st.completed).length;
-		return { done, total: card.subtasks.length };
-	}
-
-	// SQLite datetime('now') stores UTC without a Z suffix.
-	// Without the Z, JavaScript interprets it as local time — off by the timezone offset.
-	function parseUTC(dateStr: string): Date {
-		if (!dateStr) return new Date();
-		// If it already has timezone info (Z or +/-), parse as-is
-		if (/[Zz]|[+-]\d{2}:\d{2}$/.test(dateStr)) return new Date(dateStr);
-		// Otherwise it's a bare SQLite UTC timestamp — append Z
-		return new Date(dateStr + 'Z');
-	}
-
-	// Due date status for color coding
-	function getDueStatus(card: CardType): 'overdue' | 'today' | 'soon' | null {
-		if (!card.dueDate) return null;
-		const due = new Date(card.dueDate);
-		const now = new Date();
-		now.setHours(0, 0, 0, 0);
-		due.setHours(0, 0, 0, 0);
-		const diff = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-		if (diff < 0) return 'overdue';
-		if (diff === 0) return 'today';
-		if (diff <= 2) return 'soon';
-		return null;
-	}
-
-	// Relative time until/since due date
-	function getDueRelative(dueDate: string): string {
-		void tick;
-		const due = new Date(dueDate);
-		const now = new Date();
-		now.setHours(0, 0, 0, 0);
-		due.setHours(0, 0, 0, 0);
-		const diffDays = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-		if (diffDays === 0) return 'today';
-		if (diffDays === 1) return 'tomorrow';
-		if (diffDays === -1) return '1d overdue';
-		if (diffDays < -1) return `${Math.abs(diffDays)}d overdue`;
-		if (diffDays < 7) return `in ${diffDays}d`;
-		if (diffDays < 30) return `in ${Math.floor(diffDays / 7)}w`;
-		return `in ${Math.floor(diffDays / 30)}mo`;
-	}
-
-	// Relative age string (reads `tick` to stay reactive)
-	function getRelativeAge(dateStr: string): string {
-		void tick; // reactive dependency — forces re-evaluation every 15s
-		const now = Date.now();
-		const created = parseUTC(dateStr).getTime();
-		const secs = Math.floor((now - created) / 1000);
-		if (secs < 30) return 'just now';
-		if (secs < 60) return `${secs}s`;
-		const mins = Math.floor(secs / 60);
-		if (mins < 60) return `${mins}m`;
-		const hrs = Math.floor(mins / 60);
-		if (hrs < 24) return `${hrs}h`;
-		const days = Math.floor(hrs / 24);
-		if (days < 7) return `${days}d`;
-		const weeks = Math.floor(days / 7);
-		if (weeks < 4) return `${weeks}w`;
-		const months = Math.floor(days / 30);
-		return `${months}mo`;
-	}
-
-	function isStale(dateStr: string): boolean {
-		const days = Math.floor((Date.now() - parseUTC(dateStr).getTime()) / (1000 * 60 * 60 * 24));
-		return days >= 7;
-	}
-
-	// Visible card count for search filtering
-	function getVisibleCount(column: ColumnType): number {
-		if (!searchQuery.trim()) return column.cards.length;
-		return column.cards.filter(c => matchesSearch(c)).length;
-	}
-
-	// Activity log helpers
+	/** Logs an activity event for this board using the API client. */
 	function logActivity(action: string, detail: string, cardId?: number) {
-		fetch('/api/activity', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				boardId: data.board.id, cardId: cardId || null,
-				action, detail,
-				userName: currentUser.name, userEmoji: currentUser.emoji
-			})
-		});
+		api.logActivity(data.board.id, action, detail, currentUser.name, currentUser.emoji, cardId);
 	}
 
+	/** Fetches the activity log for the current board. */
 	async function loadActivities() {
 		loadingActivities = true;
-		const res = await fetch(`/api/activity?boardId=${data.board.id}`);
+		const res = await api.loadActivities(data.board.id);
 		if (res.ok) activities = await res.json();
 		loadingActivities = false;
 	}
 
+	/** Toggles the activity panel and closes the stats panel. */
 	async function toggleActivityPanel() {
 		showActivityPanel = !showActivityPanel;
 		showStatsPanel = false;
 		if (showActivityPanel) await loadActivities();
 	}
 
+	/** Toggles the stats panel and closes the activity panel. */
 	function toggleStatsPanel() {
 		showStatsPanel = !showStatsPanel;
 		showActivityPanel = false;
 	}
-
-	function getActionLabel(action: string): string {
-		const map: Record<string, string> = {
-			card_created: '➕ Created',
-			card_moved: '📦 Moved',
-			card_completed: '✅ Completed',
-			card_deleted: '🗑️ Deleted',
-			subtask_completed: '☑️ Subtask done'
-		};
-		return map[action] || action;
-	}
-
-	function getLabelById(id: number): LabelType | null {
-		return boardLabels.find(l => l.id === id) || null;
-	}
-
-	// Stats derived values
-	const allCards = $derived(boardColumns.flatMap(c => c.cards));
-	const totalCards = $derived(allCards.length);
-	const completedCards = $derived(boardColumns.filter(c => c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done').flatMap(c => c.cards).length);
-	const overdueCards = $derived(allCards.filter(c => getDueStatus(c) === 'overdue').length);
-	const avgAge = $derived(() => {
-		if (allCards.length === 0) return '0d';
-		const totalDays = allCards.reduce((sum, c) => sum + Math.floor((Date.now() - new Date(c.createdAt).getTime()) / 86400000), 0);
-		return `${Math.round(totalDays / allCards.length)}d`;
-	});
 </script>
 
 <svelte:head>
@@ -1120,7 +845,7 @@
 					<!-- svelte-ignore a11y_click_events_have_key_events -->
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div class="emoji-dropdown" onclick={(e) => e.stopPropagation()}>
-						{#each commonEmojis as emoji}
+						{#each COMMON_EMOJIS as emoji}
 							<button class="emoji-option" class:active={boardEmoji === emoji} onclick={() => saveBoardEmoji(emoji)}>{emoji}</button>
 						{/each}
 					</div>
@@ -1250,7 +975,7 @@
 			class="columns-wrapper"
 			use:dndzone={{
 				items: boardColumns,
-				flipDurationMs,
+				flipDurationMs: FLIP_DURATION_MS,
 				type: 'columns',
 				dropTargetStyle: { outline: '2px solid rgba(99, 102, 241, 0.4)', borderRadius: '14px' }
 			}}
@@ -1258,7 +983,7 @@
 			onfinalize={handleColumnDndFinalize}
 		>
 			{#each boardColumns as column (column.id)}
-				<div class="kanban-column glass" animate:flip={{ duration: flipDurationMs }}>
+				<div class="kanban-column glass" animate:flip={{ duration: FLIP_DURATION_MS }}>
 					<div class="column-header">
 						<div class="column-top-bar" style="background: {column.color}"></div>
 						<div class="column-title-row">
@@ -1277,7 +1002,7 @@
 									{column.title}
 								</h3>
 							{/if}
-							<span class="column-count">{#if searchQuery.trim()}{getVisibleCount(column)}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}</span>
+							<span class="column-count">{#if searchQuery.trim()}{getVisibleCount(column, searchQuery, boardCategories)}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}</span>
 							{#if columnSorts[column.id] && columnSorts[column.id] !== 'none'}
 								<button class="sort-badge" onclick={() => setColumnSort(column.id, 'none')} title="Clear sort">
 									{getSortLabel(columnSorts[column.id])} ✕
@@ -1296,7 +1021,7 @@
 									<!-- svelte-ignore a11y_click_events_have_key_events -->
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div class="color-picker-dropdown show" onclick={(e) => e.stopPropagation()}>
-										{#each columnColors as color}
+										{#each COLUMN_COLORS as color}
 											<button
 												class="color-swatch"
 												class:active={column.color === color}
@@ -1360,7 +1085,7 @@
 						class="column-cards"
 						use:dndzone={{
 							items: column.cards,
-							flipDurationMs,
+							flipDurationMs: FLIP_DURATION_MS,
 							type: 'cards',
 							dropTargetStyle: { outline: 'none' },
 							dropTargetClasses: ['drop-target-active']
@@ -1382,11 +1107,11 @@
 								class="kanban-card"
 								class:card-completed={isCompleteColumn(column)}
 								class:card-on-hold={isOnHoldColumn(column.title)}
-								class:card-hidden={!matchesSearch(card)}
+								class:card-hidden={!matchesSearch(card, searchQuery, boardCategories)}
 								class:card-stale={isStale(card.createdAt) && !isCompleteColumn(column)}
 								class:card-selected={selectedCards.has(card.id)}
 								class:card-pinned={card.pinned}
-								animate:flip={{ duration: flipDurationMs }}
+								animate:flip={{ duration: FLIP_DURATION_MS }}
 								onclick={(e) => selectionMode ? toggleSelection(card.id, e) : openCardModal(card)}
 								oncontextmenu={(e) => openContextMenu(e, card, column.id)}
 								role="button"
@@ -1408,8 +1133,8 @@
 										<circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/>
 									</svg>
 								</div>
-									{#if getCategoryById(card.categoryId)?.color}
-									<div class="card-color-strip" style="background: {getCategoryById(card.categoryId)?.color}; --strip-color: {getCategoryById(card.categoryId)?.color}"></div>
+									{#if getCategoryById(card.categoryId, boardCategories)?.color}
+									<div class="card-color-strip" style="background: {getCategoryById(card.categoryId, boardCategories)?.color}; --strip-color: {getCategoryById(card.categoryId, boardCategories)?.color}"></div>
 								{/if}
 								<h4 class="card-title">{card.title}</h4>
 								{#if card.description}
@@ -1425,8 +1150,8 @@
 									<span class="priority-badge priority-{card.priority}">
 										{getPriorityLabel(card.priority)}
 									</span>
-									{#if getCategoryById(card.categoryId)}
-										{@const cat = getCategoryById(card.categoryId)!}
+									{#if getCategoryById(card.categoryId, boardCategories)}
+										{@const cat = getCategoryById(card.categoryId, boardCategories)!}
 										<span class="category-badge" style="background: {cat.color}20; color: {cat.color}; border: 1px solid {cat.color}40">
 											{cat.name}
 										</span>
@@ -1456,18 +1181,18 @@
 										{/each}
 									{/if}
 									{#if card.dueDate}
-										{@const dueStatus = getDueStatus(card)}
+										{@const dueStatus = getDueStatus(card.dueDate)}
 										<span class="due-badge" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {new Date(card.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">
 											{#if dueStatus === 'overdue'}⚠️{:else if dueStatus === 'today'}🔥{:else if dueStatus === 'soon'}📅{:else}📅{/if}
-											Due {getDueRelative(card.dueDate)}
+											Due {getDueRelative(card.dueDate, tick)}
 										</span>
 									{/if}
-									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt)}</span>
+									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt, tick)}</span>
 								</div>
 								{#if card.labelIds && card.labelIds.length > 0}
 									<div class="card-labels">
 										{#each card.labelIds as labelId}
-											{@const label = getLabelById(labelId)}
+										{@const label = getLabelById(labelId, boardLabels)}
 											{#if label}
 												<span class="label-chip" style="background: {label.color}25; color: {label.color}; border: 1px solid {label.color}40">{label.name}</span>
 											{/if}
@@ -1485,179 +1210,65 @@
 
 <!-- Activity Panel -->
 {#if showActivityPanel}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="panel-overlay" onclick={() => (showActivityPanel = false)}></div>
-	<aside class="side-panel glass">
-		<div class="panel-header">
-			<h3>📋 Activity Log</h3>
-			<button class="btn-ghost close-btn" onclick={() => (showActivityPanel = false)}>✕</button>
-		</div>
-		<div class="panel-body">
-			{#if loadingActivities}
-				<p class="panel-empty">Loading...</p>
-			{:else if activities.length === 0}
-				<p class="panel-empty">No activity yet.</p>
-			{:else}
-				{#each activities as activity}
-					<div class="activity-item">
-						<span class="activity-emoji">{activity.userEmoji}</span>
-						<div class="activity-info">
-							<span class="activity-action">{getActionLabel(activity.action)}</span>
-							<span class="activity-detail">{activity.detail}</span>
-							<span class="activity-time">{getRelativeAge(activity.createdAt)} · {activity.userName}</span>
-						</div>
-					</div>
-				{/each}
-			{/if}
-		</div>
-	</aside>
+	<ActivityPanel
+		{activities}
+		loading={loadingActivities}
+		{tick}
+		onClose={() => (showActivityPanel = false)}
+	/>
 {/if}
 
 <!-- Stats Panel -->
 {#if showStatsPanel}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="panel-overlay" onclick={() => (showStatsPanel = false)}></div>
-	<aside class="side-panel glass">
-		<div class="panel-header">
-			<h3>📊 Board Stats</h3>
-			<button class="btn-ghost close-btn" onclick={() => (showStatsPanel = false)}>✕</button>
-		</div>
-		<div class="panel-body">
-			<div class="stats-grid">
-				<div class="stat-card">
-					<span class="stat-value">{totalCards}</span>
-					<span class="stat-label">Total Cards</span>
-				</div>
-				<div class="stat-card">
-					<span class="stat-value">{completedCards}</span>
-					<span class="stat-label">Completed</span>
-				</div>
-				<div class="stat-card">
-					<span class="stat-value">{overdueCards}</span>
-					<span class="stat-label">Overdue</span>
-				</div>
-				<div class="stat-card">
-					<span class="stat-value">{avgAge()}</span>
-					<span class="stat-label">Avg Age</span>
-				</div>
-			</div>
-
-			<h4 class="stats-section-title">Cards per Column</h4>
-			<div class="stats-bars">
-				{#each boardColumns as col}
-					{@const pct = totalCards > 0 ? (col.cards.length / totalCards) * 100 : 0}
-					<div class="stats-bar-row">
-						<span class="stats-bar-label">{col.title}</span>
-						<div class="stats-bar-track">
-							<div class="stats-bar-fill" style="width: {pct}%; background: {col.color}"></div>
-						</div>
-						<span class="stats-bar-count">{col.cards.length}</span>
-					</div>
-				{/each}
-			</div>
-
-			{#if boardCategories.length > 0}
-				<h4 class="stats-section-title">By Category</h4>
-				<div class="stats-bars">
-					{#each boardCategories as cat}
-						{@const count = allCards.filter(c => c.categoryId === cat.id).length}
-						{@const pct = totalCards > 0 ? (count / totalCards) * 100 : 0}
-						<div class="stats-bar-row">
-							<span class="stats-bar-label" style="color: {cat.color}">{cat.name}</span>
-							<div class="stats-bar-track">
-								<div class="stats-bar-fill" style="width: {pct}%; background: {cat.color}"></div>
-							</div>
-							<span class="stats-bar-count">{count}</span>
-						</div>
-					{/each}
-				</div>
-			{/if}
-		</div>
-	</aside>
+	<StatsPanel
+		{boardColumns}
+		{boardCategories}
+		onClose={() => (showStatsPanel = false)}
+	/>
 {/if}
 
 <!-- Bulk Action Bar -->
 {#if selectionMode && selectedCards.size > 0}
-	<div class="bulk-bar glass">
-		<span class="bulk-count">{selectedCards.size} selected</span>
-		<div class="bulk-actions">
-			<div class="bulk-group">
-				<span class="bulk-label">Move to:</span>
-				{#each boardColumns as col}
-					<button class="btn-ghost bulk-btn" onclick={() => bulkMove(col.id)}>{col.title}</button>
-				{/each}
-			</div>
-			<div class="bulk-divider"></div>
-			<div class="bulk-group">
-				<span class="bulk-label">Priority:</span>
-				<button class="btn-ghost bulk-btn" onclick={() => bulkPriority('critical')}>🔴</button>
-				<button class="btn-ghost bulk-btn" onclick={() => bulkPriority('high')}>🟠</button>
-				<button class="btn-ghost bulk-btn" onclick={() => bulkPriority('medium')}>🟡</button>
-				<button class="btn-ghost bulk-btn" onclick={() => bulkPriority('low')}>🟢</button>
-			</div>
-			<div class="bulk-divider"></div>
-			<button class="btn-ghost bulk-btn bulk-danger" onclick={bulkDelete}>🗑️ Delete</button>
-		</div>
-		<button class="btn-ghost" onclick={clearSelection}>✕</button>
-	</div>
+	<BulkActionBar
+		selectedCount={selectedCards.size}
+		columns={boardColumns}
+		onMove={bulkMove}
+		onPriority={bulkPriority}
+		onDelete={bulkDelete}
+		onClear={clearSelection}
+	/>
 {/if}
 
 <!-- Context Menu -->
 {#if contextMenu.show && contextMenu.card}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="ctx-overlay" onclick={closeDropdowns}></div>
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="ctx-menu glass" style="left: {contextMenu.x}px; top: {contextMenu.y}px" onclick={(e) => e.stopPropagation()}>
-		<div class="ctx-section">
-			<span class="ctx-label">Move to</span>
-			{#each boardColumns as col}
-				{#if col.id !== contextMenu.columnId}
-					<button class="ctx-item" onclick={async () => {
-						const card = contextMenu.card!;
-						const updates = [{ id: card.id, columnId: col.id, position: col.cards.length }];
-						await fetch('/api/cards/reorder', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ updates, boardId: data.board.id, userName: currentUser.name, userEmoji: currentUser.emoji }) });
-						logActivity('card_moved', `${card.title} → ${col.title}`, card.id);
-						toasts.add(`Moved to ${col.title}`);
-						contextMenu = { ...contextMenu, show: false };
-						await invalidateAll();
-					}}>
-						<span class="ctx-dot" style="background: {col.color}"></span> {col.title}
-					</button>
-				{/if}
-			{/each}
-		</div>
-		<div class="ctx-divider"></div>
-		<div class="ctx-section">
-			<span class="ctx-label">Priority</span>
-			<div class="ctx-row">
-				{#each [['critical', '🔴'], ['high', '🟠'], ['medium', '🟡'], ['low', '🟢']] as [p, emoji]}
-					<button class="ctx-item ctx-priority" onclick={async () => {
-						await fetch(`/api/cards/${contextMenu.card!.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priority: p, boardId: data.board.id }) });
-						toasts.add(`Priority → ${p}`);
-						contextMenu = { ...contextMenu, show: false };
-						await invalidateAll();
-					}}>{emoji}</button>
-				{/each}
-			</div>
-		</div>
-		<div class="ctx-divider"></div>
-		<button class="ctx-item" onclick={() => togglePin(contextMenu.card!)}>
-			{contextMenu.card.pinned ? '📌 Unpin' : '📌 Pin to top'}
-		</button>
-		<button class="ctx-item" onclick={() => duplicateCard(contextMenu.card!)}>📋 Duplicate</button>
-		<button class="ctx-item" onclick={() => createSubBoard(contextMenu.card!)}>🗂️ Add Sub-board</button>
-		{#if contextMenu.card.subBoards.length > 0}
-			{#each contextMenu.card.subBoards as sb}
-				<button class="ctx-item" onclick={() => { window.location.href = `/board/${sb.id}`; }}>→ {sb.emoji} {sb.name}</button>
-			{/each}
-		{/if}
-		<div class="ctx-divider"></div>
-		<button class="ctx-item ctx-danger" onclick={() => { confirmDeleteCard(contextMenu.card!.id); contextMenu = { ...contextMenu, show: false }; }}>🗑️ Delete</button>
-	</div>
+	<ContextMenu
+		card={contextMenu.card}
+		columnId={contextMenu.columnId}
+		x={contextMenu.x}
+		y={contextMenu.y}
+		columns={boardColumns}
+		onClose={closeDropdowns}
+		onMove={async (card, targetColId) => {
+			const col = boardColumns.find(c => c.id === targetColId);
+			if (!col) return;
+			const updates = [{ id: card.id, columnId: targetColId, position: col.cards.length }];
+			await api.reorderCards(updates, data.board.id, currentUser.name, currentUser.emoji);
+			logActivity('card_moved', `${card.title} → ${col.title}`, card.id);
+			toasts.add(`Moved to ${col.title}`);
+			contextMenu = { ...contextMenu, show: false };
+			await invalidateAll();
+		}}
+		onPriority={async (card, priority) => {
+			await api.updateCard(card.id, { priority, boardId: data.board.id });
+			toasts.add(`Priority → ${priority}`);
+			contextMenu = { ...contextMenu, show: false };
+			await invalidateAll();
+		}}
+		onTogglePin={(card) => togglePin(card)}
+		onDuplicate={(card) => duplicateCard(card)}
+		onCreateSubBoard={(card) => createSubBoard(card)}
+		onDelete={(cardId) => confirmDeleteCard(cardId)}
+	/>
 {/if}
 
 <Toast />
@@ -1717,151 +1328,52 @@
 
 <!-- Add Column Modal -->
 {#if showAddColumnModal}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" onclick={() => (showAddColumnModal = false)} role="dialog" aria-modal="true">
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content" onclick={(e) => e.stopPropagation()} role="document">
-			<h2>Add Column</h2>
-			<div class="form-group">
-				<label for="col-name">Column name</label>
-				<input id="col-name" type="text" placeholder="e.g. Review, Testing..." bind:value={newColumnTitle} onkeydown={(e) => e.key === 'Enter' && addColumn()} autofocus />
-			</div>
-			<div class="form-group">
-				<label>Position</label>
-				<select bind:value={newColumnPosition}>
-					<option value="start">At the start</option>
-					{#each boardColumns as col}
-						<option value="after-{col.id}">After "{col.title}"</option>
-					{/each}
-					<option value="end">At the end</option>
-				</select>
-			</div>
-			<div class="form-group">
-				<label>Color</label>
-				<div class="color-row">
-					{#each columnColors as color}
-						<button class="color-swatch" class:active={newColumnColor === color} style="background: {color}" onclick={() => (newColumnColor = color)}></button>
-					{/each}
-					<label class="color-custom-wrapper">
-						<input type="color" bind:value={newColumnColor} class="color-native-input" />
-						<span class="color-swatch custom" style="background: {newColumnColor}">✎</span>
-					</label>
-				</div>
-			</div>
-			<div class="modal-actions">
-				<button class="btn-ghost" onclick={() => (showAddColumnModal = false)}>Cancel</button>
-				<button class="btn-primary" onclick={addColumn}>Add Column</button>
-			</div>
-		</div>
-	</div>
+	<AddColumnModal
+		columns={boardColumns}
+		onAdd={({ title, position, color }) => {
+			newColumnTitle = title;
+			newColumnPosition = position;
+			newColumnColor = color;
+			addColumn();
+		}}
+		onClose={() => (showAddColumnModal = false)}
+	/>
 {/if}
 
 <!-- On Hold Note Modal -->
 {#if onHoldState.show}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" onclick={cancelOnHold} role="dialog" aria-modal="true">
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content on-hold-modal" onclick={(e) => e.stopPropagation()} role="document">
-			<div class="on-hold-header">
-				<span class="on-hold-icon">⏸️</span>
-				<h2>Put on Hold</h2>
-				<p class="on-hold-task-name">"{onHoldState.cardTitle}"</p>
-			</div>
-			<div class="form-group">
-				<label for="hold-note">Why is this on hold? What are you waiting for?</label>
-				<textarea
-					id="hold-note"
-					rows="4"
-					placeholder="e.g. Waiting for design approval, blocked by API changes..."
-					bind:value={onHoldState.note}
-					autofocus
-				></textarea>
-			</div>
-			<div class="modal-actions">
-				<button class="btn-ghost" onclick={cancelOnHold}>Cancel</button>
-				<button class="btn-primary on-hold-confirm" onclick={confirmOnHold}>
-					⏸️ Put on Hold
-				</button>
-			</div>
-		</div>
-	</div>
+	<OnHoldModal
+		cardTitle={onHoldState.cardTitle}
+		bind:note={onHoldState.note}
+		onConfirm={confirmOnHold}
+		onCancel={cancelOnHold}
+	/>
 {/if}
 
 <!-- Category Modal -->
 {#if showCategoryModal}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" onclick={() => (showCategoryModal = false)} role="dialog" aria-modal="true">
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content" onclick={(e) => e.stopPropagation()} role="document">
-			<h2>Manage Categories</h2>
-			<p class="modal-subtitle">Categories help organise your cards across the board.</p>
-			<div class="category-list">
-				{#each boardCategories as cat (cat.id)}
-					<span class="category-chip" style="background: {cat.color}15; color: {cat.color}; border: 1px solid {cat.color}35">
-						{cat.name}
-						<button class="chip-delete" onclick={() => deleteCategory(cat.id)} title="Delete" style="color: {cat.color}">
-							<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-						</button>
-					</span>
-				{:else}
-					<p class="empty-cats">No categories yet. Add one below.</p>
-				{/each}
-			</div>
-			<div class="add-category-row">
-				<input type="text" placeholder="Category name..." bind:value={newCategoryName} onkeydown={(e) => e.key === 'Enter' && addCategory()} />
-				<div class="color-row compact">
-					{#each columnColors.slice(0, 8) as color}
-						<button class="color-swatch small" class:active={newCategoryColor === color} style="background: {color}" onclick={() => (newCategoryColor = color)}></button>
-					{/each}
-					<label class="color-custom-wrapper">
-						<input type="color" bind:value={newCategoryColor} class="color-native-input" />
-						<span class="color-swatch small custom" style="background: {newCategoryColor}">✎</span>
-					</label>
-				</div>
-				<button class="btn-primary small" onclick={addCategory} disabled={!newCategoryName.trim()}>Add</button>
-			</div>
-			<div class="modal-actions">
-				<div style="flex: 1"></div>
-				<button class="btn-ghost" onclick={() => (showCategoryModal = false)}>Done</button>
-			</div>
-		</div>
-	</div>
+	<CategoryModal
+		categories={boardCategories}
+		onAdd={async ({ name, color }) => {
+			await api.createCategory({ boardId: data.board.id, name, color });
+			await invalidateAll();
+		}}
+		onDeleteCategory={async (id) => {
+			await api.deleteCategoryApi(id);
+			await invalidateAll();
+		}}
+		onClose={() => (showCategoryModal = false)}
+	/>
 {/if}
 
 <!-- Fireworks celebration -->
 {#if showFireworks}
-	<div class="fireworks-overlay">
-		<div class="fireworks-backdrop"></div>
-		<div class="fireworks-stripe"></div>
-		{#each Array(60) as _, i}
-			<div class="firework-particle" style="
-				--x: {Math.random() * 100}vw;
-				--y: {Math.random() * 100}vh;
-				--start-x: {30 + Math.random() * 40}vw;
-				--start-y: {40 + Math.random() * 20}vh;
-				--delay: {Math.random() * 0.8}s;
-				--size: {3 + Math.random() * 10}px;
-				--color: hsl({Math.random() * 360}, 85%, {50 + Math.random() * 20}%);
-				--duration: {0.8 + Math.random() * 1.8}s;
-				--spin: {Math.random() * 720}deg;
-			"></div>
-		{/each}
-		{#each Array(20) as _, i}
-			<div class="firework-sparkle" style="
-				--x: {Math.random() * 100}vw;
-				--y: {Math.random() * 100}vh;
-				--delay: {0.2 + Math.random() * 0.6}s;
-				--color: hsl({Math.random() * 60 + 30}, 100%, 70%);
-			"></div>
-		{/each}
-		<div class="firework-center">
-			<div class="firework-text">🎉 Complete!</div>
-			{#if celebrateCardTitle}
-				<div class="firework-card-title">"{celebrateCardTitle}"</div>
-			{/if}
-			<div class="firework-user">{celebrateUserEmoji} {celebrateUserName}{#if celebrateXpGained} <span class="firework-xp">+{celebrateXpGained} XP</span>{/if}</div>
-		</div>
-	</div>
+	<FireworksCelebration
+		cardTitle={celebrateCardTitle}
+		userName={celebrateUserName}
+		userEmoji={celebrateUserEmoji}
+		xpGained={celebrateXpGained}
+	/>
 {/if}
 
 <!-- User setup prompt -->
@@ -2119,6 +1631,7 @@
 		border-color: rgba(239, 68, 68, 0.25);
 		box-shadow: 0 4px 12px rgba(239, 68, 68, 0.1);
 	}
+	/* On Hold note badge — still rendered inline in card */
 	.on-hold-note-badge {
 		display: flex; align-items: flex-start; gap: 4px;
 		padding: 4px 8px; margin-bottom: var(--space-sm);
@@ -2128,18 +1641,6 @@
 	}
 	.on-hold-note-badge svg { flex-shrink: 0; margin-top: 2px; }
 
-	/* On Hold modal */
-	.on-hold-modal { max-width: 440px; }
-	.on-hold-header { text-align: center; margin-bottom: var(--space-xl); }
-	.on-hold-icon { font-size: 2rem; display: block; margin-bottom: var(--space-sm); animation: pulse 1.5s ease-in-out infinite; }
-	.on-hold-task-name { font-size: 0.9rem; color: var(--text-secondary); font-style: italic; margin-top: var(--space-xs); }
-	.on-hold-confirm { background: var(--accent-rose) !important; }
-	.on-hold-confirm:hover { background: #dc2626 !important; }
-
-	@keyframes pulse {
-		0%, 100% { transform: scale(1); }
-		50% { transform: scale(1.1); }
-	}
 	.card-color-strip {
 		position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
 		border-radius: 5px 0 0 5px;
@@ -2168,18 +1669,9 @@
 		border-radius: var(--radius-full); white-space: nowrap;
 		background: rgba(136, 136, 170, 0.08); color: var(--text-secondary);
 	}
-	.due-badge.due-overdue {
-		background: rgba(239, 68, 68, 0.12); color: #ef4444;
-		border: 1px solid rgba(239, 68, 68, 0.25);
-	}
-	.due-badge.due-today {
-		background: rgba(245, 158, 11, 0.12); color: #f59e0b;
-		border: 1px solid rgba(245, 158, 11, 0.25);
-	}
-	.due-badge.due-soon {
-		background: rgba(234, 179, 8, 0.08); color: #eab308;
-		border: 1px solid rgba(234, 179, 8, 0.15);
-	}
+	.due-badge.due-overdue { background: rgba(239, 68, 68, 0.12); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.25); }
+	.due-badge.due-today { background: rgba(245, 158, 11, 0.12); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.25); }
+	.due-badge.due-soon { background: rgba(234, 179, 8, 0.08); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.15); }
 
 	/* Stale card */
 	.kanban-card.card-stale { border-left: 2px solid rgba(136, 136, 170, 0.3); }
@@ -2194,10 +1686,7 @@
 		background: rgba(136, 136, 170, 0.1); color: var(--text-secondary);
 		border: 1px solid rgba(136, 136, 170, 0.2);
 	}
-	.subtask-badge.all-done {
-		background: rgba(16, 185, 129, 0.1); color: var(--accent-emerald);
-		border-color: rgba(16, 185, 129, 0.2);
-	}
+	.subtask-badge.all-done { background: rgba(16, 185, 129, 0.1); color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.2); }
 
 	.subboard-badge {
 		display: inline-flex; align-items: center; gap: 3px;
@@ -2205,252 +1694,14 @@
 		font-size: 0.68rem; font-weight: 600;
 		background: rgba(99, 102, 241, 0.1); color: #818cf8;
 		border: 1px solid rgba(99, 102, 241, 0.2);
-		text-decoration: none;
-		transition: all var(--duration-fast) var(--ease-out);
+		text-decoration: none; transition: all var(--duration-fast) var(--ease-out);
 	}
-	.subboard-badge:hover {
-		background: rgba(99, 102, 241, 0.2);
-		border-color: rgba(99, 102, 241, 0.4);
-	}
-	.subboard-badge.all-done {
-		background: rgba(16, 185, 129, 0.1); color: var(--accent-emerald);
-		border-color: rgba(16, 185, 129, 0.2);
-	}
-	.add-card-btn {
-		display: flex; align-items: center; gap: var(--space-sm);
-		width: calc(100% - var(--space-md) * 2); margin: 0 var(--space-md) var(--space-sm);
-		padding: var(--space-sm) var(--space-md); background: transparent; color: var(--text-tertiary);
-		border-radius: var(--radius-sm); font-size: 0.8rem; font-weight: 500;
-		flex-shrink: 0;
-	}
-	.add-card-btn:hover { background: var(--glass-hover); color: var(--text-secondary); }
-
-	.form-group { margin-top: var(--space-xl); }
-	.form-group label { display: block; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: var(--space-sm); }
-	.color-row { display: flex; flex-wrap: wrap; gap: 6px; }
-	.color-row.compact { margin-top: var(--space-sm); }
-	.color-swatch.small { width: 20px; height: 20px; }
-	.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-md); margin-top: var(--space-2xl); }
-	.modal-subtitle { font-size: 0.85rem; color: var(--text-secondary); margin-top: var(--space-sm); }
-	.category-list {
-		margin-top: var(--space-lg); display: flex; flex-wrap: wrap;
-		gap: var(--space-sm); max-height: 200px; overflow-y: auto;
-		padding: var(--space-sm); background: var(--bg-base);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-	}
-	.category-chip {
-		display: inline-flex; align-items: center; gap: 6px;
-		padding: 4px 10px; border-radius: var(--radius-full);
-		font-size: 0.75rem; font-weight: 600; white-space: nowrap;
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.category-chip:hover { filter: brightness(1.1); }
-	.chip-delete {
-		display: flex; align-items: center; background: none; border: none;
-		cursor: pointer; padding: 0; opacity: 0.4; transition: opacity var(--duration-fast) var(--ease-out);
-	}
-	.chip-delete:hover { opacity: 1; }
-	.empty-cats { font-size: 0.85rem; color: var(--text-tertiary); text-align: center; padding: var(--space-lg); width: 100%; }
-	.add-category-row { margin-top: var(--space-lg); padding-top: var(--space-lg); border-top: 1px solid var(--glass-border); display: flex; flex-direction: column; gap: var(--space-sm); }
-	.add-category-row .btn-primary.small { padding: var(--space-sm) var(--space-lg); font-size: 0.8rem; align-self: flex-start; }
-
-	/* Native color picker */
-	.color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
-	.color-native-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
-	.color-swatch.custom {
-		display: flex; align-items: center; justify-content: center;
-		font-size: 0.6rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5);
-		cursor: pointer;
-	}
-
-	/* Fireworks */
-	.fireworks-overlay {
-		position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-		z-index: 9999; pointer-events: none;
-		animation: fireworksFade 3s ease-out forwards;
-	}
-	.fireworks-backdrop {
-		position: absolute; inset: 0;
-		background: rgba(0, 0, 0, 0.35);
-		animation: backdropFade 3s ease-out forwards;
-	}
-	.fireworks-stripe {
-		position: absolute; top: 50%; left: 0; right: 0;
-		height: 140px; transform: translateY(-50%);
-		background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.75) 15%, rgba(0, 0, 0, 0.75) 85%, transparent);
-		animation: stripeFade 3s ease-out forwards;
-	}
-	.firework-particle {
-		position: absolute;
-		left: var(--start-x); top: var(--start-y);
-		width: var(--size); height: var(--size);
-		background: var(--color);
-		border-radius: 50%;
-		animation: fireworkBurst var(--duration) var(--delay) ease-out forwards;
-		box-shadow: 0 0 6px var(--color), 0 0 14px var(--color);
-	}
-	.firework-sparkle {
-		position: absolute;
-		left: var(--x); top: var(--y);
-		width: 3px; height: 3px;
-		background: var(--color);
-		border-radius: 50%;
-		animation: sparklePop 0.6s var(--delay) ease-out forwards;
-		box-shadow: 0 0 8px var(--color), 0 0 20px var(--color);
-		opacity: 0;
-	}
-	.firework-center {
-		position: absolute; top: 50%; left: 50%;
-		transform: translate(-50%, -50%);
-		z-index: 1; text-align: center;
-		animation: fireworkTextPop 0.6s ease-out forwards;
-		white-space: nowrap;
-	}
-	.firework-text {
-		font-size: 2.8rem; font-weight: 900; letter-spacing: -0.02em;
-		background: linear-gradient(135deg, #fbbf24, #f472b6, #818cf8, #34d399);
-		background-size: 300% 300%;
-		-webkit-background-clip: text; -webkit-text-fill-color: transparent;
-		background-clip: text;
-		animation: textShimmer 1.5s ease-in-out infinite;
-		filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.5));
-		line-height: 1.1;
-	}
-	.firework-card-title {
-		font-size: 1.1rem; font-weight: 600; color: rgba(255, 255, 255, 0.9);
-		margin-top: 4px; font-style: italic;
-		text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-		max-width: 400px; overflow: hidden; text-overflow: ellipsis;
-	}
-	.firework-user {
-		font-size: 0.85rem; font-weight: 500; color: rgba(255, 255, 255, 0.6);
-		margin-top: 6px;
-		text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-	}
-	.firework-xp {
-		display: inline-block; margin-left: 8px;
-		padding: 1px 8px; border-radius: var(--radius-full);
-		background: rgba(245, 158, 11, 0.25); color: #fbbf24;
-		font-weight: 700; font-size: 0.8rem;
-	}
-
-	@keyframes fireworkBurst {
-		0% { transform: translate(0, 0) scale(1) rotate(0deg); opacity: 1; }
-		70% { opacity: 0.8; }
-		100% { transform: translate(calc(var(--x) - var(--start-x)), calc(var(--y) - var(--start-y))) scale(0) rotate(var(--spin)); opacity: 0; }
-	}
-	@keyframes sparklePop {
-		0% { opacity: 0; transform: scale(0); }
-		50% { opacity: 1; transform: scale(3); }
-		100% { opacity: 0; transform: scale(0); }
-	}
-	@keyframes fireworkTextPop {
-		0% { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
-		50% { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
-		100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-	}
-	@keyframes textShimmer {
-		0% { background-position: 0% 50%; }
-		50% { background-position: 100% 50%; }
-		100% { background-position: 0% 50%; }
-	}
-	@keyframes backdropFade {
-		0% { opacity: 0; }
-		15% { opacity: 1; }
-		75% { opacity: 1; }
-		100% { opacity: 0; }
-	}
-	@keyframes stripeFade {
-		0% { opacity: 0; transform: translateY(-50%) scaleX(0); }
-		15% { opacity: 1; transform: translateY(-50%) scaleX(1); }
-		75% { opacity: 1; }
-		100% { opacity: 0; }
-	}
-	@keyframes fireworksFade {
-		0%, 80% { opacity: 1; }
-		100% { opacity: 0; }
-	}
-	/* Side panel */
-	.panel-overlay {
-		position: fixed; inset: 0; background: rgba(0,0,0,0.3);
-		z-index: 90;
-	}
-	.side-panel {
-		position: fixed; top: 0; right: 0; bottom: 0; width: 360px;
-		z-index: 91; display: flex; flex-direction: column;
-		border-left: 1px solid var(--glass-border);
-		background: var(--bg-base) !important;
-		animation: panelSlide 0.2s ease-out;
-	}
-	@keyframes panelSlide { from { transform: translateX(100%); } to { transform: translateX(0); } }
-	.panel-header {
-		display: flex; align-items: center; justify-content: space-between;
-		padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--glass-border);
-	}
-	.panel-header h3 { font-size: 1rem; font-weight: 700; }
-	.panel-body { flex: 1; overflow-y: auto; padding: var(--space-md); }
-	.panel-empty { color: var(--text-tertiary); text-align: center; padding: var(--space-xl); font-size: 0.85rem; }
-
-	/* Activity items */
-	.activity-item {
-		display: flex; gap: var(--space-sm); padding: var(--space-sm);
-		border-radius: var(--radius-sm); transition: background 0.15s;
-	}
-	.activity-item:hover { background: var(--glass-bg); }
-	.activity-emoji { font-size: 1.2rem; flex-shrink: 0; }
-	.activity-info { display: flex; flex-direction: column; min-width: 0; }
-	.activity-action { font-weight: 600; font-size: 0.78rem; }
-	.activity-detail { font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-	.activity-time { font-size: 0.65rem; color: var(--text-tertiary); }
-
-	/* Stats */
-	.stats-grid {
-		display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-sm);
-		margin-bottom: var(--space-lg);
-	}
-	.stat-card {
-		display: flex; flex-direction: column; align-items: center;
-		padding: var(--space-md); border-radius: var(--radius-md);
-		background: var(--glass-bg); border: 1px solid var(--glass-border);
-	}
-	.stat-value { font-size: 1.5rem; font-weight: 800; color: var(--accent-indigo); }
-	.stat-label { font-size: 0.68rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-	.stats-section-title { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); margin-bottom: var(--space-sm); }
-	.stats-bars { display: flex; flex-direction: column; gap: var(--space-xs); margin-bottom: var(--space-lg); }
-	.stats-bar-row { display: flex; align-items: center; gap: var(--space-sm); }
-	.stats-bar-label { font-size: 0.72rem; font-weight: 600; width: 80px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
-	.stats-bar-track { flex: 1; height: 8px; background: var(--glass-bg); border-radius: 4px; overflow: hidden; }
-	.stats-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease-out; min-width: 2px; }
-	.stats-bar-count { font-size: 0.68rem; font-weight: 700; color: var(--text-secondary); width: 24px; text-align: right; }
-
-	/* Bulk action bar */
-	.bulk-bar {
-		position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-		display: flex; align-items: center; gap: var(--space-md);
-		padding: var(--space-sm) var(--space-lg);
-		border-radius: var(--radius-lg);
-		border: 1px solid var(--glass-border);
-		background: var(--bg-base) !important;
-		box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-		z-index: 80;
-		animation: bulkSlide 0.2s ease-out;
-	}
-	@keyframes bulkSlide { from { transform: translateX(-50%) translateY(20px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }
-	.bulk-count { font-weight: 700; font-size: 0.85rem; white-space: nowrap; }
-	.bulk-actions { display: flex; align-items: center; gap: var(--space-xs); }
-	.bulk-group { display: flex; align-items: center; gap: 2px; }
-	.bulk-label { font-size: 0.68rem; font-weight: 600; color: var(--text-tertiary); margin-right: 4px; white-space: nowrap; }
-	.bulk-btn { font-size: 0.72rem !important; padding: 3px 8px !important; }
-	.bulk-danger { color: var(--accent-rose) !important; }
-	.bulk-divider { width: 1px; height: 20px; background: var(--glass-border); margin: 0 4px; }
+	.subboard-badge:hover { background: rgba(99, 102, 241, 0.2); border-color: rgba(99, 102, 241, 0.4); }
+	.subboard-badge.all-done { background: rgba(16, 185, 129, 0.1); color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.2); }
 
 	/* Card labels */
 	.card-labels { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
-	.label-chip {
-		display: inline-flex; align-items: center;
-		padding: 0px 6px; border-radius: var(--radius-full);
-		font-size: 0.58rem; font-weight: 600; white-space: nowrap;
-	}
+	.label-chip { display: inline-flex; align-items: center; padding: 0px 6px; border-radius: var(--radius-full); font-size: 0.58rem; font-weight: 600; white-space: nowrap; }
 
 	/* Selection checkbox */
 	.select-checkbox {
@@ -2458,43 +1709,13 @@
 		border: 2px solid var(--glass-border); border-radius: 4px;
 		display: flex; align-items: center; justify-content: center;
 		font-size: 0.65rem; font-weight: 800; z-index: 2;
-		background: var(--bg-surface); color: var(--accent-indigo);
-		transition: all 0.15s;
+		background: var(--bg-surface); color: var(--accent-indigo); transition: all 0.15s;
 	}
-	.select-checkbox.checked {
-		background: var(--accent-indigo); color: white; border-color: var(--accent-indigo);
-	}
+	.select-checkbox.checked { background: var(--accent-indigo); color: white; border-color: var(--accent-indigo); }
 	.kanban-card.card-selected { outline: 2px solid var(--accent-indigo); outline-offset: -2px; }
 
 	/* Active panel button */
 	.active-panel-btn { background: rgba(99, 102, 241, 0.12) !important; color: var(--accent-indigo) !important; }
-
-	/* Context menu */
-	.ctx-overlay { position: fixed; inset: 0; z-index: 95; }
-	.ctx-menu {
-		position: fixed; z-index: 96; min-width: 180px;
-		padding: 6px; border-radius: var(--radius-md);
-		background: var(--bg-surface) !important;
-		border: 1px solid var(--glass-border);
-		box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-		animation: ctxIn 0.12s ease-out;
-	}
-	@keyframes ctxIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-	.ctx-section { padding: 2px 0; }
-	.ctx-label { font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); padding: 4px 10px; display: block; }
-	.ctx-item {
-		display: flex; align-items: center; gap: 6px; width: 100%;
-		padding: 5px 10px; border: none; background: none; cursor: pointer;
-		font-size: 0.78rem; border-radius: var(--radius-sm);
-		color: var(--text-primary); text-align: left; transition: background 0.1s;
-	}
-	.ctx-item:hover { background: var(--glass-bg); }
-	.ctx-danger { color: var(--accent-rose) !important; }
-	.ctx-danger:hover { background: rgba(239, 68, 68, 0.1) !important; }
-	.ctx-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-	.ctx-divider { height: 1px; background: var(--glass-border); margin: 4px 6px; }
-	.ctx-row { display: flex; gap: 2px; padding: 0 4px; }
-	.ctx-priority { flex: 1; justify-content: center; font-size: 1rem !important; padding: 4px !important; }
 
 	/* Empty column */
 	.empty-column-prompt {
@@ -2507,13 +1728,8 @@
 	.empty-hint { font-size: 0.65rem; opacity: 0.6; }
 
 	/* Pin indicator */
-	.pin-indicator {
-		position: absolute; top: 4px; right: 4px; font-size: 0.7rem;
-		z-index: 2; opacity: 0.7;
-	}
-	.kanban-card.card-pinned {
-		border-top: 2px solid var(--accent-indigo);
-	}
+	.pin-indicator { position: absolute; top: 4px; right: 4px; font-size: 0.7rem; z-index: 2; opacity: 0.7; }
+	.kanban-card.card-pinned { border-top: 2px solid var(--accent-indigo); }
 
 	/* Drag shadow */
 	:global(.kanban-card[aria-grabbed="true"]) {

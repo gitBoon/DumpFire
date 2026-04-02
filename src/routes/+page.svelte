@@ -1,4 +1,10 @@
 <script lang="ts">
+	/**
+	 * Dashboard Page — The home screen of DumpFire.
+	 *
+	 * Displays all boards as cards with progress bars, lets users create
+	 * new boards, and provides quick access to the All Tasks and Admin views.
+	 */
 	import type { PageData } from './$types';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { browser } from '$app/environment';
@@ -10,13 +16,20 @@
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 
 	let { data }: { data: PageData } = $props();
+
+	// UI state for the "Create Board" flow
 	let showCreate = $state(false);
 	let newBoardName = $state('');
 	let newBoardEmoji = $state('📋');
+
+	/** Tracks which board is currently being deleted (shows spinner). */
 	let deleting = $state<number | null>(null);
+
+	// Theme subscription
 	let currentTheme = $state('dark');
 	theme.subscribe((v) => (currentTheme = v));
 
+	// User profile — if unset, the setup wizard is shown on mount
 	let currentUser = $state<UserProfile>({ name: '', emoji: '👤' });
 	let showUserSetup = $state(false);
 	user.subscribe((v) => (currentUser = v));
@@ -27,6 +40,7 @@
 		}
 	});
 
+	/** Confirm modal state for board deletion. */
 	let confirmState = $state<{
 		show: boolean;
 		boardId: number;
@@ -34,6 +48,7 @@
 	}>({ show: false, boardId: 0, boardName: '' });
 
 
+	/** Creates a new board via the API and navigates to it. */
 	async function createBoard() {
 		if (!newBoardName.trim()) return;
 		const res = await fetch('/api/boards', {
@@ -49,10 +64,12 @@
 		}
 	}
 
+	/** Opens the delete confirmation modal for a specific board. */
 	function confirmDeleteBoard(id: number, name: string) {
 		confirmState = { show: true, boardId: id, boardName: name };
 	}
 
+	/** Deletes a board by ID and refreshes the page data. */
 	async function deleteBoard(id: number) {
 		deleting = id;
 		confirmState.show = false;
@@ -60,7 +77,8 @@
 		await invalidateAll();
 		deleting = null;
 	}
-	// Computed totals across all boards
+
+	/** Aggregate totals across all boards for the header summary. */
 	let totalCards = $derived(data.boards.reduce((t, b) => t + b.totalCards, 0));
 	let completedCards = $derived(data.boards.reduce((t, b) => t + b.completedCards, 0));
 </script>
