@@ -1,10 +1,21 @@
 <script lang="ts">
+	/**
+	 * All Tasks Page — A cross-board view of every card in the system.
+	 *
+	 * Groups cards into swim-lane "buckets" (To Do, On Hold, In Progress, Complete)
+	 * and provides search and board-level filtering. Uses shared date and card
+	 * utilities to avoid duplicating logic from the board page.
+	 */
 	import type { PageData } from './$types';
 	import { theme } from '$lib/stores/theme';
 	import { user, type UserProfile } from '$lib/stores/user';
 	import { onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import UserSetup from '$lib/components/UserSetup.svelte';
+
+	// Shared utilities — avoid duplicating date/card logic
+	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC } from '$lib/utils/date-utils';
+	import { subtaskProgress } from '$lib/utils/card-utils';
 
 	let { data }: { data: PageData } = $props();
 	let currentTheme = $state('dark');
@@ -14,7 +25,7 @@
 	let showUserSetup = $state(false);
 	user.subscribe((v) => (currentUser = v));
 
-	// Live tick for relative timestamps
+	/** Live tick counter — forces re-evaluation of relative timestamps every 15s. */
 	let tick = $state(0);
 	let tickInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -24,67 +35,16 @@
 		return () => { if (tickInterval) clearInterval(tickInterval); };
 	});
 
-	// Search
+	// Search & filter state
 	let searchQuery = $state('');
 	let boardFilter = $state('all');
 
-	function parseUTC(dateStr: string): Date {
-		if (!dateStr) return new Date();
-		if (/[Zz]|[+-]\d{2}:\d{2}$/.test(dateStr)) return new Date(dateStr);
-		return new Date(dateStr + 'Z');
-	}
-
-	function getRelativeAge(dateStr: string): string {
-		void tick;
-		const now = Date.now();
-		const created = parseUTC(dateStr).getTime();
-		const secs = Math.floor((now - created) / 1000);
-		if (secs < 30) return 'just now';
-		if (secs < 60) return `${secs}s`;
-		const mins = Math.floor(secs / 60);
-		if (mins < 60) return `${mins}m`;
-		const hrs = Math.floor(mins / 60);
-		if (hrs < 24) return `${hrs}h`;
-		const days = Math.floor(hrs / 24);
-		if (days < 7) return `${days}d`;
-		const weeks = Math.floor(days / 7);
-		if (weeks < 4) return `${weeks}w`;
-		const months = Math.floor(days / 30);
-		return `${months}mo`;
-	}
-
-	function getDueRelative(dueDate: string): string {
-		void tick;
-		const due = new Date(dueDate);
-		const now = new Date();
-		now.setHours(0, 0, 0, 0);
-		due.setHours(0, 0, 0, 0);
-		const diffDays = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-		if (diffDays === 0) return 'today';
-		if (diffDays === 1) return 'tomorrow';
-		if (diffDays === -1) return '1d overdue';
-		if (diffDays < -1) return `${Math.abs(diffDays)}d overdue`;
-		if (diffDays < 7) return `in ${diffDays}d`;
-		if (diffDays < 30) return `in ${Math.floor(diffDays / 7)}w`;
-		return `in ${Math.floor(diffDays / 30)}mo`;
-	}
-
-	function getDueStatus(dueDate: string): 'overdue' | 'today' | 'soon' | null {
-		const due = new Date(dueDate);
-		const now = new Date();
-		now.setHours(0, 0, 0, 0);
-		due.setHours(0, 0, 0, 0);
-		const diff = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-		if (diff < 0) return 'overdue';
-		if (diff === 0) return 'today';
-		if (diff <= 2) return 'soon';
-		return null;
-	}
-
+	/** Emoji map for priority badges. */
 	const priorityEmoji: Record<string, string> = {
 		critical: '🔴', high: '🟠', medium: '🟡', low: '🟢'
 	};
 
+	/** Colour map for swim-lane bucket headers. */
 	const bucketColors: Record<string, string> = {
 		'To Do': '#6366f1',
 		'On Hold': '#ef4444',
@@ -92,12 +52,7 @@
 		'Complete': '#10b981'
 	};
 
-	function subtaskProgress(card: any) {
-		if (!card.subtasks || card.subtasks.length === 0) return null;
-		const done = card.subtasks.filter((st: any) => st.completed).length;
-		return { done, total: card.subtasks.length };
-	}
-
+	/** Checks if a card matches the active search query and board filter. */
 	function matchesFilters(card: any): boolean {
 		if (boardFilter !== 'all' && card.boardId !== Number(boardFilter)) return false;
 		if (!searchQuery.trim()) return true;
@@ -105,6 +60,7 @@
 		return card.title.toLowerCase().includes(q) || card.description?.toLowerCase().includes(q);
 	}
 
+	/** Returns the number of cards in a bucket that match active filters. */
 	function getFilteredCount(bucket: any): number {
 		return bucket.cards.filter(matchesFilters).length;
 	}
@@ -205,10 +161,10 @@
 										{@const dueStatus = getDueStatus(card.dueDate)}
 										<span class="due-badge" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {new Date(card.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">
 											{#if dueStatus === 'overdue'}⚠️{:else if dueStatus === 'today'}🔥{:else if dueStatus === 'soon'}📅{:else}📅{/if}
-											Due {getDueRelative(card.dueDate)}
+											Due {getDueRelative(card.dueDate, tick)}
 										</span>
 									{/if}
-									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt)}</span>
+									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt, tick)}</span>
 								</div>
 								{#if card.onHoldNote && bucket.title === 'On Hold'}
 									<div class="on-hold-note-badge" title={card.onHoldNote}>
@@ -348,12 +304,12 @@
 		display: flex;
 		gap: var(--space-lg);
 		height: 100%;
-		min-width: min-content;
+		min-width: 100%;
 	}
 
 	.column {
-		width: 320px;
-		min-width: 320px;
+		flex: 1;
+		min-width: 250px;
 		display: flex;
 		flex-direction: column;
 		border-radius: var(--radius-lg);
