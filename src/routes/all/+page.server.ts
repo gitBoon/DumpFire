@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, categories, subtasks, labels, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
+import { boards, columns, cards, categories, subtasks, labels, cardLabels, cardAssignees, users, boardCategories } from '$lib/server/db/schema';
 import { asc, inArray, eq } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
@@ -45,9 +45,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const allUsers = db.select({ id: users.id, username: users.username, emoji: users.emoji }).from(users).all();
 	const userMap = new Map(allUsers.map(u => [u.id, u]));
 
-	const allCategories = accessibleBoardIds.length > 0
-		? db.select().from(categories).where(inArray(categories.boardId, accessibleBoardIds)).orderBy(asc(categories.name)).all()
-		: [];
+	const allCategories = db.select().from(categories).orderBy(asc(categories.name)).all();
 	const allLabels = accessibleBoardIds.length > 0
 		? db.select().from(labels).where(inArray(labels.boardId, accessibleBoardIds)).all()
 		: [];
@@ -58,9 +56,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 		columnMap.set(col.id, { title: col.title, boardId: col.boardId });
 	}
 
-	const boardMap = new Map<number, { name: string; emoji: string }>();
+	// Load board categories and build a lookup map
+	const allBoardCategories = db.select().from(boardCategories).all();
+	const boardCatMap = new Map(allBoardCategories.map(bc => [bc.id, bc]));
+
+	const boardMap = new Map<number, { name: string; emoji: string; categoryId: number | null }>();
 	for (const b of allBoards) {
-		boardMap.set(b.id, { name: b.name, emoji: b.emoji || '📋' });
+		boardMap.set(b.id, { name: b.name, emoji: b.emoji || '📋', categoryId: b.categoryId });
 	}
 
 	// Normalize column titles into buckets
@@ -82,6 +84,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.filter(a => a.cardId === card.id)
 			.map(a => userMap.get(a.userId))
 			.filter(Boolean) as { id: number; username: string; emoji: string | null }[];
+		const boardCat = boardInfo?.categoryId ? boardCatMap.get(boardInfo.categoryId) : null;
 		return {
 			...card,
 			subtasks: allSubtasks.filter(st => st.cardId === card.id),
@@ -90,6 +93,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 			boardName: boardInfo?.name || 'Unknown',
 			boardEmoji: boardInfo?.emoji || '📋',
 			boardId: colInfo?.boardId || 0,
+			boardCategoryName: boardCat?.name || null,
+			boardCategoryColor: boardCat?.color || null,
 			columnTitle: colInfo?.title || 'Unknown',
 			bucket: colInfo ? getBucket(colInfo.title) : 'To Do'
 		};
