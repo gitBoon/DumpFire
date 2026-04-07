@@ -78,32 +78,21 @@ Built with SvelteKit 5 (Runes), Drizzle ORM, and better-sqlite3.
 
 ---
 
-## Getting Started
+## Deployment
 
-### Option 1 — Run locally
+### Option 1 — Run directly with Node
 
 ```bash
 git clone https://github.com/gitBoon/DumpFire.git
 cd DumpFire
 npm install
-```
-
-**Development** (hot reload, runs on port 5173):
-
-```bash
-npm run dev
-```
-
-**Production** (optimised build, runs on port 3000):
-
-```bash
 npm run build
 ORIGIN=http://localhost:3000 node build
 ```
 
-> On Windows, set the environment variable first: `set ORIGIN=http://localhost:3000 && node build`
+> On Windows: `set ORIGIN=http://localhost:3000 && node build`
 
-Other machines on your network can connect via the LAN IP shown in the terminal output. Set `ORIGIN` to the address users will access (e.g. `http://192.168.1.50:3000`).
+Set `ORIGIN` to the address users will access — e.g. `http://192.168.1.50:3000` or `https://kanban.yourdomain.com`. Other machines on your network can connect using that same address.
 
 ---
 
