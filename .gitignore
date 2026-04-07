@@ -21,3 +21,17 @@ Thumbs.db
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Database (contains user data and credentials)
+*.db
+*.db-shm
+*.db-wal
+
+# Backup/restore temp files
+.pre-restore-safety.json
+.restore-temp.*
+
+# Debug/log files
+check-errors.txt
+warn_machine.txt
+warnings*.txt
