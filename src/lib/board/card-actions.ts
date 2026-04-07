@@ -29,6 +29,7 @@ export async function saveCard(
 		categoryId: number | null;
 		dueDate: string | null;
 		onHoldNote?: string;
+		businessValue?: string;
 		pendingSubtasks?: string[];
 	}
 ): Promise<{ isNew: boolean; title: string; cardId?: number }> {

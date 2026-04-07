@@ -7,6 +7,7 @@
 	let selectedTarget = $state('');
 	let title = $state('');
 	let description = $state('');
+	let businessValue = $state('');
 	let priority = $state('medium');
 	let requesterName = $state('');
 	let requesterEmail = $state('');
@@ -47,6 +48,7 @@
 				targetId,
 				title: title.trim(),
 				description,
+				businessValue,
 				priority,
 				requesterName: requesterName.trim() || undefined,
 				requesterEmail: requesterEmail.trim() || undefined
@@ -82,7 +84,7 @@
 				<div class="success-icon">✅</div>
 				<h1>Request Submitted!</h1>
 				<p>Your task request has been sent and will be reviewed shortly.</p>
-				<button class="btn-primary" onclick={() => { submitted = false; title = ''; description = ''; selectedTarget = ''; priority = 'medium'; requesterName = ''; requesterEmail = ''; }}>
+				<button class="btn-primary" onclick={() => { submitted = false; title = ''; description = ''; businessValue = ''; selectedTarget = ''; priority = 'medium'; requesterName = ''; requesterEmail = ''; }}>
 					Submit Another
 				</button>
 			</div>
@@ -122,6 +124,12 @@
 				<div class="form-group">
 					<label for="description">Description</label>
 					<textarea id="description" bind:value={description} placeholder="Provide details, context, or steps to reproduce..." rows="5" class="form-textarea"></textarea>
+				</div>
+
+				<!-- Business Value -->
+				<div class="form-group">
+					<label for="business-value">Business Value / Justification</label>
+					<textarea id="business-value" bind:value={businessValue} placeholder="Why is this important? What value does it deliver?" rows="3" class="form-textarea"></textarea>
 				</div>
 
 				<!-- Priority -->

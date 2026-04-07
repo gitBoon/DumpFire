@@ -56,6 +56,7 @@ export const boards = sqliteTable('boards', {
 	name: text('name').notNull(),
 	emoji: text('emoji').default('📋'),
 	parentCardId: integer('parent_card_id'),
+	categoryId: integer('category_id'),
 	isPublic: integer('is_public', { mode: 'boolean' }).notNull().default(false),
 	createdBy: integer('created_by')
 		.references(() => users.id, { onDelete: 'set null' }),
@@ -65,6 +66,14 @@ export const boards = sqliteTable('boards', {
 	updatedAt: text('updated_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
+});
+
+// ─── Board Categories ────────────────────────────────────────────────────────
+
+export const boardCategories = sqliteTable('board_categories', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	name: text('name').notNull(),
+	color: text('color').notNull().default('#6366f1')
 });
 
 // ─── Board Access Control ────────────────────────────────────────────────────
@@ -102,7 +111,8 @@ export const columns = sqliteTable('columns', {
 		.references(() => boards.id, { onDelete: 'cascade' }),
 	title: text('title').notNull(),
 	position: real('position').notNull().default(0),
-	color: text('color').notNull().default('#6366f1')
+	color: text('color').notNull().default('#6366f1'),
+	showAddCard: integer('show_add_card', { mode: 'boolean' }).notNull().default(false)
 });
 
 export const categories = sqliteTable('categories', {
@@ -127,6 +137,7 @@ export const cards = sqliteTable('cards', {
 	colorTag: text('color_tag').default(''),
 	dueDate: text('due_date'),
 	onHoldNote: text('on_hold_note').default(''),
+	businessValue: text('business_value').default(''),
 	pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
 	completedAt: text('completed_at'),
 	createdAt: text('created_at')
@@ -236,6 +247,7 @@ export type Team = typeof teams.$inferSelect;
 export type NewTeam = typeof teams.$inferInsert;
 export type TeamMember = typeof teamMembers.$inferSelect;
 export type Board = typeof boards.$inferSelect;
+export type BoardCategory = typeof boardCategories.$inferSelect;
 export type BoardMember = typeof boardMembers.$inferSelect;
 export type BoardTeam = typeof boardTeams.$inferSelect;
 export type Column = typeof columns.$inferSelect;
@@ -247,7 +259,27 @@ export type ActivityLog = typeof activityLog.$inferSelect;
 export type Label = typeof labels.$inferSelect;
 export type Setting = typeof settings.$inferSelect;
 export type CardAssignee = typeof cardAssignees.$inferSelect;
+export type CardComment = typeof cardComments.$inferSelect;
 export type InviteToken = typeof inviteTokens.$inferSelect;
+
+// ─── Card Comments ───────────────────────────────────────────────────────────
+
+export const cardComments = sqliteTable('card_comments', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	cardId: integer('card_id')
+		.notNull()
+		.references(() => cards.id, { onDelete: 'cascade' }),
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	content: text('content').notNull(),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text('updated_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
 
 // ─── Task Requests ───────────────────────────────────────────────────────────
 
@@ -262,6 +294,7 @@ export const taskRequests = sqliteTable('task_requests', {
 	description: text('description').default(''),
 	priority: text('priority').notNull().default('medium'),
 	status: text('status').notNull().default('pending'), // 'pending' | 'accepted' | 'rejected'
+	businessValue: text('business_value').default(''),
 	resolvedBy: integer('resolved_by').references(() => users.id, { onDelete: 'set null' }),
 	resolvedCardId: integer('resolved_card_id').references(() => cards.id, { onDelete: 'set null' }),
 	rejectReason: text('reject_reason'),

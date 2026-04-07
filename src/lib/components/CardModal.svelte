@@ -8,6 +8,9 @@
 	 */
 	import SubtaskModal from './SubtaskModal.svelte';
 	import { marked } from 'marked';
+	import { COLUMN_COLORS } from '$lib/utils/constants';
+	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
 	import type { CardType, CategoryType, LabelType, SubtaskType } from '$lib/types';
 
 	let {
@@ -29,7 +32,7 @@
 		labels: LabelType[];
 		boardId: number;
 		boardUsers?: { id: number; username: string; email?: string; emoji: string }[];
-		onSave: (data: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; pendingSubtasks?: string[]; pendingAssigneeIds?: number[] }) => void;
+		onSave: (data: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[] }) => void;
 		onDelete?: () => void;
 		onClose: () => void;
 		onCreateSubBoard?: (name: string) => void;
@@ -83,8 +86,36 @@
 	let showDueDate = $state(!!card?.dueDate);
 	let descPreview = $state(false);
 	let onHoldNote = $state(card?.onHoldNote || '');
+	let businessValue = $state(card?.businessValue || '');
 	let editingOnHold = $state(false);
 	let cardSubtasks = $state<SubtaskType[]>(card?.subtasks || []);
+
+	// Inline category creation state
+	let showNewCategory = $state(false);
+	let newCatName = $state('');
+	let newCatColor = $state('#6366f1');
+	let localCategories = $state<CategoryType[]>([...categories]);
+
+	async function createCategoryInline() {
+		if (!newCatName.trim()) return;
+		const res = await fetch('/api/categories', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ boardId, name: newCatName.trim(), color: newCatColor })
+		});
+		if (res.ok) {
+			const created = await res.json();
+			localCategories = [...localCategories, created];
+			categoryId = created.id;
+			newCatName = '';
+			newCatColor = '#6366f1';
+			showNewCategory = false;
+		}
+	}
+
+	// Planned sub-boards for new card creation
+	let pendingSubBoardNames = $state<string[]>([]);
+	let newPendingSubBoardName = $state('');
 
 	// svelte-ignore state_referenced_locally
 	let cardAssignees = $state<{ id: number; username: string; emoji: string }[]>(card?.assignees || []);
@@ -136,11 +167,15 @@
 		onSave({
 			title: title.trim(), description, priority, colorTag: '', categoryId,
 			dueDate: dueDate || null, onHoldNote: onHoldNote || undefined,
+			businessValue: businessValue || undefined,
 			pendingSubtasks: pendingSubtasks.length > 0
 				? pendingSubtasks.map(s => JSON.stringify({ title: s.title, description: s.description, priority: s.priority, colorTag: s.colorTag, dueDate: s.dueDate }))
 				: undefined,
 			pendingAssigneeIds: !card && cardAssignees.length > 0
 				? cardAssignees.map(a => a.id)
+				: undefined,
+			pendingSubBoards: !card && pendingSubBoardNames.length > 0
+				? pendingSubBoardNames
 				: undefined
 		});
 	}
@@ -255,6 +290,75 @@
 		if (diff === 1) return `📅 Due tomorrow`;
 		return `📅 ${formatted}`;
 	}
+	// ─── Tabs & Comments ────────────────────────────────────────────────────
+	let activeTab = $state<'details' | 'comments'>('details');
+
+	type CommentItem = {
+		id: number; cardId: number; userId: number; content: string;
+		createdAt: string; updatedAt: string; username: string; userEmoji: string | null;
+	};
+	let comments = $state<CommentItem[]>([]);
+	let newComment = $state('');
+	let editingCommentId = $state<number | null>(null);
+	let editingCommentText = $state('');
+	let loadingComments = $state(false);
+
+	let currentUser = $derived($page.data.user);
+
+	onMount(() => {
+		if (card) loadComments();
+	});
+
+	async function loadComments() {
+		if (!card) return;
+		loadingComments = true;
+		try {
+			const res = await fetch(`/api/cards/${card.id}/comments`);
+			if (res.ok) comments = await res.json();
+		} finally { loadingComments = false; }
+	}
+
+	async function postComment() {
+		if (!card || !newComment.trim()) return;
+		const res = await fetch(`/api/cards/${card.id}/comments`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ content: newComment.trim() })
+		});
+		if (res.ok) {
+			const created = await res.json();
+			comments = [created, ...comments];
+			newComment = '';
+		}
+	}
+
+	async function deleteComment(commentId: number) {
+		if (!card) return;
+		const res = await fetch(`/api/cards/${card.id}/comments/${commentId}`, { method: 'DELETE' });
+		if (res.ok) comments = comments.filter(c => c.id !== commentId);
+	}
+
+	async function saveEditComment(commentId: number) {
+		if (!card || !editingCommentText.trim()) return;
+		const res = await fetch(`/api/cards/${card.id}/comments/${commentId}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ content: editingCommentText.trim() })
+		});
+		if (res.ok) {
+			comments = comments.map(c => c.id === commentId ? { ...c, content: editingCommentText.trim(), updatedAt: new Date().toISOString() } : c);
+			editingCommentId = null;
+			editingCommentText = '';
+		}
+	}
+
+	function commentTimeAgo(dateStr: string): string {
+		const diff = Math.floor((Date.now() - new Date(dateStr + 'Z').getTime()) / 1000);
+		if (diff < 60) return 'just now';
+		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+		if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+		return `${Math.floor(diff / 86400)}d ago`;
+	}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -264,7 +368,7 @@
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-content card-modal-content" onclick={(e) => e.stopPropagation()} role="document">
 		<div class="modal-header">
-			<h2>{card ? 'Edit Card' : 'New Card'}</h2>
+			<input class="modal-title-input" type="text" placeholder="What needs to be done?" bind:value={title} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()} autofocus />
 			<button class="close-btn btn-ghost" onclick={onClose} aria-label="Close">
 				<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
 					<path d="M4 4l10 10M14 4L4 14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -272,19 +376,26 @@
 			</button>
 		</div>
 
-		<div class="form-group">
-			<label for="card-title">Title</label>
-			<input
-				id="card-title" type="text" placeholder="What needs to be done?"
-				bind:value={title}
-				onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()}
-				autofocus
-			/>
+		{#if card}
+		<div class="tab-bar">
+			<button class="tab" class:active={activeTab === 'details'} onclick={() => (activeTab = 'details')}>
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3h8M3 7h5M3 11h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+				Details
+			</button>
+			<button class="tab" class:active={activeTab === 'comments'} onclick={() => { activeTab = 'comments'; if (comments.length === 0 && !loadingComments) loadComments(); }}>
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3a1 1 0 011-1h8a1 1 0 011 1v6a1 1 0 01-1 1H5l-3 2V3z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+				Comments{#if comments.length > 0}<span class="tab-badge">{comments.length}</span>{/if}
+			</button>
 		</div>
+		{/if}
 
-		<div class="form-group">
-			<div class="desc-header">
-				<label for="card-desc">Description</label>
+		<div class="modal-body-grid">
+			<div class="main-panel">
+				{#if !card || activeTab === 'details'}
+				<!-- Description -->
+				<div class="form-group">
+					<div class="desc-header">
+						<label for="card-desc">Description</label>
 				<div class="desc-tabs">
 					<button class="desc-tab" class:active={!descPreview} onclick={() => (descPreview = false)}>Write</button>
 					<button class="desc-tab" class:active={descPreview} onclick={() => (descPreview = true)}>Preview</button>
@@ -303,89 +414,10 @@
 			{/if}
 		</div>
 
-		<div class="form-row">
-			<div class="form-group" style="flex: 1">
-				<label for="card-priority">Priority</label>
-				<select id="card-priority" bind:value={priority}>
-					<option value="low">🟢 Low</option>
-					<option value="medium">🟡 Medium</option>
-					<option value="high">🟠 High</option>
-					<option value="critical">🔴 Critical</option>
-				</select>
-			</div>
-			<div class="form-group" style="flex: 1">
-				<label for="card-category">Category</label>
-				<select id="card-category" bind:value={categoryId}>
-					<option value={null}>None</option>
-					{#each categories as cat}
-						<option value={cat.id}>{cat.name}</option>
-					{/each}
-				</select>
-			</div>
+		<div class="form-group">
+			<label for="card-bv">Business Value / Justification</label>
+			<textarea id="card-bv" placeholder="Why is this important? What value does it deliver?" bind:value={businessValue} rows="2"></textarea>
 		</div>
-
-		<div class="form-row">
-			<div class="form-group" style="flex: 1">
-				{#if showDueDate}
-					<div class="due-date-header">
-						<label for="card-due">Due Date</label>
-						<button class="btn-ghost due-clear" onclick={() => { showDueDate = false; dueDate = ''; }} title="Remove due date">
-							<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-						</button>
-					</div>
-					<input id="card-due" type="date" bind:value={dueDate} />
-				{:else}
-					<label>Due Date</label>
-					<button class="btn-ghost due-add-btn" onclick={() => (showDueDate = true)}>
-						<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-						Set due date
-					</button>
-				{/if}
-			</div>
-		</div>
-
-		<!-- Labels -->
-		{#if card && labels.length > 0}
-			<div class="labels-section">
-				<label>Labels</label>
-				<div class="labels-picker">
-					{#each labels as label}
-						<button
-							class="label-toggle"
-							class:active={cardLabelIds.includes(label.id)}
-							style="--lc: {label.color}"
-							onclick={() => toggleLabel(label.id)}
-						>
-							{label.name}
-						</button>
-					{/each}
-				</div>
-			</div>
-		{/if}
-
-		<!-- Assignees -->
-			<div class="assignees-section">
-				<label>Assignees</label>
-				<div class="assignees-list">
-					{#each cardAssignees as assignee}
-						<div class="assignee-chip">
-							<span class="assignee-emoji">{assignee.emoji}</span>
-							<span class="assignee-name">{assignee.username}</span>
-							<button class="assignee-remove" onclick={() => unassignUser(assignee.id)} title="Remove">
-								<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-							</button>
-						</div>
-					{/each}
-					{#if availableAssignees.length > 0}
-						<select class="assignee-add" onchange={(e) => { const v = Number((e.target as HTMLSelectElement).value); if (v) assignUser(v); (e.target as HTMLSelectElement).value = ''; }}>
-							<option value="">+ Assign...</option>
-							{#each availableAssignees as u}
-								<option value={u.id}>{u.emoji} {u.username}</option>
-							{/each}
-						</select>
-					{/if}
-				</div>
-			</div>
 
 		<!-- On Hold Note -->
 		{#if card?.onHoldNote}
@@ -554,13 +586,7 @@
 
 				{#if onCreateSubBoard}
 					<div class="subboard-create-row">
-						<input
-							type="text"
-							class="subboard-name-input"
-							placeholder="Sub-board name..."
-							bind:value={newSubBoardName}
-							onkeydown={(e) => e.key === 'Enter' && newSubBoardName.trim() && onCreateSubBoard!(newSubBoardName.trim())}
-						/>
+						<input type="text" class="subboard-name-input" placeholder="Sub-board name..." bind:value={newSubBoardName} onkeydown={(e) => e.key === 'Enter' && newSubBoardName.trim() && onCreateSubBoard!(newSubBoardName.trim())} />
 						<button class="btn-ghost subboard-add-btn" onclick={() => { if (newSubBoardName.trim()) onCreateSubBoard!(newSubBoardName.trim()); }} disabled={!newSubBoardName.trim()}>
 							<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 							Create
@@ -573,15 +599,11 @@
 						{#if showLinkPicker}
 							<div class="link-picker">
 								{#each availableBoards as ab}
-									<button class="link-picker-item" onclick={() => { onLinkSubBoard!(ab.id); showLinkPicker = false; }}>
-										{ab.emoji} {ab.name}
-									</button>
+									<button class="link-picker-item" onclick={() => { onLinkSubBoard!(ab.id); showLinkPicker = false; }}>{ab.emoji} {ab.name}</button>
 								{/each}
 							</div>
 						{:else}
-							<button class="btn-ghost subboard-link-btn" onclick={() => (showLinkPicker = true)}>
-								🔗 Link existing board
-							</button>
+							<button class="btn-ghost subboard-link-btn" onclick={() => (showLinkPicker = true)}>🔗 Link existing board</button>
 						{/if}
 					</div>
 				{/if}
@@ -590,13 +612,197 @@
 					<p class="empty-subtasks">No sub-boards yet.</p>
 				{/if}
 			</div>
-		{/if}
-
-		{#if card}
-			<div class="card-timestamp">
-				Created {new Date(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+		{:else}
+			<!-- New card: planned sub-boards -->
+			<div class="subboard-section">
+				<div class="subtask-header">
+					<label>
+						Planned Sub-boards
+						{#if pendingSubBoardNames.length > 0}
+							<span class="subtask-counter">{pendingSubBoardNames.length}</span>
+						{/if}
+					</label>
+				</div>
+				{#if pendingSubBoardNames.length > 0}
+					<div class="subboard-list">
+						{#each pendingSubBoardNames as name, i}
+							<div class="subboard-row">
+								<div class="subboard-link" style="cursor: default;">
+									<span class="subboard-link-icon">📋</span>
+									<div class="subboard-link-info">
+										<span class="subboard-link-name">{name}</span>
+										<span class="subboard-link-progress">Will be created on save</span>
+									</div>
+								</div>
+								<button class="subboard-delete-btn" title="Remove" onclick={() => { pendingSubBoardNames = pendingSubBoardNames.filter((_, idx) => idx !== i); }}>
+									<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+								</button>
+							</div>
+						{/each}
+					</div>
+				{/if}
+				<div class="subboard-create-row">
+					<input type="text" class="subboard-name-input" placeholder="Sub-board name..." bind:value={newPendingSubBoardName} onkeydown={(e) => { if (e.key === 'Enter' && newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} />
+					<button class="btn-ghost subboard-add-btn" onclick={() => { if (newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} disabled={!newPendingSubBoardName.trim()}>
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+						Add
+					</button>
+				</div>
 			</div>
 		{/if}
+
+		{/if} <!-- end details tab / new card -->
+
+		{#if card && activeTab === 'comments'}
+		<!-- Comments Tab -->
+		<div class="comments-section">
+			<div class="comment-input-area">
+				<textarea class="comment-input" placeholder="Write a comment... (supports **markdown**)" bind:value={newComment} rows="3" onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) postComment(); }}></textarea>
+				<div class="comment-input-actions">
+					<span class="comment-hint">Ctrl+Enter to send</span>
+					<button class="btn-primary small" onclick={postComment} disabled={!newComment.trim()}>Post Comment</button>
+				</div>
+			</div>
+
+			{#if loadingComments}
+				<div class="comments-loading">Loading comments...</div>
+			{:else if comments.length === 0}
+				<div class="comments-empty">
+					<span class="comments-empty-icon">💬</span>
+					<p>No comments yet. Be the first to comment!</p>
+				</div>
+			{:else}
+				<div class="comment-thread">
+					{#each comments as comment (comment.id)}
+						<div class="comment-item">
+							<div class="comment-avatar">{comment.userEmoji || '👤'}</div>
+							<div class="comment-body">
+								<div class="comment-meta">
+									<span class="comment-author">{comment.username}</span>
+									<span class="comment-time">{commentTimeAgo(comment.createdAt)}</span>
+									{#if comment.createdAt !== comment.updatedAt}<span class="comment-edited">(edited)</span>{/if}
+								</div>
+								{#if editingCommentId === comment.id}
+									<textarea class="comment-edit-input" bind:value={editingCommentText} rows="3"></textarea>
+									<div class="comment-edit-actions">
+										<button class="btn-primary small" onclick={() => saveEditComment(comment.id)}>Save</button>
+										<button class="btn-ghost small" onclick={() => (editingCommentId = null)}>Cancel</button>
+									</div>
+								{:else}
+									<div class="comment-content markdown-body">{@html marked(comment.content)}</div>
+									{#if currentUser && (currentUser.id === comment.userId || currentUser.role === 'admin' || currentUser.role === 'superadmin')}
+										<div class="comment-actions">
+											{#if currentUser.id === comment.userId}
+												<button class="comment-action-btn" onclick={() => { editingCommentId = comment.id; editingCommentText = comment.content; }}>Edit</button>
+											{/if}
+											<button class="comment-action-btn danger" onclick={() => deleteComment(comment.id)}>Delete</button>
+										</div>
+									{/if}
+								{/if}
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</div>
+		{/if}
+
+		</div> <!-- end main-panel -->
+
+		<!-- Sidebar -->
+		<div class="sidebar-panel">
+			<div class="sidebar-field">
+				<label for="sb-priority">Priority</label>
+				<select id="sb-priority" bind:value={priority}>
+					<option value="low">🟢 Low</option>
+					<option value="medium">🟡 Medium</option>
+					<option value="high">🟠 High</option>
+					<option value="critical">🔴 Critical</option>
+				</select>
+			</div>
+
+			<div class="sidebar-field">
+				<label for="sb-category">Category</label>
+				{#if showNewCategory}
+					<div class="inline-cat-form">
+						<input type="text" class="inline-cat-input" placeholder="Category name..." bind:value={newCatName} onkeydown={(e) => e.key === 'Enter' && createCategoryInline()} autofocus />
+						<div class="inline-cat-colors">
+							{#each COLUMN_COLORS.slice(0, 8) as color}
+								<button class="cat-color-swatch" class:active={newCatColor === color} style="background: {color}" onclick={() => (newCatColor = color)} type="button"></button>
+							{/each}
+							<label class="color-custom-wrapper">
+								<input type="color" bind:value={newCatColor} class="color-native-input" />
+								<span class="cat-color-swatch custom" style="background: {newCatColor}">✎</span>
+							</label>
+						</div>
+						<div class="inline-cat-actions">
+							<button class="btn-primary small" onclick={createCategoryInline} disabled={!newCatName.trim()} type="button">Create</button>
+							<button class="btn-ghost small" onclick={() => (showNewCategory = false)} type="button">Cancel</button>
+						</div>
+					</div>
+				{:else}
+					<select id="sb-category" bind:value={categoryId}>
+						<option value={null}>None</option>
+						{#each localCategories as cat}
+							<option value={cat.id}>{cat.name}</option>
+						{/each}
+					</select>
+					<button class="btn-ghost new-cat-btn" onclick={() => (showNewCategory = true)} type="button">+ New Category</button>
+				{/if}
+			</div>
+
+			<div class="sidebar-field">
+				{#if showDueDate}
+					<div class="due-date-header">
+						<label for="sb-due">Due Date</label>
+						<button class="btn-ghost due-clear" onclick={() => { showDueDate = false; dueDate = ''; }} title="Remove">✕</button>
+					</div>
+					<input id="sb-due" type="date" bind:value={dueDate} />
+				{:else}
+					<label>Due Date</label>
+					<button class="btn-ghost due-add-btn" onclick={() => (showDueDate = true)}>+ Set due date</button>
+				{/if}
+			</div>
+
+			<div class="sidebar-field">
+				<label>Assignees</label>
+				<div class="assignees-list">
+					{#each cardAssignees as assignee}
+						<div class="assignee-chip">
+							<span class="assignee-emoji">{assignee.emoji}</span>
+							<span class="assignee-name">{assignee.username}</span>
+							<button class="assignee-remove" onclick={() => unassignUser(assignee.id)} title="Remove">✕</button>
+						</div>
+					{/each}
+					{#if availableAssignees.length > 0}
+						<select class="assignee-add" onchange={(e) => { const v = Number((e.target as HTMLSelectElement).value); if (v) assignUser(v); (e.target as HTMLSelectElement).value = ''; }}>
+							<option value="">+ Assign...</option>
+							{#each availableAssignees as u}
+								<option value={u.id}>{u.emoji} {u.username}</option>
+							{/each}
+						</select>
+					{/if}
+				</div>
+			</div>
+
+			{#if labels.length > 0}
+			<div class="sidebar-field">
+				<label>Labels</label>
+				<div class="labels-picker">
+					{#each labels as label}
+						<button class="label-toggle" class:active={cardLabelIds.includes(label.id)} style="--lc: {label.color}" onclick={() => toggleLabel(label.id)}>{label.name}</button>
+					{/each}
+				</div>
+			</div>
+			{/if}
+
+			{#if card}
+				<div class="sidebar-timestamp">
+					Created {new Date(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+				</div>
+			{/if}
+		</div>
+		</div> <!-- end modal-body-grid -->
 
 		<div class="modal-actions">
 			{#if onDelete}
@@ -638,11 +844,60 @@
 {/if}
 
 <style>
-	.card-modal-content { max-width: 840px; }
+	.card-modal-content { max-width: 960px; }
 
-	.modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-lg); }
-	.modal-header h2 { font-size: 1.2rem; }
-	.close-btn { padding: var(--space-xs) !important; }
+	/* Title input */
+	.modal-title-input {
+		flex: 1; font-size: 1.3rem; font-weight: 700; border: none; background: transparent;
+		color: var(--text-primary); font-family: var(--font-family); outline: none;
+		padding: var(--space-xs) 0;
+	}
+	.modal-title-input::placeholder { color: var(--text-tertiary); font-weight: 400; }
+
+	.modal-header { display: flex; align-items: center; gap: var(--space-md); margin-bottom: var(--space-md); }
+	.close-btn { padding: var(--space-xs) !important; flex-shrink: 0; }
+
+	/* Tab bar */
+	.tab-bar {
+		display: flex; gap: 2px; border-bottom: 1px solid var(--glass-border);
+		margin-bottom: var(--space-lg);
+	}
+	.tab {
+		display: flex; align-items: center; gap: 6px;
+		padding: var(--space-sm) var(--space-md); border: none; background: none;
+		color: var(--text-tertiary); font: inherit; font-size: 0.82rem; font-weight: 600;
+		cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.tab:hover { color: var(--text-secondary); }
+	.tab.active { color: var(--accent-indigo); border-bottom-color: var(--accent-indigo); }
+	.tab-badge {
+		font-size: 0.65rem; background: var(--accent-indigo); color: white;
+		padding: 1px 6px; border-radius: var(--radius-full); font-weight: 700;
+	}
+
+	/* Two-column grid */
+	.modal-body-grid { display: grid; grid-template-columns: 1fr 240px; gap: var(--space-xl); }
+	.main-panel { min-width: 0; }
+	.sidebar-panel {
+		border-left: 1px solid var(--glass-border); padding-left: var(--space-lg);
+		display: flex; flex-direction: column; gap: var(--space-md);
+	}
+	.sidebar-field label {
+		display: block; font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.06em; color: var(--text-tertiary); margin-bottom: var(--space-xs);
+	}
+	.sidebar-field select, .sidebar-field input[type="date"], .sidebar-field textarea {
+		width: 100%; font-size: 0.82rem;
+	}
+	.sidebar-timestamp {
+		font-size: 0.7rem; color: var(--text-tertiary); margin-top: auto;
+		padding-top: var(--space-md); border-top: 1px solid var(--glass-border);
+	}
+	@media (max-width: 768px) {
+		.modal-body-grid { grid-template-columns: 1fr; }
+		.sidebar-panel { border-left: none; padding-left: 0; border-top: 1px solid var(--glass-border); padding-top: var(--space-lg); }
+	}
 
 	.form-group { margin-bottom: var(--space-lg); }
 	.form-group label {
@@ -651,6 +906,42 @@
 		text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: var(--space-sm);
 	}
 	.form-row { display: flex; gap: var(--space-lg); align-items: flex-start; }
+
+	/* Inline category creation */
+	.new-cat-btn {
+		display: inline-flex; align-items: center; gap: 4px;
+		font-size: 0.72rem !important; margin-top: var(--space-xs);
+		color: var(--accent-indigo) !important;
+	}
+	.new-cat-btn:hover { text-decoration: underline; }
+	.inline-cat-form {
+		display: flex; flex-direction: column; gap: var(--space-sm);
+		padding: var(--space-md); background: var(--bg-base);
+		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+	}
+	.inline-cat-input {
+		padding: var(--space-sm); font-size: 0.85rem;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-sm); color: var(--text-primary);
+		font-family: var(--font-family);
+	}
+	.inline-cat-input:focus { outline: none; border-color: var(--accent-indigo); }
+	.inline-cat-colors { display: flex; gap: 4px; flex-wrap: wrap; }
+	.cat-color-swatch {
+		width: 20px; height: 20px; border-radius: var(--radius-sm);
+		border: 2px solid transparent; cursor: pointer;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.cat-color-swatch:hover { transform: scale(1.15); }
+	.cat-color-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 6px rgba(255,255,255,0.2); }
+	.inline-cat-actions { display: flex; gap: var(--space-sm); }
+	.inline-cat-actions .small { padding: var(--space-xs) var(--space-md); font-size: 0.75rem; }
+	.color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
+	.color-native-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+	.cat-color-swatch.custom {
+		display: flex; align-items: center; justify-content: center;
+		font-size: 0.6rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5); cursor: pointer;
+	}
 
 
 
@@ -937,4 +1228,58 @@
 		cursor: pointer; font-family: var(--font-family);
 	}
 	.assignee-add:hover { border-color: var(--accent-indigo); color: var(--text-secondary); }
+
+	/* ─── Comments ──────────────────────────────────────────── */
+	.comments-section { display: flex; flex-direction: column; gap: var(--space-lg); }
+	.comment-input-area { display: flex; flex-direction: column; gap: var(--space-sm); }
+	.comment-input {
+		padding: var(--space-md); font-size: 0.85rem; min-height: 80px; resize: vertical;
+		background: var(--bg-base); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+		color: var(--text-primary); font-family: var(--font-family);
+	}
+	.comment-input:focus { outline: none; border-color: var(--accent-indigo); }
+	.comment-input-actions { display: flex; justify-content: space-between; align-items: center; }
+	.comment-hint { font-size: 0.7rem; color: var(--text-tertiary); }
+	.comments-loading { text-align: center; color: var(--text-tertiary); padding: var(--space-xl); font-size: 0.85rem; }
+	.comments-empty {
+		text-align: center; padding: var(--space-2xl); color: var(--text-tertiary);
+	}
+	.comments-empty-icon { font-size: 2rem; display: block; margin-bottom: var(--space-sm); }
+	.comments-empty p { font-size: 0.85rem; }
+	.comment-thread { display: flex; flex-direction: column; gap: var(--space-md); }
+	.comment-item {
+		display: flex; gap: var(--space-sm); padding: var(--space-md);
+		background: var(--bg-base); border-radius: var(--radius-md);
+		border: 1px solid var(--glass-border); overflow: hidden;
+	}
+	.comment-avatar {
+		width: 32px; height: 32px; border-radius: 50%; background: var(--bg-surface);
+		display: flex; align-items: center; justify-content: center; font-size: 1rem;
+		flex-shrink: 0; border: 1px solid var(--glass-border);
+	}
+	.comment-body { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+	.comment-meta { display: flex; align-items: center; gap: var(--space-sm); margin-bottom: var(--space-xs); }
+	.comment-author { font-size: 0.8rem; font-weight: 700; color: var(--text-primary); }
+	.comment-time { font-size: 0.7rem; color: var(--text-tertiary); }
+	.comment-edited { font-size: 0.65rem; color: var(--text-tertiary); font-style: italic; }
+	.comment-content { font-size: 0.85rem; line-height: 1.5; color: var(--text-secondary); overflow-wrap: anywhere; word-break: break-word; overflow: hidden; }
+	.comment-content :global(p) { margin: 0 0 var(--space-xs); overflow-wrap: anywhere; word-break: break-word; }
+	.comment-content :global(p:last-child) { margin: 0; }
+	.comment-content :global(pre) { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+	.comment-content :global(code) { word-break: break-all; }
+	.comment-content :global(blockquote) { margin: var(--space-sm) 0; padding-left: var(--space-md); border-left: 3px solid var(--glass-border); color: var(--text-tertiary); }
+	.comment-actions { display: flex; gap: var(--space-sm); margin-top: var(--space-xs); }
+	.comment-action-btn {
+		font-size: 0.7rem; color: var(--text-tertiary); background: none; border: none;
+		cursor: pointer; padding: 2px 6px; border-radius: var(--radius-sm);
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.comment-action-btn:hover { color: var(--text-primary); background: var(--bg-surface); }
+	.comment-action-btn.danger:hover { color: #ef4444; background: rgba(239,68,68,0.1); }
+	.comment-edit-input {
+		width: 100%; padding: var(--space-sm); font-size: 0.82rem; resize: vertical;
+		background: var(--bg-surface); border: 1px solid var(--accent-indigo); border-radius: var(--radius-sm);
+		color: var(--text-primary); font-family: var(--font-family);
+	}
+	.comment-edit-actions { display: flex; gap: var(--space-sm); margin-top: var(--space-xs); }
 </style>

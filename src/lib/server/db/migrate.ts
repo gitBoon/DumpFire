@@ -34,17 +34,27 @@ export function runMigrations() {
 					.map((s) => s.trim())
 					.filter((s) => s.length > 0);
 				
-				const transaction = sqlite.transaction(() => {
-					for (const stmt of statements) {
+				let allOk = true;
+				for (const stmt of statements) {
+					try {
 						sqlite.exec(stmt);
+					} catch (stmtErr: any) {
+						// Tolerate "already exists" / "duplicate column" errors
+						const msg = stmtErr?.message || '';
+						if (msg.includes('already exists') || msg.includes('duplicate column')) {
+							console.log(`[DB] Skipping (already applied): ${msg}`);
+						} else {
+							console.log(`[DB] Statement error in ${file}: ${msg}`);
+							allOk = false;
+						}
 					}
-					sqlite.prepare('INSERT INTO __drizzle_migrations (hash) VALUES (?)').run(hash);
-				});
-				transaction();
-				console.log(`[DB] Applied migration: ${file}`);
+				}
+				// Mark migration as applied even if individual statements were skipped
+				sqlite.prepare('INSERT INTO __drizzle_migrations (hash) VALUES (?)').run(hash);
+				console.log(`[DB] Applied migration: ${file}${allOk ? '' : ' (with warnings)'}`);
 			}
 		}
-	} catch {
-		console.log('[DB] No migrations directory found, skipping.');
+	} catch (err) {
+		console.log('[DB] Migration error:', err);
 	}
 }

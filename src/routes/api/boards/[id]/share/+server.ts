@@ -46,7 +46,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 };
 
 /** POST — Share board with a user or team. */
-export const POST: RequestHandler = async ({ params, request, locals }) => {
+export const POST: RequestHandler = async ({ params, request, locals, url }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const boardId = Number(params.id);
@@ -84,7 +84,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			// Send notification email for new shares
 			const board = db.select({ name: boards.name }).from(boards).where(eq(boards.id, boardId)).get();
 			if (board) {
-				notifyBoardShared(boardId, board.name, user.email, user.username, locals.user.username, shareRole);
+				const baseUrl = `${url.protocol}//${url.host}`;
+				notifyBoardShared(boardId, board.name, user.email, user.username, locals.user.username, shareRole, baseUrl);
 			}
 		}
 	} else if (type === 'team') {

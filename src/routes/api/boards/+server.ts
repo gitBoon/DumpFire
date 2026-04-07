@@ -10,7 +10,7 @@ export const GET: RequestHandler = async () => {
 };
 
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const { name, emoji, parentCardId } = await request.json();
+	const { name, emoji, parentCardId, categoryId } = await request.json();
 	const userId = locals.user?.id || null;
 
 	const board = db
@@ -19,6 +19,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			name: name || 'Untitled Board',
 			emoji: emoji || '📋',
 			parentCardId: parentCardId || null,
+			categoryId: categoryId || null,
 			createdBy: userId
 		})
 		.returning()

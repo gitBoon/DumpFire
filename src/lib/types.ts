@@ -55,6 +55,7 @@ export type CardType = {
 	labelIds: number[];
 	pinned: boolean;
 	onHoldNote: string;
+	businessValue: string | null;
 	subBoards: SubBoardType[];
 	assignees: { id: number; username: string; emoji: string }[];
 };
@@ -86,6 +87,7 @@ export type ColumnType = {
 	title: string;
 	position: number;
 	color: string;
+	showAddCard: boolean;
 	cards: CardType[];
 };
 

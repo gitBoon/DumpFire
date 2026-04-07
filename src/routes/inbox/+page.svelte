@@ -14,6 +14,7 @@
 		requesterUserId: number | null;
 		title: string;
 		description: string;
+		businessValue: string | null;
 		priority: string;
 		status: string;
 		rejectReason: string | null;
@@ -173,6 +174,12 @@
 						{#if req.description}
 							<p class="request-desc">{req.description}</p>
 						{/if}
+						{#if req.businessValue}
+							<div class="bv-callout">
+								<span class="bv-label">💡 Business Value</span>
+								<p class="bv-text">{req.businessValue}</p>
+							</div>
+						{/if}
 						<div class="request-bottom">
 							<span class="requester-info">
 								From: {req.requesterName}
@@ -217,6 +224,12 @@
 								<span class="request-age">{timeAgo(req.createdAt)}</span>
 							</div>
 							<h3 class="request-title">{req.title}</h3>
+							{#if req.businessValue}
+								<div class="bv-callout">
+									<span class="bv-label">💡 Business Value</span>
+									<p class="bv-text">{req.businessValue}</p>
+								</div>
+							{/if}
 							{#if req.rejectReason}
 								<p class="reject-reason">Reason: {req.rejectReason}</p>
 							{/if}
@@ -360,6 +373,13 @@
 		margin-bottom: var(--space-sm);
 		display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 	}
+	.bv-callout {
+		background: rgba(99, 102, 241, 0.06); border: 1px solid rgba(99, 102, 241, 0.15);
+		border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md);
+		margin-bottom: var(--space-sm);
+	}
+	.bv-label { font-size: 0.72rem; font-weight: 700; color: var(--accent-indigo); text-transform: uppercase; letter-spacing: 0.03em; }
+	.bv-text { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin-top: 2px; }
 	.request-age { font-size: 0.7rem; color: var(--text-tertiary); margin-left: auto; }
 
 	.target-badge {
