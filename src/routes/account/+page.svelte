@@ -11,6 +11,14 @@
 	let currentTheme = $state('light');
 	theme.subscribe((v) => (currentTheme = v));
 
+	// Email change
+	let newEmail = $state(data.user.email);
+	let emailPassword = $state('');
+	let changingEmail = $state(false);
+	let emailMessage = $state('');
+	let emailError = $state(false);
+	let displayedEmail = $state(data.user.email);
+
 	// Password change
 	let currentPassword = $state('');
 	let newPassword = $state('');
@@ -19,6 +27,39 @@
 	let changingPassword = $state(false);
 	let passwordMessage = $state('');
 	let passwordError = $state(false);
+
+	async function changeEmail() {
+		if (!newEmail?.trim() || !emailPassword) return;
+		if (newEmail.trim() === displayedEmail) {
+			emailMessage = 'This is already your current email';
+			emailError = true;
+			return;
+		}
+
+		changingEmail = true;
+		emailMessage = '';
+		emailError = false;
+
+		const res = await fetch('/api/account/email', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ newEmail: newEmail.trim(), password: emailPassword })
+		});
+
+		if (res.ok) {
+			const result = await res.json();
+			emailMessage = 'Email updated successfully!';
+			emailError = false;
+			displayedEmail = result.email;
+			newEmail = result.email;
+			emailPassword = '';
+		} else {
+			const errData = await res.json().catch(() => ({ message: 'Failed to update email' }));
+			emailMessage = errData.message || 'Failed to update email';
+			emailError = true;
+		}
+		changingEmail = false;
+	}
 
 	async function changePassword() {
 		if (!currentPassword || !newPassword || !confirmPassword) return;
@@ -95,7 +136,7 @@
 					</div>
 					<div class="profile-row">
 						<span class="profile-label">Email</span>
-						<span class="profile-value">{data.user.email}</span>
+						<span class="profile-value">{displayedEmail}</span>
 					</div>
 					<div class="profile-row">
 						<span class="profile-label">Role</span>
@@ -107,8 +148,57 @@
 			</div>
 		</section>
 
-		<!-- Password change section -->
+		<!-- Email change section -->
 		<section class="account-card glass fade-in-up" style="animation-delay: 0.1s">
+			<h2>✉️ Change Email</h2>
+
+			{#if emailMessage}
+				<div class="password-msg" class:error={emailError} class:success={!emailError}>
+					{emailMessage}
+				</div>
+			{/if}
+
+			<div class="password-form">
+				<div class="form-group">
+					<label for="new-email">New Email Address</label>
+					<input
+						id="new-email"
+						type="email"
+						bind:value={newEmail}
+						placeholder="Enter new email address"
+						autocomplete="email"
+					/>
+				</div>
+
+				<div class="form-group">
+					<label for="email-pass">Confirm Password</label>
+					<div class="password-wrapper">
+						<input
+							id="email-pass"
+							type="password"
+							bind:value={emailPassword}
+							placeholder="Enter your password to confirm"
+							autocomplete="current-password"
+							onkeydown={(e) => e.key === 'Enter' && changeEmail()}
+						/>
+					</div>
+				</div>
+
+				<div class="password-actions">
+					<span></span>
+					<button
+						class="btn-primary"
+						onclick={changeEmail}
+						disabled={!newEmail?.trim() || !emailPassword || newEmail.trim() === displayedEmail || changingEmail}
+					>
+						{changingEmail ? 'Updating...' : 'Update Email'}
+					</button>
+				</div>
+			</div>
+		</section>
+
+		<!-- Password change section -->
+		<section class="account-card glass fade-in-up" style="animation-delay: 0.2s">
 			<h2>🔒 Change Password</h2>
 
 			{#if passwordMessage}

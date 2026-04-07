@@ -194,7 +194,9 @@
 								</div>
 								<div class="card-board-tag">
 									<span class="board-tag">{card.boardEmoji} {card.boardName}</span>
-									<span class="column-tag">{card.columnTitle}</span>
+									{#if card.boardCategoryName}
+										<span class="board-cat-badge" style="background: {card.boardCategoryColor}20; color: {card.boardCategoryColor}; border: 1px solid {card.boardCategoryColor}40">{card.boardCategoryName}</span>
+									{/if}
 								</div>
 								<div class="card-meta">
 									<span class="priority-badge priority-{card.priority}">
@@ -672,6 +674,12 @@
 	.category-badge {
 		font-size: 0.6rem; font-weight: 600; padding: 1px 6px;
 		border-radius: var(--radius-sm);
+	}
+
+	/* Board category badge */
+	.board-cat-badge {
+		font-size: 0.58rem; font-weight: 600; padding: 1px 5px;
+		border-radius: var(--radius-sm); white-space: nowrap;
 	}
 
 	/* Label chips */
