@@ -89,6 +89,43 @@
 	let businessValue = $state(card?.businessValue || '');
 	let editingOnHold = $state(false);
 	let titleError = $state(false);
+
+	// Card cover state
+	// svelte-ignore state_referenced_locally
+	let coverUrl = $state(card?.coverUrl || '');
+	const coverPresets = [
+		'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+		'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
+		'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
+		'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
+		'linear-gradient(135deg, #fa709a 0%, #fee140 100%)',
+		'linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)',
+		'linear-gradient(135deg, #fccb90 0%, #d57eeb 100%)',
+		'linear-gradient(135deg, #e0c3fc 0%, #8ec5fc 100%)',
+		'#6366f1', '#ef4444', '#f59e0b', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'
+	];
+
+	async function setCover(value: string) {
+		coverUrl = value;
+		if (card) {
+			await fetch(`/api/cards/${card.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ coverUrl: value || null, boardId })
+			});
+		}
+	}
+
+	async function clearCover() {
+		coverUrl = '';
+		if (card) {
+			await fetch(`/api/cards/${card.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ coverUrl: null, boardId })
+			});
+		}
+	}
 	let cardSubtasks = $state<SubtaskType[]>(card?.subtasks || []);
 
 	// Inline category creation state
@@ -161,7 +198,63 @@
 	let editingSubtask = $state<SubtaskType | null>(null);
 	let editingPendingSubtask = $state<PendingSubtask | null>(null);
 
+	// Template state
+	type TemplateItem = { id: number; name: string; title: string; description: string; priority: string; subtasksJson: string; labelsJson: string; boardId: number | null };
+	let templates = $state<TemplateItem[]>([]);
+	let showTemplatePicker = $state(false);
+	let showSaveTemplate = $state(false);
+	let templateName = $state('');
+	let templateSaving = $state(false);
 
+	async function loadTemplates() {
+		const res = await fetch(`/api/templates?boardId=${boardId}`);
+		if (res.ok) templates = await res.json();
+	}
+
+	async function saveAsTemplate() {
+		if (!templateName.trim()) return;
+		templateSaving = true;
+		await fetch('/api/templates', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				boardId,
+				name: templateName.trim(),
+				title: title,
+				description: description,
+				priority: priority,
+				subtasks: card ? cardSubtasks.map(s => ({ title: s.title, description: s.description, priority: s.priority })) : [],
+				labels: cardLabelIds
+			})
+		});
+		templateSaving = false;
+		showSaveTemplate = false;
+		templateName = '';
+	}
+
+	function applyTemplate(tmpl: TemplateItem) {
+		title = tmpl.title || '';
+		description = tmpl.description || '';
+		priority = tmpl.priority || 'medium';
+		try {
+			const subs = JSON.parse(tmpl.subtasksJson || '[]');
+			pendingSubtasks = subs.map((s: any, i: number) => ({
+				id: -(i + 100),
+				title: s.title || '',
+				description: s.description || '',
+				priority: s.priority || 'medium',
+				colorTag: '',
+				dueDate: null,
+				completed: false
+			}));
+		} catch { /* ignore */ }
+		showTemplatePicker = false;
+	}
+
+	async function deleteTemplate(id: number) {
+		await fetch(`/api/templates/${id}`, { method: 'DELETE' });
+		templates = templates.filter(t => t.id !== id);
+	}
 
 	function save() {
 		if (!title.trim()) {
@@ -296,7 +389,7 @@
 		return `📅 ${formatted}`;
 	}
 	// ─── Tabs & Comments ────────────────────────────────────────────────────
-	let activeTab = $state<'details' | 'comments'>('details');
+	let activeTab = $state<'details' | 'comments' | 'attachments'>('details');
 
 	type CommentItem = {
 		id: number; cardId: number; userId: number; content: string;
@@ -364,6 +457,70 @@
 		if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
 		return `${Math.floor(diff / 86400)}d ago`;
 	}
+
+	// ─── Attachments ─────────────────────────────────────────────────────
+	type AttachmentItem = {
+		id: number; cardId: number; filename: string; originalName: string;
+		mimeType: string; sizeBytes: number; uploadedBy: number | null; createdAt: string;
+	};
+	let attachments = $state<AttachmentItem[]>([]);
+	let loadingAttachments = $state(false);
+	let uploading = $state(false);
+	let dragOver = $state(false);
+
+	async function loadAttachments() {
+		if (!card) return;
+		loadingAttachments = true;
+		try {
+			const res = await fetch(`/api/cards/${card.id}/attachments`);
+			if (res.ok) attachments = await res.json();
+		} finally { loadingAttachments = false; }
+	}
+
+	async function uploadFiles(files: FileList | File[]) {
+		if (!card) return;
+		uploading = true;
+		for (const file of files) {
+			const form = new FormData();
+			form.append('file', file);
+			const res = await fetch(`/api/cards/${card.id}/attachments`, {
+				method: 'POST',
+				body: form
+			});
+			if (res.ok) {
+				const created = await res.json();
+				attachments = [...attachments, created];
+			}
+		}
+		uploading = false;
+	}
+
+	async function deleteAttachment(id: number) {
+		if (!card) return;
+		const res = await fetch(`/api/cards/${card.id}/attachments/${id}`, { method: 'DELETE' });
+		if (res.ok) attachments = attachments.filter(a => a.id !== id);
+	}
+
+	function formatFileSize(bytes: number): string {
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	}
+
+	function isImageMime(mime: string): boolean {
+		return mime.startsWith('image/');
+	}
+
+	function handleDrop(e: DragEvent) {
+		e.preventDefault();
+		dragOver = false;
+		if (e.dataTransfer?.files?.length) uploadFiles(e.dataTransfer.files);
+	}
+
+	function handleDragOver(e: DragEvent) {
+		e.preventDefault();
+		dragOver = true;
+	}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -372,6 +529,9 @@
 <div class="modal-overlay" onclick={onClose} role="dialog" aria-modal="true" aria-label="Card editor">
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-content card-modal-content" onclick={(e) => e.stopPropagation()} role="document">
+		{#if coverUrl}
+			<div class="modal-cover-preview" style="background: {coverUrl}"></div>
+		{/if}
 		<div class="modal-header">
 			<div class="title-field" class:title-error={titleError}>
 				<label class="title-label" for="card-title">Task Title <span class="required">*</span></label>
@@ -395,6 +555,10 @@
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3a1 1 0 011-1h8a1 1 0 011 1v6a1 1 0 01-1 1H5l-3 2V3z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
 				Comments{#if comments.length > 0}<span class="tab-badge">{comments.length}</span>{/if}
 			</button>
+		<button class="tab" class:active={activeTab === 'attachments'} onclick={() => { activeTab = 'attachments'; if (attachments.length === 0 && !loadingAttachments) loadAttachments(); }}>
+			<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7.5 2L4 5.5a2.12 2.12 0 003 3L10.5 5a1.41 1.41 0 00-2-2L5 6.5a.71.71 0 001 1L9 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+			Files{#if attachments.length > 0}<span class="tab-badge">{attachments.length}</span>{/if}
+		</button>
 		</div>
 		{/if}
 
@@ -716,6 +880,54 @@
 		</div>
 		{/if}
 
+		{#if card && activeTab === 'attachments'}
+		<!-- Attachments Tab -->
+		<div class="attachments-section">
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div
+				class="upload-zone"
+				class:drag-over={dragOver}
+				ondrop={handleDrop}
+				ondragover={handleDragOver}
+				ondragleave={() => dragOver = false}
+			>
+				<span class="upload-icon">{uploading ? '⏳' : '📎'}</span>
+				<p>{uploading ? 'Uploading...' : 'Drag & drop files here or click to browse'}</p>
+				<input type="file" multiple class="upload-input" onchange={(e) => { const el = e.target as HTMLInputElement; if (el.files?.length) uploadFiles(el.files); el.value = ''; }} />
+			</div>
+
+			{#if loadingAttachments}
+				<div class="comments-loading">Loading attachments...</div>
+			{:else if attachments.length === 0}
+				<div class="comments-empty">
+					<span class="comments-empty-icon">📂</span>
+					<p>No files attached yet. Upload files above.</p>
+				</div>
+			{:else}
+				<div class="attachment-list">
+					{#each attachments as att (att.id)}
+						<div class="attachment-item">
+							{#if isImageMime(att.mimeType)}
+								<a href="/api/cards/{card.id}/attachments/{att.id}" target="_blank" class="attachment-thumb">
+									<img src="/api/cards/{card.id}/attachments/{att.id}" alt={att.originalName} />
+								</a>
+							{:else}
+								<div class="attachment-icon">📄</div>
+							{/if}
+							<div class="attachment-info">
+								<a href="/api/cards/{card.id}/attachments/{att.id}" class="attachment-name" target="_blank" download={att.originalName}>{att.originalName}</a>
+								<span class="attachment-meta">{formatFileSize(att.sizeBytes)}</span>
+							</div>
+							<button class="attachment-delete" onclick={() => deleteAttachment(att.id)} title="Delete">
+								<svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+							</button>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</div>
+		{/if}
+
 		</div> <!-- end main-panel -->
 
 		<!-- Sidebar -->
@@ -805,6 +1017,25 @@
 			</div>
 			{/if}
 
+			<div class="sidebar-field">
+				<label>Cover</label>
+				<div class="cover-picker">
+					{#each coverPresets as preset}
+						<button
+							class="cover-swatch"
+							class:active={coverUrl === preset}
+							style="background: {preset}"
+							onclick={() => setCover(preset)}
+							title="Set cover"
+							type="button"
+						></button>
+					{/each}
+				</div>
+				{#if coverUrl}
+					<button class="btn-ghost cover-clear" onclick={clearCover} type="button">✕ Remove cover</button>
+				{/if}
+			</div>
+
 			{#if card}
 				<div class="sidebar-timestamp">
 					Created {new Date(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
@@ -820,6 +1051,15 @@
 						<path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
 					</svg>
 					Delete
+				</button>
+			{/if}
+			{#if card}
+				<button class="btn-ghost template-save-btn" onclick={() => { showSaveTemplate = true; templateName = title; }} type="button" title="Save as template">
+					📋 Save as Template
+				</button>
+			{:else}
+				<button class="btn-ghost template-save-btn" onclick={() => { showTemplatePicker = true; loadTemplates(); }} type="button" title="Create from template">
+					📋 From Template
 				</button>
 			{/if}
 			<div style="flex: 1"></div>
@@ -850,6 +1090,57 @@
 		onDelete={editingPendingSubtask ? () => { removePendingSubtask(editingPendingSubtask!.id); showSubtaskModal = false; editingPendingSubtask = null; } : undefined}
 		onClose={() => { showSubtaskModal = false; editingPendingSubtask = null; }}
 	/>
+{/if}
+
+<!-- Save as Template Modal -->
+{#if showSaveTemplate}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="template-overlay" onclick={() => showSaveTemplate = false}>
+		<div class="template-dialog" onclick={(e) => e.stopPropagation()}>
+			<h3>📋 Save as Template</h3>
+			<p class="template-desc">Save this card's configuration as a reusable template.</p>
+			<div class="template-field">
+				<label for="tmpl-name">Template Name</label>
+				<input id="tmpl-name" type="text" bind:value={templateName} placeholder="e.g. Bug Report, Feature Request..." onkeydown={(e) => e.key === 'Enter' && saveAsTemplate()} autofocus />
+			</div>
+			<div class="template-actions">
+				<button class="btn-ghost" onclick={() => showSaveTemplate = false}>Cancel</button>
+				<button class="btn-primary" onclick={saveAsTemplate} disabled={!templateName.trim() || templateSaving}>
+					{templateSaving ? 'Saving...' : 'Save Template'}
+				</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Template Picker Modal -->
+{#if showTemplatePicker}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="template-overlay" onclick={() => showTemplatePicker = false}>
+		<div class="template-dialog" onclick={(e) => e.stopPropagation()}>
+			<h3>📋 Create from Template</h3>
+			{#if templates.length === 0}
+				<p class="template-empty">No templates yet. Save a card as a template first.</p>
+			{:else}
+				<div class="template-list">
+					{#each templates as tmpl}
+						<div class="template-item">
+							<button class="template-item-btn" onclick={() => applyTemplate(tmpl)}>
+								<span class="template-item-name">{tmpl.name}</span>
+								<span class="template-item-meta">{tmpl.title || 'No title'} · {tmpl.priority}</span>
+							</button>
+							<button class="template-delete-btn" onclick={() => deleteTemplate(tmpl.id)} title="Delete template">✕</button>
+						</div>
+					{/each}
+				</div>
+			{/if}
+			<div class="template-actions">
+				<button class="btn-ghost" onclick={() => showTemplatePicker = false}>Cancel</button>
+			</div>
+		</div>
+	</div>
 {/if}
 
 <style>
@@ -1317,4 +1608,114 @@
 		color: var(--text-primary); font-family: var(--font-family);
 	}
 	.comment-edit-actions { display: flex; gap: var(--space-sm); margin-top: var(--space-xs); }
+
+	/* ─── Cover ──────────────────────────────────────────── */
+	.modal-cover-preview {
+		height: 8px; margin: calc(-1 * var(--space-lg)) calc(-1 * var(--space-lg)) var(--space-md);
+		border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+	}
+	.cover-picker {
+		display: flex; flex-wrap: wrap; gap: 4px;
+	}
+	.cover-swatch {
+		width: 24px; height: 24px; border-radius: 6px; border: 2px solid transparent;
+		cursor: pointer; transition: all 0.15s; flex-shrink: 0;
+	}
+	.cover-swatch:hover { transform: scale(1.15); }
+	.cover-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 0 1px var(--bg-card); }
+	.cover-clear {
+		font-size: 0.7rem !important; color: var(--text-tertiary) !important;
+		margin-top: 4px; padding: 2px 6px !important;
+	}
+	.cover-clear:hover { color: var(--accent-rose) !important; }
+
+	/* ─── Templates ──────────────────────────────────────── */
+	.template-save-btn { font-size: 0.78rem !important; }
+	.template-overlay {
+		position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5);
+		display: flex; align-items: center; justify-content: center;
+		z-index: 1100; backdrop-filter: blur(4px);
+	}
+	.template-dialog {
+		background: var(--bg-card); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-lg); padding: var(--space-xl);
+		width: 90%; max-width: 420px; box-shadow: var(--shadow-lg);
+	}
+	.template-dialog h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: var(--space-xs); }
+	.template-desc { font-size: 0.82rem; color: var(--text-secondary); margin-bottom: var(--space-lg); }
+	.template-field { margin-bottom: var(--space-lg); }
+	.template-field label {
+		display: block; font-size: 0.75rem; font-weight: 600;
+		color: var(--text-secondary); margin-bottom: 4px;
+	}
+	.template-field input {
+		width: 100%; padding: 8px 12px; background: var(--bg-surface);
+		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+		color: var(--text-primary); font-family: var(--font-family); font-size: 0.85rem;
+	}
+	.template-field input:focus { outline: none; border-color: var(--accent-indigo); }
+	.template-actions { display: flex; justify-content: flex-end; gap: var(--space-sm); }
+	.template-empty { font-size: 0.85rem; color: var(--text-tertiary); text-align: center; padding: var(--space-xl); }
+	.template-list { display: flex; flex-direction: column; gap: var(--space-xs); margin-bottom: var(--space-lg); max-height: 300px; overflow-y: auto; }
+	.template-item { display: flex; align-items: center; gap: var(--space-xs); }
+	.template-item-btn {
+		flex: 1; display: flex; flex-direction: column; gap: 2px;
+		padding: var(--space-sm) var(--space-md); text-align: left;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); cursor: pointer;
+		font-family: var(--font-family); transition: all 0.15s;
+	}
+	.template-item-btn:hover { border-color: var(--accent-indigo); background: rgba(99, 102, 241, 0.05); }
+	.template-item-name { font-size: 0.85rem; font-weight: 600; color: var(--text-primary); }
+	.template-item-meta { font-size: 0.7rem; color: var(--text-tertiary); }
+	.template-delete-btn {
+		padding: 4px 6px; background: none; border: none;
+		color: var(--text-tertiary); cursor: pointer; font-size: 0.75rem;
+		border-radius: var(--radius-sm); transition: all 0.15s;
+	}
+	.template-delete-btn:hover { color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+
+	/* ─── Attachments ────────────────────────────────────── */
+	.attachments-section { display: flex; flex-direction: column; gap: var(--space-md); }
+	.upload-zone {
+		position: relative; padding: var(--space-xl); text-align: center;
+		border: 2px dashed var(--glass-border); border-radius: var(--radius-md);
+		background: var(--bg-base); cursor: pointer; transition: all 0.2s;
+	}
+	.upload-zone:hover, .upload-zone.drag-over {
+		border-color: var(--accent-indigo); background: rgba(99, 102, 241, 0.04);
+	}
+	.upload-icon { font-size: 1.5rem; display: block; margin-bottom: var(--space-xs); }
+	.upload-zone p { font-size: 0.82rem; color: var(--text-tertiary); margin: 0; }
+	.upload-input {
+		position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+	}
+	.attachment-list { display: flex; flex-direction: column; gap: var(--space-sm); }
+	.attachment-item {
+		display: flex; align-items: center; gap: var(--space-md);
+		padding: var(--space-sm) var(--space-md);
+		background: var(--bg-base); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md);
+	}
+	.attachment-thumb {
+		width: 48px; height: 48px; border-radius: var(--radius-sm); overflow: hidden;
+		flex-shrink: 0; border: 1px solid var(--glass-border);
+	}
+	.attachment-thumb img { width: 100%; height: 100%; object-fit: cover; }
+	.attachment-icon {
+		width: 48px; height: 48px; display: flex; align-items: center; justify-content: center;
+		font-size: 1.5rem; flex-shrink: 0;
+	}
+	.attachment-info { flex: 1; min-width: 0; }
+	.attachment-name {
+		display: block; font-size: 0.82rem; font-weight: 600; color: var(--accent-indigo);
+		text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+	}
+	.attachment-name:hover { text-decoration: underline; }
+	.attachment-meta { font-size: 0.7rem; color: var(--text-tertiary); }
+	.attachment-delete {
+		padding: 6px; background: none; border: none; color: var(--text-tertiary);
+		cursor: pointer; border-radius: var(--radius-sm); transition: all 0.15s;
+	}
+	.attachment-delete:hover { color: #ef4444; background: rgba(239, 68, 68, 0.1); }
 </style>

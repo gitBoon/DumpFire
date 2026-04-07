@@ -113,7 +113,8 @@ export const columns = sqliteTable('columns', {
 	title: text('title').notNull(),
 	position: real('position').notNull().default(0),
 	color: text('color').notNull().default('#6366f1'),
-	showAddCard: integer('show_add_card', { mode: 'boolean' }).notNull().default(false)
+	showAddCard: integer('show_add_card', { mode: 'boolean' }).notNull().default(false),
+	wipLimit: integer('wip_limit').notNull().default(0)
 });
 
 export const categories = sqliteTable('categories', {
@@ -141,6 +142,9 @@ export const cards = sqliteTable('cards', {
 	businessValue: text('business_value').default(''),
 	pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
 	completedAt: text('completed_at'),
+	archivedAt: text('archived_at'),
+	coverUrl: text('cover_url'),
+	recurrenceRule: text('recurrence_rule'),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
@@ -227,6 +231,22 @@ export const cardAssignees = sqliteTable('card_assignees', {
 
 // ─── Invite Tokens ───────────────────────────────────────────────────────────
 
+// ─── Board Favourites ────────────────────────────────────────────────────────
+
+export const boardFavourites = sqliteTable('board_favourites', {
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	boardId: integer('board_id')
+		.notNull()
+		.references(() => boards.id, { onDelete: 'cascade' }),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+}, (table) => [
+	primaryKey({ columns: [table.userId, table.boardId] })
+]);
+
 export const inviteTokens = sqliteTable('invite_tokens', {
 	token: text('token').primaryKey(),
 	userId: integer('user_id')
@@ -262,6 +282,48 @@ export type Setting = typeof settings.$inferSelect;
 export type CardAssignee = typeof cardAssignees.$inferSelect;
 export type CardComment = typeof cardComments.$inferSelect;
 export type InviteToken = typeof inviteTokens.$inferSelect;
+export type BoardFavourite = typeof boardFavourites.$inferSelect;
+
+// ─── Card Templates ───────────────────────────────────────────────────────────
+
+export const cardTemplates = sqliteTable('card_templates', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	boardId: integer('board_id').references(() => boards.id, { onDelete: 'cascade' }),
+	name: text('name').notNull(),
+	title: text('title').notNull().default(''),
+	description: text('description').default(''),
+	priority: text('priority').notNull().default('medium'),
+	subtasksJson: text('subtasks_json').default('[]'),
+	labelsJson: text('labels_json').default('[]'),
+	createdBy: integer('created_by').references(() => users.id),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+
+// (time_entries and card_dependencies tables exist in DB from migrations
+// but are not yet used by the application)
+
+// ─── Card Attachments ────────────────────────────────────────────────────────
+
+export const cardAttachments = sqliteTable('card_attachments', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	cardId: integer('card_id')
+		.notNull()
+		.references(() => cards.id, { onDelete: 'cascade' }),
+	filename: text('filename').notNull(),
+	originalName: text('original_name').notNull(),
+	mimeType: text('mime_type').notNull().default('application/octet-stream'),
+	sizeBytes: integer('size_bytes').notNull().default(0),
+	uploadedBy: integer('uploaded_by').references(() => users.id),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export type CardTemplate = typeof cardTemplates.$inferSelect;
+export type CardAttachment = typeof cardAttachments.$inferSelect;
 
 // ─── Card Comments ───────────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db';
 import { boards, columns, cards, categories, subtasks, labels, cardLabels, cardAssignees, users, boardCategories } from '$lib/server/db/schema';
-import { asc, inArray, eq } from 'drizzle-orm';
+import { asc, inArray, eq, isNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
 
@@ -26,7 +26,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	const columnIds = allColumns.map(c => c.id);
 	const allCards = columnIds.length > 0
-		? db.select().from(cards).where(inArray(cards.columnId, columnIds)).orderBy(asc(cards.position)).all()
+		? db.select().from(cards).where(and(inArray(cards.columnId, columnIds), isNull(cards.archivedAt))).orderBy(asc(cards.position)).all()
 		: [];
 
 	const cardIds = allCards.map(c => c.id);

@@ -64,8 +64,13 @@
   class:card-stale={isStale(card.createdAt) && !isComplete}
   class:card-selected={isSelected}
   class:card-pinned={card.pinned}
+  class:has-cover={!!card.coverUrl}
   id="card-{card.id}"
 >
+  <!-- Cover strip -->
+  {#if card.coverUrl}
+    <div class="card-cover-strip" style="background: {card.coverUrl}"></div>
+  {/if}
   <!-- Pin indicator -->
   {#if card.pinned}
     <span class="pin-indicator" title="Pinned">📌</span>
@@ -170,6 +175,7 @@
     transition: all var(--duration-normal) var(--ease-out); position: relative; overflow: hidden;
     flex-shrink: 0; padding-left: calc(var(--space-md) + 12px);
   }
+  .kanban-card.has-cover { padding-top: 0; }
   .kanban-card:hover { border-color: var(--glass-border); transform: translateY(-1px); box-shadow: var(--shadow-md); }
   .kanban-card.card-completed { background: rgba(16, 185, 129, 0.06); border-color: rgba(16, 185, 129, 0.15); }
   .kanban-card.card-completed:hover { border-color: rgba(16, 185, 129, 0.25); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.1); }
@@ -179,6 +185,13 @@
   .kanban-card.card-stale { border-left: 2px solid rgba(136, 136, 170, 0.3); }
   .kanban-card.card-selected { outline: 2px solid var(--accent-indigo); outline-offset: -2px; }
   .kanban-card.card-pinned { border-top: 2px solid var(--accent-indigo); }
+
+  .card-cover-strip {
+    height: 6px; margin: 0 calc(-1 * var(--space-md)) 0 -12px;
+    width: calc(100% + var(--space-md) + 12px);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    margin-bottom: var(--space-sm);
+  }
 
   .on-hold-note-badge {
     display: flex; align-items: flex-start; gap: 4px;

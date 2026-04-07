@@ -58,6 +58,8 @@ export type CardType = {
 	businessValue: string | null;
 	subBoards: SubBoardType[];
 	assignees: { id: number; username: string; emoji: string }[];
+	archivedAt: string | null;
+	coverUrl: string | null;
 };
 
 /** A label that can be attached to cards for tagging/filtering. */
@@ -88,6 +90,7 @@ export type ColumnType = {
 	position: number;
 	color: string;
 	showAddCard: boolean;
+	wipLimit: number;
 	cards: CardType[];
 };
 

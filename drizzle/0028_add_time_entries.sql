@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS time_entries (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	started_at TEXT NOT NULL DEFAULT (datetime('now')),
+	stopped_at TEXT,
+	duration_ms INTEGER NOT NULL DEFAULT 0,
+	note TEXT DEFAULT '',
+	created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

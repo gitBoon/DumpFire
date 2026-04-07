@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamMembers, boardCategories, users, type Board } from '$lib/server/db/schema';
+import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamMembers, boardCategories, users, boardFavourites, type Board } from '$lib/server/db/schema';
 import { desc, eq, inArray, isNull, isNotNull, and, gte, sql } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
@@ -47,7 +47,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			return { ...board, totalCards: 0, completedCards: 0, lastActivity: board.updatedAt, subBoards: [] as any[], categoryName: cat?.name || null, categoryColor: cat?.color || null };
 		}
 
-		const boardCards = db.select().from(cards).where(inArray(cards.columnId, colIds)).all();
+		const boardCards = db.select().from(cards).where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt))).all();
 		const completeCols = boardCols.filter(c => c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done');
 		const completeColIds = new Set(completeCols.map(c => c.id));
 		const completedCards = boardCards.filter(c => completeColIds.has(c.columnId)).length;
@@ -353,5 +353,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 		onHoldCount
 	};
 
-	return { boards: enriched, analytics, allCategories };
+	// Get user's favourited board IDs
+	const userFavourites = db.select({ boardId: boardFavourites.boardId })
+		.from(boardFavourites)
+		.where(eq(boardFavourites.userId, user.id))
+		.all();
+	const favouriteBoardIds = userFavourites.map(f => f.boardId);
+
+	return { boards: enriched, analytics, allCategories, favouriteBoardIds };
 };
