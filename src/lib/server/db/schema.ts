@@ -10,6 +10,7 @@ export const users = sqliteTable('users', {
 	passwordHash: text('password_hash').notNull(),
 	emoji: text('emoji').default('👤'),
 	role: text('role').notNull().default('user'), // 'superadmin' | 'admin' | 'user'
+	notificationPrefs: text('notification_prefs').default('{}'),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)

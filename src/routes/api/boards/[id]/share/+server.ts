@@ -4,6 +4,7 @@ import { boards, boardMembers, boardTeams, users, teams, teamMembers } from '$li
 import { eq, and } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
 import { notifyBoardShared } from '$lib/server/notifications';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 /** GET — List all members and teams with access to this board, plus public status. */
@@ -84,7 +85,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 			// Send notification email for new shares
 			const board = db.select({ name: boards.name }).from(boards).where(eq(boards.id, boardId)).get();
 			if (board) {
-				const baseUrl = `${url.protocol}//${url.host}`;
+				const baseUrl = resolveBaseUrl(request, url);
 				notifyBoardShared(boardId, board.name, user.email, user.username, locals.user.username, shareRole, baseUrl);
 			}
 		}

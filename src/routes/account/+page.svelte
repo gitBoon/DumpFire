@@ -5,6 +5,7 @@
 	import type { PageData } from './$types';
 	import { theme } from '$lib/stores/theme';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import { onMount } from 'svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -105,6 +106,54 @@
 			user: 'role-user'
 		};
 		return styles[role] || 'role-user';
+	}
+
+	// Notification preferences
+	type NotifPrefs = Record<string, boolean>;
+	const NOTIF_TYPES = [
+		{ key: 'email_assigned', label: 'Task Assignments', desc: 'When you are assigned to a card' },
+		{ key: 'email_comments', label: 'Comments', desc: 'When someone comments on a board you belong to' },
+		{ key: 'email_moved', label: 'Card Moves', desc: 'When a card you are assigned to is moved' },
+		{ key: 'email_requests', label: 'Task Requests', desc: 'When someone submits or replies to a request' },
+		{ key: 'email_board_shared', label: 'Board Sharing', desc: 'When a board is shared with you' }
+	];
+
+	let notifPrefs = $state<NotifPrefs>({});
+	let notifLoading = $state(true);
+	let notifSaving = $state(false);
+
+	onMount(async () => {
+		try {
+			const res = await fetch('/api/account/notifications');
+			if (res.ok) notifPrefs = await res.json();
+		} catch { /* silent */ }
+		notifLoading = false;
+	});
+
+	async function toggleNotif(key: string) {
+		const newVal = !notifPrefs[key];
+		notifPrefs = { ...notifPrefs, [key]: newVal };
+
+		// If master toggle is turned off, disable all
+		if (key === 'email_all' && !newVal) {
+			const allOff: NotifPrefs = { email_all: false };
+			for (const t of NOTIF_TYPES) allOff[t.key] = false;
+			notifPrefs = allOff;
+		}
+		// If master toggle is turned on, enable all
+		if (key === 'email_all' && newVal) {
+			const allOn: NotifPrefs = { email_all: true };
+			for (const t of NOTIF_TYPES) allOn[t.key] = true;
+			notifPrefs = allOn;
+		}
+
+		notifSaving = true;
+		await fetch('/api/account/notifications', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(notifPrefs)
+		});
+		notifSaving = false;
 	}
 </script>
 
@@ -265,6 +314,45 @@
 				</div>
 			</div>
 		</section>
+
+		<!-- Email Notifications section -->
+		<section class="account-card glass fade-in-up" style="animation-delay: 0.3s">
+			<h2>🔔 Email Notifications</h2>
+			<p class="notif-desc">Choose which email notifications you'd like to receive.</p>
+
+			{#if notifLoading}
+				<p class="notif-loading">Loading preferences...</p>
+			{:else}
+				<div class="notif-list">
+					<!-- Master toggle -->
+					<div class="notif-row master">
+						<div class="notif-info">
+							<span class="notif-label">All Email Notifications</span>
+							<span class="notif-hint">Master toggle — disables all emails when off</span>
+						</div>
+						<button class="toggle" class:on={notifPrefs.email_all !== false} onclick={() => toggleNotif('email_all')} aria-label="Toggle all notifications">
+							<span class="toggle-thumb"></span>
+						</button>
+					</div>
+
+					{#each NOTIF_TYPES as type}
+						<div class="notif-row" class:disabled={notifPrefs.email_all === false}>
+							<div class="notif-info">
+								<span class="notif-label">{type.label}</span>
+								<span class="notif-hint">{type.desc}</span>
+							</div>
+							<button class="toggle" class:on={notifPrefs[type.key] !== false && notifPrefs.email_all !== false} onclick={() => toggleNotif(type.key)} disabled={notifPrefs.email_all === false} aria-label="Toggle {type.label}">
+								<span class="toggle-thumb"></span>
+							</button>
+						</div>
+					{/each}
+				</div>
+
+				{#if notifSaving}
+					<p class="notif-saving">Saving...</p>
+				{/if}
+			{/if}
+		</section>
 	</main>
 </div>
 
@@ -361,4 +449,39 @@
 		font-weight: 400 !important;
 	}
 	.show-password-check input { cursor: pointer; }
+
+	/* Notification preferences */
+	.notif-desc { font-size: 0.82rem; color: var(--text-secondary); margin-bottom: var(--space-md); }
+	.notif-loading, .notif-saving { font-size: 0.78rem; color: var(--text-tertiary); }
+	.notif-list { display: flex; flex-direction: column; gap: 2px; }
+	.notif-row {
+		display: flex; align-items: center; justify-content: space-between;
+		padding: var(--space-sm) var(--space-md);
+		border-radius: var(--radius-sm);
+		transition: opacity 0.2s ease;
+	}
+	.notif-row.master {
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); margin-bottom: var(--space-sm);
+	}
+	.notif-row.disabled { opacity: 0.4; pointer-events: none; }
+	.notif-info { display: flex; flex-direction: column; gap: 1px; }
+	.notif-label { font-size: 0.85rem; font-weight: 600; color: var(--text-primary); }
+	.notif-hint { font-size: 0.7rem; color: var(--text-tertiary); }
+
+	/* Toggle switch */
+	.toggle {
+		width: 44px; height: 24px; border-radius: 12px; border: none; cursor: pointer;
+		background: var(--glass-border); position: relative; flex-shrink: 0;
+		transition: background 0.2s ease;
+	}
+	.toggle.on { background: var(--accent-indigo); }
+	.toggle:disabled { cursor: not-allowed; }
+	.toggle-thumb {
+		position: absolute; top: 2px; left: 2px;
+		width: 20px; height: 20px; border-radius: 50%;
+		background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+		transition: transform 0.2s ease;
+	}
+	.toggle.on .toggle-thumb { transform: translateX(20px); }
 </style>

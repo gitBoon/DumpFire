@@ -4,6 +4,7 @@ import { cardAssignees, users, cards, columns } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
 import { notifyUserAssigned } from '$lib/server/notifications';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 /** POST — Assign a user to a card. */
@@ -44,7 +45,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 		db.insert(cardAssignees).values({ cardId, userId }).run();
 
 		// Send notification (fire-and-forget)
-		const baseUrl = `${url.protocol}//${url.host}`;
+		const baseUrl = resolveBaseUrl(request, url);
 		notifyUserAssigned(col.boardId, cardId, card.title, user.email, user.username, locals.user.username, baseUrl);
 	}
 

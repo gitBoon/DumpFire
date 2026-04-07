@@ -88,6 +88,7 @@
 	let onHoldNote = $state(card?.onHoldNote || '');
 	let businessValue = $state(card?.businessValue || '');
 	let editingOnHold = $state(false);
+	let titleError = $state(false);
 	let cardSubtasks = $state<SubtaskType[]>(card?.subtasks || []);
 
 	// Inline category creation state
@@ -163,7 +164,11 @@
 
 
 	function save() {
-		if (!title.trim()) return;
+		if (!title.trim()) {
+			titleError = true;
+			setTimeout(() => (titleError = false), 1500);
+			return;
+		}
 		onSave({
 			title: title.trim(), description, priority, colorTag: '', categoryId,
 			dueDate: dueDate || null, onHoldNote: onHoldNote || undefined,
@@ -368,7 +373,11 @@
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-content card-modal-content" onclick={(e) => e.stopPropagation()} role="document">
 		<div class="modal-header">
-			<input class="modal-title-input" type="text" placeholder="What needs to be done?" bind:value={title} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()} autofocus />
+			<div class="title-field" class:title-error={titleError}>
+				<label class="title-label" for="card-title">Task Title <span class="required">*</span></label>
+				<input id="card-title" class="modal-title-input" type="text" placeholder="Enter a title for this task..." bind:value={title} oninput={() => (titleError = false)} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()} autofocus />
+				{#if titleError}<span class="title-error-msg">A title is required</span>{/if}
+			</div>
 			<button class="close-btn btn-ghost" onclick={onClose} aria-label="Close">
 				<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
 					<path d="M4 4l10 10M14 4L4 14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -846,16 +855,42 @@
 <style>
 	.card-modal-content { max-width: 960px; }
 
-	/* Title input */
-	.modal-title-input {
-		flex: 1; font-size: 1.3rem; font-weight: 700; border: none; background: transparent;
-		color: var(--text-primary); font-family: var(--font-family); outline: none;
-		padding: var(--space-xs) 0;
+	/* Title field */
+	.title-field { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+	.title-label {
+		font-size: 0.7rem; font-weight: 600; color: var(--text-tertiary);
+		text-transform: uppercase; letter-spacing: 0.04em;
 	}
+	.title-label .required { color: #ef4444; }
+	.modal-title-input {
+		width: 100%; font-size: 0.95rem; font-weight: 600;
+		background: var(--bg-surface); border: 1.5px solid var(--glass-border);
+		border-radius: var(--radius-sm);
+		color: var(--text-primary); font-family: var(--font-family); outline: none;
+		padding: var(--space-sm) var(--space-sm);
+		transition: border-color 0.2s ease;
+	}
+	.modal-title-input:focus { border-color: var(--accent-indigo); }
 	.modal-title-input::placeholder { color: var(--text-tertiary); font-weight: 400; }
+	.title-error .modal-title-input {
+		border-color: #ef4444; animation: shake 0.4s ease;
+	}
+	.title-error-msg {
+		font-size: 0.7rem; color: #ef4444; font-weight: 500;
+		animation: fadeIn 0.2s ease;
+	}
 
-	.modal-header { display: flex; align-items: center; gap: var(--space-md); margin-bottom: var(--space-md); }
-	.close-btn { padding: var(--space-xs) !important; flex-shrink: 0; }
+	@keyframes shake {
+		0%, 100% { transform: translateX(0); }
+		20% { transform: translateX(-6px); }
+		40% { transform: translateX(6px); }
+		60% { transform: translateX(-4px); }
+		80% { transform: translateX(4px); }
+	}
+	@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+	.modal-header { display: flex; align-items: flex-start; gap: var(--space-md); margin-bottom: var(--space-md); }
+	.close-btn { padding: var(--space-xs) !important; flex-shrink: 0; margin-top: 18px; }
 
 	/* Tab bar */
 	.tab-bar {

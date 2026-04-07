@@ -1,8 +1,9 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { taskRequests, cards, columns, boards, cardAssignees, users } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { taskRequests, requestMessages, cards, columns, boards, cardAssignees, cardComments, users } from '$lib/server/db/schema';
+import { eq, asc } from 'drizzle-orm';
 import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } from '$lib/server/notifications';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 /** PATCH — Accept or reject a task request. */
@@ -54,6 +55,20 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			resolvedAt: new Date().toISOString()
 		}).where(eq(taskRequests.id, id)).run();
 
+		// Copy discussion messages as card comments
+		const msgs = db.select().from(requestMessages)
+			.where(eq(requestMessages.requestId, id))
+			.orderBy(asc(requestMessages.createdAt))
+			.all();
+		for (const m of msgs) {
+			const who = m.senderType === 'admin' ? `🛡️ ${m.senderName}` : `👤 ${m.senderName}`;
+			db.insert(cardComments).values({
+				cardId: newCard.id,
+				userId: locals.user.id,
+				content: `**${who} (from request discussion):**\n${m.message}`
+			}).run();
+		}
+
 		// Assign user if specified
 		if (assigneeId) {
 			db.insert(cardAssignees).values({
@@ -65,7 +80,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			const assignee = db.select({ email: users.email, username: users.username })
 				.from(users).where(eq(users.id, assigneeId)).get();
 			if (assignee) {
-				const baseUrl = `${url.protocol}//${url.host}`;
+				const baseUrl = resolveBaseUrl(request, url);
 				notifyUserAssigned(boardId, newCard.id, existing.title, assignee.email, assignee.username, locals.user.username, baseUrl);
 			}
 		}

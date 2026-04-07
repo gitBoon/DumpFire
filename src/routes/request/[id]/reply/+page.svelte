@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
 
 	type Message = {
@@ -31,10 +31,37 @@
 	let loading = $state(true);
 	let sending = $state(false);
 	let errorMsg = $state('');
+	let threadEl: HTMLDivElement | undefined = $state();
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 	onMount(async () => {
 		await loadData();
+		// Poll for new messages every 5 seconds
+		pollInterval = setInterval(pollMessages, 5000);
 	});
+
+	onDestroy(() => {
+		if (pollInterval) clearInterval(pollInterval);
+	});
+
+	async function pollMessages() {
+		try {
+			const msgRes = await fetch(`/api/requests/${requestId}/messages?email=${encodeURIComponent(email)}`);
+			if (msgRes.ok) {
+				const fresh: Message[] = await msgRes.json();
+				if (fresh.length !== messages.length) {
+					messages = fresh;
+					scrollToBottom();
+				}
+			}
+		} catch { /* silent */ }
+	}
+
+	function scrollToBottom() {
+		requestAnimationFrame(() => {
+			if (threadEl) threadEl.scrollTop = threadEl.scrollHeight;
+		});
+	}
 
 	async function loadData() {
 		loading = true;
@@ -50,6 +77,7 @@
 			const msgRes = await fetch(`/api/requests/${requestId}/messages?email=${encodeURIComponent(email)}`);
 			if (msgRes.ok) {
 				messages = await msgRes.json();
+				scrollToBottom();
 			}
 		} catch (e) {
 			errorMsg = 'Failed to load conversation';
@@ -134,7 +162,7 @@
 			</div>
 
 			<!-- Messages thread -->
-			<div class="messages-thread">
+			<div class="messages-thread" bind:this={threadEl}>
 				{#if messages.length === 0}
 					<div class="no-messages">No messages yet. Start the conversation below.</div>
 				{:else}

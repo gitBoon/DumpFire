@@ -11,6 +11,49 @@ import { db } from './db';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams } from './db/schema';
 import { eq, inArray } from 'drizzle-orm';
 
+// ─── Notification Preferences ────────────────────────────────────────────────
+
+type NotifPrefs = Record<string, boolean>;
+
+/** Get a user's notification preferences (defaults to all enabled). */
+function getUserNotifPrefs(userId: number): NotifPrefs {
+	const user = db.select({ notificationPrefs: users.notificationPrefs })
+		.from(users).where(eq(users.id, userId)).get();
+	const stored = user?.notificationPrefs ? JSON.parse(user.notificationPrefs) : {};
+	return stored;
+}
+
+/**
+ * Check if a user should receive a specific notification type.
+ * Returns false if the user has disabled that type or disabled all emails.
+ */
+function shouldNotifyUser(userId: number, type: string): boolean {
+	const prefs = getUserNotifPrefs(userId);
+	// Master toggle
+	if (prefs.email_all === false) return false;
+	// Per-type toggle
+	if (prefs[type] === false) return false;
+	return true;
+}
+
+/** Get user ID from email address (for preference checking). */
+function getUserIdByEmail(email: string): number | null {
+	const user = db.select({ id: users.id }).from(users).where(eq(users.email, email)).get();
+	return user?.id ?? null;
+}
+
+/**
+ * Filter recipients by notification preferences.
+ * Returns only recipients who have the given notification type enabled.
+ */
+function filterRecipientsByPref(recipients: { email: string; username: string }[], type: string): { email: string; username: string }[] {
+	return recipients.filter(r => {
+		const userId = getUserIdByEmail(r.email);
+		if (!userId) return true; // External email — always send
+		return shouldNotifyUser(userId, type);
+	});
+}
+
 /** Get email addresses for all assignees of a card. */
 function getAssigneeEmails(cardId: number): { email: string; username: string }[] {
 	const assignees = db.select({ userId: cardAssignees.userId })
@@ -70,7 +113,8 @@ function emailTemplate(title: string, content: string): string {
 export function notifyCardCreated(boardId: number, cardId: number, cardTitle: string, creatorName: string, baseUrl: string) {
 	if (!isSmtpConfigured()) return;
 	const boardName = getBoardName(boardId);
-	const assignees = getAssigneeEmails(cardId);
+	const allAssignees = getAssigneeEmails(cardId);
+	const assignees = filterRecipientsByPref(allAssignees, 'email_assigned');
 	if (assignees.length === 0) return;
 
 	const boardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
@@ -100,7 +144,8 @@ export function notifyCardCreated(boardId: number, cardId: number, cardTitle: st
 export function notifyCardMoved(boardId: number, cardId: number, cardTitle: string, moverName: string, fromColumn: string, toColumn: string, baseUrl: string) {
 	if (!isSmtpConfigured()) return;
 	const boardName = getBoardName(boardId);
-	const assignees = getAssigneeEmails(cardId);
+	const allAssignees = getAssigneeEmails(cardId);
+	const assignees = filterRecipientsByPref(allAssignees, 'email_moved');
 	if (assignees.length === 0) return;
 
 	const boardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
@@ -124,6 +169,11 @@ export function notifyCardMoved(boardId: number, cardId: number, cardTitle: stri
 /** Notify a user when they are assigned to a card. */
 export function notifyUserAssigned(boardId: number, cardId: number, cardTitle: string, assigneeEmail: string, assigneeName: string, assignerName: string, baseUrl: string) {
 	if (!isSmtpConfigured()) return;
+
+	// Check assignee's notification preferences
+	const userId = getUserIdByEmail(assigneeEmail);
+	if (userId && !shouldNotifyUser(userId, 'email_assigned')) return;
+
 	const boardName = getBoardName(boardId);
 
 	const boardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
@@ -176,6 +226,10 @@ export function sendInviteEmail(email: string, username: string, inviteToken: st
 export function notifyBoardShared(boardId: number, boardName: string, userEmail: string, userName: string, sharerName: string, role: string, baseUrl: string) {
 	if (!isSmtpConfigured()) return;
 
+	// Check recipient's notification preferences
+	const userId = getUserIdByEmail(userEmail);
+	if (userId && !shouldNotifyUser(userId, 'email_board_shared')) return;
+
 	const boardUrl = `${baseUrl}/board/${boardId}`;
 
 	const html = emailTemplate('Board Shared With You', `
@@ -211,6 +265,7 @@ export function notifyTaskRequest(targetType: string, targetId: number, title: s
 		}
 	}
 
+	recipients = filterRecipientsByPref(recipients, 'email_requests');
 	if (recipients.length === 0) return;
 
 	const inboxUrl = `${baseUrl}/inbox`;
@@ -268,7 +323,8 @@ function getBoardMemberEmails(boardId: number, excludeUserId?: number): { email:
 export function notifyCommentAdded(boardId: number, cardId: number, cardTitle: string, commenterName: string, commentPreview: string, commenterId: number, baseUrl: string) {
 	if (!isSmtpConfigured()) return;
 	const boardName = getBoardName(boardId);
-	const recipients = getBoardMemberEmails(boardId, commenterId);
+	const allRecipients = getBoardMemberEmails(boardId, commenterId);
+	const recipients = filterRecipientsByPref(allRecipients, 'email_comments');
 	if (recipients.length === 0) return;
 
 	const boardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
@@ -372,6 +428,7 @@ export function notifyAdminMessage(targetType: string, targetId: number, request
 		}
 	}
 
+	recipients = filterRecipientsByPref(recipients, 'email_requests');
 	if (recipients.length === 0) return;
 
 	const inboxUrl = `${baseUrl}/inbox`;
