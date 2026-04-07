@@ -71,6 +71,7 @@
 	let backupNotifyEmail = $state('');
 	let backupDestinations = $state<DestinationUI[]>([]);
 	let backupHistory = $state<BackupHistoryEntry[]>([]);
+	let showAllHistory = $state(false);
 	let backupLoading = $state(true);
 	let backupSaving = $state(false);
 	let backupRunning = $state(false);
@@ -1147,7 +1148,12 @@
 				<!-- Backup History -->
 				{#if backupHistory.length > 0}
 					<div class="backup-history">
-						<h3 style="font-size: 0.85rem; margin: var(--space-xl) 0 var(--space-md)">📜 Backup History</h3>
+						<div style="display: flex; align-items: center; justify-content: space-between; margin: var(--space-xl) 0 var(--space-md)">
+							<h3 style="font-size: 0.85rem; margin: 0">📜 Backup History</h3>
+							<div style="display: flex; gap: var(--space-sm); align-items: center">
+								<span style="font-size: 0.7rem; color: var(--text-tertiary)">{backupHistory.length} entries</span>
+							</div>
+						</div>
 						<div class="history-table-wrap">
 							<table class="history-table">
 								<thead>
@@ -1160,7 +1166,7 @@
 									</tr>
 								</thead>
 								<tbody>
-									{#each backupHistory.slice(0, 20) as entry (entry.id)}
+									{#each (showAllHistory ? backupHistory : backupHistory.slice(0, 5)) as entry (entry.id)}
 										<tr class="history-row" class:history-failed={entry.status === 'failed'}>
 											<td title={entry.createdAt}>{formatRelativeTime(entry.createdAt)}</td>
 											<td>
@@ -1181,6 +1187,11 @@
 								</tbody>
 							</table>
 						</div>
+						{#if backupHistory.length > 5}
+							<button class="btn-ghost btn-sm" style="margin-top: var(--space-sm); font-size: 0.72rem" onclick={() => showAllHistory = !showAllHistory}>
+								{showAllHistory ? '▲ Show less' : `▼ Show all ${backupHistory.length} entries`}
+							</button>
+						{/if}
 					</div>
 				{/if}
 			{/if}

@@ -145,7 +145,7 @@ export class SftpDestination implements BackupDestination {
 			const files = await sftp.list(this.config.remotePath);
 			await sftp.end();
 			return files
-				.filter(f => f.name.startsWith('dumpfire-backup-') && f.name.endsWith('.json'))
+				.filter(f => f.name.startsWith('dumpfire-backup-') && f.name.endsWith('.db'))
 				.map(f => f.name)
 				.sort();
 		} catch (err) {
@@ -214,7 +214,7 @@ export class S3Destination implements BackupDestination {
 			Bucket: this.config.bucket,
 			Key: this.getKey(filename),
 			Body: data,
-			ContentType: 'application/json'
+			ContentType: 'application/x-sqlite3'
 		}));
 	}
 
@@ -225,7 +225,7 @@ export class S3Destination implements BackupDestination {
 		}));
 		return (result.Contents || [])
 			.map(obj => obj.Key?.split('/').pop() || '')
-			.filter(name => name.startsWith('dumpfire-backup-') && name.endsWith('.json'))
+			.filter(name => name.startsWith('dumpfire-backup-') && name.endsWith('.db'))
 			.sort();
 	}
 
@@ -304,7 +304,7 @@ export class GDriveDestination implements BackupDestination {
 				parents: [this.config.folderId]
 			},
 			media: {
-				mimeType: 'application/json',
+				mimeType: 'application/x-sqlite3',
 				body: stream
 			},
 			fields: 'id'
@@ -391,7 +391,7 @@ export class OneDriveDestination implements BackupDestination {
 			const result = await client.api(`/drives/root:/${folderPath}:/children`).get();
 			return (result.value || [])
 				.map((f: any) => f.name as string)
-				.filter((name: string) => name.startsWith('dumpfire-backup-') && name.endsWith('.json'))
+				.filter((name: string) => name.startsWith('dumpfire-backup-') && name.endsWith('.db'))
 				.sort();
 		} catch {
 			return [];

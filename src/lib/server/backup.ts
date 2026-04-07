@@ -110,7 +110,13 @@ export function generateBackupData(): Buffer {
 
 // ─── Backup History ──────────────────────────────────────────────────────────
 
-export function getBackupHistory(limit = 30) {
+export function getBackupHistory(limit = 10) {
+	// Prune stale entries on every read
+	sqlite.prepare(`
+		DELETE FROM backup_log WHERE id NOT IN (
+			SELECT id FROM backup_log ORDER BY created_at DESC LIMIT 10
+		)
+	`).run();
 	return db.select().from(backupLog).orderBy(desc(backupLog.createdAt)).limit(limit).all();
 }
 
@@ -133,10 +139,10 @@ function logBackup(entry: {
 		durationMs: entry.durationMs
 	}).run();
 
-	// Prune old history — keep only the last 100 entries
+	// Prune old history — keep only the last 10 entries
 	sqlite.prepare(`
 		DELETE FROM backup_log WHERE id NOT IN (
-			SELECT id FROM backup_log ORDER BY created_at DESC LIMIT 100
+			SELECT id FROM backup_log ORDER BY created_at DESC LIMIT 10
 		)
 	`).run();
 }
