@@ -190,12 +190,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		teamUserRows.forEach(r => boardUserIds.add(r.userId));
 	}
 
-	// Always include admins/superadmins
-	const adminUsers = db.select({ id: users.id })
-		.from(users)
-		.where(inArray(users.role, ['admin', 'superadmin']))
-		.all();
-	adminUsers.forEach(a => boardUserIds.add(a.id));
+	// Note: admins/superadmins can access any board, but they are NOT
+	// auto-included in assignee list — only explicitly shared users appear.
 
 	const boardUsers = boardUserIds.size > 0
 		? db.select({ id: users.id, username: users.username, email: users.email, emoji: users.emoji })

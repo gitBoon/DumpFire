@@ -10,14 +10,17 @@
 	import { page } from '$app/stores';
 	import { onMount, onDestroy } from 'svelte';
 	import { theme } from '$lib/stores/theme';
+	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
+	import ThemePicker from '$lib/components/ThemePicker.svelte';
 
 	let { data }: { data: PageData } = $props();
 
 	let showCreate = $state(false);
 	let newBoardName = $state('');
 	let newBoardEmoji = $state('📋');
+	let newBoardCategory = $state<number | null>(null);
 	let deleting = $state<number | null>(null);
 	let currentTheme = $state('light');
 	theme.subscribe((v) => (currentTheme = v));
@@ -100,11 +103,12 @@
 		const res = await fetch('/api/boards', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: newBoardName.trim(), emoji: newBoardEmoji })
+			body: JSON.stringify({ name: newBoardName.trim(), emoji: newBoardEmoji, categoryId: newBoardCategory })
 		});
 		if (res.ok) {
 			const board = await res.json();
 			newBoardName = '';
+			newBoardCategory = null;
 			showCreate = false;
 			goto(`/board/${board.id}`);
 		}
@@ -134,12 +138,88 @@
 
 	const a = $derived(data.analytics);
 
+	// Group boards by category for dashboard display
+	type BoardGroup = { name: string; color: string | null; boards: typeof data.boards };
+	let boardGroups = $derived.by(() => {
+		const groups: BoardGroup[] = [];
+		const catMap = new Map<string, BoardGroup>();
+
+		for (const board of data.boards) {
+			const key = board.categoryName || '__uncategorised__';
+			let group = catMap.get(key);
+			if (!group) {
+				group = { name: board.categoryName || 'Uncategorised', color: board.categoryColor || null, boards: [] };
+				catMap.set(key, group);
+				groups.push(group);
+			}
+			group.boards.push(board);
+		}
+
+		// Sort: categorised groups alphabetically first, uncategorised last
+		groups.sort((a, b) => {
+			if (a.name === 'Uncategorised') return 1;
+			if (b.name === 'Uncategorised') return -1;
+			return a.name.localeCompare(b.name);
+		});
+
+		return groups;
+	});
+
 	function timeAgo(dateStr: string): string {
 		const diff = Math.floor((Date.now() - new Date(dateStr + 'Z').getTime()) / 1000);
 		if (diff < 60) return 'just now';
 		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
 		if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
 		return `${Math.floor(diff / 86400)}d ago`;
+	}
+
+	// ─── Board Context Menu ─────────────────────────────────────────────────
+	let boardCtx = $state<{ show: boolean; x: number; y: number; boardId: number; boardName: string }>(
+		{ show: false, x: 0, y: 0, boardId: 0, boardName: '' }
+	);
+	let showCatPicker = $state(false);
+	let newBoardCatName = $state('');
+	let newBoardCatColor = $state('#6366f1');
+	let showNewBoardCat = $state(false);
+
+	function openBoardContextMenu(e: MouseEvent, boardId: number, boardName: string) {
+		e.preventDefault();
+		e.stopPropagation();
+		boardCtx = { show: true, x: e.clientX, y: e.clientY, boardId, boardName };
+		showCatPicker = false;
+		showNewBoardCat = false;
+	}
+
+	function closeBoardContextMenu() {
+		boardCtx.show = false;
+		showCatPicker = false;
+		showNewBoardCat = false;
+	}
+
+	async function setBoardCategory(boardId: number, categoryId: number | null) {
+		await fetch(`/api/boards/${boardId}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ categoryId })
+		});
+		closeBoardContextMenu();
+		await invalidateAll();
+	}
+
+	async function createBoardCategoryInline() {
+		if (!newBoardCatName.trim()) return;
+		const res = await fetch('/api/board-categories', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name: newBoardCatName.trim(), color: newBoardCatColor })
+		});
+		if (res.ok) {
+			const created = await res.json();
+			await setBoardCategory(boardCtx.boardId, created.id);
+			newBoardCatName = '';
+			newBoardCatColor = '#6366f1';
+			showNewBoardCat = false;
+		}
 	}
 </script>
 
@@ -194,18 +274,7 @@
 				</svg>
 				Request
 			</a>
-			<button class="nav-pill theme-pill" onclick={() => theme.toggle()} title="Toggle theme">
-				{#if currentTheme === 'dark'}
-					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-						<circle cx="8" cy="8" r="3.5" stroke="currentColor" stroke-width="1.2"/>
-						<path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3 3l1 1M12 12l1 1M3 13l1-1M12 4l1-1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-					</svg>
-				{:else}
-					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-						<path d="M13.5 9A5.5 5.5 0 017 2.5 6 6 0 1013.5 9z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-					</svg>
-				{/if}
-			</button>
+			<ThemePicker />
 			<button class="btn-primary create-btn" onclick={() => (showCreate = true)} id="create-board-btn">
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 					<path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
@@ -299,73 +368,87 @@
 				<span class="board-row-action"></span>
 			</a>
 
-			{#each data.boards as board (board.id)}
-				<div class="board-row-group">
-					<div class="board-row">
-						{#if board.subBoards && board.subBoards.length > 0}
-							<button class="expand-toggle" onclick={() => toggleExpand(board.id)} title={expandedBoards.has(board.id) ? 'Collapse' : 'Expand'}>
-								<svg width="12" height="12" viewBox="0 0 12 12" fill="none" class:rotated={expandedBoards.has(board.id)}>
-									<path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-								</svg>
-							</button>
-						{:else}
-							<span class="expand-toggle placeholder"></span>
+			{#each boardGroups as group}
+				<!-- Category group header -->
+				<div class="category-group">
+					<div class="category-group-header">
+						{#if group.color}
+							<span class="category-dot" style="background: {group.color}"></span>
 						{/if}
-						<a href="/board/{board.id}" class="board-row-link">
-							<span class="board-row-emoji">{board.emoji}</span>
-							<span class="board-row-name">{board.name}</span>
-						</a>
-						<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
-						<div class="board-row-progress">
-							{#if board.totalCards > 0}
-								<div class="progress-track"><div class="progress-fill" style="width: {(board.completedCards / board.totalCards) * 100}%"></div></div>
-								<span class="progress-pct">{Math.round((board.completedCards / board.totalCards) * 100)}%</span>
-							{:else}
-								<span class="progress-pct empty">—</span>
-							{/if}
-						</div>
-						{#if board.subBoards && board.subBoards.length > 0}
-							{@const activeSubs = board.subBoards.filter((s: any) => showCompletedSubs || !(s.total > 0 && s.done === s.total))}
-							<span class="sub-count-badge">{activeSubs.length}/{board.subBoards.length} sub</span>
-						{/if}
-						<button
-							class="row-delete-btn"
-							title="Delete board"
-							onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(board.id, board.name); }}
-							disabled={deleting === board.id}
-						>
-							{#if deleting === board.id}
-								<span class="spinner"></span>
-							{:else}
-								<svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-									<path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-								</svg>
-							{/if}
-						</button>
+						<span class="category-group-name" style={group.color ? `color: ${group.color}` : ''}>{group.name}</span>
+						<span class="category-group-count">{group.boards.length} board{group.boards.length !== 1 ? 's' : ''}</span>
 					</div>
 
-					<!-- Sub-boards (expanded) -->
-					{#if expandedBoards.has(board.id) && board.subBoards && board.subBoards.length > 0}
-						{#each board.subBoards.filter((s) => showCompletedSubs || !(s.total > 0 && s.done === s.total)) as sb}
-							<a href="/board/{sb.id}" class="board-row sub-row" title="Parent: {sb.parentCardTitle}">
-								<span class="sub-connector">└</span>
-								<span class="board-row-emoji">{sb.emoji}</span>
-								<span class="board-row-name">{sb.name}</span>
-								<span class="board-row-count">{sb.total} card{sb.total !== 1 ? 's' : ''}</span>
+					{#each group.boards as board (board.id)}
+						<div class="board-row-group">
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div class="board-row" style={group.color ? `border-left: 3px solid ${group.color}` : ''} oncontextmenu={(e) => openBoardContextMenu(e, board.id, board.name)}>
+								{#if board.subBoards && board.subBoards.length > 0}
+									<button class="expand-toggle" onclick={() => toggleExpand(board.id)} title={expandedBoards.has(board.id) ? 'Collapse' : 'Expand'}>
+										<svg width="12" height="12" viewBox="0 0 12 12" fill="none" class:rotated={expandedBoards.has(board.id)}>
+											<path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+										</svg>
+									</button>
+								{:else}
+									<span class="expand-toggle placeholder"></span>
+								{/if}
+								<a href="/board/{board.id}" class="board-row-link">
+									<span class="board-row-emoji">{board.emoji}</span>
+									<span class="board-row-name">{board.name}</span>
+								</a>
+								<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
 								<div class="board-row-progress">
-									{#if sb.total > 0}
-										<div class="progress-track"><div class="progress-fill" style="width: {(sb.done / sb.total) * 100}%"></div></div>
-										<span class="progress-pct" class:complete={sb.done === sb.total}>{Math.round((sb.done / sb.total) * 100)}%</span>
+									{#if board.totalCards > 0}
+										<div class="progress-track"><div class="progress-fill" style="width: {(board.completedCards / board.totalCards) * 100}%"></div></div>
+										<span class="progress-pct">{Math.round((board.completedCards / board.totalCards) * 100)}%</span>
 									{:else}
-										<span class="progress-pct empty">empty</span>
+										<span class="progress-pct empty">—</span>
 									{/if}
 								</div>
-								<button class="row-delete-btn" title="Delete sub-board" onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(sb.id, sb.name); }}>
-									<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+								{#if board.subBoards && board.subBoards.length > 0}
+									{@const activeSubs = board.subBoards.filter((s: any) => showCompletedSubs || !(s.total > 0 && s.done === s.total))}
+									<span class="sub-count-badge">{activeSubs.length}/{board.subBoards.length} sub</span>
+								{/if}
+								<button
+									class="row-delete-btn"
+									title="Delete board"
+									onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(board.id, board.name); }}
+									disabled={deleting === board.id}
+								>
+									{#if deleting === board.id}
+										<span class="spinner"></span>
+									{:else}
+										<svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+											<path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+										</svg>
+									{/if}
 								</button>
-							</a>
-						{/each}
-					{/if}
+							</div>
+
+							<!-- Sub-boards (expanded) -->
+							{#if expandedBoards.has(board.id) && board.subBoards && board.subBoards.length > 0}
+								{#each board.subBoards.filter((s) => showCompletedSubs || !(s.total > 0 && s.done === s.total)) as sb}
+									<a href="/board/{sb.id}" class="board-row sub-row" title="Parent: {sb.parentCardTitle}">
+										<span class="sub-connector">└</span>
+										<span class="board-row-emoji">{sb.emoji}</span>
+										<span class="board-row-name">{sb.name}</span>
+										<span class="board-row-count">{sb.total} card{sb.total !== 1 ? 's' : ''}</span>
+										<div class="board-row-progress">
+											{#if sb.total > 0}
+												<div class="progress-track"><div class="progress-fill" style="width: {(sb.done / sb.total) * 100}%"></div></div>
+												<span class="progress-pct" class:complete={sb.done === sb.total}>{Math.round((sb.done / sb.total) * 100)}%</span>
+											{:else}
+												<span class="progress-pct empty">empty</span>
+											{/if}
+										</div>
+										<button class="row-delete-btn" title="Delete sub-board" onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(sb.id, sb.name); }}>
+											<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+										</button>
+									</a>
+								{/each}
+							{/if}
+						</div>
+					{/each}
 				</div>
 			{/each}
 		{:else}
@@ -408,10 +491,78 @@
 				<label>Icon</label>
 				<EmojiPicker value={newBoardEmoji} onSelect={(e) => (newBoardEmoji = e)} />
 			</div>
+			<div class="form-group">
+				<label for="board-category">Category</label>
+				<select id="board-category" bind:value={newBoardCategory} class="category-select">
+					<option value={null}>None</option>
+					{#each data.allCategories as cat}
+						<option value={cat.id}>🏷 {cat.name}</option>
+					{/each}
+				</select>
+			</div>
 			<div class="modal-actions">
 				<button class="btn-ghost" onclick={() => (showCreate = false)}>Cancel</button>
 				<button class="btn-primary" onclick={createBoard} disabled={!newBoardName.trim()}>Create Board</button>
 			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Board Context Menu -->
+{#if boardCtx.show}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="ctx-overlay" onclick={closeBoardContextMenu}>
+		<div class="ctx-menu" style="left: {boardCtx.x}px; top: {boardCtx.y}px" onclick={(e) => e.stopPropagation()}>
+			<div class="ctx-header">{boardCtx.boardName}</div>
+			<div class="ctx-divider"></div>
+
+			{#if showCatPicker}
+				<div class="ctx-cat-picker">
+					<button class="ctx-item" onclick={() => setBoardCategory(boardCtx.boardId, null)}>
+						<span class="ctx-icon">∅</span> No Category
+					</button>
+					{#each data.allCategories as cat}
+						<button class="ctx-item" onclick={() => setBoardCategory(boardCtx.boardId, cat.id)}>
+							<span class="ctx-dot" style="background: {cat.color}"></span> {cat.name}
+						</button>
+					{/each}
+					<div class="ctx-divider"></div>
+					{#if showNewBoardCat}
+						<div class="ctx-new-cat">
+							<input type="text" class="ctx-cat-input" placeholder="Category name..." bind:value={newBoardCatName} onkeydown={(e) => e.key === 'Enter' && createBoardCategoryInline()} autofocus />
+							<div class="ctx-cat-colors">
+								{#each COLUMN_COLORS.slice(0, 8) as color}
+									<button class="ctx-color-swatch" class:active={newBoardCatColor === color} style="background: {color}" onclick={() => (newBoardCatColor = color)} type="button"></button>
+								{/each}
+								<label class="color-custom-wrapper">
+									<input type="color" bind:value={newBoardCatColor} class="color-native-input" />
+									<span class="ctx-color-swatch custom" style="background: {newBoardCatColor}">✎</span>
+								</label>
+							</div>
+							<div class="ctx-cat-actions">
+								<button class="btn-primary small" onclick={createBoardCategoryInline} disabled={!newBoardCatName.trim()}>Create</button>
+								<button class="btn-ghost small" onclick={() => (showNewBoardCat = false)}>Cancel</button>
+							</div>
+						</div>
+					{:else}
+						<button class="ctx-item ctx-new" onclick={() => (showNewBoardCat = true)}>
+							<span class="ctx-icon">+</span> New Category
+						</button>
+					{/if}
+				</div>
+			{:else}
+				<button class="ctx-item" onclick={() => (showCatPicker = true)}>
+					<span class="ctx-icon">🏷️</span> Set Category
+				</button>
+				<a href="/board/{boardCtx.boardId}" class="ctx-item">
+					<span class="ctx-icon">📝</span> Open Board
+				</a>
+				<div class="ctx-divider"></div>
+				<button class="ctx-item ctx-danger" onclick={() => { closeBoardContextMenu(); confirmDeleteBoard(boardCtx.boardId, boardCtx.boardName); }}>
+					<span class="ctx-icon">🗑️</span> Delete Board
+				</button>
+			{/if}
 		</div>
 	</div>
 {/if}
@@ -546,6 +697,35 @@
 	.dot-high { background: #f97316; }
 	.dot-medium { background: #eab308; }
 	.dot-low { background: #22c55e; }
+
+	/* ─── Category Groups ────────────────────────────────────────── */
+	.category-group {
+		margin-bottom: var(--space-xs);
+	}
+	.category-group-header {
+		display: flex; align-items: center; gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md);
+		margin-top: var(--space-md);
+	}
+	.category-dot {
+		width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+		box-shadow: 0 0 6px currentColor;
+	}
+	.category-group-name {
+		font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.05em; color: var(--text-secondary);
+	}
+	.category-group-count {
+		font-size: 0.65rem; font-weight: 500; color: var(--text-tertiary);
+		margin-left: auto;
+	}
+	.category-select {
+		width: 100%; padding: var(--space-sm) var(--space-md);
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); color: var(--text-primary);
+		font-family: var(--font-family); font-size: 0.85rem;
+	}
+	.category-select:focus { outline: none; border-color: var(--accent-indigo); }
 
 	/* ─── Boards Table ────────────────────────────────────────────── */
 	.boards-section { margin-bottom: var(--space-2xl); }
@@ -695,4 +875,64 @@
 		.dashboard-header { flex-direction: column; gap: var(--space-md); align-items: flex-start; }
 		.header-actions { flex-wrap: wrap; }
 	}
+
+	/* ─── Board Context Menu ─────────────────────────────────────── */
+	.ctx-overlay {
+		position: fixed; inset: 0; z-index: 1000;
+	}
+	.ctx-menu {
+		position: fixed; z-index: 1001;
+		min-width: 200px; max-width: 280px;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-lg); box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+		padding: var(--space-xs) 0; backdrop-filter: blur(20px);
+	}
+	.ctx-header {
+		padding: var(--space-sm) var(--space-md);
+		font-size: 0.72rem; font-weight: 700; color: var(--text-tertiary);
+		text-transform: uppercase; letter-spacing: 0.04em;
+		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+	}
+	.ctx-divider { height: 1px; background: var(--glass-border); margin: var(--space-xs) 0; }
+	.ctx-item {
+		display: flex; align-items: center; gap: var(--space-sm);
+		width: 100%; padding: var(--space-sm) var(--space-md);
+		background: none; border: none; color: var(--text-primary);
+		font: inherit; font-size: 0.82rem; cursor: pointer; text-decoration: none;
+		transition: background var(--duration-fast) var(--ease-out);
+	}
+	.ctx-item:hover { background: var(--bg-base); }
+	.ctx-danger { color: #ef4444 !important; }
+	.ctx-danger:hover { background: rgba(239,68,68,0.1); }
+	.ctx-new { color: var(--accent-indigo) !important; }
+	.ctx-icon { width: 18px; text-align: center; flex-shrink: 0; }
+	.ctx-dot {
+		width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+		display: inline-block;
+	}
+	.ctx-new-cat {
+		padding: var(--space-sm) var(--space-md);
+		display: flex; flex-direction: column; gap: var(--space-sm);
+	}
+	.ctx-cat-input {
+		padding: var(--space-xs) var(--space-sm); font-size: 0.82rem;
+		background: var(--bg-base); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-sm); color: var(--text-primary); font-family: var(--font-family);
+	}
+	.ctx-cat-input:focus { outline: none; border-color: var(--accent-indigo); }
+	.ctx-cat-colors { display: flex; gap: 3px; flex-wrap: wrap; }
+	.ctx-color-swatch {
+		width: 16px; height: 16px; border-radius: 3px; border: 2px solid transparent;
+		cursor: pointer; transition: transform var(--duration-fast) var(--ease-out);
+	}
+	.ctx-color-swatch:hover { transform: scale(1.2); }
+	.ctx-color-swatch.active { border-color: var(--text-primary); }
+	.ctx-color-swatch.custom {
+		display: flex; align-items: center; justify-content: center;
+		font-size: 0.5rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+	}
+	.ctx-cat-actions { display: flex; gap: var(--space-sm); }
+	.ctx-cat-actions .small { padding: 2px var(--space-sm); font-size: 0.72rem; }
+	.color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
+	.color-native-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
 </style>

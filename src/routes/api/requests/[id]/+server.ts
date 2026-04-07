@@ -6,7 +6,7 @@ import { notifyUserAssigned } from '$lib/server/notifications';
 import type { RequestHandler } from './$types';
 
 /** PATCH — Accept or reject a task request. */
-export const PATCH: RequestHandler = async ({ params, request, locals }) => {
+export const PATCH: RequestHandler = async ({ params, request, locals, url }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const id = Number(params.id);
@@ -42,7 +42,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 			position: maxPos,
 			colorTag: '',
 			pinned: false,
-			onHoldNote: ''
+			onHoldNote: '',
+			businessValue: existing.businessValue || ''
 		}).returning().get();
 
 		// Update request status
@@ -64,7 +65,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 			const assignee = db.select({ email: users.email, username: users.username })
 				.from(users).where(eq(users.id, assigneeId)).get();
 			if (assignee) {
-				notifyUserAssigned(boardId, newCard.id, existing.title, assignee.email, assignee.username, locals.user.username);
+				const baseUrl = `${url.protocol}//${url.host}`;
+				notifyUserAssigned(boardId, newCard.id, existing.title, assignee.email, assignee.username, locals.user.username, baseUrl);
 			}
 		}
 

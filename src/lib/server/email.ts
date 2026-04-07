@@ -172,10 +172,10 @@ export async function sendTestEmail(to: string): Promise<void> {
 	await transporter.sendMail({
 		from: `"${config.fromName}" <${config.fromAddress}>`,
 		to,
-		subject: '🔥 DumpFire — SMTP Test',
+		subject: 'DumpFire — SMTP Test',
 		html: `
 			<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
-				<h2 style="color: #6366f1;">🔥 SMTP Configuration Working!</h2>
+				<h2 style="color: #6366f1;">SMTP Configuration Working!</h2>
 				<p style="color: #64748b; line-height: 1.6;">
 					Your DumpFire email notifications are properly configured.
 					You'll now receive notifications for task assignments and updates.

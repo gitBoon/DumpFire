@@ -3,14 +3,15 @@
 	 * All Tasks Page — A cross-board view of every card in the system.
 	 *
 	 * Groups cards into swim-lane "buckets" (To Do, On Hold, In Progress, Complete)
-	 * and provides search and board-level filtering. Uses shared date and card
-	 * utilities to avoid duplicating logic from the board page.
+	 * and provides search and board-level filtering. Supports editing and moving cards.
 	 */
 	import type { PageData } from './$types';
 	import { theme } from '$lib/stores/theme';
 	import { onMount } from 'svelte';
-
-	// Shared utilities — avoid duplicating date/card logic
+	import { invalidateAll } from '$app/navigation';
+	import CardModal from '$lib/components/CardModal.svelte';
+	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import type { CardType } from '$lib/types';
 	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC } from '$lib/utils/date-utils';
 	import { subtaskProgress } from '$lib/utils/card-utils';
 
@@ -18,33 +19,19 @@
 	let currentTheme = $state('light');
 	theme.subscribe((v) => (currentTheme = v));
 
-	/** Live tick counter — forces re-evaluation of relative timestamps every 15s. */
 	let tick = $state(0);
 	let tickInterval: ReturnType<typeof setInterval> | null = null;
-
 	onMount(() => {
 		tickInterval = setInterval(() => { tick++; }, 15000);
 		return () => { if (tickInterval) clearInterval(tickInterval); };
 	});
 
-	// Search & filter state
 	let searchQuery = $state('');
 	let boardFilter = $state('all');
 
-	/** Emoji map for priority badges. */
-	const priorityEmoji: Record<string, string> = {
-		critical: '🔴', high: '🟠', medium: '🟡', low: '🟢'
-	};
+	const priorityEmoji: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
+	const bucketColors: Record<string, string> = { 'To Do': '#6366f1', 'On Hold': '#ef4444', 'In Progress': '#f59e0b', 'Complete': '#10b981' };
 
-	/** Colour map for swim-lane bucket headers. */
-	const bucketColors: Record<string, string> = {
-		'To Do': '#6366f1',
-		'On Hold': '#ef4444',
-		'In Progress': '#f59e0b',
-		'Complete': '#10b981'
-	};
-
-	/** Checks if a card matches the active search query and board filter. */
 	function matchesFilters(card: any): boolean {
 		if (boardFilter !== 'all' && card.boardId !== Number(boardFilter)) return false;
 		if (!searchQuery.trim()) return true;
@@ -52,9 +39,84 @@
 		return card.title.toLowerCase().includes(q) || card.description?.toLowerCase().includes(q);
 	}
 
-	/** Returns the number of cards in a bucket that match active filters. */
 	function getFilteredCount(bucket: any): number {
 		return bucket.cards.filter(matchesFilters).length;
+	}
+
+	// ─── Card Editing ────────────────────────────────────────────────────
+	let showCardModal = $state(false);
+	let editingCard = $state<CardType | null>(null);
+	let editingBoardId = $state(0);
+	let showMoveModal = $state(false);
+	let moveCard = $state<any>(null);
+	let moveBoardId = $state<number | null>(null);
+	let moveColumnId = $state<number | null>(null);
+
+	function openCard(card: any) {
+		editingCard = {
+			id: card.id, columnId: card.columnId, categoryId: card.categoryId,
+			title: card.title, description: card.description, position: card.position ?? 0,
+			priority: card.priority, colorTag: card.colorTag, dueDate: card.dueDate,
+			createdAt: card.createdAt, updatedAt: card.updatedAt || card.createdAt,
+			subtasks: card.subtasks || [], labelIds: card.labelIds || [],
+			pinned: card.pinned || false, onHoldNote: card.onHoldNote || '',
+			businessValue: card.businessValue || '',
+			subBoards: card.subBoards || [], assignees: card.assignees || []
+		};
+		editingBoardId = card.boardId;
+		showCardModal = true;
+	}
+
+	function openMoveModal(card: any) {
+		moveCard = card;
+		moveBoardId = card.boardId;
+		moveColumnId = card.columnId;
+		showMoveModal = true;
+	}
+
+	async function doMoveCard() {
+		if (!moveCard || !moveColumnId) return;
+		await fetch(`/api/cards/${moveCard.id}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ columnId: moveColumnId, boardId: moveBoardId })
+		});
+		showMoveModal = false;
+		moveCard = null;
+		await invalidateAll();
+	}
+
+	async function saveCard(cardData: any) {
+		if (!editingCard) return;
+		await fetch(`/api/cards/${editingCard.id}`, {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				title: cardData.title, description: cardData.description,
+				priority: cardData.priority, categoryId: cardData.categoryId,
+				dueDate: cardData.dueDate, onHoldNote: cardData.onHoldNote || '',
+				businessValue: cardData.businessValue || '', boardId: editingBoardId
+			})
+		});
+		showCardModal = false;
+		editingCard = null;
+		await invalidateAll();
+	}
+
+	async function deleteCard() {
+		if (!editingCard) return;
+		await fetch(`/api/cards/${editingCard.id}`, {
+			method: 'DELETE',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ boardId: editingBoardId })
+		});
+		showCardModal = false;
+		editingCard = null;
+		await invalidateAll();
+	}
+
+	function getBoardColumns(boardId: number) {
+		return data.columns.filter((c: any) => c.boardId === boardId);
 	}
 </script>
 
@@ -88,18 +150,7 @@
 				</svg>
 				<input type="text" class="search-input" placeholder="Search tasks..." bind:value={searchQuery} />
 			</div>
-			<button class="theme-toggle btn-ghost" onclick={() => theme.toggle()} title="Toggle theme">
-				{#if currentTheme === 'dark'}
-					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<circle cx="9" cy="9" r="4" stroke="currentColor" stroke-width="1.5"/>
-						<path d="M9 1v2M9 15v2M1 9h2M15 9h2M3.3 3.3l1.4 1.4M13.3 13.3l1.4 1.4M3.3 14.7l1.4-1.4M13.3 4.7l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-					</svg>
-				{:else}
-					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<path d="M15.5 10.1A6.5 6.5 0 017.9 2.5 7 7 0 1015.5 10.1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-					</svg>
-				{/if}
-			</button>
+			<ThemePicker />
 		</div>
 	</header>
 
@@ -117,7 +168,7 @@
 					</div>
 					<div class="card-list">
 						{#each filteredCards as card (card.id)}
-							<a href="/board/{card.boardId}" class="card" class:card-pinned={card.pinned}>
+							<div class="card" class:card-pinned={card.pinned} onclick={() => openCard(card)} role="button" tabindex="0">
 								{#if card.colorTag}
 									<div class="card-color-bar" style="background: {card.colorTag}"></div>
 								{/if}
@@ -126,6 +177,9 @@
 								{/if}
 								<div class="card-header">
 									<span class="card-title">{card.title}</span>
+									<button class="move-btn" title="Move card" onclick={(e) => { e.stopPropagation(); openMoveModal(card); }}>
+										<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 4L2 7l2 3M10 4l2 3-2 3M4 4L7 2l3 2M4 10l3 2 3-2" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/></svg>
+									</button>
 								</div>
 								<div class="card-board-tag">
 									<span class="board-tag">{card.boardEmoji} {card.boardName}</span>
@@ -190,7 +244,7 @@
 										{/each}
 									</div>
 								{/if}
-							</a>
+							</div>
 						{:else}
 							<div class="column-empty">No tasks</div>
 						{/each}
@@ -201,7 +255,51 @@
 	</div>
 </div>
 
+<!-- Card Edit Modal -->
+{#if showCardModal && editingCard}
+	<CardModal
+		card={editingCard}
+		categories={data.categories.filter((c: any) => c.boardId === editingBoardId) as any}
+		labels={data.labels.filter((l: any) => l.boardId === editingBoardId) as any}
+		boardId={editingBoardId}
+		boardUsers={data.allUsers}
+		onSave={saveCard}
+		onDelete={deleteCard}
+		onClose={() => { showCardModal = false; editingCard = null; }}
+	/>
+{/if}
 
+<!-- Move Card Modal -->
+{#if showMoveModal && moveCard}
+	<div class="modal-overlay" onclick={() => { showMoveModal = false; moveCard = null; }} role="dialog">
+		<div class="move-modal" onclick={(e) => e.stopPropagation()}>
+			<h3>Move "{moveCard.title}"</h3>
+			<div class="form-group">
+				<label for="move-board">Board</label>
+				<select id="move-board" bind:value={moveBoardId} onchange={() => { moveColumnId = null; }}>
+					{#each data.boards as b}
+						<option value={b.id}>{b.emoji} {b.name}</option>
+					{/each}
+				</select>
+			</div>
+			{#if moveBoardId}
+				<div class="form-group">
+					<label for="move-col">Column</label>
+					<select id="move-col" bind:value={moveColumnId}>
+						<option value={null}>Select column...</option>
+						{#each getBoardColumns(moveBoardId) as col}
+							<option value={col.id}>{col.title}</option>
+						{/each}
+					</select>
+				</div>
+			{/if}
+			<div class="move-actions">
+				<button class="btn-ghost" onclick={() => { showMoveModal = false; moveCard = null; }}>Cancel</button>
+				<button class="btn-primary move-confirm-btn" onclick={doMoveCard} disabled={!moveColumnId}>Move Card</button>
+			</div>
+		</div>
+	</div>
+{/if}
 
 <style>
 	.all-page {
@@ -567,4 +665,46 @@
 		background: rgba(99, 102, 241, 0.1); color: #818cf8;
 		border: 1px solid rgba(99, 102, 241, 0.2);
 	}
+
+	/* Card interactions */
+	.card { cursor: pointer; }
+	.card-header { justify-content: space-between; }
+	.move-btn {
+		flex-shrink: 0; background: none; border: none; cursor: pointer;
+		color: var(--text-tertiary); padding: 2px; border-radius: var(--radius-sm);
+		opacity: 0; transition: all var(--duration-fast) var(--ease-out);
+	}
+	.card:hover .move-btn { opacity: 1; }
+	.move-btn:hover { color: var(--accent-indigo); background: rgba(99, 102, 241, 0.08); }
+
+	/* Move Modal */
+	.modal-overlay {
+		position: fixed; inset: 0; z-index: 1000;
+		background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(4px);
+		display: flex; align-items: center; justify-content: center;
+	}
+	.move-modal {
+		background: var(--bg-card); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-lg); padding: var(--space-xl); width: 100%; max-width: 400px;
+		box-shadow: var(--shadow-lg);
+	}
+	.move-modal h3 { font-size: 1rem; font-weight: 700; color: var(--text-primary); margin-bottom: var(--space-lg); }
+	.move-modal .form-group { display: flex; flex-direction: column; gap: var(--space-xs); margin-bottom: var(--space-md); }
+	.move-modal label { font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); }
+	.move-modal select {
+		padding: 8px 12px; border-radius: var(--radius-md);
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		color: var(--text-primary); font-family: var(--font-family); font-size: 0.88rem;
+		cursor: pointer;
+	}
+	.move-modal select:focus { outline: none; border-color: var(--accent-indigo); }
+	.move-actions { display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-lg); }
+	.move-confirm-btn {
+		padding: 8px 20px; border-radius: var(--radius-md); border: none;
+		background: var(--accent-indigo); color: white; font-weight: 600; font-size: 0.85rem;
+		cursor: pointer; font-family: var(--font-family);
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.move-confirm-btn:hover:not(:disabled) { background: #5558e6; transform: translateY(-1px); }
+	.move-confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

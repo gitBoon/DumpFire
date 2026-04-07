@@ -112,7 +112,7 @@ export function setSessionCookie(cookies: Cookies, token: string): void {
 	cookies.set(SESSION_COOKIE_NAME, token, {
 		path: '/',
 		httpOnly: true,
-		sameSite: 'strict',
+		sameSite: 'lax',
 		secure: process.env.NODE_ENV === 'production',
 		maxAge: SESSION_DURATION_DAYS * 24 * 60 * 60
 	});

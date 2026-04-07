@@ -5,7 +5,7 @@ import { emit } from '$lib/server/events';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ request }) => {
-	const { columnId, title, description, position, priority, colorTag, categoryId, dueDate, boardId } = await request.json();
+	const { columnId, title, description, position, priority, colorTag, categoryId, dueDate, boardId, businessValue } = await request.json();
 	const card = db
 		.insert(cards)
 		.values({
@@ -16,7 +16,8 @@ export const POST: RequestHandler = async ({ request }) => {
 			position: position ?? 0,
 			priority: priority || 'medium',
 			colorTag: colorTag || '',
-			dueDate: dueDate || null
+			dueDate: dueDate || null,
+			businessValue: businessValue || ''
 		})
 		.returning()
 		.get();

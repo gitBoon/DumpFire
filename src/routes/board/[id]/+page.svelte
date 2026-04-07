@@ -43,6 +43,7 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ShareModal from '$lib/components/ShareModal.svelte';
+	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import KanbanCard from '$lib/components/board/KanbanCard.svelte';
 	import ActivityPanel from '$lib/components/board/ActivityPanel.svelte';
@@ -158,7 +159,7 @@
 		showCardModal = true;
 	}
 
-	async function saveCard(cardData: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; pendingSubtasks?: string[]; pendingAssigneeIds?: number[] }) {
+	async function saveCard(cardData: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[] }) {
 		const result = await cardActions.saveCard(editingCard, cardModalColumnId, data.board.id, boardColumns, cardData);
 		showCardModal = false;
 		if (result.isNew && cardData.title) {
@@ -174,6 +175,20 @@
 						body: JSON.stringify({ userId })
 					})
 				));
+			}
+
+			// Create pending sub-boards for the newly created card
+			if (result.cardId && cardData.pendingSubBoards?.length) {
+				for (const sbName of cardData.pendingSubBoards) {
+					const res = await fetch('/api/boards', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ name: sbName, parentCardId: result.cardId })
+					});
+					if (res.ok) {
+						toasts.add(`Sub-board "${sbName}" created`);
+					}
+				}
 			}
 		} else if (!result.isNew && editingCard) {
 			toasts.add('Card updated');
@@ -683,18 +698,7 @@
 			<a href="/request" class="btn-ghost nav-btn" title="Submit a Request">
 				📋 Request
 			</a>
-			<button class="theme-toggle btn-ghost" onclick={() => theme.toggle()} title="Toggle theme">
-				{#if currentTheme === 'dark'}
-					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<circle cx="9" cy="9" r="4" stroke="currentColor" stroke-width="1.5"/>
-						<path d="M9 1v2M9 15v2M1 9h2M15 9h2M3.3 3.3l1.4 1.4M13.3 13.3l1.4 1.4M3.3 14.7l1.4-1.4M13.3 4.7l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-					</svg>
-				{:else}
-					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<path d="M15.5 10.1A6.5 6.5 0 017.9 2.5 7 7 0 1015.5 10.1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-					</svg>
-				{/if}
-			</button>
+			<ThemePicker />
 		</div>
 	</header>
 
@@ -737,10 +741,12 @@
 									{getSortLabel(columnSorts[column.id])} ✕
 								</button>
 							{/if}
-							<button class="add-card-badge" onclick={() => openNewCardModal(column.id)} title="Add task">
-								<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-								Add Task
-							</button>
+							{#if column.title.toLowerCase() === 'to do' || column.showAddCard}
+								<button class="add-card-badge" onclick={() => openNewCardModal(column.id)} title="Add task">
+									<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+									Add Task
+								</button>
+							{/if}
 							<div class="column-actions">
 							<div class="color-picker-wrapper">
 								<button class="btn-ghost column-action-btn" title="Change color" onclick={(e) => { e.stopPropagation(); toggleDropdown(`color-${column.id}`); }}>
@@ -800,6 +806,10 @@
 											</button>
 										{/if}
 										<div class="menu-divider"></div>
+										<button class="column-menu-item" onclick={() => { const newVal = !(column.showAddCard || column.title.toLowerCase() === 'to do'); updateColumn(column.id, { showAddCard: newVal }); column.showAddCard = newVal; closeDropdowns(); }}>
+											{column.showAddCard || column.title.toLowerCase() === 'to do' ? '✓' : '○'} Show Add Task
+										</button>
+										<div class="menu-divider"></div>
 										<button class="column-menu-item danger" onclick={() => { confirmDeleteColumn(column.id, column.title); closeDropdowns(); }}>
 											<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 3.5h8M4.5 3.5V2.5a.5.5 0 01.5-.5h2a.5.5 0 01.5.5v1m1 0l-.4 6a1 1 0 01-1 .9H4.9a1 1 0 01-1-.9l-.4-6" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
 											Delete column
@@ -824,13 +834,15 @@
 						}}
 						onconsider={(e) => handleCardDndConsider(column.id, e)}
 						onfinalize={(e) => handleCardDndFinalize(column.id, e)}
-						ondblclick={(e: MouseEvent) => { if (!(e.target as HTMLElement).closest('.kanban-card')) openNewCardModal(column.id); }}
+						ondblclick={(e: MouseEvent) => { if ((column.title.toLowerCase() === 'to do' || column.showAddCard) && !(e.target as HTMLElement).closest('.kanban-card')) openNewCardModal(column.id); }}
 					>
 						{#if column.cards.length === 0}
 							<div class="empty-column-prompt">
 								<span class="empty-icon">✨</span>
 								<span class="empty-text">No cards yet</span>
-								<span class="empty-hint">Double-click to add one</span>
+								{#if column.title.toLowerCase() === 'to do' || column.showAddCard}
+									<span class="empty-hint">Double-click to add one</span>
+								{/if}
 							</div>
 						{/if}
 						{#each column.cards as card (card.id)}
@@ -1118,7 +1130,7 @@
 
 <!-- Share modal -->
 {#if showShareModal}
-	<ShareModal boardId={data.board.id} boardName={boardName} canManage={data.canManage} onClose={() => (showShareModal = false)} />
+	<ShareModal boardId={data.board.id} boardName={boardName} canManage={data.canManage} onClose={() => { showShareModal = false; invalidateAll(); }} />
 {/if}
 
 <style>

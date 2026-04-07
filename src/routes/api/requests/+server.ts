@@ -66,9 +66,9 @@ export const GET: RequestHandler = async ({ locals }) => {
 };
 
 /** POST — Create a new task request. Works authed or unauthed. */
-export const POST: RequestHandler = async ({ request, locals }) => {
+export const POST: RequestHandler = async ({ request, locals, url }) => {
 	const body = await request.json();
-	const { targetType, targetId, title, description, priority, requesterName, requesterEmail } = body;
+	const { targetType, targetId, title, description, priority, requesterName, requesterEmail, businessValue } = body;
 
 	if (!title?.trim()) throw error(400, 'Title is required');
 	if (!targetType || !targetId) throw error(400, 'Target is required');
@@ -89,14 +89,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		title: title.trim(),
 		description: description || '',
 		priority: priority || 'medium',
+		businessValue: businessValue || '',
 		requesterName: locals.user ? locals.user.username : (requesterName?.trim() || 'Anonymous'),
 		requesterEmail: locals.user ? locals.user.email : (requesterEmail?.trim() || null),
 		requesterUserId: locals.user?.id || null
 	}).returning().get();
 
-	// Send email notification to target
 	const name = locals.user ? locals.user.username : (requesterName?.trim() || 'Anonymous');
-	notifyTaskRequest(targetType, targetId, title.trim(), name, priority || 'medium');
+	const baseUrl = `${url.protocol}//${url.host}`;
+	notifyTaskRequest(targetType, targetId, title.trim(), name, priority || 'medium', baseUrl);
 
 	return json(result, { status: 201 });
 };

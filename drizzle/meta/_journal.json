@@ -15,6 +15,13 @@
       "when": 1775131864588,
       "tag": "0001_dear_pandemic",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1775548934071,
+      "tag": "0002_abandoned_sally_floyd",
+      "breakpoints": true
     }
   ]
 }

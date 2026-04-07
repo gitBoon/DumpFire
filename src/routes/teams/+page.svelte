@@ -10,6 +10,7 @@
 	import { theme } from '$lib/stores/theme';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import ThemePicker from '$lib/components/ThemePicker.svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -117,18 +118,7 @@
 			<h1>🏢 My Teams</h1>
 		</div>
 		<div class="teams-header-right">
-			<button class="theme-toggle btn-ghost" onclick={() => theme.toggle()}>
-				{#if currentTheme === 'dark'}
-					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<circle cx="9" cy="9" r="4" stroke="currentColor" stroke-width="1.5"/>
-						<path d="M9 1v2M9 15v2M1 9h2M15 9h2M3.3 3.3l1.4 1.4M13.3 13.3l1.4 1.4M3.3 14.7l1.4-1.4M13.3 4.7l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-					</svg>
-				{:else}
-					<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-						<path d="M15.5 10.1A6.5 6.5 0 017.9 2.5 7 7 0 1015.5 10.1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-					</svg>
-				{/if}
-			</button>
+			<ThemePicker />
 			<button class="btn-primary" onclick={() => (showCreateTeam = true)}>
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 					<path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>

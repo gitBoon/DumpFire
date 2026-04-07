@@ -6,7 +6,7 @@ import { emit } from '$lib/server/events';
 import { notifyCardMoved } from '$lib/server/notifications';
 import type { RequestHandler } from './$types';
 
-export const PUT: RequestHandler = async ({ request }) => {
+export const PUT: RequestHandler = async ({ request, url }) => {
 	const { updates, boardId, userName, userEmoji } = await request.json();
 
 	// Snapshot old column assignments to detect moves to Complete
@@ -61,7 +61,8 @@ export const PUT: RequestHandler = async ({ request }) => {
 			const fromCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, existingCard.columnId)).get();
 			const toCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, update.columnId)).get();
 			if (fromCol && toCol) {
-				notifyCardMoved(boardId, update.id, existingCard.title, userName || 'Someone', fromCol.title, toCol.title);
+				const baseUrl = `${url.protocol}//${url.host}`;
+				notifyCardMoved(boardId, update.id, existingCard.title, userName || 'Someone', fromCol.title, toCol.title, baseUrl);
 			}
 		}
 	}

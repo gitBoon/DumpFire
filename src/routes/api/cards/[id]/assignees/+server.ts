@@ -27,10 +27,13 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 	const role = getBoardRole(locals.user, col.boardId);
 	if (!role || role === 'viewer') throw error(403, 'No edit access');
 
-	// Check user exists
-	const user = db.select({ id: users.id, email: users.email, username: users.username })
+	// Check user exists and has access to this board
+	const user = db.select({ id: users.id, email: users.email, username: users.username, role: users.role })
 		.from(users).where(eq(users.id, userId)).get();
 	if (!user) throw error(404, 'User not found');
+
+	const targetRole = getBoardRole(user as any, col.boardId);
+	if (!targetRole) throw error(400, 'User does not have access to this board');
 
 	// Upsert
 	const existing = db.select().from(cardAssignees)
@@ -42,7 +45,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 
 		// Send notification (fire-and-forget)
 		const baseUrl = `${url.protocol}//${url.host}`;
-		notifyUserAssigned(col.boardId, cardId, card.title, user.email, user.username, locals.user.username);
+		notifyUserAssigned(col.boardId, cardId, card.title, user.email, user.username, locals.user.username, baseUrl);
 	}
 
 	return json({ success: true });

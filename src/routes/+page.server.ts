@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamMembers, type Board } from '$lib/server/db/schema';
+import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamMembers, boardCategories, type Board } from '$lib/server/db/schema';
 import { desc, eq, inArray, isNull, isNotNull, and, gte, sql } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
@@ -35,12 +35,16 @@ export const load: PageServerLoad = async ({ locals }) => {
 		subBoardsByCard.set(sb.parentCardId, list);
 	}
 
+	// Fetch all categories for board grouping
+	const allCategories = db.select().from(boardCategories).all();
+
 	// Enrich each board with card stats and sub-board info
 	const enriched = allBoards.map(board => {
 		const boardCols = db.select().from(columns).where(eq(columns.boardId, board.id)).all();
 		const colIds = boardCols.map(c => c.id);
-		if (colIds.length === 0) {
-			return { ...board, totalCards: 0, completedCards: 0, lastActivity: board.updatedAt, subBoards: [] as any[] };
+	if (colIds.length === 0) {
+			const cat = board.categoryId ? allCategories.find(c => c.id === board.categoryId) : null;
+			return { ...board, totalCards: 0, completedCards: 0, lastActivity: board.updatedAt, subBoards: [] as any[], categoryName: cat?.name || null, categoryColor: cat?.color || null };
 		}
 
 		const boardCards = db.select().from(cards).where(inArray(cards.columnId, colIds)).all();
@@ -80,12 +84,25 @@ export const load: PageServerLoad = async ({ locals }) => {
 			}
 		}
 
+		// Look up board category
+		let categoryName: string | null = null;
+		let categoryColor: string | null = null;
+		if (board.categoryId) {
+			const cat = allCategories.find(c => c.id === board.categoryId);
+			if (cat) {
+				categoryName = cat.name;
+				categoryColor = cat.color;
+			}
+		}
+
 		return {
 			...board,
 			totalCards: boardCards.length,
 			completedCards,
 			lastActivity,
-			subBoards: subBoardsForBoard
+			subBoards: subBoardsForBoard,
+			categoryName,
+			categoryColor
 		};
 	});
 
@@ -183,5 +200,5 @@ export const load: PageServerLoad = async ({ locals }) => {
 		recentActivity
 	};
 
-	return { boards: enriched, analytics };
+	return { boards: enriched, analytics, allCategories };
 };

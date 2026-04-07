@@ -105,8 +105,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		buckets: grouped,
 		categories: allCategories,
 		labels: allLabels,
+		columns: allColumns,
+		allUsers: allUsers.map(u => ({ id: u.id, username: u.username, emoji: u.emoji || '👤' })),
 		totalCards: allCards.length,
 		completedCards: enrichedCards.filter(c => c.bucket === 'Complete').length
 	};
 };
-
