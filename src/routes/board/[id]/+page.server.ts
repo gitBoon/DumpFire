@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db';
 import { boards, columns, cards, categories, subtasks, labels, cardLabels, boardMembers, boardTeams, users, teams, cardAssignees, teamMembers } from '$lib/server/db/schema';
-import { eq, asc, inArray, isNull } from 'drizzle-orm';
+import { eq, asc, inArray, isNull, and } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
 import { getBoardRole } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
@@ -61,7 +61,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 			? db
 					.select()
 					.from(cards)
-					.where(inArray(cards.columnId, columnIds))
+					.where(and(inArray(cards.columnId, columnIds), isNull(cards.archivedAt)))
 					.orderBy(asc(cards.position))
 					.all()
 			: [];

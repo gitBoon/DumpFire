@@ -381,6 +381,69 @@
 
 	let searchQuery = $state('');
 	let filterAssigneeId = $state<number | null>(null);
+	let myCardsOnly = $state(false);
+
+	// ─── Archive Panel ──────────────────────────────────────────────────────────
+
+	let showArchivePanel = $state(false);
+	let archivedCards = $state<any[]>([]);
+	let loadingArchive = $state(false);
+
+	async function loadArchivedCards() {
+		loadingArchive = true;
+		try {
+			const res = await fetch(`/api/boards/${data.board.id}/archive`);
+			if (res.ok) archivedCards = await res.json();
+		} finally { loadingArchive = false; }
+	}
+
+	async function toggleArchivePanel() {
+		showArchivePanel = !showArchivePanel;
+		showActivityPanel = false;
+		showStatsPanel = false;
+		if (showArchivePanel) await loadArchivedCards();
+	}
+
+	async function restoreCard(cardId: number) {
+		await fetch(`/api/boards/${data.board.id}/archive`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ cardId })
+		});
+		archivedCards = archivedCards.filter(c => c.id !== cardId);
+		toasts.add('Card restored');
+		await invalidateAll();
+	}
+
+	async function permanentlyDeleteCard(cardId: number) {
+		await fetch(`/api/cards/${cardId}?permanent=true`, {
+			method: 'DELETE',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ boardId: data.board.id })
+		});
+		archivedCards = archivedCards.filter(c => c.id !== cardId);
+		toasts.add('Card permanently deleted', 'info');
+	}
+
+	// ─── WIP Limit Editing ─────────────────────────────────────────────────────
+
+	let editingWipColumn = $state<number | null>(null);
+	let wipLimitInput = $state(0);
+
+	function startEditWipLimit(col: ColumnType) {
+		editingWipColumn = col.id;
+		wipLimitInput = col.wipLimit || 0;
+	}
+
+	async function saveWipLimit(colId: number) {
+		const limit = Math.max(0, wipLimitInput);
+		await updateColumn(colId, { wipLimit: limit });
+		const col = boardColumns.find(c => c.id === colId);
+		if (col) col.wipLimit = limit;
+		boardColumns = [...boardColumns];
+		editingWipColumn = null;
+		toasts.add(limit > 0 ? `WIP limit set to ${limit}` : 'WIP limit removed');
+	}
 
 	// ─── Blocked & On Hold Modals ────────────────────────────────────────────
 
@@ -495,12 +558,14 @@
 	async function toggleActivityPanel() {
 		showActivityPanel = !showActivityPanel;
 		showStatsPanel = false;
+		showArchivePanel = false;
 		if (showActivityPanel) await loadActivities();
 	}
 
 	function toggleStatsPanel() {
 		showStatsPanel = !showStatsPanel;
 		showActivityPanel = false;
+		showArchivePanel = false;
 	}
 
 	// ─── Lifecycle ───────────────────────────────────────────────────────────
@@ -647,11 +712,17 @@
 				{boardColumns.length} columns · {boardColumns.reduce((sum, col) => sum + col.cards.length, 0)} cards
 			</span>
 
+			<button class="btn-ghost" class:active-panel-btn={myCardsOnly} onclick={() => (myCardsOnly = !myCardsOnly)} title={myCardsOnly ? 'Show all cards' : 'Show only my cards'}>
+				👤 {myCardsOnly ? 'My Cards' : 'All'}
+			</button>
 			<button class="btn-ghost" class:active-panel-btn={showActivityPanel} onclick={toggleActivityPanel} title="Activity log">
 				📋
 			</button>
 			<button class="btn-ghost" class:active-panel-btn={showStatsPanel} onclick={toggleStatsPanel} title="Board statistics">
 				📊
+			</button>
+			<button class="btn-ghost" class:active-panel-btn={showArchivePanel} onclick={toggleArchivePanel} title="Archived cards">
+				🗄️
 			</button>
 			{#if data.breadcrumbs && data.breadcrumbs.length > 0}
 				<button class="btn-ghost btn-delete-subboard" onclick={() => {
@@ -716,11 +787,11 @@
 			onfinalize={handleColumnDndFinalize}
 		>
 			{#each boardColumns as column (column.id)}
-				<div class="kanban-column glass" animate:flip={{ duration: FLIP_DURATION_MS }}>
+				<div class="kanban-column glass" class:wip-warning={column.wipLimit > 0 && column.cards.length >= column.wipLimit} animate:flip={{ duration: FLIP_DURATION_MS }}>
 					<div class="column-header">
 						<div class="column-top-bar" style="background: {column.color}"></div>
 						<div class="column-title-row">
-							{#if editingColumn === column.id}
+							{#if editingColumn === column.id && canManage}
 								<input
 									class="column-title-input"
 									type="text"
@@ -731,11 +802,11 @@
 								/>
 							{:else}
 								<!-- svelte-ignore a11y_click_events_have_key_events -->
-								<h3 class="column-title" onclick={() => startEditColumn(column)} role="button" tabindex="0">
+								<h3 class="column-title" onclick={() => canManage && startEditColumn(column)} role="button" tabindex="0">
 									{column.title}
 								</h3>
 							{/if}
-							<span class="column-count">{#if searchQuery.trim() || filterAssigneeId !== null}{column.cards.filter(c => matchesSearch(c, searchQuery, boardCategories) && (filterAssigneeId === null || c.assignees?.some(a => a.id === filterAssigneeId))).length}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}</span>
+							<span class="column-count" class:wip-over={column.wipLimit > 0 && column.cards.length >= column.wipLimit}>{#if searchQuery.trim() || filterAssigneeId !== null}{column.cards.filter(c => matchesSearch(c, searchQuery, boardCategories) && (filterAssigneeId === null || c.assignees?.some(a => a.id === filterAssigneeId))).length}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}{#if column.wipLimit > 0}<span class="wip-limit-label">/{column.wipLimit}</span>{/if}</span>
 							{#if columnSorts[column.id] && columnSorts[column.id] !== 'none'}
 								<button class="sort-badge" onclick={() => setColumnSort(column.id, 'none')} title="Clear sort">
 									{getSortLabel(columnSorts[column.id])} ✕
@@ -805,15 +876,33 @@
 												✕ Clear sort
 											</button>
 										{/if}
+										{#if canManage}
 										<div class="menu-divider"></div>
 										<button class="column-menu-item" onclick={() => { const newVal = !(column.showAddCard || column.title.toLowerCase() === 'to do'); updateColumn(column.id, { showAddCard: newVal }); column.showAddCard = newVal; closeDropdowns(); }}>
 											{column.showAddCard || column.title.toLowerCase() === 'to do' ? '✓' : '○'} Show Add Task
 										</button>
+										{#if editingWipColumn === column.id}
+											<!-- svelte-ignore a11y_click_events_have_key_events -->
+											<!-- svelte-ignore a11y_no_static_element_interactions -->
+											<div class="wip-limit-edit" onclick={(e) => e.stopPropagation()}>
+												<label class="wip-label">WIP Limit (0 = none)</label>
+												<div class="wip-input-row">
+													<input type="number" class="wip-input" min="0" max="99" bind:value={wipLimitInput} onkeydown={(e) => e.key === 'Enter' && saveWipLimit(column.id)} autofocus />
+													<button class="btn-primary small" onclick={() => saveWipLimit(column.id)}>Set</button>
+													<button class="btn-ghost small" onclick={() => (editingWipColumn = null)}>✕</button>
+												</div>
+											</div>
+										{:else}
+											<button class="column-menu-item" onclick={() => startEditWipLimit(column)}>
+												📊 WIP Limit {column.wipLimit > 0 ? `(${column.wipLimit})` : ''}
+											</button>
+										{/if}
 										<div class="menu-divider"></div>
 										<button class="column-menu-item danger" onclick={() => { confirmDeleteColumn(column.id, column.title); closeDropdowns(); }}>
 											<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 3.5h8M4.5 3.5V2.5a.5.5 0 01.5-.5h2a.5.5 0 01.5.5v1m1 0l-.4 6a1 1 0 01-1 .9H4.9a1 1 0 01-1-.9l-.4-6" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
 											Delete column
 										</button>
+										{/if}
 									</div>
 								{/if}
 							</div>
@@ -851,7 +940,7 @@
 								class="kanban-card"
 								class:card-completed={isCompleteColumn(column)}
 								class:card-on-hold={isOnHoldColumn(column.title)}
-								class:card-hidden={!matchesSearch(card, searchQuery, boardCategories) || (filterAssigneeId !== null && !card.assignees?.some(a => a.id === filterAssigneeId))}
+								class:card-hidden={!matchesSearch(card, searchQuery, boardCategories) || (filterAssigneeId !== null && !card.assignees?.some(a => a.id === filterAssigneeId)) || (myCardsOnly && !card.assignees?.some(a => a.id === currentUser?.id))}
 								class:card-stale={isStale(card.createdAt) && !isCompleteColumn(column)}
 								class:card-selected={selectedCards.has(card.id)}
 								class:card-pinned={card.pinned}
@@ -976,6 +1065,57 @@
 		{boardCategories}
 		onClose={() => (showStatsPanel = false)}
 	/>
+{/if}
+
+<!-- Archive Panel -->
+{#if showArchivePanel}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="side-panel archive-panel" onclick={(e) => e.stopPropagation()}>
+		<div class="side-panel-header">
+			<h3>🗄️ Archived Cards</h3>
+			<button class="btn-ghost" onclick={() => (showArchivePanel = false)} title="Close">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3L3 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+			</button>
+		</div>
+		<div class="side-panel-body">
+			{#if loadingArchive}
+				<div class="archive-loading">Loading...</div>
+			{:else if archivedCards.length === 0}
+				<div class="archive-empty">
+					<span class="archive-empty-icon">📦</span>
+					<p>No archived cards</p>
+					<p class="archive-empty-hint">Deleted cards will appear here for recovery</p>
+				</div>
+			{:else}
+				<div class="archive-list">
+					{#each archivedCards as card (card.id)}
+						<div class="archive-card">
+							<div class="archive-card-info">
+								<span class="archive-card-title">{card.title}</span>
+								{#if card.archivedAt}
+									<span class="archive-card-date">Archived {new Date(card.archivedAt + 'Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
+								{/if}
+							</div>
+							<div class="archive-card-actions">
+								<button class="btn-ghost small" onclick={() => restoreCard(card.id)} title="Restore">
+									↩️ Restore
+								</button>
+								<button class="btn-ghost small danger" onclick={() => {
+									showConfirm('Delete Permanently', `Permanently delete "${card.title}"? This cannot be undone.`, 'Delete Forever', async () => {
+										await permanentlyDeleteCard(card.id);
+										confirmState.show = false;
+									});
+								}} title="Delete permanently">
+									🗑️
+								</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	</div>
 {/if}
 
 <!-- Bulk Action Bar -->
@@ -1513,4 +1653,59 @@
 
 	/* Progress ring */
 	.progress-ring { flex-shrink: 0; transition: stroke-dashoffset 0.3s ease-out; }
+
+	/* ─── WIP Limit Styles ──────────────────────────────────────────────── */
+	.wip-warning { box-shadow: inset 0 0 0 2px rgba(245, 158, 11, 0.35); }
+	.wip-warning .column-top-bar { animation: wip-pulse 2s ease-in-out infinite; }
+	@keyframes wip-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+	.wip-over { color: #f59e0b !important; font-weight: 700; }
+	.wip-limit-label { color: var(--text-tertiary); font-weight: 400; }
+
+	.wip-limit-edit { padding: 8px 12px; }
+	.wip-label { font-size: 0.72rem; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 6px; }
+	.wip-input-row { display: flex; align-items: center; gap: 6px; }
+	.wip-input {
+		width: 60px; padding: 4px 8px; border-radius: var(--radius-sm);
+		border: 1px solid var(--glass-border); background: var(--bg-surface);
+		color: var(--text-primary); font-size: 0.82rem; text-align: center;
+		font-family: var(--font-family);
+	}
+	.wip-input:focus { outline: none; border-color: var(--accent-indigo); }
+
+	/* ─── Archive Panel Styles ──────────────────────────────────────────── */
+	.archive-panel {
+		position: fixed; top: 0; right: 0; bottom: 0; width: 360px; z-index: 100;
+		background: var(--bg-card); border-left: 1px solid var(--glass-border);
+		box-shadow: -4px 0 24px rgba(0,0,0,0.15); display: flex; flex-direction: column;
+		animation: slide-in-right 0.2s ease-out;
+	}
+	@keyframes slide-in-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
+	.side-panel-header {
+		display: flex; align-items: center; justify-content: space-between;
+		padding: var(--space-lg); border-bottom: 1px solid var(--glass-border); flex-shrink: 0;
+	}
+	.side-panel-header h3 { font-size: 0.95rem; font-weight: 700; }
+	.side-panel-body { flex: 1; overflow-y: auto; padding: var(--space-md); }
+
+	.archive-loading { text-align: center; padding: var(--space-xl); color: var(--text-tertiary); font-size: 0.85rem; }
+
+	.archive-empty { text-align: center; padding: var(--space-xl) var(--space-md); }
+	.archive-empty-icon { font-size: 2rem; display: block; margin-bottom: var(--space-sm); }
+	.archive-empty p { color: var(--text-secondary); font-size: 0.85rem; margin: 2px 0; }
+	.archive-empty-hint { color: var(--text-tertiary); font-size: 0.75rem; }
+
+	.archive-list { display: flex; flex-direction: column; gap: var(--space-sm); }
+	.archive-card {
+		display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md);
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.archive-card:hover { border-color: var(--accent-indigo); }
+	.archive-card-info { flex: 1; min-width: 0; }
+	.archive-card-title { font-size: 0.82rem; font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.archive-card-date { font-size: 0.68rem; color: var(--text-tertiary); }
+	.archive-card-actions { display: flex; gap: 4px; flex-shrink: 0; }
+	.archive-card-actions .danger { color: var(--accent-rose); }
+	.archive-card-actions .danger:hover { background: rgba(239, 68, 68, 0.1); }
 </style>

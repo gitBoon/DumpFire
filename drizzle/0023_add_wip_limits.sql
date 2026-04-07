@@ -1,0 +1,1 @@
+ALTER TABLE columns ADD COLUMN wip_limit INTEGER DEFAULT 0;

@@ -139,6 +139,25 @@
 	let totalCards = $derived(data.boards.reduce((t, b) => t + b.totalCards, 0));
 	let completedCards = $derived(data.boards.reduce((t, b) => t + b.completedCards, 0));
 
+	// ─── Board Favourites ────────────────────────────────────────────────────
+	let favouriteBoardIds = $state<Set<number>>(new Set(data.favouriteBoardIds || []));
+
+	$effect(() => {
+		favouriteBoardIds = new Set(data.favouriteBoardIds || []);
+	});
+
+	async function toggleFavourite(boardId: number, e: MouseEvent) {
+		e.stopPropagation();
+		e.preventDefault();
+		const next = new Set(favouriteBoardIds);
+		if (next.has(boardId)) next.delete(boardId);
+		else next.add(boardId);
+		favouriteBoardIds = next;
+		await fetch(`/api/boards/${boardId}/favourite`, { method: 'POST' });
+	}
+
+	let favouriteBoards = $derived(data.boards.filter(b => favouriteBoardIds.has(b.id)));
+
 	const a = $derived(data.analytics);
 
 	// Group boards by category for dashboard display
@@ -367,6 +386,39 @@
 						<span class="board-row-action"></span>
 					</a>
 
+					<!-- Favourites Section -->
+					{#if favouriteBoards.length > 0}
+						<div class="category-group favourites-group">
+							<div class="category-group-header fav-header">
+								<span class="fav-star">⭐</span>
+								<span class="category-group-name fav-name">Favourites</span>
+								<span class="category-group-count">{favouriteBoards.length}</span>
+							</div>
+							<div class="cat-boards-wrapper animate-slide-up">
+								{#each favouriteBoards as board (board.id)}
+									<a href="/board/{board.id}" class="board-row fav-row">
+										<span class="board-row-emoji glass">{board.emoji}</span>
+										<div class="board-row-text">
+											<span class="board-row-name">{board.name}</span>
+											<span class="board-row-meta">Activity {timeAgo(board.lastActivity)}</span>
+										</div>
+										<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
+										<div class="board-row-progress">
+											{#if board.totalCards > 0}
+												{@const pct = Math.round((board.completedCards / board.totalCards) * 100)}
+												<div class="progress-track"><div class="progress-fill" class:complete={pct === 100} style="width: {pct}%"></div></div>
+												<span class="progress-pct" class:complete={pct === 100}>{pct}%</span>
+											{:else}
+												<span class="progress-pct empty">—</span>
+											{/if}
+										</div>
+										<button class="row-fav-btn favourited" title="Remove from favourites" onclick={(e) => toggleFavourite(board.id, e)}>⭐</button>
+									</a>
+								{/each}
+							</div>
+						</div>
+					{/if}
+
 					{#each boardGroups as group}
 						<!-- Category group header -->
 						<div class="category-group">
@@ -421,6 +473,14 @@
 													{@const activeSubs = board.subBoards.filter((s: any) => showCompletedSubs || !(s.total > 0 && s.done === s.total))}
 													<span class="sub-count-badge" class:all-done={activeSubs.length === 0}>{activeSubs.length}/{board.subBoards.length} sub</span>
 												{/if}
+												<button
+													class="row-fav-btn"
+													class:favourited={favouriteBoardIds.has(board.id)}
+													title={favouriteBoardIds.has(board.id) ? 'Remove from favourites' : 'Add to favourites'}
+													onclick={(e) => toggleFavourite(board.id, e)}
+												>
+													{favouriteBoardIds.has(board.id) ? '⭐' : '☆'}
+												</button>
 												<button
 													class="row-delete-btn"
 													title="Delete board"
@@ -1340,4 +1400,24 @@
 	.qs-label { font-size: 0.68rem; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.03em; }
 	.qs-value { font-size: 0.78rem; font-weight: 800; color: var(--text-primary); }
 	.qs-value.qs-warn { color: var(--accent-rose); }
+
+	/* ─── Favourites ──────────────────────────────────────────── */
+	.row-fav-btn {
+		background: none; border: none; cursor: pointer;
+		font-size: 0.85rem; padding: 2px 4px; border-radius: var(--radius-sm);
+		opacity: 0; transition: all var(--duration-fast) var(--ease-out);
+		flex-shrink: 0; line-height: 1;
+	}
+	.board-row:hover .row-fav-btn,
+	.row-fav-btn.favourited { opacity: 1; }
+	.row-fav-btn:hover { transform: scale(1.2); }
+
+	.favourites-group { border-left: 3px solid #f59e0b; }
+	.fav-header {
+		display: flex; align-items: center; gap: var(--space-sm);
+		padding: 8px var(--space-md); cursor: default;
+	}
+	.fav-star { font-size: 0.85rem; }
+	.fav-name { font-weight: 700; color: #f59e0b; font-size: 0.78rem; }
+	.fav-row { border-left: 2px solid rgba(245, 158, 11, 0.25); }
 </style>
