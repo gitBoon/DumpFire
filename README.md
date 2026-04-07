@@ -157,8 +157,126 @@ docker run -d \
 | `DB_PATH` | Path to the SQLite database file inside the container | `/app/data/dumpfire.db` |
 | `ORIGIN` | Public URL for CSRF protection (must match how users access the app) | `http://localhost:3000` |
 | `PORT` | Port the server listens on | `3000` |
+| `COOKIE_SECURE` | Set to `false` to allow session cookies over plain HTTP (see [HTTPS & Reverse Proxies](#https--reverse-proxies)) | `true` in production |
 
 ---
+
+### HTTPS & Reverse Proxies
+
+In production the session cookie is set with the `secure` flag, which means browsers will only send it over HTTPS connections. If you put DumpFire behind a reverse proxy that terminates SSL — **which is the recommended approach** — everything works automatically as long as `ORIGIN` is set to your `https://` URL.
+
+DumpFire's Dockerfile already includes `PROTOCOL_HEADER=X-Forwarded-Proto` and `HOST_HEADER=X-Forwarded-Host` so that SvelteKit trusts the forwarded headers from your proxy.
+
+#### Cloudflare Tunnels (easiest)
+
+Cloudflare Tunnels handle HTTPS, DNS, and DDoS protection with zero server configuration. No ports to open, no certificates to manage.
+
+1. Install `cloudflared` on your server
+2. Create a tunnel pointed at `http://localhost:3000`
+3. Set `ORIGIN=https://kanban.yourdomain.com` in your container
+
+That's it — Cloudflare handles the TLS certificate automatically.
+
+```bash
+cloudflared tunnel --url http://localhost:3000
+```
+
+#### Caddy (automatic HTTPS)
+
+Caddy obtains and renews Let's Encrypt certificates automatically. A single-line `Caddyfile` is all you need:
+
+```caddyfile
+kanban.yourdomain.com {
+    reverse_proxy dumpfire:3000
+}
+```
+
+Add Caddy as a service in your `docker-compose.yml`:
+
+```yaml
+services:
+  dumpfire:
+    build: .
+    environment:
+      - ORIGIN=https://kanban.yourdomain.com
+    volumes:
+      - dumpfire-data:/app/data
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy-data:/data
+    depends_on:
+      - dumpfire
+    restart: unless-stopped
+
+volumes:
+  dumpfire-data:
+  caddy-data:
+```
+
+#### Nginx + Let's Encrypt
+
+A more traditional setup with full control over TLS configuration.
+
+Example `nginx.conf`:
+
+```nginx
+server {
+    listen 80;
+    server_name kanban.yourdomain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name kanban.yourdomain.com;
+
+    ssl_certificate     /etc/letsencrypt/live/kanban.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/kanban.yourdomain.com/privkey.pem;
+
+    location / {
+        proxy_pass http://dumpfire:3000;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+    }
+}
+```
+
+Use Certbot to obtain the initial certificate:
+
+```bash
+certbot certonly --standalone -d kanban.yourdomain.com
+```
+
+#### Running without HTTPS
+
+If you're running on a **trusted local network** and don't need HTTPS (e.g. home lab, LAN-only access), set `COOKIE_SECURE=false` so the session cookie works over plain HTTP:
+
+```yaml
+# docker-compose.yml
+environment:
+  - ORIGIN=http://192.168.1.50:3000
+  - COOKIE_SECURE=false
+```
+
+Or with `docker run`:
+
+```bash
+docker run -e ORIGIN=http://192.168.1.50:3000 -e COOKIE_SECURE=false ...
+```
+
+> **⚠️ Warning:** With `COOKIE_SECURE=false`, session cookies are sent in the clear. Only use this on networks you trust.
 
 ## Updating to a New Version
 
