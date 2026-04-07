@@ -38,6 +38,12 @@
 		show: false, request: null, reason: ''
 	});
 
+	// Conversation modal state
+	type ChatMessage = { id: number; requestId: number; senderType: string; senderName: string; message: string; createdAt: string };
+	let chatModal = $state<{ show: boolean; request: TaskRequest | null; messages: ChatMessage[]; newMsg: string; sending: boolean }>({
+		show: false, request: null, messages: [], newMsg: '', sending: false
+	});
+
 	let showResolved = $state(false);
 
 	const pendingRequests = $derived(
@@ -123,6 +129,29 @@
 	const priorityLabels: Record<string, string> = {
 		critical: '🔴 Critical', high: '🟠 High', medium: '🟡 Medium', low: '🟢 Low'
 	};
+
+	async function openChat(req: TaskRequest) {
+		chatModal = { show: true, request: req, messages: [], newMsg: '', sending: false };
+		const res = await fetch(`/api/requests/${req.id}/messages`);
+		if (res.ok) chatModal.messages = await res.json();
+	}
+
+	async function sendChatMessage() {
+		if (!chatModal.request || !chatModal.newMsg.trim()) return;
+		chatModal.sending = true;
+		const res = await fetch(`/api/requests/${chatModal.request.id}/messages`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ message: chatModal.newMsg.trim() })
+		});
+		chatModal.sending = false;
+		if (res.ok) {
+			chatModal.newMsg = '';
+			// Reload messages
+			const msgRes = await fetch(`/api/requests/${chatModal.request.id}/messages`);
+			if (msgRes.ok) chatModal.messages = await msgRes.json();
+		}
+	}
 </script>
 
 <svelte:head>
@@ -188,6 +217,9 @@
 								{/if}
 							</span>
 							<div class="request-actions">
+								<button class="btn-discuss" onclick={() => openChat(req)}>
+									💬 Discuss
+								</button>
 								<button class="btn-accept" onclick={() => acceptModal = { show: true, request: req, boardId: null, columnId: null, assigneeId: null }}>
 									✅ Accept
 								</button>
@@ -314,6 +346,55 @@
 			<div class="modal-actions">
 				<button class="btn-cancel" onclick={() => rejectModal = { show: false, request: null, reason: '' }}>Cancel</button>
 				<button class="btn-reject-confirm" onclick={rejectRequest}>Reject Request</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Conversation Modal -->
+{#if chatModal.show && chatModal.request}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="modal-overlay" onclick={() => chatModal = { show: false, request: null, messages: [], newMsg: '', sending: false }}>
+		<div class="modal-card chat-modal" onclick={(e) => e.stopPropagation()}>
+			<div class="chat-header">
+				<div>
+					<h2>💬 Discussion</h2>
+					<p class="chat-title">{chatModal.request.title}</p>
+					{#if chatModal.request.requesterEmail}
+						<p class="chat-requester-info">With: {chatModal.request.requesterName} ({chatModal.request.requesterEmail})</p>
+					{/if}
+				</div>
+				<button class="chat-close" onclick={() => chatModal = { show: false, request: null, messages: [], newMsg: '', sending: false }}>✕</button>
+			</div>
+
+			<div class="chat-messages">
+				{#if chatModal.messages.length === 0}
+					<div class="chat-empty">No messages yet. Start the conversation!</div>
+				{:else}
+					{#each chatModal.messages as msg}
+						<div class="chat-bubble" class:chat-admin={msg.senderType === 'admin'} class:chat-requester-bubble={msg.senderType === 'requester'}>
+							<div class="chat-bubble-header">
+								<span class="chat-sender">{msg.senderType === 'admin' ? '🛡️' : '👤'} {msg.senderName}</span>
+								<span class="chat-time">{timeAgo(msg.createdAt)}</span>
+							</div>
+							<p class="chat-text">{msg.message}</p>
+						</div>
+					{/each}
+				{/if}
+			</div>
+
+			<div class="chat-input-area">
+				<textarea
+					bind:value={chatModal.newMsg}
+					placeholder="Type a message..."
+					rows="2"
+					class="chat-textarea"
+					onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendChatMessage(); }}
+				></textarea>
+				<button class="btn-send-chat" disabled={chatModal.sending || !chatModal.newMsg.trim()} onclick={sendChatMessage}>
+					{chatModal.sending ? '...' : '📨 Send'}
+				</button>
 			</div>
 		</div>
 	</div>
@@ -507,4 +588,72 @@
 		font-size: 0.82rem; cursor: pointer; font-family: var(--font-family);
 	}
 	.btn-reject-confirm:hover { background: #dc2626; }
+
+	/* Discuss button */
+	.btn-discuss {
+		padding: 6px 14px; border-radius: var(--radius-md);
+		font-size: 0.78rem; font-weight: 600; cursor: pointer;
+		border: 1px solid rgba(99, 102, 241, 0.2); font-family: var(--font-family);
+		background: rgba(99, 102, 241, 0.08); color: var(--accent-indigo);
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.btn-discuss:hover { background: rgba(99, 102, 241, 0.15); }
+
+	/* Chat modal */
+	.chat-modal { max-width: 560px; width: 95%; display: flex; flex-direction: column; max-height: 80vh; }
+	.chat-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: var(--space-md); }
+	.chat-header h2 { margin: 0; font-size: 1.1rem; }
+	.chat-title { font-size: 0.82rem; color: var(--text-secondary); margin: 2px 0 0; font-weight: 500; }
+	.chat-requester-info { font-size: 0.72rem; color: var(--text-tertiary); margin: 2px 0 0; }
+	.chat-close {
+		background: none; border: none; font-size: 1.1rem; cursor: pointer;
+		color: var(--text-tertiary); padding: 4px; line-height: 1;
+	}
+	.chat-close:hover { color: var(--text-primary); }
+
+	.chat-messages {
+		flex: 1; overflow-y: auto; display: flex; flex-direction: column;
+		gap: var(--space-sm); padding: var(--space-sm) 0;
+		min-height: 150px; max-height: 350px;
+		border-top: 1px solid var(--glass-border);
+		border-bottom: 1px solid var(--glass-border);
+		margin-bottom: var(--space-sm);
+	}
+	.chat-empty { text-align: center; color: var(--text-tertiary); font-size: 0.82rem; padding: var(--space-lg); }
+
+	.chat-bubble {
+		max-width: 80%; padding: var(--space-sm) var(--space-md);
+		border-radius: var(--radius-md); font-size: 0.82rem;
+	}
+	.chat-admin {
+		align-self: flex-end;
+		background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.15);
+		border-bottom-right-radius: 4px;
+	}
+	.chat-requester-bubble {
+		align-self: flex-start;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-bottom-left-radius: 4px;
+	}
+	.chat-bubble-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; }
+	.chat-sender { font-size: 0.68rem; font-weight: 600; color: var(--text-secondary); }
+	.chat-time { font-size: 0.6rem; color: var(--text-tertiary); }
+	.chat-text { margin: 0; color: var(--text-primary); line-height: 1.5; white-space: pre-wrap; }
+
+	.chat-input-area { display: flex; gap: var(--space-sm); align-items: flex-end; }
+	.chat-textarea {
+		flex: 1; padding: 8px 12px;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); color: var(--text-primary);
+		font-family: var(--font-family); font-size: 0.82rem; resize: none;
+	}
+	.chat-textarea:focus { outline: none; border-color: var(--accent-indigo); }
+	.btn-send-chat {
+		padding: 8px 14px; background: var(--accent-indigo); color: white; border: none;
+		border-radius: var(--radius-md); font-weight: 600; font-size: 0.78rem;
+		cursor: pointer; font-family: var(--font-family); white-space: nowrap;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.btn-send-chat:hover:not(:disabled) { background: #5558e6; }
+	.btn-send-chat:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

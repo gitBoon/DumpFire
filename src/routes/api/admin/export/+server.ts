@@ -1,50 +1,34 @@
-import { json } from '@sveltejs/kit';
-import { db, sqlite } from '$lib/server/db';
+/**
+ * /api/admin/export — Download a complete SQLite database backup.
+ *
+ * Uses VACUUM INTO to create a self-contained .db copy that includes all WAL
+ * data. This captures everything automatically — no need to list tables.
+ */
+
+import { sqlite, getDbPath } from '$lib/server/db';
+import { readFileSync, unlinkSync } from 'node:fs';
 
 export async function GET() {
-	// Full database export — every table except ephemeral sessions/invite_tokens
-	const data = {
-		version: 2,
-		exportedAt: new Date().toISOString(),
+	const dbPath = getDbPath();
+	const backupPath = dbPath + '.export-temp';
 
-		// Users & Auth
-		users: sqlite.prepare('SELECT * FROM users').all(),
+	// Remove any stale temp file
+	try { unlinkSync(backupPath); } catch {}
 
-		// Teams
-		teams: sqlite.prepare('SELECT * FROM teams').all(),
-		teamMembers: sqlite.prepare('SELECT * FROM team_members').all(),
+	// VACUUM INTO creates a complete, self-contained copy including all WAL data
+	sqlite.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
 
-		// Boards & Access Control
-		boards: sqlite.prepare('SELECT * FROM boards').all(),
-		boardCategories: sqlite.prepare('SELECT * FROM board_categories').all(),
-		boardMembers: sqlite.prepare('SELECT * FROM board_members').all(),
-		boardTeams: sqlite.prepare('SELECT * FROM board_teams').all(),
+	const dbBuffer = readFileSync(backupPath);
 
-		// Columns, Cards & Related
-		columns: sqlite.prepare('SELECT * FROM columns').all(),
-		categories: sqlite.prepare('SELECT * FROM categories').all(),
-		cards: sqlite.prepare('SELECT * FROM cards').all(),
-		subtasks: sqlite.prepare('SELECT * FROM subtasks').all(),
-		labels: sqlite.prepare('SELECT * FROM labels').all(),
-		cardLabels: sqlite.prepare('SELECT * FROM card_labels').all(),
-		cardAssignees: sqlite.prepare('SELECT * FROM card_assignees').all(),
-		cardComments: sqlite.prepare('SELECT * FROM card_comments').all(),
+	// Clean up temp file
+	try { unlinkSync(backupPath); } catch {}
 
-		// Activity & XP
-		activityLog: sqlite.prepare('SELECT * FROM activity_log').all(),
-		userXp: sqlite.prepare('SELECT * FROM user_xp').all(),
+	const timestamp = new Date().toISOString().slice(0, 10);
 
-		// Task Requests
-		taskRequests: sqlite.prepare('SELECT * FROM task_requests').all(),
-
-		// Settings
-		settings: sqlite.prepare('SELECT * FROM settings').all()
-	};
-
-	return new Response(JSON.stringify(data, null, 2), {
+	return new Response(dbBuffer, {
 		headers: {
-			'Content-Type': 'application/json',
-			'Content-Disposition': `attachment; filename="dumpfire-backup-${new Date().toISOString().slice(0, 10)}.json"`
+			'Content-Type': 'application/x-sqlite3',
+			'Content-Disposition': `attachment; filename="dumpfire-backup-${timestamp}.db"`
 		}
 	});
 }

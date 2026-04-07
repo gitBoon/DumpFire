@@ -22,6 +22,13 @@
       "when": 1775548934071,
       "tag": "0002_abandoned_sally_floyd",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1775556880875,
+      "tag": "0003_big_scrambler",
+      "breakpoints": true
     }
   ]
 }

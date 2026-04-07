@@ -33,6 +33,8 @@
 	async function submit() {
 		if (!title.trim()) { errorMsg = 'Title is required'; return; }
 		if (!selectedTarget) { errorMsg = 'Please select a target'; return; }
+		if (!requesterName.trim()) { errorMsg = 'Your name is required'; return; }
+		if (!requesterEmail.trim()) { errorMsg = 'Your email is required'; return; }
 
 		const [type, idStr] = selectedTarget.split(':');
 		const targetId = Number(idStr);
@@ -84,12 +86,16 @@
 				<div class="success-icon">✅</div>
 				<h1>Request Submitted!</h1>
 				<p>Your task request has been sent and will be reviewed shortly.</p>
-				<button class="btn-primary" onclick={() => { submitted = false; title = ''; description = ''; businessValue = ''; selectedTarget = ''; priority = 'medium'; requesterName = ''; requesterEmail = ''; }}>
-					Submit Another
-				</button>
+				<div class="success-actions">
+					<button class="btn-primary" onclick={() => { submitted = false; title = ''; description = ''; businessValue = ''; selectedTarget = ''; priority = 'medium'; requesterName = ''; requesterEmail = ''; }}>
+						Submit Another
+					</button>
+					<a href="/" class="btn-home">🏠 Home</a>
+				</div>
 			</div>
 		{:else}
 			<div class="form-header">
+				<a href="/" class="home-link" title="Home">🏠</a>
 				<div class="form-icon">📋</div>
 				<h1>Request a Task</h1>
 				<p class="form-subtitle">Submit a feature request, bug report, or task to a team or person.</p>
@@ -150,12 +156,12 @@
 					</div>
 				</div>
 
-				<!-- Requester info (for unauthenticated users) -->
+				<!-- Requester info -->
 				<div class="form-group requester-fields">
-					<label>Your details <span class="optional">(optional)</span></label>
+					<label>Your details <span class="required">*</span></label>
 					<div class="requester-row">
-						<input type="text" bind:value={requesterName} placeholder="Your name" class="form-input" />
-						<input type="email" bind:value={requesterEmail} placeholder="Your email" class="form-input" />
+						<input type="text" bind:value={requesterName} placeholder="Your name" class="form-input" required />
+						<input type="email" bind:value={requesterEmail} placeholder="Your email" class="form-input" required />
 					</div>
 				</div>
 
@@ -266,4 +272,22 @@
 		transition: all var(--duration-fast) var(--ease-out);
 	}
 	.btn-primary:hover { background: #5558e6; }
+
+	/* Home link */
+	.home-link {
+		position: absolute; top: 0; right: 0;
+		font-size: 1.4rem; text-decoration: none;
+		opacity: 0.5; transition: opacity var(--duration-fast) var(--ease-out);
+	}
+	.home-link:hover { opacity: 1; }
+	.form-header { position: relative; }
+
+	.success-actions { display: flex; gap: var(--space-sm); justify-content: center; align-items: center; }
+	.btn-home {
+		padding: 10px 24px; background: var(--bg-surface); color: var(--text-secondary);
+		border: 1px solid var(--glass-border); border-radius: var(--radius-md); font-weight: 600;
+		font-size: 0.85rem; text-decoration: none; font-family: var(--font-family);
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.btn-home:hover { background: var(--bg-hover); color: var(--text-primary); }
 </style>

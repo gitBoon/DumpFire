@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamMembers, boardCategories, type Board } from '$lib/server/db/schema';
+import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamMembers, boardCategories, users, type Board } from '$lib/server/db/schema';
 import { desc, eq, inArray, isNull, isNotNull, and, gte, sql } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
@@ -160,12 +160,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const monthAgoStr = monthAgo.toISOString();
 	const completedThisMonth = myCompletedCards.filter(c => c.completedAt && c.completedAt >= monthAgoStr).length;
 
-	// Recent activity (last 8 entries for this user)
+	// Recent activity (last 10 entries for this user)
 	const recentActivity = db.select()
 		.from(activityLog)
 		.where(eq(activityLog.userId, user.id))
 		.orderBy(desc(activityLog.createdAt))
-		.limit(8)
+		.limit(10)
 		.all();
 
 	// Pending inbox requests
@@ -187,6 +187,148 @@ export const load: PageServerLoad = async ({ locals }) => {
 		}).length;
 	} catch { /* table may not exist yet */ }
 
+	// ─── Weekly Activity Sparkline (last 7 days) ────────────────────────────
+	const weeklyActivity: { day: string; count: number }[] = [];
+	for (let i = 6; i >= 0; i--) {
+		const d = new Date();
+		d.setDate(d.getDate() - i);
+		const dayStr = d.toISOString().split('T')[0];
+		const dayLabel = d.toLocaleDateString('en-GB', { weekday: 'short' });
+		const count = myCompletedCards.filter(c => c.completedAt && c.completedAt.startsWith(dayStr)).length;
+		weeklyActivity.push({ day: dayLabel, count });
+	}
+
+	// Total sub-boards count
+	const totalSubBoards = allSubBoards.length;
+
+	// Board health: top boards sorted by completion % for sidebar overview
+	const boardHealth = enriched
+		.filter(b => b.totalCards > 0)
+		.map(b => ({
+			id: b.id,
+			name: b.name,
+			emoji: b.emoji || '📋',
+			totalCards: b.totalCards,
+			completedCards: b.completedCards,
+			pct: Math.round((b.completedCards / b.totalCards) * 100)
+		}))
+		.sort((a, b) => b.pct - a.pct)
+		.slice(0, 8);
+
+	// Due soon: cards due within next 3 days that aren't completed
+	const threeDaysFromNow = new Date();
+	threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3);
+	const threeDaysStr = threeDaysFromNow.toISOString().split('T')[0];
+	const dueSoon = myActiveCards
+		.filter(c => c.dueDate && c.dueDate >= now && c.dueDate <= threeDaysStr)
+		.length;
+
+	// ─── Category Distribution ──────────────────────────────────────────────
+	const categoryDistribution: { name: string; color: string; count: number }[] = [];
+	const catCountMap = new Map<string, { color: string; count: number }>();
+	for (const board of enriched) {
+		const catKey = board.categoryName || 'Uncategorised';
+		const existing = catCountMap.get(catKey);
+		if (existing) {
+			existing.count += board.totalCards;
+		} else {
+			catCountMap.set(catKey, { color: board.categoryColor || '#6366f1', count: board.totalCards });
+		}
+	}
+	for (const [name, data] of catCountMap.entries()) {
+		categoryDistribution.push({ name, color: data.color, count: data.count });
+	}
+	categoryDistribution.sort((a, b) => b.count - a.count);
+
+	// ─── Aging Tasks (how long active cards have been open) ──────────────
+	const agingBuckets = { fresh: 0, week: 0, fortnight: 0, month: 0, stale: 0 };
+	const nowMs = Date.now();
+	for (const c of myActiveCards) {
+		const created = new Date(c.createdAt.endsWith('Z') ? c.createdAt : c.createdAt + 'Z').getTime();
+		const days = Math.floor((nowMs - created) / 86400000);
+		if (days <= 2) agingBuckets.fresh++;
+		else if (days <= 7) agingBuckets.week++;
+		else if (days <= 14) agingBuckets.fortnight++;
+		else if (days <= 30) agingBuckets.month++;
+		else agingBuckets.stale++;
+	}
+
+	// ─── Team Leaderboard (top assignees on YOUR boards) ────────────────
+	// Only count cards on boards the user has access to
+	const myBoardIds = allBoards.map(b => b.id);
+	const accessibleColIds = myBoardIds.length > 0
+		? db.select({ id: columns.id }).from(columns).where(inArray(columns.boardId, myBoardIds)).all().map(c => c.id)
+		: [];
+	const accessibleCardIds = accessibleColIds.length > 0
+		? new Set(db.select({ id: cards.id }).from(cards).where(inArray(cards.columnId, accessibleColIds)).all().map(c => c.id))
+		: new Set<number>();
+
+	const scopedAssigneeRows = db.select({
+		userId: cardAssignees.userId,
+		cardId: cardAssignees.cardId
+	}).from(cardAssignees).all().filter(r => accessibleCardIds.has(r.cardId));
+
+	const leaderMap = new Map<number, { completed: number; active: number }>();
+	for (const row of scopedAssigneeRows) {
+		if (!leaderMap.has(row.userId)) leaderMap.set(row.userId, { completed: 0, active: 0 });
+		const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, row.cardId)).get();
+		if (card) {
+			const col = db.select({ title: columns.title }).from(columns).where(eq(columns.id, card.columnId)).get();
+			const isDone = col && (col.title.toLowerCase() === 'complete' || col.title.toLowerCase() === 'done');
+			if (isDone) leaderMap.get(row.userId)!.completed++;
+			else leaderMap.get(row.userId)!.active++;
+		}
+	}
+
+	const allUsersList = db.select({ id: users.id, username: users.username, emoji: users.emoji }).from(users).all();
+	const userLookup = new Map(allUsersList.map(u => [u.id, u]));
+
+	const teamLeaderboard = Array.from(leaderMap.entries())
+		.map(([userId, stats]) => {
+			const u = userLookup.get(userId);
+			return { username: u?.username || 'Unknown', emoji: u?.emoji || '👤', completed: stats.completed, active: stats.active };
+		})
+		.sort((a, b) => b.completed - a.completed)
+		.slice(0, 5);
+
+	// ─── Upcoming Deadlines ─────────────────────────────────────────────
+	const upcomingDeadlines = myActiveCards
+		.filter(c => c.dueDate && c.dueDate >= now)
+		.sort((a, b) => a.dueDate!.localeCompare(b.dueDate!))
+		.slice(0, 5)
+		.map(c => ({
+			title: c.title,
+			dueDate: c.dueDate!,
+			priority: c.priority
+		}));
+
+	// ─── 4-Week Trend (weekly completed counts) ─────────────────────────
+	const weeklyTrend: { label: string; count: number }[] = [];
+	for (let w = 3; w >= 0; w--) {
+		const start = new Date();
+		start.setDate(start.getDate() - (w + 1) * 7);
+		const end = new Date();
+		end.setDate(end.getDate() - w * 7);
+		const label = w === 0 ? 'This Week' : w === 1 ? 'Last Week' : `${w + 1}w ago`;
+		const count = myCompletedCards.filter(c => {
+			if (!c.completedAt) return false;
+			return c.completedAt >= start.toISOString() && c.completedAt < end.toISOString();
+		}).length;
+		weeklyTrend.push({ label, count });
+	}
+
+	// ─── On Hold count ──────────────────────────────────────────────────
+	const onHoldColumnIds = new Set<number>();
+	if (allColumnIds.length > 0) {
+		const cols = db.select({ id: columns.id, title: columns.title })
+			.from(columns)
+			.where(inArray(columns.id, allColumnIds))
+			.all();
+		cols.filter(c => c.title.toLowerCase() === 'on hold' || c.title.toLowerCase() === 'blocked' || c.title.toLowerCase() === 'waiting')
+			.forEach(c => onHoldColumnIds.add(c.id));
+	}
+	const onHoldCount = myCards.filter(c => onHoldColumnIds.has(c.columnId)).length;
+
 	const analytics = {
 		totalAssigned: myCards.length,
 		active: myActiveCards.length,
@@ -197,7 +339,18 @@ export const load: PageServerLoad = async ({ locals }) => {
 		completedThisMonth,
 		priorityCounts,
 		pendingRequests,
-		recentActivity
+		recentActivity,
+		weeklyActivity,
+		totalSubBoards,
+		boardHealth,
+		dueSoon,
+		totalBoards: allBoards.length,
+		categoryDistribution,
+		agingBuckets,
+		teamLeaderboard,
+		upcomingDeadlines,
+		weeklyTrend,
+		onHoldCount
 	};
 
 	return { boards: enriched, analytics, allCategories };

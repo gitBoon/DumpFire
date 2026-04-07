@@ -41,6 +41,363 @@
 		confirmAction = { show: true, title, message, action };
 	}
 
+	// ─── Scheduled Backups ────────────────────────────────────────────────
+
+	type DestType = 'sftp' | 's3' | 'gdrive' | 'onedrive';
+
+	interface DestinationUI {
+		type: DestType;
+		name: string;
+		[key: string]: unknown;
+	}
+
+	interface BackupHistoryEntry {
+		id: number;
+		destinationType: string;
+		destinationName: string;
+		filename: string;
+		sizeBytes: number | null;
+		status: string;
+		error: string | null;
+		durationMs: number | null;
+		createdAt: string;
+	}
+
+	let backupSchedule = $state('disabled');
+	let backupScheduleTime = $state('02:00');
+	let backupScheduleDay = $state(0);
+	let backupRetention = $state(7);
+	let backupNotifyOnFailure = $state(false);
+	let backupNotifyEmail = $state('');
+	let backupDestinations = $state<DestinationUI[]>([]);
+	let backupHistory = $state<BackupHistoryEntry[]>([]);
+	let backupLoading = $state(true);
+	let backupSaving = $state(false);
+	let backupRunning = $state(false);
+	let showAddDestination = $state(false);
+	let newDestType = $state<DestType>('sftp');
+	let testingDest = $state<string | null>(null);
+	let editingDest = $state<string | null>(null);
+
+	// Destination form fields (shared for add/edit)
+	let destName = $state('');
+	let destHost = $state('');
+	let destPort = $state(22);
+	let destUsername = $state('');
+	let destPassword = $state('');
+	let destPrivateKey = $state('');
+	let destRemotePath = $state('/backups');
+	let destRegion = $state('us-east-1');
+	let destBucket = $state('');
+	let destAccessKey = $state('');
+	let destSecretKey = $state('');
+	let destPrefix = $state('dumpfire/');
+	let destEndpoint = $state('');
+	let destServiceAccountJson = $state('');
+	let destFolderId = $state('');
+	let destGdriveAuthMethod = $state<'oauth' | 'service_account'>('oauth');
+	let destGdriveClientId = $state('');
+	let destGdriveClientSecret = $state('');
+	let destGdriveRefreshToken = $state('');
+	let destTenantId = $state('');
+	let destClientId = $state('');
+	let destClientSecret = $state('');
+	let destFolderPath = $state('/DumpFire Backups');
+
+	$effect(() => {
+		loadBackupConfig();
+		loadAppUrl();
+	});
+
+	// ─── Application Settings ────────────────────────────────────────────
+
+	let appUrl = $state('');
+	let appUrlSaving = $state(false);
+
+	async function loadAppUrl() {
+		try {
+			const res = await fetch('/api/admin/smtp');
+			if (res.ok) {
+				const data = await res.json();
+				appUrl = data.appUrl || '';
+			}
+		} catch {}
+	}
+
+	async function saveAppUrl() {
+		appUrlSaving = true;
+		try {
+			const res = await fetch('/api/admin/smtp', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ appUrl })
+			});
+			if (res.ok) showToast('App URL saved');
+			else showToast('Failed to save App URL', 'error');
+		} catch { showToast('Failed to save App URL', 'error'); }
+		appUrlSaving = false;
+	}
+
+	function resetDestForm() {
+		destName = ''; destHost = ''; destPort = 22; destUsername = ''; destPassword = '';
+		destPrivateKey = ''; destRemotePath = '/backups'; destRegion = 'us-east-1';
+		destBucket = ''; destAccessKey = ''; destSecretKey = ''; destPrefix = 'dumpfire/';
+		destEndpoint = ''; destServiceAccountJson = ''; destFolderId = '';
+		destGdriveAuthMethod = 'oauth'; destGdriveClientId = ''; destGdriveClientSecret = ''; destGdriveRefreshToken = '';
+		destTenantId = ''; destClientId = ''; destClientSecret = '';
+		destFolderPath = '/DumpFire Backups';
+	}
+
+	function populateDestForm(dest: DestinationUI) {
+		destName = dest.name || '';
+		if (dest.type === 'sftp') {
+			destHost = (dest.host as string) || ''; destPort = (dest.port as number) || 22;
+			destUsername = (dest.username as string) || ''; destPassword = (dest.password as string) || '';
+			destPrivateKey = (dest.privateKey as string) || ''; destRemotePath = (dest.remotePath as string) || '/backups';
+		} else if (dest.type === 's3') {
+			destRegion = (dest.region as string) || 'us-east-1'; destBucket = (dest.bucket as string) || '';
+			destAccessKey = (dest.accessKeyId as string) || ''; destSecretKey = (dest.secretAccessKey as string) || '';
+			destPrefix = (dest.prefix as string) || ''; destEndpoint = (dest.endpoint as string) || '';
+		} else if (dest.type === 'gdrive') {
+			destGdriveAuthMethod = (dest.authMethod as 'oauth' | 'service_account') || 'oauth';
+			destServiceAccountJson = (dest.serviceAccountJson as string) || '';
+			destFolderId = (dest.folderId as string) || '';
+			destGdriveClientId = (dest.clientId as string) || '';
+			destGdriveClientSecret = (dest.clientSecret as string) || '';
+			destGdriveRefreshToken = (dest.refreshToken as string) || '';
+		} else if (dest.type === 'onedrive') {
+			destTenantId = (dest.tenantId as string) || ''; destClientId = (dest.clientId as string) || '';
+			destClientSecret = (dest.clientSecret as string) || '';
+			destFolderPath = (dest.folderPath as string) || '/DumpFire Backups';
+		}
+	}
+
+	function buildDestConfig(): DestinationUI {
+		if (newDestType === 'sftp') {
+			return { type: 'sftp', name: destName, host: destHost, port: destPort, username: destUsername, password: destPassword, privateKey: destPrivateKey, remotePath: destRemotePath };
+		} else if (newDestType === 's3') {
+			return { type: 's3', name: destName, region: destRegion, bucket: destBucket, accessKeyId: destAccessKey, secretAccessKey: destSecretKey, prefix: destPrefix, endpoint: destEndpoint || undefined };
+		} else if (newDestType === 'gdrive') {
+			return {
+				type: 'gdrive', name: destName, folderId: destFolderId,
+				authMethod: destGdriveAuthMethod,
+				serviceAccountJson: destGdriveAuthMethod === 'service_account' ? destServiceAccountJson : undefined,
+				clientId: destGdriveAuthMethod === 'oauth' ? destGdriveClientId : undefined,
+				clientSecret: destGdriveAuthMethod === 'oauth' ? destGdriveClientSecret : undefined,
+				refreshToken: destGdriveAuthMethod === 'oauth' ? destGdriveRefreshToken : undefined
+			};
+		} else {
+			return { type: 'onedrive', name: destName, tenantId: destTenantId, clientId: destClientId, clientSecret: destClientSecret, folderPath: destFolderPath };
+		}
+	}
+
+	async function loadBackupConfig() {
+		backupLoading = true;
+		try {
+			const res = await fetch('/api/admin/backup');
+			if (res.ok) {
+				const d = await res.json();
+				backupSchedule = d.schedule || 'disabled';
+				backupScheduleTime = d.scheduleTime || '02:00';
+				backupScheduleDay = d.scheduleDay ?? 0;
+				backupRetention = d.retention ?? 7;
+				backupNotifyOnFailure = d.notifyOnFailure ?? false;
+				backupNotifyEmail = d.notifyEmail || '';
+				backupDestinations = d.destinations || [];
+				backupHistory = d.history || [];
+			}
+		} catch {}
+		backupLoading = false;
+	}
+
+	async function saveBackupConfig() {
+		backupSaving = true;
+		try {
+			const res = await fetch('/api/admin/backup', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					schedule: backupSchedule,
+					scheduleTime: backupScheduleTime,
+					scheduleDay: backupScheduleDay,
+					retention: backupRetention,
+					notifyOnFailure: backupNotifyOnFailure,
+					notifyEmail: backupNotifyEmail,
+					destinations: backupDestinations
+				})
+			});
+			if (res.ok) {
+				showToast('Backup settings saved');
+			} else {
+				showToast('Failed to save backup settings', 'error');
+			}
+		} catch {
+			showToast('Failed to save backup settings', 'error');
+		}
+		backupSaving = false;
+	}
+
+	function addDestination() {
+		if (!destName.trim()) { showToast('Destination name is required', 'error'); return; }
+		if (backupDestinations.some(d => d.name === destName.trim())) { showToast('A destination with that name already exists', 'error'); return; }
+		backupDestinations = [...backupDestinations, buildDestConfig()];
+		resetDestForm();
+		showAddDestination = false;
+		saveBackupConfig();
+	}
+
+	function updateDestination() {
+		if (!editingDest || !destName.trim()) return;
+		const idx = backupDestinations.findIndex(d => d.name === editingDest);
+		if (idx === -1) return;
+		const updated = [...backupDestinations];
+		updated[idx] = buildDestConfig();
+		backupDestinations = updated;
+		editingDest = null;
+		resetDestForm();
+		saveBackupConfig();
+	}
+
+	function removeDestination(name: string) {
+		backupDestinations = backupDestinations.filter(d => d.name !== name);
+		saveBackupConfig();
+	}
+
+	function startEditDestination(dest: DestinationUI) {
+		editingDest = dest.name;
+		newDestType = dest.type;
+		populateDestForm(dest);
+	}
+
+	async function testDestination(dest: DestinationUI) {
+		testingDest = dest.name;
+		try {
+			const res = await fetch('/api/admin/backup/test', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(dest)
+			});
+			const result = await res.json();
+			showToast(result.message || (result.success ? 'Connection successful' : 'Connection failed'), result.success ? 'success' : 'error');
+		} catch {
+			showToast('Connection test failed', 'error');
+		}
+		testingDest = null;
+	}
+
+	async function runManualBackup() {
+		backupRunning = true;
+		try {
+			const res = await fetch('/api/admin/backup', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({})
+			});
+			const result = await res.json();
+			const results = result.results || [];
+			const failed = results.filter((r: any) => r.status === 'failed');
+			if (failed.length === 0) {
+				showToast(`Backup completed to ${results.length} destination${results.length !== 1 ? 's' : ''}`);
+			} else {
+				showToast(`${failed.length} of ${results.length} backup(s) failed`, 'error');
+			}
+			await loadBackupConfig();
+		} catch {
+			showToast('Backup failed', 'error');
+		}
+		backupRunning = false;
+	}
+
+	const destTypeLabels: Record<DestType, string> = {
+		sftp: '🔐 SFTP / SCP',
+		s3: '☁️ Amazon S3',
+		gdrive: '📁 Google Drive',
+		onedrive: '💙 OneDrive'
+	};
+
+	function formatBytes(bytes: number | null): string {
+		if (!bytes) return '—';
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	}
+
+	function formatDuration(ms: number | null): string {
+		if (!ms) return '—';
+		if (ms < 1000) return `${ms}ms`;
+		return `${(ms / 1000).toFixed(1)}s`;
+	}
+
+	function formatRelativeTime(dateStr: string): string {
+		if (!dateStr) return '—';
+		// SQLite datetime('now') returns 'YYYY-MM-DD HH:MM:SS' (UTC, no Z)
+		// Normalise to ISO: replace space with T and append Z if no timezone
+		const normalized = dateStr.includes('T') ? dateStr : dateStr.replace(' ', 'T') + 'Z';
+		const d = new Date(normalized);
+		if (isNaN(d.getTime())) return dateStr;
+		const now = new Date();
+		const diff = now.getTime() - d.getTime();
+		const mins = Math.floor(diff / 60000);
+		if (mins < 1) return 'just now';
+		if (mins < 60) return `${mins}m ago`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h ago`;
+		const days = Math.floor(hrs / 24);
+		return `${days}d ago`;
+	}
+
+	/** Open Google OAuth consent and manage code exchange in a modal. */
+	let gdriveConnecting = $state('');
+	let gdriveAuthCode = $state('');
+	let gdriveExchanging = $state(false);
+
+	async function connectGDriveOAuth(destName: string) {
+		gdriveConnecting = destName;
+		gdriveAuthCode = '';
+		try {
+			const res = await fetch(`/api/admin/backup/gdrive/auth?dest=${encodeURIComponent(destName)}`);
+			if (!res.ok) { showToast('Failed to generate auth URL', 'error'); gdriveConnecting = ''; return; }
+			const { authUrl } = await res.json();
+			window.open(authUrl, '_blank', 'width=600,height=700');
+		} catch {
+			showToast('Failed to start OAuth flow', 'error');
+			gdriveConnecting = '';
+		}
+	}
+
+	async function exchangeGDriveCode() {
+		if (!gdriveAuthCode.trim() || !gdriveConnecting) return;
+		gdriveExchanging = true;
+
+		// Extract the code from a full URL if the user pasted the entire redirect URL
+		let code = gdriveAuthCode.trim();
+		try {
+			const urlObj = new URL(code);
+			const codeParam = urlObj.searchParams.get('code');
+			if (codeParam) code = codeParam;
+		} catch { /* not a URL, use as-is */ }
+
+		try {
+			const res = await fetch('/api/admin/backup/gdrive/auth', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ code, destName: gdriveConnecting })
+			});
+			const data = await res.json();
+			if (data.success) {
+				showToast(data.message || 'Google Drive connected!');
+				await loadBackupConfig();
+			} else {
+				showToast(data.message || 'Failed to connect', 'error');
+			}
+		} catch {
+			showToast('Failed to exchange authorization code', 'error');
+		}
+		gdriveExchanging = false;
+		gdriveConnecting = '';
+		gdriveAuthCode = '';
+	}
+
 	// ─── Board Management ─────────────────────────────────────────────────
 
 	async function deleteBoard(id: number) {
@@ -82,7 +439,7 @@
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = url;
-			a.download = `dumpfire-backup-${new Date().toISOString().slice(0, 10)}.json`;
+			a.download = `dumpfire-backup-${new Date().toISOString().slice(0, 10)}.db`;
 			document.body.append(a);
 			a.click();
 			a.remove();
@@ -107,19 +464,31 @@
 
 		importing = true;
 		try {
-			const text = await file.text();
-			const data = JSON.parse(text);
+			const isDbFile = file.name.endsWith('.db') || file.name.endsWith('.sqlite') || file.name.endsWith('.sqlite3');
 
-			if (!data.version || !data.boards) {
-				showToast('Invalid backup file format', 'error');
-				return;
+			let res: Response;
+			if (isDbFile) {
+				// Send raw binary for .db files
+				const buffer = await file.arrayBuffer();
+				res = await fetch('/api/admin/import', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/octet-stream' },
+					body: buffer
+				});
+			} else {
+				// Legacy JSON import
+				const text = await file.text();
+				const data = JSON.parse(text);
+				if (!data.version || !data.boards) {
+					showToast('Invalid backup file format', 'error');
+					return;
+				}
+				res = await fetch('/api/admin/import', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: text
+				});
 			}
-
-			const res = await fetch('/api/admin/import', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: text
-			});
 
 			const result = await res.json();
 			if (res.ok) {
@@ -304,7 +673,7 @@
 	let smtpPass = $state('');
 	let smtpFromAddress = $state('');
 	let smtpFromName = $state('DumpFire');
-	let appUrl = $state('');
+	// appUrl is now in Application Settings section above
 	let smtpLoading = $state(true);
 	let smtpSaving = $state(false);
 	let smtpTesting = $state(false);
@@ -329,7 +698,7 @@
 					smtpPass = data.pass || '';
 					smtpFromAddress = data.fromAddress || '';
 				smtpFromName = data.fromName || 'DumpFire';
-				appUrl = data.appUrl || '';
+				// appUrl loaded separately in loadAppUrl()
 				}
 			}
 		} catch {}
@@ -346,8 +715,7 @@
 				body: JSON.stringify({
 					host: smtpHost, port: smtpPort, secure: smtpSecure,
 					user: smtpUser, pass: smtpPass,
-					fromAddress: smtpFromAddress, fromName: smtpFromName,
-					appUrl
+					fromAddress: smtpFromAddress, fromName: smtpFromName
 				})
 			});
 			if (res.ok) {
@@ -439,13 +807,37 @@
 					<span class="stat-value">{data.teams.length}</span>
 					<span class="stat-label">Teams</span>
 				</div>
+				<div class="stat-item">
+					<span class="stat-value">{formatBytes(data.dbSizeBytes)}</span>
+					<span class="stat-label">DB Size</span>
+				</div>
 			</div>
+		</section>
+
+		<!-- Application Settings -->
+		<section class="admin-card glass fade-in-up" style="animation-delay: 40ms">
+			<h2>🌐 Application Settings</h2>
+			<p class="section-desc">Configure the public URL for your DumpFire instance. This is used for invite emails, OAuth callbacks, and backup integrations.</p>
+			<div class="form-row" style="align-items: flex-end">
+				<div style="flex: 2; display: flex; flex-direction: column; gap: 4px">
+					<label style="font-size: 0.72rem; font-weight: 600; color: var(--text-secondary)">Application URL</label>
+					<input type="url" placeholder="https://kanban.example.com" bind:value={appUrl} class="form-input" />
+				</div>
+				<button class="btn-primary btn-sm" onclick={saveAppUrl} disabled={appUrlSaving} style="flex: none">
+					{appUrlSaving ? 'Saving...' : 'Save'}
+				</button>
+			</div>
+			{#if !appUrl}
+				<p style="font-size: 0.68rem; color: var(--accent-amber); margin-top: var(--space-xs)">
+					⚠️ No App URL set. Invite links and Google Drive OAuth will use auto-detected URLs which may not work behind reverse proxies.
+				</p>
+			{/if}
 		</section>
 
 		<!-- Backup & Restore -->
 		<section class="admin-card glass fade-in-up" style="animation-delay: 80ms">
 			<h2>💾 Backup & Restore</h2>
-			<p class="section-desc">Export a complete backup of your entire system — users, teams, boards, cards, comments, labels, assignees, task requests, activity logs, and settings — as JSON, or restore from a previous backup.</p>
+			<p class="section-desc">Export a complete backup of your entire database as a SQLite file, or restore from a previous backup. Captures everything automatically — users, teams, boards, cards, settings, and all other data.</p>
 
 			<div class="backup-actions">
 				<div class="backup-item">
@@ -456,7 +848,7 @@
 					</div>
 					<div class="backup-info">
 						<strong>Export Database</strong>
-						<p>Download a complete JSON backup of all users, teams, boards, cards, comments, labels, task requests, and settings.</p>
+						<p>Download the complete database as a .db file — includes all data automatically.</p>
 					</div>
 					<button class="btn-backup export" onclick={exportDatabase} disabled={exporting}>
 						{#if exporting}
@@ -489,7 +881,309 @@
 				</div>
 			</div>
 
-			<input type="file" accept=".json" class="hidden-input" bind:this={fileInput} onchange={handleFileSelected} />
+			<input type="file" accept=".db,.json,.sqlite,.sqlite3" class="hidden-input" bind:this={fileInput} onchange={handleFileSelected} />
+		</section>
+
+		<!-- Scheduled Backups -->
+		<section class="admin-card glass fade-in-up" style="animation-delay: 120ms">
+			<div class="section-header">
+				<h2>☁️ Scheduled Backups</h2>
+				<div style="display: flex; gap: var(--space-sm); align-items: center">
+					{#if backupDestinations.length > 0}
+						<button class="btn-primary btn-sm" onclick={runManualBackup} disabled={backupRunning}>
+							{backupRunning ? '⏳ Running...' : '▶ Run Now'}
+						</button>
+					{/if}
+					<button class="btn-primary btn-sm" onclick={() => { resetDestForm(); newDestType = 'sftp'; showAddDestination = true; }}>+ Add Destination</button>
+				</div>
+			</div>
+
+			{#if backupLoading}
+				<p class="empty-msg">Loading backup config...</p>
+			{:else}
+				<!-- Schedule Settings -->
+				<div class="sched-config">
+					<div class="sched-row">
+						<label class="sched-label">Schedule</label>
+						<select bind:value={backupSchedule} class="form-input" style="flex: none; width: 160px" onchange={() => saveBackupConfig()}>
+							<option value="disabled">Disabled</option>
+							<option value="hourly">Every Hour</option>
+							<option value="every6h">Every 6 Hours</option>
+							<option value="every12h">Every 12 Hours</option>
+							<option value="daily">Daily</option>
+							<option value="weekly">Weekly</option>
+						</select>
+
+						{#if backupSchedule === 'weekly'}
+							<label class="sched-label" style="margin-left: var(--space-md)">on</label>
+							<select bind:value={backupScheduleDay} class="form-input" style="flex: none; width: 120px" onchange={() => saveBackupConfig()}>
+								<option value={0}>Sunday</option>
+								<option value={1}>Monday</option>
+								<option value={2}>Tuesday</option>
+								<option value={3}>Wednesday</option>
+								<option value={4}>Thursday</option>
+								<option value={5}>Friday</option>
+								<option value={6}>Saturday</option>
+							</select>
+						{/if}
+
+						{#if backupSchedule === 'daily' || backupSchedule === 'weekly'}
+							<label class="sched-label" style="margin-left: var(--space-md)">at</label>
+							<input type="time" bind:value={backupScheduleTime} class="form-input" style="flex: none; width: 110px" onchange={() => saveBackupConfig()} />
+						{/if}
+
+						<label class="sched-label" style="margin-left: var(--space-lg)">Keep Last</label>
+						<input type="number" min="1" max="100" bind:value={backupRetention} class="form-input" style="flex: none; width: 60px" onchange={() => saveBackupConfig()} />
+						<span style="font-size: 0.75rem; color: var(--text-tertiary)">backups</span>
+					</div>
+
+					<div class="sched-row">
+						<label style="display: flex; align-items: center; gap: var(--space-xs); font-size: 0.78rem; color: var(--text-secondary); cursor: pointer">
+							<input type="checkbox" bind:checked={backupNotifyOnFailure} onchange={() => saveBackupConfig()} /> Email on failure
+						</label>
+						{#if backupNotifyOnFailure}
+							<input type="email" placeholder="Notification email" bind:value={backupNotifyEmail} class="form-input" style="flex: 1; max-width: 250px" onchange={() => saveBackupConfig()} />
+						{/if}
+					</div>
+				</div>
+
+				<!-- Destinations -->
+				{#if backupDestinations.length === 0 && !showAddDestination}
+					<p class="empty-msg">No backup destinations configured. Add one to get started.</p>
+				{/if}
+
+				{#each backupDestinations as dest (dest.name)}
+					<div class="dest-card">
+						<div class="dest-card-header">
+							<span class="dest-type-badge dest-type-{dest.type}">{destTypeLabels[dest.type] || dest.type}</span>
+							<span class="dest-name">{dest.name}</span>
+							<div class="dest-actions">
+								{#if dest.type === 'gdrive' && dest.authMethod === 'oauth'}
+									{#if dest.refreshToken}
+										<span style="font-size: 0.68rem; color: var(--accent-emerald)">✅ Connected</span>
+									{:else}
+										<button class="btn-ghost btn-xs" style="color: var(--accent-indigo)" onclick={() => connectGDriveOAuth(dest.name)}>🔗 Connect</button>
+									{/if}
+								{/if}
+								<button class="btn-ghost btn-xs" onclick={() => testDestination(dest)} disabled={testingDest === dest.name}>
+									{testingDest === dest.name ? '⏳' : '🧪'} Test
+								</button>
+								<button class="btn-ghost btn-xs" onclick={() => startEditDestination(dest)}>✏️ Edit</button>
+								<button class="btn-ghost btn-xs danger" onclick={() => confirm('Remove Destination', `Remove "${dest.name}" from backup destinations?`, async () => removeDestination(dest.name))}>🗑️</button>
+							</div>
+						</div>
+						<div class="dest-card-detail">
+							{#if dest.type === 'sftp'}
+								<span>{dest.host}:{dest.port} → {dest.remotePath}</span>
+							{:else if dest.type === 's3'}
+								<span>{dest.bucket}{dest.prefix ? `/${dest.prefix}` : ''} ({dest.region})</span>
+							{:else if dest.type === 'gdrive'}
+								<span>{dest.authMethod === 'oauth' ? '🔑 OAuth' : '🏢 Service Account'} · Folder: {dest.folderId}</span>
+							{:else if dest.type === 'onedrive'}
+								<span>{dest.folderPath}</span>
+							{/if}
+						</div>
+
+						<!-- Inline edit form -->
+						{#if editingDest === dest.name}
+							<div class="dest-edit-form">
+								<div class="form-row">
+									<input type="text" placeholder="Destination name" bind:value={destName} class="form-input" />
+								</div>
+								{#if newDestType === 'sftp'}
+									<div class="form-row">
+										<input type="text" placeholder="Host" bind:value={destHost} class="form-input" />
+										<input type="number" placeholder="Port" bind:value={destPort} class="form-input" style="width: 70px; flex: none" />
+										<input type="text" placeholder="Username" bind:value={destUsername} class="form-input" />
+									</div>
+									<div class="form-row">
+										<input type="password" placeholder="Password" bind:value={destPassword} class="form-input" />
+										<input type="text" placeholder="Remote path" bind:value={destRemotePath} class="form-input" />
+									</div>
+								{:else if newDestType === 's3'}
+									<div class="form-row">
+										<input type="text" placeholder="Bucket" bind:value={destBucket} class="form-input" />
+										<input type="text" placeholder="Region" bind:value={destRegion} class="form-input" style="width: 120px; flex: none" />
+									</div>
+									<div class="form-row">
+										<input type="text" placeholder="Access Key ID" bind:value={destAccessKey} class="form-input" />
+										<input type="password" placeholder="Secret Access Key" bind:value={destSecretKey} class="form-input" />
+									</div>
+									<div class="form-row">
+										<input type="text" placeholder="Path prefix (optional)" bind:value={destPrefix} class="form-input" />
+										<input type="text" placeholder="Custom endpoint (optional)" bind:value={destEndpoint} class="form-input" />
+									</div>
+								{:else if newDestType === 'gdrive'}
+									<div class="form-row">
+										<select bind:value={destGdriveAuthMethod} class="form-input" style="flex: none; width: 180px">
+											<option value="oauth">🔑 OAuth (Personal)</option>
+											<option value="service_account">🏢 Service Account</option>
+										</select>
+										<input type="text" placeholder="Folder ID" bind:value={destFolderId} class="form-input" />
+									</div>
+									{#if destGdriveAuthMethod === 'oauth'}
+										<div class="form-row">
+											<input type="text" placeholder="OAuth Client ID" bind:value={destGdriveClientId} class="form-input" />
+											<input type="password" placeholder="OAuth Client Secret" bind:value={destGdriveClientSecret} class="form-input" />
+										</div>
+										{#if destGdriveRefreshToken}
+											<p style="font-size: 0.72rem; color: var(--accent-emerald)">✅ Google account connected</p>
+										{:else}
+											<p style="font-size: 0.68rem; color: var(--text-tertiary)">Save first, then use "Connect Google Account" on the destination card.</p>
+										{/if}
+									{:else}
+										<div class="form-row">
+											<textarea placeholder="Service Account JSON" bind:value={destServiceAccountJson} class="form-input" rows="4" style="font-family: monospace; font-size: 0.72rem"></textarea>
+										</div>
+									{/if}
+								{:else if newDestType === 'onedrive'}
+									<div class="form-row">
+										<input type="text" placeholder="Tenant ID" bind:value={destTenantId} class="form-input" />
+										<input type="text" placeholder="Client ID" bind:value={destClientId} class="form-input" />
+									</div>
+									<div class="form-row">
+										<input type="password" placeholder="Client Secret" bind:value={destClientSecret} class="form-input" />
+										<input type="text" placeholder="Folder path" bind:value={destFolderPath} class="form-input" />
+									</div>
+								{/if}
+								<div class="form-row" style="justify-content: flex-end">
+									<button class="btn-ghost btn-sm" onclick={() => { editingDest = null; resetDestForm(); }}>Cancel</button>
+									<button class="btn-primary btn-sm" onclick={updateDestination} disabled={!destName.trim()}>Save</button>
+								</div>
+							</div>
+						{/if}
+					</div>
+				{/each}
+
+				<!-- Add Destination Form -->
+				{#if showAddDestination}
+					<div class="dest-add-form">
+						<h3 style="font-size: 0.9rem; margin-bottom: var(--space-md)">Add Backup Destination</h3>
+						<div class="form-row">
+							<input type="text" placeholder="Destination name (e.g. Production NAS)" bind:value={destName} class="form-input" />
+							<select bind:value={newDestType} class="form-input" style="flex: none; width: 160px">
+								<option value="sftp">🔐 SFTP / SCP</option>
+								<option value="s3">☁️ Amazon S3</option>
+								<option value="gdrive">📁 Google Drive</option>
+								<option value="onedrive">💙 OneDrive</option>
+							</select>
+						</div>
+
+						{#if newDestType === 'sftp'}
+							<div class="form-row">
+								<input type="text" placeholder="Host" bind:value={destHost} class="form-input" />
+								<input type="number" placeholder="Port" bind:value={destPort} class="form-input" style="width: 70px; flex: none" />
+								<input type="text" placeholder="Username" bind:value={destUsername} class="form-input" />
+							</div>
+							<div class="form-row">
+								<input type="password" placeholder="Password" bind:value={destPassword} class="form-input" />
+								<input type="text" placeholder="Remote path (e.g. /backups)" bind:value={destRemotePath} class="form-input" />
+							</div>
+							<details style="margin-top: var(--space-xs)">
+								<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer">Advanced: Private Key auth</summary>
+								<textarea placeholder="Paste private key (PEM format)" bind:value={destPrivateKey} class="form-input" rows="3" style="margin-top: var(--space-xs); font-family: monospace; font-size: 0.7rem; width: 100%"></textarea>
+							</details>
+						{:else if newDestType === 's3'}
+							<div class="form-row">
+								<input type="text" placeholder="Bucket name" bind:value={destBucket} class="form-input" />
+								<input type="text" placeholder="Region (e.g. us-east-1)" bind:value={destRegion} class="form-input" style="width: 140px; flex: none" />
+							</div>
+							<div class="form-row">
+								<input type="text" placeholder="Access Key ID" bind:value={destAccessKey} class="form-input" />
+								<input type="password" placeholder="Secret Access Key" bind:value={destSecretKey} class="form-input" />
+							</div>
+							<div class="form-row">
+								<input type="text" placeholder="Path prefix (e.g. dumpfire/)" bind:value={destPrefix} class="form-input" />
+								<input type="text" placeholder="Custom endpoint (MinIO, Backblaze, etc.)" bind:value={destEndpoint} class="form-input" />
+							</div>
+						{:else if newDestType === 'gdrive'}
+						<div class="form-row">
+							<select bind:value={destGdriveAuthMethod} class="form-input" style="flex: none; width: 180px">
+								<option value="oauth">🔑 OAuth (Personal)</option>
+								<option value="service_account">🏢 Service Account</option>
+							</select>
+							<input type="text" placeholder="Google Drive Folder ID" bind:value={destFolderId} class="form-input" />
+						</div>
+						{#if destGdriveAuthMethod === 'oauth'}
+							<div class="form-row">
+								<input type="text" placeholder="OAuth Client ID" bind:value={destGdriveClientId} class="form-input" />
+								<input type="password" placeholder="OAuth Client Secret" bind:value={destGdriveClientSecret} class="form-input" />
+							</div>
+							<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
+								1. Go to <strong>Google Cloud Console → APIs &amp; Services → Credentials</strong><br/>
+								2. Create an <strong>OAuth 2.0 Client ID</strong> — select <strong>"Desktop app"</strong> as type<br/>
+								3. Enable the <strong>Google Drive API</strong> at <strong>APIs &amp; Services → Library</strong><br/>
+								4. After adding the destination, click <strong>"🔗 Connect"</strong> to authorize your Google account
+							</p>
+						{:else}
+							<div class="form-row">
+								<textarea placeholder="Paste Service Account JSON credentials" bind:value={destServiceAccountJson} class="form-input" rows="5" style="font-family: monospace; font-size: 0.72rem"></textarea>
+							</div>
+							<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
+								Create a Service Account in Google Cloud Console → Enable Drive API → Share the folder with the service account email.
+							</p>
+						{/if}
+						{:else if newDestType === 'onedrive'}
+							<div class="form-row">
+								<input type="text" placeholder="Azure Tenant ID" bind:value={destTenantId} class="form-input" />
+								<input type="text" placeholder="App Client ID" bind:value={destClientId} class="form-input" />
+							</div>
+							<div class="form-row">
+								<input type="password" placeholder="Client Secret" bind:value={destClientSecret} class="form-input" />
+								<input type="text" placeholder="Folder path (e.g. /DumpFire Backups)" bind:value={destFolderPath} class="form-input" />
+							</div>
+							<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
+								Register an app in Azure AD → Add Files.ReadWrite.All permission → Create a client secret.
+							</p>
+						{/if}
+
+						<div class="form-row" style="justify-content: flex-end; margin-top: var(--space-sm)">
+							<button class="btn-ghost btn-sm" onclick={() => { showAddDestination = false; resetDestForm(); }}>Cancel</button>
+							<button class="btn-primary btn-sm" onclick={addDestination} disabled={!destName.trim()}>Add Destination</button>
+						</div>
+					</div>
+				{/if}
+
+				<!-- Backup History -->
+				{#if backupHistory.length > 0}
+					<div class="backup-history">
+						<h3 style="font-size: 0.85rem; margin: var(--space-xl) 0 var(--space-md)">📜 Backup History</h3>
+						<div class="history-table-wrap">
+							<table class="history-table">
+								<thead>
+									<tr>
+										<th>When</th>
+										<th>Destination</th>
+										<th>Status</th>
+										<th>Size</th>
+										<th>Time</th>
+									</tr>
+								</thead>
+								<tbody>
+									{#each backupHistory.slice(0, 20) as entry (entry.id)}
+										<tr class="history-row" class:history-failed={entry.status === 'failed'}>
+											<td title={entry.createdAt}>{formatRelativeTime(entry.createdAt)}</td>
+											<td>
+												<span class="dest-type-badge-sm dest-type-{entry.destinationType}">{entry.destinationType}</span>
+												{entry.destinationName}
+											</td>
+											<td>
+												{#if entry.status === 'success'}
+													<span class="status-success">✅</span>
+												{:else}
+													<span class="status-failed" title={entry.error || ''}>❌ {entry.error?.slice(0, 40)}{(entry.error?.length ?? 0) > 40 ? '...' : ''}</span>
+												{/if}
+											</td>
+											<td>{formatBytes(entry.sizeBytes)}</td>
+											<td>{formatDuration(entry.durationMs)}</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+					</div>
+				{/if}
+			{/if}
 		</section>
 
 		<!-- Board management -->
@@ -688,10 +1382,6 @@
 						<input type="text" placeholder="From Name" bind:value={smtpFromName} class="form-input" />
 					</div>
 					<div class="form-row">
-						<input type="url" placeholder="App URL (e.g. https://kanban.example.com)" bind:value={appUrl} class="form-input" style="flex: 2" />
-						<span style="font-size: 0.68rem; color: var(--text-tertiary); white-space: nowrap">Used in invite links</span>
-					</div>
-					<div class="form-row">
 						<label style="display: flex; align-items: center; gap: var(--space-xs); font-size: 0.78rem; color: var(--text-secondary); cursor: pointer">
 							<input type="checkbox" bind:checked={smtpSecure} /> Use SSL/TLS
 						</label>
@@ -746,6 +1436,36 @@
 			<div class="modal-actions">
 				<button class="btn-ghost" onclick={() => (confirmAction.show = false)}>Cancel</button>
 				<button class="btn-danger-solid" onclick={async () => { confirmAction.show = false; await confirmAction.action(); }}>Confirm</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Google Drive OAuth code entry -->
+{#if gdriveConnecting}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<div class="modal-overlay" onclick={() => { gdriveConnecting = ''; gdriveAuthCode = ''; }} role="dialog" aria-modal="true">
+		<!-- svelte-ignore a11y_click_events_have_key_events -->
+		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px">
+			<h2>🔗 Connect Google Drive</h2>
+			<p style="margin-bottom: var(--space-md)">
+				A Google sign-in window has opened. After granting access, Google will redirect to a page that may not load — <strong>that's expected</strong>.
+			</p>
+			<p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: var(--space-md); line-height: 1.5">
+				Copy the <strong>entire URL</strong> from your browser's address bar (it will contain <code style="background: var(--bg-elevated); padding: 1px 4px; border-radius: 3px; font-size: 0.72rem">code=</code>) and paste it below:
+			</p>
+			<input
+				type="text"
+				placeholder="Paste the full URL or authorization code here..."
+				bind:value={gdriveAuthCode}
+				class="form-input"
+				style="width: 100%; font-family: monospace; font-size: 0.78rem; margin-bottom: var(--space-md)"
+			/>
+			<div class="modal-actions">
+				<button class="btn-ghost" onclick={() => { gdriveConnecting = ''; gdriveAuthCode = ''; }}>Cancel</button>
+				<button class="btn-primary" onclick={exchangeGDriveCode} disabled={!gdriveAuthCode.trim() || gdriveExchanging}>
+					{gdriveExchanging ? '⏳ Connecting...' : '✅ Connect'}
+				</button>
 			</div>
 		</div>
 	</div>
@@ -1050,4 +1770,89 @@
 	}
 	.smtp-success { background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: var(--accent-emerald); }
 	.smtp-error { background: rgba(244, 63, 94, 0.1); border: 1px solid rgba(244, 63, 94, 0.3); color: var(--accent-rose); }
+
+	/* Scheduled Backups */
+	.sched-config {
+		padding: var(--space-md) var(--space-lg);
+		background: var(--bg-base); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); margin-bottom: var(--space-lg);
+		display: flex; flex-direction: column; gap: var(--space-sm);
+	}
+	.sched-row {
+		display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap;
+	}
+	.sched-label {
+		font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap;
+	}
+
+	.dest-card {
+		background: var(--bg-base); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); overflow: hidden;
+		margin-bottom: var(--space-sm); transition: border-color 0.15s;
+	}
+	.dest-card:hover { border-color: var(--accent-indigo); }
+	.dest-card-header {
+		display: flex; align-items: center; gap: var(--space-sm);
+		padding: var(--space-md) var(--space-lg);
+	}
+	.dest-name { font-weight: 600; font-size: 0.85rem; flex: 1; }
+	.dest-actions { display: flex; gap: var(--space-xs); }
+	.dest-card-detail {
+		padding: 0 var(--space-lg) var(--space-md);
+		font-size: 0.72rem; color: var(--text-tertiary);
+	}
+
+	.dest-type-badge {
+		font-size: 0.65rem; font-weight: 700; padding: 2px 8px;
+		border-radius: var(--radius-sm); white-space: nowrap;
+	}
+	.dest-type-badge-sm {
+		font-size: 0.6rem; font-weight: 700; padding: 1px 5px;
+		border-radius: 3px; white-space: nowrap;
+	}
+	.dest-type-sftp { background: rgba(34, 197, 94, 0.12); color: #22c55e; }
+	.dest-type-s3 { background: rgba(249, 115, 22, 0.12); color: #f97316; }
+	.dest-type-gdrive { background: rgba(59, 130, 246, 0.12); color: #3b82f6; }
+	.dest-type-onedrive { background: rgba(99, 102, 241, 0.12); color: #6366f1; }
+
+	.dest-edit-form, .dest-add-form {
+		padding: var(--space-lg); background: var(--bg-base);
+		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+		margin-bottom: var(--space-sm);
+		display: flex; flex-direction: column; gap: var(--space-sm);
+	}
+	.dest-edit-form {
+		border-top: 1px solid var(--glass-border);
+		margin: 0; border-radius: 0 0 var(--radius-md) var(--radius-md);
+	}
+	.dest-add-form {
+		border-color: var(--accent-indigo);
+		background: var(--bg-elevated);
+	}
+
+	/* History table */
+	.history-table-wrap {
+		overflow-x: auto; border-radius: var(--radius-md);
+		border: 1px solid var(--glass-border);
+	}
+	.history-table {
+		width: 100%; border-collapse: collapse; font-size: 0.75rem;
+	}
+	.history-table th {
+		text-align: left; padding: var(--space-sm) var(--space-md);
+		font-weight: 600; font-size: 0.68rem; text-transform: uppercase;
+		letter-spacing: 0.05em; color: var(--text-tertiary);
+		background: var(--bg-base); border-bottom: 1px solid var(--glass-border);
+	}
+	.history-table td {
+		padding: var(--space-xs) var(--space-md);
+		border-bottom: 1px solid var(--glass-border);
+		vertical-align: middle;
+	}
+	.history-row:last-child td { border-bottom: none; }
+	.history-failed { opacity: 0.85; }
+	.history-failed td:first-child { border-left: 3px solid var(--accent-rose); }
+
+	.status-success { color: var(--accent-emerald); }
+	.status-failed { color: var(--accent-rose); font-size: 0.68rem; }
 </style>
