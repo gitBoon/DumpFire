@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { requestMessages, taskRequests } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { notifyRequesterMessage, notifyAdminMessage } from '$lib/server/notifications';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 /** GET — Fetch all messages for a request. */
@@ -58,7 +59,7 @@ export const POST: RequestHandler = async ({ params, request: req, locals, url }
 		message: message.trim()
 	}).returning().get();
 
-	const baseUrl = `${url.protocol}//${url.host}`;
+	const baseUrl = resolveBaseUrl(req, url);
 
 	// Send email notifications
 	if (sType === 'admin' && taskReq.requesterEmail) {

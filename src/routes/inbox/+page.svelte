@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 
 	let { data } = $props();
 
@@ -43,6 +43,8 @@
 	let chatModal = $state<{ show: boolean; request: TaskRequest | null; messages: ChatMessage[]; newMsg: string; sending: boolean }>({
 		show: false, request: null, messages: [], newMsg: '', sending: false
 	});
+	let chatPollInterval: ReturnType<typeof setInterval> | null = null;
+	let chatMessagesEl: HTMLDivElement | undefined = $state();
 
 	let showResolved = $state(false);
 
@@ -69,6 +71,10 @@
 
 	onMount(async () => {
 		await loadRequests();
+	});
+
+	onDestroy(() => {
+		if (chatPollInterval) clearInterval(chatPollInterval);
 	});
 
 	async function loadRequests() {
@@ -133,7 +139,37 @@
 	async function openChat(req: TaskRequest) {
 		chatModal = { show: true, request: req, messages: [], newMsg: '', sending: false };
 		const res = await fetch(`/api/requests/${req.id}/messages`);
-		if (res.ok) chatModal.messages = await res.json();
+		if (res.ok) {
+			chatModal.messages = await res.json();
+			scrollChatToBottom();
+		}
+		// Start polling for new messages
+		if (chatPollInterval) clearInterval(chatPollInterval);
+		chatPollInterval = setInterval(() => pollChatMessages(req.id), 5000);
+	}
+
+	function closeChat() {
+		if (chatPollInterval) { clearInterval(chatPollInterval); chatPollInterval = null; }
+		chatModal = { show: false, request: null, messages: [], newMsg: '', sending: false };
+	}
+
+	async function pollChatMessages(requestId: number) {
+		try {
+			const res = await fetch(`/api/requests/${requestId}/messages`);
+			if (res.ok) {
+				const fresh: ChatMessage[] = await res.json();
+				if (fresh.length !== chatModal.messages.length) {
+					chatModal.messages = fresh;
+					scrollChatToBottom();
+				}
+			}
+		} catch { /* silent */ }
+	}
+
+	function scrollChatToBottom() {
+		requestAnimationFrame(() => {
+			if (chatMessagesEl) chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+		});
 	}
 
 	async function sendChatMessage() {
@@ -149,7 +185,10 @@
 			chatModal.newMsg = '';
 			// Reload messages
 			const msgRes = await fetch(`/api/requests/${chatModal.request.id}/messages`);
-			if (msgRes.ok) chatModal.messages = await msgRes.json();
+			if (msgRes.ok) {
+				chatModal.messages = await msgRes.json();
+				scrollChatToBottom();
+			}
 		}
 	}
 </script>
@@ -159,11 +198,18 @@
 </svelte:head>
 
 <div class="inbox-page">
-	<div class="inbox-header">
-		<h1>📥 Inbox</h1>
-		<p class="inbox-subtitle">Task requests targeted at you or your teams</p>
-	</div>
+	<header class="inbox-header">
+		<div class="inbox-header-left">
+			<a href="/" class="back-btn btn-ghost" title="Back to Dashboard">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</a>
+			<h1>📥 Inbox</h1>
+		</div>
+	</header>
 
+	<main class="inbox-content">
 	<!-- Tabs -->
 	<div class="inbox-tabs">
 		<button class="tab" class:active={tab === 'all'} onclick={() => tab = 'all'}>
@@ -276,6 +322,7 @@
 			{/if}
 		{/if}
 	{/if}
+	</main>
 </div>
 
 <!-- Accept Modal -->
@@ -355,7 +402,7 @@
 {#if chatModal.show && chatModal.request}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="modal-overlay" onclick={() => chatModal = { show: false, request: null, messages: [], newMsg: '', sending: false }}>
+	<div class="modal-overlay" onclick={closeChat}>
 		<div class="modal-card chat-modal" onclick={(e) => e.stopPropagation()}>
 			<div class="chat-header">
 				<div>
@@ -365,10 +412,10 @@
 						<p class="chat-requester-info">With: {chatModal.request.requesterName} ({chatModal.request.requesterEmail})</p>
 					{/if}
 				</div>
-				<button class="chat-close" onclick={() => chatModal = { show: false, request: null, messages: [], newMsg: '', sending: false }}>✕</button>
+				<button class="chat-close" onclick={closeChat}>✕</button>
 			</div>
 
-			<div class="chat-messages">
+			<div class="chat-messages" bind:this={chatMessagesEl}>
 				{#if chatModal.messages.length === 0}
 					<div class="chat-empty">No messages yet. Start the conversation!</div>
 				{:else}
@@ -401,13 +448,19 @@
 {/if}
 
 <style>
-	.inbox-page {
-		max-width: 800px; margin: 0 auto;
-		padding: var(--space-xl) var(--space-lg);
+	.inbox-page { min-height: 100vh; }
+	.inbox-header {
+		display: flex; align-items: center; justify-content: space-between;
+		padding: var(--space-md) var(--space-xl);
+		border-bottom: 1px solid var(--glass-border);
 	}
-	.inbox-header { margin-bottom: var(--space-lg); }
-	.inbox-header h1 { font-size: 1.5rem; font-weight: 700; color: var(--text-primary); }
-	.inbox-subtitle { color: var(--text-secondary); font-size: 0.88rem; margin-top: 2px; }
+	.inbox-header-left { display: flex; align-items: center; gap: var(--space-md); }
+	.inbox-header-left h1 { font-size: 1.25rem; }
+	.back-btn { padding: var(--space-sm); }
+	.inbox-content {
+		max-width: 800px; margin: 0 auto;
+		padding: var(--space-2xl);
+	}
 
 	/* Tabs */
 	.inbox-tabs {

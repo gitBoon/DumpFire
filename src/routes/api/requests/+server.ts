@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { taskRequests, users, teams, teamMembers, cards, columns } from '$lib/server/db/schema';
 import { eq, and, inArray, or, desc } from 'drizzle-orm';
 import { notifyTaskRequest } from '$lib/server/notifications';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 /** GET — Returns requests targeted at the current user or their teams. */
@@ -96,7 +97,7 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 	}).returning().get();
 
 	const name = locals.user ? locals.user.username : (requesterName?.trim() || 'Anonymous');
-	const baseUrl = `${url.protocol}//${url.host}`;
+	const baseUrl = resolveBaseUrl(request, url);
 	notifyTaskRequest(targetType, targetId, title.trim(), name, priority || 'medium', baseUrl);
 
 	return json(result, { status: 201 });

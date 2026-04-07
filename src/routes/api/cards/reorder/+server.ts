@@ -4,6 +4,7 @@ import { cards, columns, userXp } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { notifyCardMoved } from '$lib/server/notifications';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ request, url }) => {
@@ -61,7 +62,7 @@ export const PUT: RequestHandler = async ({ request, url }) => {
 			const fromCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, existingCard.columnId)).get();
 			const toCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, update.columnId)).get();
 			if (fromCol && toCol) {
-				const baseUrl = `${url.protocol}//${url.host}`;
+				const baseUrl = resolveBaseUrl(request, url);
 				notifyCardMoved(boardId, update.id, existingCard.title, userName || 'Someone', fromCol.title, toCol.title, baseUrl);
 			}
 		}
