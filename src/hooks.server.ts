@@ -1,5 +1,6 @@
 import { runMigrations } from '$lib/server/db/migrate';
 import { validateSession, SESSION_COOKIE_NAME, hasAnyUsers, cleanExpiredSessions } from '$lib/server/auth';
+import { initBackupScheduler } from '$lib/server/backup';
 import { redirect, type Handle } from '@sveltejs/kit';
 
 // Run migrations on server start
@@ -7,6 +8,9 @@ runMigrations();
 
 // Clean expired sessions periodically (on startup)
 cleanExpiredSessions();
+
+// Start the scheduled backup timer
+initBackupScheduler();
 
 /** Public routes that don't require authentication. */
 const PUBLIC_ROUTES = ['/login', '/setup', '/invite', '/request', '/api/requests'];

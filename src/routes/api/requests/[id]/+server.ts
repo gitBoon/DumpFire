@@ -2,7 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { taskRequests, cards, columns, boards, cardAssignees, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { notifyUserAssigned } from '$lib/server/notifications';
+import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } from '$lib/server/notifications';
 import type { RequestHandler } from './$types';
 
 /** PATCH — Accept or reject a task request. */
@@ -70,6 +70,11 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			}
 		}
 
+		// Notify requester via email
+		if (existing.requesterEmail) {
+			notifyRequesterAccepted(existing.requesterEmail, existing.title, locals.user.username);
+		}
+
 		return json({ ...existing, status: 'accepted', resolvedCardId: newCard.id });
 
 	} else if (action === 'reject') {
@@ -79,6 +84,11 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			rejectReason: rejectReason || null,
 			resolvedAt: new Date().toISOString()
 		}).where(eq(taskRequests.id, id)).run();
+
+		// Notify requester via email
+		if (existing.requesterEmail) {
+			notifyRequesterRejected(existing.requesterEmail, existing.title, locals.user.username, rejectReason || undefined);
+		}
 
 		return json({ ...existing, status: 'rejected' });
 

@@ -1,7 +1,9 @@
 import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
+import { getDbPath } from '$lib/server/db';
 import { boards, columns, cards, subtasks, categories, users, teams, teamMembers } from '$lib/server/db/schema';
 import { count, eq } from 'drizzle-orm';
+import { statSync } from 'node:fs';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	// Board stats
@@ -49,10 +51,18 @@ export const load: PageServerLoad = async ({ locals }) => {
 		return { ...team, members };
 	});
 
+	// Database size
+	let dbSizeBytes = 0;
+	try {
+		const stat = statSync(getDbPath());
+		dbSizeBytes = stat.size;
+	} catch {}
+
 	return {
 		boards: stats,
 		users: allUsers,
 		teams: teamsWithMembers,
-		currentUser: locals.user
+		currentUser: locals.user,
+		dbSizeBytes
 	};
 };

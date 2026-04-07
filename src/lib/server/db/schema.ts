@@ -307,6 +307,39 @@ export const taskRequests = sqliteTable('task_requests', {
 export type TaskRequest = typeof taskRequests.$inferSelect;
 export type NewTaskRequest = typeof taskRequests.$inferInsert;
 
+// ─── Request Messages (conversation thread) ─────────────────────────────────
+
+export const requestMessages = sqliteTable('request_messages', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	requestId: integer('request_id').notNull().references(() => taskRequests.id, { onDelete: 'cascade' }),
+	senderType: text('sender_type').notNull().default('admin'), // 'admin' | 'requester'
+	senderName: text('sender_name').notNull(),
+	message: text('message').notNull(),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export type RequestMessage = typeof requestMessages.$inferSelect;
+
+// ─── Backup Log ──────────────────────────────────────────────────────────────
+
+export const backupLog = sqliteTable('backup_log', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	destinationType: text('destination_type').notNull(), // 'sftp' | 's3' | 'gdrive' | 'onedrive'
+	destinationName: text('destination_name').notNull(),
+	filename: text('filename').notNull(),
+	sizeBytes: integer('size_bytes'),
+	status: text('status').notNull(), // 'success' | 'failed'
+	error: text('error'),
+	durationMs: integer('duration_ms'),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export type BackupLogEntry = typeof backupLog.$inferSelect;
+
 // ─── Insert Types ────────────────────────────────────────────────────────────
 
 export type NewBoard = typeof boards.$inferInsert;

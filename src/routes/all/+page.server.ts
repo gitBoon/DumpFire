@@ -69,7 +69,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		if (t === 'complete' || t === 'done') return 'Complete';
 		if (t === 'in progress' || t === 'in-progress' || t === 'doing') return 'In Progress';
 		if (t === 'on hold' || t === 'blocked' || t === 'waiting') return 'On Hold';
-		return 'To Do';
+		if (t === 'to do' || t === 'todo') return 'To Do';
+		// Title case for consistent merging of custom columns
+		return t.replace(/\b\w/g, c => c.toUpperCase());
 	}
 
 	// Build enriched cards with board info
@@ -93,11 +95,58 @@ export const load: PageServerLoad = async ({ locals }) => {
 		};
 	});
 
+	// Track which board has which bucket and calculate average positions
+	const baseBuckets = ['To Do', 'On Hold', 'In Progress', 'Complete'];
+	const bucketBoardMap = new Map<string, Set<string>>();
+	const bucketPositions = new Map<string, number[]>();
+
+	// Group columns by board
+	const colsByBoard = new Map<number, (typeof columns.$inferSelect)[]>();
+	for (const col of allColumns) {
+		if (!colsByBoard.has(col.boardId)) colsByBoard.set(col.boardId, []);
+		colsByBoard.get(col.boardId)!.push(col);
+	}
+
+	for (const [boardId, boardCols] of colsByBoard.entries()) {
+		const boardInfo = boardMap.get(boardId);
+		boardCols.sort((a, b) => a.position - b.position);
+		
+		boardCols.forEach((col, index) => {
+			const bucketName = getBucket(col.title);
+			
+			if (!bucketBoardMap.has(bucketName)) bucketBoardMap.set(bucketName, new Set());
+			if (boardInfo) bucketBoardMap.get(bucketName)!.add(`${boardInfo.emoji} ${boardInfo.name}`);
+			
+			if (!bucketPositions.has(bucketName)) bucketPositions.set(bucketName, []);
+			// Normalize index inside the board (0.0 to 1.0)
+			const pct = boardCols.length <= 1 ? 0.5 : index / (boardCols.length - 1);
+			bucketPositions.get(bucketName)!.push(pct);
+		});
+	}
+
+	const bucketAvg = new Map<string, number>();
+	for (const [b, posArr] of bucketPositions.entries()) {
+		bucketAvg.set(b, posArr.reduce((sum, val) => sum + val, 0) / posArr.length);
+	}
+
+	// Force strict anchors for base buckets requested by user
+	bucketAvg.set('To Do', -1);
+	bucketAvg.set('On Hold', 0.25);
+	bucketAvg.set('In Progress', 0.5);
+	bucketAvg.set('Complete', 2);
+
+	const allBucketsSet = new Set([...baseBuckets, ...Array.from(bucketAvg.keys())]);
+	const buckets = Array.from(allBucketsSet).sort((a, b) => {
+		const weightA = bucketAvg.get(a) ?? 0.5;
+		const weightB = bucketAvg.get(b) ?? 0.5;
+		return weightA - weightB || a.localeCompare(b);
+	});
+
 	// Group into buckets
-	const buckets = ['To Do', 'On Hold', 'In Progress', 'Complete'];
 	const grouped = buckets.map(bucket => ({
 		title: bucket,
-		cards: enrichedCards.filter(c => c.bucket === bucket)
+		cards: enrichedCards.filter(c => c.bucket === bucket),
+		contributingBoards: Array.from(bucketBoardMap.get(bucket) || [])
 	}));
 
 	return {

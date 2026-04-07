@@ -291,3 +291,107 @@ export function notifyCommentAdded(boardId: number, cardId: number, cardTitle: s
 		sendEmail(r.email, `New comment on: ${cardTitle}`, html).catch(err => console.error('[EMAIL] Comment notify failed:', err));
 	}
 }
+
+// ─── Request Conversation Notifications ──────────────────────────────────────
+
+/** Notify the requester when their request is accepted. */
+export function notifyRequesterAccepted(email: string, requestTitle: string, resolverName: string) {
+	if (!isSmtpConfigured() || !email) return;
+
+	const html = emailTemplate('Request Accepted ✅', `
+		<div style="background: #f0fdf4; padding: 16px; border-radius: 8px; border-left: 4px solid #22c55e;">
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${requestTitle}</p>
+			<p style="margin: 0; font-size: 13px; color: #475569;">
+				Great news! <strong>${resolverName}</strong> has accepted your request and created a task for it.
+			</p>
+		</div>
+	`);
+
+	sendEmail(email, `Request accepted: ${requestTitle}`, html).catch(err => console.error('[EMAIL] Accept notify failed:', err));
+}
+
+/** Notify the requester when their request is rejected. */
+export function notifyRequesterRejected(email: string, requestTitle: string, resolverName: string, reason?: string) {
+	if (!isSmtpConfigured() || !email) return;
+
+	const reasonBlock = reason
+		? `<blockquote style="margin: 12px 0 0; padding: 8px 12px; background: #fef2f2; border-left: 3px solid #ef4444; color: #334155; font-size: 13px; border-radius: 4px;">${reason}</blockquote>`
+		: '';
+
+	const html = emailTemplate('Request Declined', `
+		<div style="background: #fef2f2; padding: 16px; border-radius: 8px; border-left: 4px solid #ef4444;">
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${requestTitle}</p>
+			<p style="margin: 0; font-size: 13px; color: #475569;">
+				<strong>${resolverName}</strong> has declined this request.
+			</p>
+			${reasonBlock}
+		</div>
+	`);
+
+	sendEmail(email, `Request declined: ${requestTitle}`, html).catch(err => console.error('[EMAIL] Reject notify failed:', err));
+}
+
+/** Notify the requester when an admin sends a conversation message. */
+export function notifyRequesterMessage(email: string, requestTitle: string, senderName: string, message: string, requestId: number, baseUrl: string) {
+	if (!isSmtpConfigured() || !email) return;
+
+	const replyUrl = `${baseUrl}/request/${requestId}/reply?email=${encodeURIComponent(email)}`;
+	const preview = message.length > 300 ? message.slice(0, 300) + '…' : message;
+
+	const html = emailTemplate('New Message on Your Request', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #6366f1;">
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${requestTitle}</p>
+			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
+				<strong>${senderName}</strong> sent you a message:
+			</p>
+			<blockquote style="margin: 12px 0 16px; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid #6366f1; color: #334155; font-size: 13px; border-radius: 4px;">
+				${preview}
+			</blockquote>
+			<a href="${replyUrl}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View & Reply</a>
+		</div>
+	`);
+
+	sendEmail(email, `Message on request: ${requestTitle}`, html).catch(err => console.error('[EMAIL] Message notify failed:', err));
+}
+
+/** Notify admin/team when the requester replies. */
+export function notifyAdminMessage(targetType: string, targetId: number, requestTitle: string, requesterName: string, message: string, baseUrl: string) {
+	if (!isSmtpConfigured()) return;
+
+	let recipients: { email: string; username: string }[] = [];
+	if (targetType === 'user') {
+		const user = db.select({ email: users.email, username: users.username })
+			.from(users).where(eq(users.id, targetId)).get();
+		if (user) recipients = [user];
+	} else {
+		const members = db.select({ userId: teamMembers.userId })
+			.from(teamMembers).where(eq(teamMembers.teamId, targetId)).all();
+		if (members.length > 0) {
+			recipients = db.select({ email: users.email, username: users.username })
+				.from(users).where(inArray(users.id, members.map((m: any) => m.userId))).all();
+		}
+	}
+
+	if (recipients.length === 0) return;
+
+	const inboxUrl = `${baseUrl}/inbox`;
+	const preview = message.length > 300 ? message.slice(0, 300) + '…' : message;
+
+	const html = emailTemplate('Reply on Task Request', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #f59e0b;">
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${requestTitle}</p>
+			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
+				<strong>${requesterName}</strong> replied:
+			</p>
+			<blockquote style="margin: 12px 0 16px; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid #f59e0b; color: #334155; font-size: 13px; border-radius: 4px;">
+				${preview}
+			</blockquote>
+			<a href="${inboxUrl}" style="display: inline-block; padding: 8px 16px; background: #f59e0b; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open Inbox</a>
+		</div>
+	`);
+
+	for (const r of recipients) {
+		sendEmail(r.email, `Reply on request: ${requestTitle}`, html).catch(err => console.error('[EMAIL] Admin msg notify failed:', err));
+	}
+}
+

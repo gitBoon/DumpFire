@@ -1,3 +1,0 @@
-﻿====================================
-[33msvelte-check found 0 errors and 89 warnings in 16 files
-[39m

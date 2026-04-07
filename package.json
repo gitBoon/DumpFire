@@ -18,6 +18,7 @@
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
 		"@types/bcryptjs": "^2.4.6",
 		"@types/better-sqlite3": "^7.6.13",
+		"@types/ssh2-sftp-client": "^9.0.6",
 		"drizzle-kit": "^0.31.10",
 		"svelte": "^5.54.0",
 		"svelte-check": "^4.4.2",
@@ -25,12 +26,17 @@
 		"vite": "^7.3.1"
 	},
 	"dependencies": {
+		"@aws-sdk/client-s3": "^3.1025.0",
+		"@azure/identity": "^4.13.1",
+		"@microsoft/microsoft-graph-client": "^3.0.7",
 		"@types/nodemailer": "^7.0.11",
 		"bcryptjs": "^3.0.3",
 		"better-sqlite3": "^12.8.0",
 		"drizzle-orm": "^0.45.2",
+		"googleapis": "^171.4.0",
 		"marked": "^17.0.5",
 		"nodemailer": "^8.0.4",
+		"ssh2-sftp-client": "^12.1.1",
 		"svelte-dnd-action": "^0.9.69"
 	}
 }

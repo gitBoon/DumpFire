@@ -15,3 +15,4 @@ sqlite.pragma('cache_size = -64000'); // 64MB cache
 
 export const db = drizzle(sqlite, { schema });
 export { sqlite };
+export function getDbPath(): string { return DB_PATH; }
