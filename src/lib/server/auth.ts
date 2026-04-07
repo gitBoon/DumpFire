@@ -113,7 +113,9 @@ export function setSessionCookie(cookies: Cookies, token: string): void {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
-		secure: process.env.NODE_ENV === 'production',
+		secure: process.env.COOKIE_SECURE !== undefined
+			? process.env.COOKIE_SECURE === 'true'
+			: process.env.NODE_ENV === 'production',
 		maxAge: SESSION_DURATION_DAYS * 24 * 60 * 60
 	});
 }

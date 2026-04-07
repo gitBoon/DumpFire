@@ -40,6 +40,8 @@ RUN mkdir -p /app/data
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV ORIGIN=http://localhost:3000
+ENV PROTOCOL_HEADER=X-Forwarded-Proto
+ENV HOST_HEADER=X-Forwarded-Host
 
 EXPOSE 3000
 
