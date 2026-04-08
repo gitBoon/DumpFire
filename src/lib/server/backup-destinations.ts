@@ -281,13 +281,15 @@ export class GDriveDestination implements BackupDestination {
 				const res = await drive.files.list({
 					q: `'${this.config.folderId}' in parents and trashed = false`,
 					pageSize: 1,
-					fields: 'files(id,name)'
+					fields: 'files(id,name)',
+					supportsAllDrives: true,
+					includeItemsFromAllDrives: true
 				});
 				const count = res.data.files?.length ?? 0;
 				return { success: true, message: `Connected to Google Drive folder (${count} existing file${count !== 1 ? 's' : ''})` };
 			} else {
 				// No folder specified — just verify credentials work
-				await drive.files.list({ pageSize: 1, fields: 'files(id)' });
+				await drive.files.list({ pageSize: 1, fields: 'files(id)', supportsAllDrives: true, includeItemsFromAllDrives: true });
 				return { success: true, message: 'Connected to Google Drive (no folder specified — will upload to root)' };
 			}
 		} catch (err: any) {
@@ -307,7 +309,8 @@ export class GDriveDestination implements BackupDestination {
 				mimeType: 'application/x-sqlite3',
 				body: stream
 			},
-			fields: 'id'
+			fields: 'id',
+			supportsAllDrives: true
 		});
 	}
 
@@ -316,7 +319,9 @@ export class GDriveDestination implements BackupDestination {
 		const res = await drive.files.list({
 			q: `'${this.config.folderId}' in parents and trashed = false and name contains 'dumpfire-backup-'`,
 			fields: 'files(id,name)',
-			orderBy: 'name'
+			orderBy: 'name',
+			supportsAllDrives: true,
+			includeItemsFromAllDrives: true
 		});
 		return (res.data.files || []).map(f => f.name || '').filter(Boolean);
 	}
@@ -326,11 +331,13 @@ export class GDriveDestination implements BackupDestination {
 		// Find the file by name in the folder
 		const res = await drive.files.list({
 			q: `'${this.config.folderId}' in parents and name = '${filename}' and trashed = false`,
-			fields: 'files(id)'
+			fields: 'files(id)',
+			supportsAllDrives: true,
+			includeItemsFromAllDrives: true
 		});
 		const file = res.data.files?.[0];
 		if (file?.id) {
-			await drive.files.delete({ fileId: file.id });
+			await drive.files.delete({ fileId: file.id, supportsAllDrives: true });
 		}
 	}
 }
