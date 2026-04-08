@@ -372,10 +372,22 @@
 				</div>
 
 				{#if data.boards.length > 0}
+					<!-- Column headers -->
+					<div class="board-col-header">
+						<span class="bch-spacer"></span>
+						<span class="bch-name">Name</span>
+						<span class="bch-activity">Activity</span>
+						<span class="bch-cards">Cards</span>
+						<span class="bch-progress">Progress</span>
+						<span class="bch-actions"></span>
+					</div>
+
 					<!-- All Tasks row -->
 					<a href="/all" class="board-row board-row-all" id="all-tasks">
+						<span class="expand-toggle placeholder"></span>
 						<span class="board-row-emoji glass">🌐</span>
 						<span class="board-row-name">All Tasks</span>
+						<span class="board-row-activity"></span>
 						<span class="board-row-count">{totalCards} cards</span>
 						<div class="board-row-progress">
 							{#if totalCards > 0}
@@ -383,7 +395,7 @@
 								<span class="progress-pct">{Math.round((completedCards / totalCards) * 100)}%</span>
 							{/if}
 						</div>
-						<span class="board-row-action"></span>
+						<div class="board-row-actions"></div>
 					</a>
 
 					<!-- Favourites Section -->
@@ -397,11 +409,10 @@
 							<div class="cat-boards-wrapper animate-slide-up">
 								{#each favouriteBoards as board (board.id)}
 									<a href="/board/{board.id}" class="board-row fav-row">
+										<span class="expand-toggle placeholder"></span>
 										<span class="board-row-emoji glass">{board.emoji}</span>
-										<div class="board-row-text">
-											<span class="board-row-name">{board.name}</span>
-											<span class="board-row-meta">Activity {timeAgo(board.lastActivity)}</span>
-										</div>
+										<span class="board-row-name">{board.name}</span>
+										<span class="board-row-activity">{timeAgo(board.lastActivity)}</span>
 										<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
 										<div class="board-row-progress">
 											{#if board.totalCards > 0}
@@ -412,7 +423,9 @@
 												<span class="progress-pct empty">—</span>
 											{/if}
 										</div>
-										<button class="row-fav-btn favourited" title="Remove from favourites" onclick={(e) => toggleFavourite(board.id, e)}>⭐</button>
+										<div class="board-row-actions">
+											<button class="row-fav-btn favourited" title="Remove from favourites" onclick={(e) => toggleFavourite(board.id, e)}>⭐</button>
+										</div>
 									</a>
 								{/each}
 							</div>
@@ -454,11 +467,9 @@
 												{/if}
 												<a href="/board/{board.id}" class="board-row-link">
 													<span class="board-row-emoji glass">{board.emoji}</span>
-													<div class="board-row-text">
-														<span class="board-row-name">{board.name}</span>
-														<span class="board-row-meta">Activity {timeAgo(board.lastActivity)}</span>
-													</div>
+													<span class="board-row-name">{board.name}</span>
 												</a>
+												<span class="board-row-activity">{timeAgo(board.lastActivity)}</span>
 												<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
 												<div class="board-row-progress">
 													{#if board.totalCards > 0}
@@ -469,32 +480,22 @@
 														<span class="progress-pct empty">—</span>
 													{/if}
 												</div>
-												{#if board.subBoards && board.subBoards.length > 0}
-													{@const activeSubs = board.subBoards.filter((s: any) => showCompletedSubs || !(s.total > 0 && s.done === s.total))}
-													<span class="sub-count-badge" class:all-done={activeSubs.length === 0}>{activeSubs.length}/{board.subBoards.length} sub</span>
-												{/if}
-												<button
-													class="row-fav-btn"
-													class:favourited={favouriteBoardIds.has(board.id)}
-													title={favouriteBoardIds.has(board.id) ? 'Remove from favourites' : 'Add to favourites'}
-													onclick={(e) => toggleFavourite(board.id, e)}
-												>
-													{favouriteBoardIds.has(board.id) ? '⭐' : '☆'}
-												</button>
-												<button
-													class="row-delete-btn"
-													title="Delete board"
-													onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(board.id, board.name); }}
-													disabled={deleting === board.id}
-												>
-													{#if deleting === board.id}
-														<span class="spinner"></span>
-													{:else}
-														<svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-															<path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-														</svg>
-													{/if}
-												</button>
+												<div class="board-row-actions">
+									{#if board.subBoards && board.subBoards.length > 0}
+										{@const activeSubs = board.subBoards.filter((s: any) => showCompletedSubs || !(s.total > 0 && s.done === s.total))}
+										<span class="sub-count-badge" class:all-done={activeSubs.length === 0}>{activeSubs.length}/{board.subBoards.length} sub</span>
+									{/if}
+									<button class="row-fav-btn" class:favourited={favouriteBoardIds.has(board.id)} title={favouriteBoardIds.has(board.id) ? 'Remove from favourites' : 'Add to favourites'} onclick={(e) => toggleFavourite(board.id, e)}>
+										{favouriteBoardIds.has(board.id) ? '⭐' : '☆'}
+									</button>
+									<button class="row-delete-btn" title="Delete board" onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(board.id, board.name); }} disabled={deleting === board.id}>
+										{#if deleting === board.id}
+											<span class="spinner"></span>
+										{:else}
+											<svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+										{/if}
+									</button>
+								</div>
 											</div>
 
 											<!-- Sub-boards (expanded) -->
@@ -503,10 +504,8 @@
 													<a href="/board/{sb.id}" class="board-row sub-row animate-fade-in" title="Parent: {sb.parentCardTitle}">
 														<span class="sub-connector">└</span>
 														<span class="board-row-emoji glass-sm">{sb.emoji}</span>
-														<div class="board-row-text">
-															<span class="board-row-name">{sb.name}</span>
-															<span class="board-row-meta">from {sb.parentCardTitle}</span>
-														</div>
+														<span class="board-row-name">{sb.name}</span>
+														<span class="board-row-activity">{sb.parentCardTitle}</span>
 														<span class="board-row-count">{sb.total} card{sb.total !== 1 ? 's' : ''}</span>
 														<div class="board-row-progress">
 															{#if sb.total > 0}
@@ -517,9 +516,11 @@
 																<span class="progress-pct empty">empty</span>
 															{/if}
 														</div>
-														<button class="row-delete-btn" title="Delete sub-board" onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(sb.id, sb.name); }}>
-															<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-														</button>
+														<div class="board-row-actions">
+															<button class="row-delete-btn" title="Delete sub-board" onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(sb.id, sb.name); }}>
+																<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+															</button>
+														</div>
 													</a>
 												{/each}
 											{/if}
@@ -1054,7 +1055,6 @@
 	.cat-expand-icon.rotated svg { transform: rotate(90deg); }
 	.category-dot {
 		width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
-		box-shadow: 0 0 6px currentColor;
 	}
 	.category-group-name {
 		font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
@@ -1110,6 +1110,10 @@
 		background: var(--bg-card);
 		transition: all var(--duration-fast) var(--ease-out);
 		text-decoration: none; color: inherit;
+		position: relative; overflow: hidden;
+	}
+	.board-color-strip {
+		position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
 	}
 	.board-row:first-child, .board-row-all { border-radius: var(--radius-md) var(--radius-md) 0 0; }
 	.board-row-group:last-child .board-row:last-child,
@@ -1117,12 +1121,28 @@
 	.board-row:hover { background: rgba(99, 102, 241, 0.04); }
 
 	.board-row-all {
-		border-bottom: 1px solid rgba(99, 102, 241, 0.2);
-		background: linear-gradient(135deg, var(--bg-card), rgba(99, 102, 241, 0.04));
+		border-bottom: 1px solid var(--glass-border);
+		background: var(--bg-card);
 		border-radius: var(--radius-md);
 		margin-bottom: var(--space-xs);
 	}
-	.board-row-all:hover { background: linear-gradient(135deg, var(--bg-card), rgba(99, 102, 241, 0.08)); }
+	.board-row-all:hover { background: rgba(99, 102, 241, 0.04); }
+
+	/* Column header */
+	.board-col-header {
+		display: flex; align-items: center; gap: var(--space-sm);
+		padding: 6px var(--space-md); margin-bottom: 2px;
+	}
+	.board-col-header span {
+		font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.06em; color: var(--text-tertiary);
+	}
+	.bch-spacer { width: 20px; flex-shrink: 0; }
+	.bch-name { flex: 1; min-width: 0; }
+	.bch-activity { width: 80px; text-align: right; }
+	.bch-cards { width: 60px; text-align: right; }
+	.bch-progress { width: 100px; text-align: right; }
+	.bch-actions { width: 80px; }
 
 	.board-row-link {
 		display: flex; align-items: center; gap: var(--space-sm);
@@ -1134,9 +1154,10 @@
 		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 		flex: 1; min-width: 0;
 	}
-	.board-row-count { font-size: 0.72rem; color: var(--text-tertiary); font-weight: 500; white-space: nowrap; min-width: 55px; }
+	.board-row-activity { width: 80px; font-size: 0.7rem; color: var(--text-tertiary); font-weight: 500; white-space: nowrap; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; }
+	.board-row-count { width: 60px; font-size: 0.72rem; color: var(--text-tertiary); font-weight: 500; white-space: nowrap; text-align: right; flex-shrink: 0; }
 	.board-row-progress {
-		display: flex; align-items: center; gap: 6px; min-width: 100px;
+		width: 100px; flex-shrink: 0; display: flex; align-items: center; gap: 6px;
 	}
 	.progress-track { flex: 1; height: 5px; background: var(--glass-bg); border-radius: 3px; overflow: hidden; }
 	.progress-fill { height: 100%; background: var(--accent-indigo); border-radius: 3px; transition: width 0.3s; }
@@ -1184,7 +1205,8 @@
 		font-size: 0.7rem; color: var(--text-tertiary); font-weight: 400;
 		width: 14px; flex-shrink: 0; text-align: center;
 	}
-	.board-row-action { width: 24px; flex-shrink: 0; }
+	.board-row-action { width: 80px; flex-shrink: 0; }
+	.board-row-actions { width: 80px; flex-shrink: 0; display: flex; align-items: center; gap: 4px; justify-content: flex-end; margin-left: var(--space-sm); }
 
 	/* ─── Activity ────────────────────────────────────────────────── */
 	.activity-section { margin-bottom: var(--space-2xl); }
