@@ -100,7 +100,12 @@ Set `ORIGIN` to the address users will access — e.g. `http://192.168.1.50:3000
 
 #### Docker Compose (recommended)
 
-Create a `docker-compose.yml`:
+```bash
+git clone https://github.com/gitBoon/DumpFire.git
+cd DumpFire
+```
+
+Create a `docker-compose.yml` in the project directory:
 
 ```yaml
 services:
@@ -125,8 +130,6 @@ volumes:
 Then run:
 
 ```bash
-git clone https://github.com/gitBoon/DumpFire.git
-cd DumpFire
 docker compose up -d
 ```
 
