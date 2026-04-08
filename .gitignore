@@ -38,3 +38,9 @@ warnings*.txt
 
 # User uploads (card attachments)
 uploads/
+
+# IDE / editor config
+.vscode/
+
+# Agent workflows (local only)
+.agent/
