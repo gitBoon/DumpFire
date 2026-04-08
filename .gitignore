@@ -35,3 +35,6 @@ vite.config.ts.timestamp-*
 check-errors.txt
 warn_machine.txt
 warnings*.txt
+
+# User uploads (card attachments)
+uploads/

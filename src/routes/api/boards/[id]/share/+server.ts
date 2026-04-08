@@ -109,6 +109,25 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 			db.insert(boardTeams)
 				.values({ boardId, teamId: targetId, role: shareRole })
 				.run();
+
+			// Notify all team members about the new board share
+			const board = db.select({ name: boards.name }).from(boards).where(eq(boards.id, boardId)).get();
+			if (board) {
+				const baseUrl = resolveBaseUrl(request, url);
+				const members = db.select({ userId: teamMembers.userId })
+					.from(teamMembers).where(eq(teamMembers.teamId, targetId)).all();
+				if (members.length > 0) {
+					const allMemberUsers: { email: string; username: string }[] = [];
+					for (const m of members) {
+						const u = db.select({ email: users.email, username: users.username })
+							.from(users).where(eq(users.id, m.userId)).get();
+						if (u) allMemberUsers.push(u);
+					}
+					for (const u of allMemberUsers) {
+						notifyBoardShared(boardId, board.name, u.email, u.username, locals.user.username, shareRole, baseUrl);
+					}
+				}
+			}
 		}
 	} else {
 		throw error(400, 'type must be "user" or "team"');
