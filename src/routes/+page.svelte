@@ -796,7 +796,7 @@
 
 <!-- Create board modal -->
 {#if showCreate}
-	<div class="modal-overlay" onclick={() => (showCreate = false)} role="dialog" aria-modal="true">
+	<div class="modal-overlay" role="dialog" aria-modal="true">
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<div class="modal-content" onclick={(e) => e.stopPropagation()} role="document">
 			<h2>Create New Board</h2>

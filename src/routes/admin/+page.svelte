@@ -1299,7 +1299,7 @@
 		<!-- Password Reset Modal (inline) -->
 		{#if resetPasswordUserId}
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
-			<div class="modal-overlay" onclick={() => (resetPasswordUserId = null)} role="dialog" aria-modal="true">
+			<div class="modal-overlay" role="dialog" aria-modal="true">
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
 				<div class="modal-content" onclick={(e) => e.stopPropagation()} role="document">
 					<h2>🔑 Reset Password</h2>
@@ -1439,7 +1439,7 @@
 <!-- Confirm dialog -->
 {#if confirmAction.show}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" onclick={() => (confirmAction.show = false)} role="dialog" aria-modal="true">
+	<div class="modal-overlay" role="dialog" aria-modal="true">
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document">
 			<h2>{confirmAction.title}</h2>
@@ -1455,7 +1455,7 @@
 <!-- Google Drive OAuth code entry -->
 {#if gdriveConnecting}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" onclick={() => { gdriveConnecting = ''; gdriveAuthCode = ''; }} role="dialog" aria-modal="true">
+	<div class="modal-overlay" role="dialog" aria-modal="true">
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px">
 			<h2>🔗 Connect Google Drive</h2>

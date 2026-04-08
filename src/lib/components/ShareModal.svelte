@@ -142,7 +142,7 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay" onclick={onClose} role="dialog" aria-modal="true" aria-label="Share board">
+<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Share board">
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-content share-modal" onclick={(e) => e.stopPropagation()} role="document">
 		<div class="share-header">

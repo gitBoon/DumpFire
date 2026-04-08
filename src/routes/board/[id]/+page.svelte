@@ -27,8 +27,9 @@
 
 	// Shared utilities
 	import { COLUMN_COLORS, COMMON_EMOJIS, FLIP_DURATION_MS } from '$lib/utils/constants';
-	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, isStale } from '$lib/utils/date-utils';
+	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, isStale, isNew } from '$lib/utils/date-utils';
 	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel, getActionLabel, getVisibleCount } from '$lib/utils/card-utils';
+	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	// Board-specific modules
 	import * as api from '$lib/api';
@@ -300,7 +301,7 @@
 	let contextMenu = $state<{ show: boolean; x: number; y: number; card: CardType | null; columnId: number }>({ show: false, x: 0, y: 0, card: null, columnId: 0 });
 
 	function toggleDropdown(id: string) { openDropdown = openDropdown === id ? null : id; }
-	function closeDropdowns() { openDropdown = null; showEmojiPicker = false; contextMenu = { ...contextMenu, show: false }; }
+	function closeDropdowns() { openDropdown = null; showEmojiPicker = false; showMoreMenu = false; contextMenu = { ...contextMenu, show: false }; }
 
 	function openContextMenu(e: MouseEvent, card: CardType, columnId: number) {
 		e.preventDefault();
@@ -381,7 +382,7 @@
 
 	let searchQuery = $state('');
 	let filterAssigneeId = $state<number | null>(null);
-	let myCardsOnly = $state(false);
+
 
 	// ─── Archive Panel ──────────────────────────────────────────────────────────
 
@@ -470,6 +471,7 @@
 	let currentUser = $derived($page.data.user);
 	let canManage = $derived(data.canManage);
 	let showShareModal = $state(false);
+	let showMoreMenu = $state(false);
 
 	// ─── Fireworks ───────────────────────────────────────────────────────────
 
@@ -531,8 +533,10 @@
 				boardColumns = result.updatedColumns;
 				for (const entry of result.movedCards) {
 					if (entry.isComplete) {
+						playCompleteSound();
 						logActivity('card_completed', `${entry.card.title} (${entry.fromName} → ${entry.toName})`, entry.card.id);
 					} else {
+						playMoveSound();
 						logActivity('card_moved', `${entry.card.title} (${entry.fromName} → ${entry.toName})`, entry.card.id);
 					}
 				}
@@ -584,6 +588,7 @@
 					celebrateUserEmoji = d.userEmoji;
 					celebrateXpGained = d.xpGained;
 					showFireworks = true;
+					playCompleteSound();
 					setTimeout(() => (showFireworks = false), 3000);
 				},
 				onXpUpdate: () => refreshXp()
@@ -617,7 +622,7 @@
 		<div class="board-header-left">
 			{#if data.breadcrumbs && data.breadcrumbs.length > 0}
 				<nav class="breadcrumbs">
-					<a href="/" class="breadcrumb-link" title="Dashboard">🔥</a>
+					<a href="/" class="breadcrumb-link breadcrumb-home" title="Dashboard">🔥</a>
 					<span class="breadcrumb-sep">›</span>
 					{#each data.breadcrumbs as crumb}
 						<a href={crumb.href} class="breadcrumb-link">{crumb.emoji} {crumb.label}</a>
@@ -702,49 +707,15 @@
 		</div>
 		<select class="assignee-filter" bind:value={filterAssigneeId}>
 			<option value={null}>All assignees</option>
-			{#each data.boardUsers as u}
+			{#if currentUser}
+				<option value={currentUser.id}>👤 My Cards</option>
+			{/if}
+			{#each data.boardUsers.filter(u => u.id !== currentUser?.id) as u}
 				<option value={u.id}>{u.emoji || '👤'} {u.username}</option>
 			{/each}
 		</select>
 
 		<div class="board-header-right">
-			<span class="board-stats">
-				{boardColumns.length} columns · {boardColumns.reduce((sum, col) => sum + col.cards.length, 0)} cards
-			</span>
-
-			<button class="btn-ghost" class:active-panel-btn={myCardsOnly} onclick={() => (myCardsOnly = !myCardsOnly)} title={myCardsOnly ? 'Show all cards' : 'Show only my cards'}>
-				👤 {myCardsOnly ? 'My Cards' : 'All'}
-			</button>
-			<button class="btn-ghost" class:active-panel-btn={showActivityPanel} onclick={toggleActivityPanel} title="Activity log">
-				📋
-			</button>
-			<button class="btn-ghost" class:active-panel-btn={showStatsPanel} onclick={toggleStatsPanel} title="Board statistics">
-				📊
-			</button>
-			<button class="btn-ghost" class:active-panel-btn={showArchivePanel} onclick={toggleArchivePanel} title="Archived cards">
-				🗄️
-			</button>
-			{#if data.breadcrumbs && data.breadcrumbs.length > 0}
-				<button class="btn-ghost btn-delete-subboard" onclick={() => {
-					showConfirm('Delete Sub-board', `Delete "${boardName}" and all its cards? This cannot be undone.`, 'Delete', async () => {
-						const parentHref = data.breadcrumbs[data.breadcrumbs.length - 1]?.href || '/';
-						await fetch(`/api/boards/${data.board.id}`, { method: 'DELETE' });
-						window.location.href = parentHref;
-					});
-				}} title="Delete this sub-board">
-					🗑️
-				</button>
-			{/if}
-			<button class="btn-ghost" class:active-panel-btn={selectionMode} onclick={() => { selectionMode = !selectionMode; if (!selectionMode) clearSelection(); }} title="Bulk select">
-				☑️
-			</button>
-
-			<button class="btn-ghost" onclick={() => (showCategoryModal = true)} title="Manage categories">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M2 3h4l2 2h6v8H2V3z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-				</svg>
-				Categories
-			</button>
 			<button class="btn-ghost" onclick={() => (showAddColumnModal = true)} title="Add column">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 					<rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
@@ -752,23 +723,70 @@
 				</svg>
 				Add Column
 			</button>
-			{#if canManage}
-				<button class="btn-ghost" onclick={() => (showShareModal = true)} title="Share board">
+
+			<!-- More menu (progressive disclosure) -->
+			<div class="more-menu-wrapper">
+				<button class="btn-ghost more-menu-trigger" class:active-panel-btn={showMoreMenu} onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="More actions">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-						<circle cx="12" cy="4" r="2" stroke="currentColor" stroke-width="1.5"/>
-						<circle cx="4" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/>
-						<circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="1.5"/>
-						<path d="M5.8 7l4.4-2M5.8 9l4.4 2" stroke="currentColor" stroke-width="1.5"/>
+						<circle cx="3" cy="8" r="1.5" fill="currentColor"/>
+						<circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+						<circle cx="13" cy="8" r="1.5" fill="currentColor"/>
 					</svg>
-					Share
+					More
 				</button>
-			{/if}
-			<a href="/inbox" class="btn-ghost nav-btn" title="Inbox">
-				📥 Inbox
-			</a>
-			<a href="/request" class="btn-ghost nav-btn" title="Submit a Request">
-				📋 Request
-			</a>
+				{#if showMoreMenu}
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div class="more-dropdown" onclick={(e) => e.stopPropagation()}>
+						<div class="more-dropdown-section">
+							<div class="more-dropdown-label">Panels</div>
+							<button class="more-dropdown-item" class:more-active={showActivityPanel} onclick={() => { toggleActivityPanel(); showMoreMenu = false; }}>
+								<span class="more-item-icon">📋</span> Activity Log
+								{#if showActivityPanel}<span class="more-check">✓</span>{/if}
+							</button>
+							<button class="more-dropdown-item" class:more-active={showStatsPanel} onclick={() => { toggleStatsPanel(); showMoreMenu = false; }}>
+								<span class="more-item-icon">📊</span> Statistics
+								{#if showStatsPanel}<span class="more-check">✓</span>{/if}
+							</button>
+							<button class="more-dropdown-item" class:more-active={showArchivePanel} onclick={() => { toggleArchivePanel(); showMoreMenu = false; }}>
+								<span class="more-item-icon">🗄️</span> Archived Cards
+								{#if showArchivePanel}<span class="more-check">✓</span>{/if}
+							</button>
+						</div>
+
+						<div class="more-dropdown-divider"></div>
+
+						<div class="more-dropdown-section">
+							<div class="more-dropdown-label">Board</div>
+							<button class="more-dropdown-item" onclick={() => { showCategoryModal = true; showMoreMenu = false; }}>
+								<span class="more-item-icon">🏷️</span> Manage Categories
+							</button>
+							<button class="more-dropdown-item" class:more-active={selectionMode} onclick={() => { selectionMode = !selectionMode; if (!selectionMode) clearSelection(); showMoreMenu = false; }}>
+								<span class="more-item-icon">☑️</span> Bulk Select
+								{#if selectionMode}<span class="more-check">✓</span>{/if}
+							</button>
+							{#if canManage}
+								<button class="more-dropdown-item" onclick={() => { showShareModal = true; showMoreMenu = false; }}>
+									<span class="more-item-icon">🔗</span> Share Board
+								</button>
+							{/if}
+							{#if data.breadcrumbs && data.breadcrumbs.length > 0}
+								<button class="more-dropdown-item more-danger" onclick={() => {
+									showMoreMenu = false;
+									showConfirm('Delete Sub-board', `Delete "${boardName}" and all its cards? This cannot be undone.`, 'Delete', async () => {
+										const parentHref = data.breadcrumbs[data.breadcrumbs.length - 1]?.href || '/';
+										await fetch(`/api/boards/${data.board.id}`, { method: 'DELETE' });
+										window.location.href = parentHref;
+									});
+								}}>
+									<span class="more-item-icon">🗑️</span> Delete Sub-board
+								</button>
+							{/if}
+						</div>
+					</div>
+				{/if}
+			</div>
+
 			<ThemePicker />
 		</div>
 	</header>
@@ -940,7 +958,7 @@
 								class="kanban-card"
 								class:card-completed={isCompleteColumn(column)}
 								class:card-on-hold={isOnHoldColumn(column.title)}
-								class:card-hidden={!matchesSearch(card, searchQuery, boardCategories) || (filterAssigneeId !== null && !card.assignees?.some(a => a.id === filterAssigneeId)) || (myCardsOnly && !card.assignees?.some(a => a.id === currentUser?.id))}
+								class:card-hidden={!matchesSearch(card, searchQuery, boardCategories) || (filterAssigneeId !== null && !card.assignees?.some(a => a.id === filterAssigneeId))}
 								class:card-stale={isStale(card.createdAt) && !isCompleteColumn(column)}
 								class:card-selected={selectedCards.has(card.id)}
 								class:card-pinned={card.pinned}
@@ -953,6 +971,9 @@
 							>
 								{#if card.pinned}
 									<span class="pin-indicator" title="Pinned">📌</span>
+								{/if}
+								{#if isNew(card.createdAt) && !isCompleteColumn(column)}
+									<span class="new-badge">New</span>
 								{/if}
 								{#if selectionMode}
 									<div class="select-checkbox" class:checked={selectedCards.has(card.id)}>
@@ -1279,13 +1300,62 @@
 	.board-header {
 		display: flex; align-items: center; justify-content: space-between;
 		padding: var(--space-md) var(--space-xl); border-bottom: 1px solid var(--glass-border);
-		flex-shrink: 0; gap: var(--space-md);
+		flex-shrink: 0; gap: var(--space-md); flex-wrap: wrap;
 	}
-	.board-header-left { display: flex; align-items: center; gap: var(--space-md); min-width: 0; }
-	.board-header-right { display: flex; align-items: center; gap: var(--space-sm); flex-shrink: 0; }
+	.board-header-left { display: flex; align-items: center; gap: var(--space-md); min-width: 0; flex: 1 1 auto; }
+	.board-header-right { display: flex; align-items: center; gap: var(--space-sm); flex-shrink: 0; flex-wrap: wrap; }
 	.back-btn { padding: var(--space-sm); }
-	.btn-delete-subboard { opacity: 0.5; }
-	.btn-delete-subboard:hover { opacity: 1; background: rgba(244, 63, 94, 0.1) !important; }
+
+	/* More menu dropdown */
+	.more-menu-wrapper { position: relative; }
+	.more-menu-trigger { display: flex; align-items: center; gap: 6px; }
+	.more-dropdown {
+		position: absolute; top: calc(100% + 6px); right: 0;
+		background: var(--bg-card); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-lg); min-width: 220px;
+		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.04);
+		z-index: 200; padding: var(--space-xs) 0;
+		animation: moreDropdownIn 0.15s ease-out;
+		backdrop-filter: blur(12px);
+	}
+	@keyframes moreDropdownIn {
+		from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+		to { opacity: 1; transform: translateY(0) scale(1); }
+	}
+	.more-dropdown-section { padding: var(--space-xs) 0; }
+	.more-dropdown-label {
+		font-size: 0.62rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.08em; color: var(--text-tertiary);
+		padding: var(--space-xs) var(--space-md) 4px;
+	}
+	.more-dropdown-divider {
+		height: 1px; background: var(--glass-border);
+		margin: var(--space-xs) var(--space-md);
+	}
+	.more-dropdown-item {
+		display: flex; align-items: center; gap: var(--space-sm);
+		width: 100%; padding: 7px var(--space-md);
+		border: none; background: transparent;
+		color: var(--text-secondary); font-size: 0.82rem; font-weight: 500;
+		font-family: var(--font-family); cursor: pointer;
+		text-decoration: none; text-align: left;
+		transition: all 0.1s ease;
+	}
+	.more-dropdown-item:hover {
+		background: rgba(99, 102, 241, 0.08); color: var(--text-primary);
+	}
+	.more-dropdown-item.more-active {
+		color: var(--accent-indigo); font-weight: 600;
+	}
+	.more-dropdown-item.more-danger { color: var(--text-tertiary); }
+	.more-dropdown-item.more-danger:hover {
+		color: var(--accent-rose); background: rgba(244, 63, 94, 0.08);
+	}
+	.more-item-icon { font-size: 0.9rem; width: 20px; text-align: center; flex-shrink: 0; }
+	.more-check {
+		margin-left: auto; font-size: 0.75rem; font-weight: 700;
+		color: var(--accent-indigo);
+	}
 
 	.breadcrumbs {
 		display: flex;
@@ -1297,10 +1367,19 @@
 		overflow: hidden;
 	}
 
+	.breadcrumb-home {
+		font-size: 1.25rem;
+		line-height: 1;
+		flex-shrink: 0;
+	}
+
 	.breadcrumb-link {
 		color: var(--text-secondary);
 		text-decoration: none;
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 160px;
 		transition: color var(--duration-fast) var(--ease-out);
 	}
 
@@ -1481,7 +1560,13 @@
 	.column-title { font-size: 0.9rem; font-weight: 600; cursor: pointer; padding: 2px var(--space-xs); border-radius: var(--radius-sm); transition: background var(--duration-fast) var(--ease-out); white-space: nowrap; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 	.column-title:hover { background: var(--glass-hover); }
 	.column-title-input { font-size: 0.9rem; font-weight: 600; padding: 2px var(--space-xs); width: 100%; }
-	.column-count { font-size: 0.7rem; font-weight: 600; color: var(--text-tertiary); background: var(--bg-base); padding: 1px 6px; border-radius: var(--radius-full); flex-shrink: 0; }
+	.column-count {
+		font-size: 0.78rem; font-weight: 700; color: var(--text-secondary);
+		background: var(--bg-base); padding: 2px 8px;
+		border-radius: var(--radius-full); flex-shrink: 0;
+		border: 1px solid var(--glass-border);
+		min-width: 22px; text-align: center;
+	}
 	.column-actions { display: flex; align-items: center; gap: 0; opacity: 0; transition: opacity var(--duration-fast) var(--ease-out); flex-shrink: 0; margin-left: auto; margin-bottom: var(--space-xs); }
 	.kanban-column:hover .column-actions { opacity: 1; }
 	.column-action-btn { padding: 2px !important; }
@@ -1643,6 +1728,23 @@
 	/* Pin indicator */
 	.pin-indicator { position: absolute; top: 4px; right: 4px; font-size: 0.7rem; z-index: 2; opacity: 0.7; }
 	.kanban-card.card-pinned { border-top: 2px solid var(--accent-indigo); }
+
+	/* New badge */
+	.new-badge {
+		position: absolute; top: 4px; right: 4px; z-index: 2;
+		font-size: 0.5rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.06em; padding: 1px 6px;
+		border-radius: var(--radius-full);
+		background: linear-gradient(135deg, #22c55e, #10b981);
+		color: #fff;
+		box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+		animation: newPulse 2s ease-in-out infinite;
+	}
+	.kanban-card.card-pinned .new-badge { right: 22px; }
+	@keyframes newPulse {
+		0%, 100% { box-shadow: 0 0 6px rgba(34, 197, 94, 0.3); }
+		50% { box-shadow: 0 0 12px rgba(34, 197, 94, 0.6); }
+	}
 
 	/* Drag shadow */
 	:global(.kanban-card[aria-grabbed="true"]) {

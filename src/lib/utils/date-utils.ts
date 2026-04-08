@@ -106,3 +106,15 @@ export function isStale(dateStr: string): boolean {
 	const days = Math.floor((Date.now() - parseUTC(dateStr).getTime()) / (1000 * 60 * 60 * 24));
 	return days >= 7;
 }
+
+/**
+ * Checks whether a card/item is "new" — created within the last 24 hours.
+ * Used to visually highlight freshly created tasks.
+ *
+ * @param dateStr — The creation timestamp to check
+ * @returns True if the item is less than 24 hours old
+ */
+export function isNew(dateStr: string): boolean {
+	const hours = (Date.now() - parseUTC(dateStr).getTime()) / (1000 * 60 * 60);
+	return hours < 24;
+}

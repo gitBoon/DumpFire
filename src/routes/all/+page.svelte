@@ -4,16 +4,20 @@
 	 *
 	 * Groups cards into swim-lane "buckets" (To Do, On Hold, In Progress, Complete)
 	 * and provides search and board-level filtering. Supports editing and moving cards.
+	 * Live-updates via global SSE and shows celebrations on task completion.
 	 */
 	import type { PageData } from './$types';
 	import { theme } from '$lib/stores/theme';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
+	import { browser } from '$app/environment';
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import FireworksCelebration from '$lib/components/board/FireworksCelebration.svelte';
 	import type { CardType } from '$lib/types';
-	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC } from '$lib/utils/date-utils';
+	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC, isNew } from '$lib/utils/date-utils';
 	import { subtaskProgress } from '$lib/utils/card-utils';
+	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	let { data }: { data: PageData } = $props();
 	let currentTheme = $state('light');
@@ -21,9 +25,60 @@
 
 	let tick = $state(0);
 	let tickInterval: ReturnType<typeof setInterval> | null = null;
+
+	// ─── SSE Live Updates ─────────────────────────────────────────────────
+	let eventSource: EventSource | null = null;
+	let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+
+	// ─── Fireworks Celebration ────────────────────────────────────────────
+	let showFireworks = $state(false);
+	let celebrateCardTitle = $state('');
+	let celebrateUserName = $state('');
+	let celebrateUserEmoji = $state('');
+	let celebrateXpGained = $state(0);
+
+	function connectGlobalSSE() {
+		eventSource = new EventSource('/api/events');
+
+		eventSource.addEventListener('update', () => {
+			invalidateAll();
+		});
+
+		eventSource.addEventListener('celebrate', (e) => {
+			try {
+				const d = JSON.parse(e.data);
+				celebrateCardTitle = d.cardTitle || '';
+				celebrateUserName = d.userName || 'Someone';
+				celebrateUserEmoji = d.userEmoji || '👤';
+				celebrateXpGained = d.xpGained || 0;
+				showFireworks = true;
+				playCompleteSound();
+				setTimeout(() => (showFireworks = false), 3000);
+			} catch {
+				// Ignore parse errors
+			}
+		});
+
+		eventSource.onerror = () => {
+			if (eventSource) eventSource.close();
+			reconnectTimeout = setTimeout(connectGlobalSSE, 3000);
+		};
+	}
+
 	onMount(() => {
 		tickInterval = setInterval(() => { tick++; }, 15000);
-		return () => { if (tickInterval) clearInterval(tickInterval); };
+		if (browser) {
+			connectGlobalSSE();
+		}
+	});
+
+	onDestroy(() => {
+		if (tickInterval) clearInterval(tickInterval);
+		if (reconnectTimeout) clearTimeout(reconnectTimeout);
+		if (eventSource) {
+			eventSource.close();
+			eventSource = null;
+		}
 	});
 
 	let searchQuery = $state('');
@@ -61,7 +116,8 @@
 			subtasks: card.subtasks || [], labelIds: card.labelIds || [],
 			pinned: card.pinned || false, onHoldNote: card.onHoldNote || '',
 			businessValue: card.businessValue || '',
-			subBoards: card.subBoards || [], assignees: card.assignees || []
+			subBoards: card.subBoards || [], assignees: card.assignees || [],
+			archivedAt: card.archivedAt || null, coverUrl: card.coverUrl || null
 		};
 		editingBoardId = card.boardId;
 		showCardModal = true;
@@ -76,11 +132,24 @@
 
 	async function doMoveCard() {
 		if (!moveCard || !moveColumnId) return;
+
+		// Check if moving to a "complete" column for sound effect
+		const targetCol = data.columns.find((c: any) => c.id === moveColumnId);
+		const isCompletingMove = targetCol && ['complete', 'done'].includes(targetCol.title.toLowerCase().trim());
+
 		await fetch(`/api/cards/${moveCard.id}`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ columnId: moveColumnId, boardId: moveBoardId })
 		});
+
+		// Play appropriate sound
+		if (isCompletingMove) {
+			playCompleteSound();
+		} else {
+			playMoveSound();
+		}
+
 		showMoveModal = false;
 		moveCard = null;
 		await invalidateAll();
@@ -186,6 +255,9 @@
 								{#if card.pinned}
 									<span class="pin-badge" title="Pinned">📌</span>
 								{/if}
+								{#if isNew(card.createdAt)}
+									<span class="new-badge">New</span>
+								{/if}
 								<div class="card-header">
 									<span class="card-title">{card.title}</span>
 									<button class="move-btn" title="Move card" onclick={(e) => { e.stopPropagation(); openMoveModal(card); }}>
@@ -284,7 +356,7 @@
 
 <!-- Move Card Modal -->
 {#if showMoveModal && moveCard}
-	<div class="modal-overlay" onclick={() => { showMoveModal = false; moveCard = null; }} role="dialog">
+	<div class="modal-overlay" role="dialog">
 		<div class="move-modal" onclick={(e) => e.stopPropagation()}>
 			<h3>Move "{moveCard.title}"</h3>
 			<div class="form-group">
@@ -312,6 +384,16 @@
 			</div>
 		</div>
 	</div>
+{/if}
+
+<!-- Fireworks celebration -->
+{#if showFireworks}
+	<FireworksCelebration
+		cardTitle={celebrateCardTitle}
+		userName={celebrateUserName}
+		userEmoji={celebrateUserEmoji}
+		xpGained={celebrateXpGained}
+	/>
 {/if}
 
 <style>
@@ -538,6 +620,31 @@
 		top: 4px;
 		right: 6px;
 		font-size: 0.65rem;
+	}
+
+	.new-badge {
+		position: absolute;
+		top: 4px;
+		right: 6px;
+		font-size: 0.55rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		padding: 1px 6px;
+		border-radius: var(--radius-full);
+		background: linear-gradient(135deg, #22c55e, #10b981);
+		color: #fff;
+		box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
+		animation: newPulse 2s ease-in-out infinite;
+	}
+
+	.card-pinned .new-badge {
+		right: 24px;
+	}
+
+	@keyframes newPulse {
+		0%, 100% { box-shadow: 0 0 6px rgba(34, 197, 94, 0.3); }
+		50% { box-shadow: 0 0 12px rgba(34, 197, 94, 0.6); }
 	}
 
 	.card-header {
