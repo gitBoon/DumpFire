@@ -35,7 +35,27 @@
 	let expandedBoards = $state<Set<number>>(new Set());
 	let collapsedCategories = $state<Set<string>>(new Set());
 	let showCompletedSubs = $state(false);
+	let showCompletedBoards = $state(true);
 	let showCategoryManager = $state(false);
+
+	// Sort state
+	type SortColumn = 'name' | 'activity' | 'cards' | 'progress';
+	let sortBy = $state<SortColumn>('name');
+	let sortDir = $state<'asc' | 'desc'>('asc');
+
+	function toggleSort(col: SortColumn) {
+		if (sortBy === col) {
+			sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+		} else {
+			sortBy = col;
+			sortDir = col === 'name' ? 'asc' : 'desc';
+		}
+	}
+
+	function sortArrow(col: SortColumn): string {
+		if (sortBy !== col) return '';
+		return sortDir === 'asc' ? ' ▲' : ' ▼';
+	}
 
 	// Typewriter straplines
 	const straplines = [
@@ -167,6 +187,8 @@
 		const catMap = new Map<string, BoardGroup>();
 
 		for (const board of data.boards) {
+			// Hide completed boards when toggle is off
+			if (!showCompletedBoards && board.totalCards > 0 && board.completedCards === board.totalCards) continue;
 			const key = board.categoryName || '__uncategorised__';
 			let group = catMap.get(key);
 			if (!group) {
@@ -185,6 +207,31 @@
 			if (b.name === 'Uncategorised') return -1;
 			return a.name.localeCompare(b.name);
 		});
+
+		// Sort boards within each group
+		const dir = sortDir === 'asc' ? 1 : -1;
+		for (const group of groups) {
+			group.boards.sort((a, b) => {
+				switch (sortBy) {
+					case 'name':
+						return dir * a.name.localeCompare(b.name);
+					case 'activity': {
+						const aTime = new Date(a.lastActivity || '').getTime() || 0;
+						const bTime = new Date(b.lastActivity || '').getTime() || 0;
+						return dir * (aTime - bTime);
+					}
+					case 'cards':
+						return dir * (a.totalCards - b.totalCards);
+					case 'progress': {
+						const aPct = a.totalCards > 0 ? a.completedCards / a.totalCards : 0;
+						const bPct = b.totalCards > 0 ? b.completedCards / b.totalCards : 0;
+						return dir * (aPct - bPct);
+					}
+					default:
+						return 0;
+				}
+			});
+		}
 
 		return groups;
 	});
@@ -365,8 +412,11 @@
 						<button class="toggle-completed-btn" title="Manage Categories" onclick={() => showCategoryManager = true}>
 							🏷️ Manage Categories
 						</button>
+						<button class="toggle-completed-btn" class:active={showCompletedBoards} onclick={() => showCompletedBoards = !showCompletedBoards}>
+							{showCompletedBoards ? '✅ Showing done boards' : '👁️ Show done boards'}
+						</button>
 						<button class="toggle-completed-btn" class:active={showCompletedSubs} onclick={() => showCompletedSubs = !showCompletedSubs}>
-							{showCompletedSubs ? '✅ Showing done' : '👁️ Show done subs'}
+							{showCompletedSubs ? '✅ Showing done subs' : '👁️ Show done subs'}
 						</button>
 					</div>
 				</div>
@@ -375,10 +425,10 @@
 					<!-- Column headers -->
 					<div class="board-col-header">
 						<span class="bch-spacer"></span>
-						<span class="bch-name">Name</span>
-						<span class="bch-activity">Activity</span>
-						<span class="bch-cards">Cards</span>
-						<span class="bch-progress">Progress</span>
+						<button class="bch-name bch-sort" class:active={sortBy === 'name'} onclick={() => toggleSort('name')}>Name{sortArrow('name')}</button>
+						<button class="bch-activity bch-sort" class:active={sortBy === 'activity'} onclick={() => toggleSort('activity')}>Activity{sortArrow('activity')}</button>
+						<button class="bch-cards bch-sort" class:active={sortBy === 'cards'} onclick={() => toggleSort('cards')}>Cards{sortArrow('cards')}</button>
+						<button class="bch-progress bch-sort" class:active={sortBy === 'progress'} onclick={() => toggleSort('progress')}>Progress{sortArrow('progress')}</button>
 						<span class="bch-actions"></span>
 					</div>
 
@@ -1133,10 +1183,16 @@
 		display: flex; align-items: center; gap: var(--space-sm);
 		padding: 6px var(--space-md); margin-bottom: 2px;
 	}
-	.board-col-header span {
+	.board-col-header span, .board-col-header button {
 		font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
 		letter-spacing: 0.06em; color: var(--text-tertiary);
 	}
+	.bch-sort {
+		background: none; border: none; cursor: pointer; padding: 2px 0;
+		font-family: var(--font-family); transition: color 0.15s; text-align: left;
+	}
+	.bch-sort:hover { color: var(--text-primary); }
+	.bch-sort.active { color: var(--accent-indigo); }
 	.bch-spacer { width: 20px; flex-shrink: 0; }
 	.bch-name { flex: 1; min-width: 0; }
 	.bch-activity { width: 80px; text-align: right; }
