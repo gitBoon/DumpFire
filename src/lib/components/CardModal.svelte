@@ -90,6 +90,46 @@
 	let editingOnHold = $state(false);
 	let titleError = $state(false);
 
+	// Chip dropdown visibility
+	let showPriorityDrop = $state(false);
+	let showCategoryDrop = $state(false);
+	let showDueDateDrop = $state(false);
+	let showAssigneeDrop = $state(false);
+	let showAdvanced = $state(false);
+
+	function closeAllDropdowns() {
+		showPriorityDrop = false;
+		showCategoryDrop = false;
+		showDueDateDrop = false;
+		showAssigneeDrop = false;
+	}
+
+	function toggleDrop(name: string) {
+		const wasOpen = name === 'priority' ? showPriorityDrop : name === 'category' ? showCategoryDrop : name === 'due' ? showDueDateDrop : showAssigneeDrop;
+		closeAllDropdowns();
+		if (!wasOpen) {
+			if (name === 'priority') showPriorityDrop = true;
+			else if (name === 'category') showCategoryDrop = true;
+			else if (name === 'due') showDueDateDrop = true;
+			else showAssigneeDrop = true;
+		}
+	}
+
+	function getPriorityColor(p: string) {
+		const m: Record<string, string> = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#22c55e' };
+		return m[p] || '#eab308';
+	}
+
+	function getPriorityEmoji(p: string) {
+		const m: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
+		return m[p] || '🟡';
+	}
+
+	// Whether to show business justification (only for request-origin cards or if it already has content)
+	let showBusinessValue = $derived(
+		!!card?.requestOrigin || !!card?.businessValue || !!businessValue
+	);
+
 	// Card cover state
 	// svelte-ignore state_referenced_locally
 	let coverUrl = $state(card?.coverUrl || '');
@@ -526,23 +566,26 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay" onclick={onClose} role="dialog" aria-modal="true" aria-label="Card editor">
+<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Card editor">
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-content card-modal-content" onclick={(e) => e.stopPropagation()} role="document">
+	<div class="modal-content card-modal-content" onclick={(e) => { e.stopPropagation(); closeAllDropdowns(); }} role="document">
 		{#if coverUrl}
 			<div class="modal-cover-preview" style="background: {coverUrl}"></div>
 		{/if}
 		<div class="modal-header">
-			<div class="title-field" class:title-error={titleError}>
-				<label class="title-label" for="card-title">Task Title <span class="required">*</span></label>
-				<input id="card-title" class="modal-title-input" type="text" placeholder="Enter a title for this task..." bind:value={title} oninput={() => (titleError = false)} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()} autofocus />
-				{#if titleError}<span class="title-error-msg">A title is required</span>{/if}
-			</div>
+			<h2>{card ? 'Edit Task' : 'New Task'}</h2>
 			<button class="close-btn btn-ghost" onclick={onClose} aria-label="Close">
-				<svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-					<path d="M4 4l10 10M14 4L4 14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<line x1="18" y1="6" x2="6" y2="18"></line>
+					<line x1="6" y1="6" x2="18" y2="18"></line>
 				</svg>
 			</button>
+		</div>
+
+		<div class="modal-body">
+		<div class="title-field" class:title-error={titleError}>
+			<input id="card-title" class="modal-title-input" type="text" placeholder="What needs to be done?" bind:value={title} oninput={() => (titleError = false)} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()} autofocus />
+			{#if titleError}<span class="title-error-msg">A title is required</span>{/if}
 		</div>
 
 		{#if card}
@@ -583,14 +626,115 @@
 					{/if}
 				</div>
 			{:else}
-				<textarea id="card-desc" placeholder="Supports **markdown** formatting..." bind:value={description} rows="4"></textarea>
+			<textarea id="card-desc" placeholder="Add a description…" bind:value={description} rows="3"></textarea>
 			{/if}
+			<div class="desc-hint">Supports markdown formatting</div>
 		</div>
 
+		<!-- Metadata chips -->
+		<div class="metadata-section">
+			<div class="metadata-label">Details</div>
+			<div class="metadata-row">
+				<!-- Priority chip -->
+				<div class="dropdown-wrapper">
+					<button class="chip" onclick={(e) => { e.stopPropagation(); toggleDrop('priority'); }}>
+						<span class="chip-dot" style="background: {getPriorityColor(priority)}"></span>
+						<span>{priority.charAt(0).toUpperCase() + priority.slice(1)}</span>
+						<svg class="chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+					</button>
+					{#if showPriorityDrop}
+					<div class="chip-dropdown" onclick={(e) => e.stopPropagation()}>
+						{#each ['critical', 'high', 'medium', 'low'] as p}
+							<button class="chip-dropdown-item" class:selected={priority === p} onclick={() => { priority = p; showPriorityDrop = false; }}>
+								<span class="chip-dot" style="background: {getPriorityColor(p)}"></span>
+								{p.charAt(0).toUpperCase() + p.slice(1)}
+							</button>
+						{/each}
+					</div>
+					{/if}
+				</div>
+
+				<!-- Category chip -->
+				<div class="dropdown-wrapper">
+					<button class="chip" class:is-set={categoryId} onclick={(e) => { e.stopPropagation(); toggleDrop('category'); }}>
+						<svg class="chip-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6v6H4z"/><path d="M14 4h6v6h-6z"/><path d="M4 14h6v6H4z"/><path d="M14 14h6v6h-6z"/></svg>
+						<span>{categoryId ? localCategories.find(c => c.id === categoryId)?.name || 'Category' : 'Category'}</span>
+						<svg class="chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+					</button>
+					{#if showCategoryDrop}
+					<div class="chip-dropdown" onclick={(e) => e.stopPropagation()}>
+						<button class="chip-dropdown-item" class:selected={!categoryId} onclick={() => { categoryId = null; showCategoryDrop = false; }}>None</button>
+						{#each localCategories as cat}
+							<button class="chip-dropdown-item" class:selected={categoryId === cat.id} onclick={() => { categoryId = cat.id; showCategoryDrop = false; }}>
+								<span class="chip-dot" style="background: {cat.color}"></span>
+								{cat.name}
+							</button>
+						{/each}
+						<div class="chip-dropdown-divider"></div>
+						<button class="chip-dropdown-item" onclick={() => { showNewCategory = true; showCategoryDrop = false; }}>+ New Category</button>
+					</div>
+					{/if}
+				</div>
+
+				<!-- Due date chip -->
+				<div class="dropdown-wrapper">
+					<button class="chip" class:is-set={dueDate} onclick={(e) => { e.stopPropagation(); toggleDrop('due'); }}>
+						<svg class="chip-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+						<span>{dueDate ? new Date(dueDate + 'T00:00').toLocaleDateString('en-GB', {day:'numeric',month:'short'}) : 'Due date'}</span>
+						<svg class="chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+					</button>
+					{#if showDueDateDrop}
+					<div class="chip-dropdown" onclick={(e) => e.stopPropagation()}>
+						<button class="chip-dropdown-item" class:selected={!dueDate} onclick={() => { dueDate = ''; showDueDateDrop = false; }}>No date</button>
+						<div class="chip-dropdown-divider"></div>
+						<div style="padding: 4px 8px;">
+							<input type="date" bind:value={dueDate} onchange={() => { showDueDateDrop = false; }} style="width: 100%; font-size: 0.82rem;" />
+						</div>
+					</div>
+					{/if}
+				</div>
+
+				<!-- Assignee chip -->
+				<div class="dropdown-wrapper">
+					<button class="chip" class:is-set={cardAssignees.length > 0} onclick={(e) => { e.stopPropagation(); toggleDrop('assignee'); }}>
+						<svg class="chip-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+						<span>{cardAssignees.length > 0 ? cardAssignees.map(a => a.username).join(', ') : 'Assign'}</span>
+						<svg class="chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+					</button>
+					{#if showAssigneeDrop}
+					<div class="chip-dropdown" onclick={(e) => e.stopPropagation()}>
+						{#each cardAssignees as a}
+							<button class="chip-dropdown-item selected" onclick={() => unassignUser(a.id)}>
+								{a.emoji} {a.username} ✕
+							</button>
+						{/each}
+						{#if cardAssignees.length > 0 && availableAssignees.length > 0}
+							<div class="chip-dropdown-divider"></div>
+						{/if}
+						{#each availableAssignees as u}
+							<button class="chip-dropdown-item" onclick={() => assignUser(u.id)}>
+								{u.emoji} {u.username}
+							</button>
+						{/each}
+					</div>
+					{/if}
+				</div>
+			</div>
+		</div>
+
+		{#if card?.requestOrigin}
+			<div class="request-origin-banner">
+				<span class="request-origin-icon">📨</span>
+				<span>Created from request by <strong>{card.requestOrigin.requesterName}</strong></span>
+			</div>
+		{/if}
+
+		{#if showBusinessValue}
 		<div class="form-group">
 			<label for="card-bv">Business Value / Justification</label>
 			<textarea id="card-bv" placeholder="Why is this important? What value does it deliver?" bind:value={businessValue} rows="2"></textarea>
 		</div>
+		{/if}
 
 		<!-- On Hold Note -->
 		{#if card?.onHoldNote}
@@ -667,7 +811,10 @@
 				</div>
 
 				{#if totalCount === 0}
-					<p class="empty-subtasks">No subtasks yet. Click "Add" to break this task down.</p>
+					<button class="add-subtask-inline" onclick={openNewSubtask}>
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+						Add subtask
+					</button>
 				{/if}
 			</div>
 		{:else}
@@ -716,111 +863,11 @@
 				</div>
 
 				{#if pendingSubtasks.length === 0}
-					<p class="empty-subtasks">No subtasks yet. Click "Add" to break this task down.</p>
-				{/if}
-			</div>
-		{/if}
-
-		<!-- Sub-boards section -->
-		{#if card}
-			<div class="subboard-section">
-				<div class="subtask-header">
-					<label>
-						Sub-boards
-						{#if card.subBoards && card.subBoards.length > 0}
-							<span class="subtask-counter">{card.subBoards.length}</span>
-						{/if}
-					</label>
-				</div>
-
-				{#if card.subBoards && card.subBoards.length > 0}
-					<div class="subboard-list">
-						{#each card.subBoards as sb}
-							<div class="subboard-row">
-								<a href="/board/{sb.id}" class="subboard-link">
-									<span class="subboard-link-icon">{sb.emoji}</span>
-									<div class="subboard-link-info">
-										<span class="subboard-link-name">{sb.name}</span>
-										<span class="subboard-link-progress">{sb.done}/{sb.total} complete</span>
-									</div>
-									<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-										<path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-									</svg>
-								</a>
-								{#if onDeleteSubBoard}
-								<button class="subboard-delete-btn" title="Delete sub-board" onclick={() => onDeleteSubBoard!(sb.id)}>
-									<svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-								</button>
-								{/if}
-							</div>
-						{/each}
-					</div>
-				{/if}
-
-				{#if onCreateSubBoard}
-					<div class="subboard-create-row">
-						<input type="text" class="subboard-name-input" placeholder="Sub-board name..." bind:value={newSubBoardName} onkeydown={(e) => e.key === 'Enter' && newSubBoardName.trim() && onCreateSubBoard!(newSubBoardName.trim())} />
-						<button class="btn-ghost subboard-add-btn" onclick={() => { if (newSubBoardName.trim()) onCreateSubBoard!(newSubBoardName.trim()); }} disabled={!newSubBoardName.trim()}>
-							<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-							Create
-						</button>
-					</div>
-				{/if}
-
-				{#if onLinkSubBoard && availableBoards.length > 0}
-					<div class="subboard-link-section">
-						{#if showLinkPicker}
-							<div class="link-picker">
-								{#each availableBoards as ab}
-									<button class="link-picker-item" onclick={() => { onLinkSubBoard!(ab.id); showLinkPicker = false; }}>{ab.emoji} {ab.name}</button>
-								{/each}
-							</div>
-						{:else}
-							<button class="btn-ghost subboard-link-btn" onclick={() => (showLinkPicker = true)}>🔗 Link existing board</button>
-						{/if}
-					</div>
-				{/if}
-
-				{#if (!card.subBoards || card.subBoards.length === 0) && !onCreateSubBoard}
-					<p class="empty-subtasks">No sub-boards yet.</p>
-				{/if}
-			</div>
-		{:else}
-			<!-- New card: planned sub-boards -->
-			<div class="subboard-section">
-				<div class="subtask-header">
-					<label>
-						Planned Sub-boards
-						{#if pendingSubBoardNames.length > 0}
-							<span class="subtask-counter">{pendingSubBoardNames.length}</span>
-						{/if}
-					</label>
-				</div>
-				{#if pendingSubBoardNames.length > 0}
-					<div class="subboard-list">
-						{#each pendingSubBoardNames as name, i}
-							<div class="subboard-row">
-								<div class="subboard-link" style="cursor: default;">
-									<span class="subboard-link-icon">📋</span>
-									<div class="subboard-link-info">
-										<span class="subboard-link-name">{name}</span>
-										<span class="subboard-link-progress">Will be created on save</span>
-									</div>
-								</div>
-								<button class="subboard-delete-btn" title="Remove" onclick={() => { pendingSubBoardNames = pendingSubBoardNames.filter((_, idx) => idx !== i); }}>
-									<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-								</button>
-							</div>
-						{/each}
-					</div>
-				{/if}
-				<div class="subboard-create-row">
-					<input type="text" class="subboard-name-input" placeholder="Sub-board name..." bind:value={newPendingSubBoardName} onkeydown={(e) => { if (e.key === 'Enter' && newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} />
-					<button class="btn-ghost subboard-add-btn" onclick={() => { if (newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} disabled={!newPendingSubBoardName.trim()}>
+					<button class="add-subtask-inline" onclick={openNewPendingSubtask}>
 						<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-						Add
+						Add subtask
 					</button>
-				</div>
+				{/if}
 			</div>
 		{/if}
 
@@ -930,143 +977,164 @@
 
 		</div> <!-- end main-panel -->
 
-		<!-- Sidebar -->
-		<div class="sidebar-panel">
-			<div class="sidebar-field">
-				<label for="sb-priority">Priority</label>
-				<select id="sb-priority" bind:value={priority}>
-					<option value="low">🟢 Low</option>
-					<option value="medium">🟡 Medium</option>
-					<option value="high">🟠 High</option>
-					<option value="critical">🔴 Critical</option>
-				</select>
+		<!-- New Category inline form -->
+		{#if showNewCategory}
+		<div class="inline-cat-form" style="margin-bottom: var(--space-lg);">
+			<label style="font-size:0.75rem; font-weight:600; color:var(--text-secondary); margin-bottom:6px; display:block;">New Category</label>
+			<input type="text" class="inline-cat-input" placeholder="Category name..." bind:value={newCatName} onkeydown={(e) => e.key === 'Enter' && createCategoryInline()} autofocus />
+			<div class="inline-cat-colors">
+				{#each COLUMN_COLORS.slice(0, 8) as color}
+					<button class="cat-color-swatch" class:active={newCatColor === color} style="background: {color}" onclick={() => (newCatColor = color)} type="button"></button>
+				{/each}
+				<label class="color-custom-wrapper">
+					<input type="color" bind:value={newCatColor} class="color-native-input" />
+					<span class="cat-color-swatch custom" style="background: {newCatColor}">✎</span>
+				</label>
 			</div>
-
-			<div class="sidebar-field">
-				<label for="sb-category">Category</label>
-				{#if showNewCategory}
-					<div class="inline-cat-form">
-						<input type="text" class="inline-cat-input" placeholder="Category name..." bind:value={newCatName} onkeydown={(e) => e.key === 'Enter' && createCategoryInline()} autofocus />
-						<div class="inline-cat-colors">
-							{#each COLUMN_COLORS.slice(0, 8) as color}
-								<button class="cat-color-swatch" class:active={newCatColor === color} style="background: {color}" onclick={() => (newCatColor = color)} type="button"></button>
-							{/each}
-							<label class="color-custom-wrapper">
-								<input type="color" bind:value={newCatColor} class="color-native-input" />
-								<span class="cat-color-swatch custom" style="background: {newCatColor}">✎</span>
-							</label>
-						</div>
-						<div class="inline-cat-actions">
-							<button class="btn-primary small" onclick={createCategoryInline} disabled={!newCatName.trim()} type="button">Create</button>
-							<button class="btn-ghost small" onclick={() => (showNewCategory = false)} type="button">Cancel</button>
-						</div>
-					</div>
-				{:else}
-					<select id="sb-category" bind:value={categoryId}>
-						<option value={null}>None</option>
-						{#each localCategories as cat}
-							<option value={cat.id}>{cat.name}</option>
-						{/each}
-					</select>
-					<button class="btn-ghost new-cat-btn" onclick={() => (showNewCategory = true)} type="button">+ New Category</button>
-				{/if}
+			<div class="inline-cat-actions">
+				<button class="btn-primary small" onclick={createCategoryInline} disabled={!newCatName.trim()} type="button">Create</button>
+				<button class="btn-ghost small" onclick={() => (showNewCategory = false)} type="button">Cancel</button>
 			</div>
+		</div>
+		{/if}
 
-			<div class="sidebar-field">
-				{#if showDueDate}
-					<div class="due-date-header">
-						<label for="sb-due">Due Date</label>
-						<button class="btn-ghost due-clear" onclick={() => { showDueDate = false; dueDate = ''; }} title="Remove">✕</button>
-					</div>
-					<input id="sb-due" type="date" bind:value={dueDate} />
-				{:else}
-					<label>Due Date</label>
-					<button class="btn-ghost due-add-btn" onclick={() => (showDueDate = true)}>+ Set due date</button>
-				{/if}
-			</div>
+		{#if !card || activeTab === 'details'}
+		<!-- More options (progressive disclosure) -->
+		<div class="advanced-section">
+			<button class="advanced-toggle" class:is-expanded={showAdvanced} onclick={() => (showAdvanced = !showAdvanced)}>
+				<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+				More options
+			</button>
 
-			<div class="sidebar-field">
-				<label>Assignees</label>
-				<div class="assignees-list">
-					{#each cardAssignees as assignee}
-						<div class="assignee-chip">
-							<span class="assignee-emoji">{assignee.emoji}</span>
-							<span class="assignee-name">{assignee.username}</span>
-							<button class="assignee-remove" onclick={() => unassignUser(assignee.id)} title="Remove">✕</button>
+			{#if showAdvanced}
+			<div class="advanced-content">
+				<!-- Sub-board -->
+				<div class="form-group">
+					<label>Sub-board</label>
+					{#if card}
+						{#if card.subBoards && card.subBoards.length > 0}
+							<div class="subboard-list">
+								{#each card.subBoards as sb}
+									<div class="subboard-row">
+										<a href="/board/{sb.id}" class="subboard-link">
+											<span class="subboard-link-icon">{sb.emoji}</span>
+											<div class="subboard-link-info">
+												<span class="subboard-link-name">{sb.name}</span>
+												<span class="subboard-link-progress">{sb.done}/{sb.total} complete</span>
+											</div>
+										</a>
+										{#if onDeleteSubBoard}
+											<button class="subboard-delete-btn" title="Delete" onclick={() => onDeleteSubBoard!(sb.id)}>✕</button>
+										{/if}
+									</div>
+								{/each}
+							</div>
+						{/if}
+						{#if onCreateSubBoard}
+							<div class="subboard-create-row">
+								<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." bind:value={newSubBoardName} onkeydown={(e) => e.key === 'Enter' && newSubBoardName.trim() && onCreateSubBoard!(newSubBoardName.trim())} />
+								<button class="btn-ghost subboard-add-btn" onclick={() => { if (newSubBoardName.trim()) onCreateSubBoard!(newSubBoardName.trim()); }} disabled={!newSubBoardName.trim()}>+ Create</button>
+							</div>
+						{/if}
+						{#if onLinkSubBoard && availableBoards.length > 0}
+							{#if showLinkPicker}
+								<div class="link-picker">
+									{#each availableBoards as ab}
+										<button class="link-picker-item" onclick={() => { onLinkSubBoard!(ab.id); showLinkPicker = false; }}>{ab.emoji} {ab.name}</button>
+									{/each}
+								</div>
+							{:else}
+								<button class="btn-ghost subboard-link-btn" onclick={() => (showLinkPicker = true)}>🔗 Link existing board</button>
+							{/if}
+						{/if}
+					{:else}
+						{#if pendingSubBoardNames.length > 0}
+							<div class="subboard-list">
+								{#each pendingSubBoardNames as name, i}
+									<div class="subboard-row">
+										<div class="subboard-link" style="cursor: default;">
+											<span class="subboard-link-icon">📋</span>
+											<span class="subboard-link-name">{name}</span>
+										</div>
+										<button class="subboard-delete-btn" title="Remove" onclick={() => { pendingSubBoardNames = pendingSubBoardNames.filter((_, idx) => idx !== i); }}>✕</button>
+									</div>
+								{/each}
+							</div>
+						{/if}
+						<div class="subboard-create-row">
+							<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." bind:value={newPendingSubBoardName} onkeydown={(e) => { if (e.key === 'Enter' && newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} />
+							<button class="btn-ghost subboard-add-btn" onclick={() => { if (newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} disabled={!newPendingSubBoardName.trim()}>+ Add</button>
 						</div>
-					{/each}
-					{#if availableAssignees.length > 0}
-						<select class="assignee-add" onchange={(e) => { const v = Number((e.target as HTMLSelectElement).value); if (v) assignUser(v); (e.target as HTMLSelectElement).value = ''; }}>
-							<option value="">+ Assign...</option>
-							{#each availableAssignees as u}
-								<option value={u.id}>{u.emoji} {u.username}</option>
-							{/each}
-						</select>
 					{/if}
 				</div>
-			</div>
 
-			{#if labels.length > 0}
-			<div class="sidebar-field">
-				<label>Labels</label>
-				<div class="labels-picker">
-					{#each labels as label}
-						<button class="label-toggle" class:active={cardLabelIds.includes(label.id)} style="--lc: {label.color}" onclick={() => toggleLabel(label.id)}>{label.name}</button>
-					{/each}
+				{#if labels.length > 0}
+				<div class="form-group">
+					<label>Labels</label>
+					<div class="labels-picker">
+						{#each labels as label}
+							<button class="label-toggle" class:active={cardLabelIds.includes(label.id)} style="--lc: {label.color}" onclick={() => toggleLabel(label.id)}>{label.name}</button>
+						{/each}
+					</div>
 				</div>
-			</div>
-			{/if}
-
-			<div class="sidebar-field">
-				<label>Cover</label>
-				<div class="cover-picker">
-					{#each coverPresets as preset}
-						<button
-							class="cover-swatch"
-							class:active={coverUrl === preset}
-							style="background: {preset}"
-							onclick={() => setCover(preset)}
-							title="Set cover"
-							type="button"
-						></button>
-					{/each}
-				</div>
-				{#if coverUrl}
-					<button class="btn-ghost cover-clear" onclick={clearCover} type="button">✕ Remove cover</button>
 				{/if}
-			</div>
 
-			{#if card}
-				<div class="sidebar-timestamp">
-					Created {new Date(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+				<div class="form-group">
+					<label>Cover</label>
+					<div class="cover-picker">
+						<button class="cover-swatch cover-swatch-none" class:active={!coverUrl} onclick={clearCover} title="No cover" type="button"></button>
+						{#each coverPresets as preset}
+							<button class="cover-swatch" class:active={coverUrl === preset} style="background: {preset}" onclick={() => setCover(preset)} title="Set cover" type="button"></button>
+						{/each}
+						<label class="color-custom-wrapper">
+							<input type="color" value={coverUrl || '#6366f1'} onchange={(e) => setCover((e.target as HTMLInputElement).value)} class="color-native-input" />
+							<span class="cover-swatch custom" style="background: {coverUrl || 'var(--bg-elevated)'}">✎</span>
+						</label>
+					</div>
 				</div>
+			</div>
 			{/if}
 		</div>
-		</div> <!-- end modal-body-grid -->
 
-		<div class="modal-actions">
-			{#if onDelete}
-				<button class="btn-danger" onclick={onDelete}>
-					<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-						<path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-					</svg>
-					Delete
+		{#if card}
+			<div class="sidebar-timestamp">
+				Created {new Date(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+			</div>
+		{/if}
+		{/if} <!-- end details-only block for more options -->
+		</div> <!-- end modal-body-grid -->
+		</div> <!-- end modal-body -->
+
+		<div class="modal-footer">
+			<div class="footer-left">
+				{#if card}
+					<button class="template-btn" onclick={() => { showSaveTemplate = true; templateName = title; }} type="button">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+						Save as Template
+					</button>
+				{:else}
+					<button class="template-btn" onclick={() => { showTemplatePicker = true; loadTemplates(); }} type="button">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+						From template
+					</button>
+				{/if}
+				{#if onDelete}
+					<button class="btn-danger" onclick={onDelete}>
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+						Delete
+					</button>
+				{/if}
+			</div>
+			<div class="footer-right">
+				<button class="btn-cancel" onclick={onClose}>Cancel</button>
+				<button class="btn-create" onclick={save} disabled={!title.trim()}>
+					{card ? 'Save Changes' : 'Create task'}
 				</button>
-			{/if}
-			{#if card}
-				<button class="btn-ghost template-save-btn" onclick={() => { showSaveTemplate = true; templateName = title; }} type="button" title="Save as template">
-					📋 Save as Template
-				</button>
-			{:else}
-				<button class="btn-ghost template-save-btn" onclick={() => { showTemplatePicker = true; loadTemplates(); }} type="button" title="Create from template">
-					📋 From Template
-				</button>
-			{/if}
-			<div style="flex: 1"></div>
-			<button class="btn-ghost" onclick={onClose}>Cancel</button>
-			<button class="btn-primary" onclick={save} disabled={!title.trim()}>
-				{card ? 'Save Changes' : 'Create Card'}
-			</button>
+			</div>
+		</div>
+
+		<div class="shortcut-hint">
+			<kbd>Ctrl</kbd> <kbd>Enter</kbd> to {card ? 'save' : 'create'} · <kbd>Esc</kbd> to close
 		</div>
 	</div>
 </div>
@@ -1144,7 +1212,36 @@
 {/if}
 
 <style>
-	.card-modal-content { max-width: 960px; }
+	.card-modal-content {
+		max-width: 640px;
+		background: white;
+		border: 1px solid #e5e7eb;
+	}
+	[data-theme="dark"] .card-modal-content,
+	[data-theme="midnight"] .card-modal-content,
+	[data-theme="ocean-depth"] .card-modal-content,
+	[data-theme="cyberpunk"] .card-modal-content,
+	[data-theme="nord-dark"] .card-modal-content,
+	[data-theme="tokyo-night"] .card-modal-content,
+	[data-theme="gruvbox-dark"] .card-modal-content,
+	[data-theme="synthwave"] .card-modal-content,
+	[data-theme="monokai"] .card-modal-content { background: var(--bg-surface); border-color: var(--glass-border); }
+
+	/* Modal body wrapper */
+	.modal-body { padding: var(--space-lg) var(--space-xl) var(--space-xl); }
+
+	/* Description hint */
+	.desc-hint { font-size: 0.65rem; color: var(--text-tertiary); margin-top: var(--space-xs); padding-left: 2px; }
+
+	/* Request origin banner */
+	.request-origin-banner {
+		display: flex; align-items: center; gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md); margin-bottom: var(--space-lg);
+		background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.15);
+		border-radius: var(--radius-sm); font-size: 0.78rem; color: var(--text-secondary);
+	}
+	.request-origin-icon { font-size: 0.9rem; }
+	.request-origin-banner strong { color: var(--text-primary); }
 
 	/* Title field */
 	.title-field { flex: 1; display: flex; flex-direction: column; gap: 2px; }
@@ -1154,15 +1251,17 @@
 	}
 	.title-label .required { color: #ef4444; }
 	.modal-title-input {
-		width: 100%; font-size: 0.95rem; font-weight: 600;
-		background: var(--bg-surface); border: 1.5px solid var(--glass-border);
-		border-radius: var(--radius-sm);
+		width: 100%; font-size: 1.05rem; font-weight: 600;
+		background: var(--bg-elevated); border: 1px solid transparent;
+		border-radius: var(--radius-md);
 		color: var(--text-primary); font-family: var(--font-family); outline: none;
-		padding: var(--space-sm) var(--space-sm);
-		transition: border-color 0.2s ease;
+		padding: var(--space-md) var(--space-lg);
+		transition: border-color 0.2s ease, background 0.2s ease;
+		caret-color: var(--accent-indigo);
 	}
-	.modal-title-input:focus { border-color: var(--accent-indigo); }
-	.modal-title-input::placeholder { color: var(--text-tertiary); font-weight: 400; }
+	.modal-title-input:hover { border-color: var(--glass-border); }
+	.modal-title-input:focus { border-color: var(--accent-indigo); background: var(--bg-hover); }
+	.modal-title-input::placeholder { color: var(--text-tertiary); font-weight: 500; }
 	.title-error .modal-title-input {
 		border-color: #ef4444; animation: shake 0.4s ease;
 	}
@@ -1180,8 +1279,9 @@
 	}
 	@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-	.modal-header { display: flex; align-items: flex-start; gap: var(--space-md); margin-bottom: var(--space-md); }
-	.close-btn { padding: var(--space-xs) !important; flex-shrink: 0; margin-top: 18px; }
+	.modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0; padding: var(--space-lg) var(--space-xl) 0; }
+	.modal-header h2 { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); }
+	.close-btn { padding: var(--space-xs) !important; flex-shrink: 0; }
 
 	/* Tab bar */
 	.tab-bar {
@@ -1191,7 +1291,7 @@
 	.tab {
 		display: flex; align-items: center; gap: 6px;
 		padding: var(--space-sm) var(--space-md); border: none; background: none;
-		color: var(--text-tertiary); font: inherit; font-size: 0.82rem; font-weight: 600;
+		color: var(--text-tertiary); font: inherit; font-size: 0.75rem; font-weight: 600;
 		cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
 		transition: all var(--duration-fast) var(--ease-out);
 	}
@@ -1202,11 +1302,11 @@
 		padding: 1px 6px; border-radius: var(--radius-full); font-weight: 700;
 	}
 
-	/* Two-column grid */
-	.modal-body-grid { display: grid; grid-template-columns: 1fr 240px; gap: var(--space-xl); }
+	/* Single-column layout */
+	.modal-body-grid { display: flex; flex-direction: column; }
 	.main-panel { min-width: 0; }
 	.sidebar-panel {
-		border-left: 1px solid var(--glass-border); padding-left: var(--space-lg);
+		border-top: 1px solid var(--glass-border); padding-top: var(--space-lg);
 		display: flex; flex-direction: column; gap: var(--space-md);
 	}
 	.sidebar-field label {
@@ -1220,15 +1320,11 @@
 		font-size: 0.7rem; color: var(--text-tertiary); margin-top: auto;
 		padding-top: var(--space-md); border-top: 1px solid var(--glass-border);
 	}
-	@media (max-width: 768px) {
-		.modal-body-grid { grid-template-columns: 1fr; }
-		.sidebar-panel { border-left: none; padding-left: 0; border-top: 1px solid var(--glass-border); padding-top: var(--space-lg); }
-	}
 
 	.form-group { margin-bottom: var(--space-lg); }
 	.form-group label {
 		display: flex; align-items: center; gap: var(--space-sm);
-		font-size: 0.75rem; font-weight: 600; color: var(--text-secondary);
+		font-size: 0.7rem; font-weight: 600; color: var(--text-secondary);
 		text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: var(--space-sm);
 	}
 	.form-row { display: flex; gap: var(--space-lg); align-items: flex-start; }
@@ -1718,4 +1814,138 @@
 		cursor: pointer; border-radius: var(--radius-sm); transition: all 0.15s;
 	}
 	.attachment-delete:hover { color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+
+	/* Modal cover preview strip */
+	.modal-cover-preview { height: 6px; border-radius: var(--radius-xl) var(--radius-xl) 0 0; }
+
+	/* Footer */
+	.modal-footer {
+		display: flex; align-items: center; justify-content: space-between;
+		padding: var(--space-lg) var(--space-xl);
+		border-top: 1px solid var(--glass-border); margin-top: var(--space-xl);
+	}
+	.footer-left { display: flex; align-items: center; gap: var(--space-md); }
+	.footer-right { display: flex; align-items: center; gap: var(--space-md); }
+
+	.template-btn {
+		display: inline-flex; align-items: center; gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md); font-size: 0.75rem;
+		color: var(--text-tertiary); background: transparent;
+		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+		cursor: pointer; transition: all 0.15s;
+	}
+	.template-btn:hover { color: var(--text-secondary); border-color: var(--text-tertiary); }
+
+	.btn-cancel {
+		padding: var(--space-sm) var(--space-lg); font-size: 0.82rem; font-weight: 500;
+		color: var(--text-secondary); background: transparent; border: none;
+		border-radius: var(--radius-sm); cursor: pointer; transition: all 0.15s;
+	}
+	.btn-cancel:hover { color: var(--text-primary); background: var(--glass-hover); }
+
+	.btn-create {
+		padding: 8px 20px; font-size: 0.82rem; font-weight: 600;
+		color: white; background: linear-gradient(135deg, var(--accent-purple), var(--accent-indigo));
+		border: none; border-radius: var(--radius-sm); cursor: pointer;
+		transition: all 0.15s; box-shadow: var(--shadow-sm), var(--shadow-glow-purple);
+	}
+	.btn-create:hover { filter: brightness(1.08); transform: translateY(-1px); }
+	.btn-create:active { transform: translateY(0); }
+	.btn-create:disabled { opacity: 0.35; cursor: not-allowed; transform: none; filter: none; }
+
+	/* Keyboard shortcut hint */
+	.shortcut-hint {
+		font-size: 0.6rem; color: var(--text-tertiary);
+		padding: var(--space-xs) var(--space-xl) var(--space-lg); text-align: right;
+	}
+	.shortcut-hint kbd {
+		display: inline-block; padding: 1px 5px; font-family: var(--font-family);
+		font-size: 0.6rem; color: var(--text-tertiary);
+		background: var(--bg-elevated); border: 1px solid var(--glass-border); border-radius: 3px;
+	}
+	/* Cover swatches */
+	.cover-picker { display: flex; gap: 6px; flex-wrap: wrap; }
+	.cover-swatch {
+		width: 26px; height: 26px; border-radius: var(--radius-sm);
+		border: 2px solid transparent; cursor: pointer;
+		transition: all 0.15s; display: flex; align-items: center; justify-content: center;
+	}
+	.cover-swatch:hover { transform: scale(1.15); }
+	.cover-swatch.active { border-color: var(--text-primary); }
+	.cover-swatch-none {
+		background: var(--bg-elevated); position: relative;
+	}
+	.cover-swatch-none::after {
+		content: ''; position: absolute; inset: 4px;
+		border: 1.5px dashed var(--text-tertiary); border-radius: 3px;
+	}
+	.cover-swatch.custom {
+		font-size: 0.6rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+	}
+
+	/* Custom color picker (shared pattern) */
+	.color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
+	.color-native-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+
+	/* Metadata chips */
+	.metadata-section { margin-top: var(--space-xl); }
+	.metadata-label {
+		font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.06em; color: var(--text-tertiary); margin-bottom: var(--space-md);
+	}
+	.metadata-row { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+
+	.chip {
+		display: inline-flex; align-items: center; gap: var(--space-sm);
+		padding: 5px 10px; font-family: var(--font-family); font-size: 0.78rem; font-weight: 500;
+		color: var(--text-secondary); background: var(--bg-elevated);
+		border: 1px solid var(--glass-border); border-radius: 100px;
+		cursor: pointer; transition: all 0.15s; white-space: nowrap; user-select: none;
+	}
+	.chip:hover { border-color: var(--text-tertiary); color: var(--text-primary); background: var(--bg-hover); }
+	.chip.is-set { border-color: var(--accent-indigo); background: rgba(99, 102, 241, 0.1); color: var(--text-accent); }
+	.chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+	.chip-icon { display: flex; align-items: center; flex-shrink: 0; }
+	.chip-chevron { margin-left: 2px; }
+
+	/* Chip dropdowns */
+	.dropdown-wrapper { position: relative; }
+	.chip-dropdown {
+		position: absolute; top: calc(100% + 6px); left: 0; z-index: 200;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); padding: var(--space-xs); min-width: 180px;
+		box-shadow: var(--shadow-lg); animation: fadeIn 0.15s ease;
+	}
+	.chip-dropdown-item {
+		display: flex; align-items: center; gap: var(--space-md);
+		padding: var(--space-sm) var(--space-md); font-size: 0.78rem;
+		color: var(--text-secondary); border-radius: var(--radius-sm);
+		cursor: pointer; border: none; background: transparent; width: 100%;
+		text-align: left; transition: all 0.1s; font-family: var(--font-family);
+	}
+	.chip-dropdown-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+	.chip-dropdown-item.selected { color: var(--text-primary); font-weight: 600; }
+	.chip-dropdown-divider { height: 1px; background: var(--glass-border); margin: 4px 0; }
+
+	/* Add subtask inline button */
+	.add-subtask-inline {
+		display: flex; align-items: center; gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md); font-size: 0.82rem; font-weight: 500;
+		color: var(--text-tertiary); background: transparent; border: none;
+		cursor: pointer; transition: all 0.15s; border-radius: var(--radius-sm);
+	}
+	.add-subtask-inline:hover { color: var(--text-secondary); background: var(--bg-elevated); }
+
+	/* Advanced section (progressive disclosure) */
+	.advanced-section { margin-top: var(--space-xl); }
+	.advanced-toggle {
+		display: flex; align-items: center; gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md); font-size: 0.78rem; font-weight: 500;
+		color: var(--text-tertiary); background: transparent; border: none;
+		border-radius: var(--radius-sm); cursor: pointer; transition: all 0.15s; user-select: none;
+	}
+	.advanced-toggle:hover { color: var(--text-secondary); background: var(--bg-elevated); }
+	.advanced-toggle svg { transition: transform 0.25s ease; }
+	.advanced-toggle.is-expanded svg { transform: rotate(90deg); }
+	.advanced-content { margin-top: var(--space-lg); display: flex; flex-direction: column; gap: var(--space-lg); animation: fadeIn 0.2s ease; }
 </style>

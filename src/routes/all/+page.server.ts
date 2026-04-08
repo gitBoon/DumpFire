@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, categories, subtasks, labels, cardLabels, cardAssignees, users, boardCategories } from '$lib/server/db/schema';
+import { boards, columns, cards, categories, subtasks, labels, cardLabels, cardAssignees, users, boardCategories, taskRequests } from '$lib/server/db/schema';
 import { asc, inArray, eq, isNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
@@ -46,6 +46,18 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const userMap = new Map(allUsers.map(u => [u.id, u]));
 
 	const allCategories = db.select().from(categories).orderBy(asc(categories.name)).all();
+
+	// Get request origins for cards created from accepted task requests
+	const requestOrigins = cardIds.length > 0
+		? db.select({
+			resolvedCardId: taskRequests.resolvedCardId,
+			requesterName: taskRequests.requesterName,
+			requesterEmail: taskRequests.requesterEmail,
+			title: taskRequests.title
+		}).from(taskRequests).where(inArray(taskRequests.resolvedCardId, cardIds)).all()
+		: [];
+	const requestOriginMap = new Map(requestOrigins.map(r => [r.resolvedCardId, r]));
+
 	const allLabels = accessibleBoardIds.length > 0
 		? db.select().from(labels).where(inArray(labels.boardId, accessibleBoardIds)).all()
 		: [];
@@ -85,11 +97,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.map(a => userMap.get(a.userId))
 			.filter(Boolean) as { id: number; username: string; emoji: string | null }[];
 		const boardCat = boardInfo?.categoryId ? boardCatMap.get(boardInfo.categoryId) : null;
+		const ro = requestOriginMap.get(card.id);
 		return {
 			...card,
 			subtasks: allSubtasks.filter(st => st.cardId === card.id),
 			labelIds: allCardLabels.filter(cl => cl.cardId === card.id).map(cl => cl.labelId),
 			assignees,
+			requestOrigin: ro ? { requesterName: ro.requesterName, requesterEmail: ro.requesterEmail || undefined, requestTitle: ro.title } : null,
 			boardName: boardInfo?.name || 'Unknown',
 			boardEmoji: boardInfo?.emoji || '📋',
 			boardId: colInfo?.boardId || 0,
