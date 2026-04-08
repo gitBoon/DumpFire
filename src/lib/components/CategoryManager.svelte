@@ -59,7 +59,7 @@
 	}
 </script>
 
-<div class="modal-overlay" onclick={onClose} role="dialog" aria-modal="true">
+<div class="modal-overlay" role="dialog" aria-modal="true">
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-content cat-mgr" onclick={(e) => e.stopPropagation()} role="document">
 		<header class="mgr-header">

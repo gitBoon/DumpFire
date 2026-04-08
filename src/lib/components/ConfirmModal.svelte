@@ -23,7 +23,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay" onclick={onCancel} role="dialog" aria-modal="true" aria-label={title}>
+<div class="modal-overlay" role="dialog" aria-modal="true" aria-label={title}>
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="confirm-modal" onclick={(e) => e.stopPropagation()} role="document">
 		<div class="confirm-icon" class:danger={confirmDanger}>

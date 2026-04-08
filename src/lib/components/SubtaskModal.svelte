@@ -101,7 +101,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay subtask-overlay" onclick={onClose} role="dialog" aria-modal="true" aria-label="Subtask editor">
+<div class="modal-overlay subtask-overlay" role="dialog" aria-modal="true" aria-label="Subtask editor">
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="subtask-modal" onclick={(e) => e.stopPropagation()} role="document">
 		<div class="modal-header">
@@ -252,9 +252,9 @@
 
 	.form-group { margin-bottom: var(--space-lg); }
 	.form-group label {
-		display: block; font-size: 0.75rem; font-weight: 600;
-		color: var(--text-secondary); text-transform: uppercase;
-		letter-spacing: 0.05em; margin-bottom: var(--space-sm);
+		display: block; font-size: 0.78rem; font-weight: 500;
+		color: var(--text-secondary);
+		margin-bottom: 6px;
 	}
 	.form-row { display: flex; gap: var(--space-lg); }
 

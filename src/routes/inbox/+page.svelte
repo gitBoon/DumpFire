@@ -329,7 +329,7 @@
 {#if acceptModal.show && acceptModal.request}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="modal-overlay" onclick={() => acceptModal = { show: false, request: null, boardId: null, columnId: null, assigneeId: null }}>
+	<div class="modal-overlay">
 		<div class="modal-card" onclick={(e) => e.stopPropagation()}>
 			<h2>Accept Request</h2>
 			<p class="modal-desc">Create a card from "<strong>{acceptModal.request.title}</strong>" on a board.</p>
@@ -380,7 +380,7 @@
 {#if rejectModal.show && rejectModal.request}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="modal-overlay" onclick={() => rejectModal = { show: false, request: null, reason: '' }}>
+	<div class="modal-overlay">
 		<div class="modal-card" onclick={(e) => e.stopPropagation()}>
 			<h2>Reject Request</h2>
 			<p class="modal-desc">Reject "<strong>{rejectModal.request.title}</strong>"</p>
@@ -402,7 +402,7 @@
 {#if chatModal.show && chatModal.request}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="modal-overlay" onclick={closeChat}>
+	<div class="modal-overlay">
 		<div class="modal-card chat-modal" onclick={(e) => e.stopPropagation()}>
 			<div class="chat-header">
 				<div>
