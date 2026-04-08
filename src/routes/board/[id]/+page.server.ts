@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, categories, subtasks, labels, cardLabels, boardMembers, boardTeams, users, teams, cardAssignees, teamMembers } from '$lib/server/db/schema';
+import { boards, columns, cards, categories, subtasks, labels, cardLabels, boardMembers, boardTeams, users, teams, cardAssignees, teamMembers, taskRequests } from '$lib/server/db/schema';
 import { eq, asc, inArray, isNull, and } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
 import { getBoardRole } from '$lib/server/board-access';
@@ -128,6 +128,20 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		.all()
 		: [];
 
+	// Get request origins for cards created from accepted task requests
+	const requestOrigins = cardIds.length > 0
+		? db.select({
+			resolvedCardId: taskRequests.resolvedCardId,
+			requesterName: taskRequests.requesterName,
+			requesterEmail: taskRequests.requesterEmail,
+			title: taskRequests.title
+		})
+		.from(taskRequests)
+		.where(inArray(taskRequests.resolvedCardId, cardIds))
+		.all()
+		: [];
+	const requestOriginMap = new Map(requestOrigins.map(r => [r.resolvedCardId, r]));
+
 	// Group cards by column with their subtasks, labels, sub-board info, and assignees
 	const columnsWithCards = boardColumns.map((col) => ({
 		...col,
@@ -140,7 +154,11 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 				subBoards: subBoardMap.get(card.id) || [],
 				assignees: allAssignees
 					.filter(a => a.cardId === card.id)
-					.map(a => ({ id: a.userId, username: a.username, emoji: a.emoji || '👤' }))
+					.map(a => ({ id: a.userId, username: a.username, emoji: a.emoji || '👤' })),
+				requestOrigin: (() => {
+					const ro = requestOriginMap.get(card.id);
+					return ro ? { requesterName: ro.requesterName, requesterEmail: ro.requesterEmail || undefined, requestTitle: ro.title } : null;
+				})()
 			}))
 	}));
 

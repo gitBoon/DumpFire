@@ -60,6 +60,7 @@ export type CardType = {
 	assignees: { id: number; username: string; emoji: string }[];
 	archivedAt: string | null;
 	coverUrl: string | null;
+	requestOrigin?: { requesterName: string; requesterEmail?: string; requestTitle: string } | null;
 };
 
 /** A label that can be attached to cards for tagging/filtering. */
