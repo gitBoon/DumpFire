@@ -6,6 +6,8 @@
 
 	let showPassword = $state(false);
 	let selectedEmoji = $state('🔥');
+	let username = $state(form?.username ?? '');
+	let email = $state(form?.email ?? '');
 
 	const emojiOptions = ['🔥', '👤', '🦊', '🐱', '🐶', '🦁', '🐼', '🐸', '🦉', '🐙', '🦄', '🐝', '🐳', '🚀', '⚡', '💎', '🎯', '🛡️'];
 </script>
@@ -39,7 +41,7 @@
 					name="username"
 					type="text"
 					placeholder="e.g. admin"
-					value={form?.username ?? ''}
+					bind:value={username}
 					autocomplete="username"
 					autofocus
 					required
@@ -53,7 +55,7 @@
 					name="email"
 					type="email"
 					placeholder="admin@example.com"
-					value={form?.email ?? ''}
+					bind:value={email}
 					autocomplete="email"
 					required
 				/>
