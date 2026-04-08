@@ -292,12 +292,14 @@ Database migrations run automatically on every startup. Only new migrations are 
 ```bash
 cd DumpFire
 git pull
-docker compose down
+docker compose down --remove-orphans
 docker compose build
 docker compose up -d
 ```
 
-That's it. The new container starts, detects any pending migrations, applies them against your existing database, and serves the updated app.
+> **Why `--remove-orphans`?** If you've ever changed your `docker-compose.yml` (e.g. added or removed a reverse proxy service), Docker may leave old containers behind that it no longer recognises. The `--remove-orphans` flag cleans those up, preventing "container name already in use" errors on the next `up`.
+
+That's it. The new container starts, detects any pending migrations, applies them against your existing database, and serves the updated app. Named volumes (`dumpfire-data`) are **never** removed by `docker compose down` — your data is always preserved.
 
 ### With Docker Run
 
