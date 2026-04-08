@@ -8,6 +8,8 @@
 	let selectedEmoji = $state('🔥');
 	let username = $state(form?.username ?? '');
 	let email = $state(form?.email ?? '');
+	let submitting = $state(false);
+	let clientError = $state('');
 
 	const emojiOptions = ['🔥', '👤', '🦊', '🐱', '🐶', '🦁', '🐼', '🐸', '🦉', '🐙', '🦄', '🐝', '🐳', '🚀', '⚡', '💎', '🎯', '🛡️'];
 </script>
@@ -24,14 +26,27 @@
 			<p class="setup-subtitle">Create your superadmin account to get started.</p>
 		</div>
 
-		{#if form?.error}
+		{#if form?.error || clientError}
 			<div class="error-banner">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5v4M8 10.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-				{form.error}
+				{form?.error || clientError}
 			</div>
 		{/if}
 
-		<form method="POST" use:enhance class="setup-form">
+		<form method="POST" use:enhance={() => {
+			clientError = '';
+			submitting = true;
+			return async ({ result, update }) => {
+				submitting = false;
+				if (result.type === 'error') {
+					clientError = result.error?.message || `Server error (${result.status}). Check that ORIGIN is set correctly in your Docker environment.`;
+				} else if (result.type === 'failure') {
+					await update();
+				} else {
+					await update();
+				}
+			};
+		}} class="setup-form">
 			<input type="hidden" name="emoji" value={selectedEmoji} />
 
 			<div class="form-group">
@@ -45,6 +60,7 @@
 					autocomplete="username"
 					autofocus
 					required
+					disabled={submitting}
 				/>
 			</div>
 
@@ -58,6 +74,7 @@
 					bind:value={email}
 					autocomplete="email"
 					required
+					disabled={submitting}
 				/>
 			</div>
 
@@ -72,6 +89,7 @@
 						autocomplete="new-password"
 						minlength="8"
 						required
+						disabled={submitting}
 					/>
 					<button type="button" class="password-toggle" onclick={() => (showPassword = !showPassword)}>
 						{showPassword ? '🙈' : '👁️'}
@@ -89,6 +107,7 @@
 					autocomplete="new-password"
 					minlength="8"
 					required
+					disabled={submitting}
 				/>
 			</div>
 
@@ -101,6 +120,7 @@
 							class="emoji-btn"
 							class:active={selectedEmoji === emoji}
 							onclick={() => (selectedEmoji = emoji)}
+							disabled={submitting}
 						>
 							{emoji}
 						</button>
@@ -108,9 +128,14 @@
 				</div>
 			</div>
 
-			<button type="submit" class="btn-primary submit-btn">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 2.5l-8 8L2 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-				Create Account & Start
+			<button type="submit" class="btn-primary submit-btn" disabled={submitting}>
+				{#if submitting}
+					<span class="spinner"></span>
+					Creating account…
+				{:else}
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 2.5l-8 8L2 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+					Create Account & Start
+				{/if}
 			</button>
 		</form>
 
@@ -296,5 +321,24 @@
 		0% { transform: scale(0); opacity: 0; }
 		60% { transform: scale(1.2); opacity: 1; }
 		100% { transform: scale(1); }
+	}
+
+	@keyframes spin {
+		to { transform: rotate(360deg); }
+	}
+
+	.spinner {
+		display: inline-block;
+		width: 16px;
+		height: 16px;
+		border: 2px solid rgba(255,255,255,0.3);
+		border-top-color: #fff;
+		border-radius: 50%;
+		animation: spin 0.6s linear infinite;
+	}
+
+	.submit-btn:disabled {
+		opacity: 0.7;
+		cursor: not-allowed;
 	}
 </style>
