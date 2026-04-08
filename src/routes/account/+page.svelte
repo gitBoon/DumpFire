@@ -5,6 +5,7 @@
 	import type { PageData } from './$types';
 	import { theme } from '$lib/stores/theme';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { onMount } from 'svelte';
 
 	let { data }: { data: PageData } = $props();
@@ -19,6 +20,21 @@
 	let emailMessage = $state('');
 	let emailError = $state(false);
 	let displayedEmail = $state(data.user.email);
+
+	// Avatar
+	let currentEmoji = $state(data.user.emoji || '👤');
+	let savingEmoji = $state(false);
+
+	async function changeEmoji(emoji: string) {
+		currentEmoji = emoji;
+		savingEmoji = true;
+		await fetch('/api/account/emoji', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ emoji })
+		});
+		savingEmoji = false;
+	}
 
 	// Password change
 	let currentPassword = $state('');
@@ -177,7 +193,10 @@
 		<section class="account-card glass fade-in-up">
 			<h2>👤 Profile</h2>
 			<div class="profile-info">
-				<div class="profile-avatar">{data.user.emoji}</div>
+				<div class="profile-avatar-wrap">
+					<EmojiPicker value={currentEmoji} onSelect={(e) => changeEmoji(e)} />
+					<span class="avatar-edit-hint">Click to change</span>
+				</div>
 				<div class="profile-details">
 					<div class="profile-row">
 						<span class="profile-label">Username</span>
@@ -392,11 +411,12 @@
 
 	/* Profile */
 	.profile-info { display: flex; gap: var(--space-xl); align-items: flex-start; }
-	.profile-avatar {
-		font-size: 3rem; width: 72px; height: 72px;
-		display: flex; align-items: center; justify-content: center;
-		background: var(--bg-base); border-radius: var(--radius-lg);
-		border: 2px solid var(--glass-border); flex-shrink: 0;
+	.profile-avatar-wrap {
+		display: flex; flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0;
+	}
+	.avatar-edit-hint {
+		font-size: 0.6rem; color: var(--text-tertiary); text-transform: uppercase;
+		letter-spacing: 0.05em; font-weight: 600;
 	}
 	.profile-details { flex: 1; display: flex; flex-direction: column; gap: var(--space-md); }
 	.profile-row { display: flex; align-items: center; gap: var(--space-md); }
