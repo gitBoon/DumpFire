@@ -1230,6 +1230,28 @@
 	/* Modal body wrapper */
 	.modal-body { padding: var(--space-lg) var(--space-xl) var(--space-xl); }
 
+	/* Softer field styles for card modal */
+	.card-modal-content input,
+	.card-modal-content textarea,
+	.card-modal-content select {
+		background: #f4f4f8; border: 1px solid #e5e5ec;
+	}
+	.card-modal-content input:focus,
+	.card-modal-content textarea:focus,
+	.card-modal-content select:focus {
+		border-color: var(--accent-indigo); box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12);
+	}
+	[data-theme="dark"] .card-modal-content input,
+	[data-theme="dark"] .card-modal-content textarea,
+	[data-theme="dark"] .card-modal-content select {
+		background: var(--bg-base); border-color: var(--glass-border);
+	}
+	[data-theme="dark"] .card-modal-content input:focus,
+	[data-theme="dark"] .card-modal-content textarea:focus,
+	[data-theme="dark"] .card-modal-content select:focus {
+		box-shadow: 0 0 0 2px var(--accent-purple-glow);
+	}
+
 	/* Description hint */
 	.desc-hint { font-size: 0.65rem; color: var(--text-tertiary); margin-top: var(--space-xs); padding-left: 2px; }
 
@@ -1252,15 +1274,15 @@
 	.title-label .required { color: #ef4444; }
 	.modal-title-input {
 		width: 100%; font-size: 1.05rem; font-weight: 600;
-		background: var(--bg-elevated); border: 1px solid transparent;
+		background: #f4f4f8; border: 1px solid transparent;
 		border-radius: var(--radius-md);
 		color: var(--text-primary); font-family: var(--font-family); outline: none;
 		padding: var(--space-md) var(--space-lg);
 		transition: border-color 0.2s ease, background 0.2s ease;
 		caret-color: var(--accent-indigo);
 	}
-	.modal-title-input:hover { border-color: var(--glass-border); }
-	.modal-title-input:focus { border-color: var(--accent-indigo); background: var(--bg-hover); }
+	.modal-title-input:hover { border-color: #e5e5ec; }
+	.modal-title-input:focus { border-color: var(--accent-indigo); background: #f4f4f8; box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12); }
 	.modal-title-input::placeholder { color: var(--text-tertiary); font-weight: 500; }
 	.title-error .modal-title-input {
 		border-color: #ef4444; animation: shake 0.4s ease;
@@ -1306,7 +1328,6 @@
 	.modal-body-grid { display: flex; flex-direction: column; }
 	.main-panel { min-width: 0; }
 	.sidebar-panel {
-		border-top: 1px solid var(--glass-border); padding-top: var(--space-lg);
 		display: flex; flex-direction: column; gap: var(--space-md);
 	}
 	.sidebar-field label {

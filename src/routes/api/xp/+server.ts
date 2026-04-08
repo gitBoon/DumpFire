@@ -1,12 +1,20 @@
 import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { userXp } from '$lib/server/db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { userXp, users } from '$lib/server/db/schema';
+import { eq, sql, ne } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 
-// GET all XP records
+// GET all XP records (excluding superadmin)
 export const GET: RequestHandler = async () => {
-	const all = db.select().from(userXp).all();
+	const all = db.select({
+		name: userXp.name,
+		xp: userXp.xp,
+		emoji: userXp.emoji
+	})
+	.from(userXp)
+	.leftJoin(users, eq(userXp.name, users.username))
+	.where(sql`${users.role} IS NULL OR ${users.role} != 'superadmin'`)
+	.all();
 	return json(all);
 };
 

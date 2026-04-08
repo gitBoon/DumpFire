@@ -432,6 +432,11 @@
 		showToast('Database vacuumed — IDs will restart from 1 for new records');
 	}
 
+	async function resetAllXp() {
+		await fetch('/api/admin/reset-xp', { method: 'POST' });
+		showToast('All XP has been reset to 0');
+	}
+
 	async function exportDatabase() {
 		exporting = true;
 		try {
@@ -1420,6 +1425,15 @@
 					</div>
 					<button class="btn-outline" onclick={() => confirm('Vacuum Database', 'This will optimise the database and reset auto-increment counters. Existing data is not affected.', vacuumDatabase)}>
 						Vacuum
+					</button>
+				</div>
+				<div class="danger-item">
+					<div>
+						<strong>Reset All XP</strong>
+						<p>Resets everyone's XP back to 0. Leaderboard will be cleared. This cannot be undone.</p>
+					</div>
+					<button class="btn-outline" onclick={() => confirm('Reset All XP', 'This will set every user\'s XP to 0. The leaderboard will be completely cleared. Are you sure?', resetAllXp)}>
+						Reset XP
 					</button>
 				</div>
 				<div class="danger-item">
