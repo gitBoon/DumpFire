@@ -6,6 +6,7 @@ import { emit } from '$lib/server/events';
 import { canEditBoard } from '$lib/server/board-access';
 import { notifyCardMoved } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
+import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ request, url, locals }) => {
@@ -37,7 +38,7 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 			.all()
 			.filter((col) => {
 				const full = db.select().from(columns).where(eq(columns.id, col.id)).get();
-				return full && full.title.toLowerCase() === 'complete';
+				return full && isCompleteColumnTitle(full.title);
 			})
 			.map((c) => c.id);
 
@@ -47,6 +48,11 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 					// Check if this card was previously NOT in a complete column
 					const existing = db.select().from(cards).where(eq(cards.id, update.id)).get();
 					if (existing && !completeColumns.includes(existing.columnId)) {
+						// Block completion if subtasks or sub-boards are incomplete
+						const blocker = getCompletionBlocker(update.id);
+						if (blocker) {
+							throw error(409, blocker);
+						}
 						movedToComplete = true;
 						completedCardTitle = existing.title;
 						completedCardPriority = existing.priority;

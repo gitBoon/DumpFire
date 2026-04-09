@@ -4,6 +4,7 @@ import { cards, columns, userXp } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
+import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -52,8 +53,16 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	const isMovingColumn = existingCard.columnId !== targetColumnId;
 
 	// Check if target column is "Complete"
-	const isCompleteColumn = targetCol.title.toLowerCase() === 'complete';
+	const isCompleteColumn = isCompleteColumnTitle(targetCol.title);
 	const wasAlreadyCompleted = !!existingCard.completedAt;
+
+	// Block completion if subtasks or sub-boards are incomplete
+	if (isMovingColumn && isCompleteColumn) {
+		const blocker = getCompletionBlocker(cardId);
+		if (blocker) {
+			throw error(409, blocker);
+		}
+	}
 
 	// Update position and column
 	const updateData: Record<string, unknown> = {

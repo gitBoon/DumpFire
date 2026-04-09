@@ -4,6 +4,7 @@ import { cards, columns } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { canEditBoard } from '$lib/server/board-access';
+import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -36,6 +37,21 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	for (const key of allowed) {
 		if (key in rawData) updateData[key] = rawData[key];
 	}
+
+	// Block completion if columnId is being changed to a Complete column
+	if (updateData.columnId) {
+		const existingCard = db.select().from(cards).where(eq(cards.id, id)).get();
+		if (existingCard && existingCard.columnId !== updateData.columnId) {
+			const targetCol = db.select().from(columns).where(eq(columns.id, updateData.columnId as number)).get();
+			if (targetCol && isCompleteColumnTitle(targetCol.title)) {
+				const blocker = getCompletionBlocker(id);
+				if (blocker) {
+					throw error(409, blocker);
+				}
+			}
+		}
+	}
+
 	updateData.updatedAt = new Date().toISOString();
 
 	const updated = db
