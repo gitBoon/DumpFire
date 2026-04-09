@@ -11,6 +11,8 @@ import { subscribeGlobal } from '$lib/server/events';
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
+	let cleanup: (() => void) | null = null;
+
 	const stream = new ReadableStream({
 		start(controller) {
 			const encoder = new TextEncoder();
@@ -26,7 +28,9 @@ export const GET: RequestHandler = async ({ locals }) => {
 					const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 					controller.enqueue(encoder.encode(payload));
 				} catch {
-					// Client disconnected
+					// Client disconnected — clean up
+					unsubscribe();
+					clearInterval(heartbeat);
 				}
 			});
 
@@ -39,15 +43,14 @@ export const GET: RequestHandler = async ({ locals }) => {
 				}
 			}, 30000);
 
-			(controller as any)._cleanup = () => {
+			// Store cleanup for cancel()
+			cleanup = () => {
 				unsubscribe();
 				clearInterval(heartbeat);
 			};
 		},
 		cancel() {
-			if ((this as any)._cleanup) {
-				(this as any)._cleanup();
-			}
+			if (cleanup) cleanup();
 		}
 	});
 
