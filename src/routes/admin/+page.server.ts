@@ -51,11 +51,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 		return { ...team, members };
 	});
 
-	// Database size
+	// Database size (main file + WAL + SHM — SQLite WAL mode splits data across all three)
 	let dbSizeBytes = 0;
 	try {
-		const stat = statSync(getDbPath());
-		dbSizeBytes = stat.size;
+		const dbPath = getDbPath();
+		for (const suffix of ['', '-wal', '-shm']) {
+			try { dbSizeBytes += statSync(dbPath + suffix).size; } catch {}
+		}
 	} catch {}
 
 	return {
