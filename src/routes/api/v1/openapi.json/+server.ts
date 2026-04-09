@@ -585,7 +585,7 @@ const spec = {
 				tags: ['Cards'],
 				summary: 'Move a card',
 				description:
-					'Moves a card between columns. Moving to "Complete" awards XP and fires a celebration event.',
+					'Moves a card between columns. Moving to "Complete" or "Done" awards XP and fires a celebration event. The move will be rejected with 409 if the card has incomplete subtasks or sub-boards.',
 				operationId: 'moveCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -620,7 +620,16 @@ const spec = {
 						}
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'404': { $ref: '#/components/responses/NotFound' },
+					'409': {
+						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { error: 'Card has 3 incomplete subtasks that must be completed first' }
+							}
+						}
+					}
 				}
 			}
 		},
