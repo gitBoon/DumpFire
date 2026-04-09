@@ -2,6 +2,9 @@ import { db, sqlite } from './index';
 import { boards, columns } from './schema';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { createLogger } from '../logger';
+
+const log = createLogger('DB');
 
 export function runMigrations() {
 	const migrationsDir = join(process.cwd(), 'drizzle');
@@ -42,19 +45,19 @@ export function runMigrations() {
 						// Tolerate "already exists" / "duplicate column" errors
 						const msg = stmtErr?.message || '';
 						if (msg.includes('already exists') || msg.includes('duplicate column')) {
-							console.log(`[DB] Skipping (already applied): ${msg}`);
+							log.warn(`Skipping (already applied): ${msg}`);
 						} else {
-							console.log(`[DB] Statement error in ${file}: ${msg}`);
+							log.error(`Statement error in ${file}: ${msg}`);
 							allOk = false;
 						}
 					}
 				}
 				// Mark migration as applied even if individual statements were skipped
 				sqlite.prepare('INSERT INTO __drizzle_migrations (hash) VALUES (?)').run(hash);
-				console.log(`[DB] Applied migration: ${file}${allOk ? '' : ' (with warnings)'}`);
+				log.warn(`Applied migration: ${file}${allOk ? '' : ' (with warnings)'}`);
 			}
 		}
 	} catch (err) {
-		console.log('[DB] Migration error:', err);
+		log.critical('Migration error', err);
 	}
 }

@@ -2,6 +2,9 @@ import { runMigrations } from '$lib/server/db/migrate';
 import { validateSession, SESSION_COOKIE_NAME, hasAnyUsers, cleanExpiredSessions } from '$lib/server/auth';
 import { initBackupScheduler } from '$lib/server/backup';
 import { redirect, type Handle } from '@sveltejs/kit';
+import { createLogger } from '$lib/server/logger';
+
+const log = createLogger('HTTP');
 
 // Run migrations on server start
 runMigrations();
@@ -74,7 +77,18 @@ export const handle: Handle = async ({ event, resolve }) => {
 		}
 	}
 
-	const response = await resolve(event);
+	let response: Response;
+	try {
+		response = await resolve(event);
+	} catch (err) {
+		// Re-throw redirects and SvelteKit HTTP errors — they are expected control flow
+		throw err;
+	}
+
+	// Log server errors (5xx responses)
+	if (response.status >= 500) {
+		log.error(`${event.request.method} ${path} → ${response.status}`);
+	}
 
 	// ── 5. Security headers ──────────────────────────────────────────────
 	response.headers.set('X-Content-Type-Options', 'nosniff');
@@ -85,3 +99,4 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	return response;
 };
+

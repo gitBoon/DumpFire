@@ -10,6 +10,9 @@ import { sendEmail, isSmtpConfigured } from './email';
 import { db } from './db';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams } from './db/schema';
 import { eq, inArray } from 'drizzle-orm';
+import { createLogger } from './logger';
+
+const log = createLogger('NOTIFY');
 
 /** Escape HTML entities to prevent injection in email templates. */
 function esc(str: string): string {
@@ -146,7 +149,7 @@ export function notifyCardCreated(boardId: number, cardId: number, cardTitle: st
 	`);
 
 	for (const a of assignees) {
-		sendEmail(a.email, `New card: ${cardTitle}`, html).catch(err => console.error('[EMAIL] Send failed:', err));
+		sendEmail(a.email, `New card: ${cardTitle}`, html).catch(err => log.error(`Card-created notification failed for ${a.email}`, err));
 	}
 }
 
@@ -172,7 +175,7 @@ export function notifyCardMoved(boardId: number, cardId: number, cardTitle: stri
 	`);
 
 	for (const a of assignees) {
-		sendEmail(a.email, `Card moved: ${cardTitle} → ${toColumn}`, html).catch(err => console.error('[EMAIL] Send failed:', err));
+		sendEmail(a.email, `Card moved: ${cardTitle} → ${toColumn}`, html).catch(err => log.error(`Card-moved notification failed for ${a.email}`, err));
 	}
 }
 
@@ -204,7 +207,7 @@ export function notifyUserAssigned(boardId: number, cardId: number, cardTitle: s
 		</div>
 	`);
 
-	sendEmail(assigneeEmail, `Assigned: ${cardTitle}`, html).catch(err => console.error('[EMAIL] Send failed:', err));
+	sendEmail(assigneeEmail, `Assigned: ${cardTitle}`, html).catch(err => log.error(`Assignment notification failed for ${assigneeEmail}`, err));
 }
 
 /** Send an invite email to a new user with a password-set link. */
@@ -227,7 +230,7 @@ export function sendInviteEmail(email: string, username: string, inviteToken: st
 	`);
 
 	sendEmail(email, 'You\'re invited to DumpFire!', html)
-		.catch(err => console.error('[INVITE] Failed to send invite email:', err));
+		.catch(err => log.error(`Invite email failed for ${email}`, err));
 }
 
 /** Notify a user when they are added to a board. */
@@ -250,7 +253,7 @@ export function notifyBoardShared(boardId: number, boardName: string, userEmail:
 		</div>
 	`);
 
-	sendEmail(userEmail, `Board shared: ${boardName}`, html).catch(err => console.error('[EMAIL] Board share notify failed:', err));
+	sendEmail(userEmail, `Board shared: ${boardName}`, html).catch(err => log.error(`Board-share notification failed for ${userEmail}`, err));
 }
 
 /** Notify the target user(s) when a new task request is submitted. */
@@ -295,7 +298,7 @@ export function notifyTaskRequest(targetType: string, targetId: number, title: s
 	`);
 
 	for (const r of recipients) {
-		sendEmail(r.email, `New request: ${title}`, html).catch(err => console.error('[EMAIL] Request notify failed:', err));
+		sendEmail(r.email, `New request: ${title}`, html).catch(err => log.error(`Task-request notification failed for ${r.email}`, err));
 	}
 }
 
@@ -352,7 +355,7 @@ export function notifyCommentAdded(boardId: number, cardId: number, cardTitle: s
 	`);
 
 	for (const r of recipients) {
-		sendEmail(r.email, `New comment on: ${cardTitle}`, html).catch(err => console.error('[EMAIL] Comment notify failed:', err));
+		sendEmail(r.email, `New comment on: ${cardTitle}`, html).catch(err => log.error(`Comment notification failed for ${r.email}`, err));
 	}
 }
 
@@ -371,7 +374,7 @@ export function notifyRequesterAccepted(email: string, requestTitle: string, res
 		</div>
 	`);
 
-	sendEmail(email, `Request accepted: ${requestTitle}`, html).catch(err => console.error('[EMAIL] Accept notify failed:', err));
+	sendEmail(email, `Request accepted: ${requestTitle}`, html).catch(err => log.error(`Accept notification failed for ${email}`, err));
 }
 
 /** Notify the requester when their request is rejected. */
@@ -392,7 +395,7 @@ export function notifyRequesterRejected(email: string, requestTitle: string, res
 		</div>
 	`);
 
-	sendEmail(email, `Request declined: ${requestTitle}`, html).catch(err => console.error('[EMAIL] Reject notify failed:', err));
+	sendEmail(email, `Request declined: ${requestTitle}`, html).catch(err => log.error(`Reject notification failed for ${email}`, err));
 }
 
 /** Notify the requester when an admin sends a conversation message. */
@@ -415,7 +418,7 @@ export function notifyRequesterMessage(email: string, requestTitle: string, send
 		</div>
 	`);
 
-	sendEmail(email, `Message on request: ${requestTitle}`, html).catch(err => console.error('[EMAIL] Message notify failed:', err));
+	sendEmail(email, `Message on request: ${requestTitle}`, html).catch(err => log.error(`Requester-message notification failed for ${email}`, err));
 }
 
 /** Notify admin/team when the requester replies. */
@@ -456,7 +459,7 @@ export function notifyAdminMessage(targetType: string, targetId: number, request
 	`);
 
 	for (const r of recipients) {
-		sendEmail(r.email, `Reply on request: ${requestTitle}`, html).catch(err => console.error('[EMAIL] Admin msg notify failed:', err));
+		sendEmail(r.email, `Reply on request: ${requestTitle}`, html).catch(err => log.error(`Admin-message notification failed for ${r.email}`, err));
 	}
 }
 

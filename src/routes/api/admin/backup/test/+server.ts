@@ -6,6 +6,9 @@ import { json, error } from '@sveltejs/kit';
 import { createDestination, type DestinationConfig } from '$lib/server/backup-destinations';
 import { getBackupConfig } from '$lib/server/backup';
 import type { RequestHandler } from './$types';
+import { createLogger } from '$lib/server/logger';
+
+const log = createLogger('BACKUP');
 
 /** POST — Test a specific destination connection. */
 export const POST: RequestHandler = async ({ request, locals }) => {
@@ -40,6 +43,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const result = await dest.test();
 		return json(result);
 	} catch (err: any) {
+		log.error(`Destination test failed for "${destConfig.name}" (${destConfig.type}): ${err.message}`);
 		return json({ success: false, message: err.message || 'Test failed' });
 	}
 };

@@ -10,6 +10,9 @@ import type { Transporter } from 'nodemailer';
 import { db } from './db';
 import { settings } from './db/schema';
 import { eq } from 'drizzle-orm';
+import { createLogger } from './logger';
+
+const log = createLogger('EMAIL');
 
 // ─── Settings Helpers ────────────────────────────────────────────────────────
 
@@ -155,7 +158,7 @@ export async function sendEmail(to: string, subject: string, html: string): Prom
 		});
 		return true;
 	} catch (err) {
-		console.error('[EMAIL] Failed to send:', err);
+		log.error(`Failed to send email to ${to}: ${subject}`, err);
 		return false;
 	}
 }
