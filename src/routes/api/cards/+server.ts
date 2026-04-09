@@ -43,6 +43,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		})
 		.returning()
 		.get();
-	if (resolvedBoardId) emit(resolvedBoardId, 'update', { type: 'card' });
+	if (resolvedBoardId) emit(resolvedBoardId, 'update', { type: 'card', action: 'created', cardTitle: card.title, userName: locals.user.username, userEmoji: locals.user.emoji || '👤' });
 	return json(card, { status: 201 });
 };

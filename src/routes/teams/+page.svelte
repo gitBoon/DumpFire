@@ -108,23 +108,22 @@
 </svelte:head>
 
 <div class="teams-page">
-	<header class="teams-header">
-		<div class="teams-header-left">
-			<a href="/" class="back-btn btn-ghost">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-				</svg>
+	<header class="teams-header glass">
+		<div class="teams-header-inner">
+			<a href="/" class="header-logo" title="Back to DumpFire">
+				<span class="logo-fire">🔥</span>
+				<span class="logo-text">DumpFire</span>
 			</a>
-			<h1>🏢 My Teams</h1>
-		</div>
-		<div class="teams-header-right">
-			<ThemePicker />
-			<button class="btn-primary" onclick={() => (showCreateTeam = true)}>
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-				</svg>
-				New Team
-			</button>
+			<h1 class="header-title">🏢 My Teams</h1>
+			<div class="teams-header-right">
+				<ThemePicker />
+				<button class="btn-primary" onclick={() => (showCreateTeam = true)}>
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+						<path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+					</svg>
+					New Team
+				</button>
+			</div>
 		</div>
 	</header>
 
@@ -236,16 +235,29 @@
 {/if}
 
 <style>
-	.teams-page { min-height: 100vh; }
+	.teams-page { min-height: 100vh; padding-top: 64px; }
 
 	.teams-header {
-		display: flex; align-items: center; justify-content: space-between;
-		padding: var(--space-md) var(--space-xl); border-bottom: 1px solid var(--glass-border);
+		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+		height: 64px; border-bottom: 1px solid var(--glass-border);
+		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
 	}
-	.teams-header-left { display: flex; align-items: center; gap: var(--space-md); }
-	.teams-header-left h1 { font-size: 1.25rem; }
+	.teams-header-inner {
+		max-width: 1400px; margin: 0 auto; height: 100%;
+		display: flex; align-items: center; justify-content: space-between;
+		padding: 0 var(--space-xl);
+	}
+	.header-logo {
+		display: flex; align-items: center; gap: var(--space-sm);
+		text-decoration: none; color: var(--text-primary);
+		font-weight: 700; font-size: 1.1rem;
+	}
+	.logo-fire { font-size: 1.4rem; }
+	.header-title {
+		font-size: 1rem; font-weight: 700; color: var(--text-primary);
+		letter-spacing: -0.01em;
+	}
 	.teams-header-right { display: flex; gap: var(--space-sm); align-items: center; }
-	.back-btn { padding: var(--space-sm); }
 
 	.teams-content {
 		max-width: 800px; margin: 0 auto; padding: var(--space-2xl);

@@ -99,7 +99,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		.returning()
 		.get();
 
-	emit(boardId, 'update', { type: 'card' });
+	emit(boardId, 'update', { type: 'card', action: 'created', cardTitle: card.title, userName: locals.user.username, userEmoji: locals.user.emoji || '\ud83d\udc64' });
 
 	return json(card, { status: 201 });
 };

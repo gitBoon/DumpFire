@@ -14,10 +14,10 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import FireworksCelebration from '$lib/components/board/FireworksCelebration.svelte';
-	import type { CardType } from '$lib/types';
+	import type { CardType, SortOption } from '$lib/types';
 	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC, isNew } from '$lib/utils/date-utils';
-	import { subtaskProgress } from '$lib/utils/card-utils';
-	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
+	import { subtaskProgress, sortCards, getSortLabel } from '$lib/utils/card-utils';
+	import { playMoveSound, playCompleteSound, playCreateSound, playNotifySound } from '$lib/utils/sounds';
 
 	let { data }: { data: PageData } = $props();
 	let currentTheme = $state('light');
@@ -37,10 +37,44 @@
 	let celebrateUserEmoji = $state('');
 	let celebrateXpGained = $state(0);
 
+	// ─── Live Activity Toast ──────────────────────────────────────────────
+	type LiveToast = {
+		id: number;
+		type: 'created' | 'moved';
+		cardTitle: string;
+		userName: string;
+		userEmoji: string;
+		fromColumn?: string;
+		toColumn?: string;
+	};
+	let liveToasts = $state<LiveToast[]>([]);
+	let toastCounter = 0;
+
+	function addLiveToast(toast: Omit<LiveToast, 'id'>) {
+		const id = ++toastCounter;
+		liveToasts = [{ ...toast, id }, ...liveToasts].slice(0, 5);
+		setTimeout(() => {
+			liveToasts = liveToasts.filter(t => t.id !== id);
+		}, 5000);
+	}
+
 	function connectGlobalSSE() {
 		eventSource = new EventSource('/api/events');
 
-		eventSource.addEventListener('update', () => {
+		eventSource.addEventListener('update', (e) => {
+			try {
+				const d = JSON.parse(e.data);
+				// Show toast for card creation
+				if (d.action === 'created' && d.cardTitle) {
+					addLiveToast({ type: 'created', cardTitle: d.cardTitle, userName: d.userName || 'Someone', userEmoji: d.userEmoji || '👤' });
+					playCreateSound();
+				}
+				// Show toast for card movement
+				if (d.action === 'moved' && d.cardTitle) {
+					addLiveToast({ type: 'moved', cardTitle: d.cardTitle, userName: d.userName || 'Someone', userEmoji: d.userEmoji || '👤', fromColumn: d.fromColumn, toColumn: d.toColumn });
+					playNotifySound();
+				}
+			} catch { /* fallback — still refresh */ }
 			invalidateAll();
 		});
 
@@ -96,6 +130,21 @@
 
 	function getFilteredCount(bucket: any): number {
 		return bucket.cards.filter(matchesFilters).length;
+	}
+
+	// ─── Column Sorting ─────────────────────────────────────────────────
+	let bucketSorts = $state<Record<string, SortOption>>({ 'Complete': 'date-desc' });
+	let openSortDropdown = $state<string | null>(null);
+
+	function setBucketSort(bucketTitle: string, sort: SortOption) {
+		bucketSorts = { ...bucketSorts, [bucketTitle]: sort };
+		openSortDropdown = null;
+	}
+
+	function getSortedCards(cards: any[], bucketTitle: string): any[] {
+		const sort = bucketSorts[bucketTitle];
+		if (!sort || sort === 'none') return cards;
+		return sortCards([...cards] as CardType[], sort, data.categories);
 	}
 
 	// ─── Card Editing ────────────────────────────────────────────────────
@@ -187,11 +236,17 @@
 	function getBoardColumns(boardId: number) {
 		return data.columns.filter((c: any) => c.boardId === boardId);
 	}
+
+	function closeSortDropdowns() {
+		openSortDropdown = null;
+	}
 </script>
 
 <svelte:head>
 	<title>DumpFire — All Tasks</title>
 </svelte:head>
+
+<svelte:window onclick={closeSortDropdowns} />
 
 <div class="all-page">
 	<header class="all-header">
@@ -226,13 +281,40 @@
 	<div class="kanban-scroll">
 		<div class="kanban-track">
 			{#each data.buckets as bucket}
-				{@const filteredCards = bucket.cards.filter(matchesFilters)}
+				{@const filteredCards = getSortedCards(bucket.cards.filter(matchesFilters), bucket.title)}
 				<div class="column">
 					<div class="column-header">
 						<div class="column-title-row">
 							<span class="column-color-dot" style="background: {bucketColors[bucket.title] || '#8b5cf6'}"></span>
 							<h2 class="column-title">{bucket.title}</h2>
 							<span class="column-count">{filteredCards.length}</span>
+							<div class="sort-wrapper">
+								{#if bucketSorts[bucket.title] && bucketSorts[bucket.title] !== 'none'}
+									<button class="sort-active-badge" onclick={(e) => { e.stopPropagation(); setBucketSort(bucket.title, 'none'); }} title="Clear sort">
+										{getSortLabel(bucketSorts[bucket.title])} ✕
+									</button>
+								{/if}
+								<!-- svelte-ignore a11y_click_events_have_key_events -->
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<button class="sort-btn" class:sort-btn-active={openSortDropdown === bucket.title} onclick={(e) => { e.stopPropagation(); openSortDropdown = openSortDropdown === bucket.title ? null : bucket.title; }} title="Sort cards">
+									<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 3h8M3 6h6M4 9h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+								</button>
+								{#if openSortDropdown === bucket.title}
+									<!-- svelte-ignore a11y_click_events_have_key_events -->
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<div class="sort-dropdown" onclick={(e) => e.stopPropagation()}>
+										<div class="sort-dropdown-label">Sort by</div>
+										<button class="sort-dropdown-item" class:sort-active={bucketSorts[bucket.title] === 'date-asc'} onclick={() => setBucketSort(bucket.title, 'date-asc')}>↑ Oldest first</button>
+										<button class="sort-dropdown-item" class:sort-active={bucketSorts[bucket.title] === 'date-desc'} onclick={() => setBucketSort(bucket.title, 'date-desc')}>↓ Newest first</button>
+										<button class="sort-dropdown-item" class:sort-active={bucketSorts[bucket.title] === 'priority'} onclick={() => setBucketSort(bucket.title, 'priority')}>⚡ Priority</button>
+										<button class="sort-dropdown-item" class:sort-active={bucketSorts[bucket.title] === 'category'} onclick={() => setBucketSort(bucket.title, 'category')}>🏷 Category</button>
+										<button class="sort-dropdown-item" class:sort-active={bucketSorts[bucket.title] === 'assignee'} onclick={() => setBucketSort(bucket.title, 'assignee')}>👤 Assignee</button>
+										{#if bucketSorts[bucket.title] && bucketSorts[bucket.title] !== 'none'}
+											<button class="sort-dropdown-item" onclick={() => setBucketSort(bucket.title, 'none')}>✕ Clear sort</button>
+										{/if}
+									</div>
+								{/if}
+							</div>
 						</div>
 						{#if bucket.contributingBoards && bucket.contributingBoards.length > 0}
 							<div class="column-boards">
@@ -394,6 +476,34 @@
 		userEmoji={celebrateUserEmoji}
 		xpGained={celebrateXpGained}
 	/>
+{/if}
+
+<!-- Live Activity Toasts -->
+{#if liveToasts.length > 0}
+	<div class="live-toast-container">
+		{#each liveToasts as toast (toast.id)}
+			<div class="live-toast" class:live-toast-created={toast.type === 'created'} class:live-toast-moved={toast.type === 'moved'}>
+				<div class="live-toast-glow"></div>
+				<div class="live-toast-inner">
+					<span class="live-toast-emoji">{toast.userEmoji}</span>
+					<div class="live-toast-body">
+						<span class="live-toast-user">{toast.userName}</span>
+						{#if toast.type === 'created'}
+							<span class="live-toast-action">created</span>
+							<span class="live-toast-card">"{toast.cardTitle}"</span>
+						{:else}
+							<span class="live-toast-action">moved</span>
+							<span class="live-toast-card">"{toast.cardTitle}"</span>
+							{#if toast.fromColumn && toast.toColumn}
+								<span class="live-toast-cols">{toast.fromColumn} → {toast.toColumn}</span>
+							{/if}
+						{/if}
+					</div>
+					<span class="live-toast-icon">{toast.type === 'created' ? '✨' : '➡️'}</span>
+				</div>
+			</div>
+		{/each}
+	</div>
 {/if}
 
 <style>
@@ -851,4 +961,189 @@
 	}
 	.move-confirm-btn:hover:not(:disabled) { background: #5558e6; transform: translateY(-1px); }
 	.move-confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+	/* Sort dropdown */
+	.sort-wrapper {
+		position: relative; display: flex; align-items: center; gap: 4px; margin-left: auto;
+	}
+	.sort-btn {
+		width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+		border-radius: var(--radius-sm); background: transparent; border: none;
+		color: var(--text-tertiary); cursor: pointer; transition: all var(--duration-fast) var(--ease-out);
+	}
+	.sort-btn:hover, .sort-btn-active { color: var(--text-primary); background: var(--glass-hover); }
+	.sort-active-badge {
+		display: inline-flex; align-items: center; gap: 4px;
+		font-size: 0.6rem; font-weight: 600; padding: 1px 6px;
+		border-radius: var(--radius-sm); background: rgba(99, 102, 241, 0.1);
+		color: var(--accent-indigo); border: 1px solid rgba(99, 102, 241, 0.2);
+		cursor: pointer; white-space: nowrap;
+	}
+	.sort-active-badge:hover { background: rgba(99, 102, 241, 0.2); }
+	.sort-dropdown {
+		position: absolute; top: 100%; right: 0; z-index: 100;
+		background: var(--bg-card); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); padding: var(--space-xs);
+		box-shadow: var(--shadow-lg); min-width: 140px; margin-top: 4px;
+	}
+	.sort-dropdown-label {
+		font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.05em; color: var(--text-tertiary);
+		padding: 4px 8px;
+	}
+	.sort-dropdown-item {
+		display: block; width: 100%; text-align: left; padding: 6px 8px;
+		font-size: 0.78rem; font-weight: 500; color: var(--text-secondary);
+		background: transparent; border: none; border-radius: var(--radius-sm);
+		cursor: pointer; font-family: var(--font-family);
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.sort-dropdown-item:hover { background: var(--glass-hover); color: var(--text-primary); }
+	.sort-dropdown-item.sort-active {
+		background: rgba(99, 102, 241, 0.1); color: var(--accent-indigo); font-weight: 600;
+	}
+
+	/* ── Live Activity Toasts ─────────────────────────── */
+	.live-toast-container {
+		position: fixed;
+		top: var(--space-xl);
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 9999;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+		pointer-events: none;
+		max-width: 420px;
+		width: 90%;
+	}
+
+	.live-toast {
+		position: relative;
+		border-radius: var(--radius-lg);
+		overflow: hidden;
+		animation: toastSlideIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+		pointer-events: auto;
+	}
+
+	.live-toast-glow {
+		position: absolute;
+		inset: 0;
+		border-radius: var(--radius-lg);
+		opacity: 0.4;
+		animation: toastGlow 2s ease-in-out infinite;
+	}
+
+	.live-toast-created .live-toast-glow {
+		box-shadow: 0 0 20px rgba(16, 185, 129, 0.3), 0 0 40px rgba(16, 185, 129, 0.15);
+	}
+
+	.live-toast-moved .live-toast-glow {
+		box-shadow: 0 0 20px rgba(99, 102, 241, 0.3), 0 0 40px rgba(99, 102, 241, 0.15);
+	}
+
+	.live-toast-inner {
+		position: relative;
+		display: flex;
+		align-items: center;
+		gap: var(--space-md);
+		padding: var(--space-md) var(--space-lg);
+		background: var(--bg-card);
+		border: 1px solid var(--glass-border);
+		border-radius: var(--radius-lg);
+		backdrop-filter: blur(16px);
+		-webkit-backdrop-filter: blur(16px);
+	}
+
+	.live-toast-created .live-toast-inner {
+		border-left: 3px solid #10b981;
+		background: linear-gradient(135deg, var(--bg-card), rgba(16, 185, 129, 0.04));
+	}
+
+	.live-toast-moved .live-toast-inner {
+		border-left: 3px solid #6366f1;
+		background: linear-gradient(135deg, var(--bg-card), rgba(99, 102, 241, 0.04));
+	}
+
+	.live-toast-emoji {
+		font-size: 1.5rem;
+		flex-shrink: 0;
+		animation: toastBounce 0.6s ease-out;
+	}
+
+	.live-toast-body {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 4px;
+		font-size: 0.82rem;
+		line-height: 1.4;
+	}
+
+	.live-toast-user {
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.live-toast-action {
+		color: var(--text-secondary);
+		font-weight: 500;
+	}
+
+	.live-toast-card {
+		font-weight: 600;
+		color: var(--text-primary);
+		max-width: 200px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.live-toast-cols {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		padding: 1px 6px;
+		border-radius: var(--radius-sm);
+		background: rgba(99, 102, 241, 0.1);
+		color: var(--accent-indigo);
+		white-space: nowrap;
+	}
+
+	.live-toast-icon {
+		font-size: 1.1rem;
+		flex-shrink: 0;
+		animation: toastIconPulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes toastSlideIn {
+		from {
+			opacity: 0;
+			transform: translateY(-30px) scale(0.9);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0) scale(1);
+		}
+	}
+
+	@keyframes toastGlow {
+		0%, 100% { opacity: 0.3; }
+		50% { opacity: 0.6; }
+	}
+
+	@keyframes toastBounce {
+		0% { transform: scale(0.5); }
+		50% { transform: scale(1.2); }
+		100% { transform: scale(1); }
+	}
+
+	@keyframes toastIconPulse {
+		0%, 100% { transform: scale(1); }
+		50% { transform: scale(1.15); }
+	}
 </style>
