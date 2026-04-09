@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { columns } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
-import { getBoardRole } from '$lib/server/board-access';
+import { canEditBoard } from '$lib/server/board-access';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
@@ -11,15 +11,21 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 	const id = Number(params.id);
 	const data = await request.json();
-	const { boardId: _clientBoardId, ...updateData } = data;
+	const { boardId: _clientBoardId, ...rawData } = data;
 
 	// Always resolve the board from the database — never trust the client
 	const column = db.select().from(columns).where(eq(columns.id, id)).get();
 	if (!column) throw error(404, 'Column not found');
 
-	const role = getBoardRole(locals.user, column.boardId);
-	if (role !== 'admin' && role !== 'owner') {
-		throw error(403, 'Only board owners and admins can modify column settings');
+	if (!canEditBoard(locals.user, column.boardId)) {
+		throw error(403, 'No edit access to this board');
+	}
+
+	// Whitelist allowed fields to prevent mass assignment
+	const updateData: Record<string, unknown> = {};
+	const allowed = ['title', 'color', 'position', 'wipLimit'];
+	for (const key of allowed) {
+		if (key in rawData) updateData[key] = rawData[key];
 	}
 
 	const updated = db.update(columns).set(updateData).where(eq(columns.id, id)).returning().get();
@@ -37,9 +43,8 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	const column = db.select().from(columns).where(eq(columns.id, id)).get();
 	if (!column) throw error(404, 'Column not found');
 
-	const role = getBoardRole(locals.user, column.boardId);
-	if (role !== 'admin' && role !== 'owner') {
-		throw error(403, 'Only board owners and admins can delete columns');
+	if (!canEditBoard(locals.user, column.boardId)) {
+		throw error(403, 'No edit access to this board');
 	}
 
 	db.delete(columns).where(eq(columns.id, id)).run();
