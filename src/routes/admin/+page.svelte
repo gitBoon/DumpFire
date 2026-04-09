@@ -683,6 +683,7 @@
 	let smtpLoading = $state(true);
 	let smtpSaving = $state(false);
 	let smtpTesting = $state(false);
+	let smtpTestTo = $state('');
 	let smtpMessage = $state('');
 	let smtpIsError = $state(false);
 
@@ -742,11 +743,12 @@
 	async function testSmtp() {
 		smtpTesting = true;
 		smtpMessage = '';
+		const recipient = smtpTestTo.trim() || data.currentUser?.email;
 		try {
 			const res = await fetch('/api/admin/smtp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ to: data.currentUser?.email })
+				body: JSON.stringify({ to: recipient })
 			});
 			const result = await res.json();
 			if (res.ok) {
@@ -1402,8 +1404,11 @@
 							<input type="checkbox" bind:checked={smtpSecure} /> Use SSL/TLS
 						</label>
 						<div style="flex: 1"></div>
-						<button class="btn-ghost btn-sm" onclick={testSmtp} disabled={!smtpHost || smtpTesting}>🧪 {smtpTesting ? 'Sending...' : 'Send Test'}</button>
 						<button class="btn-primary btn-sm" onclick={saveSmtp} disabled={!smtpHost || smtpSaving}>{smtpSaving ? 'Saving...' : 'Save SMTP'}</button>
+					</div>
+					<div class="form-row" style="margin-top: var(--space-sm)">
+						<input type="email" placeholder="Test recipient (defaults to your email)" bind:value={smtpTestTo} class="form-input" />
+						<button class="btn-ghost btn-sm" onclick={testSmtp} disabled={!smtpHost || smtpTesting} style="flex: none">🧪 {smtpTesting ? 'Sending...' : 'Send Test'}</button>
 					</div>
 					{#if smtpMessage}
 						<p class="smtp-msg" class:smtp-error={smtpIsError} class:smtp-success={!smtpIsError}>{smtpMessage}</p>
