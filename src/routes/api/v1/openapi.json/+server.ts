@@ -106,6 +106,24 @@ const spec = {
 					position: { type: 'integer' }
 				}
 			},
+			Category: {
+				type: 'object',
+				properties: {
+					id: { type: 'integer' },
+					boardId: { type: ['integer', 'null'], description: 'Board this category belongs to' },
+					name: { type: 'string' },
+					color: { type: 'string', description: 'Hex colour code' }
+				}
+			},
+			BoardCategory: {
+				type: 'object',
+				description: 'Dashboard-level category for grouping boards',
+				properties: {
+					id: { type: 'integer' },
+					name: { type: 'string' },
+					color: { type: 'string', description: 'Hex colour code' }
+				}
+			},
 			CardDetail: {
 				type: 'object',
 				properties: {
@@ -156,6 +174,13 @@ const spec = {
 				required: true,
 				schema: { type: 'integer' },
 				description: 'Subtask ID'
+			},
+			categoryId: {
+				name: 'categoryId',
+				in: 'path',
+				required: true,
+				schema: { type: 'integer' },
+				description: 'Category ID'
 			}
 		},
 		responses: {
@@ -820,6 +845,252 @@ const spec = {
 					'404': { $ref: '#/components/responses/NotFound' }
 				}
 			}
+		},
+
+		'/api/v1/boards/{boardId}/categories': {
+			get: {
+				tags: ['Categories'],
+				summary: 'List categories on a board',
+				description: 'Returns all card categories for the specified board.',
+				operationId: 'listCategories',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				responses: {
+					'200': {
+						description: 'List of categories',
+						content: {
+							'application/json': {
+								schema: { type: 'array', items: { $ref: '#/components/schemas/Category' } }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No access to this board' }
+				}
+			},
+			post: {
+				tags: ['Categories'],
+				summary: 'Create a category',
+				description: 'Creates a new card category on the specified board.',
+				operationId: 'createCategory',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['name'],
+								properties: {
+									name: { type: 'string', maxLength: 200, description: 'Category name' },
+									color: { type: 'string', description: 'Hex colour code (default: #6366f1)' }
+								}
+							},
+							example: { name: 'Bug', color: '#ef4444' }
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'Category created',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Category' } }
+						}
+					},
+					'400': { description: 'Validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' }
+				}
+			}
+		},
+
+		'/api/v1/categories/{categoryId}': {
+			get: {
+				tags: ['Categories'],
+				summary: 'Get a category',
+				operationId: 'getCategory',
+				parameters: [{ $ref: '#/components/parameters/categoryId' }],
+				responses: {
+					'200': {
+						description: 'Category details',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Category' } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			put: {
+				tags: ['Categories'],
+				summary: 'Update a category',
+				operationId: 'updateCategory',
+				parameters: [{ $ref: '#/components/parameters/categoryId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								properties: {
+									name: { type: 'string', maxLength: 200 },
+									color: { type: 'string' }
+								}
+							},
+							example: { name: 'Feature', color: '#10b981' }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Updated category',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Category' } }
+						}
+					},
+					'400': { description: 'No valid fields or validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			delete: {
+				tags: ['Categories'],
+				summary: 'Delete a category',
+				description: 'Permanently deletes the card category. Cards using this category will have their categoryId set to null.',
+				operationId: 'deleteCategory',
+				parameters: [{ $ref: '#/components/parameters/categoryId' }],
+				responses: {
+					'200': {
+						description: 'Deleted',
+						content: {
+							'application/json': { example: { success: true } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			}
+		},
+
+		'/api/v1/board-categories': {
+			get: {
+				tags: ['Board Categories'],
+				summary: 'List board categories',
+				description: 'Returns all board categories used for grouping boards on the dashboard.',
+				operationId: 'listBoardCategories',
+				responses: {
+					'200': {
+						description: 'List of board categories',
+						content: {
+							'application/json': {
+								schema: { type: 'array', items: { $ref: '#/components/schemas/BoardCategory' } }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' }
+				}
+			},
+			post: {
+				tags: ['Board Categories'],
+				summary: 'Create a board category',
+				description: 'Creates a new board category for grouping boards on the dashboard.',
+				operationId: 'createBoardCategory',
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['name'],
+								properties: {
+									name: { type: 'string', maxLength: 200, description: 'Category name' },
+									color: { type: 'string', description: 'Hex colour code (default: #6366f1)' }
+								}
+							},
+							example: { name: 'Development', color: '#6366f1' }
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'Board category created',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/BoardCategory' } }
+						}
+					},
+					'400': { description: 'Validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' }
+				}
+			}
+		},
+
+		'/api/v1/board-categories/{categoryId}': {
+			get: {
+				tags: ['Board Categories'],
+				summary: 'Get a board category',
+				operationId: 'getBoardCategory',
+				parameters: [{ $ref: '#/components/parameters/categoryId' }],
+				responses: {
+					'200': {
+						description: 'Board category details',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/BoardCategory' } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			put: {
+				tags: ['Board Categories'],
+				summary: 'Update a board category',
+				operationId: 'updateBoardCategory',
+				parameters: [{ $ref: '#/components/parameters/categoryId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								properties: {
+									name: { type: 'string', maxLength: 200 },
+									color: { type: 'string' }
+								}
+							},
+							example: { name: 'Infrastructure', color: '#f59e0b' }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Updated board category',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/BoardCategory' } }
+						}
+					},
+					'400': { description: 'No valid fields or validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			delete: {
+				tags: ['Board Categories'],
+				summary: 'Delete a board category',
+				description: 'Permanently deletes the board category. Boards using this category will have their categoryId unchanged (you may want to clear them first).',
+				operationId: 'deleteBoardCategory',
+				parameters: [{ $ref: '#/components/parameters/categoryId' }],
+				responses: {
+					'200': {
+						description: 'Deleted',
+						content: {
+							'application/json': { example: { success: true } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			}
 		}
 	},
 	tags: [
@@ -828,7 +1099,9 @@ const spec = {
 		{ name: 'Cards', description: 'Task cards on boards' },
 		{ name: 'Assignees', description: 'Card user assignments' },
 		{ name: 'Subtasks', description: 'Card subtasks / checklist items' },
-		{ name: 'Comments', description: 'Card discussion comments' }
+		{ name: 'Comments', description: 'Card discussion comments' },
+		{ name: 'Categories', description: 'Card categories (per-board tags for cards)' },
+		{ name: 'Board Categories', description: 'Dashboard categories for grouping boards' }
 	]
 };
 
