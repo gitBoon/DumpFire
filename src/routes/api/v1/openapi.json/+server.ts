@@ -827,7 +827,7 @@ const spec = {
 export const GET: RequestHandler = async () => {
 	return json(spec, {
 		headers: {
-			'Cache-Control': 'public, max-age=3600',
+			'Cache-Control': 'public, max-age=10',
 			'Access-Control-Allow-Origin': '*'
 		}
 	});
