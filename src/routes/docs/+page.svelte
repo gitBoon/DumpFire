@@ -481,9 +481,9 @@
 						</div>
 					</section>
 				{/if}
-			</main>
-		</div>
-	{/if}
+		</main>
+	</div>
+{/if}
 </div>
 
 <style>
@@ -603,7 +603,7 @@
 		color: var(--text-primary);
 	}
 
-	/* ── Docs Layout ──────────────────────────────── */
+	/* ── Docs Layout ────────────────────────────────── */
 	.docs-layout {
 		max-width: 1400px;
 		margin: 0 auto;

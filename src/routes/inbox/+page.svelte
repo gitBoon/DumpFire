@@ -198,14 +198,14 @@
 </svelte:head>
 
 <div class="inbox-page">
-	<header class="inbox-header">
-		<div class="inbox-header-left">
-			<a href="/" class="back-btn btn-ghost" title="Back to Dashboard">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-				</svg>
+	<header class="inbox-header glass">
+		<div class="inbox-header-inner">
+			<a href="/" class="header-logo" title="Back to DumpFire">
+				<span class="logo-fire">🔥</span>
+				<span class="logo-text">DumpFire</span>
 			</a>
-			<h1>📥 Inbox</h1>
+			<h1 class="header-title">📥 Inbox</h1>
+			<div class="header-spacer"></div>
 		</div>
 	</header>
 
@@ -448,15 +448,32 @@
 {/if}
 
 <style>
-	.inbox-page { min-height: 100vh; }
+	.inbox-page { min-height: 100vh; padding-top: 64px; }
 	.inbox-header {
-		display: flex; align-items: center; justify-content: space-between;
-		padding: var(--space-md) var(--space-xl);
-		border-bottom: 1px solid var(--glass-border);
+		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+		height: 64px; border-bottom: 1px solid var(--glass-border);
+		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
 	}
-	.inbox-header-left { display: flex; align-items: center; gap: var(--space-md); }
-	.inbox-header-left h1 { font-size: 1.25rem; }
-	.back-btn { padding: var(--space-sm); }
+	.inbox-header-inner {
+		max-width: 1400px; margin: 0 auto; height: 100%;
+		display: flex; align-items: center; justify-content: center;
+		padding: 0 var(--space-xl); gap: var(--space-lg); position: relative;
+	}
+	.header-logo {
+		position: absolute; left: var(--space-xl);
+		display: flex; align-items: center; gap: var(--space-sm);
+		text-decoration: none; color: var(--text-primary);
+		font-weight: 700; font-size: 1.1rem;
+	}
+	.logo-fire { font-size: 1.4rem; }
+	.header-title {
+		font-size: 1rem; font-weight: 700; color: var(--text-primary);
+		letter-spacing: -0.01em;
+	}
+	.header-spacer {
+		position: absolute; right: var(--space-xl);
+		width: 80px;
+	}
 	.inbox-content {
 		max-width: 800px; margin: 0 auto;
 		padding: var(--space-2xl);
