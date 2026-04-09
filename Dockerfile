@@ -39,6 +39,9 @@ RUN mkdir -p /app/data
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# IMPORTANT: Set ORIGIN to your actual public URL at runtime, e.g.:
+#   docker run -e ORIGIN=https://kanban.example.com ...
+# Leaving this as localhost will cause CSRF failures in production.
 ENV ORIGIN=http://localhost:3000
 ENV PROTOCOL_HEADER=X-Forwarded-Proto
 ENV HOST_HEADER=X-Forwarded-Host

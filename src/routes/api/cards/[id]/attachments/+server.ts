@@ -1,19 +1,34 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { cardAttachments } from '$lib/server/db/schema';
+import { cardAttachments, cards, columns } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { writeFile, mkdir } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { join, dirname } from 'path';
+import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import type { RequestHandler } from './$types';
 
 const DB_PATH = process.env.DB_PATH || 'dumpfire.db';
 const UPLOADS_DIR = join(dirname(DB_PATH), 'uploads');
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 
+/** Resolve the boardId for a given card. */
+function getCardBoardId(cardId: number): number | null {
+	const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, cardId)).get();
+	if (!card) return null;
+	const col = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, card.columnId)).get();
+	return col?.boardId ?? null;
+}
+
 /** GET — list attachments for a card */
-export const GET: RequestHandler = async ({ params }) => {
+export const GET: RequestHandler = async ({ params, locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
 	const cardId = Number(params.id);
+	const boardId = getCardBoardId(cardId);
+	if (!boardId) throw error(404, 'Card not found');
+	if (!canViewBoard(locals.user, boardId)) throw error(403, 'No access to this board');
+
 	const attachments = db.select().from(cardAttachments)
 		.where(eq(cardAttachments.cardId, cardId))
 		.all();
@@ -22,8 +37,12 @@ export const GET: RequestHandler = async ({ params }) => {
 
 /** POST — upload file attachment */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
 	const cardId = Number(params.id);
-	const user = locals.user!;
+	const boardId = getCardBoardId(cardId);
+	if (!boardId) throw error(404, 'Card not found');
+	if (!canEditBoard(locals.user, boardId)) throw error(403, 'No edit access to this board');
 
 	const formData = await request.formData();
 	const file = formData.get('file') as File | null;
@@ -45,7 +64,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		originalName: file.name,
 		mimeType: file.type || 'application/octet-stream',
 		sizeBytes: file.size,
-		uploadedBy: user.id
+		uploadedBy: locals.user.id
 	}).returning().get();
 
 	return json(attachment);

@@ -1,7 +1,7 @@
-import { json } from '@sveltejs/kit';
+import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { userXp, users } from '$lib/server/db/schema';
-import { eq, sql, ne } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 
 // GET all XP records (excluding superadmin)
@@ -18,8 +18,12 @@ export const GET: RequestHandler = async () => {
 	return json(all);
 };
 
-// POST to award XP
-export const POST: RequestHandler = async ({ request }) => {
+// POST to award XP — admin only
+export const POST: RequestHandler = async ({ request, locals }) => {
+	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
+		throw error(403, 'Forbidden');
+	}
+
 	const { name, emoji, amount } = await request.json();
 	if (!name || !amount) return json({ error: 'Missing name or amount' }, { status: 400 });
 

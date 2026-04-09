@@ -90,7 +90,6 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 	let invited = false;
 
 	// If no password was provided and SMTP is ready, send invite
-	console.log('[USER CREATE] password:', !!password, 'smtpReady:', smtpReady);
 	if (!password && smtpReady) {
 		const token = crypto.randomUUID();
 		const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -100,7 +99,6 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 			.run();
 
 		const baseUrl = resolveBaseUrl(request, url);
-		console.log('[USER CREATE] Sending invite to', user.email, 'baseUrl:', baseUrl);
 		sendInviteEmail(user.email, user.username, token, baseUrl);
 		invited = true;
 	}

@@ -1,11 +1,13 @@
-import { json } from '@sveltejs/kit';
+import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { cardTemplates } from '$lib/server/db/schema';
 import { eq, or, isNull } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 
 /** GET — list templates (global + board-specific) */
-export const GET: RequestHandler = async ({ url }) => {
+export const GET: RequestHandler = async ({ url, locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
 	const boardId = url.searchParams.get('boardId');
 	let templates;
 	if (boardId) {
@@ -20,8 +22,9 @@ export const GET: RequestHandler = async ({ url }) => {
 
 /** POST — create a template */
 export const POST: RequestHandler = async ({ request, locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
 	const data = await request.json();
-	const user = locals.user!;
 
 	const template = db.insert(cardTemplates).values({
 		boardId: data.boardId || null,
@@ -31,7 +34,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		priority: data.priority || 'medium',
 		subtasksJson: JSON.stringify(data.subtasks || []),
 		labelsJson: JSON.stringify(data.labels || []),
-		createdBy: user.id
+		createdBy: locals.user.id
 	}).returning().get();
 
 	return json(template);

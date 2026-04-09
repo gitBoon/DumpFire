@@ -5,10 +5,16 @@
  * data. This captures everything automatically — no need to list tables.
  */
 
+import { error } from '@sveltejs/kit';
 import { sqlite, getDbPath } from '$lib/server/db';
 import { readFileSync, unlinkSync } from 'node:fs';
+import type { RequestHandler } from './$types';
 
-export async function GET() {
+export const GET: RequestHandler = async ({ locals }) => {
+	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
+		throw error(403, 'Forbidden');
+	}
+
 	const dbPath = getDbPath();
 	const backupPath = dbPath + '.export-temp';
 

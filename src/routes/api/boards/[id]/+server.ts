@@ -2,14 +2,31 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { boards, columns, cards } from '$lib/server/db/schema';
 import { eq, inArray } from 'drizzle-orm';
+import { canEditBoard, getBoardRole } from '$lib/server/board-access';
 import type { RequestHandler } from './$types';
 
-export const PUT: RequestHandler = async ({ params, request }) => {
+export const PUT: RequestHandler = async ({ params, request, locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
 	const id = Number(params.id);
+
+	if (!canEditBoard(locals.user, id)) {
+		throw error(403, 'No edit access to this board');
+	}
+
 	const data = await request.json();
+
+	// Whitelist allowed fields to prevent mass assignment
+	const updateData: Record<string, unknown> = {};
+	const allowed = ['name', 'emoji', 'isPublic', 'categoryId'];
+	for (const key of allowed) {
+		if (key in data) updateData[key] = data[key];
+	}
+	updateData.updatedAt = new Date().toISOString();
+
 	const updated = db
 		.update(boards)
-		.set({ ...data, updatedAt: new Date().toISOString() })
+		.set(updateData)
 		.where(eq(boards.id, id))
 		.returning()
 		.get();
@@ -17,8 +34,17 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 	return json(updated);
 };
 
-export const DELETE: RequestHandler = async ({ params }) => {
+export const DELETE: RequestHandler = async ({ params, locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
 	const id = Number(params.id);
+
+	// Only owners and admins can delete boards
+	const role = getBoardRole(locals.user, id);
+	if (role !== 'owner' && role !== 'admin') {
+		throw error(403, 'Only board owners and admins can delete boards');
+	}
+
 	deleteBoardCascade(id);
 	return json({ success: true });
 };

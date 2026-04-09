@@ -8,6 +8,7 @@
 	 */
 	import SubtaskModal from './SubtaskModal.svelte';
 	import { marked } from 'marked';
+	import DOMPurify from 'dompurify';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
@@ -620,7 +621,7 @@
 			{#if descPreview}
 				<div class="desc-preview markdown-body">
 					{#if description.trim()}
-						{@html marked(description)}
+						{@html DOMPurify.sanitize(marked(description) as string)}
 					{:else}
 						<p class="desc-empty">Nothing to preview</p>
 					{/if}
@@ -909,7 +910,7 @@
 										<button class="btn-ghost small" onclick={() => (editingCommentId = null)}>Cancel</button>
 									</div>
 								{:else}
-									<div class="comment-content markdown-body">{@html marked(comment.content)}</div>
+									<div class="comment-content markdown-body">{@html DOMPurify.sanitize(marked(comment.content) as string)}</div>
 									{#if currentUser && (currentUser.id === comment.userId || currentUser.role === 'admin' || currentUser.role === 'superadmin')}
 										<div class="comment-actions">
 											{#if currentUser.id === comment.userId}
