@@ -1,8 +1,9 @@
 import { runMigrations } from '$lib/server/db/migrate';
-import { validateSession, SESSION_COOKIE_NAME, hasAnyUsers, cleanExpiredSessions } from '$lib/server/auth';
+import { validateSession, SESSION_COOKIE_NAME, hasAnyUsers, cleanExpiredSessions, validateApiKey } from '$lib/server/auth';
 import { initBackupScheduler } from '$lib/server/backup';
-import { redirect, type Handle } from '@sveltejs/kit';
+import { json, redirect, type Handle } from '@sveltejs/kit';
 import { createLogger } from '$lib/server/logger';
+import { checkRateLimit } from '$lib/server/rate-limit';
 
 const log = createLogger('HTTP');
 
@@ -16,25 +17,71 @@ cleanExpiredSessions();
 initBackupScheduler();
 
 /** Public routes that don't require authentication. */
-const PUBLIC_ROUTES = ['/login', '/setup', '/invite', '/request', '/api/requests'];
+const PUBLIC_ROUTES = ['/login', '/setup', '/invite', '/request', '/api/requests', '/docs', '/api/v1/openapi.json'];
 
 /** Routes restricted to admin/superadmin only. */
 const ADMIN_ROUTES = ['/admin'];
 
 export const handle: Handle = async ({ event, resolve }) => {
-	// ── 1. Read session cookie and attach user to locals ──────────────
+	const path = event.url.pathname;
+
+	// Allow static assets to pass through immediately
+	if (path.startsWith('/_app/') || path.startsWith('/favicon')) {
+		return await resolve(event);
+	}
+
+	// ── 1a. API v1 bearer-token authentication ───────────────────────
+	if (path.startsWith('/api/v1/')) {
+		// Public API endpoints (no auth required)
+		if (path === '/api/v1/openapi.json') {
+			return await resolve(event);
+		}
+
+		const authHeader = event.request.headers.get('authorization');
+		if (!authHeader || !authHeader.startsWith('Bearer ')) {
+			return json({ error: 'Missing or invalid Authorization header. Use: Bearer <api_key>' }, { status: 401 });
+		}
+
+		const apiKey = authHeader.substring(7);
+		if (!apiKey) {
+			return json({ error: 'API key is empty' }, { status: 401 });
+		}
+
+		// Rate limit by API key prefix (60 requests per minute)
+		const keyId = apiKey.substring(0, 11);
+		const rl = checkRateLimit(`apikey:${keyId}`, 60, 60 * 1000);
+		if (rl.limited) {
+			return json(
+				{ error: 'Rate limit exceeded', retryAfterSecs: rl.retryAfterSecs },
+				{ status: 429, headers: { 'Retry-After': String(rl.retryAfterSecs) } }
+			);
+		}
+
+		const user = validateApiKey(apiKey);
+		if (!user) {
+			return json({ error: 'Invalid or expired API key' }, { status: 401 });
+		}
+
+		event.locals.user = user;
+
+		let response: Response;
+		try {
+			response = await resolve(event);
+		} catch (err) {
+			throw err;
+		}
+
+		// Security headers
+		response.headers.set('X-Content-Type-Options', 'nosniff');
+		return response;
+	}
+
+	// ── 1b. Read session cookie and attach user to locals ─────────────
 	const token = event.cookies.get(SESSION_COOKIE_NAME);
 	if (token) {
 		event.locals.user = validateSession(token);
 	} else {
 		event.locals.user = null;
-	}
-
-	const path = event.url.pathname;
-
-	// Allow static assets and API routes for auth to pass through
-	if (path.startsWith('/_app/') || path.startsWith('/favicon')) {
-		return await resolve(event);
 	}
 
 	// ── 2. Setup guard — if no users exist, force /setup ─────────────
@@ -99,4 +146,3 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	return response;
 };
-

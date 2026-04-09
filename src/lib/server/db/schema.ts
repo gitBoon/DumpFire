@@ -385,6 +385,26 @@ export const requestMessages = sqliteTable('request_messages', {
 
 export type RequestMessage = typeof requestMessages.$inferSelect;
 
+// ─── API Keys ────────────────────────────────────────────────────────────────
+
+export const apiKeys = sqliteTable('api_keys', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	keyHash: text('key_hash').notNull().unique(),
+	keyPrefix: text('key_prefix').notNull(),
+	name: text('name').notNull(),
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	lastUsedAt: text('last_used_at'),
+	expiresAt: text('expires_at'),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export type ApiKey = typeof apiKeys.$inferSelect;
+export type NewApiKey = typeof apiKeys.$inferInsert;
+
 // ─── Backup Log ──────────────────────────────────────────────────────────────
 
 export const backupLog = sqliteTable('backup_log', {
