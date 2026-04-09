@@ -76,3 +76,48 @@ export function playCompleteSound(): void {
 	osc2.start(ctx.currentTime + 0.1);
 	osc2.stop(ctx.currentTime + 0.25);
 }
+
+/**
+ * A gentle sparkle chime when a card is created — three rising notes.
+ */
+export function playCreateSound(): void {
+	const ctx = getAudioContext();
+	if (!ctx) return;
+
+	const notes = [440, 554.37, 659.25]; // A4, C#5, E5 — bright major triad
+	notes.forEach((freq, i) => {
+		const osc = ctx.createOscillator();
+		const gain = ctx.createGain();
+		osc.connect(gain);
+		gain.connect(ctx.destination);
+		osc.type = 'sine';
+		const t = ctx.currentTime + i * 0.07;
+		osc.frequency.setValueAtTime(freq, t);
+		gain.gain.setValueAtTime(0.001, ctx.currentTime);
+		gain.gain.setValueAtTime(0.08, t);
+		gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+		osc.start(t);
+		osc.stop(t + 0.18);
+	});
+}
+
+/**
+ * A soft swoosh sound when a card is moved between columns.
+ */
+export function playNotifySound(): void {
+	const ctx = getAudioContext();
+	if (!ctx) return;
+
+	const osc = ctx.createOscillator();
+	const gain = ctx.createGain();
+	osc.connect(gain);
+	gain.connect(ctx.destination);
+	osc.type = 'sine';
+	osc.frequency.setValueAtTime(350, ctx.currentTime);
+	osc.frequency.exponentialRampToValueAtTime(700, ctx.currentTime + 0.12);
+	osc.frequency.exponentialRampToValueAtTime(500, ctx.currentTime + 0.2);
+	gain.gain.setValueAtTime(0.1, ctx.currentTime);
+	gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
+	osc.start(ctx.currentTime);
+	osc.stop(ctx.currentTime + 0.22);
+}

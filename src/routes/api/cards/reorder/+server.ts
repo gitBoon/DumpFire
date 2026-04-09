@@ -59,6 +59,11 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 		}
 	}
 
+	// Track the most recent cross-column move for toast notification
+	let movedCardTitle = '';
+	let movedFromCol = '';
+	let movedToCol = '';
+
 	for (const update of updates) {
 		// Track column changes for notifications
 		const existingCard = db.select().from(cards).where(eq(cards.id, update.id)).get();
@@ -74,6 +79,9 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 			const fromCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, existingCard.columnId)).get();
 			const toCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, update.columnId)).get();
 			if (fromCol && toCol) {
+				movedCardTitle = existingCard.title;
+				movedFromCol = fromCol.title;
+				movedToCol = toCol.title;
 				const baseUrl = resolveBaseUrl(request, url);
 				notifyCardMoved(boardId, update.id, existingCard.title, userName, fromCol.title, toCol.title, baseUrl);
 			}
@@ -89,7 +97,15 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 	}
 
 	if (boardId) {
-		emit(boardId, 'update', { type: 'card' });
+		emit(boardId, 'update', {
+			type: 'card',
+			action: movedCardTitle ? 'moved' : 'reorder',
+			cardTitle: movedCardTitle || undefined,
+			fromColumn: movedFromCol || undefined,
+			toColumn: movedToCol || undefined,
+			userName,
+			userEmoji
+		});
 		// Only award XP on FIRST completion (not re-completions)
 		if (movedToComplete && userName && !cardAlreadyCompleted) {
 			// Award XP based on priority

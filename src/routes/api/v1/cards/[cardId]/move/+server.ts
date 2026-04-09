@@ -111,7 +111,16 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		}
 	}
 
-	emit(boardId, 'update', { type: 'card' });
+	const fromCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, existingCard.columnId)).get();
+	emit(boardId, 'update', {
+		type: 'card',
+		action: isMovingColumn ? 'moved' : 'reorder',
+		cardTitle: existingCard.title,
+		fromColumn: fromCol?.title,
+		toColumn: targetCol.title,
+		userName: locals.user.username,
+		userEmoji: locals.user.emoji || '\ud83d\udc64'
+	});
 
 	// Return the moved card with column info
 	const movedCard = db.select().from(cards).where(eq(cards.id, cardId)).get();
