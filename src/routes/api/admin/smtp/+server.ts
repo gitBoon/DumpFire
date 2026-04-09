@@ -1,6 +1,9 @@
 import { json, error } from '@sveltejs/kit';
 import { getSmtpConfig, saveSmtpConfig, sendTestEmail, getAppUrl, setAppUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
+import { createLogger } from '$lib/server/logger';
+
+const log = createLogger('SMTP');
 
 /** GET — Return current SMTP config (password masked). */
 export const GET: RequestHandler = async ({ locals }) => {
@@ -64,6 +67,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		await sendTestEmail(recipient);
 		return json({ success: true, message: `Test email sent to ${recipient}` });
 	} catch (err: any) {
+		log.error(`Test email to ${recipient} failed: ${err.message}`);
 		throw error(500, `Failed to send test email: ${err.message}`);
 	}
 };

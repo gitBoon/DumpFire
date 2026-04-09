@@ -13,6 +13,9 @@ import Database from 'better-sqlite3';
 import { writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RequestHandler } from './$types';
+import { createLogger } from '$lib/server/logger';
+
+const log = createLogger('IMPORT');
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
@@ -136,6 +139,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				});
 			} catch (err: any) {
 				try { unlinkSync(tempPath); } catch {}
+				log.critical(`Database restore failed: ${err.message}`, { errors });
 				return json({ error: `Restore failed: ${err.message}`, errors }, { status: 500 });
 			}
 		}
@@ -331,6 +335,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	} catch (error) {
 		try { sqlite.pragma('foreign_keys = ON'); } catch {}
 		const msg = error instanceof Error ? error.message : 'Unknown error';
+		log.critical(`Legacy JSON import failed: ${msg}`, error);
 		return json({ error: `Import failed: ${msg}` }, { status: 500 });
 	}
 };

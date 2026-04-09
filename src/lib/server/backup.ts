@@ -11,6 +11,9 @@ import { eq, desc } from 'drizzle-orm';
 import { createDestination, type DestinationConfig } from './backup-destinations';
 import { sendEmail, isSmtpConfigured } from './email';
 import { readFileSync, unlinkSync } from 'node:fs';
+import { createLogger } from './logger';
+
+const log = createLogger('BACKUP');
 
 // ─── Settings Helpers ────────────────────────────────────────────────────────
 
@@ -160,14 +163,14 @@ async function cleanupRetention(config: DestinationConfig, retention: number): P
 			for (const filename of toDelete) {
 				try {
 					await dest.delete(filename);
-					console.log(`[BACKUP] Retention: deleted ${filename} from ${config.name}`);
+					log.warn(`Retention cleanup: deleted ${filename} from ${config.name}`);
 				} catch (err) {
-					console.error(`[BACKUP] Retention: failed to delete ${filename}:`, err);
+					log.error(`Retention cleanup: failed to delete ${filename}`, err);
 				}
 			}
 		}
 	} catch (err) {
-		console.error(`[BACKUP] Retention cleanup failed for ${config.name}:`, err);
+		log.error(`Retention cleanup failed for ${config.name}`, err);
 	}
 }
 
@@ -233,7 +236,7 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 				durationMs
 			});
 
-			console.log(`[BACKUP] ✅ ${destConfig.name}: ${filename} (${durationMs}ms)`);
+			log.warn(`Backup succeeded: ${destConfig.name} → ${filename} (${durationMs}ms, ${(buffer.length / 1024).toFixed(1)} KB)`);
 		} catch (err: any) {
 			const durationMs = Date.now() - start;
 			const errMsg = err.message || 'Unknown error';
@@ -255,7 +258,7 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 				durationMs
 			});
 
-			console.error(`[BACKUP] ❌ ${destConfig.name}: ${errMsg}`);
+			log.error(`Backup failed: ${destConfig.name} → ${errMsg}`);
 
 			// Send failure notification if configured
 			if (config.notifyOnFailure && config.notifyEmail && isSmtpConfigured()) {
@@ -276,7 +279,7 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 						</div>`
 					);
 				} catch {
-					console.error('[BACKUP] Failed to send failure notification email');
+					log.error('Failed to send backup failure notification email');
 				}
 			}
 		}
@@ -357,14 +360,14 @@ export function initBackupScheduler(): void {
 			const now = new Date();
 
 			if (isBackupDue(config, now)) {
-				console.log(`[BACKUP] Scheduled backup triggered (${config.schedule} at ${config.scheduleTime || 'now'})`);
+				log.warn(`Scheduled backup triggered (${config.schedule} at ${config.scheduleTime || 'now'})`);
 				lastBackupTime = now.getTime();
 				await runBackup();
 			}
 		} catch (err) {
-			console.error('[BACKUP] Scheduler error:', err);
+			log.error('Scheduler error', err);
 		}
 	}, 60_000);
 
-	console.log('[BACKUP] Scheduler initialized');
+	log.warn('Backup scheduler initialized');
 }

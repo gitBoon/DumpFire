@@ -2,12 +2,17 @@ import { json, error } from '@sveltejs/kit';
 import { sqlite } from '$lib/server/db';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import type { RequestHandler } from './$types';
+import { createLogger } from '$lib/server/logger';
+
+const log = createLogger('ADMIN');
 
 /** POST — Nuclear reset: purge ALL data and redirect to setup. */
 export const POST: RequestHandler = async ({ locals, cookies }) => {
 	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
 		throw error(403, 'Forbidden');
 	}
+
+	log.critical(`Nuclear reset initiated by user ${locals.user.username} (ID: ${locals.user.id})`);
 
 	// Order matters due to foreign key constraints — delete children first
 	const tables = [
@@ -34,8 +39,8 @@ export const POST: RequestHandler = async ({ locals, cookies }) => {
 	for (const table of tables) {
 		try {
 			sqlite.exec(`DELETE FROM ${table}`);
-		} catch {
-			// Table might not exist yet, skip
+		} catch (e) {
+			log.warn(`Reset: table ${table} could not be cleared`, e);
 		}
 	}
 

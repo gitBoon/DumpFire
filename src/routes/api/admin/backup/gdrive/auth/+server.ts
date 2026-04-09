@@ -13,6 +13,9 @@ import { json, error } from '@sveltejs/kit';
 import { google } from 'googleapis';
 import { getBackupConfig, saveBackupConfig } from '$lib/server/backup';
 import type { RequestHandler } from './$types';
+import { createLogger } from '$lib/server/logger';
+
+const log = createLogger('GDRIVE');
 
 const SCOPES = ['https://www.googleapis.com/auth/drive'];
 
@@ -81,6 +84,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 		return json({ success: true, message: 'Google Drive connected successfully!' });
 	} catch (err: any) {
+		log.error(`OAuth token exchange failed for destination "${destName}": ${err.message}`);
 		return json({ success: false, message: err.message || 'Failed to exchange auth code' });
 	}
 };

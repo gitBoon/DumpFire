@@ -2,6 +2,9 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { getUserByUsername, getUserByEmail, verifyPassword, createSession, setSessionCookie } from '$lib/server/auth';
 import { checkRateLimit, resetRateLimit } from '$lib/server/rate-limit';
+import { createLogger } from '$lib/server/logger';
+
+const log = createLogger('AUTH');
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.user) {
@@ -28,6 +31,7 @@ export const actions: Actions = {
 		const clientIp = getClientAddress();
 		const { limited, retryAfterSecs } = checkRateLimit(`login:${clientIp}`, 10, 15 * 60 * 1000);
 		if (limited) {
+			log.warn(`Rate limit hit for IP ${clientIp} (login attempts)`);
 			return fail(429, {
 				error: `Too many login attempts. Please try again in ${Math.ceil(retryAfterSecs / 60)} minute(s).`,
 				identity
@@ -40,10 +44,12 @@ export const actions: Actions = {
 			: getUserByUsername(identity);
 
 		if (!user) {
+			log.warn(`Failed login attempt for "${identity}" from IP ${clientIp}`);
 			return fail(400, { error: 'Invalid username/email or password', identity });
 		}
 
 		if (!verifyPassword(password, user.passwordHash)) {
+			log.warn(`Failed login attempt for "${identity}" from IP ${clientIp} (bad password)`);
 			return fail(400, { error: 'Invalid username/email or password', identity });
 		}
 
