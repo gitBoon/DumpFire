@@ -239,6 +239,52 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' }
 				}
+			},
+			post: {
+				tags: ['Boards'],
+				summary: 'Create a board',
+				description: 'Creates a new board with default columns (To Do, On Hold, In Progress, Complete). The API key\'s user is automatically added as board owner. To create a sub-board linked to a card, pass parentCardId.',
+				operationId: 'createBoard',
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['name'],
+								properties: {
+									name: { type: 'string', maxLength: 200, description: 'Board name' },
+									emoji: { type: 'string', description: 'Board emoji icon (default: 📋)' },
+									parentCardId: { type: 'integer', nullable: true, description: 'ID of a card to link this board to as a sub-board' }
+								}
+							},
+							examples: {
+								basic: {
+									summary: 'Create a standalone board',
+									value: { name: 'Sprint 43', emoji: '🚀' }
+								},
+								subBoard: {
+									summary: 'Create a sub-board linked to a card',
+									value: { name: 'Sub-project Tasks', emoji: '📂', parentCardId: 10 }
+								}
+							}
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'Board created with default columns',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/BoardDetail' }
+							}
+						}
+					},
+					'400': { description: 'Invalid input (missing name or name too long)' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to parent card\'s board (sub-board only)' },
+					'404': { description: 'Parent card not found (sub-board only)' }
+				}
 			}
 		},
 
@@ -393,10 +439,20 @@ const spec = {
 									onHoldNote: { type: 'string' },
 									businessValue: { type: 'string' },
 									pinned: { type: 'boolean' },
-									coverUrl: { type: 'string' }
+									coverUrl: { type: 'string' },
+									archivedAt: { type: 'string', nullable: true, description: 'Set to null to restore an archived card' }
 								}
 							},
-							example: { priority: 'critical', dueDate: '2026-04-12' }
+							examples: {
+								update: {
+									summary: 'Update priority and due date',
+									value: { priority: 'critical', dueDate: '2026-04-12' }
+								},
+								restore: {
+									summary: 'Restore an archived card',
+									value: { archivedAt: null }
+								}
+							}
 						}
 					}
 				},
