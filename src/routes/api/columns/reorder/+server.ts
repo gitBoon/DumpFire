@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { columns } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
-import { getBoardRole } from '$lib/server/board-access';
+import { canEditBoard } from '$lib/server/board-access';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ request, locals }) => {
@@ -11,12 +11,9 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 
 	const { updates, boardId } = await request.json();
 
-	// Verify board access — only owners/admins can reorder columns
-	if (boardId) {
-		const role = getBoardRole(locals.user, boardId);
-		if (role !== 'admin' && role !== 'owner') {
-			throw error(403, 'Only board owners and admins can reorder columns');
-		}
+	// Verify board access — editors, owners, and admins can reorder columns
+	if (boardId && !canEditBoard(locals.user, boardId)) {
+		throw error(403, 'No edit access to this board');
 	}
 
 	for (const update of updates) {
