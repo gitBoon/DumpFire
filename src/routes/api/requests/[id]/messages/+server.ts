@@ -6,15 +6,21 @@ import { notifyRequesterMessage, notifyAdminMessage } from '$lib/server/notifica
 import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
-/** GET — Fetch all messages for a request. */
-export const GET: RequestHandler = async ({ params, url }) => {
+/** GET — Fetch all messages for a request. Requires auth or valid requester email. */
+export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const requestId = Number(params.id);
-
-	// Allow access if authenticated OR via email token
 	const emailToken = url.searchParams.get('email');
 
 	const request = db.select().from(taskRequests).where(eq(taskRequests.id, requestId)).get();
 	if (!request) throw error(404, 'Request not found');
+
+	// Access control: must be authenticated OR provide the correct requester email
+	const isAuthed = !!locals.user;
+	const isRequester = emailToken && request.requesterEmail && emailToken === request.requesterEmail;
+
+	if (!isAuthed && !isRequester) {
+		throw error(403, 'Access denied');
+	}
 
 	const messages = db.select().from(requestMessages)
 		.where(eq(requestMessages.requestId, requestId))
@@ -28,12 +34,14 @@ export const GET: RequestHandler = async ({ params, url }) => {
 export const POST: RequestHandler = async ({ params, request: req, locals, url }) => {
 	const requestId = Number(params.id);
 	const body = await req.json();
-	const { message, senderType, senderName: bodyName, email: bodyEmail } = body;
+	const { message, senderType, email: bodyEmail } = body;
 
 	if (!message?.trim()) throw error(400, 'Message is required');
+	if (message.trim().length > 5000) throw error(400, 'Message too long (max 5000 characters)');
 
 	const taskReq = db.select().from(taskRequests).where(eq(taskRequests.id, requestId)).get();
 	if (!taskReq) throw error(404, 'Request not found');
+	if (taskReq.status !== 'pending') throw error(400, 'Request is already resolved');
 
 	let sType: string;
 	let sName: string;

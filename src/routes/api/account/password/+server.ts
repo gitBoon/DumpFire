@@ -1,12 +1,12 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { users } from '$lib/server/db/schema';
+import { users, sessions } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { hashPassword, verifyPassword } from '$lib/server/auth';
+import { hashPassword, verifyPassword, createSession, setSessionCookie, SESSION_COOKIE_NAME } from '$lib/server/auth';
 import type { RequestHandler } from './$types';
 
 /** PUT — Change own password. Requires current password verification. */
-export const PUT: RequestHandler = async ({ request, locals }) => {
+export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const { currentPassword, newPassword } = await request.json();
@@ -29,6 +29,13 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 		.set({ passwordHash: newHash })
 		.where(eq(users.id, locals.user.id))
 		.run();
+
+	// Invalidate all existing sessions for this user
+	db.delete(sessions).where(eq(sessions.userId, locals.user.id)).run();
+
+	// Create a fresh session so the current user stays logged in
+	const newToken = createSession(locals.user.id);
+	setSessionCookie(cookies, newToken);
 
 	return json({ success: true });
 };

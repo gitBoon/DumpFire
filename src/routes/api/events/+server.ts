@@ -1,12 +1,16 @@
 import type { RequestHandler } from './$types';
+import { error } from '@sveltejs/kit';
 import { subscribeGlobal } from '$lib/server/events';
 
 /**
  * Global SSE endpoint — streams events from ALL boards.
  * Used by the All Tasks page to receive live updates without
  * needing to know which specific boards are being modified.
+ * Requires authentication since it exposes activity across all boards.
  */
-export const GET: RequestHandler = async () => {
+export const GET: RequestHandler = async ({ locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
 	const stream = new ReadableStream({
 		start(controller) {
 			const encoder = new TextEncoder();

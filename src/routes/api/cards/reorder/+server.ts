@@ -1,14 +1,26 @@
-import { json } from '@sveltejs/kit';
+import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { cards, columns, userXp } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
+import { canEditBoard } from '$lib/server/board-access';
 import { notifyCardMoved } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
-export const PUT: RequestHandler = async ({ request, url }) => {
-	const { updates, boardId, userName, userEmoji } = await request.json();
+export const PUT: RequestHandler = async ({ request, url, locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
+	const { updates, boardId } = await request.json();
+
+	// Use authenticated user identity — never trust client-supplied userName
+	const userName = locals.user.username;
+	const userEmoji = locals.user.emoji || '👤';
+
+	// Verify board access
+	if (boardId && !canEditBoard(locals.user, boardId)) {
+		throw error(403, 'No edit access to this board');
+	}
 
 	// Snapshot old column assignments to detect moves to Complete
 	let movedToComplete = false;
@@ -63,7 +75,7 @@ export const PUT: RequestHandler = async ({ request, url }) => {
 			const toCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, update.columnId)).get();
 			if (fromCol && toCol) {
 				const baseUrl = resolveBaseUrl(request, url);
-				notifyCardMoved(boardId, update.id, existingCard.title, userName || 'Someone', fromCol.title, toCol.title, baseUrl);
+				notifyCardMoved(boardId, update.id, existingCard.title, userName, fromCol.title, toCol.title, baseUrl);
 			}
 		}
 	}

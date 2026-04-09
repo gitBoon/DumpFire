@@ -4,6 +4,7 @@ import { taskRequests, users, teams, teamMembers, cards, columns } from '$lib/se
 import { eq, and, inArray, or, desc } from 'drizzle-orm';
 import { notifyTaskRequest } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
+import { checkRateLimit } from '$lib/server/rate-limit';
 import type { RequestHandler } from './$types';
 
 /** GET — Returns requests targeted at the current user or their teams. */
@@ -67,13 +68,31 @@ export const GET: RequestHandler = async ({ locals }) => {
 };
 
 /** POST — Create a new task request. Works authed or unauthed. */
-export const POST: RequestHandler = async ({ request, locals, url }) => {
+export const POST: RequestHandler = async ({ request, locals, url, getClientAddress }) => {
+	// Rate limit unauthenticated submissions — 5 per 15 minutes per IP
+	if (!locals.user) {
+		const clientIp = getClientAddress();
+		const { limited, retryAfterSecs } = checkRateLimit(`request:${clientIp}`, 5, 15 * 60 * 1000);
+		if (limited) {
+			throw error(429, `Too many requests. Try again in ${Math.ceil(retryAfterSecs / 60)} minute(s).`);
+		}
+	}
+
 	const body = await request.json();
 	const { targetType, targetId, title, description, priority, requesterName, requesterEmail, businessValue } = body;
 
 	if (!title?.trim()) throw error(400, 'Title is required');
 	if (!targetType || !targetId) throw error(400, 'Target is required');
 	if (!['user', 'team'].includes(targetType)) throw error(400, 'Invalid target type');
+
+	// Input length limits
+	if (title.length > 500) throw error(400, 'Title too long (max 500 chars)');
+	if (description && description.length > 10000) throw error(400, 'Description too long (max 10000 chars)');
+	if (businessValue && businessValue.length > 5000) throw error(400, 'Business value too long (max 5000 chars)');
+
+	// Validate priority
+	const validPriorities = ['low', 'medium', 'high', 'critical'];
+	const safePriority = validPriorities.includes(priority) ? priority : 'medium';
 
 	// Validate target exists
 	if (targetType === 'team') {
@@ -89,7 +108,7 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 		targetId,
 		title: title.trim(),
 		description: description || '',
-		priority: priority || 'medium',
+		priority: safePriority,
 		businessValue: businessValue || '',
 		requesterName: locals.user ? locals.user.username : (requesterName?.trim() || 'Anonymous'),
 		requesterEmail: locals.user ? locals.user.email : (requesterEmail?.trim() || null),
@@ -98,7 +117,7 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 
 	const name = locals.user ? locals.user.username : (requesterName?.trim() || 'Anonymous');
 	const baseUrl = resolveBaseUrl(request, url);
-	notifyTaskRequest(targetType, targetId, title.trim(), name, priority || 'medium', baseUrl);
+	notifyTaskRequest(targetType, targetId, title.trim(), name, safePriority, baseUrl);
 
 	return json(result, { status: 201 });
 };

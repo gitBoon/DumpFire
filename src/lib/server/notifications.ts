@@ -11,6 +11,16 @@ import { db } from './db';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams } from './db/schema';
 import { eq, inArray } from 'drizzle-orm';
 
+/** Escape HTML entities to prevent injection in email templates. */
+function esc(str: string): string {
+	return str
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#039;');
+}
+
 // ─── Notification Preferences ────────────────────────────────────────────────
 
 type NotifPrefs = Record<string, boolean>;
@@ -120,14 +130,14 @@ export function notifyCardCreated(boardId: number, cardId: number, cardTitle: st
 	const boardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
 
 	const details = getCardDetails(cardId);
-	const descBlock = details.description ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Description:</strong> ${details.description.length > 200 ? details.description.slice(0, 200) + '…' : details.description}</p>` : '';
-	const bvBlock = details.businessValue ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Business Value:</strong> ${details.businessValue.length > 200 ? details.businessValue.slice(0, 200) + '…' : details.businessValue}</p>` : '';
+	const descBlock = details.description ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Description:</strong> ${esc(details.description.length > 200 ? details.description.slice(0, 200) + '…' : details.description)}</p>` : '';
+	const bvBlock = details.businessValue ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Business Value:</strong> ${esc(details.businessValue.length > 200 ? details.businessValue.slice(0, 200) + '…' : details.businessValue)}</p>` : '';
 
 	const html = emailTemplate('New Card Created', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #6366f1;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${cardTitle}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
 			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">
-				Created by <strong>${creatorName}</strong> in <strong>${boardName}</strong>
+				Created by <strong>${esc(creatorName)}</strong> in <strong>${esc(boardName)}</strong>
 			</p>
 			${descBlock}
 			${bvBlock}
@@ -152,11 +162,11 @@ export function notifyCardMoved(boardId: number, cardId: number, cardTitle: stri
 
 	const html = emailTemplate('Card Moved', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #f59e0b;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${cardTitle}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
 			<p style="margin: 0; font-size: 13px; color: #475569;">
-				<strong>${moverName}</strong> moved this card from <strong>${fromColumn}</strong> → <strong>${toColumn}</strong>
+				<strong>${esc(moverName)}</strong> moved this card from <strong>${esc(fromColumn)}</strong> → <strong>${esc(toColumn)}</strong>
 			</p>
-			<p style="margin: 4px 0 16px; font-size: 12px; color: #64748b;">Board: ${boardName}</p>
+			<p style="margin: 4px 0 16px; font-size: 12px; color: #64748b;">Board: ${esc(boardName)}</p>
 			<a href="${boardUrl}" style="display: inline-block; padding: 8px 16px; background: #f59e0b; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a>
 		</div>
 	`);
@@ -179,14 +189,14 @@ export function notifyUserAssigned(boardId: number, cardId: number, cardTitle: s
 	const boardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
 
 	const details = getCardDetails(cardId);
-	const descBlock = details.description ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Description:</strong> ${details.description.length > 200 ? details.description.slice(0, 200) + '…' : details.description}</p>` : '';
-	const bvBlock = details.businessValue ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Business Value:</strong> ${details.businessValue.length > 200 ? details.businessValue.slice(0, 200) + '…' : details.businessValue}</p>` : '';
+	const descBlock = details.description ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Description:</strong> ${esc(details.description.length > 200 ? details.description.slice(0, 200) + '…' : details.description)}</p>` : '';
+	const bvBlock = details.businessValue ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Business Value:</strong> ${esc(details.businessValue.length > 200 ? details.businessValue.slice(0, 200) + '…' : details.businessValue)}</p>` : '';
 
 	const html = emailTemplate('You\'ve Been Assigned', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #10b981;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${cardTitle}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
 			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">
-				<strong>${assignerName}</strong> assigned you to this card in <strong>${boardName}</strong>
+				<strong>${esc(assignerName)}</strong> assigned you to this card in <strong>${esc(boardName)}</strong>
 			</p>
 			${descBlock}
 			${bvBlock}
@@ -204,7 +214,7 @@ export function sendInviteEmail(email: string, username: string, inviteToken: st
 	const inviteUrl = `${baseUrl}/invite/${inviteToken}`;
 	const html = emailTemplate('Welcome to DumpFire!', `
 		<p style="color: #334155; line-height: 1.6;">
-			Hi <strong style="color: #0f172a;">${username}</strong>, you've been invited to join DumpFire — a blazingly fast Kanban board.
+			Hi <strong style="color: #0f172a;">${esc(username)}</strong>, you've been invited to join DumpFire — a blazingly fast Kanban board.
 		</p>
 		<div style="text-align: center; margin: 24px 0;">
 			<a href="${inviteUrl}" style="display: inline-block; padding: 12px 32px; background: #6366f1; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
@@ -216,10 +226,8 @@ export function sendInviteEmail(email: string, username: string, inviteToken: st
 		</p>
 	`);
 
-	console.log('[INVITE] Sending invite email to', email, 'with URL', inviteUrl);
 	sendEmail(email, 'You\'re invited to DumpFire!', html)
-		.then(sent => console.log('[INVITE] Email sent:', sent))
-		.catch(err => console.error('[INVITE] Failed to send:', err));
+		.catch(err => console.error('[INVITE] Failed to send invite email:', err));
 }
 
 /** Notify a user when they are added to a board. */
@@ -234,9 +242,9 @@ export function notifyBoardShared(boardId: number, boardName: string, userEmail:
 
 	const html = emailTemplate('Board Shared With You', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${boardName}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(boardName)}</p>
 			<p style="margin: 0 0 16px; font-size: 13px; color: #475569;">
-				<strong>${sharerName}</strong> shared this board with you as <strong style="text-transform: capitalize;">${role}</strong>
+				<strong>${esc(sharerName)}</strong> shared this board with you as <strong style="text-transform: capitalize;">${esc(role)}</strong>
 			</p>
 			<a href="${boardUrl}" style="display: inline-block; padding: 8px 16px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open Board</a>
 		</div>
@@ -277,9 +285,9 @@ export function notifyTaskRequest(targetType: string, targetId: number, title: s
 
 	const html = emailTemplate('New Task Request', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid ${borderColor};">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${title}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(title)}</p>
 			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
-				From <strong>${requesterName}</strong> · Priority: <strong style="text-transform: capitalize;">${priority}</strong>
+				From <strong>${esc(requesterName)}</strong> · Priority: <strong style="text-transform: capitalize;">${esc(priority)}</strong>
 			</p>
 			<p style="margin: 8px 0 16px; font-size: 12px; color: #64748b;">Review this request in your inbox to accept or reject it.</p>
 			<a href="${inboxUrl}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open Inbox</a>
@@ -332,12 +340,12 @@ export function notifyCommentAdded(boardId: number, cardId: number, cardTitle: s
 
 	const html = emailTemplate('New Comment', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #06b6d4;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${cardTitle}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
 			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
-				<strong>${commenterName}</strong> commented in <strong>${boardName}</strong>
+				<strong>${esc(commenterName)}</strong> commented in <strong>${esc(boardName)}</strong>
 			</p>
 			<blockquote style="margin: 12px 0 16px; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid #06b6d4; color: #334155; font-size: 13px; border-radius: 4px;">
-				${preview}
+				${esc(preview)}
 			</blockquote>
 			<a href="${boardUrl}" style="display: inline-block; padding: 8px 16px; background: #06b6d4; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a>
 		</div>
@@ -356,9 +364,9 @@ export function notifyRequesterAccepted(email: string, requestTitle: string, res
 
 	const html = emailTemplate('Request Accepted ✅', `
 		<div style="background: #f0fdf4; padding: 16px; border-radius: 8px; border-left: 4px solid #22c55e;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${requestTitle}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(requestTitle)}</p>
 			<p style="margin: 0; font-size: 13px; color: #475569;">
-				Great news! <strong>${resolverName}</strong> has accepted your request and created a task for it.
+				Great news! <strong>${esc(resolverName)}</strong> has accepted your request and created a task for it.
 			</p>
 		</div>
 	`);
@@ -371,14 +379,14 @@ export function notifyRequesterRejected(email: string, requestTitle: string, res
 	if (!isSmtpConfigured() || !email) return;
 
 	const reasonBlock = reason
-		? `<blockquote style="margin: 12px 0 0; padding: 8px 12px; background: #fef2f2; border-left: 3px solid #ef4444; color: #334155; font-size: 13px; border-radius: 4px;">${reason}</blockquote>`
+		? `<blockquote style="margin: 12px 0 0; padding: 8px 12px; background: #fef2f2; border-left: 3px solid #ef4444; color: #334155; font-size: 13px; border-radius: 4px;">${esc(reason)}</blockquote>`
 		: '';
 
 	const html = emailTemplate('Request Declined', `
 		<div style="background: #fef2f2; padding: 16px; border-radius: 8px; border-left: 4px solid #ef4444;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${requestTitle}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(requestTitle)}</p>
 			<p style="margin: 0; font-size: 13px; color: #475569;">
-				<strong>${resolverName}</strong> has declined this request.
+				<strong>${esc(resolverName)}</strong> has declined this request.
 			</p>
 			${reasonBlock}
 		</div>
@@ -396,12 +404,12 @@ export function notifyRequesterMessage(email: string, requestTitle: string, send
 
 	const html = emailTemplate('New Message on Your Request', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #6366f1;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${requestTitle}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(requestTitle)}</p>
 			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
-				<strong>${senderName}</strong> sent you a message:
+				<strong>${esc(senderName)}</strong> sent you a message:
 			</p>
 			<blockquote style="margin: 12px 0 16px; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid #6366f1; color: #334155; font-size: 13px; border-radius: 4px;">
-				${preview}
+				${esc(preview)}
 			</blockquote>
 			<a href="${replyUrl}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View & Reply</a>
 		</div>
@@ -436,12 +444,12 @@ export function notifyAdminMessage(targetType: string, targetId: number, request
 
 	const html = emailTemplate('Reply on Task Request', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #f59e0b;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${requestTitle}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(requestTitle)}</p>
 			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
-				<strong>${requesterName}</strong> replied:
+				<strong>${esc(requesterName)}</strong> replied:
 			</p>
 			<blockquote style="margin: 12px 0 16px; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid #f59e0b; color: #334155; font-size: 13px; border-radius: 4px;">
-				${preview}
+				${esc(preview)}
 			</blockquote>
 			<a href="${inboxUrl}" style="display: inline-block; padding: 8px 16px; background: #f59e0b; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open Inbox</a>
 		</div>

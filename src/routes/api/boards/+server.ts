@@ -1,17 +1,36 @@
-import { json } from '@sveltejs/kit';
+import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { boards, columns, boardMembers } from '$lib/server/db/schema';
-import { desc } from 'drizzle-orm';
+import { desc, inArray } from 'drizzle-orm';
+import { getAccessibleBoardIds } from '$lib/server/board-access';
 import type { RequestHandler } from './$types';
 
-export const GET: RequestHandler = async () => {
-	const allBoards = db.select().from(boards).orderBy(desc(boards.createdAt)).all();
+export const GET: RequestHandler = async ({ locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
+	const accessibleIds = getAccessibleBoardIds(locals.user);
+
+	let allBoards: (typeof boards.$inferSelect)[];
+	if (accessibleIds === null) {
+		// Admin — sees everything
+		allBoards = db.select().from(boards).orderBy(desc(boards.createdAt)).all();
+	} else if (accessibleIds.length === 0) {
+		allBoards = [];
+	} else {
+		allBoards = db.select().from(boards)
+			.where(inArray(boards.id, accessibleIds))
+			.orderBy(desc(boards.createdAt))
+			.all();
+	}
+
 	return json(allBoards);
 };
 
 export const POST: RequestHandler = async ({ request, locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
 	const { name, emoji, parentCardId, categoryId } = await request.json();
-	const userId = locals.user?.id || null;
+	const userId = locals.user.id;
 
 	const board = db
 		.insert(boards)
@@ -36,11 +55,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		.run();
 
 	// Auto-add the creator as board owner
-	if (userId) {
-		db.insert(boardMembers)
-			.values({ boardId: board.id, userId, role: 'owner' })
-			.run();
-	}
+	db.insert(boardMembers)
+		.values({ boardId: board.id, userId, role: 'owner' })
+		.run();
 
 	return json(board, { status: 201 });
 };

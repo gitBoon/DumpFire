@@ -14,7 +14,11 @@ import { writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RequestHandler } from './$types';
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ request, locals }) => {
+	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
+		return json({ error: 'Forbidden' }, { status: 403 });
+	}
+
 	try {
 		const contentType = request.headers.get('content-type') || '';
 

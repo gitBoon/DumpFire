@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { users } from '$lib/server/db/schema';
+import { users, sessions } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { hashPassword } from '$lib/server/auth';
 import type { RequestHandler } from './$types';
@@ -34,6 +34,11 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 	const passwordHash = hashPassword(password);
 	db.update(users).set({ passwordHash }).where(eq(users.id, userId)).run();
+
+	// Invalidate all existing sessions for this user (except self if changing own)
+	if (!isSelf) {
+		db.delete(sessions).where(eq(sessions.userId, userId)).run();
+	}
 
 	return json({ success: true });
 };

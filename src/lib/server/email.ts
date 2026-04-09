@@ -126,7 +126,7 @@ function createTransporter(config: SmtpConfig): Transporter {
 		port: config.port,
 		secure: useDirectSSL,
 		auth: config.user ? { user: config.user, pass: config.pass } : undefined,
-		tls: { rejectUnauthorized: false },
+		tls: { rejectUnauthorized: useDirectSSL || config.secure },
 		family: 4, // Force IPv4 — prevents ETIMEDOUT on IPv6 DNS resolution
 		name: 'dumpfire.app', // Explicit EHLO name prevents Google 421 rate-limit errors from local computer names
 		connectionTimeout: 10000,

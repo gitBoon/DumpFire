@@ -1,8 +1,17 @@
 import type { RequestHandler } from './$types';
 import { subscribe } from '$lib/server/events';
+import { error } from '@sveltejs/kit';
+import { canViewBoard } from '$lib/server/board-access';
 
-export const GET: RequestHandler = async ({ params }) => {
+export const GET: RequestHandler = async ({ params, locals }) => {
+	if (!locals.user) throw error(401, 'Not authenticated');
+
 	const boardId = Number(params.id);
+
+	// Verify user has access to this board before streaming events
+	if (!canViewBoard(locals.user, boardId)) {
+		throw error(403, 'No access to this board');
+	}
 
 	const stream = new ReadableStream({
 		start(controller) {
