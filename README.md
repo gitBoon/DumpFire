@@ -116,7 +116,7 @@ services:
       - "3000:3000"
     environment:
       - DB_PATH=/app/data/dumpfire.db
-      - ORIGIN=http://localhost:3000
+      - ORIGIN=http://localhost:3000   # ⚠️ CHANGE THIS — see note below
     volumes:
       - dumpfire-data:/app/data
     restart: unless-stopped
@@ -125,7 +125,7 @@ volumes:
   dumpfire-data:
 ```
 
-> **Deploying on a server?** Change `ORIGIN` to the URL users will access, e.g. `http://192.168.1.50:3000` or `https://kanban.yourdomain.com`.
+> **⚠️ You MUST set `ORIGIN` to the URL users will use to access DumpFire.** If you leave it as `http://localhost:3000` on a server, all form submissions (including initial setup) will silently fail with a 403 error. Set it to your actual URL, e.g. `http://192.168.1.50:3000` or `https://kanban.yourdomain.com`.
 
 Then run:
 
@@ -153,12 +153,14 @@ docker run -d \
   dumpfire
 ```
 
+> **⚠️ Remember to replace `ORIGIN`** with your actual access URL. See [Environment Variables](#environment-variables) below.
+
 #### Environment Variables
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `DB_PATH` | Path to the SQLite database file inside the container | `/app/data/dumpfire.db` |
-| `ORIGIN` | Public URL for CSRF protection (must match how users access the app) | `http://localhost:3000` |
+| **`ORIGIN`** | **Public URL for CSRF protection — must exactly match how users access the app (including protocol and port).** If this is wrong, all form submissions will fail with 403. | `http://localhost:3000` |
 | `PORT` | Port the server listens on | `3000` |
 | `COOKIE_SECURE` | Set to `false` to allow session cookies over plain HTTP (see [HTTPS & Reverse Proxies](#https--reverse-proxies)) | `true` in production |
 
