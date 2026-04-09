@@ -88,7 +88,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// Whitelist allowed fields
 	const updateData: Record<string, unknown> = {};
 	const allowed = ['title', 'description', 'priority', 'colorTag', 'categoryId', 'dueDate',
-		'onHoldNote', 'businessValue', 'pinned', 'coverUrl'];
+		'onHoldNote', 'businessValue', 'pinned', 'coverUrl', 'archivedAt'];
 	for (const key of allowed) {
 		if (key in data) updateData[key] = data[key];
 	}
