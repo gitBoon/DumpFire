@@ -6,8 +6,9 @@
  */
 
 import { hashSync, compareSync } from 'bcryptjs';
+import { createHash, randomBytes } from 'node:crypto';
 import { db } from './db';
-import { users, sessions } from './db/schema';
+import { users, sessions, apiKeys } from './db/schema';
 import { eq, and, gt, lt } from 'drizzle-orm';
 import type { Cookies } from '@sveltejs/kit';
 
@@ -141,4 +142,60 @@ export function getUserByUsername(username: string) {
 /** Get a user by email (case-insensitive). */
 export function getUserByEmail(email: string) {
 	return db.select().from(users).where(eq(users.email, email)).get();
+}
+
+// ─── API Key Management ─────────────────────────────────────────────────────
+
+/** Hash an API key using SHA-256. */
+export function hashApiKey(key: string): string {
+	return createHash('sha256').update(key).digest('hex');
+}
+
+/** Generate a new API key. Returns { plaintextKey, keyHash, keyPrefix }. */
+export function generateApiKey(): { plaintextKey: string; keyHash: string; keyPrefix: string } {
+	const raw = randomBytes(32).toString('hex');
+	const plaintextKey = `df_${raw}`;
+	const keyHash = hashApiKey(plaintextKey);
+	const keyPrefix = plaintextKey.substring(0, 11); // "df_" + first 8 hex chars
+	return { plaintextKey, keyHash, keyPrefix };
+}
+
+/**
+ * Validate an API key. Returns the user if valid, null otherwise.
+ * Also updates `last_used_at` on each valid access.
+ */
+export function validateApiKey(key: string): SessionUser | null {
+	const hash = hashApiKey(key);
+	const now = new Date().toISOString();
+
+	const apiKey = db.select()
+		.from(apiKeys)
+		.where(eq(apiKeys.keyHash, hash))
+		.get();
+
+	if (!apiKey) return null;
+
+	// Check expiry
+	if (apiKey.expiresAt && apiKey.expiresAt < now) return null;
+
+	const user = db.select()
+		.from(users)
+		.where(eq(users.id, apiKey.userId))
+		.get();
+
+	if (!user) return null;
+
+	// Update last used timestamp
+	db.update(apiKeys)
+		.set({ lastUsedAt: now })
+		.where(eq(apiKeys.id, apiKey.id))
+		.run();
+
+	return {
+		id: user.id,
+		username: user.username,
+		email: user.email,
+		emoji: user.emoji || '👤',
+		role: user.role
+	};
 }

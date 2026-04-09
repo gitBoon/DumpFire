@@ -138,12 +138,85 @@
 	let notifLoading = $state(true);
 	let notifSaving = $state(false);
 
+	// API Keys
+	type ApiKeyInfo = {
+		id: number;
+		name: string;
+		keyPrefix: string;
+		lastUsedAt: string | null;
+		expiresAt: string | null;
+		createdAt: string;
+	};
+
+	let apiKeys = $state<ApiKeyInfo[]>([]);
+	let apiKeysLoading = $state(true);
+	let newKeyName = $state('');
+	let generatingKey = $state(false);
+	let newlyCreatedKey = $state('');
+	let keyCopied = $state(false);
+	let deletingKeyId = $state<number | null>(null);
+	let confirmDeleteId = $state<number | null>(null);
+
+	async function loadApiKeys() {
+		try {
+			const res = await fetch('/api/account/api-keys');
+			if (res.ok) apiKeys = await res.json();
+		} catch { /* silent */ }
+		apiKeysLoading = false;
+	}
+
+	async function generateApiKey() {
+		if (!newKeyName.trim() || generatingKey) return;
+		generatingKey = true;
+		newlyCreatedKey = '';
+		keyCopied = false;
+
+		const res = await fetch('/api/account/api-keys', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name: newKeyName.trim() })
+		});
+
+		if (res.ok) {
+			const result = await res.json();
+			newlyCreatedKey = result.key;
+			newKeyName = '';
+			await loadApiKeys();
+		}
+		generatingKey = false;
+	}
+
+	async function copyKey() {
+		if (!newlyCreatedKey) return;
+		await navigator.clipboard.writeText(newlyCreatedKey);
+		keyCopied = true;
+		setTimeout(() => keyCopied = false, 2000);
+	}
+
+	async function revokeKey(id: number) {
+		deletingKeyId = id;
+		const res = await fetch(`/api/account/api-keys/${id}`, { method: 'DELETE' });
+		if (res.ok) {
+			apiKeys = apiKeys.filter(k => k.id !== id);
+		}
+		deletingKeyId = null;
+		confirmDeleteId = null;
+	}
+
+	function formatDate(dateStr: string | null): string {
+		if (!dateStr) return 'Never';
+		const d = new Date(dateStr);
+		return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+	}
+
 	onMount(async () => {
 		try {
 			const res = await fetch('/api/account/notifications');
 			if (res.ok) notifPrefs = await res.json();
 		} catch { /* silent */ }
 		notifLoading = false;
+
+		await loadApiKeys();
 	});
 
 	async function toggleNotif(key: string) {
@@ -372,6 +445,95 @@
 				{/if}
 			{/if}
 		</section>
+
+		<!-- API Keys section -->
+		<section class="account-card glass fade-in-up" style="animation-delay: 0.4s">
+			<h2>🔑 API Keys</h2>
+			<p class="notif-desc">Generate API keys for automation and external integrations. See <a href="/DUMPFIRE_API.md" target="_blank">API documentation</a> for usage.</p>
+
+			<!-- New key creation -->
+			<div class="apikey-create">
+				<div class="apikey-create-row">
+					<input
+						id="apikey-name"
+						type="text"
+						bind:value={newKeyName}
+						placeholder="Key name (e.g. CI Pipeline, n8n)"
+						maxlength="100"
+						onkeydown={(e) => e.key === 'Enter' && generateApiKey()}
+					/>
+					<button
+						id="apikey-generate-btn"
+						class="btn-primary"
+						onclick={generateApiKey}
+						disabled={!newKeyName.trim() || generatingKey}
+					>
+						{generatingKey ? 'Generating...' : 'Generate Key'}
+					</button>
+				</div>
+
+				{#if newlyCreatedKey}
+					<div class="apikey-reveal">
+						<div class="apikey-reveal-header">
+							<span class="apikey-reveal-icon">⚠️</span>
+							<span>Copy your key now — it won't be shown again</span>
+						</div>
+						<div class="apikey-reveal-value">
+							<code id="apikey-plaintext">{newlyCreatedKey}</code>
+							<button
+								id="apikey-copy-btn"
+								class="btn-ghost apikey-copy-btn"
+								onclick={copyKey}
+							>
+								{keyCopied ? '✅ Copied!' : '📋 Copy'}
+							</button>
+						</div>
+					</div>
+				{/if}
+			</div>
+
+			<!-- Existing keys -->
+			{#if apiKeysLoading}
+				<p class="notif-loading">Loading API keys...</p>
+			{:else if apiKeys.length === 0}
+				<p class="apikey-empty">No API keys yet. Generate one above to get started.</p>
+			{:else}
+				<div class="apikey-list">
+					{#each apiKeys as key (key.id)}
+						<div class="apikey-row">
+							<div class="apikey-info">
+								<span class="apikey-name">{key.name}</span>
+								<code class="apikey-prefix">{key.keyPrefix}•••</code>
+								<span class="apikey-meta">
+									Created {formatDate(key.createdAt)}
+									 · Last used: {formatDate(key.lastUsedAt)}
+								</span>
+							</div>
+							{#if confirmDeleteId === key.id}
+								<div class="apikey-confirm-delete">
+									<span class="apikey-confirm-text">Revoke?</span>
+									<button
+										class="btn-danger-sm"
+										onclick={() => revokeKey(key.id)}
+										disabled={deletingKeyId === key.id}
+									>
+										{deletingKeyId === key.id ? '...' : 'Yes'}
+									</button>
+									<button class="btn-ghost-sm" onclick={() => confirmDeleteId = null}>No</button>
+								</div>
+							{:else}
+								<button
+									class="btn-ghost-sm apikey-revoke"
+									onclick={() => confirmDeleteId = key.id}
+								>
+									Revoke
+								</button>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</section>
 	</main>
 </div>
 
@@ -504,4 +666,84 @@
 		transition: transform 0.2s ease;
 	}
 	.toggle.on .toggle-thumb { transform: translateX(20px); }
+
+	/* API Keys */
+	.apikey-create { margin-bottom: var(--space-xl); }
+	.apikey-create-row {
+		display: flex; gap: var(--space-sm); align-items: stretch;
+	}
+	.apikey-create-row input { flex: 1; }
+	.apikey-create-row button { white-space: nowrap; }
+
+	.apikey-reveal {
+		margin-top: var(--space-md);
+		padding: var(--space-md);
+		background: rgba(245, 158, 11, 0.08);
+		border: 1px solid rgba(245, 158, 11, 0.25);
+		border-radius: var(--radius-md);
+	}
+	.apikey-reveal-header {
+		display: flex; align-items: center; gap: var(--space-xs);
+		font-size: 0.78rem; font-weight: 600; color: var(--accent-amber);
+		margin-bottom: var(--space-sm);
+	}
+	.apikey-reveal-value {
+		display: flex; align-items: center; gap: var(--space-sm);
+		background: var(--bg-surface); padding: var(--space-sm) var(--space-md);
+		border-radius: var(--radius-sm); overflow: hidden;
+	}
+	.apikey-reveal-value code {
+		flex: 1; font-size: 0.72rem; word-break: break-all;
+		color: var(--text-primary); font-family: 'JetBrains Mono', monospace;
+	}
+	.apikey-copy-btn { flex-shrink: 0; font-size: 0.75rem; }
+
+	.apikey-empty {
+		font-size: 0.82rem; color: var(--text-tertiary);
+		text-align: center; padding: var(--space-xl) 0;
+	}
+
+	.apikey-list {
+		display: flex; flex-direction: column; gap: 2px;
+	}
+	.apikey-row {
+		display: flex; align-items: center; justify-content: space-between;
+		padding: var(--space-sm) var(--space-md);
+		border-radius: var(--radius-sm);
+		transition: background 0.15s ease;
+	}
+	.apikey-row:hover { background: var(--bg-surface); }
+	.apikey-info {
+		display: flex; flex-direction: column; gap: 2px; min-width: 0;
+	}
+	.apikey-name {
+		font-size: 0.85rem; font-weight: 600; color: var(--text-primary);
+	}
+	.apikey-prefix {
+		font-size: 0.7rem; font-family: 'JetBrains Mono', monospace;
+		color: var(--text-secondary); background: var(--bg-surface);
+		padding: 1px 6px; border-radius: var(--radius-sm); width: fit-content;
+	}
+	.apikey-meta {
+		font-size: 0.68rem; color: var(--text-tertiary);
+	}
+
+	.apikey-confirm-delete {
+		display: flex; align-items: center; gap: var(--space-xs);
+	}
+	.apikey-confirm-text {
+		font-size: 0.75rem; color: var(--accent-rose); font-weight: 600;
+	}
+	.btn-danger-sm {
+		padding: 2px 10px; font-size: 0.72rem; border-radius: var(--radius-sm);
+		background: var(--accent-rose); color: white; border: none; cursor: pointer;
+		font-weight: 600;
+	}
+	.btn-danger-sm:disabled { opacity: 0.5; cursor: not-allowed; }
+	.btn-ghost-sm {
+		padding: 2px 10px; font-size: 0.72rem; border-radius: var(--radius-sm);
+		background: transparent; color: var(--text-secondary); border: 1px solid var(--glass-border);
+		cursor: pointer; font-weight: 500;
+	}
+	.apikey-revoke { color: var(--accent-rose); }
 </style>

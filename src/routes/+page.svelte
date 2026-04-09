@@ -388,6 +388,13 @@
 				</svg>
 				Request
 			</a>
+			<a href="/docs" class="nav-pill" id="api-docs-link">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<path d="M2.5 2h4l1.5 2H13.5a1 1 0 011 1v8a1 1 0 01-1 1h-11a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+					<path d="M6 8h4M6 10.5h2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+				</svg>
+				API Docs
+			</a>
 			<ThemePicker />
 			<button class="btn-primary create-btn" onclick={() => (showCreate = true)} id="create-board-btn">
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
