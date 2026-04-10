@@ -444,8 +444,6 @@
 
 	async function toggleArchivePanel() {
 		showArchivePanel = !showArchivePanel;
-		showActivityPanel = false;
-		showStatsPanel = false;
 		if (showArchivePanel) await loadArchivedCards();
 	}
 
@@ -612,15 +610,11 @@
 
 	async function toggleActivityPanel() {
 		showActivityPanel = !showActivityPanel;
-		showStatsPanel = false;
-		showArchivePanel = false;
 		if (showActivityPanel) await loadActivities();
 	}
 
 	function toggleStatsPanel() {
 		showStatsPanel = !showStatsPanel;
-		showActivityPanel = false;
-		showArchivePanel = false;
 	}
 
 	// ─── Lifecycle ───────────────────────────────────────────────────────────
@@ -668,6 +662,7 @@
 
 <svelte:window onclick={closeDropdowns} />
 
+<div class="board-page-wrapper">
 <div class="board-page">
 	<header class="board-header">
 		<div class="board-header-left">
@@ -1136,19 +1131,34 @@
 			{/each}
 		</div>
 	</div>
-</div>
-
-<!-- Activity Panel -->
+</div> <!-- /.board-page -->
+<div class="board-panels-area">
 {#if showActivityPanel}
-	<ActivityPanel
-		{activities}
-		loading={loadingActivities}
-		{tick}
-		onClose={() => (showActivityPanel = false)}
-	/>
+	<aside class="board-side-panel">
+		<div class="board-side-panel-header">
+			<h3>📋 Activity Log</h3>
+			<button class="btn-ghost" onclick={() => (showActivityPanel = false)} title="Close">✕</button>
+		</div>
+		<div class="board-side-panel-body">
+			{#if loadingActivities}
+				<p class="panel-empty">Loading...</p>
+			{:else if activities.length === 0}
+				<p class="panel-empty">No activity yet.</p>
+			{:else}
+				{#each activities as activity}
+					<div class="activity-item">
+						<span class="activity-emoji">{activity.userEmoji}</span>
+						<div class="activity-info">
+							<span class="activity-action">{activity.action.replace('api:', '').replace(/_/g, ' ')}</span>
+							<span class="activity-detail">{activity.detail}</span>
+							<span class="activity-time">{new Date(activity.createdAt + 'Z').toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · {activity.userName}</span>
+						</div>
+					</div>
+				{/each}
+			{/if}
+		</div>
+	</aside>
 {/if}
-
-<!-- Stats Panel -->
 {#if showStatsPanel}
 	<StatsPanel
 		{boardColumns}
@@ -1157,19 +1167,13 @@
 		onClose={() => (showStatsPanel = false)}
 	/>
 {/if}
-
-<!-- Archive Panel -->
 {#if showArchivePanel}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="side-panel archive-panel" onclick={(e) => e.stopPropagation()}>
-		<div class="side-panel-header">
+	<aside class="board-side-panel">
+		<div class="board-side-panel-header">
 			<h3>🗄️ Archived Cards</h3>
-			<button class="btn-ghost" onclick={() => (showArchivePanel = false)} title="Close">
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3L3 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-			</button>
+			<button class="btn-ghost" onclick={() => (showArchivePanel = false)} title="Close">✕</button>
 		</div>
-		<div class="side-panel-body">
+		<div class="board-side-panel-body">
 			{#if loadingArchive}
 				<div class="archive-loading">Loading...</div>
 			{:else if archivedCards.length === 0}
@@ -1206,8 +1210,11 @@
 				</div>
 			{/if}
 		</div>
-	</div>
+	</aside>
 {/if}
+</div> <!-- /.board-panels-area -->
+</div> <!-- /.board-page-wrapper -->
+
 
 <!-- Bulk Action Bar -->
 {#if selectionMode && selectedCards.size > 0}
@@ -1369,7 +1376,39 @@
 {/if}
 
 <style>
-	.board-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+	/* Flex wrapper: board + side panels */
+	.board-page-wrapper { display: flex; height: 100vh; overflow: hidden; }
+	.board-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; flex: 1; min-width: 0; }
+	.board-panels-area { display: flex; flex-shrink: 0; }
+
+	/* Side panels — push content */
+	.board-side-panel {
+		width: 340px; height: 100vh; flex-shrink: 0;
+		background: var(--bg-surface); border-left: 1px solid var(--glass-border);
+		display: flex; flex-direction: column;
+		animation: panelSlideIn 0.2s ease-out;
+	}
+	@keyframes panelSlideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+	.board-side-panel-header {
+		display: flex; align-items: center; justify-content: space-between;
+		padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--glass-border);
+		flex-shrink: 0;
+	}
+	.board-side-panel-header h3 { font-size: 0.9rem; font-weight: 700; margin: 0; }
+	.board-side-panel-body { flex: 1; overflow-y: auto; padding: var(--space-md); }
+
+	/* Activity items (inline in board page now) */
+	.activity-item {
+		display: flex; gap: var(--space-sm); padding: var(--space-sm);
+		border-radius: var(--radius-sm); transition: background 0.15s;
+	}
+	.activity-item:hover { background: var(--glass-bg); }
+	.activity-emoji { font-size: 1.2rem; flex-shrink: 0; }
+	.activity-info { display: flex; flex-direction: column; min-width: 0; }
+	.activity-action { font-weight: 600; font-size: 0.78rem; text-transform: capitalize; }
+	.activity-detail { font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.activity-time { font-size: 0.65rem; color: var(--text-tertiary); }
+	.panel-empty { color: var(--text-tertiary); text-align: center; padding: var(--space-xl); font-size: 0.85rem; }
 
 	.board-header {
 		display: flex; align-items: center; justify-content: space-between;
@@ -1942,8 +1981,10 @@
 		.card-title { font-size: 0.9rem; }
 
 		/* Side panels become full-width on mobile */
-		.side-panel {
+		.board-page-wrapper { flex-direction: column; }
+		.board-side-panel {
 			width: 100% !important;
+			height: 50vh;
 		}
 
 		/* Touch-friendly buttons */
