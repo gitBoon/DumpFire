@@ -10,6 +10,7 @@
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
+	import { highlightMentions } from '$lib/utils/mentions';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import type { CardType, CategoryType, LabelType, SubtaskType } from '$lib/types';
@@ -910,7 +911,7 @@
 										<button class="btn-ghost small" onclick={() => (editingCommentId = null)}>Cancel</button>
 									</div>
 								{:else}
-									<div class="comment-content markdown-body">{@html DOMPurify.sanitize(marked(comment.content) as string)}</div>
+									<div class="comment-content markdown-body">{@html DOMPurify.sanitize(highlightMentions(marked(comment.content) as string))}</div>
 									{#if currentUser && (currentUser.id === comment.userId || currentUser.role === 'admin' || currentUser.role === 'superadmin')}
 										<div class="comment-actions">
 											{#if currentUser.id === comment.userId}
@@ -1712,6 +1713,11 @@
 	.comment-content :global(pre) { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 	.comment-content :global(code) { word-break: break-all; }
 	.comment-content :global(blockquote) { margin: var(--space-sm) 0; padding-left: var(--space-md); border-left: 3px solid var(--glass-border); color: var(--text-tertiary); }
+	.comment-content :global(.mention-chip) {
+		display: inline; padding: 1px 4px; border-radius: 3px;
+		background: rgba(139, 92, 246, 0.12); color: #8b5cf6;
+		font-weight: 600; font-size: 0.82em;
+	}
 	.comment-actions { display: flex; gap: var(--space-sm); margin-top: var(--space-xs); }
 	.comment-action-btn {
 		font-size: 0.7rem; color: var(--text-tertiary); background: none; border: none;

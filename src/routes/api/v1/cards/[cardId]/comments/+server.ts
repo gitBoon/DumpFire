@@ -6,6 +6,7 @@ import { getBoardRole } from '$lib/server/board-access';
 import { notifyCommentAdded } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
 import { logActivity } from '$lib/server/logActivity';
+import { processMentions } from '$lib/server/mentions';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/cards/:cardId/comments — List all comments on a card (newest first). */
@@ -68,6 +69,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 	// Notify board members (fire-and-forget)
 	const baseUrl = resolveBaseUrl(request, url);
 	notifyCommentAdded(col.boardId, cardId, card.title, locals.user.username, content.trim(), locals.user.id, baseUrl);
+	processMentions(content.trim(), locals.user.id, locals.user.username, cardId, card.title, col.boardId, baseUrl);
 
 	logActivity({
 		boardId: col.boardId,

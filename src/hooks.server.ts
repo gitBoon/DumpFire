@@ -2,6 +2,7 @@ import { runMigrations } from '$lib/server/db/migrate';
 import { validateSession, SESSION_COOKIE_NAME, hasAnyUsers, cleanExpiredSessions, validateApiKey } from '$lib/server/auth';
 import { initBackupScheduler } from '$lib/server/backup';
 import { initReportScheduler } from '$lib/server/reports';
+import { initSnapshotScheduler } from '$lib/server/snapshots';
 import { json, redirect, type Handle } from '@sveltejs/kit';
 import { createLogger } from '$lib/server/logger';
 import { checkRateLimit } from '$lib/server/rate-limit';
@@ -19,6 +20,9 @@ initBackupScheduler();
 
 // Start the scheduled report timer
 initReportScheduler();
+
+// Start the daily snapshot scheduler (for CFD / burndown)
+initSnapshotScheduler();
 
 /** Public routes that don't require authentication. */
 const PUBLIC_ROUTES = ['/login', '/setup', '/invite', '/request', '/api/requests', '/docs', '/api/v1/openapi.json'];

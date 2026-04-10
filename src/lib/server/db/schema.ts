@@ -145,6 +145,7 @@ export const cards = sqliteTable('cards', {
 	archivedAt: text('archived_at'),
 	coverUrl: text('cover_url'),
 	recurrenceRule: text('recurrence_rule'),
+	nextRecurrence: text('next_recurrence'),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
@@ -186,6 +187,51 @@ export const activityLog = sqliteTable('activity_log', {
 	detail: text('detail').default(''),
 	userName: text('user_name').default(''),
 	userEmoji: text('user_emoji').default('👤'),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+// ─── Daily Snapshots (for CFD / Burndown) ────────────────────────────────────
+
+export const dailySnapshots = sqliteTable('daily_snapshots', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	boardId: integer('board_id')
+		.notNull()
+		.references(() => boards.id, { onDelete: 'cascade' }),
+	columnId: integer('column_id')
+		.notNull()
+		.references(() => columns.id, { onDelete: 'cascade' }),
+	date: text('date').notNull(),
+	cardCount: integer('card_count').notNull().default(0)
+});
+
+// ─── Webhooks ────────────────────────────────────────────────────────────────
+
+export const webhooks = sqliteTable('webhooks', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	boardId: integer('board_id')
+		.notNull()
+		.references(() => boards.id, { onDelete: 'cascade' }),
+	url: text('url').notNull(),
+	secret: text('secret').notNull().default(''),
+	events: text('events').notNull().default('[]'),
+	active: integer('active', { mode: 'boolean' }).notNull().default(true),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+// ─── Card Dependencies ──────────────────────────────────────────────────────
+
+export const cardDependencies = sqliteTable('card_dependencies', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	cardId: integer('card_id')
+		.notNull()
+		.references(() => cards.id, { onDelete: 'cascade' }),
+	dependsOnCardId: integer('depends_on_card_id')
+		.notNull()
+		.references(() => cards.id, { onDelete: 'cascade' }),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)

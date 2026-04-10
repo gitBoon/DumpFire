@@ -71,6 +71,50 @@
 	let loadingActivities = $state(false);
 	let showStatsPanel = $state(false);
 
+	// ─── Inline Card Editing ─────────────────────────────────────────────────
+	let inlineEditCardId = $state<number | null>(null);
+	let inlineEditValue = $state('');
+
+	function startInlineEdit(card: CardType, e: MouseEvent) {
+		e.stopPropagation();
+		e.preventDefault();
+		inlineEditCardId = card.id;
+		inlineEditValue = card.title;
+	}
+
+	async function saveInlineEdit(cardId: number) {
+		const trimmed = inlineEditValue.trim();
+		if (!trimmed) { inlineEditCardId = null; return; }
+		const col = boardColumns.find(c => c.cards.some(cd => cd.id === cardId));
+		const card = col?.cards.find(cd => cd.id === cardId);
+		if (card && card.title !== trimmed) {
+			card.title = trimmed;
+			boardColumns = [...boardColumns];
+			await api.updateCard(cardId, { title: trimmed, boardId: data.board.id });
+			toasts.add('Title updated');
+		}
+		inlineEditCardId = null;
+	}
+
+	function cancelInlineEdit() { inlineEditCardId = null; }
+
+	function handleInlineKeydown(e: KeyboardEvent, cardId: number) {
+		if (e.key === 'Enter') { e.preventDefault(); saveInlineEdit(cardId); }
+		else if (e.key === 'Escape') { e.preventDefault(); cancelInlineEdit(); }
+	}
+
+	// Priority cycling for quick-edit
+	const PRIORITY_CYCLE = ['low', 'medium', 'high', 'critical'] as const;
+
+	async function cyclePriority(card: CardType, e: MouseEvent) {
+		e.stopPropagation();
+		const idx = PRIORITY_CYCLE.indexOf(card.priority as any);
+		const next = PRIORITY_CYCLE[(idx + 1) % PRIORITY_CYCLE.length];
+		card.priority = next;
+		boardColumns = [...boardColumns];
+		await api.updateCard(card.id, { priority: next, boardId: data.board.id });
+	}
+
 	// ─── Bulk Selection ──────────────────────────────────────────────────────
 
 	let selectionMode = $state(false);
@@ -540,6 +584,13 @@
 						logActivity('card_moved', `${entry.card.title} (${entry.fromName} → ${entry.toName})`, entry.card.id);
 					}
 				}
+				// Check WIP limit on destination column
+				if (result.movedCards.length > 0) {
+					const destCol = boardColumns.find(c => c.id === columnId);
+					if (destCol && destCol.wipLimit > 0 && destCol.cards.length > destCol.wipLimit) {
+						toasts.add(`⚠ ${destCol.title} exceeds WIP limit (${destCol.cards.length}/${destCol.wipLimit})`, 'warning');
+					}
+				}
 				break;
 		}
 	}
@@ -963,7 +1014,7 @@
 								class:card-selected={selectedCards.has(card.id)}
 								class:card-pinned={card.pinned}
 								animate:flip={{ duration: FLIP_DURATION_MS }}
-								onclick={(e) => selectionMode ? toggleSelection(card.id, e) : openCardModal(card)}
+								onclick={(e) => inlineEditCardId === card.id ? null : (selectionMode ? toggleSelection(card.id, e) : openCardModal(card))}
 								oncontextmenu={(e) => openContextMenu(e, card, column.id)}
 								role="button"
 								tabindex="0"
@@ -990,7 +1041,25 @@
 									{#if getCategoryById(card.categoryId, boardCategories)?.color}
 									<div class="card-color-strip" style="background: {getCategoryById(card.categoryId, boardCategories)?.color}; --strip-color: {getCategoryById(card.categoryId, boardCategories)?.color}"></div>
 								{/if}
-								<h4 class="card-title">{card.title}</h4>
+								{#if inlineEditCardId === card.id}
+								<!-- svelte-ignore a11y_autofocus -->
+								<input
+									class="inline-edit-input"
+									bind:value={inlineEditValue}
+									onkeydown={(e) => handleInlineKeydown(e, card.id)}
+									onblur={() => saveInlineEdit(card.id)}
+									onclick={(e) => e.stopPropagation()}
+									autofocus
+								/>
+							{:else}
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<h4 class="card-title" ondblclick={(e) => startInlineEdit(card, e)}>
+									<!-- svelte-ignore a11y_click_events_have_key_events -->
+									<!-- svelte-ignore a11y_no_static_element_interactions -->
+									<span class="priority-dot priority-{card.priority}" onclick={(e) => cyclePriority(card, e)} title="Priority: {card.priority} (click to cycle)"></span>
+									{card.title}
+								</h4>
+							{/if}
 								{#if card.description}
 									<p class="card-description">{card.description}</p>
 								{/if}
@@ -1084,6 +1153,7 @@
 	<StatsPanel
 		{boardColumns}
 		{boardCategories}
+		boardId={data.board.id}
 		onClose={() => (showStatsPanel = false)}
 	/>
 {/if}
@@ -1167,6 +1237,10 @@
 			await api.reorderCards(updates, data.board.id, currentUser.name, currentUser.emoji);
 			logActivity('card_moved', `${card.title} → ${col.title}`, card.id);
 			toasts.add(`Moved to ${col.title}`);
+			// WIP limit violation alert
+			if (col.wipLimit > 0 && col.cards.length + 1 > col.wipLimit) {
+				toasts.add(`⚠ ${col.title} exceeds WIP limit (${col.cards.length + 1}/${col.wipLimit})`, 'warning');
+			}
 			contextMenu = { ...contextMenu, show: false };
 			await invalidateAll();
 		}}
@@ -1636,7 +1710,24 @@
 		border-radius: 5px 0 0 5px;
 		box-shadow: 2px 0 8px var(--strip-color, transparent);
 	}
-	.card-title { font-size: 0.85rem; font-weight: 500; line-height: 1.4; margin-bottom: var(--space-xs); }
+	.card-title { font-size: 0.85rem; font-weight: 500; line-height: 1.4; margin-bottom: var(--space-xs); cursor: text; }
+	.inline-edit-input {
+		width: 100%; font-size: 0.85rem; font-weight: 500; line-height: 1.4;
+		margin-bottom: var(--space-xs); padding: 2px 4px; border: 1px solid var(--accent-indigo);
+		border-radius: var(--radius-sm); background: var(--bg-base); color: var(--text-primary);
+		font-family: var(--font-family); outline: none;
+		box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+	}
+	.priority-dot {
+		display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+		margin-right: 4px; vertical-align: middle; cursor: pointer;
+		transition: transform 0.15s ease;
+	}
+	.priority-dot:hover { transform: scale(1.5); }
+	.priority-dot.priority-low { background: #94a3b8; }
+	.priority-dot.priority-medium { background: #3b82f6; }
+	.priority-dot.priority-high { background: #f59e0b; }
+	.priority-dot.priority-critical { background: #ef4444; }
 	.card-description { font-size: 0.75rem; color: var(--text-tertiary); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: var(--space-sm); }
 	.card-meta { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
 	.card-date { font-size: 0.65rem; color: var(--text-secondary); margin-left: auto; flex-shrink: 0; }
@@ -1810,4 +1901,71 @@
 	.archive-card-actions { display: flex; gap: 4px; flex-shrink: 0; }
 	.archive-card-actions .danger { color: var(--accent-rose); }
 	.archive-card-actions .danger:hover { background: rgba(239, 68, 68, 0.1); }
+
+	/* ─── Mobile Responsive ──────────────────────────────────────────────── */
+
+	@media (max-width: 768px) {
+		.board-header {
+			padding: var(--space-sm) var(--space-md);
+			gap: var(--space-sm);
+		}
+		.board-header-left { gap: var(--space-sm); }
+		.board-header-right { gap: var(--space-xs); }
+		.board-name { font-size: 1rem; max-width: 180px; }
+		.board-stats { display: none; }
+		.search-wrapper { max-width: 100%; }
+		.xp-bar-container { display: none; }
+		.breadcrumb { font-size: 0.7rem; }
+		.breadcrumb-link { max-width: 100px; }
+
+		.kanban-container {
+			padding: var(--space-sm);
+			overflow-x: auto;
+			-webkit-overflow-scrolling: touch;
+		}
+		.columns-wrapper {
+			gap: var(--space-md);
+			overflow-x: auto;
+			scroll-snap-type: x mandatory;
+			-webkit-overflow-scrolling: touch;
+			padding-bottom: var(--space-md);
+		}
+		.kanban-column {
+			flex: 0 0 85vw;
+			min-width: 260px;
+			max-width: 85vw;
+			scroll-snap-align: start;
+		}
+		.kanban-card {
+			padding: var(--space-md) var(--space-lg) !important;
+		}
+		.card-title { font-size: 0.9rem; }
+
+		/* Side panels become full-width on mobile */
+		.side-panel {
+			width: 100% !important;
+		}
+
+		/* Touch-friendly buttons */
+		.btn-ghost, .column-action-btn, .nav-btn {
+			min-height: 36px;
+			min-width: 36px;
+		}
+		.more-dropdown-item, .column-menu-item {
+			padding: var(--space-md) var(--space-lg) !important;
+			min-height: 40px;
+		}
+	}
+
+	@media (max-width: 480px) {
+		.board-header { flex-direction: column; align-items: stretch; }
+		.board-header-left { flex-wrap: wrap; }
+		.board-header-right { justify-content: flex-end; }
+		.kanban-column {
+			flex: 0 0 92vw;
+			max-width: 92vw;
+		}
+		.nav-btn span { display: none; }
+		.user-name { display: none; }
+	}
 </style>

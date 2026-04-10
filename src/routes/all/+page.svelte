@@ -414,6 +414,9 @@
 			<button class="btn-ghost activity-toggle-btn" class:active={activityOpen} onclick={toggleActivity} title="Activity Feed">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 3h12M2 6h8M2 9h10M2 12h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 			</button>
+			<a class="btn-ghost export-csv-btn" href={boardFilter !== 'all' ? `/api/cards/export/csv?boardId=${boardFilter}` : '/api/cards/export/csv'} download title="Export to CSV">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+			</a>
 			<ThemePicker />
 		</div>
 	</header>

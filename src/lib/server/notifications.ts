@@ -463,3 +463,42 @@ export function notifyAdminMessage(targetType: string, targetId: number, request
 	}
 }
 
+// ─── @Mention Notifications ─────────────────────────────────────────────────
+
+/**
+ * Send an email notification to a user who was @mentioned in a comment.
+ * Respects the user's email_mentions notification preference.
+ */
+export function notifyMention(
+	mentionedUser: { id: number; email: string; username: string },
+	authorUsername: string,
+	cardId: number,
+	cardTitle: string,
+	commentText: string,
+	boardId: number,
+	baseUrl: string
+): void {
+	if (!isSmtpConfigured()) return;
+	if (!shouldNotifyUser(mentionedUser.id, 'email_mentions')) return;
+
+	const boardName = getBoardName(boardId);
+	const preview = commentText.length > 300 ? commentText.slice(0, 300) + '…' : commentText;
+	const cardUrl = `${baseUrl}/board/${boardId}`;
+
+	const html = emailTemplate(`You were mentioned by ${esc(authorUsername)}`, `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
+			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
+				<strong>${esc(authorUsername)}</strong> mentioned you in a comment on <strong>${esc(boardName)}</strong>:
+			</p>
+			<blockquote style="margin: 12px 0 16px; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid #8b5cf6; color: #334155; font-size: 13px; border-radius: 4px;">
+				${esc(preview)}
+			</blockquote>
+			<a href="${cardUrl}" style="display: inline-block; padding: 8px 16px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Board</a>
+		</div>
+	`);
+
+	sendEmail(mentionedUser.email, `${authorUsername} mentioned you: ${cardTitle}`, html).catch(err =>
+		log.error(`Mention notification failed for ${mentionedUser.email}`, err)
+	);
+}

@@ -2,24 +2,31 @@
   StatsPanel.svelte — Side panel showing board statistics.
 
   Displays total/completed/overdue card counts, average card age,
-  per-column distribution bars, and per-category distribution bars.
+  per-column distribution bars, per-category distribution bars,
+  and cycle time / lead time metrics.
 -->
 <script lang="ts">
   import type { ColumnType, CategoryType, CardType } from '$lib/types';
   import { getDueStatus } from '$lib/utils/date-utils';
+  import { onMount } from 'svelte';
+  import CfdChart from './CfdChart.svelte';
+  import BurndownChart from './BurndownChart.svelte';
 
   /**
    * @prop boardColumns — All columns on the board (for per-column stats)
    * @prop boardCategories — All categories on the board
+   * @prop boardId — Board ID for fetching metrics
    * @prop onClose — Callback to close the panel
    */
   let {
     boardColumns = [],
     boardCategories = [],
+    boardId = 0,
     onClose
   }: {
     boardColumns: ColumnType[];
     boardCategories: CategoryType[];
+    boardId?: number;
     onClose: () => void;
   } = $props();
 
@@ -49,6 +56,67 @@
     );
     return `${Math.round(totalDays / allCards.length)}d`;
   });
+
+  // ─── Cycle/Lead Time Metrics ─────────────────────────────────────────
+  type MetricsData = {
+    days: number;
+    completed: number;
+    leadTime: { avgFormatted: string; medianFormatted: string } | null;
+    cycleTime: { avgFormatted: string; medianFormatted: string } | null;
+  };
+
+  let metrics = $state<MetricsData | null>(null);
+  let metricsLoading = $state(false);
+  let metricsDays = $state(30);
+
+  async function loadMetrics() {
+    if (!boardId) return;
+    metricsLoading = true;
+    try {
+      const res = await fetch(`/api/boards/${boardId}/metrics?days=${metricsDays}`);
+      if (res.ok) metrics = await res.json();
+    } finally { metricsLoading = false; }
+  }
+
+  // ─── CFD Chart Data ──────────────────────────────────────────────────
+  type CfdColumn = { id: number; title: string; color: string };
+  type CfdDataPoint = { date: string; columns: { columnId: number; count: number }[] };
+
+  let cfdColumns = $state<CfdColumn[]>([]);
+  let cfdData = $state<CfdDataPoint[]>([]);
+  let cfdLoading = $state(false);
+
+  async function loadCfd() {
+    if (!boardId) return;
+    cfdLoading = true;
+    try {
+      const res = await fetch(`/api/boards/${boardId}/cfd?days=30`);
+      if (res.ok) {
+        const json = await res.json();
+        cfdColumns = json.columns || [];
+        cfdData = json.data || [];
+      }
+    } finally { cfdLoading = false; }
+  }
+
+  // ─── Burndown Data ──────────────────────────────────────────────────────
+  type BurndownPoint = { date: string; total: number; completed: number; remaining: number };
+  let burndownData = $state<BurndownPoint[]>([]);
+  let burndownLoading = $state(false);
+
+  async function loadBurndown() {
+    if (!boardId) return;
+    burndownLoading = true;
+    try {
+      const res = await fetch(`/api/boards/${boardId}/burndown?days=30`);
+      if (res.ok) {
+        const json = await res.json();
+        burndownData = json.data || [];
+      }
+    } finally { burndownLoading = false; }
+  }
+
+  onMount(() => { loadMetrics(); loadCfd(); loadBurndown(); });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -112,6 +180,60 @@
         {/each}
       </div>
     {/if}
+
+    <!-- Cycle / Lead Time Metrics -->
+    <h4 class="stats-section-title">
+      Delivery Metrics
+      <select class="metrics-period-select" bind:value={metricsDays} onchange={() => loadMetrics()}>
+        <option value={7}>7 days</option>
+        <option value={14}>14 days</option>
+        <option value={30}>30 days</option>
+        <option value={90}>90 days</option>
+      </select>
+    </h4>
+    {#if metricsLoading}
+      <div class="metrics-loading">Loading metrics...</div>
+    {:else if metrics}
+      <div class="stats-grid" style="margin-bottom: var(--space-md);">
+        <div class="stat-card">
+          <span class="stat-value stat-value-sm">{metrics.leadTime?.avgFormatted ?? '—'}</span>
+          <span class="stat-label">Avg Lead Time</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value stat-value-sm">{metrics.leadTime?.medianFormatted ?? '—'}</span>
+          <span class="stat-label">Median Lead</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value stat-value-sm">{metrics.cycleTime?.avgFormatted ?? '—'}</span>
+          <span class="stat-label">Avg Cycle Time</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value stat-value-sm">{metrics.cycleTime?.medianFormatted ?? '—'}</span>
+          <span class="stat-label">Median Cycle</span>
+        </div>
+      </div>
+      <div class="metrics-footnote">
+        Based on {metrics.completed} card{metrics.completed !== 1 ? 's' : ''} completed in the last {metrics.days} days
+      </div>
+    {:else}
+      <div class="metrics-loading">No completed cards in this period</div>
+    {/if}
+
+    <!-- Cumulative Flow Diagram -->
+    <h4 class="stats-section-title">Flow Diagram (30 days)</h4>
+    {#if cfdLoading}
+      <div class="metrics-loading">Loading chart...</div>
+    {:else}
+      <CfdChart columns={cfdColumns} data={cfdData} />
+    {/if}
+
+    <!-- Burndown Chart -->
+    <h4 class="stats-section-title">Burndown (30 days)</h4>
+    {#if burndownLoading}
+      <div class="metrics-loading">Loading chart...</div>
+    {:else}
+      <BurndownChart data={burndownData} />
+    {/if}
   </div>
 </aside>
 
@@ -152,4 +274,15 @@
   .stats-bar-track { flex: 1; height: 8px; background: var(--glass-bg); border-radius: 4px; overflow: hidden; }
   .stats-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease-out; min-width: 2px; }
   .stats-bar-count { font-size: 0.68rem; font-weight: 700; color: var(--text-secondary); width: 24px; text-align: right; }
+
+  .stat-value-sm { font-size: 1.1rem; }
+  .stats-section-title { display: flex; align-items: center; justify-content: space-between; }
+  .metrics-period-select {
+    font-size: 0.65rem; font-weight: 600; padding: 2px 6px;
+    border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+    background: var(--bg-surface); color: var(--text-secondary);
+    cursor: pointer; text-transform: none; letter-spacing: 0;
+  }
+  .metrics-loading { text-align: center; padding: var(--space-md); color: var(--text-tertiary); font-size: 0.8rem; }
+  .metrics-footnote { font-size: 0.68rem; color: var(--text-tertiary); text-align: center; padding-top: var(--space-xs); }
 </style>

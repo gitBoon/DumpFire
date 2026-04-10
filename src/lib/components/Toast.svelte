@@ -10,7 +10,7 @@
 		{#each items as toast (toast.id)}
 			<div class="toast toast-{toast.type}" role="alert">
 				<span class="toast-icon">
-					{#if toast.type === 'success'}✓{:else if toast.type === 'error'}✕{:else}ℹ{/if}
+					{#if toast.type === 'success'}✓{:else if toast.type === 'error'}✕{:else if toast.type === 'warning'}⚠️{:else}ℹ{/if}
 				</span>
 				<span class="toast-msg">{toast.message}</span>
 				<button class="toast-close" onclick={() => toasts.dismiss(toast.id)}>✕</button>
@@ -43,6 +43,8 @@
 	.toast-success .toast-icon { color: #22c55e; }
 	.toast-error .toast-icon { color: #ef4444; }
 	.toast-info .toast-icon { color: #6366f1; }
+	.toast-warning .toast-icon { color: #f59e0b; }
+	.toast-warning { border-color: rgba(245, 158, 11, 0.3); }
 	.toast-msg { flex: 1; }
 	.toast-close {
 		background: none; border: none; cursor: pointer; padding: 2px;

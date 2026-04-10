@@ -3,7 +3,7 @@ import { writable } from 'svelte/store';
 export type Toast = {
 	id: number;
 	message: string;
-	type: 'success' | 'info' | 'error';
+	type: 'success' | 'info' | 'error' | 'warning';
 };
 
 let nextId = 0;
