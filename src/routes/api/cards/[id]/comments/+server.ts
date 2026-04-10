@@ -5,6 +5,7 @@ import { eq, desc } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
 import { notifyCommentAdded } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
+import { processMentions } from '$lib/server/mentions';
 import type { RequestHandler } from './$types';
 
 /** GET — List all comments for a card (newest first). */
@@ -67,6 +68,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 	// Notify all board members (fire-and-forget)
 	const baseUrl = resolveBaseUrl(request, url);
 	notifyCommentAdded(col.boardId, cardId, card.title, locals.user.username, content.trim(), locals.user.id, baseUrl);
+	processMentions(content.trim(), locals.user.id, locals.user.username, cardId, card.title, col.boardId, baseUrl);
 
 	// Return with user info
 	return json({
