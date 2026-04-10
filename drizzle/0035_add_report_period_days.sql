@@ -1,0 +1,1 @@
+ALTER TABLE report_schedules ADD COLUMN period_days INTEGER NOT NULL DEFAULT 7;
