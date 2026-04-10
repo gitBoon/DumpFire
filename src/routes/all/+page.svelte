@@ -286,29 +286,54 @@
 		openSortDropdown = null;
 	}
 
-	// ─── Activity Panel ────────────────────────────────────────────────────
 	let activityOpen = $state(false);
 	let activityItems = $state<any[]>([]);
 	let activityLoading = $state(false);
+	let knownActivityIds = new Set<number>();
+	let newActivityIds = $state(new Set<number>());
 
 	onMount(() => {
 		if (browser) {
 			activityOpen = localStorage.getItem('df-activity-open') === 'true';
-			if (activityOpen) fetchActivity();
+			if (activityOpen) fetchActivity(true);
 		}
 	});
 
 	function toggleActivity() {
 		activityOpen = !activityOpen;
 		if (browser) localStorage.setItem('df-activity-open', String(activityOpen));
-		if (activityOpen && activityItems.length === 0) fetchActivity();
+		if (activityOpen && activityItems.length === 0) fetchActivity(true);
 	}
 
-	async function fetchActivity() {
+	async function fetchActivity(initial = false) {
 		activityLoading = true;
 		try {
 			const res = await fetch('/api/activity');
-			if (res.ok) activityItems = await res.json();
+			if (res.ok) {
+				const items = await res.json();
+				if (initial) {
+					// First load — seed known IDs, nothing is "new"
+					knownActivityIds = new Set(items.map((i: any) => i.id));
+					newActivityIds = new Set();
+				} else {
+					// Subsequent loads — detect new items
+					const freshIds = new Set<number>();
+					for (const item of items) {
+						if (!knownActivityIds.has(item.id)) {
+							freshIds.add(item.id);
+							knownActivityIds.add(item.id);
+						}
+					}
+					if (freshIds.size > 0) {
+						newActivityIds = new Set([...newActivityIds, ...freshIds]);
+						// Clear the pulse after 30 seconds
+						setTimeout(() => {
+							newActivityIds = new Set([...newActivityIds].filter(id => !freshIds.has(id)));
+						}, 30000);
+					}
+				}
+				activityItems = items;
+			}
 		} catch { /* ignore */ }
 		activityLoading = false;
 	}
@@ -576,7 +601,7 @@
 			<div class="activity-empty">No activity yet</div>
 		{:else}
 			{#each activityItems as item}
-				<div class="activity-item">
+				<div class="activity-item" class:activity-new={newActivityIds.has(item.id)}>
 					<div class="activity-avatar">{item.userEmoji || '👤'}</div>
 					<div class="activity-body">
 						<div class="activity-action-line">
@@ -1439,10 +1464,19 @@
 		display: flex;
 		gap: 10px;
 		padding: 10px 20px;
-		transition: background 0.1s;
+		transition: background 0.15s, border-color 0.15s;
+		border-left: 3px solid transparent;
 	}
 	.activity-item:hover {
 		background: var(--glass-hover);
+	}
+	.activity-item.activity-new {
+		border-left-color: var(--accent-indigo, #6366f1);
+		animation: activityPulse 2s ease-in-out infinite;
+	}
+	@keyframes activityPulse {
+		0%, 100% { background: transparent; }
+		50% { background: rgba(99, 102, 241, 0.08); }
 	}
 	.activity-avatar {
 		width: 28px;
