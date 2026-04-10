@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { boards, columns, boardMembers, cards } from '$lib/server/db/schema';
 import { desc, inArray, eq } from 'drizzle-orm';
 import { getAccessibleBoardIds, canEditBoard } from '$lib/server/board-access';
+import { logActivity } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards — List all boards accessible to the API key's user. */
@@ -86,6 +87,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	db.insert(boardMembers)
 		.values({ boardId: board.id, userId: locals.user.id, role: 'owner' })
 		.run();
+
+	logActivity({
+		boardId: board.id,
+		userId: locals.user.id,
+		action: 'api:board_created',
+		detail: `Created board "${board.name}"`,
+		userName: locals.user.username,
+		userEmoji: locals.user.emoji || '👤'
+	});
 
 	// Return the board with its columns
 	const boardColumns = db.select().from(columns).where(eq(columns.boardId, board.id)).all();

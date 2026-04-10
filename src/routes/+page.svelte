@@ -19,6 +19,7 @@
 	let { data }: { data: PageData } = $props();
 
 	let showCreate = $state(false);
+	let showMoreMenu = $state(false);
 	let newBoardName = $state('');
 	let newBoardEmoji = $state('📋');
 	let newBoardCategory = $state<number | null>(null);
@@ -341,6 +342,8 @@
 	<title>DumpFire — Your Boards</title>
 </svelte:head>
 
+<svelte:window onclick={() => { showMoreMenu = false; }} />
+
 <div class="dashboard">
 	<header class="dashboard-header">
 		<div class="brand">
@@ -355,22 +358,6 @@
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 				All Tasks
 			</a>
-			<a href="/teams" class="nav-pill">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M5.5 8a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM1.5 14v-1a3.5 3.5 0 013.5-3.5h1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-					<path d="M10.5 8a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM14.5 14v-1a3.5 3.5 0 00-2.5-3.37" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-				</svg>
-				Teams
-			</a>
-			{#if isAdmin}
-			<a href="/admin" class="nav-pill">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M8 1l1.1 2.2 2.4.35-1.75 1.7.4 2.4L8 6.6l-2.15 1.05.4-2.4-1.75-1.7 2.4-.35L8 1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-					<path d="M3.5 9.5v3a1 1 0 001 1h7a1 1 0 001-1v-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-				</svg>
-				Admin
-			</a>
-			{/if}
 			<a href="/inbox" class="nav-pill">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 					<path d="M2 4l6 5 6-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -381,20 +368,55 @@
 					<span class="inbox-count-badge">{inboxCount}</span>
 				{/if}
 			</a>
-			<a href="/request" class="nav-pill">
+			<a href="/reports" class="nav-pill" id="reports-link">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-					<path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+					<rect x="2" y="3" width="3" height="10" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
+					<rect x="6.5" y="6" width="3" height="7" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
+					<rect x="11" y="1" width="3" height="12" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
 				</svg>
-				Request
+				Reports
 			</a>
-			<a href="/docs" class="nav-pill" id="api-docs-link">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-					<path d="M2.5 2h4l1.5 2H13.5a1 1 0 011 1v8a1 1 0 01-1 1h-11a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-					<path d="M6 8h4M6 10.5h2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-				</svg>
-				API Docs
-			</a>
+			<!-- More dropdown -->
+			<div class="nav-more-wrapper">
+				<button class="nav-pill nav-more-btn" onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} id="nav-more-btn">
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="4" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12" cy="8" r="1.2" fill="currentColor"/></svg>
+					More
+				</button>
+				{#if showMoreMenu}
+				<div class="nav-more-menu" onclick={(e) => e.stopPropagation()}>
+					<a href="/teams" class="nav-more-item" onclick={() => showMoreMenu = false}>
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+							<path d="M5.5 8a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM1.5 14v-1a3.5 3.5 0 013.5-3.5h1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+							<path d="M10.5 8a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM14.5 14v-1a3.5 3.5 0 00-2.5-3.37" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+						</svg>
+						Teams
+					</a>
+					{#if isAdmin}
+					<a href="/admin" class="nav-more-item" onclick={() => showMoreMenu = false}>
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+							<path d="M8 1l1.1 2.2 2.4.35-1.75 1.7.4 2.4L8 6.6l-2.15 1.05.4-2.4-1.75-1.7 2.4-.35L8 1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+							<path d="M3.5 9.5v3a1 1 0 001 1h7a1 1 0 001-1v-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+						</svg>
+						Admin
+					</a>
+					{/if}
+					<a href="/request" class="nav-more-item" onclick={() => showMoreMenu = false}>
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+							<path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+							<path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+						</svg>
+						Request
+					</a>
+					<a href="/docs" class="nav-more-item" onclick={() => showMoreMenu = false}>
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+							<path d="M2.5 2h4l1.5 2H13.5a1 1 0 011 1v8a1 1 0 01-1 1h-11a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+							<path d="M6 8h4M6 10.5h2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+						</svg>
+						API Docs
+					</a>
+				</div>
+				{/if}
+			</div>
 			<ThemePicker />
 			<button class="btn-primary create-btn" onclick={() => (showCreate = true)} id="create-board-btn">
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -966,7 +988,7 @@
 	/* ─── Header ─────────────────────────────────────────────────── */
 	.dashboard-header {
 		display: flex; align-items: center; justify-content: space-between;
-		margin-bottom: var(--space-xl); padding-bottom: calc(var(--space-xl) + 18px);
+		margin-bottom: var(--space-lg); padding-bottom: var(--space-md);
 		border-bottom: 1px solid var(--glass-border);
 	}
 	.header-nav {
@@ -988,6 +1010,42 @@
 	}
 	.nav-pill svg { flex-shrink: 0; opacity: 0.7; }
 	.nav-pill:hover svg { opacity: 1; }
+	.nav-more-wrapper { position: relative; }
+	.nav-more-menu {
+		position: absolute;
+		top: calc(100% + 6px);
+		right: 0;
+		min-width: 170px;
+		background: var(--bg-surface);
+		border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md);
+		box-shadow: var(--shadow-lg);
+		padding: 4px;
+		z-index: 100;
+		animation: navMenuSlideDown 0.15s ease-out;
+	}
+	@keyframes navMenuSlideDown {
+		from { opacity: 0; transform: translateY(-6px); }
+		to { opacity: 1; transform: translateY(0); }
+	}
+	.nav-more-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 12px;
+		border-radius: var(--radius-sm);
+		font-size: 0.78rem;
+		font-weight: 500;
+		color: var(--text-secondary);
+		text-decoration: none;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.nav-more-item:hover {
+		color: var(--text-primary);
+		background: var(--glass-hover);
+	}
+	.nav-more-item svg { flex-shrink: 0; opacity: 0.65; }
+	.nav-more-item:hover svg { opacity: 1; }
 	.theme-pill { padding: 7px 10px; }
 	.create-btn { border-radius: var(--radius-full); padding: 6px 16px; font-size: 0.78rem; }
 	.inbox-count-badge {

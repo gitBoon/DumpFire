@@ -189,3 +189,36 @@ export async function sendTestEmail(to: string): Promise<void> {
 		`
 	});
 }
+
+/**
+ * Send an email with a file attachment. Used for scheduled PDF reports.
+ * Silently no-ops if SMTP is not configured.
+ */
+export async function sendEmailWithAttachment(
+	to: string,
+	subject: string,
+	html: string,
+	attachment: { filename: string; content: Buffer; contentType: string }
+): Promise<boolean> {
+	const config = getSmtpConfig();
+	if (!config || !config.host) return false;
+
+	try {
+		const transporter = createTransporter(config);
+		await transporter.sendMail({
+			from: `"${config.fromName}" <${config.fromAddress}>`,
+			to,
+			subject,
+			html,
+			attachments: [{
+				filename: attachment.filename,
+				content: attachment.content,
+				contentType: attachment.contentType
+			}]
+		});
+		return true;
+	} catch (err) {
+		log.error(`Failed to send email with attachment to ${to}: ${subject}`, err);
+		return false;
+	}
+}

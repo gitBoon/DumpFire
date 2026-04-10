@@ -4,8 +4,11 @@ import { asc, inArray, eq, isNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals }) => {
+const DEFAULT_COMPLETED_LIMIT = 50;
+
+export const load: PageServerLoad = async ({ locals, url }) => {
 	const user = locals.user!;
+	const completedLimit = Math.max(1, Math.min(500, Number(url.searchParams.get('completedLimit')) || DEFAULT_COMPLETED_LIMIT));
 
 	// Get board IDs this user can access (null = admin, sees all)
 	const accessibleIds = getAccessibleBoardIds(user);
@@ -161,10 +164,25 @@ export const load: PageServerLoad = async ({ locals }) => {
 		return weightA - weightB || a.localeCompare(b);
 	});
 
-	// Group into buckets
+	// Group into buckets — cap completed cards for performance
+	const allCompletedCards = enrichedCards.filter(c => c.bucket === 'Complete');
+	const totalCompletedCount = allCompletedCards.length;
+
+	// Sort completed cards by completedAt (most recent first), fallback to updatedAt
+	allCompletedCards.sort((a, b) => {
+		const aDate = a.completedAt || a.updatedAt || a.createdAt;
+		const bDate = b.completedAt || b.updatedAt || b.createdAt;
+		return bDate.localeCompare(aDate);
+	});
+
+	const cappedCompleted = allCompletedCards.slice(0, completedLimit);
+	const hasMoreCompleted = totalCompletedCount > completedLimit;
+
 	const grouped = buckets.map(bucket => ({
 		title: bucket,
-		cards: enrichedCards.filter(c => c.bucket === bucket),
+		cards: bucket === 'Complete'
+			? cappedCompleted
+			: enrichedCards.filter(c => c.bucket === bucket),
 		contributingBoards: Array.from(bucketBoardMap.get(bucket) || [])
 	}));
 
@@ -176,6 +194,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		columns: allColumns,
 		allUsers: allUsers.map(u => ({ id: u.id, username: u.username, emoji: u.emoji || '👤' })),
 		totalCards: allCards.length,
-		completedCards: enrichedCards.filter(c => c.bucket === 'Complete').length
+		completedCards: totalCompletedCount,
+		hasMoreCompleted,
+		totalCompletedCount,
+		completedLimit
 	};
 };

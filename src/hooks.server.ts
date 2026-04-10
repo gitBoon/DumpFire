@@ -1,6 +1,7 @@
 import { runMigrations } from '$lib/server/db/migrate';
 import { validateSession, SESSION_COOKIE_NAME, hasAnyUsers, cleanExpiredSessions, validateApiKey } from '$lib/server/auth';
 import { initBackupScheduler } from '$lib/server/backup';
+import { initReportScheduler } from '$lib/server/reports';
 import { json, redirect, type Handle } from '@sveltejs/kit';
 import { createLogger } from '$lib/server/logger';
 import { checkRateLimit } from '$lib/server/rate-limit';
@@ -15,6 +16,9 @@ cleanExpiredSessions();
 
 // Start the scheduled backup timer
 initBackupScheduler();
+
+// Start the scheduled report timer
+initReportScheduler();
 
 /** Public routes that don't require authentication. */
 const PUBLIC_ROUTES = ['/login', '/setup', '/invite', '/request', '/api/requests', '/docs', '/api/v1/openapi.json'];

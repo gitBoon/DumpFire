@@ -6,6 +6,7 @@ import { canEditBoard, getBoardRole } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { notifyUserAssigned } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
+import { logActivity } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board and card title that a card belongs to. */
@@ -83,6 +84,18 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 
 	emit(ctx.boardId, 'update', { type: 'card' });
 
+	if (!existing) {
+		logActivity({
+			boardId: ctx.boardId,
+			cardId,
+			userId: locals.user.id,
+			action: 'api:assignee_added',
+			detail: `Assigned ${user.username} to "${ctx.cardTitle}"`,
+			userName: locals.user.username,
+			userEmoji: locals.user.emoji || '👤'
+		});
+	}
+
 	return json({ success: true, message: existing ? 'User already assigned' : 'User assigned' });
 };
 
@@ -108,6 +121,17 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 		.run();
 
 	emit(ctx.boardId, 'update', { type: 'card' });
+
+	const removedUser = db.select({ username: users.username }).from(users).where(eq(users.id, userId)).get();
+	logActivity({
+		boardId: ctx.boardId,
+		cardId,
+		userId: locals.user.id,
+		action: 'api:assignee_removed',
+		detail: `Removed ${removedUser?.username || 'user'} from "${ctx.cardTitle}"`,
+		userName: locals.user.username,
+		userEmoji: locals.user.emoji || '👤'
+	});
 
 	return json({ success: true });
 };

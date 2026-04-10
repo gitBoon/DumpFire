@@ -423,6 +423,36 @@ export const backupLog = sqliteTable('backup_log', {
 
 export type BackupLogEntry = typeof backupLog.$inferSelect;
 
+// ─── Report Schedules ────────────────────────────────────────────────────────
+
+export const reportSchedules = sqliteTable('report_schedules', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	name: text('name').notNull(),
+	scope: text('scope').notNull().default('board'), // 'board' | 'category' | 'all'
+	scopeId: integer('scope_id'),
+	frequency: text('frequency').notNull().default('weekly'), // 'weekly' | 'monthly'
+	dayOfWeek: integer('day_of_week').notNull().default(1),
+	dayOfMonth: integer('day_of_month').notNull().default(1),
+	timeOfDay: text('time_of_day').notNull().default('09:00'),
+	enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+	recipients: text('recipients').notNull().default(''), // comma-separated email addresses
+	periodDays: integer('period_days').notNull().default(7), // lookback period in days
+	lastRunAt: text('last_run_at'),
+	nextRunAt: text('next_run_at'),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text('updated_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export type ReportSchedule = typeof reportSchedules.$inferSelect;
+export type NewReportSchedule = typeof reportSchedules.$inferInsert;
+
 // ─── Insert Types ────────────────────────────────────────────────────────────
 
 export type NewBoard = typeof boards.$inferInsert;

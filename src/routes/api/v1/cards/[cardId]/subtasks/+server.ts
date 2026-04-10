@@ -4,6 +4,7 @@ import { cards, columns, subtasks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
+import { logActivity } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -70,6 +71,17 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		.get();
 
 	emit(boardId, 'update', { type: 'card' });
+
+	const card = db.select({ title: cards.title }).from(cards).where(eq(cards.id, cardId)).get();
+	logActivity({
+		boardId,
+		cardId,
+		userId: locals.user.id,
+		action: 'api:subtask_created',
+		detail: `Created subtask "${title.trim()}" on "${card?.title || 'Unknown'}"`,
+		userName: locals.user.username,
+		userEmoji: locals.user.emoji || '👤'
+	});
 
 	return json(subtask, { status: 201 });
 };
