@@ -14,7 +14,8 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import FireworksCelebration from '$lib/components/board/FireworksCelebration.svelte';
-	import type { CardType, SortOption } from '$lib/types';
+	import type { CardType, ColumnType, CategoryType, SortOption } from '$lib/types';
+	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
 	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC, isNew } from '$lib/utils/date-utils';
 	import { subtaskProgress, sortCards, getSortLabel } from '$lib/utils/card-utils';
 	import { playMoveSound, playCompleteSound, playCreateSound, playNotifySound } from '$lib/utils/sounds';
@@ -292,6 +293,13 @@
 	let knownActivityIds = new Set<number>();
 	let newActivityIds = $state(new Set<number>());
 
+	// More menu & panel state
+	let showMoreMenu = $state(false);
+	let showStatsPanel = $state(false);
+	let showArchivePanel = $state(false);
+	let archivedCards = $state<any[]>([]);
+	let loadingArchive = $state(false);
+
 	onMount(() => {
 		if (browser) {
 			activityOpen = localStorage.getItem('df-activity-open') === 'true';
@@ -303,6 +311,29 @@
 		activityOpen = !activityOpen;
 		if (browser) localStorage.setItem('df-activity-open', String(activityOpen));
 		if (activityOpen && activityItems.length === 0) fetchActivity(true);
+	}
+
+	function toggleStatsPanel() {
+		showStatsPanel = !showStatsPanel;
+	}
+
+	async function toggleArchivePanel() {
+		showArchivePanel = !showArchivePanel;
+		if (showArchivePanel && archivedCards.length === 0) await loadAllArchived();
+	}
+
+	async function loadAllArchived() {
+		loadingArchive = true;
+		try {
+			const res = await fetch('/api/cards/archived');
+			if (res.ok) archivedCards = await res.json();
+		} finally { loadingArchive = false; }
+	}
+
+	async function restoreArchivedCard(cardId: number) {
+		await fetch(`/api/cards/${cardId}/restore`, { method: 'POST' });
+		archivedCards = archivedCards.filter(c => c.id !== cardId);
+		await invalidateAll();
 	}
 
 	async function fetchActivity(initial = false) {
@@ -384,7 +415,7 @@
 
 <svelte:window onclick={closeSortDropdowns} />
 
-<div class="all-page-wrapper">
+<div class="all-page-wrapper" onclick={() => { showMoreMenu = false; }}>
 <div class="all-page">
 	<header class="all-header">
 		<div class="all-header-left">
@@ -411,9 +442,33 @@
 				</svg>
 				<input type="text" class="search-input" placeholder="Search tasks..." bind:value={searchQuery} />
 			</div>
-			<button class="btn-ghost activity-toggle-btn" class:active={activityOpen} onclick={toggleActivity} title="Activity Feed">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 3h12M2 6h8M2 9h10M2 12h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-			</button>
+			<div class="more-menu-container">
+				<button class="btn-ghost nav-btn" onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="Panels">
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="3" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="13" r="1.2" fill="currentColor"/></svg>
+					More
+				</button>
+				{#if showMoreMenu}
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div class="more-dropdown" onclick={(e) => e.stopPropagation()}>
+						<div class="more-dropdown-section">
+							<div class="more-dropdown-label">Panels</div>
+							<button class="more-dropdown-item" class:more-active={activityOpen} onclick={() => { toggleActivity(); showMoreMenu = false; }}>
+								<span class="more-item-icon">📋</span> Activity Log
+								{#if activityOpen}<span class="more-check">✓</span>{/if}
+							</button>
+							<button class="more-dropdown-item" class:more-active={showStatsPanel} onclick={() => { toggleStatsPanel(); showMoreMenu = false; }}>
+								<span class="more-item-icon">📊</span> Statistics
+								{#if showStatsPanel}<span class="more-check">✓</span>{/if}
+							</button>
+							<button class="more-dropdown-item" class:more-active={showArchivePanel} onclick={() => { toggleArchivePanel(); showMoreMenu = false; }}>
+								<span class="more-item-icon">🗄️</span> Archived Cards
+								{#if showArchivePanel}<span class="more-check">✓</span>{/if}
+							</button>
+						</div>
+					</div>
+				{/if}
+			</div>
 			<a class="btn-ghost export-csv-btn" href={boardFilter !== 'all' ? `/api/cards/export/csv?boardId=${boardFilter}` : '/api/cards/export/csv'} download title="Export to CSV">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 			</a>
@@ -579,8 +634,7 @@
 		</div>
 	</div>
 </div> <!-- /.all-page -->
-
-<!-- Activity Panel (inside wrapper, pushes content) -->
+<div class="all-panels-area">
 {#if activityOpen}
 <div class="activity-panel">
 	<div class="activity-panel-header">
@@ -630,6 +684,60 @@
 	</div>
 </div>
 {/if}
+{#if showStatsPanel}
+	{@const syntheticColumns = data.buckets.map((b, i) => ({
+		id: i + 1,
+		boardId: 0,
+		title: b.title,
+		position: i,
+		color: b.title === 'Complete' ? '#10b981' : b.title === 'In Progress' ? '#6366f1' : b.title === 'On Hold' ? '#f59e0b' : '#64748b',
+		showAddCard: false,
+		wipLimit: 0,
+		cards: b.cards as unknown as CardType[]
+	} satisfies ColumnType))}
+	<StatsPanel
+		boardColumns={syntheticColumns}
+		boardCategories={data.categories as unknown as CategoryType[]}
+		boardId={boardFilter !== 'all' ? Number(boardFilter) : 0}
+		onClose={() => (showStatsPanel = false)}
+	/>
+{/if}
+{#if showArchivePanel}
+<div class="activity-panel">
+	<div class="activity-panel-header">
+		<h3>🗄️ Archived Cards</h3>
+		<div style="display:flex;gap:4px;">
+			<button class="activity-refresh-btn" onclick={() => loadAllArchived()} title="Refresh">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7a4.5 4.5 0 0 1 8.5-2M11.5 7a4.5 4.5 0 0 1-8.5 2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11 2v3h-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 12V9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+			</button>
+			<button class="activity-refresh-btn" onclick={() => (showArchivePanel = false)} title="Close">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+			</button>
+		</div>
+	</div>
+	<div class="activity-list" style="padding: var(--space-md);">
+		{#if loadingArchive}
+			<div class="activity-loading">Loading...</div>
+		{:else if archivedCards.length === 0}
+			<div class="activity-empty">
+				<span style="font-size:2rem;">📦</span>
+				<p>No archived cards</p>
+			</div>
+		{:else}
+			{#each archivedCards as card (card.id)}
+				<div class="archive-card-item">
+					<div class="archive-card-info">
+						<span class="archive-card-title">{card.title}</span>
+						{#if card.boardName}<span class="archive-card-board">{card.boardName}</span>{/if}
+					</div>
+					<button class="btn-ghost small" onclick={() => restoreArchivedCard(card.id)} title="Restore">↩️</button>
+				</div>
+			{/each}
+		{/if}
+	</div>
+</div>
+{/if}
+</div> <!-- /.all-panels-area -->
 </div> <!-- /all-page-wrapper -->
 
 <!-- Card Edit Modal -->
@@ -722,6 +830,7 @@
 		height: 100vh;
 		overflow: hidden;
 	}
+	.all-panels-area { display: flex; flex-shrink: 0; }
 	.all-page {
 		display: flex;
 		flex-direction: column;
@@ -1552,4 +1661,62 @@
 		color: var(--text-secondary);
 		font-size: 0.8rem;
 	}
+
+	/* More Menu Dropdown */
+	.more-menu-container { position: relative; }
+	.more-dropdown {
+		position: absolute; top: 100%; right: 0;
+		min-width: 200px; padding: var(--space-xs);
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md); box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+		z-index: 100; animation: fadeIn 0.1s ease-out;
+	}
+	@keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+	.more-dropdown-label {
+		font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.04em; color: var(--text-tertiary);
+		padding: var(--space-xs) var(--space-sm);
+	}
+	.more-dropdown-item {
+		display: flex; align-items: center; gap: var(--space-sm);
+		width: 100%; padding: var(--space-sm); border: none;
+		background: transparent; color: var(--text-primary);
+		font-size: 0.82rem; cursor: pointer; border-radius: var(--radius-sm);
+		transition: background 0.1s;
+	}
+	.more-dropdown-item:hover { background: var(--glass-hover); }
+	.more-dropdown-item.more-active { color: var(--accent-indigo); }
+	.more-item-icon { font-size: 1rem; }
+	.more-check { margin-left: auto; font-size: 0.8rem; color: var(--accent-emerald); }
+
+	/* All Tasks Stats Panel */
+	.all-stats-grid {
+		display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-sm);
+		margin-bottom: var(--space-lg);
+	}
+	.all-stat-card {
+		display: flex; flex-direction: column; align-items: center;
+		padding: var(--space-md); border-radius: var(--radius-md);
+		background: var(--glass-bg); border: 1px solid var(--glass-border);
+	}
+	.all-stat-value { font-size: 1.5rem; font-weight: 800; color: var(--accent-indigo); }
+	.all-stat-label { font-size: 0.68rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+	.all-stats-section-title { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); margin-bottom: var(--space-sm); }
+	.all-stats-board-row { display: flex; align-items: center; gap: var(--space-sm); margin-bottom: var(--space-xs); }
+	.all-stats-board-name { font-size: 0.72rem; font-weight: 600; width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+	.all-stats-bar-track { flex: 1; height: 8px; background: var(--glass-bg); border-radius: 4px; overflow: hidden; }
+	.all-stats-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease-out; min-width: 2px; }
+	.all-stats-board-count { font-size: 0.68rem; font-weight: 700; color: var(--text-secondary); width: 40px; text-align: right; }
+
+	/* Archive Card Items */
+	.archive-card-item {
+		display: flex; align-items: center; justify-content: space-between;
+		padding: var(--space-sm); border-radius: var(--radius-sm);
+		border: 1px solid var(--glass-border); margin-bottom: var(--space-xs);
+		transition: border-color 0.15s;
+	}
+	.archive-card-item:hover { border-color: var(--accent-indigo); }
+	.archive-card-info { flex: 1; min-width: 0; }
+	.archive-card-title { font-size: 0.82rem; font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.archive-card-board { font-size: 0.68rem; color: var(--text-tertiary); }
 </style>

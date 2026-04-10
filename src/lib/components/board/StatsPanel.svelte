@@ -119,10 +119,7 @@
   onMount(() => { loadMetrics(); loadCfd(); loadBurndown(); });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="panel-overlay" onclick={onClose}></div>
-<aside class="side-panel glass">
+<aside class="side-panel">
   <div class="panel-header">
     <h3>📊 Board Stats</h3>
     <button class="btn-ghost close-btn" onclick={onClose}>✕</button>
@@ -238,17 +235,14 @@
 </aside>
 
 <style>
-  .panel-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 90;
-  }
   .side-panel {
-    position: fixed; top: 0; right: 0; bottom: 0; width: 360px;
-    z-index: 91; display: flex; flex-direction: column;
+    width: 340px; height: 100vh; flex-shrink: 0;
+    display: flex; flex-direction: column;
     border-left: 1px solid var(--glass-border);
-    background: var(--bg-base) !important;
-    animation: panelSlide 0.2s ease-out;
+    background: var(--bg-surface);
+    animation: panelSlideIn 0.2s ease-out;
   }
-  @keyframes panelSlide { from { transform: translateX(100%); } to { transform: translateX(0); } }
+  @keyframes panelSlideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
   .panel-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--glass-border);
