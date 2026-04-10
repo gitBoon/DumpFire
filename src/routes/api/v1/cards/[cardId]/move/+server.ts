@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
+import { logActivity } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -130,6 +131,18 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		userName: locals.user.username,
 		userEmoji: locals.user.emoji || '\ud83d\udc64'
 	});
+
+	if (isMovingColumn) {
+		logActivity({
+			boardId,
+			cardId,
+			userId: locals.user.id,
+			action: 'api:card_moved',
+			detail: `"${existingCard.title}" from ${fromCol?.title || 'Unknown'} to ${targetCol.title}`,
+			userName: locals.user.username,
+			userEmoji: locals.user.emoji || '\ud83d\udc64'
+		});
+	}
 
 	// Return the moved card with column info
 	const movedCard = db.select().from(cards).where(eq(cards.id, cardId)).get();

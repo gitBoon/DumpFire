@@ -37,6 +37,34 @@
 	let celebrateUserEmoji = $state('');
 	let celebrateXpGained = $state(0);
 
+	type CelebrationItem = { cardTitle: string; userName: string; userEmoji: string; xpGained: number };
+	let celebrationQueue: CelebrationItem[] = [];
+	let celebrationPlaying = false;
+
+	function playNextCelebration() {
+		const next = celebrationQueue.shift();
+		if (!next) {
+			celebrationPlaying = false;
+			return;
+		}
+		celebrationPlaying = true;
+		// Brief reset to re-trigger animation if already showing
+		showFireworks = false;
+		requestAnimationFrame(() => {
+			celebrateCardTitle = next.cardTitle;
+			celebrateUserName = next.userName;
+			celebrateUserEmoji = next.userEmoji;
+			celebrateXpGained = next.xpGained;
+			showFireworks = true;
+			playCompleteSound();
+			setTimeout(() => {
+				showFireworks = false;
+				// Always try to drain the queue
+				setTimeout(playNextCelebration, 300);
+			}, 3000);
+		});
+	}
+
 	// ─── Live Activity Toast ──────────────────────────────────────────────
 	type LiveToast = {
 		id: number;
@@ -75,19 +103,24 @@
 					playNotifySound();
 				}
 			} catch { /* fallback — still refresh */ }
-			invalidateAll();
+			// Defer data refresh so celebrate event can trigger fireworks first
+			setTimeout(() => {
+				invalidateAll();
+				if (activityOpen) fetchActivity();
+			}, 250);
 		});
 
 		eventSource.addEventListener('celebrate', (e) => {
 			try {
 				const d = JSON.parse(e.data);
-				celebrateCardTitle = d.cardTitle || '';
-				celebrateUserName = d.userName || 'Someone';
-				celebrateUserEmoji = d.userEmoji || '👤';
-				celebrateXpGained = d.xpGained || 0;
-				showFireworks = true;
-				playCompleteSound();
-				setTimeout(() => (showFireworks = false), 3000);
+				// Queue celebrations so each one shows sequentially
+				celebrationQueue.push({
+					cardTitle: d.cardTitle || '',
+					userName: d.userName || 'Someone',
+					userEmoji: d.userEmoji || '👤',
+					xpGained: d.xpGained || 0
+				});
+				if (!celebrationPlaying) playNextCelebration();
 			} catch {
 				// Ignore parse errors
 			}
@@ -144,7 +177,7 @@
 	function getSortedCards(cards: any[], bucketTitle: string): any[] {
 		const sort = bucketSorts[bucketTitle];
 		if (!sort || sort === 'none') return cards;
-		return sortCards([...cards] as CardType[], sort, data.categories);
+		return sortCards([...cards] as CardType[], sort, data.categories as any);
 	}
 
 	// ─── Card Editing ────────────────────────────────────────────────────
@@ -237,8 +270,86 @@
 		return data.columns.filter((c: any) => c.boardId === boardId);
 	}
 
+	let loadingMore = $state(false);
+
+	async function loadMoreCompleted() {
+		loadingMore = true;
+		const newLimit = (data.completedLimit || 50) + 50;
+		const url = new URL(window.location.href);
+		url.searchParams.set('completedLimit', String(newLimit));
+		window.history.replaceState({}, '', url.toString());
+		await invalidateAll();
+		loadingMore = false;
+	}
+
 	function closeSortDropdowns() {
 		openSortDropdown = null;
+	}
+
+	// ─── Activity Panel ────────────────────────────────────────────────────
+	let activityOpen = $state(false);
+	let activityItems = $state<any[]>([]);
+	let activityLoading = $state(false);
+
+	onMount(() => {
+		if (browser) {
+			activityOpen = localStorage.getItem('df-activity-open') === 'true';
+			if (activityOpen) fetchActivity();
+		}
+	});
+
+	function toggleActivity() {
+		activityOpen = !activityOpen;
+		if (browser) localStorage.setItem('df-activity-open', String(activityOpen));
+		if (activityOpen && activityItems.length === 0) fetchActivity();
+	}
+
+	async function fetchActivity() {
+		activityLoading = true;
+		try {
+			const res = await fetch('/api/activity');
+			if (res.ok) activityItems = await res.json();
+		} catch { /* ignore */ }
+		activityLoading = false;
+	}
+
+	function formatActivityTime(dateStr: string) {
+		if (!dateStr) return '';
+		const d = parseUTC(dateStr);
+		const now = new Date();
+		const diffMs = now.getTime() - d.getTime();
+		const mins = Math.floor(diffMs / 60000);
+		if (mins < 1) return 'just now';
+		if (mins < 60) return `${mins}m ago`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h ago`;
+		const days = Math.floor(hrs / 24);
+		if (days < 7) return `${days}d ago`;
+		return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+	}
+
+	function getActionLabel(action: string): string {
+		const labels: Record<string, string> = {
+			'api:card_updated': 'Updated card',
+			'api:card_archived': 'Archived card',
+			'api:card_deleted': 'Deleted card',
+			'api:card_moved': 'Moved card',
+			'api:assignee_added': 'Assigned user',
+			'api:assignee_removed': 'Unassigned user',
+			'api:comment_added': 'Added comment',
+			'api:subtask_created': 'Created subtask',
+			'api:board_created': 'Created board',
+			'card_created': 'Created card',
+			'card_moved': 'Moved card',
+			'card_completed': 'Completed card',
+			'subtask_toggled': 'Updated subtask',
+			'comment_added': 'Added comment'
+		};
+		return labels[action] || action.replace(/_/g, ' ');
+	}
+
+	function isApiAction(action: string): boolean {
+		return action.startsWith('api:');
 	}
 </script>
 
@@ -248,6 +359,7 @@
 
 <svelte:window onclick={closeSortDropdowns} />
 
+<div class="all-page-wrapper">
 <div class="all-page">
 	<header class="all-header">
 		<div class="all-header-left">
@@ -274,6 +386,9 @@
 				</svg>
 				<input type="text" class="search-input" placeholder="Search tasks..." bind:value={searchQuery} />
 			</div>
+			<button class="btn-ghost activity-toggle-btn" class:active={activityOpen} onclick={toggleActivity} title="Activity Feed">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 3h12M2 6h8M2 9h10M2 12h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+			</button>
 			<ThemePicker />
 		</div>
 	</header>
@@ -287,7 +402,13 @@
 						<div class="column-title-row">
 							<span class="column-color-dot" style="background: {bucketColors[bucket.title] || '#8b5cf6'}"></span>
 							<h2 class="column-title">{bucket.title}</h2>
-							<span class="column-count">{filteredCards.length}</span>
+							<span class="column-count">
+								{#if bucket.title === 'Complete' && data.hasMoreCompleted}
+									{filteredCards.length} of {data.totalCompletedCount}
+								{:else}
+									{filteredCards.length}
+								{/if}
+							</span>
 							<div class="sort-wrapper">
 								{#if bucketSorts[bucket.title] && bucketSorts[bucket.title] !== 'none'}
 									<button class="sort-active-badge" onclick={(e) => { e.stopPropagation(); setBucketSort(bucket.title, 'none'); }} title="Clear sort">
@@ -415,12 +536,73 @@
 						{:else}
 							<div class="column-empty">No tasks</div>
 						{/each}
+						{#if bucket.title === 'Complete' && data.hasMoreCompleted}
+							<button class="load-more-btn" onclick={loadMoreCompleted} disabled={loadingMore} id="load-more-completed">
+								{#if loadingMore}
+									<span class="spinner"></span> Loading…
+								{:else}
+									Show More ({data.totalCompletedCount - filteredCards.length} remaining)
+								{/if}
+							</button>
+						{/if}
 					</div>
 				</div>
 			{/each}
 		</div>
 	</div>
+</div> <!-- /.all-page -->
+
+<!-- Activity Panel (inside wrapper, pushes content) -->
+{#if activityOpen}
+<div class="activity-panel">
+	<div class="activity-panel-header">
+		<h3>
+			<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3h10M2 5.5h7M2 8h8M2 10.5h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+			Activity
+		</h3>
+		<div style="display:flex;gap:4px;">
+			<button class="activity-refresh-btn" onclick={fetchActivity} title="Refresh">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7a4.5 4.5 0 0 1 8.5-2M11.5 7a4.5 4.5 0 0 1-8.5 2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11 2v3h-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 12V9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+			</button>
+			<button class="activity-refresh-btn" onclick={toggleActivity} title="Close">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+			</button>
+		</div>
+	</div>
+	<div class="activity-list">
+		{#if activityLoading}
+			<div class="activity-loading">Loading activity...</div>
+		{:else if activityItems.length === 0}
+			<div class="activity-empty">No activity yet</div>
+		{:else}
+			{#each activityItems as item}
+				<div class="activity-item">
+					<div class="activity-avatar">{item.userEmoji || '👤'}</div>
+					<div class="activity-body">
+						<div class="activity-action-line">
+							<span class="activity-action-label">{item.userName || 'System'}</span>
+							{getActionLabel(item.action)}
+							{#if isApiAction(item.action)}
+								<span class="activity-api-badge">API</span>
+							{/if}
+						</div>
+						{#if item.detail}
+							<div class="activity-detail">{item.detail}</div>
+						{/if}
+						<div class="activity-meta">
+							<span>{formatActivityTime(item.createdAt)}</span>
+							{#if item.boardName}
+								<span class="activity-board-tag">{item.boardName}</span>
+							{/if}
+						</div>
+					</div>
+				</div>
+			{/each}
+		{/if}
+	</div>
 </div>
+{/if}
+</div> <!-- /all-page-wrapper -->
 
 <!-- Card Edit Modal -->
 {#if showCardModal && editingCard}
@@ -478,7 +660,6 @@
 	/>
 {/if}
 
-<!-- Live Activity Toasts -->
 {#if liveToasts.length > 0}
 	<div class="live-toast-container">
 		{#each liveToasts as toast (toast.id)}
@@ -507,11 +688,20 @@
 {/if}
 
 <style>
+	/* Flex wrapper for page + activity panel */
+	.all-page-wrapper {
+		display: flex;
+		height: 100vh;
+		overflow: hidden;
+	}
 	.all-page {
 		display: flex;
 		flex-direction: column;
+		flex: 1;
+		min-width: 0;
 		height: 100vh;
 		overflow: hidden;
+		transition: flex 0.2s ease;
 	}
 
 	.all-header {
@@ -696,6 +886,48 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-sm);
+	}
+
+	.load-more-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-sm);
+		width: 100%;
+		padding: var(--space-md);
+		border-radius: var(--radius-md);
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
+		font-size: 0.75rem;
+		font-weight: 600;
+		border: 1px dashed var(--glass-border);
+		cursor: pointer;
+		transition: all var(--duration-normal) var(--ease-out);
+		flex-shrink: 0;
+	}
+
+	.load-more-btn:hover:not(:disabled) {
+		background: var(--accent-purple-glow);
+		color: var(--accent-purple);
+		border-color: var(--accent-purple);
+	}
+
+	.load-more-btn:disabled {
+		opacity: 0.6;
+		cursor: wait;
+	}
+
+	.load-more-btn .spinner {
+		width: 14px;
+		height: 14px;
+		border: 2px solid var(--glass-border);
+		border-top-color: var(--accent-purple);
+		border-radius: 50%;
+		animation: spin 0.6s linear infinite;
+	}
+
+	@keyframes spin {
+		to { transform: rotate(360deg); }
 	}
 
 	.card {
@@ -1145,5 +1377,142 @@
 	@keyframes toastIconPulse {
 		0%, 100% { transform: scale(1); }
 		50% { transform: scale(1.15); }
+	}
+	/* Activity Panel */
+	.activity-toggle-btn {
+		position: relative;
+	}
+	.activity-toggle-btn.active {
+		color: var(--accent-indigo);
+		background: var(--glass-hover);
+	}
+	.activity-panel {
+		width: 360px;
+		height: 100vh;
+		background: var(--bg-surface);
+		border-left: 1px solid var(--glass-border);
+		z-index: 10;
+		display: flex;
+		flex-direction: column;
+		flex-shrink: 0;
+		animation: slideInPanel 0.2s ease-out;
+	}
+	@keyframes slideInPanel {
+		from { transform: translateX(100%); }
+		to { transform: translateX(0); }
+	}
+	.activity-panel-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 16px 20px;
+		border-bottom: 1px solid var(--glass-border);
+		flex-shrink: 0;
+	}
+	.activity-panel-header h3 {
+		margin: 0;
+		font-size: 0.9rem;
+		color: var(--text-primary);
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	.activity-panel-header h3 svg {
+		opacity: 0.6;
+	}
+	.activity-refresh-btn {
+		background: none;
+		border: none;
+		color: var(--text-secondary);
+		cursor: pointer;
+		padding: 4px;
+		border-radius: 4px;
+		transition: color 0.15s;
+	}
+	.activity-refresh-btn:hover { color: var(--text-primary); }
+	.activity-list {
+		flex: 1;
+		overflow-y: auto;
+		padding: 8px 0;
+	}
+	.activity-item {
+		display: flex;
+		gap: 10px;
+		padding: 10px 20px;
+		transition: background 0.1s;
+	}
+	.activity-item:hover {
+		background: var(--glass-hover);
+	}
+	.activity-avatar {
+		width: 28px;
+		height: 28px;
+		border-radius: 50%;
+		background: var(--glass-hover);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 14px;
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+	.activity-body {
+		flex: 1;
+		min-width: 0;
+	}
+	.activity-action-line {
+		font-size: 0.78rem;
+		color: var(--text-primary);
+		line-height: 1.3;
+	}
+	.activity-action-label {
+		font-weight: 600;
+	}
+	.activity-api-badge {
+		display: inline-block;
+		padding: 1px 5px;
+		background: var(--glass-hover);
+		color: var(--accent-indigo);
+		border-radius: 3px;
+		font-size: 0.6rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		margin-left: 4px;
+		vertical-align: middle;
+	}
+	.activity-detail {
+		font-size: 0.72rem;
+		color: var(--text-secondary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		margin-top: 2px;
+	}
+	.activity-meta {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 3px;
+		font-size: 0.68rem;
+		color: var(--text-secondary);
+	}
+	.activity-board-tag {
+		padding: 1px 5px;
+		background: var(--bg-elevated);
+		border-radius: 3px;
+		font-size: 0.65rem;
+		color: var(--text-secondary);
+	}
+	.activity-empty {
+		padding: 40px 20px;
+		text-align: center;
+		color: var(--text-secondary);
+		font-size: 0.82rem;
+	}
+	.activity-loading {
+		padding: 30px 20px;
+		text-align: center;
+		color: var(--text-secondary);
+		font-size: 0.8rem;
 	}
 </style>

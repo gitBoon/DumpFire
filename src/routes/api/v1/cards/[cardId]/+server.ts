@@ -4,6 +4,7 @@ import { cards, columns, subtasks, cardLabels, cardAssignees, users } from '$lib
 import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
+import { logActivity } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -117,6 +118,17 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 	emit(boardId, 'update', { type: 'card' });
 
+	const changedFields = Object.keys(updateData).filter(k => k !== 'updatedAt').join(', ');
+	logActivity({
+		boardId,
+		cardId,
+		userId: locals.user.id,
+		action: 'api:card_updated',
+		detail: `Updated fields: ${changedFields} on "${updated.title}"`,
+		userName: locals.user.username,
+		userEmoji: locals.user.emoji || '👤'
+	});
+
 	return json(updated);
 };
 
@@ -135,6 +147,7 @@ export const DELETE: RequestHandler = async ({ params, url, locals }) => {
 	}
 
 	const permanent = url.searchParams.get('permanent') === 'true';
+	const cardTitle = db.select({ title: cards.title }).from(cards).where(eq(cards.id, cardId)).get()?.title || 'Unknown';
 
 	if (permanent) {
 		db.delete(cards).where(eq(cards.id, cardId)).run();
@@ -146,6 +159,16 @@ export const DELETE: RequestHandler = async ({ params, url, locals }) => {
 	}
 
 	emit(boardId, 'update', { type: 'card' });
+
+	logActivity({
+		boardId,
+		cardId,
+		userId: locals.user.id,
+		action: permanent ? 'api:card_deleted' : 'api:card_archived',
+		detail: `"${cardTitle}"`,
+		userName: locals.user.username,
+		userEmoji: locals.user.emoji || '👤'
+	});
 
 	return json({ success: true });
 };
