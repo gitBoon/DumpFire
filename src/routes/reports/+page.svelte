@@ -19,8 +19,8 @@
 	let isAdmin = $derived(data.isAdmin);
 
 	// ─── Generate Report Form ───────────────────────────────────────────
-	let genScope = $state<'board' | 'category' | 'all'>('board');
-	let genScopeId = $state<number | null>(null);
+	// Unified target: 'all', 'cat:<id>', or '<boardId>'
+	let genTarget = $state<string>(data.boards.length > 0 ? String(data.boards[0].id) : 'all');
 	let genPeriod = $state('7d');
 	let genCustomStart = $state('');
 	let genCustomEnd = $state('');
@@ -30,14 +30,44 @@
 	// PDF preview
 	let pdfUrl = $state<string | null>(null);
 
-	$effect(() => {
-		if (genScope === 'board' && data.boards.length > 0 && !genScopeId) {
-			genScopeId = data.boards[0].id;
-		} else if (genScope === 'category' && data.categories.length > 0 && !genScopeId) {
-			genScopeId = data.categories[0].id;
-		} else if (genScope === 'all') {
-			genScopeId = null;
+	// Derive scope and scopeId from the unified target
+	let genScope = $derived<'board' | 'category' | 'all'>(
+		genTarget === 'all' ? 'all' : genTarget.startsWith('cat:') ? 'category' : 'board'
+	);
+	let genScopeId = $derived<number | null>(
+		genTarget === 'all' ? null : genTarget.startsWith('cat:') ? Number(genTarget.slice(4)) : Number(genTarget)
+	);
+
+	// Group boards by category for optgroup display
+	let categorisedBoards = $derived(() => {
+		const catMap = new Map<number, { name: string; color: string }>();
+		for (const c of data.categories) catMap.set(c.id, { name: c.name, color: c.color });
+
+		const groups: { label: string; catId: number | null; boards: typeof data.boards }[] = [];
+		const byCategory = new Map<number | null, typeof data.boards>();
+
+		for (const b of data.boards) {
+			const key = b.categoryId ?? null;
+			if (!byCategory.has(key)) byCategory.set(key, []);
+			byCategory.get(key)!.push(b);
 		}
+
+		// Categories with boards first
+		for (const [catId, boards] of byCategory) {
+			if (catId !== null) {
+				const cat = catMap.get(catId);
+				groups.push({ label: cat?.name || 'Unknown', catId, boards });
+			}
+		}
+		groups.sort((a, b) => a.label.localeCompare(b.label));
+
+		// Uncategorised at end
+		const uncategorised = byCategory.get(null);
+		if (uncategorised && uncategorised.length > 0) {
+			groups.push({ label: 'Uncategorised', catId: null, boards: uncategorised });
+		}
+
+		return groups;
 	});
 
 	function getPeriodDates(): { start: string; end: string } {
@@ -156,8 +186,7 @@
 	// ─── Schedules ──────────────────────────────────────────────────────
 	let showNewSchedule = $state(false);
 	let schedName = $state('');
-	let schedScope = $state<'board' | 'category' | 'all'>('board');
-	let schedScopeId = $state<number | null>(null);
+	let schedTarget = $state<string>(data.boards.length > 0 ? String(data.boards[0].id) : 'all');
 	let schedFrequency = $state<'weekly' | 'monthly'>('weekly');
 	let schedDayOfWeek = $state(1);
 	let schedDayOfMonth = $state(1);
@@ -166,15 +195,12 @@
 	let schedPeriodDays = $state(7);
 	let schedCreating = $state(false);
 
-	$effect(() => {
-		if (schedScope === 'board' && data.boards.length > 0 && !schedScopeId) {
-			schedScopeId = data.boards[0].id;
-		} else if (schedScope === 'category' && data.categories.length > 0 && !schedScopeId) {
-			schedScopeId = data.categories[0].id;
-		} else if (schedScope === 'all') {
-			schedScopeId = null;
-		}
-	});
+	let schedScope = $derived<'board' | 'category' | 'all'>(
+		schedTarget === 'all' ? 'all' : schedTarget.startsWith('cat:') ? 'category' : 'board'
+	);
+	let schedScopeId = $derived<number | null>(
+		schedTarget === 'all' ? null : schedTarget.startsWith('cat:') ? Number(schedTarget.slice(4)) : Number(schedTarget)
+	);
 
 	async function createSchedule() {
 		schedCreating = true;
@@ -353,35 +379,23 @@
 
 				<div class="form-row">
 					<div class="form-group">
-						<label for="gen-scope">Scope</label>
-						<select id="gen-scope" bind:value={genScope} onchange={() => { genScopeId = null; }}>
-							<option value="board">Single Board</option>
-							<option value="category">Board Category</option>
+						<label for="gen-target">Report Target</label>
+						<select id="gen-target" bind:value={genTarget}>
 							{#if isAdmin}
-								<option value="all">All Boards (Admin)</option>
+								<option value="all">🌐 All Boards</option>
 							{/if}
+							{#each categorisedBoards() as group}
+								<optgroup label="{group.label}">
+									{#if group.catId !== null}
+										<option value="cat:{group.catId}">🏷️ All {group.label} boards</option>
+									{/if}
+									{#each group.boards as board}
+										<option value={String(board.id)}>{board.emoji} {board.name}</option>
+									{/each}
+								</optgroup>
+							{/each}
 						</select>
 					</div>
-
-					{#if genScope === 'board'}
-						<div class="form-group">
-							<label for="gen-board">Board</label>
-							<select id="gen-board" bind:value={genScopeId}>
-								{#each data.boards as board}
-									<option value={board.id}>{board.emoji} {board.name}</option>
-								{/each}
-							</select>
-						</div>
-					{:else if genScope === 'category'}
-						<div class="form-group">
-							<label for="gen-category">Category</label>
-							<select id="gen-category" bind:value={genScopeId}>
-								{#each data.categories as cat}
-									<option value={cat.id}>🏷️ {cat.name}</option>
-								{/each}
-							</select>
-						</div>
-					{/if}
 				</div>
 
 				<div class="form-row">
@@ -445,34 +459,23 @@
 						</div>
 						<div class="form-row">
 							<div class="form-group">
-								<label for="sched-scope">Scope</label>
-								<select id="sched-scope" bind:value={schedScope} onchange={() => { schedScopeId = null; }}>
-									<option value="board">Single Board</option>
-									<option value="category">Board Category</option>
+								<label for="sched-target">Report Target</label>
+								<select id="sched-target" bind:value={schedTarget}>
 									{#if isAdmin}
-										<option value="all">All Boards (Admin)</option>
+										<option value="all">🌐 All Boards</option>
 									{/if}
+									{#each categorisedBoards() as group}
+										<optgroup label="{group.label}">
+											{#if group.catId !== null}
+												<option value="cat:{group.catId}">🏷️ All {group.label} boards</option>
+											{/if}
+											{#each group.boards as board}
+												<option value={String(board.id)}>{board.emoji} {board.name}</option>
+											{/each}
+										</optgroup>
+									{/each}
 								</select>
 							</div>
-							{#if schedScope === 'board'}
-								<div class="form-group">
-									<label for="sched-board">Board</label>
-									<select id="sched-board" bind:value={schedScopeId}>
-										{#each data.boards as board}
-											<option value={board.id}>{board.emoji} {board.name}</option>
-										{/each}
-									</select>
-								</div>
-							{:else if schedScope === 'category'}
-								<div class="form-group">
-									<label for="sched-cat">Category</label>
-									<select id="sched-cat" bind:value={schedScopeId}>
-										{#each data.categories as cat}
-											<option value={cat.id}>🏷️ {cat.name}</option>
-										{/each}
-									</select>
-								</div>
-							{/if}
 						</div>
 						<div class="form-row">
 							<div class="form-group">

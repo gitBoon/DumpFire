@@ -360,6 +360,17 @@
 		pendingSubtasks = pendingSubtasks.filter(s => s.id !== id);
 	}
 
+	// Share link
+	let linkCopied = $state(false);
+	function shareLink() {
+		if (!card) return;
+		const url = `${window.location.origin}/board/${boardId}?card=${card.id}`;
+		navigator.clipboard.writeText(url).then(() => {
+			linkCopied = true;
+			setTimeout(() => (linkCopied = false), 2000);
+		});
+	}
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (showSubtaskModal) return; // Let subtask modal handle its own escape
 		if (e.key === 'Escape') onClose();
@@ -576,12 +587,24 @@
 		{/if}
 		<div class="modal-header">
 			<h2>{card ? 'Edit Task' : 'New Task'}</h2>
-			<button class="close-btn btn-ghost" onclick={onClose} aria-label="Close">
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<line x1="18" y1="6" x2="6" y2="18"></line>
-					<line x1="6" y1="6" x2="18" y2="18"></line>
-				</svg>
-			</button>
+			<div class="modal-header-actions">
+				{#if card}
+					<button class="share-link-btn btn-ghost" onclick={shareLink} title="Copy link to this task">
+						{#if linkCopied}
+							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green, #10b981)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+							<span class="copied-tooltip">Copied!</span>
+						{:else}
+							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+						{/if}
+					</button>
+				{/if}
+				<button class="close-btn btn-ghost" onclick={onClose} aria-label="Close">
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<line x1="18" y1="6" x2="6" y2="18"></line>
+						<line x1="6" y1="6" x2="18" y2="18"></line>
+					</svg>
+				</button>
+			</div>
 		</div>
 
 		<div class="modal-body">
@@ -1305,7 +1328,23 @@
 
 	.modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0; padding: var(--space-lg) var(--space-xl) 0; }
 	.modal-header h2 { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); }
+	.modal-header-actions { display: flex; align-items: center; gap: var(--space-xs); }
 	.close-btn { padding: var(--space-xs) !important; flex-shrink: 0; }
+	.share-link-btn {
+		position: relative; padding: var(--space-xs) !important; flex-shrink: 0;
+		color: var(--text-tertiary); transition: color var(--duration-fast) var(--ease-out);
+	}
+	.share-link-btn:hover { color: var(--accent-purple, #6366f1); }
+	.copied-tooltip {
+		position: absolute; top: -28px; left: 50%; transform: translateX(-50%);
+		background: var(--accent-green, #10b981); color: white; font-size: 0.65rem; font-weight: 600;
+		padding: 2px 8px; border-radius: var(--radius-sm); white-space: nowrap;
+		animation: fade-tooltip 2s ease-out forwards; pointer-events: none;
+	}
+	@keyframes fade-tooltip {
+		0%, 70% { opacity: 1; transform: translateX(-50%) translateY(0); }
+		100% { opacity: 0; transform: translateX(-50%) translateY(-4px); }
+	}
 
 	/* Tab bar */
 	.tab-bar {
