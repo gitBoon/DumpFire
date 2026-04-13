@@ -995,23 +995,19 @@
 		backdrop-filter: blur(4px);
 	}
 	.email-modal {
-		background: var(--surface-primary, var(--bg-primary, #1a1b2e));
+		background: var(--bg-surface);
 		border-radius: 12px;
-		border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+		border: 1px solid var(--glass-border);
 		width: 100%;
 		max-width: 460px;
 		box-shadow: 0 16px 48px rgba(0,0,0,0.4);
-	}
-	:global([data-theme="light"]) .email-modal {
-		background: #ffffff;
-		border-color: #e2e8f0;
 	}
 	.email-modal-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		padding: var(--space-md) var(--space-lg);
-		border-bottom: 1px solid var(--border-subtle);
+		border-bottom: 1px solid var(--glass-border);
 	}
 	.email-modal-header h3 {
 		margin: 0;
@@ -1038,8 +1034,8 @@
 	.email-input {
 		width: 100%;
 		padding: 10px 12px;
-		background: var(--input-bg);
-		border: 1px solid var(--border-subtle);
+		background: var(--bg-base);
+		border: 1px solid var(--glass-border);
 		border-radius: 8px;
 		color: var(--text-primary);
 		font-size: 0.85rem;
@@ -1072,7 +1068,7 @@
 		justify-content: flex-end;
 		gap: var(--space-sm);
 		padding: var(--space-md) var(--space-lg);
-		border-top: 1px solid var(--border-subtle);
+		border-top: 1px solid var(--glass-border);
 	}
 </style>
 
