@@ -6,6 +6,8 @@ import { canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
 import { logActivity } from '$lib/server/logActivity';
+import { notifyRequesterProgress } from '$lib/server/notifications';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -23,7 +25,7 @@ function getCardBoardId(cardId: number): number | null {
  *
  * Triggers the same completion/XP logic as the UI drag-and-drop.
  */
-export const PUT: RequestHandler = async ({ params, request, locals }) => {
+export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const cardId = Number(params.cardId);
@@ -141,6 +143,19 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			detail: `"${existingCard.title}" from ${fromCol?.title || 'Unknown'} to ${targetCol.title}`,
 			userName: locals.user.username,
 			userEmoji: locals.user.emoji || '\ud83d\udc64'
+		});
+
+		// Notify the original requester about progress
+		const baseUrl = resolveBaseUrl(request, url);
+		notifyRequesterProgress({
+			cardId,
+			action: isCompleteColumn ? 'completed' : 'moved',
+			summary: `${fromCol?.title || 'Unknown'} → ${targetCol.title}`,
+			actorName: locals.user.username,
+			baseUrl,
+			fromColumn: fromCol?.title || 'Unknown',
+			toColumn: targetCol.title,
+			actorUserId: locals.user.id
 		});
 	}
 

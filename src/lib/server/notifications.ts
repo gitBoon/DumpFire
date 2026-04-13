@@ -6,10 +6,10 @@
  * Notifications are fire-and-forget — they never block API responses.
  */
 
-import { sendEmail, isSmtpConfigured } from './email';
+import { sendEmail, sendEmailWithAttachment, isSmtpConfigured } from './email';
 import { db } from './db';
-import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams } from './db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams, taskRequests } from './db/schema';
+import { eq, and, inArray } from 'drizzle-orm';
 import { createLogger } from './logger';
 
 const log = createLogger('NOTIFY');
@@ -461,6 +461,186 @@ export function notifyAdminMessage(targetType: string, targetId: number, request
 	for (const r of recipients) {
 		sendEmail(r.email, `Reply on request: ${requestTitle}`, html).catch(err => log.error(`Admin-message notification failed for ${r.email}`, err));
 	}
+}
+
+
+// ─── Requester Progress Notifications ────────────────────────────────────────
+
+type RequesterProgressAction = 'comment' | 'moved' | 'subtask_completed' | 'completed';
+
+interface RequesterProgressEvent {
+	/** The card that was acted upon. */
+	cardId: number;
+	/** What happened: comment, moved, subtask_completed, completed. */
+	action: RequesterProgressAction;
+	/** Human-readable summary e.g. "Subtask 'Write tests' completed" or "John commented: ..." */
+	summary: string;
+	/** Who performed the action. */
+	actorName: string;
+	/** Base URL for building links. */
+	baseUrl: string;
+	/** For 'moved' events — the column the card moved to. */
+	toColumn?: string;
+	/** For 'moved' events — the column the card moved from. */
+	fromColumn?: string;
+	/** The user ID of the actor (to skip self-notifications). */
+	actorUserId?: number;
+}
+
+/**
+ * Notify the original task requester about progress on their accepted request.
+ *
+ * Looks up the task_requests table for a request with resolvedCardId = cardId.
+ * Sends a styled email with event-specific content.
+ * Automatically stops if the card already has completedAt set (unless this IS the completion event).
+ * Skips if the actor is the requester themselves.
+ */
+export async function notifyRequesterProgress(event: RequesterProgressEvent): Promise<void> {
+	if (!isSmtpConfigured()) return;
+
+	const { cardId, action, summary, actorName, baseUrl, toColumn, fromColumn, actorUserId } = event;
+
+	// Find the originating task request for this card
+	const request = db.select({
+		id: taskRequests.id,
+		requesterEmail: taskRequests.requesterEmail,
+		requesterUserId: taskRequests.requesterUserId,
+		title: taskRequests.title,
+		status: taskRequests.status
+	})
+	.from(taskRequests)
+	.where(and(eq(taskRequests.resolvedCardId, cardId), eq(taskRequests.status, 'accepted')))
+	.get();
+
+	if (!request || !request.requesterEmail) return;
+
+	// Skip self-notifications — don't email the requester about their own actions
+	if (actorUserId && request.requesterUserId && actorUserId === request.requesterUserId) return;
+
+	// For non-completion events, check if the card is already completed — stop sending updates
+	if (action !== 'completed') {
+		const card = db.select({ completedAt: cards.completedAt }).from(cards).where(eq(cards.id, cardId)).get();
+		if (card?.completedAt) return;
+	}
+
+	// Check notification preferences for internal users
+	if (request.requesterUserId) {
+		if (!shouldNotifyUser(request.requesterUserId, 'email_request_progress')) return;
+	}
+
+	// Build event-specific email content
+	const requestTitle = request.title;
+	const replyUrl = `${baseUrl}/request/${request.id}/reply?email=${encodeURIComponent(request.requesterEmail)}`;
+
+	const actionConfigs: Record<RequesterProgressAction, { subject: string; borderColor: string; heading: string; icon: string }> = {
+		comment: {
+			subject: `New comment on your request: ${requestTitle}`,
+			borderColor: '#06b6d4',
+			heading: 'Comment Added',
+			icon: '💬'
+		},
+		moved: {
+			subject: `Your request moved: ${requestTitle}${toColumn ? ` → ${toColumn}` : ''}`,
+			borderColor: '#f59e0b',
+			heading: 'Card Moved',
+			icon: '📋'
+		},
+		subtask_completed: {
+			subject: `Subtask completed on your request: ${requestTitle}`,
+			borderColor: '#8b5cf6',
+			heading: 'Subtask Completed',
+			icon: '✅'
+		},
+		completed: {
+			subject: `Your request is complete: ${requestTitle} ✅`,
+			borderColor: '#22c55e',
+			heading: 'Request Complete!',
+			icon: '🎉'
+		}
+	};
+
+	const config = actionConfigs[action];
+
+	// Build the detail block based on action type
+	let detailHtml = '';
+	if (action === 'comment') {
+		const preview = summary.length > 300 ? summary.slice(0, 300) + '…' : summary;
+		detailHtml = `
+			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
+				<strong>${esc(actorName)}</strong> commented:
+			</p>
+			<blockquote style="margin: 12px 0 0; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid ${config.borderColor}; color: #334155; font-size: 13px; border-radius: 4px;">
+				${esc(preview)}
+			</blockquote>
+		`;
+	} else if (action === 'moved') {
+		detailHtml = `
+			<p style="margin: 0; font-size: 13px; color: #475569;">
+				<strong>${esc(actorName)}</strong> moved this task from <strong>${esc(fromColumn || 'Unknown')}</strong> → <strong>${esc(toColumn || 'Unknown')}</strong>
+			</p>
+		`;
+	} else if (action === 'subtask_completed') {
+		detailHtml = `
+			<p style="margin: 0; font-size: 13px; color: #475569;">
+				<strong>${esc(actorName)}</strong> completed a subtask:
+			</p>
+			<p style="margin: 8px 0 0; font-size: 13px; color: #334155; font-weight: 500;">
+				${esc(summary)}
+			</p>
+		`;
+	} else if (action === 'completed') {
+		detailHtml = `
+			<p style="margin: 0; font-size: 13px; color: #475569;">
+				Great news! <strong>${esc(actorName)}</strong> has completed the task for your request.
+			</p>
+			<p style="margin: 8px 0 0; font-size: 12px; color: #64748b;">
+				No further progress updates will be sent for this request.
+			</p>
+		`;
+	}
+
+	const bgColor = action === 'completed' ? '#f0fdf4' : '#f8fafc';
+
+	const html = emailTemplate(`${config.icon} ${config.heading}`, `
+		<div style="background: ${bgColor}; padding: 16px; border-radius: 8px; border-left: 4px solid ${config.borderColor};">
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(requestTitle)}</p>
+			${detailHtml}
+			<div style="margin-top: 16px;">
+				<a href="${replyUrl}" style="display: inline-block; padding: 8px 16px; background: ${config.borderColor}; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Request</a>
+			</div>
+		</div>
+	`);
+
+	// For completion events, generate and attach a PDF report
+	if (action === 'completed') {
+		// Lazy-import to avoid circular dependency
+		const { generateCardReport, generateReportPdf } = await import('./reports');
+		try {
+			const reportData = generateCardReport(cardId);
+			if (reportData) {
+				const pdfBuffer = await generateReportPdf(reportData);
+				const safeTitle = requestTitle.replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-').slice(0, 60);
+				const filename = `dumpfire-task-report-${safeTitle}-${new Date().toISOString().split('T')[0]}.pdf`;
+
+				sendEmailWithAttachment(
+					request.requesterEmail,
+					config.subject,
+					html,
+					{ filename, content: pdfBuffer, contentType: 'application/pdf' }
+				).catch(err =>
+					log.error(`Requester completion PDF email failed for ${request.requesterEmail}`, err)
+				);
+				return;
+			}
+		} catch (err) {
+			log.error(`Failed to generate completion PDF for card ${cardId}`, err);
+			// Fall through to send without PDF
+		}
+	}
+
+	sendEmail(request.requesterEmail, config.subject, html).catch(err =>
+		log.error(`Requester progress notification (${action}) failed for ${request.requesterEmail}`, err)
+	);
 }
 
 // ─── @Mention Notifications ─────────────────────────────────────────────────
