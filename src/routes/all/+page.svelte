@@ -156,7 +156,15 @@
 	const bucketColors: Record<string, string> = { 'To Do': '#6366f1', 'On Hold': '#ef4444', 'In Progress': '#f59e0b', 'Complete': '#10b981' };
 
 	function matchesFilters(card: any): boolean {
-		if (boardFilter !== 'all' && card.boardId !== Number(boardFilter)) return false;
+		if (boardFilter !== 'all') {
+			if (boardFilter.startsWith('cat:')) {
+				const catId = Number(boardFilter.slice(4));
+				const board = data.boards.find((b: any) => b.id === card.boardId);
+				if (!board || board.categoryId !== catId) return false;
+			} else {
+				if (card.boardId !== Number(boardFilter)) return false;
+			}
+		}
 		if (!searchQuery.trim()) return true;
 		const q = searchQuery.toLowerCase();
 		return card.title.toLowerCase().includes(q) || card.description?.toLowerCase().includes(q);
@@ -431,8 +439,25 @@
 		<div class="all-header-right">
 			<select class="board-filter" bind:value={boardFilter}>
 				<option value="all">All Boards</option>
-				{#each data.boards as board}
-					<option value={board.id}>{board.emoji} {board.name}</option>
+				{#each (data.boardCategories || []) as cat}
+					{@const catBoards = data.boards.filter((b: any) => b.categoryId === cat.id)}
+					{#if catBoards.length > 0}
+						<optgroup label="{cat.name}">
+							<option value="cat:{cat.id}">⬛ All {cat.name}</option>
+							{#each catBoards as board}
+								<option value={board.id}>{board.emoji} {board.name}</option>
+							{/each}
+						</optgroup>
+					{/if}
+				{/each}
+				{#each [data.boards.filter((b: any) => !b.categoryId)] as uncategorizedBoards}
+					{#if uncategorizedBoards.length > 0}
+						<optgroup label="Uncategorized">
+							{#each uncategorizedBoards as board}
+								<option value={board.id}>{board.emoji} {board.name}</option>
+							{/each}
+						</optgroup>
+					{/if}
 				{/each}
 			</select>
 			<div class="search-wrapper">
@@ -469,7 +494,7 @@
 					</div>
 				{/if}
 			</div>
-			<a class="btn-ghost export-csv-btn" href={boardFilter !== 'all' ? `/api/cards/export/csv?boardId=${boardFilter}` : '/api/cards/export/csv'} download title="Export to CSV">
+			<a class="btn-ghost export-csv-btn" href={boardFilter !== 'all' && !boardFilter.startsWith('cat:') ? `/api/cards/export/csv?boardId=${boardFilter}` : '/api/cards/export/csv'} download title="Export to CSV">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 			</a>
 			<ThemePicker />
@@ -698,7 +723,7 @@
 	<StatsPanel
 		boardColumns={syntheticColumns}
 		boardCategories={data.categories as unknown as CategoryType[]}
-		boardId={boardFilter !== 'all' ? Number(boardFilter) : 0}
+		boardId={boardFilter !== 'all' && !boardFilter.startsWith('cat:') ? Number(boardFilter) : 0}
 		onClose={() => (showStatsPanel = false)}
 	/>
 {/if}
