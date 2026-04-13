@@ -38,6 +38,7 @@ interface TaskDetail {
 	assignees: string[];
 	columnTitle: string;
 	description: string;
+	businessValue: string;
 	subtasks: SubtaskInfo[];
 }
 
@@ -84,6 +85,7 @@ export interface ReportData {
 		boardName: string;
 		assignees: string[];
 		description: string;
+		businessValue: string;
 		subtasks: SubtaskInfo[];
 	}[];
 
@@ -285,6 +287,7 @@ function generateReportForBoards(
 						assignees: cardAssigns.map(a => userMap.get(a.userId)?.username || 'Unknown'),
 						columnTitle: colInfo?.title || 'Unknown',
 						description: c.description || '',
+						businessValue: c.businessValue || '',
 						subtasks: subtaskMap.get(c.id) || []
 					};
 				})
@@ -306,6 +309,7 @@ function generateReportForBoards(
 				boardName: b?.name || 'Unknown',
 				assignees: cardAssigns.map(a => userMap.get(a.userId)?.username || 'Unknown'),
 				description: c.description || '',
+				businessValue: c.businessValue || '',
 				subtasks: subtaskMap.get(c.id) || []
 			};
 		});
@@ -534,7 +538,7 @@ function drawTasksWithDetails(
 	for (let r = 0; r < tasks.length; r++) {
 		const task = tasks[r];
 		const pColor = priorityColors[task.priority] || C.medium;
-		const hasDetails = task.description || task.subtasks.length > 0;
+		const hasDetails = task.description || task.businessValue || task.subtasks.length > 0;
 
 		// ─── Main Row ────────────────────────────────────────────────
 		let rowH = 16;
@@ -593,6 +597,12 @@ function drawTasksWithDetails(
 				const truncDesc = desc.length > 800 ? desc.slice(0, 800) + '...' : desc;
 				detailH += doc.heightOfString(truncDesc, { width: detailW - 10 }) + 6;
 			}
+			if (task.businessValue) {
+				const bv = stripTag(task.businessValue);
+				const truncBv = bv.length > 500 ? bv.slice(0, 500) + '...' : bv;
+				detailH += 12; // "BUSINESS VALUE" label
+				detailH += doc.heightOfString(truncBv, { width: detailW - 10 }) + 6;
+			}
 			if (task.subtasks.length > 0) {
 				detailH += 12; // "Subtasks" heading
 				for (const st of task.subtasks) {
@@ -623,6 +633,18 @@ function drawTasksWithDetails(
 				const truncDesc = desc.length > 800 ? desc.slice(0, 800) + '...' : desc;
 				doc.font('Helvetica').fontSize(7.5).fillColor(C.textMuted)
 					.text(truncDesc, detailX, dy, { width: detailW - 10 });
+				dy = (doc as any).y + 6;
+			}
+
+			// Business Value
+			if (task.businessValue) {
+				const bv = stripTag(task.businessValue);
+				const truncBv = bv.length > 500 ? bv.slice(0, 500) + '...' : bv;
+				doc.font('Helvetica-Bold').fontSize(6.5).fillColor(C.accent)
+					.text('BUSINESS VALUE', detailX, dy, { width: detailW - 10 });
+				dy = (doc as any).y + 2;
+				doc.font('Helvetica').fontSize(7).fillColor('#4338ca')
+					.text(truncBv, detailX, dy, { width: detailW - 10 });
 				dy = (doc as any).y + 6;
 			}
 
