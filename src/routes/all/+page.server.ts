@@ -190,6 +190,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		boards: allBoards.map(b => ({ ...b, ...boardMap.get(b.id)! })),
 		buckets: grouped,
 		categories: allCategories,
+		boardCategories: allBoardCategories,
 		labels: allLabels,
 		columns: allColumns,
 		allUsers: allUsers.map(u => ({ id: u.id, username: u.username, emoji: u.emoji || '👤' })),
