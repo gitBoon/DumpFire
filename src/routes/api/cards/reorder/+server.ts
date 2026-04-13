@@ -4,7 +4,7 @@ import { cards, columns, userXp } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { canEditBoard } from '$lib/server/board-access';
-import { notifyCardMoved } from '$lib/server/notifications';
+import { notifyCardMoved, notifyRequesterProgress } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
 import type { RequestHandler } from './$types';
@@ -90,6 +90,18 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 				movedToCol = toCol.title;
 				const baseUrl = resolveBaseUrl(request, url);
 				notifyCardMoved(boardId, update.id, existingCard.title, userName, fromCol.title, toCol.title, baseUrl);
+
+				// Notify the original requester about progress
+				notifyRequesterProgress({
+					cardId: update.id,
+					action: movedToComplete && completedCardId === update.id ? 'completed' : 'moved',
+					summary: `${fromCol.title} → ${toCol.title}`,
+					actorName: userName,
+					baseUrl,
+					fromColumn: fromCol.title,
+					toColumn: toCol.title,
+					actorUserId: locals.user.id
+				});
 			}
 		}
 	}

@@ -4,6 +4,8 @@ import { subtasks, cards, columns, activityLog } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { canEditBoard } from '$lib/server/board-access';
+import { notifyRequesterProgress } from '$lib/server/notifications';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a subtask belongs to (via card → column). */
@@ -16,7 +18,7 @@ function getSubtaskBoardId(subtaskId: number): number | null {
 	return col?.boardId ?? null;
 }
 
-export const PUT: RequestHandler = async ({ params, request, locals }) => {
+export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const id = Number(params.id);
@@ -45,6 +47,17 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			userName: locals.user.username,
 			userEmoji: locals.user.emoji || '👤'
 		}).run();
+
+		// Notify the original requester about this subtask completion
+		const baseUrl = resolveBaseUrl(request, url);
+		notifyRequesterProgress({
+			cardId: updated.cardId,
+			action: 'subtask_completed',
+			summary: updated.title,
+			actorName: locals.user.username,
+			baseUrl,
+			actorUserId: locals.user.id
+		});
 	}
 
 	return json(updated);

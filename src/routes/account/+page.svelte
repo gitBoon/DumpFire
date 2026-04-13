@@ -131,6 +131,7 @@
 		{ key: 'email_comments', label: 'Comments', desc: 'When someone comments on a board you belong to' },
 		{ key: 'email_moved', label: 'Card Moves', desc: 'When a card you are assigned to is moved' },
 		{ key: 'email_requests', label: 'Task Requests', desc: 'When someone submits or replies to a request' },
+		{ key: 'email_request_progress', label: 'Request Progress', desc: 'Updates on tasks you requested until completion' },
 		{ key: 'email_board_shared', label: 'Board Sharing', desc: 'When a board is shared with you' }
 	];
 

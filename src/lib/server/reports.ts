@@ -387,6 +387,108 @@ export function generateAllBoardsReport(
 	return generateReportForBoards(allBoards.map(b => b.id), periodStart, periodEnd, 'All Boards', 'all');
 }
 
+/**
+ * Generate a single-card report — used for requester completion emails.
+ * Does NOT require a SessionUser, since it's triggered by the system.
+ * Returns the report data scoped to the card's board, with only the target card.
+ */
+export function generateCardReport(cardId: number): ReportData | null {
+	const card = db.select().from(cards).where(eq(cards.id, cardId)).get();
+	if (!card) return null;
+
+	const col = db.select().from(columns).where(eq(columns.id, card.columnId)).get();
+	if (!col) return null;
+
+	const board = db.select().from(boards).where(eq(boards.id, col.boardId)).get();
+	if (!board) return null;
+
+	// Get subtasks
+	const cardSubtasks = db.select().from(subtasks).where(eq(subtasks.cardId, cardId)).all();
+	const subtaskInfos: SubtaskInfo[] = cardSubtasks.map(st => ({
+		title: st.title,
+		completed: st.completed,
+		priority: st.priority,
+		description: st.description || ''
+	}));
+
+	// Get assignees
+	const assigns = db.select().from(cardAssignees).where(eq(cardAssignees.cardId, cardId)).all();
+	const allUsers = db.select({ id: users.id, username: users.username }).from(users).all();
+	const userMap = new Map(allUsers.map(u => [u.id, u.username]));
+	const assigneeNames = assigns.map(a => userMap.get(a.userId) || 'Unknown');
+
+	const now = new Date().toISOString();
+	const createdAt = card.createdAt || now;
+
+	return {
+		generatedAt: now,
+		periodStart: createdAt,
+		periodEnd: now,
+		scope: 'board',
+		scopeName: `Task Report: ${card.title}`,
+
+		summary: {
+			totalTasks: 1,
+			completedInPeriod: card.completedAt ? 1 : 0,
+			createdInPeriod: 1,
+			outstanding: card.completedAt ? 0 : 1,
+			overdue: 0
+		},
+
+		priorityBreakdown: {
+			critical: card.priority === 'critical' ? 1 : 0,
+			high: card.priority === 'high' ? 1 : 0,
+			medium: card.priority === 'medium' ? 1 : 0,
+			low: card.priority === 'low' ? 1 : 0
+		},
+
+		assigneeStats: assigneeNames.map(name => ({
+			username: name,
+			completedInPeriod: card.completedAt ? 1 : 0,
+			outstanding: card.completedAt ? 0 : 1
+		})),
+
+		outstandingTasks: card.completedAt ? [] : [{
+			boardName: board.name,
+			categoryName: '',
+			categoryColor: '',
+			tasks: [{
+				id: card.id,
+				title: card.title,
+				priority: card.priority,
+				dueDate: card.dueDate,
+				createdAt: card.createdAt,
+				assignees: assigneeNames,
+				columnTitle: col.title,
+				description: card.description || '',
+				businessValue: card.businessValue || '',
+				subtasks: subtaskInfos
+			}]
+		}],
+
+		completedTasks: card.completedAt ? [{
+			id: card.id,
+			title: card.title,
+			priority: card.priority,
+			completedAt: card.completedAt,
+			boardName: board.name,
+			assignees: assigneeNames,
+			description: card.description || '',
+			businessValue: card.businessValue || '',
+			subtasks: subtaskInfos
+		}] : [],
+
+		boardBreakdown: [{
+			boardName: board.name,
+			categoryName: '',
+			categoryColor: '',
+			totalCards: 1,
+			completedCards: card.completedAt ? 1 : 0,
+			completedInPeriod: card.completedAt ? 1 : 0
+		}]
+	};
+}
+
 // ─── PDF Generation ──────────────────────────────────────────────────────────
 
 // Professional colour palette — clean, print-friendly

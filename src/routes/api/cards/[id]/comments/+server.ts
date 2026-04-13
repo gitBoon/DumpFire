@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { cardComments, cards, columns, users } from '$lib/server/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
-import { notifyCommentAdded } from '$lib/server/notifications';
+import { notifyCommentAdded, notifyRequesterProgress } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
 import { processMentions } from '$lib/server/mentions';
 import type { RequestHandler } from './$types';
@@ -69,6 +69,16 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 	const baseUrl = resolveBaseUrl(request, url);
 	notifyCommentAdded(col.boardId, cardId, card.title, locals.user.username, content.trim(), locals.user.id, baseUrl);
 	processMentions(content.trim(), locals.user.id, locals.user.username, cardId, card.title, col.boardId, baseUrl);
+
+	// Notify the original requester about this comment
+	notifyRequesterProgress({
+		cardId,
+		action: 'comment',
+		summary: content.trim(),
+		actorName: locals.user.username,
+		baseUrl,
+		actorUserId: locals.user.id
+	});
 
 	// Return with user info
 	return json({
