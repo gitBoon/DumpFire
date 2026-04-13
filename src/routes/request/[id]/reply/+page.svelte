@@ -66,11 +66,10 @@
 	async function loadData() {
 		loading = true;
 		try {
-			// Load request info
-			const reqRes = await fetch(`/api/requests`);
+			// Load request info (public endpoint — supports email token auth)
+			const reqRes = await fetch(`/api/requests/${requestId}?email=${encodeURIComponent(email)}`);
 			if (reqRes.ok) {
-				const allReqs = await reqRes.json();
-				request = allReqs.find((r: any) => r.id === requestId) || null;
+				request = await reqRes.json();
 			}
 
 			// Load messages

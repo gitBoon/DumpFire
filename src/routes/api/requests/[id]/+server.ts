@@ -6,7 +6,33 @@ import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } 
 import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
-/** PATCH — Accept or reject a task request. */
+/** GET — Fetch a single request. Requires auth or valid requester email. */
+export const GET: RequestHandler = async ({ params, url, locals }) => {
+	const id = Number(params.id);
+	const emailToken = url.searchParams.get('email');
+
+	const request = db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
+	if (!request) throw error(404, 'Request not found');
+
+	// Access control: must be authenticated OR provide the correct requester email
+	const isAuthed = !!locals.user;
+	const isRequester = emailToken && request.requesterEmail && emailToken === request.requesterEmail;
+
+	if (!isAuthed && !isRequester) {
+		throw error(403, 'Access denied');
+	}
+
+	return json({
+		id: request.id,
+		title: request.title,
+		description: request.description,
+		priority: request.priority,
+		status: request.status,
+		requesterName: request.requesterName,
+		requesterEmail: isAuthed ? request.requesterEmail : null, // only expose email to authenticated users
+		createdAt: request.createdAt
+	});
+};
 export const PATCH: RequestHandler = async ({ params, request, locals, url }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
