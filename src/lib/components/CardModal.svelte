@@ -589,12 +589,13 @@
 			<h2>{card ? 'Edit Task' : 'New Task'}</h2>
 			<div class="modal-header-actions">
 				{#if card}
-					<button class="share-link-btn btn-ghost" onclick={shareLink} title="Copy link to this task">
+					<button class="share-link-btn" onclick={shareLink} title="Copy link to this task">
 						{#if linkCopied}
-							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green, #10b981)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-							<span class="copied-tooltip">Copied!</span>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+							Copied!
 						{:else}
-							<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+							Share
 						{/if}
 					</button>
 				{/if}
@@ -1239,18 +1240,9 @@
 <style>
 	.card-modal-content {
 		max-width: 640px;
-		background: white;
-		border: 1px solid #e5e7eb;
+		background: var(--bg-surface);
+		border: 1px solid var(--glass-border);
 	}
-	[data-theme="dark"] .card-modal-content,
-	[data-theme="midnight"] .card-modal-content,
-	[data-theme="ocean-depth"] .card-modal-content,
-	[data-theme="cyberpunk"] .card-modal-content,
-	[data-theme="nord-dark"] .card-modal-content,
-	[data-theme="tokyo-night"] .card-modal-content,
-	[data-theme="gruvbox-dark"] .card-modal-content,
-	[data-theme="synthwave"] .card-modal-content,
-	[data-theme="monokai"] .card-modal-content { background: var(--bg-surface); border-color: var(--glass-border); }
 
 	/* Modal body wrapper */
 	.modal-body { padding: var(--space-lg) var(--space-xl) var(--space-xl); }
@@ -1259,22 +1251,12 @@
 	.card-modal-content input,
 	.card-modal-content textarea,
 	.card-modal-content select {
-		background: #f4f4f8; border: 1px solid #e5e5ec;
+		background: var(--bg-base); border: 1px solid var(--glass-border);
 	}
 	.card-modal-content input:focus,
 	.card-modal-content textarea:focus,
 	.card-modal-content select:focus {
-		border-color: var(--accent-indigo); box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12);
-	}
-	[data-theme="dark"] .card-modal-content input,
-	[data-theme="dark"] .card-modal-content textarea,
-	[data-theme="dark"] .card-modal-content select {
-		background: var(--bg-base); border-color: var(--glass-border);
-	}
-	[data-theme="dark"] .card-modal-content input:focus,
-	[data-theme="dark"] .card-modal-content textarea:focus,
-	[data-theme="dark"] .card-modal-content select:focus {
-		box-shadow: 0 0 0 2px var(--accent-purple-glow);
+		border-color: var(--accent-indigo); box-shadow: 0 0 0 2px var(--accent-purple-glow);
 	}
 
 	/* Description hint */
@@ -1299,15 +1281,15 @@
 	.title-label .required { color: #ef4444; }
 	.modal-title-input {
 		width: 100%; font-size: 1.05rem; font-weight: 600;
-		background: #f4f4f8; border: 1px solid transparent;
+		background: var(--bg-base); border: 1px solid transparent;
 		border-radius: var(--radius-md);
 		color: var(--text-primary); font-family: var(--font-family); outline: none;
 		padding: var(--space-md) var(--space-lg);
 		transition: border-color 0.2s ease, background 0.2s ease;
 		caret-color: var(--accent-indigo);
 	}
-	.modal-title-input:hover { border-color: #e5e5ec; }
-	.modal-title-input:focus { border-color: var(--accent-indigo); background: #f4f4f8; box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12); }
+	.modal-title-input:hover { border-color: var(--glass-border); }
+	.modal-title-input:focus { border-color: var(--accent-indigo); background: var(--bg-base); box-shadow: 0 0 0 2px var(--accent-purple-glow); }
 	.modal-title-input::placeholder { color: var(--text-tertiary); font-weight: 500; }
 	.title-error .modal-title-input {
 		border-color: #ef4444; animation: shake 0.4s ease;
@@ -1328,23 +1310,22 @@
 
 	.modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0; padding: var(--space-lg) var(--space-xl) 0; }
 	.modal-header h2 { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); }
-	.modal-header-actions { display: flex; align-items: center; gap: var(--space-xs); }
+	.modal-header-actions { display: flex; align-items: center; gap: var(--space-sm); }
 	.close-btn { padding: var(--space-xs) !important; flex-shrink: 0; }
 	.share-link-btn {
-		position: relative; padding: var(--space-xs) !important; flex-shrink: 0;
-		color: var(--text-tertiary); transition: color var(--duration-fast) var(--ease-out);
+		display: flex; align-items: center; gap: 5px;
+		padding: 4px 12px; flex-shrink: 0; border: none; cursor: pointer;
+		font-size: 0.72rem; font-weight: 600; font-family: inherit;
+		color: var(--accent-purple, #6366f1);
+		background: var(--accent-purple-glow, rgba(99, 102, 241, 0.1));
+		border-radius: var(--radius-full, 999px);
+		border: 1px solid var(--accent-purple, #6366f1);
+		transition: all var(--duration-fast, 150ms) var(--ease-out, ease-out);
 	}
-	.share-link-btn:hover { color: var(--accent-purple, #6366f1); }
-	.copied-tooltip {
-		position: absolute; top: -28px; left: 50%; transform: translateX(-50%);
-		background: var(--accent-green, #10b981); color: white; font-size: 0.65rem; font-weight: 600;
-		padding: 2px 8px; border-radius: var(--radius-sm); white-space: nowrap;
-		animation: fade-tooltip 2s ease-out forwards; pointer-events: none;
+	.share-link-btn:hover {
+		background: var(--accent-purple, #6366f1); color: white;
 	}
-	@keyframes fade-tooltip {
-		0%, 70% { opacity: 1; transform: translateX(-50%) translateY(0); }
-		100% { opacity: 0; transform: translateX(-50%) translateY(-4px); }
-	}
+	.share-link-btn:hover svg { stroke: white; }
 
 	/* Tab bar */
 	.tab-bar {
