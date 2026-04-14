@@ -10,6 +10,7 @@
 	let email = $state(form?.email ?? '');
 	let submitting = $state(false);
 	let clientError = $state('');
+	let isOriginError = $state(false);
 
 	const emojiOptions = ['🔥', '👤', '🦊', '🐱', '🐶', '🦁', '🐼', '🐸', '🦉', '🐙', '🦄', '🐝', '🐳', '🚀', '⚡', '💎', '🎯', '🛡️'];
 </script>
@@ -27,19 +28,30 @@
 		</div>
 
 		{#if form?.error || clientError}
-			<div class="error-banner">
+			<div class="error-banner" class:origin-error={isOriginError}>
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5v4M8 10.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-				{form?.error || clientError}
+				<div>
+					<p>{form?.error || clientError}</p>
+					{#if isOriginError}
+						<p class="origin-hint">The <code>ORIGIN</code> environment variable doesn't match the URL you're using to access DumpFire. Update it to <code>{typeof window !== 'undefined' ? window.location.origin : ''}</code> and restart the container.</p>
+					{/if}
+				</div>
 			</div>
 		{/if}
 
 		<form method="POST" use:enhance={() => {
 			clientError = '';
+			isOriginError = false;
 			submitting = true;
 			return async ({ result, update }) => {
 				submitting = false;
 				if (result.type === 'error') {
-					clientError = result.error?.message || `Server error (${result.status}). Check that ORIGIN is set correctly in your Docker environment.`;
+					if (result.status === 403) {
+						clientError = 'Request blocked — ORIGIN mismatch detected.';
+						isOriginError = true;
+					} else {
+						clientError = result.error?.message || `Server error (${result.status}).`;
+					}
 				} else if (result.type === 'failure') {
 					await update();
 				} else {
@@ -191,7 +203,7 @@
 
 	.error-banner {
 		display: flex;
-		align-items: center;
+		align-items: flex-start;
 		gap: var(--space-sm);
 		padding: var(--space-md) var(--space-lg);
 		background: rgba(244, 63, 94, 0.1);
@@ -201,6 +213,37 @@
 		font-size: 0.85rem;
 		font-weight: 500;
 		margin-bottom: var(--space-xl);
+	}
+
+	.error-banner svg {
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	.error-banner.origin-error {
+		background: rgba(245, 158, 11, 0.1);
+		border-color: rgba(245, 158, 11, 0.4);
+		color: var(--accent-amber);
+	}
+
+	.error-banner p {
+		margin: 0;
+	}
+
+	.origin-hint {
+		margin-top: var(--space-xs) !important;
+		font-size: 0.78rem;
+		font-weight: 400;
+		line-height: 1.5;
+		opacity: 0.9;
+	}
+
+	.origin-hint code {
+		background: rgba(0, 0, 0, 0.15);
+		padding: 1px 5px;
+		border-radius: 3px;
+		font-size: 0.75rem;
+		font-family: 'Courier New', monospace;
 	}
 
 	.setup-form {

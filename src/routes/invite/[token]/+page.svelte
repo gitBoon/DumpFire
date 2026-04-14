@@ -5,6 +5,9 @@
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
 	let showPassword = $state(false);
+	let submitting = $state(false);
+	let clientError = $state('');
+	let isOriginError = $state(false);
 </script>
 
 <svelte:head>
@@ -25,14 +28,38 @@
 		</div>
 
 		{#if data.valid}
-			{#if form?.error}
-				<div class="error-banner">
+			{#if form?.error || clientError}
+				<div class="error-banner" class:origin-error={isOriginError}>
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5v4M8 10.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-					{form.error}
+					<div>
+						<p>{form?.error || clientError}</p>
+						{#if isOriginError}
+							<p class="origin-hint">The <code>ORIGIN</code> environment variable doesn't match the URL you're using to access DumpFire. Update it to <code>{typeof window !== 'undefined' ? window.location.origin : ''}</code> and restart the container.</p>
+						{/if}
+					</div>
 				</div>
 			{/if}
 
-			<form method="POST" use:enhance class="invite-form">
+			<form method="POST" use:enhance={() => {
+				clientError = '';
+				isOriginError = false;
+				submitting = true;
+				return async ({ result, update }) => {
+					submitting = false;
+					if (result.type === 'error') {
+						if (result.status === 403) {
+							clientError = 'Request blocked — ORIGIN mismatch detected.';
+							isOriginError = true;
+						} else {
+							clientError = result.error?.message || `Server error (${result.status}).`;
+						}
+					} else if (result.type === 'failure') {
+						await update();
+					} else {
+						await update();
+					}
+				};
+			}} class="invite-form">
 				<div class="form-group">
 					<label for="invite-password">Password</label>
 					<div class="password-wrapper">
@@ -122,7 +149,7 @@
 	}
 
 	.error-banner {
-		display: flex; align-items: center; gap: var(--space-sm);
+		display: flex; align-items: flex-start; gap: var(--space-sm);
 		padding: var(--space-md) var(--space-lg);
 		background: rgba(244, 63, 94, 0.1);
 		border: 1px solid rgba(244, 63, 94, 0.3);
@@ -130,6 +157,37 @@
 		color: var(--accent-rose);
 		font-size: 0.85rem; font-weight: 500;
 		margin-bottom: var(--space-xl);
+	}
+
+	.error-banner svg {
+		flex-shrink: 0;
+		margin-top: 2px;
+	}
+
+	.error-banner.origin-error {
+		background: rgba(245, 158, 11, 0.1);
+		border-color: rgba(245, 158, 11, 0.4);
+		color: var(--accent-amber);
+	}
+
+	.error-banner p {
+		margin: 0;
+	}
+
+	.origin-hint {
+		margin-top: var(--space-xs) !important;
+		font-size: 0.78rem;
+		font-weight: 400;
+		line-height: 1.5;
+		opacity: 0.9;
+	}
+
+	.origin-hint code {
+		background: rgba(0, 0, 0, 0.15);
+		padding: 1px 5px;
+		border-radius: 3px;
+		font-size: 0.75rem;
+		font-family: 'Courier New', monospace;
 	}
 
 	.invite-form {
