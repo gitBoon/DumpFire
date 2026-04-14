@@ -344,6 +344,16 @@
 		await invalidateAll();
 	}
 
+	async function permanentlyDeleteArchivedCard(cardId: number, cardTitle: string) {
+		if (!window.confirm(`Permanently delete "${cardTitle}"? This cannot be undone.`)) return;
+		await fetch(`/api/cards/${cardId}?permanent=true`, {
+			method: 'DELETE',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({})
+		});
+		archivedCards = archivedCards.filter(c => c.id !== cardId);
+	}
+
 	async function fetchActivity(initial = false) {
 		activityLoading = true;
 		try {
@@ -755,7 +765,10 @@
 						<span class="archive-card-title">{card.title}</span>
 						{#if card.boardName}<span class="archive-card-board">{card.boardName}</span>{/if}
 					</div>
-					<button class="btn-ghost small" onclick={() => restoreArchivedCard(card.id)} title="Restore">↩️</button>
+					<div style="display:flex;gap:4px;">
+						<button class="btn-ghost small" onclick={() => restoreArchivedCard(card.id)} title="Restore">↩️ Restore</button>
+						<button class="btn-ghost small danger" onclick={() => permanentlyDeleteArchivedCard(card.id, card.title)} title="Delete permanently">🗑️</button>
+					</div>
 				</div>
 			{/each}
 		{/if}
