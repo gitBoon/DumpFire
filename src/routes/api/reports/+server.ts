@@ -19,7 +19,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!user) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
 
 	const body = await request.json();
-	const { scope, scopeId, periodStart, periodEnd } = body;
+	const { scope, scopeId, periodStart, periodEnd, detailLevel: rawDetailLevel } = body;
+	const detailLevel: 'summary' | 'detailed' = rawDetailLevel === 'summary' ? 'summary' : 'detailed';
 
 	if (!scope || !periodStart || !periodEnd) {
 		return new Response(JSON.stringify({ error: 'Missing required fields: scope, periodStart, periodEnd' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
@@ -55,7 +56,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	}
 
 	// Generate PDF
-	const pdfBuffer = await generateReportPdf(reportData);
+	const pdfBuffer = await generateReportPdf(reportData, detailLevel);
 
 	const dateStr = new Date().toISOString().split('T')[0];
 

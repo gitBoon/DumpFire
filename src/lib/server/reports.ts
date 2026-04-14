@@ -606,6 +606,7 @@ function drawTable(
 /**
  * Draw tasks with nested details — each task is a header row followed by
  * indented description + subtask rows within the same table structure.
+ * When detailLevel is 'summary', only the main table rows are drawn (no detail sub-rows).
  */
 function drawTasksWithDetails(
 	doc: PDFKit.PDFDocument,
@@ -613,7 +614,8 @@ function drawTasksWithDetails(
 	columns: { header: string; width: number; getter: (t: TaskDetail) => string }[],
 	startX: number,
 	startY: number,
-	tableWidth: number
+	tableWidth: number,
+	detailLevel: 'summary' | 'detailed' = 'detailed'
 ): number {
 	const fontSize = 7.5;
 	const headerHeight = 20;
@@ -640,7 +642,7 @@ function drawTasksWithDetails(
 	for (let r = 0; r < tasks.length; r++) {
 		const task = tasks[r];
 		const pColor = priorityColors[task.priority] || C.medium;
-		const hasDetails = task.description || task.businessValue || task.subtasks.length > 0;
+		const hasDetails = detailLevel === 'detailed' && (task.description || task.businessValue || task.subtasks.length > 0);
 
 		// ─── Main Row ────────────────────────────────────────────────
 		let rowH = 16;
@@ -780,7 +782,7 @@ function drawTasksWithDetails(
 	return y;
 }
 
-export async function generateReportPdf(data: ReportData): Promise<Buffer> {
+export async function generateReportPdf(data: ReportData, detailLevel: 'summary' | 'detailed' = 'detailed'): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 	const doc = new PDFDocument({
 		size: 'A4',
@@ -802,10 +804,11 @@ export async function generateReportPdf(data: ReportData): Promise<Buffer> {
 
 	// ─── Header Banner ───────────────────────────────────────────────────
 	doc.rect(0, 0, doc.page.width, 80).fill(C.headerBg);
+	const modeLabel = detailLevel === 'summary' ? 'Summary Report' : 'Detailed Report';
 	doc.font('Helvetica-Bold').fontSize(18).fillColor(C.headerText)
 		.text('DumpFire Report', mx, 14, { width: pw });
 	doc.font('Helvetica-Bold').fontSize(11).fillColor(C.accentLight)
-		.text(data.scopeName, mx, 34, { width: pw });
+		.text(`${data.scopeName}  ·  ${modeLabel}`, mx, 34, { width: pw });
 	doc.font('Helvetica-Bold').fontSize(10).fillColor(C.headerText)
 		.text(`${formatDate(data.periodStart)}  -  ${formatDate(data.periodEnd)}`, mx, 52, { width: pw });
 	doc.font('Helvetica').fontSize(7.5).fillColor(C.textLight)
@@ -943,7 +946,7 @@ export async function generateReportPdf(data: ReportData): Promise<Buffer> {
 					{ header: 'Priority', width: pw * 0.13, getter: t => t.priority.charAt(0).toUpperCase() + t.priority.slice(1) },
 					{ header: 'Due Date', width: pw * 0.20, getter: t => t.dueDate ? formatDate(t.dueDate) : '—' },
 					{ header: 'Assignees', width: pw * 0.20, getter: t => t.assignees.join(', ') || '—' }
-				], mx, y, pw);
+				], mx, y, pw, detailLevel);
 			}
 		}
 	}
@@ -964,7 +967,7 @@ export async function generateReportPdf(data: ReportData): Promise<Buffer> {
 			{ header: 'Priority', width: pw * 0.13, getter: t => t.priority.charAt(0).toUpperCase() + t.priority.slice(1) },
 			{ header: 'Completed', width: pw * 0.19, getter: t => (t as any).completedAt ? formatDate((t as any).completedAt) : '—' },
 			{ header: 'Assignees', width: pw * 0.20, getter: t => t.assignees.join(', ') || '—' }
-		], mx, y, pw);
+		], mx, y, pw, detailLevel);
 	}
 
 
@@ -1041,7 +1044,8 @@ async function checkAndRunScheduledReports(): Promise<void> {
 			}
 
 			if (reportData) {
-				const pdfBuffer = await generateReportPdf(reportData);
+				const schedDetailLevel = schedule.detailLevel === 'summary' ? 'summary' : 'detailed';
+				const pdfBuffer = await generateReportPdf(reportData, schedDetailLevel as 'summary' | 'detailed');
 				const reportName = `${schedule.name} - ${schedule.frequency === 'weekly' ? 'Weekly' : 'Monthly'} Report`;
 				const periodLabel = `${formatDate(start)} - ${formatDate(end)}`;
 
