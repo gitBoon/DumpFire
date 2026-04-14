@@ -696,14 +696,12 @@ function drawTasksWithDetails(
 			doc.font('Helvetica').fontSize(7.5);
 			if (task.description) {
 				const desc = stripTag(task.description);
-				const truncDesc = desc.length > 800 ? desc.slice(0, 800) + '...' : desc;
-				detailH += doc.heightOfString(truncDesc, { width: detailW - 10 }) + 6;
+				detailH += doc.heightOfString(desc, { width: detailW - 10 }) + 6;
 			}
 			if (task.businessValue) {
 				const bv = stripTag(task.businessValue);
-				const truncBv = bv.length > 500 ? bv.slice(0, 500) + '...' : bv;
 				detailH += 12; // "BUSINESS VALUE" label
-				detailH += doc.heightOfString(truncBv, { width: detailW - 10 }) + 6;
+				detailH += doc.heightOfString(bv, { width: detailW - 10 }) + 6;
 			}
 			if (task.subtasks.length > 0) {
 				detailH += 12; // "Subtasks" heading
@@ -712,8 +710,7 @@ function drawTasksWithDetails(
 					const stDesc = stripTag(st.description);
 					if (stDesc) {
 						doc.font('Helvetica').fontSize(7);
-						const truncStDesc = stDesc.length > 500 ? stDesc.slice(0, 500) + '...' : stDesc;
-						detailH += doc.heightOfString(truncStDesc, { width: detailW - 30 }) + 3;
+						detailH += doc.heightOfString(stDesc, { width: detailW - 30 }) + 3;
 					}
 				}
 			}
@@ -732,21 +729,19 @@ function drawTasksWithDetails(
 			// Description
 			if (task.description) {
 				const desc = stripTag(task.description);
-				const truncDesc = desc.length > 800 ? desc.slice(0, 800) + '...' : desc;
 				doc.font('Helvetica').fontSize(7.5).fillColor(C.textMuted)
-					.text(truncDesc, detailX, dy, { width: detailW - 10 });
+					.text(desc, detailX, dy, { width: detailW - 10 });
 				dy = (doc as any).y + 6;
 			}
 
 			// Business Value
 			if (task.businessValue) {
 				const bv = stripTag(task.businessValue);
-				const truncBv = bv.length > 500 ? bv.slice(0, 500) + '...' : bv;
 				doc.font('Helvetica-Bold').fontSize(6.5).fillColor(C.accent)
 					.text('BUSINESS VALUE', detailX, dy, { width: detailW - 10 });
 				dy = (doc as any).y + 2;
 				doc.font('Helvetica').fontSize(7).fillColor('#4338ca')
-					.text(truncBv, detailX, dy, { width: detailW - 10 });
+					.text(bv, detailX, dy, { width: detailW - 10 });
 				dy = (doc as any).y + 6;
 			}
 
@@ -771,9 +766,8 @@ function drawTasksWithDetails(
 					// Subtask description
 					const stDesc = stripTag(st.description);
 					if (stDesc) {
-						const truncStDesc = stDesc.length > 500 ? stDesc.slice(0, 500) + '...' : stDesc;
 						doc.font('Helvetica-Oblique').fontSize(7).fillColor(C.textLight)
-							.text(truncStDesc, detailX + 12, dy, { width: detailW - 30 });
+							.text(stDesc, detailX + 12, dy, { width: detailW - 30 });
 						dy = (doc as any).y + 2;
 					}
 				}
