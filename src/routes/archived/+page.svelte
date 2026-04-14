@@ -190,7 +190,7 @@
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-overlay" role="dialog" aria-modal="true" onclick={() => confirmState.show = false}>
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="confirm-modal glass" onclick={(e) => e.stopPropagation()} role="document">
+		<div class="confirm-modal" onclick={(e) => e.stopPropagation()} role="document">
 			<h2>{confirmState.title}</h2>
 			<p>{confirmState.message}</p>
 			<div class="modal-actions">
@@ -433,6 +433,9 @@
 		max-width: 420px;
 		padding: var(--space-xl);
 		border-radius: var(--radius-lg);
+		background: var(--bg-card);
+		border: 1px solid var(--glass-border);
+		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
 	}
 
 	.confirm-modal h2 { font-size: 1.1rem; margin: 0 0 var(--space-sm); color: var(--text-primary); }
