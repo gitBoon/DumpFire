@@ -37,7 +37,7 @@ export function playMoveSound(): void {
 	osc.frequency.setValueAtTime(600, ctx.currentTime);
 	osc.frequency.exponentialRampToValueAtTime(400, ctx.currentTime + 0.08);
 
-	gain.gain.setValueAtTime(0.12, ctx.currentTime);
+	gain.gain.setValueAtTime(0.4, ctx.currentTime);
 	gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
 
 	osc.start(ctx.currentTime);
@@ -58,7 +58,7 @@ export function playCompleteSound(): void {
 	gain1.connect(ctx.destination);
 	osc1.type = 'sine';
 	osc1.frequency.setValueAtTime(523.25, ctx.currentTime); // C5
-	gain1.gain.setValueAtTime(0.15, ctx.currentTime);
+	gain1.gain.setValueAtTime(0.5, ctx.currentTime);
 	gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
 	osc1.start(ctx.currentTime);
 	osc1.stop(ctx.currentTime + 0.15);
@@ -71,7 +71,7 @@ export function playCompleteSound(): void {
 	osc2.type = 'sine';
 	osc2.frequency.setValueAtTime(659.25, ctx.currentTime + 0.1); // E5
 	gain2.gain.setValueAtTime(0.001, ctx.currentTime);
-	gain2.gain.setValueAtTime(0.15, ctx.currentTime + 0.1);
+	gain2.gain.setValueAtTime(0.5, ctx.currentTime + 0.1);
 	gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
 	osc2.start(ctx.currentTime + 0.1);
 	osc2.stop(ctx.currentTime + 0.25);
@@ -94,7 +94,7 @@ export function playCreateSound(): void {
 		const t = ctx.currentTime + i * 0.07;
 		osc.frequency.setValueAtTime(freq, t);
 		gain.gain.setValueAtTime(0.001, ctx.currentTime);
-		gain.gain.setValueAtTime(0.08, t);
+		gain.gain.setValueAtTime(0.35, t);
 		gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
 		osc.start(t);
 		osc.stop(t + 0.18);
@@ -116,7 +116,7 @@ export function playNotifySound(): void {
 	osc.frequency.setValueAtTime(350, ctx.currentTime);
 	osc.frequency.exponentialRampToValueAtTime(700, ctx.currentTime + 0.12);
 	osc.frequency.exponentialRampToValueAtTime(500, ctx.currentTime + 0.2);
-	gain.gain.setValueAtTime(0.1, ctx.currentTime);
+	gain.gain.setValueAtTime(0.4, ctx.currentTime);
 	gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.22);
 	osc.start(ctx.currentTime);
 	osc.stop(ctx.currentTime + 0.22);
