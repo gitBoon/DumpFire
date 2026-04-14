@@ -437,6 +437,26 @@
 		showToast('All XP has been reset to 0');
 	}
 
+	let purgingArchived = $state(false);
+
+	async function purgeArchivedCards() {
+		purgingArchived = true;
+		try {
+			const res = await fetch('/api/admin/purge-archived', { method: 'POST' });
+			if (res.ok) {
+				const result = await res.json();
+				showToast(`Purged ${result.purged} archived card${result.purged !== 1 ? 's' : ''} permanently`);
+				await invalidateAll();
+			} else {
+				showToast('Failed to purge archived cards', 'error');
+			}
+		} catch {
+			showToast('Failed to purge archived cards', 'error');
+		} finally {
+			purgingArchived = false;
+		}
+	}
+
 	async function exportDatabase() {
 		exporting = true;
 		try {
@@ -1422,6 +1442,15 @@
 			<p class="section-desc">These actions affect the entire database. Use with caution.</p>
 
 			<div class="danger-actions">
+				<div class="danger-item">
+					<div>
+						<strong>Purge Archived Cards</strong>
+						<p>Permanently deletes all archived/soft-deleted cards and their subtasks, labels, and assignees. This cannot be undone.</p>
+					</div>
+					<button class="btn-outline" onclick={() => confirm('Purge Archived Cards', 'This will permanently delete ALL archived cards across every board, including their subtasks, labels, and assignees. This cannot be undone. Are you sure?', purgeArchivedCards)} disabled={purgingArchived}>
+						{purgingArchived ? 'Purging...' : 'Purge All'}
+					</button>
+				</div>
 				<div class="danger-item">
 					<div>
 						<strong>Vacuum Database</strong>

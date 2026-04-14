@@ -383,7 +383,7 @@ export function generateAllBoardsReport(
 	periodStart: string, periodEnd: string, user: SessionUser
 ): ReportData | null {
 	if (user.role !== 'admin' && user.role !== 'superadmin') return null;
-	const allBoards = db.select().from(boards).where(isNull(boards.parentCardId)).all();
+	const allBoards = db.select().from(boards).all();
 	return generateReportForBoards(allBoards.map(b => b.id), periodStart, periodEnd, 'All Boards', 'all');
 }
 
