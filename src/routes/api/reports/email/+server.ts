@@ -17,7 +17,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!user) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
 
 	const body = await request.json();
-	const { scope, scopeId, periodStart, periodEnd, recipients } = body;
+	const { scope, scopeId, periodStart, periodEnd, recipients, detailLevel: rawDetailLevel } = body;
+	const detailLevel: 'summary' | 'detailed' = rawDetailLevel === 'summary' ? 'summary' : 'detailed';
 
 	if (!scope || !periodStart || !periodEnd) {
 		return new Response(JSON.stringify({ error: 'Missing required fields' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
@@ -60,7 +61,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return new Response(JSON.stringify({ error: 'Failed to generate report or no access' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
 	}
 
-	const pdfBuffer = await generateReportPdf(reportData);
+	const pdfBuffer = await generateReportPdf(reportData, detailLevel);
 	const dateStr = new Date().toISOString().split('T')[0];
 	const filename = `dumpfire-report-${scopeName.toLowerCase().replace(/\s+/g, '-')}-${dateStr}.pdf`;
 

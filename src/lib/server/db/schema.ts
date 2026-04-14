@@ -486,6 +486,7 @@ export const reportSchedules = sqliteTable('report_schedules', {
 	enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
 	recipients: text('recipients').notNull().default(''), // comma-separated email addresses
 	periodDays: integer('period_days').notNull().default(7), // lookback period in days
+	detailLevel: text('detail_level').notNull().default('detailed'), // 'summary' | 'detailed'
 	lastRunAt: text('last_run_at'),
 	nextRunAt: text('next_run_at'),
 	createdAt: text('created_at')

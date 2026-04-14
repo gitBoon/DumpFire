@@ -36,6 +36,13 @@
       "when": 1775820356175,
       "tag": "0004_dizzy_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1776168232076,
+      "tag": "0005_shallow_excalibur",
+      "breakpoints": true
     }
   ]
 }

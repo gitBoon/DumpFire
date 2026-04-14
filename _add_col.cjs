@@ -1,8 +1,13 @@
-const Database = require('better-sqlite3');
-const db = new Database('dumpfire.db');
+const db = require('better-sqlite3')('./dumpfire.db');
 try {
-  db.exec(`ALTER TABLE cards ADD COLUMN next_recurrence TEXT`);
-  console.log('next_recurrence column added');
+  db.exec("ALTER TABLE report_schedules ADD COLUMN detail_level TEXT NOT NULL DEFAULT 'detailed'");
+  console.log('Column added successfully');
 } catch (e) {
-  console.log('Column may already exist:', e.message);
+  if (e.message.includes('duplicate column')) {
+    console.log('Column already exists');
+  } else {
+    throw e;
+  }
 }
+const cols = db.pragma('table_info(report_schedules)');
+console.log('Columns:', cols.map(c => c.name).join(', '));

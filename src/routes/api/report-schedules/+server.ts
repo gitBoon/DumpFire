@@ -29,7 +29,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!user) return json({ error: 'Unauthorized' }, { status: 401 });
 
 	const body = await request.json();
-	const { name, scope, scopeId, frequency, dayOfWeek, dayOfMonth, timeOfDay, recipients, periodDays } = body;
+	const { name, scope, scopeId, frequency, dayOfWeek, dayOfMonth, timeOfDay, recipients, periodDays, detailLevel: rawDetailLevel } = body;
+	const detailLevel = rawDetailLevel === 'summary' ? 'summary' : 'detailed';
 
 	if (!name || !scope || !frequency) {
 		return json({ error: 'Missing required fields: name, scope, frequency' }, { status: 400 });
@@ -97,6 +98,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		enabled: true,
 		recipients: recipients || '',
 		periodDays: periodDays || 7,
+		detailLevel,
 		nextRunAt: nextRunAt.toISOString()
 	}).run();
 

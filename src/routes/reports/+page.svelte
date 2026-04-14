@@ -24,6 +24,7 @@
 	let genPeriod = $state('7d');
 	let genCustomStart = $state('');
 	let genCustomEnd = $state('');
+	let genDetailLevel = $state<'summary' | 'detailed'>('detailed');
 	let generating = $state(false);
 	let genError = $state('');
 
@@ -108,7 +109,8 @@
 					scope: genScope,
 					scopeId: genScopeId,
 					periodStart: start,
-					periodEnd: end
+					periodEnd: end,
+					detailLevel: genDetailLevel
 				})
 			});
 			if (!res.ok) {
@@ -167,7 +169,8 @@
 					scopeId: genScopeId,
 					periodStart: start,
 					periodEnd: end,
-					recipients
+					recipients,
+					detailLevel: genDetailLevel
 				})
 			});
 			const data = await res.json();
@@ -193,6 +196,7 @@
 	let schedTime = $state('09:00');
 	let schedRecipients = $state('');
 	let schedPeriodDays = $state(7);
+	let schedDetailLevel = $state<'summary' | 'detailed'>('detailed');
 	let schedCreating = $state(false);
 
 	let schedScope = $derived<'board' | 'category' | 'all'>(
@@ -216,7 +220,8 @@
 				dayOfMonth: schedDayOfMonth,
 				timeOfDay: schedTime,
 				recipients: schedRecipients,
-				periodDays: schedPeriodDays
+				periodDays: schedPeriodDays,
+				detailLevel: schedDetailLevel
 			})
 		});
 		showNewSchedule = false;
@@ -421,6 +426,16 @@
 					{/if}
 				</div>
 
+				<div class="form-row">
+					<div class="form-group">
+						<label for="gen-detail">Report Detail</label>
+						<select id="gen-detail" bind:value={genDetailLevel}>
+							<option value="detailed">📋 Detailed — full descriptions, business value, subtasks</option>
+							<option value="summary">📊 Summary — metrics and task listings only</option>
+						</select>
+					</div>
+				</div>
+
 				{#if genError}
 					<div class="error-msg">{genError}</div>
 				{/if}
@@ -531,6 +546,15 @@
 								<span class="form-hint">Comma-separated email addresses. The PDF report will be emailed to all recipients.</span>
 							</div>
 						</div>
+						<div class="form-row">
+							<div class="form-group">
+								<label for="sched-detail">Report Detail</label>
+								<select id="sched-detail" bind:value={schedDetailLevel}>
+									<option value="detailed">📋 Detailed</option>
+									<option value="summary">📊 Summary</option>
+								</select>
+							</div>
+						</div>
 						<button class="btn-primary" onclick={createSchedule} disabled={schedCreating}>
 							{schedCreating ? 'Creating…' : 'Create Schedule'}
 						</button>
@@ -547,6 +571,7 @@
 										<span class="scope-badge">{getScopeLabel(schedule.scope, schedule.scopeId)}</span>
 										<span class="freq-badge">{schedule.frequency === 'weekly' ? `Weekly on ${dayNames[schedule.dayOfWeek]}` : `Monthly on day ${schedule.dayOfMonth}`} at {schedule.timeOfDay}</span>
 										<span class="freq-badge">Last {schedule.periodDays} days</span>
+										<span class="freq-badge">{schedule.detailLevel === 'summary' ? '📊 Summary' : '📋 Detailed'}</span>
 									</div>
 									{#if schedule.recipients}
 										<div class="schedule-recipients">
