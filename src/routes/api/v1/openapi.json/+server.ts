@@ -610,7 +610,7 @@ const spec = {
 				tags: ['Cards'],
 				summary: 'Move a card',
 				description:
-					'Moves a card between columns. Moving to "Complete" or "Done" awards XP and fires a celebration event. The move will be rejected with 409 if the card has incomplete subtasks or sub-boards.',
+					'Moves a card between columns, including across different boards. The target column can belong to any board the user has edit access to. For cross-board moves, board-scoped data (categoryId, labels) is automatically cleaned up. Moving to "Complete" or "Done" awards XP and fires a celebration event. The move will be rejected with 409 if the card has incomplete subtasks or sub-boards.',
 				operationId: 'moveCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -621,17 +621,26 @@ const spec = {
 								type: 'object',
 								required: ['columnId'],
 								properties: {
-									columnId: { type: 'integer', description: 'Target column ID' },
+									columnId: { type: 'integer', description: 'Target column ID (can be on a different board for cross-board moves)' },
 									position: { type: 'integer', description: 'Position within column' }
 								}
 							},
-							example: { columnId: 4, position: 0 }
+							examples: {
+								sameBoard: {
+									summary: 'Move within the same board',
+									value: { columnId: 4, position: 0 }
+								},
+								crossBoard: {
+									summary: 'Move to a column on another board',
+									value: { columnId: 12, position: 0 }
+								}
+							}
 						}
 					}
 				},
 				responses: {
 					'200': {
-						description: 'Card moved',
+						description: 'Card moved. The boardId in the response reflects the card\'s new board (may differ from original for cross-board moves).',
 						content: {
 							'application/json': {
 								example: {
@@ -645,6 +654,15 @@ const spec = {
 						}
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to the source or target board',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { error: 'No edit access to the target board' }
+							}
+						}
+					},
 					'404': { $ref: '#/components/responses/NotFound' },
 					'409': {
 						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete',

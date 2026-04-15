@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { cards, columns, userXp } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { cards, columns, userXp, cardLabels, labels, boards } from '$lib/server/db/schema';
+import { eq, and, inArray } from 'drizzle-orm';
 import { canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
@@ -23,6 +23,10 @@ function getCardBoardId(cardId: number): number | null {
  *
  * Body: { columnId: number, position?: number }
  *
+ * Supports both within-board and cross-board moves. For cross-board moves,
+ * the user must have edit access to both the source and target boards.
+ * Board-scoped data (categoryId, labels) is cleaned up automatically.
+ *
  * Triggers the same completion/XP logic as the UI drag-and-drop.
  */
 export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
@@ -31,10 +35,10 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	const cardId = Number(params.cardId);
 	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
 
-	const boardId = getCardBoardId(cardId);
-	if (!boardId) throw error(404, 'Card not found');
+	const sourceBoardId = getCardBoardId(cardId);
+	if (!sourceBoardId) throw error(404, 'Card not found');
 
-	if (!canEditBoard(locals.user, boardId)) {
+	if (!canEditBoard(locals.user, sourceBoardId)) {
 		throw error(403, 'No edit access to this card\'s board');
 	}
 
@@ -43,10 +47,18 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 
 	if (!targetColumnId) throw error(400, 'columnId is required');
 
-	// Verify target column exists and belongs to the same board
+	// Verify target column exists
 	const targetCol = db.select().from(columns).where(eq(columns.id, targetColumnId)).get();
-	if (!targetCol || targetCol.boardId !== boardId) {
-		throw error(400, 'Target column does not belong to this board');
+	if (!targetCol) {
+		throw error(400, 'Target column not found');
+	}
+
+	const targetBoardId = targetCol.boardId;
+	const isCrossBoardMove = targetBoardId !== sourceBoardId;
+
+	// For cross-board moves, verify edit access to the target board
+	if (isCrossBoardMove && !canEditBoard(locals.user, targetBoardId)) {
+		throw error(403, 'No edit access to the target board');
 	}
 
 	// Get the card's current state
@@ -79,12 +91,36 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 		updateData.completedAt = new Date().toISOString();
 	}
 
+	// For cross-board moves, clean up board-scoped data
+	if (isCrossBoardMove) {
+		// Clear categoryId — categories are per-board
+		updateData.categoryId = null;
+
+		// Remove board-scoped labels from the card
+		const sourceBoardLabels = db.select({ id: labels.id })
+			.from(labels)
+			.where(eq(labels.boardId, sourceBoardId))
+			.all()
+			.map(l => l.id);
+
+		if (sourceBoardLabels.length > 0) {
+			db.delete(cardLabels)
+				.where(and(
+					eq(cardLabels.cardId, cardId),
+					inArray(cardLabels.labelId, sourceBoardLabels)
+				))
+				.run();
+		}
+	}
+
 	db.update(cards)
 		.set(updateData)
 		.where(eq(cards.id, cardId))
 		.run();
 
 	// XP and celebration logic (only on first completion)
+	// For cross-board moves, celebrate on the TARGET board
+	const celebrateBoardId = isCrossBoardMove ? targetBoardId : sourceBoardId;
 	if (isMovingColumn && isCompleteColumn) {
 		const userName = locals.user.username;
 		const userEmoji = locals.user.emoji || '👤';
@@ -103,17 +139,17 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 				db.insert(userXp).values({ name: userName, xp: xpAmount, emoji: userEmoji || '👤' }).run();
 			}
 
-			emit(boardId, 'celebrate', {
+			emit(celebrateBoardId, 'celebrate', {
 				type: 'complete',
 				cardTitle: existingCard.title,
 				userName,
 				userEmoji,
 				xpGained: xpAmount
 			});
-			emit(boardId, 'xp-update', {});
+			emit(celebrateBoardId, 'xp-update', {});
 		} else {
 			// Card was already completed before — celebrate but no XP
-			emit(boardId, 'celebrate', {
+			emit(celebrateBoardId, 'celebrate', {
 				type: 'complete',
 				cardTitle: existingCard.title,
 				userName,
@@ -124,28 +160,83 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	}
 
 	const fromCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, existingCard.columnId)).get();
-	emit(boardId, 'update', {
-		type: 'card',
-		action: isMovingColumn ? 'moved' : 'reorder',
-		cardTitle: existingCard.title,
-		fromColumn: fromCol?.title,
-		toColumn: targetCol.title,
-		userName: locals.user.username,
-		userEmoji: locals.user.emoji || '\ud83d\udc64'
-	});
 
-	if (isMovingColumn) {
-		logActivity({
-			boardId,
-			cardId,
-			userId: locals.user.id,
-			action: 'api:card_moved',
-			detail: `"${existingCard.title}" from ${fromCol?.title || 'Unknown'} to ${targetCol.title}`,
+	if (isCrossBoardMove) {
+		// Cross-board move: emit events to BOTH boards
+		const sourceBoard = db.select({ name: boards.name }).from(boards).where(eq(boards.id, sourceBoardId)).get();
+		const targetBoard = db.select({ name: boards.name }).from(boards).where(eq(boards.id, targetBoardId)).get();
+
+		// Source board: card departed
+		emit(sourceBoardId, 'update', {
+			type: 'card',
+			action: 'moved_away',
+			cardTitle: existingCard.title,
+			fromColumn: fromCol?.title,
+			toBoard: targetBoard?.name || 'Unknown',
+			toColumn: targetCol.title,
 			userName: locals.user.username,
 			userEmoji: locals.user.emoji || '\ud83d\udc64'
 		});
 
-		// Notify the original requester about progress
+		// Target board: card arrived
+		emit(targetBoardId, 'update', {
+			type: 'card',
+			action: 'moved_in',
+			cardTitle: existingCard.title,
+			fromBoard: sourceBoard?.name || 'Unknown',
+			fromColumn: fromCol?.title,
+			toColumn: targetCol.title,
+			userName: locals.user.username,
+			userEmoji: locals.user.emoji || '\ud83d\udc64'
+		});
+
+		// Log activity on both boards
+		logActivity({
+			boardId: sourceBoardId,
+			cardId,
+			userId: locals.user.id,
+			action: 'api:card_moved_away',
+			detail: `"${existingCard.title}" moved to board "${targetBoard?.name || 'Unknown'}" (${fromCol?.title || 'Unknown'} → ${targetCol.title})`,
+			userName: locals.user.username,
+			userEmoji: locals.user.emoji || '\ud83d\udc64'
+		});
+
+		logActivity({
+			boardId: targetBoardId,
+			cardId,
+			userId: locals.user.id,
+			action: 'api:card_moved_in',
+			detail: `"${existingCard.title}" moved from board "${sourceBoard?.name || 'Unknown'}" (${fromCol?.title || 'Unknown'} → ${targetCol.title})`,
+			userName: locals.user.username,
+			userEmoji: locals.user.emoji || '\ud83d\udc64'
+		});
+	} else {
+		// Same-board move: existing behaviour
+		emit(sourceBoardId, 'update', {
+			type: 'card',
+			action: isMovingColumn ? 'moved' : 'reorder',
+			cardTitle: existingCard.title,
+			fromColumn: fromCol?.title,
+			toColumn: targetCol.title,
+			userName: locals.user.username,
+			userEmoji: locals.user.emoji || '\ud83d\udc64'
+		});
+
+		if (isMovingColumn) {
+			logActivity({
+				boardId: sourceBoardId,
+				cardId,
+				userId: locals.user.id,
+				action: 'api:card_moved',
+				detail: `"${existingCard.title}" from ${fromCol?.title || 'Unknown'} to ${targetCol.title}`,
+				userName: locals.user.username,
+				userEmoji: locals.user.emoji || '\ud83d\udc64'
+			});
+		}
+	}
+
+	// Notify the original requester about progress (both same-board and cross-board)
+	if (isMovingColumn) {
 		const baseUrl = resolveBaseUrl(request, url);
 		notifyRequesterProgress({
 			cardId,
@@ -164,6 +255,6 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	return json({
 		...movedCard,
 		columnTitle: targetCol.title,
-		boardId
+		boardId: targetBoardId
 	});
 };
