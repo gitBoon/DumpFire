@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.0
+version: 1.1
 status: As-Built
-date: 2026-04-14
+date: 2026-04-22
 tags:
   - features
   - overview
@@ -56,6 +56,7 @@ Cards are your tasks. Each card sits in a column and can be enriched with detail
 | **Labels** | Tag cards with coloured labels for filtering |
 | **Categories** | Classify cards by category within a board |
 | **Colour tags** | Visual colour dots for quick scanning |
+| **Card ID** | Every card displays a unique `#N` identifier for easy reference |
 | **Cover images** | Add a cover image to make cards stand out |
 | **Business value** | Document why this task matters |
 | **Pin to top** | Keep important cards at the top of a column |
@@ -93,6 +94,13 @@ Select multiple cards with checkboxes and apply actions in bulk:
 - **Bulk move** — move selected cards to any column
 - **Bulk delete** — archive selected cards
 - **Bulk priority** — change priority of all selected cards
+
+### Search & Filtering
+
+Filter cards in real time using the search bar:
+- **Text search** — matches card titles, descriptions, categories, and assignee names
+- **Card ID search** — type `#221` to jump to card 221 instantly
+- **Assignee filter** — filter cards by assigned team member
 
 ---
 

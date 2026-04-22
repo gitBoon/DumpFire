@@ -59,7 +59,9 @@ const spec = {
 					id: { type: 'integer' },
 					title: { type: 'string' },
 					position: { type: 'integer' },
-					color: { type: 'string', description: 'Hex colour code' }
+					color: { type: 'string', description: 'Hex colour code' },
+					wipLimit: { type: ['integer', 'null'], description: 'Work-in-progress limit' },
+					showAddCard: { type: 'boolean' }
 				}
 			},
 			BoardDetail: {
@@ -124,6 +126,62 @@ const spec = {
 					color: { type: 'string', description: 'Hex colour code' }
 				}
 			},
+			Label: {
+				type: 'object',
+				properties: {
+					id: { type: 'integer' },
+					boardId: { type: 'integer' },
+					name: { type: 'string' },
+					color: { type: 'string', description: 'Hex colour code' }
+				}
+			},
+			Webhook: {
+				type: 'object',
+				properties: {
+					id: { type: 'integer' },
+					boardId: { type: 'integer' },
+					url: { type: 'string', format: 'uri' },
+					secret: { type: 'string' },
+					events: { type: 'array', items: { type: 'string' } },
+					active: { type: 'boolean' },
+					createdAt: { type: 'string' }
+				}
+			},
+			Dependency: {
+				type: 'object',
+				properties: {
+					cardId: { type: 'integer' },
+					dependsOnCardId: { type: 'integer' },
+					dependsOnTitle: { type: 'string' },
+					dependsOnCompleted: { type: 'boolean' }
+				}
+			},
+			AuditLogEntry: {
+				type: 'object',
+				properties: {
+					id: { type: 'integer' },
+					boardId: { type: 'integer' },
+					cardId: { type: ['integer', 'null'] },
+					userId: { type: 'integer' },
+					action: { type: 'string' },
+					detail: { type: 'string' },
+					userName: { type: 'string' },
+					userEmoji: { type: 'string' },
+					createdAt: { type: 'string' }
+				}
+			},
+			UserStats: {
+				type: 'object',
+				properties: {
+					totalCards: { type: 'integer' },
+					completedCards: { type: 'integer' },
+					activeCards: { type: 'integer' },
+					totalSubtasks: { type: 'integer' },
+					completedSubtasks: { type: 'integer' },
+					xp: { type: 'integer' },
+					boardCount: { type: 'integer' }
+				}
+			},
 			CardDetail: {
 				type: 'object',
 				properties: {
@@ -181,6 +239,27 @@ const spec = {
 				required: true,
 				schema: { type: 'integer' },
 				description: 'Category ID'
+			},
+			columnId: {
+				name: 'columnId',
+				in: 'path',
+				required: true,
+				schema: { type: 'integer' },
+				description: 'Column ID'
+			},
+			labelId: {
+				name: 'labelId',
+				in: 'path',
+				required: true,
+				schema: { type: 'integer' },
+				description: 'Label ID'
+			},
+			webhookId: {
+				name: 'webhookId',
+				in: 'path',
+				required: true,
+				schema: { type: 'integer' },
+				description: 'Webhook ID'
 			}
 		},
 		responses: {
@@ -220,12 +299,13 @@ const spec = {
 		}
 	},
 	paths: {
+		// ─── User ───────────────────────────────────────────────────────────
 		'/api/v1/me': {
 			get: {
 				tags: ['User'],
 				summary: 'Get current user',
-				description: 'Returns the profile of the user associated with the API key.',
-				operationId: 'getCurrentUser',
+				description: "Returns the user profile associated with the API key.",
+				operationId: 'getMe',
 				responses: {
 					'200': {
 						description: 'User profile',
@@ -247,6 +327,27 @@ const spec = {
 			}
 		},
 
+		'/api/v1/me/stats': {
+			get: {
+				tags: ['User'],
+				summary: 'Get personal stats',
+				description: 'Returns aggregated statistics for the authenticated user: card counts, subtask counts, XP, and board count.',
+				operationId: 'getMeStats',
+				responses: {
+					'200': {
+						description: 'Personal statistics',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/UserStats' }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' }
+				}
+			}
+		},
+
+		// ─── Boards ─────────────────────────────────────────────────────────
 		'/api/v1/boards': {
 			get: {
 				tags: ['Boards'],
@@ -332,9 +433,193 @@ const spec = {
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'404': { $ref: '#/components/responses/NotFound' }
 				}
+			},
+			put: {
+				tags: ['Boards'],
+				summary: 'Update a board',
+				description: 'Updates board properties. Updatable fields: name, emoji, categoryId.',
+				operationId: 'updateBoard',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								properties: {
+									name: { type: 'string', maxLength: 200 },
+									emoji: { type: 'string' },
+									categoryId: { type: 'integer', nullable: true }
+								}
+							},
+							example: { name: 'Sprint 44', emoji: '🚀' }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Updated board',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Board' }
+							}
+						}
+					},
+					'400': { description: 'No valid fields or validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			delete: {
+				tags: ['Boards'],
+				summary: 'Delete a board',
+				description: 'Permanently deletes the board and all its contents. Requires owner or admin role.',
+				operationId: 'deleteBoard',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				responses: {
+					'200': {
+						description: 'Deleted',
+						content: {
+							'application/json': { example: { success: true } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'Requires owner or admin role' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
 			}
 		},
 
+		// ─── Columns ────────────────────────────────────────────────────────
+		'/api/v1/boards/{boardId}/columns': {
+			get: {
+				tags: ['Columns'],
+				summary: 'List columns on a board',
+				operationId: 'listColumns',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				responses: {
+					'200': {
+						description: 'List of columns',
+						content: {
+							'application/json': {
+								schema: { type: 'array', items: { $ref: '#/components/schemas/Column' } }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' }
+				}
+			},
+			post: {
+				tags: ['Columns'],
+				summary: 'Create a column',
+				operationId: 'createColumn',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['title'],
+								properties: {
+									title: { type: 'string', maxLength: 200 },
+									color: { type: 'string', description: 'Hex colour code' },
+									position: { type: 'integer' }
+								}
+							},
+							example: { title: 'Review', color: '#f59e0b', position: 3 }
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'Column created',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Column' } }
+						}
+					},
+					'400': { description: 'Validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' }
+				}
+			}
+		},
+
+		'/api/v1/columns/{columnId}': {
+			get: {
+				tags: ['Columns'],
+				summary: 'Get a column',
+				operationId: 'getColumn',
+				parameters: [{ $ref: '#/components/parameters/columnId' }],
+				responses: {
+					'200': {
+						description: 'Column details',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Column' } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			put: {
+				tags: ['Columns'],
+				summary: 'Update a column',
+				operationId: 'updateColumn',
+				parameters: [{ $ref: '#/components/parameters/columnId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								properties: {
+									title: { type: 'string', maxLength: 200 },
+									color: { type: 'string' },
+									position: { type: 'integer' },
+									wipLimit: { type: 'integer', nullable: true, description: 'Work-in-progress limit' },
+									showAddCard: { type: 'boolean' }
+								}
+							},
+							example: { title: 'In Review', wipLimit: 3 }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Updated column',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Column' } }
+						}
+					},
+					'400': { description: 'No valid fields or validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			delete: {
+				tags: ['Columns'],
+				summary: 'Delete a column',
+				description: 'Permanently deletes the column. Cards in this column will be orphaned.',
+				operationId: 'deleteColumn',
+				parameters: [{ $ref: '#/components/parameters/columnId' }],
+				responses: {
+					'200': {
+						description: 'Deleted',
+						content: {
+							'application/json': { example: { success: true } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			}
+		},
+
+		// ─── Cards ──────────────────────────────────────────────────────────
 		'/api/v1/boards/{boardId}/cards': {
 			get: {
 				tags: ['Cards'],
@@ -526,6 +811,79 @@ const spec = {
 			}
 		},
 
+		'/api/v1/cards/{cardId}/move': {
+			put: {
+				tags: ['Cards'],
+				summary: 'Move a card',
+				description:
+					'Moves a card between columns, including across different boards. The target column can belong to any board the user has edit access to. For cross-board moves, board-scoped data (categoryId, labels) is automatically cleaned up. Moving to "Complete" or "Done" awards XP and fires a celebration event. The move will be rejected with 409 if the card has incomplete subtasks or sub-boards.',
+				operationId: 'moveCard',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['columnId'],
+								properties: {
+									columnId: { type: 'integer', description: 'Target column ID (can be on a different board for cross-board moves)' },
+									position: { type: 'integer', description: 'Position within column' }
+								}
+							},
+							examples: {
+								sameBoard: {
+									summary: 'Move within the same board',
+									value: { columnId: 4, position: 0 }
+								},
+								crossBoard: {
+									summary: 'Move to a column on another board',
+									value: { columnId: 12, position: 0 }
+								}
+							}
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Card moved. The boardId in the response reflects the card\'s new board (may differ from original for cross-board moves).',
+						content: {
+							'application/json': {
+								example: {
+									id: 10,
+									columnId: 4,
+									columnTitle: 'Complete',
+									boardId: 1,
+									completedAt: '2026-04-09T10:45:00.000Z'
+								}
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to the source or target board',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { error: 'No edit access to the target board' }
+							}
+						}
+					},
+					'404': { $ref: '#/components/responses/NotFound' },
+					'409': {
+						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { error: 'Card has 3 incomplete subtasks that must be completed first' }
+							}
+						}
+					}
+				}
+			}
+		},
+
+		// ─── Assignees ──────────────────────────────────────────────────────
 		'/api/v1/cards/{cardId}/assignees': {
 			get: {
 				tags: ['Assignees'],
@@ -605,78 +963,7 @@ const spec = {
 			}
 		},
 
-		'/api/v1/cards/{cardId}/move': {
-			put: {
-				tags: ['Cards'],
-				summary: 'Move a card',
-				description:
-					'Moves a card between columns, including across different boards. The target column can belong to any board the user has edit access to. For cross-board moves, board-scoped data (categoryId, labels) is automatically cleaned up. Moving to "Complete" or "Done" awards XP and fires a celebration event. The move will be rejected with 409 if the card has incomplete subtasks or sub-boards.',
-				operationId: 'moveCard',
-				parameters: [{ $ref: '#/components/parameters/cardId' }],
-				requestBody: {
-					required: true,
-					content: {
-						'application/json': {
-							schema: {
-								type: 'object',
-								required: ['columnId'],
-								properties: {
-									columnId: { type: 'integer', description: 'Target column ID (can be on a different board for cross-board moves)' },
-									position: { type: 'integer', description: 'Position within column' }
-								}
-							},
-							examples: {
-								sameBoard: {
-									summary: 'Move within the same board',
-									value: { columnId: 4, position: 0 }
-								},
-								crossBoard: {
-									summary: 'Move to a column on another board',
-									value: { columnId: 12, position: 0 }
-								}
-							}
-						}
-					}
-				},
-				responses: {
-					'200': {
-						description: 'Card moved. The boardId in the response reflects the card\'s new board (may differ from original for cross-board moves).',
-						content: {
-							'application/json': {
-								example: {
-									id: 10,
-									columnId: 4,
-									columnTitle: 'Complete',
-									boardId: 1,
-									completedAt: '2026-04-09T10:45:00.000Z'
-								}
-							}
-						}
-					},
-					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No edit access to the source or target board',
-						content: {
-							'application/json': {
-								schema: { $ref: '#/components/schemas/Error' },
-								example: { error: 'No edit access to the target board' }
-							}
-						}
-					},
-					'404': { $ref: '#/components/responses/NotFound' },
-					'409': {
-						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete',
-						content: {
-							'application/json': {
-								schema: { $ref: '#/components/schemas/Error' },
-								example: { error: 'Card has 3 incomplete subtasks that must be completed first' }
-							}
-						}
-					}
-				}
-			}
-		},
-
+		// ─── Subtasks ───────────────────────────────────────────────────────
 		'/api/v1/cards/{cardId}/subtasks': {
 			get: {
 				tags: ['Subtasks'],
@@ -800,6 +1087,7 @@ const spec = {
 			}
 		},
 
+		// ─── Comments ───────────────────────────────────────────────────────
 		'/api/v1/cards/{cardId}/comments': {
 			get: {
 				tags: ['Comments'],
@@ -865,6 +1153,285 @@ const spec = {
 			}
 		},
 
+		// ─── Labels ─────────────────────────────────────────────────────────
+		'/api/v1/boards/{boardId}/labels': {
+			get: {
+				tags: ['Labels'],
+				summary: 'List labels on a board',
+				operationId: 'listLabels',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				responses: {
+					'200': {
+						description: 'List of labels',
+						content: {
+							'application/json': {
+								schema: { type: 'array', items: { $ref: '#/components/schemas/Label' } }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' }
+				}
+			},
+			post: {
+				tags: ['Labels'],
+				summary: 'Create a label',
+				operationId: 'createLabel',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['name'],
+								properties: {
+									name: { type: 'string', maxLength: 200 },
+									color: { type: 'string', description: 'Hex colour code (default: #6366f1)' }
+								}
+							},
+							example: { name: 'Frontend', color: '#3b82f6' }
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'Label created',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Label' } }
+						}
+					},
+					'400': { description: 'Validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' }
+				}
+			}
+		},
+
+		'/api/v1/labels/{labelId}': {
+			get: {
+				tags: ['Labels'],
+				summary: 'Get a label',
+				operationId: 'getLabel',
+				parameters: [{ $ref: '#/components/parameters/labelId' }],
+				responses: {
+					'200': {
+						description: 'Label details',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Label' } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			put: {
+				tags: ['Labels'],
+				summary: 'Update a label',
+				operationId: 'updateLabel',
+				parameters: [{ $ref: '#/components/parameters/labelId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								properties: {
+									name: { type: 'string', maxLength: 200 },
+									color: { type: 'string' }
+								}
+							},
+							example: { name: 'Backend', color: '#10b981' }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Updated label',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Label' } }
+						}
+					},
+					'400': { description: 'No valid fields or validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			delete: {
+				tags: ['Labels'],
+				summary: 'Delete a label',
+				description: 'Permanently deletes the label. Card-label associations are removed automatically.',
+				operationId: 'deleteLabel',
+				parameters: [{ $ref: '#/components/parameters/labelId' }],
+				responses: {
+					'200': {
+						description: 'Deleted',
+						content: {
+							'application/json': { example: { success: true } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			}
+		},
+
+		// ─── Card Labels ────────────────────────────────────────────────────
+		'/api/v1/cards/{cardId}/labels': {
+			get: {
+				tags: ['Card Labels'],
+				summary: 'List labels on a card',
+				operationId: 'listCardLabels',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				responses: {
+					'200': {
+						description: 'Labels assigned to this card',
+						content: {
+							'application/json': {
+								schema: { type: 'array', items: { $ref: '#/components/schemas/Label' } }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' }
+				}
+			},
+			post: {
+				tags: ['Card Labels'],
+				summary: 'Assign a label to a card',
+				operationId: 'assignLabel',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['labelId'],
+								properties: { labelId: { type: 'integer' } }
+							}
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Label assigned',
+						content: {
+							'application/json': { example: { success: true } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' }
+				}
+			},
+			delete: {
+				tags: ['Card Labels'],
+				summary: 'Remove a label from a card',
+				operationId: 'removeCardLabel',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['labelId'],
+								properties: { labelId: { type: 'integer' } }
+							}
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Label removed',
+						content: {
+							'application/json': { example: { success: true } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' }
+				}
+			}
+		},
+
+		// ─── Dependencies ───────────────────────────────────────────────────
+		'/api/v1/cards/{cardId}/dependencies': {
+			get: {
+				tags: ['Dependencies'],
+				summary: 'List card dependencies',
+				description: 'Returns all cards that this card depends on.',
+				operationId: 'listDependencies',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				responses: {
+					'200': {
+						description: 'Dependency list',
+						content: {
+							'application/json': {
+								schema: { type: 'array', items: { $ref: '#/components/schemas/Dependency' } }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' }
+				}
+			},
+			post: {
+				tags: ['Dependencies'],
+				summary: 'Add a dependency',
+				description: 'Makes this card depend on another card. Blocks completion if the dependency is incomplete.',
+				operationId: 'addDependency',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['dependsOnCardId'],
+								properties: { dependsOnCardId: { type: 'integer', description: 'ID of card this card depends on' } }
+							},
+							example: { dependsOnCardId: 42 }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Dependency added',
+						content: {
+							'application/json': { example: { success: true } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			delete: {
+				tags: ['Dependencies'],
+				summary: 'Remove a dependency',
+				operationId: 'removeDependency',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['dependsOnCardId'],
+								properties: { dependsOnCardId: { type: 'integer' } }
+							}
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Dependency removed',
+						content: {
+							'application/json': { example: { success: true } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' }
+				}
+			}
+		},
+
+		// ─── Categories (Per-Board Card Categories) ─────────────────────────
 		'/api/v1/boards/{boardId}/categories': {
 			get: {
 				tags: ['Categories'],
@@ -991,6 +1558,7 @@ const spec = {
 			}
 		},
 
+		// ─── Board Categories (Dashboard Grouping) ──────────────────────────
 		'/api/v1/board-categories': {
 			get: {
 				tags: ['Board Categories'],
@@ -1109,17 +1677,184 @@ const spec = {
 					'404': { $ref: '#/components/responses/NotFound' }
 				}
 			}
+		},
+
+		// ─── Webhooks ───────────────────────────────────────────────────────
+		'/api/v1/boards/{boardId}/webhooks': {
+			get: {
+				tags: ['Webhooks'],
+				summary: 'List webhooks on a board',
+				operationId: 'listWebhooks',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				responses: {
+					'200': {
+						description: 'List of webhooks',
+						content: {
+							'application/json': {
+								schema: { type: 'array', items: { $ref: '#/components/schemas/Webhook' } }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No access to this board' }
+				}
+			},
+			post: {
+				tags: ['Webhooks'],
+				summary: 'Create a webhook',
+				operationId: 'createWebhook',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['url'],
+								properties: {
+									url: { type: 'string', format: 'uri', description: 'Webhook delivery URL' },
+									secret: { type: 'string', description: 'Shared secret for HMAC verification' },
+									events: { type: 'array', items: { type: 'string' }, description: 'Event types to subscribe to (default: all events)' }
+								}
+							},
+							example: { url: 'https://example.com/webhook', secret: 'my-secret', events: ['card.created', 'card.moved'] }
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'Webhook created',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Webhook' } }
+						}
+					},
+					'400': { description: 'Validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No edit access to this board' }
+				}
+			}
+		},
+
+		'/api/v1/webhooks/{webhookId}': {
+			get: {
+				tags: ['Webhooks'],
+				summary: 'Get a webhook',
+				operationId: 'getWebhook',
+				parameters: [{ $ref: '#/components/parameters/webhookId' }],
+				responses: {
+					'200': {
+						description: 'Webhook details',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Webhook' } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			put: {
+				tags: ['Webhooks'],
+				summary: 'Update a webhook',
+				operationId: 'updateWebhook',
+				parameters: [{ $ref: '#/components/parameters/webhookId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								properties: {
+									url: { type: 'string', format: 'uri' },
+									secret: { type: 'string' },
+									events: { type: 'array', items: { type: 'string' } },
+									active: { type: 'boolean' }
+								}
+							},
+							example: { active: false }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Updated webhook',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Webhook' } }
+						}
+					},
+					'400': { description: 'No valid fields or validation error' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			delete: {
+				tags: ['Webhooks'],
+				summary: 'Delete a webhook',
+				operationId: 'deleteWebhook',
+				parameters: [{ $ref: '#/components/parameters/webhookId' }],
+				responses: {
+					'200': {
+						description: 'Deleted',
+						content: {
+							'application/json': { example: { success: true } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			}
+		},
+
+		// ─── Audit Log ──────────────────────────────────────────────────────
+		'/api/v1/audit-log': {
+			get: {
+				tags: ['Audit'],
+				summary: 'Get audit log',
+				description: 'Returns activity log entries. Filter by boardId and/or userId. Admin only.',
+				operationId: 'getAuditLog',
+				parameters: [
+					{
+						name: 'boardId',
+						in: 'query',
+						schema: { type: 'integer' },
+						description: 'Filter by board ID'
+					},
+					{
+						name: 'userId',
+						in: 'query',
+						schema: { type: 'integer' },
+						description: 'Filter by user ID'
+					}
+				],
+				responses: {
+					'200': {
+						description: 'Audit log entries',
+						content: {
+							'application/json': {
+								schema: { type: 'array', items: { $ref: '#/components/schemas/AuditLogEntry' } }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'Admin access required' }
+				}
+			}
 		}
 	},
 	tags: [
 		{ name: 'User', description: 'Current authenticated user' },
 		{ name: 'Boards', description: 'Kanban boards' },
+		{ name: 'Columns', description: 'Board columns' },
 		{ name: 'Cards', description: 'Task cards on boards' },
 		{ name: 'Assignees', description: 'Card user assignments' },
 		{ name: 'Subtasks', description: 'Card subtasks / checklist items' },
 		{ name: 'Comments', description: 'Card discussion comments' },
+		{ name: 'Labels', description: 'Board labels for tagging cards' },
+		{ name: 'Card Labels', description: 'Label assignments on cards' },
+		{ name: 'Dependencies', description: 'Card-to-card dependencies' },
 		{ name: 'Categories', description: 'Card categories (per-board tags for cards)' },
-		{ name: 'Board Categories', description: 'Dashboard categories for grouping boards' }
+		{ name: 'Board Categories', description: 'Dashboard categories for grouping boards' },
+		{ name: 'Webhooks', description: 'Webhook subscriptions for board events' },
+		{ name: 'Audit', description: 'Activity audit log' }
 	]
 };
 

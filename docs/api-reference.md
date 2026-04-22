@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.0
+version: 1.1
 status: As-Built
-date: 2026-04-14
+date: 2026-04-22
 tags:
   - api
   - rest
@@ -153,6 +153,8 @@ Create a new board. Default columns (To Do, On Hold, In Progress, Complete) are 
 ---
 
 ### Cards
+
+Each card has a unique numeric ID shown in the UI as `#N`. You can search for cards by ID in both the board view and All Tasks view.
 
 #### `GET /api/v1/boards/:boardId/cards`
 

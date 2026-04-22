@@ -81,17 +81,28 @@ export function subBoardIncompleteCount(card: CardType): number {
 
 /**
  * Tests whether a card matches the current search query.
- * Searches card title, description, and category name.
+ * Searches card ID (with `#` prefix for exact match), title, description,
+ * category name, and assignee usernames.
  *
  * @param card — The card to test
- * @param searchQuery — The raw search string (case-insensitive)
+ * @param searchQuery — The raw search string (case-insensitive).
+ *   Use `#123` to match card ID 123 exactly.
  * @param categories — Board categories for name matching
  * @returns True if the card matches, or if the query is empty
  */
 export function matchesSearch(card: CardType, searchQuery: string, categories: CategoryType[]): boolean {
 	if (!searchQuery.trim()) return true;
-	const q = searchQuery.toLowerCase();
+	const q = searchQuery.trim().toLowerCase();
+
+	// Exact card-ID match: "#123" matches only card 123
+	const hashMatch = q.match(/^#(\d+)$/);
+	if (hashMatch) {
+		return card.id === parseInt(hashMatch[1], 10);
+	}
+
+	const idStr = String(card.id);
 	return (
+		idStr.includes(q) ||
 		card.title.toLowerCase().includes(q) ||
 		card.description?.toLowerCase().includes(q) ||
 		categories.find(cat => cat.id === card.categoryId)?.name.toLowerCase().includes(q) ||
