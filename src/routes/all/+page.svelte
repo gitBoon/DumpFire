@@ -166,8 +166,16 @@
 			}
 		}
 		if (!searchQuery.trim()) return true;
-		const q = searchQuery.toLowerCase();
-		return card.title.toLowerCase().includes(q) || card.description?.toLowerCase().includes(q);
+		const q = searchQuery.trim().toLowerCase();
+
+		// Exact card-ID match: "#123" matches only card 123
+		const hashMatch = q.match(/^#(\d+)$/);
+		if (hashMatch) {
+			return card.id === parseInt(hashMatch[1], 10);
+		}
+
+		const idStr = String(card.id);
+		return idStr.includes(q) || card.title.toLowerCase().includes(q) || card.description?.toLowerCase().includes(q);
 	}
 
 	function getFilteredCount(bucket: any): number {
@@ -475,7 +483,7 @@
 					<circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
 					<path d="M10 10l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 				</svg>
-				<input type="text" class="search-input" placeholder="Search tasks..." bind:value={searchQuery} />
+				<input type="text" class="search-input" placeholder="Search tasks or #id..." bind:value={searchQuery} />
 			</div>
 			<div class="more-menu-container">
 				<button class="btn-ghost nav-btn" onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="Panels">
@@ -580,7 +588,7 @@
 									<span class="new-badge">New</span>
 								{/if}
 								<div class="card-header">
-									<span class="card-title">{card.title}</span>
+									<span class="card-title"><span class="card-id">#{card.id}</span> {card.title}</span>
 									<button class="move-btn" title="Move card" onclick={(e) => { e.stopPropagation(); openMoveModal(card); }}>
 										<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 4L2 7l2 3M10 4l2 3-2 3M4 4L7 2l3 2M4 10l3 2 3-2" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/></svg>
 									</button>

@@ -742,7 +742,7 @@
 			<input
 				class="search-input"
 				type="text"
-				placeholder="Search tasks..."
+				placeholder="Search tasks or #id..."
 				bind:value={searchQuery}
 			/>
 			{#if searchQuery}
@@ -1052,6 +1052,7 @@
 									<!-- svelte-ignore a11y_click_events_have_key_events -->
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<span class="priority-dot priority-{card.priority}" onclick={(e) => cyclePriority(card, e)} title="Priority: {card.priority} (click to cycle)"></span>
+									<span class="card-id">#{card.id}</span>
 									{card.title}
 								</h4>
 							{/if}

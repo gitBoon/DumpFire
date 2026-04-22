@@ -172,6 +172,8 @@ Returns a single board with its columns.
 
 ### Cards
 
+Each card has a unique numeric ID (e.g. `#10`) that is displayed in the DumpFire UI. You can search for cards by their ID using `#N` syntax in the board or All Tasks search bar.
+
 #### List Cards on a Board
 
 ```

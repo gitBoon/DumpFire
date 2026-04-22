@@ -586,7 +586,7 @@
 			<div class="modal-cover-preview" style="background: {coverUrl}"></div>
 		{/if}
 		<div class="modal-header">
-			<h2>{card ? 'Edit Task' : 'New Task'}</h2>
+			<h2>{card ? `Edit Task` : 'New Task'}{#if card}<span class="card-id-header">#{card.id}</span>{/if}</h2>
 			<div class="modal-header-actions">
 				{#if card}
 					<button class="share-link-btn" onclick={shareLink} title="Copy link to this task">
