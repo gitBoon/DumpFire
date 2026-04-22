@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.1
+version: 1.2
 status: As-Built
 date: 2026-04-22
 tags:
@@ -174,6 +174,16 @@ Set up automatic weekly or monthly reports delivered to any email addresses.
 
 - **Burndown chart** — see task completion over time
 - **Cumulative Flow Diagram** — visualise workload distribution across columns
+
+### Graph View
+
+An interactive, Neo4j-style knowledge graph showing how boards, cards, columns, and users connect across the entire workspace.
+
+- **Force-directed layout** — nodes arrange themselves naturally based on relationships
+- **Lazy-load expansion** — click any board node to reveal its cards and columns
+- **Pan, zoom, and drag** — navigate the graph like a map
+- **Colour-coded nodes** — boards (purple), cards (cyan), columns (amber), users (green)
+- **Hover tooltips** — see entity details without clicking
 
 ---
 

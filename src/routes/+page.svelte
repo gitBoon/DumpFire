@@ -413,6 +413,15 @@
 				</svg>
 				Reports
 			</a>
+			<a href="/graph" class="nav-pill" id="graph-link">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<circle cx="4" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>
+					<circle cx="12" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>
+					<circle cx="8" cy="12" r="2" stroke="currentColor" stroke-width="1.2"/>
+					<path d="M5.5 5.5L7 10.5M10.5 5.5L9 10.5M6 4h4" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+				</svg>
+				Graph
+			</a>
 			<!-- More dropdown -->
 			<div class="nav-more-wrapper">
 				<button class="nav-pill nav-more-btn" onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} id="nav-more-btn">
