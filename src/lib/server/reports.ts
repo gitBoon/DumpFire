@@ -12,7 +12,7 @@ import {
 	boards, columns, cards, cardAssignees, users, subtasks,
 	boardCategories, reportSchedules
 } from './db/schema';
-import { eq, inArray, isNull, and } from 'drizzle-orm';
+import { eq, inArray, isNull, isNotNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds, canViewBoard } from './board-access';
 import { sendEmailWithAttachment } from './email';
 import type { SessionUser } from './auth';
@@ -149,6 +149,41 @@ function getSubtasksForCards(cardIds: number[]): Map<number, SubtaskInfo[]> {
 	return result;
 }
 
+/**
+ * Recursively collect all sub-board IDs reachable from the given board IDs.
+ * Walks the board → cards → sub-boards chain to any depth.
+ */
+function collectSubBoardIds(boardIds: number[]): number[] {
+	const allIds = new Set(boardIds);
+	let frontier = boardIds;
+	while (frontier.length > 0) {
+		// Get all columns on frontier boards
+		const cols = db.select({ id: columns.id })
+			.from(columns)
+			.where(inArray(columns.boardId, frontier))
+			.all();
+		if (cols.length === 0) break;
+		// Get all card IDs on those columns
+		const colCardIds = db.select({ id: cards.id })
+			.from(cards)
+			.where(inArray(cards.columnId, cols.map(c => c.id)))
+			.all()
+			.map(c => c.id);
+		if (colCardIds.length === 0) break;
+		// Find sub-boards linked to these cards
+		const subBoardIds = db.select({ id: boards.id })
+			.from(boards)
+			.where(inArray(boards.parentCardId, colCardIds))
+			.all()
+			.map(b => b.id)
+			.filter(id => !allIds.has(id));
+		if (subBoardIds.length === 0) break;
+		for (const id of subBoardIds) allIds.add(id);
+		frontier = subBoardIds;
+	}
+	return Array.from(allIds);
+}
+
 // ─── Core Generator ──────────────────────────────────────────────────────────
 
 function generateReportForBoards(
@@ -191,6 +226,33 @@ function generateReportForBoards(
 	const boardsInfo = db.select().from(boards).where(inArray(boards.id, boardIds)).all();
 	const boardMap = new Map(boardsInfo.map(b => [b.id, b]));
 
+	// Build parent board name prefix for sub-boards
+	const parentNameMap = new Map<number, string>();
+	for (const b of boardsInfo) {
+		if (b.parentCardId) {
+			const parentCard = db.select().from(cards).where(eq(cards.id, b.parentCardId)).get();
+			if (parentCard) {
+				const parentCol = db.select().from(columns).where(eq(columns.id, parentCard.columnId)).get();
+				if (parentCol) {
+					const parentBoard = boardMap.get(parentCol.boardId);
+					if (parentBoard) {
+						parentNameMap.set(b.id, parentBoard.name);
+					} else {
+						// Parent board not in report scope — look it up directly
+						const pb = db.select().from(boards).where(eq(boards.id, parentCol.boardId)).get();
+						if (pb) parentNameMap.set(b.id, pb.name);
+					}
+				}
+			}
+		}
+	}
+	function getDisplayName(boardId: number): string {
+		const b = boardMap.get(boardId);
+		const name = b?.name || 'Unknown';
+		const parent = parentNameMap.get(boardId);
+		return parent ? `${parent} → ${name}` : name;
+	}
+
 	// Category lookup
 	const catIds = [...new Set(boardsInfo.map(b => b.categoryId).filter((id): id is number => id != null))];
 	const catMap = new Map<number, { name: string; color: string }>();
@@ -203,6 +265,20 @@ function generateReportForBoards(
 		if (b?.categoryId && catMap.has(b.categoryId)) {
 			const cat = catMap.get(b.categoryId)!;
 			return { categoryName: cat.name, categoryColor: cat.color };
+		}
+		// For sub-boards, inherit category from parent board if available
+		if (b?.parentCardId) {
+			const parentCard = db.select().from(cards).where(eq(cards.id, b.parentCardId)).get();
+			if (parentCard) {
+				const parentCol = db.select().from(columns).where(eq(columns.id, parentCard.columnId)).get();
+				if (parentCol) {
+					const parentBoard = boardMap.get(parentCol.boardId);
+					if (parentBoard?.categoryId && catMap.has(parentBoard.categoryId)) {
+						const cat = catMap.get(parentBoard.categoryId)!;
+						return { categoryName: cat.name, categoryColor: cat.color };
+					}
+				}
+			}
 		}
 		return { categoryName: 'Uncategorised', categoryColor: '#94a3b8' };
 	}
@@ -265,10 +341,9 @@ function generateReportForBoards(
 	}
 
 	const outstandingTasks = Array.from(outstandingByBoard.entries()).map(([boardId, boardCards]) => {
-		const b = boardMap.get(boardId);
 		const catInfo = getCatInfo(boardId);
 		return {
-			boardName: b?.name || 'Unknown',
+			boardName: getDisplayName(boardId),
 			...catInfo,
 			tasks: boardCards
 				.sort((a, b) => {
@@ -299,14 +374,13 @@ function generateReportForBoards(
 		.sort((a, b) => (b.completedAt || b.updatedAt).localeCompare(a.completedAt || a.updatedAt))
 		.map(c => {
 			const colInfo = columnMap.get(c.columnId);
-			const b = colInfo ? boardMap.get(colInfo.boardId) : null;
 			const cardAssigns = allAssignments.filter(a => a.cardId === c.id);
 			return {
 				id: c.id,
 				title: c.title,
 				priority: c.priority,
 				completedAt: c.completedAt || c.updatedAt,
-				boardName: b?.name || 'Unknown',
+				boardName: colInfo ? getDisplayName(colInfo.boardId) : 'Unknown',
 				assignees: cardAssigns.map(a => userMap.get(a.userId)?.username || 'Unknown'),
 				description: c.description || '',
 				businessValue: c.businessValue || '',
@@ -316,7 +390,6 @@ function generateReportForBoards(
 
 	// Board breakdown
 	const boardBreakdown = boardIds.map(boardId => {
-		const b = boardMap.get(boardId);
 		const catInfo = getCatInfo(boardId);
 		const boardCards = allCards.filter(c => {
 			const colInfo = columnMap.get(c.columnId);
@@ -328,7 +401,7 @@ function generateReportForBoards(
 			return cd >= periodStart && cd <= periodEnd;
 		});
 		return {
-			boardName: b?.name || 'Unknown',
+			boardName: getDisplayName(boardId),
 			...catInfo,
 			totalCards: boardCards.length,
 			completedCards: boardCompleted.length,
@@ -362,7 +435,9 @@ export function generateBoardReport(
 	if (!canViewBoard(user, boardId)) return null;
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) return null;
-	return generateReportForBoards([boardId], periodStart, periodEnd, board.name, 'board');
+	// Include all sub-boards recursively
+	const allBoardIds = collectSubBoardIds([boardId]);
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, board.name, 'board');
 }
 
 export function generateCategoryReport(
@@ -376,15 +451,19 @@ export function generateCategoryReport(
 		catBoards = catBoards.filter(b => accessibleIds.includes(b.id));
 	}
 	if (catBoards.length === 0) return null;
-	return generateReportForBoards(catBoards.map(b => b.id), periodStart, periodEnd, cat.name, 'category');
+	// Include all sub-boards recursively
+	const allBoardIds = collectSubBoardIds(catBoards.map(b => b.id));
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, cat.name, 'category');
 }
 
 export function generateAllBoardsReport(
 	periodStart: string, periodEnd: string, user: SessionUser
 ): ReportData | null {
 	if (user.role !== 'admin' && user.role !== 'superadmin') return null;
-	const allBoards = db.select().from(boards).all();
-	return generateReportForBoards(allBoards.map(b => b.id), periodStart, periodEnd, 'All Boards', 'all');
+	// Start from top-level boards only, then expand to include sub-boards
+	const topLevelBoards = db.select().from(boards).where(isNull(boards.parentCardId)).all();
+	const allBoardIds = collectSubBoardIds(topLevelBoards.map(b => b.id));
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, 'All Boards', 'all');
 }
 
 /**
