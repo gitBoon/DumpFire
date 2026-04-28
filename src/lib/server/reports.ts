@@ -1095,11 +1095,12 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 				// Render sub-boards nested under this parent
 				const subs = subBoardsByParent.get(group.boardName) || [];
 				for (const sub of subs) {
-					y = ensureSpace(doc, 50, y);
+					y = ensureSpace(doc, 60, y);
+					y += 14; // breathing room before sub-board section
 					// Sub-board section — proper heading with parent context
 					doc.font('Helvetica').fontSize(7).fillColor(C.textMuted)
 						.text(`SUB-BOARD OF ${group.boardName.toUpperCase()}`, mx + 2, y, { width: pw - 4 });
-					y += 10;
+					y += 12;
 					y = drawSectionTitle(doc, `Outstanding — ${sub.boardName}`, mx, y);
 					y = drawTasksWithDetails(doc, sub.tasks, [
 						{ header: 'Title', width: pw * 0.32, getter: t => stripTag(t.title) },
