@@ -20,8 +20,8 @@
 
 	// ─── Generate Report Form ───────────────────────────────────────────
 	// Unified target: 'all', 'cat:<id>', or '<boardId>'
-	let genTarget = $state<string>(data.boards.length > 0 ? String(data.boards[0].id) : 'all');
-	let genPeriod = $state('7d');
+	let genTarget = $state<string>(data.isAdmin ? 'all' : (data.boards.length > 0 ? String(data.boards[0].id) : 'all'));
+	let genPeriod = $state('30d');
 	let genCustomStart = $state('');
 	let genCustomEnd = $state('');
 	let genDetailLevel = $state<'summary' | 'detailed'>('detailed');
@@ -79,13 +79,29 @@
 			return { start: genCustomStart ? new Date(genCustomStart).toISOString() : endStr, end: genCustomEnd ? new Date(genCustomEnd).toISOString() : endStr };
 		}
 
-		const days = genPeriod === '7d' ? 7 : genPeriod === '30d' ? 30 : genPeriod === 'month' ? new Date().getDate() : 7;
 		const start = new Date();
-		if (genPeriod === 'month') {
-			start.setDate(1);
-			start.setHours(0, 0, 0, 0);
-		} else {
-			start.setDate(start.getDate() - days);
+		switch (genPeriod) {
+			case '7d': start.setDate(start.getDate() - 7); break;
+			case '14d': start.setDate(start.getDate() - 14); break;
+			case '30d': start.setDate(start.getDate() - 30); break;
+			case '60d': start.setDate(start.getDate() - 60); break;
+			case '90d': start.setDate(start.getDate() - 90); break;
+			case 'month':
+				start.setDate(1);
+				start.setHours(0, 0, 0, 0);
+				break;
+			case 'quarter': {
+				const qMonth = Math.floor(start.getMonth() / 3) * 3;
+				start.setMonth(qMonth, 1);
+				start.setHours(0, 0, 0, 0);
+				break;
+			}
+			case 'ytd':
+				start.setMonth(0, 1);
+				start.setHours(0, 0, 0, 0);
+				break;
+			case 'year': start.setDate(start.getDate() - 365); break;
+			default: start.setDate(start.getDate() - 30); break;
 		}
 		return { start: start.toISOString(), end: endStr };
 	}
@@ -408,8 +424,14 @@
 						<label for="gen-period">Period</label>
 						<select id="gen-period" bind:value={genPeriod}>
 							<option value="7d">Last 7 days</option>
+							<option value="14d">Last 14 days</option>
 							<option value="30d">Last 30 days</option>
+							<option value="60d">Last 60 days</option>
+							<option value="90d">Last 90 days</option>
 							<option value="month">This month</option>
+							<option value="quarter">This quarter</option>
+							<option value="ytd">Year to date</option>
+							<option value="year">Last 12 months</option>
 							<option value="custom">Custom range</option>
 						</select>
 					</div>
