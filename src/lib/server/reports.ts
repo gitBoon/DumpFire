@@ -72,6 +72,7 @@ export interface ReportData {
 
 	outstandingTasks: {
 		boardName: string;
+		parentBoardName: string | null;
 		categoryName: string;
 		categoryColor: string;
 		tasks: TaskDetail[];
@@ -91,6 +92,7 @@ export interface ReportData {
 
 	boardBreakdown: {
 		boardName: string;
+		parentBoardName: string | null;
 		categoryName: string;
 		categoryColor: string;
 		totalCards: number;
@@ -341,9 +343,11 @@ function generateReportForBoards(
 	}
 
 	const outstandingTasks = Array.from(outstandingByBoard.entries()).map(([boardId, boardCards]) => {
+		const b = boardMap.get(boardId);
 		const catInfo = getCatInfo(boardId);
 		return {
-			boardName: getDisplayName(boardId),
+			boardName: b?.name || 'Unknown',
+			parentBoardName: parentNameMap.get(boardId) || null,
 			...catInfo,
 			tasks: boardCards
 				.sort((a, b) => {
@@ -390,6 +394,7 @@ function generateReportForBoards(
 
 	// Board breakdown
 	const boardBreakdown = boardIds.map(boardId => {
+		const b = boardMap.get(boardId);
 		const catInfo = getCatInfo(boardId);
 		const boardCards = allCards.filter(c => {
 			const colInfo = columnMap.get(c.columnId);
@@ -401,7 +406,8 @@ function generateReportForBoards(
 			return cd >= periodStart && cd <= periodEnd;
 		});
 		return {
-			boardName: getDisplayName(boardId),
+			boardName: b?.name || 'Unknown',
+			parentBoardName: parentNameMap.get(boardId) || null,
 			...catInfo,
 			totalCards: boardCards.length,
 			completedCards: boardCompleted.length,
@@ -529,6 +535,7 @@ export function generateCardReport(cardId: number): ReportData | null {
 
 		outstandingTasks: card.completedAt ? [] : [{
 			boardName: board.name,
+			parentBoardName: null,
 			categoryName: '',
 			categoryColor: '',
 			tasks: [{
@@ -559,6 +566,7 @@ export function generateCardReport(cardId: number): ReportData | null {
 
 		boardBreakdown: [{
 			boardName: board.name,
+			parentBoardName: null,
 			categoryName: '',
 			categoryColor: '',
 			totalCards: 1,
@@ -977,20 +985,61 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 	if (data.boardBreakdown.length > 1) {
 		y = ensureSpace(doc, 100, y);
 		y = drawSectionTitle(doc, 'Board Breakdown', mx, y);
+
+		// Group sub-boards under their parent boards
+		const parentBoards = data.boardBreakdown.filter(b => !b.parentBoardName);
+		const subBoardsByParent = new Map<string, typeof data.boardBreakdown>();
+		for (const b of data.boardBreakdown) {
+			if (b.parentBoardName) {
+				if (!subBoardsByParent.has(b.parentBoardName)) subBoardsByParent.set(b.parentBoardName, []);
+				subBoardsByParent.get(b.parentBoardName)!.push(b);
+			}
+		}
+
+		// Build flat rows with indentation for sub-boards
 		const headers = ['Board', 'Total', 'Completed', 'In Period', 'Remaining'];
 		const widths = [pw * 0.36, pw * 0.16, pw * 0.16, pw * 0.16, pw * 0.16];
-		const rows = data.boardBreakdown.map(b => [
-			b.boardName,
-			String(b.totalCards),
-			String(b.completedCards),
-			String(b.completedInPeriod),
-			String(b.totalCards - b.completedCards)
-		]);
+		const rows: string[][] = [];
+		for (const b of parentBoards) {
+			rows.push([
+				b.boardName,
+				String(b.totalCards),
+				String(b.completedCards),
+				String(b.completedInPeriod),
+				String(b.totalCards - b.completedCards)
+			]);
+			// Add sub-boards indented beneath
+			const subs = subBoardsByParent.get(b.boardName) || [];
+			for (const sb of subs) {
+				rows.push([
+					`  └ ${sb.boardName}`,
+					String(sb.totalCards),
+					String(sb.completedCards),
+					String(sb.completedInPeriod),
+					String(sb.totalCards - sb.completedCards)
+				]);
+			}
+		}
+		// Add any orphaned sub-boards (parent not in breakdown)
+		const parentNames = new Set(parentBoards.map(b => b.boardName));
+		for (const [parentName, subs] of subBoardsByParent) {
+			if (!parentNames.has(parentName)) {
+				for (const sb of subs) {
+					rows.push([
+						`${parentName} └ ${sb.boardName}`,
+						String(sb.totalCards),
+						String(sb.completedCards),
+						String(sb.completedInPeriod),
+						String(sb.totalCards - sb.completedCards)
+					]);
+				}
+			}
+		}
 		y = drawTable(doc, headers, rows, widths, mx, y);
 		y += 14;
 	}
 
-	// ─── Outstanding Tasks (grouped by category) ────────────────────────
+	// ─── Outstanding Tasks (grouped by category, sub-boards nested under parent) ──
 	if (data.outstandingTasks.length > 0) {
 		// Group boards by category for multi-board reports
 		const byCategory = new Map<string, typeof data.outstandingTasks>();
@@ -1002,12 +1051,23 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 
 		const isMultiBoard = data.scope === 'all' || data.scope === 'category';
 
+		// Build parent→sub-board grouping
+		const subBoardsByParent = new Map<string, typeof data.outstandingTasks>();
+		const parentGroups = new Set<typeof data.outstandingTasks[0]>();
+		for (const group of data.outstandingTasks) {
+			if (group.parentBoardName) {
+				if (!subBoardsByParent.has(group.parentBoardName)) subBoardsByParent.set(group.parentBoardName, []);
+				subBoardsByParent.get(group.parentBoardName)!.push(group);
+			} else {
+				parentGroups.add(group);
+			}
+		}
+
 		for (const [catName, groups] of byCategory) {
 			// Category header (only for multi-board reports)
 			if (isMultiBoard && byCategory.size > 1) {
 				y = ensureSpace(doc, 28, y);
 				const catColor = groups[0]?.categoryColor || '#94a3b8';
-				// Subtle category divider: thin left accent + muted label
 				doc.rect(mx, y + 2, pw, 0.5).fill(C.borderLight);
 				doc.rect(mx, y + 6, 3, 12).fill(catColor);
 				doc.font('Helvetica-Bold').fontSize(7.5).fillColor(C.textMuted)
@@ -1015,10 +1075,55 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 				y += 24;
 			}
 
-			for (let gi = 0; gi < groups.length; gi++) {
-				const group = groups[gi];
+			// Render parent boards, with sub-boards nested underneath
+			const rendered = new Set<string>(); // track rendered board names to avoid duplicates
+			for (const group of groups) {
+				if (group.parentBoardName) continue; // sub-boards rendered with their parent
+				if (rendered.has(group.boardName)) continue;
+				rendered.add(group.boardName);
+
 				y = ensureSpace(doc, 60, y);
-				y = drawSectionTitle(doc, `Outstanding - ${group.boardName}`, mx, y);
+				y = drawSectionTitle(doc, `Outstanding — ${group.boardName}`, mx, y);
+				y = drawTasksWithDetails(doc, group.tasks, [
+					{ header: 'Title', width: pw * 0.32, getter: t => stripTag(t.title) },
+					{ header: 'Column', width: pw * 0.15, getter: t => t.columnTitle },
+					{ header: 'Priority', width: pw * 0.13, getter: t => t.priority.charAt(0).toUpperCase() + t.priority.slice(1) },
+					{ header: 'Due Date', width: pw * 0.20, getter: t => t.dueDate ? formatDate(t.dueDate) : '—' },
+					{ header: 'Assignees', width: pw * 0.20, getter: t => t.assignees.join(', ') || '—' }
+				], mx, y, pw, detailLevel);
+
+				// Render sub-boards nested under this parent
+				const subs = subBoardsByParent.get(group.boardName) || [];
+				for (const sub of subs) {
+					y = ensureSpace(doc, 40, y);
+					// Sub-board heading — indented with a subtle connector
+					const subX = mx + 16;
+					doc.rect(mx + 6, y + 3, 2, 10).fill(C.borderLight);
+					doc.font('Helvetica-Bold').fontSize(9).fillColor(C.textMuted)
+						.text(`└ ${sub.boardName}`, subX, y + 2, { width: pw - 20 });
+					y += 16;
+					y = drawTasksWithDetails(doc, sub.tasks, [
+						{ header: 'Title', width: pw * 0.32, getter: t => stripTag(t.title) },
+						{ header: 'Column', width: pw * 0.15, getter: t => t.columnTitle },
+						{ header: 'Priority', width: pw * 0.13, getter: t => t.priority.charAt(0).toUpperCase() + t.priority.slice(1) },
+						{ header: 'Due Date', width: pw * 0.20, getter: t => t.dueDate ? formatDate(t.dueDate) : '—' },
+						{ header: 'Assignees', width: pw * 0.20, getter: t => t.assignees.join(', ') || '—' }
+					], mx, y, pw, detailLevel);
+				}
+			}
+
+			// Render any orphaned sub-boards (parent not in this category group)
+			for (const group of groups) {
+				if (!group.parentBoardName) continue;
+				if (rendered.has(`${group.parentBoardName}→${group.boardName}`)) continue;
+				// Check if parent was already rendered in this category
+				if (rendered.has(group.parentBoardName)) {
+					rendered.add(`${group.parentBoardName}→${group.boardName}`);
+					continue; // already rendered as nested
+				}
+				rendered.add(`${group.parentBoardName}→${group.boardName}`);
+				y = ensureSpace(doc, 60, y);
+				y = drawSectionTitle(doc, `Outstanding — ${group.parentBoardName} └ ${group.boardName}`, mx, y);
 				y = drawTasksWithDetails(doc, group.tasks, [
 					{ header: 'Title', width: pw * 0.32, getter: t => stripTag(t.title) },
 					{ header: 'Column', width: pw * 0.15, getter: t => t.columnTitle },
