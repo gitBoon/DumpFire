@@ -686,7 +686,7 @@
 						{/if}
 					</div>
 					<div class="stat-value">{a.active}</div>
-					<div class="stat-sub">{a.totalAssigned} assigned to {user?.username}</div>
+					<div class="stat-sub">{a.totalAssigned} total · {a.completed} completed</div>
 				</div>
 
 				<div class="stat-card glass-glow accent-green">

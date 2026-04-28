@@ -108,7 +108,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	// ─── Personal Analytics ──────────────────────────────────────────────────
 
-	// All cards assigned to this user
+	// All non-archived cards assigned to this user
 	const myAssignments = db.select({ cardId: cardAssignees.cardId })
 		.from(cardAssignees)
 		.where(eq(cardAssignees.userId, user.id))
@@ -117,7 +117,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	let myCards: typeof cards.$inferSelect[] = [];
 	if (myCardIds.length > 0) {
-		myCards = db.select().from(cards).where(inArray(cards.id, myCardIds)).all();
+		myCards = db.select().from(cards).where(and(inArray(cards.id, myCardIds), isNull(cards.archivedAt))).all();
 	}
 
 	// Determine which of my cards are in "done" columns
