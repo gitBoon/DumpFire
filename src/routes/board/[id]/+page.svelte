@@ -708,6 +708,7 @@
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
 				<h1 class="board-name" onclick={() => (editingBoardName = true)} role="button" tabindex="0">
 					{boardName}
+					<span class="board-id">#{data.board.id}</span>
 				</h1>
 			{/if}
 		</div>
