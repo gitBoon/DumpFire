@@ -543,7 +543,7 @@
 									<a href="/board/{board.id}" class="board-row fav-row">
 										<span class="expand-toggle placeholder"></span>
 										<span class="board-row-emoji glass">{board.emoji}</span>
-										<span class="board-row-name">{board.name}</span>
+										<span class="board-row-name">{board.name} <span class="board-id">#{board.id}</span></span>
 										<span class="board-row-activity">{timeAgo(board.lastActivity)}</span>
 										<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
 										<div class="board-row-progress">
@@ -599,7 +599,7 @@
 												{/if}
 												<a href="/board/{board.id}" class="board-row-link">
 													<span class="board-row-emoji glass">{board.emoji}</span>
-													<span class="board-row-name">{board.name}</span>
+													<span class="board-row-name">{board.name} <span class="board-id">#{board.id}</span></span>
 												</a>
 												<span class="board-row-activity">{timeAgo(board.lastActivity)}</span>
 												<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
@@ -636,7 +636,7 @@
 													<a href="/board/{sb.id}" class="board-row sub-row animate-fade-in" title="Parent: {sb.parentCardTitle}">
 														<span class="sub-connector">└</span>
 														<span class="board-row-emoji glass-sm">{sb.emoji}</span>
-														<span class="board-row-name">{sb.name}</span>
+														<span class="board-row-name">{sb.name} <span class="board-id">#{sb.id}</span></span>
 														<span class="board-row-activity">{sb.parentCardTitle}</span>
 														<span class="board-row-count">{sb.total} card{sb.total !== 1 ? 's' : ''}</span>
 														<div class="board-row-progress">
