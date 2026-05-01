@@ -738,7 +738,7 @@
 					</div>
 					<div class="stat-value">{a.active}</div>
 					<div class="stat-sub">{a.totalAssigned} total · {a.completed} completed</div>
-				<div class="stat-card-hint">Click to view</div>
+
 			</div>
 
 				<div class="stat-card glass-glow accent-green">
@@ -1120,7 +1120,7 @@
 							</a>
 							<div class="atm-card-list">
 								{#each group.cards as card}
-									<a href="/board/{group.boardId}" class="atm-card-row">
+									<a href="/board/{group.boardId}?card={card.id}" class="atm-card-row">
 										<span class="atm-card-priority" title={card.priority}>{priorityIcon(card.priority)}</span>
 										<div class="atm-card-info">
 											<span class="atm-card-title">{card.title}</span>
