@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { taskRequests, users, teams, teamMembers, cards, columns } from '$lib/server/db/schema';
+import { taskRequests, users, teams, teamMembers, cards, columns, boards } from '$lib/server/db/schema';
 import { eq, and, inArray, or, desc } from 'drizzle-orm';
 import { notifyTaskRequest } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
@@ -28,18 +28,13 @@ export const GET: RequestHandler = async ({ locals }) => {
 		);
 	}
 
-	// Admins see everything
-	let rows;
-	if (locals.user.role === 'admin' || locals.user.role === 'superadmin') {
-		rows = db.select().from(taskRequests).orderBy(desc(taskRequests.createdAt)).all();
-	} else {
-		rows = db.select().from(taskRequests)
-			.where(or(...conditions))
-			.orderBy(desc(taskRequests.createdAt))
-			.all();
-	}
+	// All users (including admins) only see requests targeted at them or their teams
+	const rows = db.select().from(taskRequests)
+		.where(or(...conditions))
+		.orderBy(desc(taskRequests.createdAt))
+		.all();
 
-	// Enrich with target name and resolved board ID
+	// Enrich with target name, desired board info, and resolved board ID
 	const enriched = rows.map(r => {
 		let targetName = 'Unknown';
 		let targetEmoji = '❓';
@@ -61,7 +56,18 @@ export const GET: RequestHandler = async ({ locals }) => {
 			}
 		}
 
-		return { ...r, targetName, targetEmoji, resolvedBoardId };
+		// Look up desired board info
+		let desiredBoardName: string | null = null;
+		let desiredBoardEmoji: string | null = null;
+		if (r.desiredBoardId) {
+			const board = db.select({ name: boards.name, emoji: boards.emoji }).from(boards).where(eq(boards.id, r.desiredBoardId)).get();
+			if (board) {
+				desiredBoardName = board.name;
+				desiredBoardEmoji = board.emoji || '📋';
+			}
+		}
+
+		return { ...r, targetName, targetEmoji, resolvedBoardId, desiredBoardName, desiredBoardEmoji };
 	});
 
 	return json(enriched);
@@ -79,11 +85,12 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 	}
 
 	const body = await request.json();
-	const { targetType, targetId, title, description, priority, requesterName, requesterEmail, businessValue } = body;
+	const { targetType, targetId, title, description, priority, requesterName, requesterEmail, businessValue, desiredBoardId } = body;
 
 	if (!title?.trim()) throw error(400, 'Title is required');
 	if (!targetType || !targetId) throw error(400, 'Target is required');
 	if (!['user', 'team'].includes(targetType)) throw error(400, 'Invalid target type');
+	if (!desiredBoardId) throw error(400, 'A target board/project is required');
 
 	// Input length limits
 	if (title.length > 500) throw error(400, 'Title too long (max 500 chars)');
@@ -103,9 +110,14 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 		if (!user) throw error(404, 'User not found');
 	}
 
+	// Validate desired board exists
+	const desiredBoard = db.select({ id: boards.id }).from(boards).where(eq(boards.id, desiredBoardId)).get();
+	if (!desiredBoard) throw error(404, 'Board not found');
+
 	const result = db.insert(taskRequests).values({
 		targetType,
 		targetId,
+		desiredBoardId,
 		title: title.trim(),
 		description: description || '',
 		priority: safePriority,

@@ -20,6 +20,9 @@
 		rejectReason: string | null;
 		resolvedCardId: number | null;
 		resolvedBoardId: number | null;
+		desiredBoardId: number | null;
+		desiredBoardName: string | null;
+		desiredBoardEmoji: string | null;
 		createdAt: string;
 		resolvedAt: string | null;
 	};
@@ -245,6 +248,9 @@
 							</span>
 							<span class="request-age">{timeAgo(req.createdAt)}</span>
 						</div>
+						{#if req.desiredBoardName}
+							<div class="board-badge">📋 {req.desiredBoardName}</div>
+						{/if}
 						<h3 class="request-title">{req.title}</h3>
 						{#if req.description}
 							<p class="request-desc">{req.description}</p>
@@ -266,7 +272,7 @@
 								<button class="btn-discuss" onclick={() => openChat(req)}>
 									💬 Discuss
 								</button>
-								<button class="btn-accept" onclick={() => acceptModal = { show: true, request: req, boardId: null, columnId: null, assigneeId: null }}>
+								<button class="btn-accept" onclick={() => acceptModal = { show: true, request: req, boardId: req.desiredBoardId ?? null, columnId: null, assigneeId: null }}>
 									✅ Accept
 								</button>
 								<button class="btn-reject" onclick={() => rejectModal = { show: true, request: req, reason: '' }}>
@@ -532,6 +538,15 @@
 	.bv-label { font-size: 0.72rem; font-weight: 700; color: var(--accent-indigo); text-transform: uppercase; letter-spacing: 0.03em; }
 	.bv-text { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin-top: 2px; }
 	.request-age { font-size: 0.7rem; color: var(--text-tertiary); margin-left: auto; }
+
+	.board-badge {
+		display: inline-flex; align-items: center; gap: 4px;
+		padding: 2px 10px; border-radius: var(--radius-full);
+		font-size: 0.68rem; font-weight: 600;
+		background: rgba(99, 102, 241, 0.08); color: var(--accent-indigo);
+		border: 1px solid rgba(99, 102, 241, 0.15);
+		margin-bottom: var(--space-xs);
+	}
 
 	.target-badge {
 		display: inline-flex; align-items: center; gap: 3px;
