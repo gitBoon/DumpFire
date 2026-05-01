@@ -2,9 +2,12 @@
 	import { onMount } from 'svelte';
 
 	type Target = { id: number; name: string; emoji: string; type: 'user' | 'team' };
+	type BoardOption = { id: number; name: string; emoji: string };
 
 	let targets = $state<Target[]>([]);
+	let boardOptions = $state<BoardOption[]>([]);
 	let selectedTarget = $state('');
+	let selectedBoardId = $state('');
 	let title = $state('');
 	let description = $state('');
 	let businessValue = $state('');
@@ -25,14 +28,19 @@
 			// Simpler: just check if we have a session cookie
 		} catch {}
 
-		// Load targets
+		// Load targets and boards
 		const res = await fetch('/api/requests/targets');
-		if (res.ok) targets = await res.json();
+		if (res.ok) {
+			const data = await res.json();
+			targets = data.targets;
+			boardOptions = data.boards;
+		}
 	});
 
 	async function submit() {
 		if (!title.trim()) { errorMsg = 'Title is required'; return; }
 		if (!selectedTarget) { errorMsg = 'Please select a target'; return; }
+		if (!selectedBoardId) { errorMsg = 'Please select a board/project'; return; }
 		if (!requesterName.trim()) { errorMsg = 'Your name is required'; return; }
 		if (!requesterEmail.trim()) { errorMsg = 'Your email is required'; return; }
 
@@ -48,6 +56,7 @@
 			body: JSON.stringify({
 				targetType: type,
 				targetId,
+				desiredBoardId: Number(selectedBoardId),
 				title: title.trim(),
 				description,
 				businessValue,
@@ -87,7 +96,7 @@
 				<h1>Request Submitted!</h1>
 				<p>Your task request has been sent and will be reviewed shortly.</p>
 				<div class="success-actions">
-					<button class="btn-primary" onclick={() => { submitted = false; title = ''; description = ''; businessValue = ''; selectedTarget = ''; priority = 'medium'; requesterName = ''; requesterEmail = ''; }}>
+					<button class="btn-primary" onclick={() => { submitted = false; title = ''; description = ''; businessValue = ''; selectedTarget = ''; selectedBoardId = ''; priority = 'medium'; requesterName = ''; requesterEmail = ''; }}>
 						Submit Another
 					</button>
 					<a href="/" class="btn-home">🏠 Home</a>
@@ -117,6 +126,17 @@
 								<option value="user:{t.id}">{t.emoji} {t.name}</option>
 							{/each}
 						</optgroup>
+					</select>
+				</div>
+
+				<!-- Board / Project -->
+				<div class="form-group">
+					<label for="board">Board / Project <span class="required">*</span></label>
+					<select id="board" bind:value={selectedBoardId} class="form-select">
+						<option value="">Choose a board/project...</option>
+						{#each boardOptions as b}
+							<option value={b.id}>{b.emoji} {b.name}</option>
+						{/each}
 					</select>
 				</div>
 

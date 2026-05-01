@@ -406,6 +406,7 @@ export const taskRequests = sqliteTable('task_requests', {
 	businessValue: text('business_value').default(''),
 	resolvedBy: integer('resolved_by').references(() => users.id, { onDelete: 'set null' }),
 	resolvedCardId: integer('resolved_card_id').references(() => cards.id, { onDelete: 'set null' }),
+	desiredBoardId: integer('desired_board_id').references(() => boards.id, { onDelete: 'set null' }),
 	rejectReason: text('reject_reason'),
 	createdAt: text('created_at')
 		.notNull()
