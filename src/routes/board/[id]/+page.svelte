@@ -26,7 +26,8 @@
 	import type { CardType, ColumnType, CategoryType, LabelType, ActivityType, SortOption, XpEntry, BlockedState, OnHoldState } from '$lib/types';
 
 	// Shared utilities
-	import { COLUMN_COLORS, COMMON_EMOJIS, FLIP_DURATION_MS } from '$lib/utils/constants';
+	import { COLUMN_COLORS, FLIP_DURATION_MS } from '$lib/utils/constants';
+	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, isStale, isNew } from '$lib/utils/date-utils';
 	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel, getActionLabel, getVisibleCount } from '$lib/utils/card-utils';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
@@ -265,7 +266,7 @@
 	let editingBoardName = $state(false);
 	let boardName = $state(data.board.name);
 	let boardEmoji = $state(data.board.emoji || '📋');
-	let showEmojiPicker = $state(false);
+
 
 	async function saveBoardName() {
 		await boardActions.saveBoardName(data.board.id, boardName);
@@ -274,7 +275,6 @@
 
 	async function saveBoardEmoji(emoji: string) {
 		boardEmoji = emoji;
-		showEmojiPicker = false;
 		await boardActions.saveBoardEmoji(data.board.id, emoji);
 	}
 
@@ -345,7 +345,7 @@
 	let contextMenu = $state<{ show: boolean; x: number; y: number; card: CardType | null; columnId: number }>({ show: false, x: 0, y: 0, card: null, columnId: 0 });
 
 	function toggleDropdown(id: string) { openDropdown = openDropdown === id ? null : id; }
-	function closeDropdowns() { openDropdown = null; showEmojiPicker = false; showMoreMenu = false; contextMenu = { ...contextMenu, show: false }; }
+	function closeDropdowns() { openDropdown = null; showMoreMenu = false; contextMenu = { ...contextMenu, show: false }; }
 
 	function openContextMenu(e: MouseEvent, card: CardType, columnId: number) {
 		e.preventDefault();
@@ -682,19 +682,7 @@
 					</svg>
 				</a>
 			{/if}
-			<div class="emoji-picker-wrapper">
-				<!-- svelte-ignore a11y_click_events_have_key_events -->
-				<span class="board-emoji clickable" onclick={(e) => { e.stopPropagation(); showEmojiPicker = !showEmojiPicker; }} role="button" tabindex="0" title="Change icon">{boardEmoji}</span>
-				{#if showEmojiPicker}
-					<!-- svelte-ignore a11y_click_events_have_key_events -->
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div class="emoji-dropdown" onclick={(e) => e.stopPropagation()}>
-						{#each COMMON_EMOJIS as emoji}
-							<button class="emoji-option" class:active={boardEmoji === emoji} onclick={() => saveBoardEmoji(emoji)}>{emoji}</button>
-						{/each}
-					</div>
-				{/if}
-			</div>
+			<EmojiPicker value={boardEmoji} onSelect={(emoji) => saveBoardEmoji(emoji)} />
 			{#if editingBoardName}
 				<input
 					class="board-name-input"
@@ -1507,25 +1495,7 @@
 		font-weight: 300;
 		flex-shrink: 0;
 	}
-	.emoji-picker-wrapper { position: relative; }
-	.board-emoji { font-size: 1.5rem; }
-	.board-emoji.clickable { cursor: pointer; transition: transform 0.15s; }
-	.board-emoji.clickable:hover { transform: scale(1.15); }
-	.emoji-dropdown {
-		position: absolute; top: 100%; left: 0; z-index: 50;
-		display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px;
-		padding: var(--space-sm); border-radius: var(--radius-md);
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		box-shadow: 0 8px 24px rgba(0,0,0,0.2); width: 280px;
-		animation: panelSlide 0.15s ease-out;
-	}
-	.emoji-option {
-		padding: 4px; font-size: 1.2rem; border-radius: var(--radius-sm);
-		background: transparent; border: none; cursor: pointer; transition: all 0.1s;
-		display: flex; align-items: center; justify-content: center;
-	}
-	.emoji-option:hover { background: var(--glass-bg); transform: scale(1.2); }
-	.emoji-option.active { background: rgba(99, 102, 241, 0.15); outline: 2px solid var(--accent-indigo); }
+
 	.board-name {
 		font-size: 1.25rem; cursor: pointer; padding: 2px var(--space-sm);
 		border-radius: var(--radius-sm); transition: background var(--duration-fast) var(--ease-out);
