@@ -1680,7 +1680,49 @@
 	.color-swatch:hover { transform: scale(1.15); }
 	.color-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 8px rgba(255, 255, 255, 0.2); }
 
-	.column-cards { flex: 1; overflow-y: auto; padding: 0 var(--space-md) var(--space-md); min-height: 0; display: flex; flex-direction: column; gap: var(--space-sm); }
+	.column-cards {
+		flex: 1; overflow-y: auto; padding: 0 var(--space-md) var(--space-md);
+		min-height: 0; display: flex; flex-direction: column; gap: var(--space-sm);
+		/* Firefox scrollbar - hidden by default */
+		scrollbar-width: auto;
+		scrollbar-color: transparent transparent;
+		transition: scrollbar-color 0.2s ease;
+	}
+	/* Show Firefox scrollbar on column hover */
+	.kanban-column:hover .column-cards {
+		scrollbar-color: var(--text-tertiary) rgba(128, 128, 128, 0.08);
+	}
+	/* Webkit scrollbar - wider, prettier */
+	.column-cards::-webkit-scrollbar { width: 8px; }
+	.column-cards::-webkit-scrollbar-track {
+		background: transparent;
+		border-radius: var(--radius-full);
+		margin: 4px 0;
+		transition: background 0.2s ease;
+	}
+	.kanban-column:hover .column-cards::-webkit-scrollbar-track {
+		background: rgba(128, 128, 128, 0.08);
+	}
+	.column-cards::-webkit-scrollbar-thumb {
+		background: transparent;
+		border-radius: var(--radius-full);
+		border: 1.5px solid transparent;
+		background-clip: padding-box;
+		transition: background 0.2s ease, box-shadow 0.2s ease;
+	}
+	/* Show webkit scrollbar thumb on column hover */
+	.kanban-column:hover .column-cards::-webkit-scrollbar-thumb {
+		background: var(--text-tertiary);
+		border-radius: var(--radius-full);
+		border: 1.5px solid transparent;
+		background-clip: padding-box;
+	}
+	.kanban-column:hover .column-cards::-webkit-scrollbar-thumb:hover {
+		background: var(--text-secondary);
+		border: 1.5px solid transparent;
+		background-clip: padding-box;
+		box-shadow: 0 0 6px rgba(99, 102, 241, 0.3);
+	}
 	:global(.drop-target-active) { background: rgba(99, 102, 241, 0.05) !important; border-radius: var(--radius-md); }
 
 	.kanban-card {
