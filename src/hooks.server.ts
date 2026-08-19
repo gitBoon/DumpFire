@@ -3,8 +3,8 @@ import { validateSession, SESSION_COOKIE_NAME, hasAnyUsers, cleanExpiredSessions
 import { initBackupScheduler } from '$lib/server/backup';
 import { initReportScheduler } from '$lib/server/reports';
 import { initSnapshotScheduler } from '$lib/server/snapshots';
-import { json, redirect, type Handle } from '@sveltejs/kit';
-import { createLogger } from '$lib/server/logger';
+import { json, redirect, isRedirect, type Handle, type RequestEvent } from '@sveltejs/kit';
+import { createLogger, initLogMaintenance } from '$lib/server/logger';
 import { checkRateLimit } from '$lib/server/rate-limit';
 
 const log = createLogger('HTTP');
@@ -14,6 +14,9 @@ runMigrations();
 
 // Clean expired sessions periodically (on startup)
 cleanExpiredSessions();
+
+// Start log retention maintenance (prune old system_logs entries)
+initLogMaintenance();
 
 // Start the scheduled backup timer
 initBackupScheduler();
@@ -28,15 +31,13 @@ initSnapshotScheduler();
 const PUBLIC_ROUTES = ['/login', '/setup', '/invite', '/request', '/api/requests', '/docs', '/api/v1/openapi.json'];
 
 /** Routes restricted to admin/superadmin only. */
-const ADMIN_ROUTES = ['/admin'];
+const ADMIN_ROUTES = ['/admin', '/audit'];
 
-export const handle: Handle = async ({ event, resolve }) => {
+type ResolveFn = Parameters<Handle>[0]['resolve'];
+
+/** Auth guards + routing rules. Wrapped by `handle` below for request logging. */
+async function handleRequest(event: RequestEvent, resolve: ResolveFn): Promise<Response> {
 	const path = event.url.pathname;
-
-	// Allow static assets to pass through immediately
-	if (path.startsWith('/_app/') || path.startsWith('/favicon')) {
-		return await resolve(event);
-	}
 
 	// ── 1a. API v1 bearer-token authentication ───────────────────────
 	if (path.startsWith('/api/v1/')) {
@@ -72,12 +73,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 		event.locals.user = user;
 
-		let response: Response;
-		try {
-			response = await resolve(event);
-		} catch (err) {
-			throw err;
-		}
+		const response = await resolve(event);
 
 		// Security headers
 		response.headers.set('X-Content-Type-Options', 'nosniff');
@@ -132,18 +128,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 		}
 	}
 
-	let response: Response;
-	try {
-		response = await resolve(event);
-	} catch (err) {
-		// Re-throw redirects and SvelteKit HTTP errors — they are expected control flow
-		throw err;
-	}
-
-	// Log server errors (5xx responses)
-	if (response.status >= 500) {
-		log.error(`${event.request.method} ${path} → ${response.status}`);
-	}
+	const response = await resolve(event);
 
 	// ── 5. Security headers ──────────────────────────────────────────────
 	response.headers.set('X-Content-Type-Options', 'nosniff');
@@ -153,4 +138,53 @@ export const handle: Handle = async ({ event, resolve }) => {
 	response.headers.set('X-XSS-Protection', '1; mode=block');
 
 	return response;
+}
+
+export const handle: Handle = async ({ event, resolve }) => {
+	const path = event.url.pathname;
+
+	// Static assets pass through immediately, unlogged
+	if (path.startsWith('/_app/') || path.startsWith('/favicon')) {
+		return await resolve(event);
+	}
+
+	const start = Date.now();
+	const method = event.request.method;
+	let ip: string | null = null;
+	try {
+		ip = event.getClientAddress();
+	} catch {
+		// Unavailable (e.g. during prerender) — log without it
+	}
+
+	try {
+		const response = await handleRequest(event, resolve);
+		const durationMs = Date.now() - start;
+		const status = response.status;
+		const fields = { userId: event.locals.user?.id ?? null, ip };
+		const meta = { method, path, status, durationMs };
+
+		if (status >= 500) log.error(`${method} ${path} → ${status} (${durationMs}ms)`, meta, fields);
+		else if (status >= 400) log.warn(`${method} ${path} → ${status} (${durationMs}ms)`, meta, fields);
+		else log.info(`${method} ${path} → ${status} (${durationMs}ms)`, meta, fields);
+
+		return response;
+	} catch (err) {
+		const durationMs = Date.now() - start;
+		const fields = { userId: event.locals.user?.id ?? null, ip };
+
+		if (isRedirect(err)) {
+			// Auth-guard redirects are normal flow, but a redirect to /login for a
+			// request that carried a cookie is exactly the logged-out evidence we
+			// want on record — so log every one with who/where.
+			log.info(
+				`${method} ${path} → ${err.status} redirect to ${err.location} (${durationMs}ms)`,
+				{ method, path, status: err.status, location: err.location, durationMs },
+				fields
+			);
+		} else {
+			log.error(`${method} ${path} → unhandled error (${durationMs}ms)`, err, fields);
+		}
+		throw err;
+	}
 };
