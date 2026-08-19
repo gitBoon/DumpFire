@@ -156,6 +156,38 @@
 		const d = new Date(ts.endsWith('Z') || ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z');
 		return d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 	}
+
+	// ─── Expandable lines ────────────────────────────────────────────────
+	let expandedLogs = $state<Set<string>>(new Set());
+	let expandedAudit = $state<Set<number>>(new Set());
+
+	function logKey(e: LogEntry): string {
+		return `${e.id}|${e.timestamp}`;
+	}
+
+	function toggleLog(e: LogEntry) {
+		const key = logKey(e);
+		const next = new Set(expandedLogs);
+		if (next.has(key)) next.delete(key);
+		else next.add(key);
+		expandedLogs = next;
+	}
+
+	function toggleAudit(id: number) {
+		const next = new Set(expandedAudit);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		expandedAudit = next;
+	}
+
+	function prettyMeta(meta: string | null): string {
+		if (!meta) return '';
+		try {
+			return JSON.stringify(JSON.parse(meta), null, 2);
+		} catch {
+			return meta;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -221,19 +253,43 @@
 					<div class="console-empty">Waiting for log entries…</div>
 				{:else}
 					{#each visibleEntries as entry (entry.id + entry.timestamp)}
-						<div class="log-line level-{entry.level.toLowerCase()}">
-							<span class="log-time">{fmtTime(entry.timestamp)}</span>
-							<span class="log-level">{entry.level}</span>
-							<span class="log-context">[{entry.context}]</span>
-							<span class="log-message">{entry.message}</span>
-							{#if entry.userId !== null}
-								<span class="log-chip" title="User">{userLabel(entry.userId)}</span>
-							{/if}
-							{#if entry.ip}
-								<span class="log-chip" title="IP address">{entry.ip}</span>
-							{/if}
-							{#if entry.meta}
-								<span class="log-meta" title={entry.meta}>{fmtMeta(entry.meta)}</span>
+						{@const expanded = expandedLogs.has(logKey(entry))}
+						<!-- svelte-ignore a11y_click_events_have_key_events -->
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div class="log-row" class:expanded onclick={() => toggleLog(entry)}>
+							<div class="log-line level-{entry.level.toLowerCase()}">
+								<span class="log-caret">{expanded ? '▾' : '▸'}</span>
+								<span class="log-time">{fmtTime(entry.timestamp)}</span>
+								<span class="log-level">{entry.level}</span>
+								<span class="log-context">[{entry.context}]</span>
+								<span class="log-message">{entry.message}</span>
+								{#if entry.userId !== null}
+									<span class="log-chip" title="User">{userLabel(entry.userId)}</span>
+								{/if}
+								{#if entry.ip}
+									<span class="log-chip" title="IP address">{entry.ip}</span>
+								{/if}
+								{#if entry.meta}
+									<span class="log-meta">{fmtMeta(entry.meta)}</span>
+								{/if}
+							</div>
+							{#if expanded}
+								<!-- svelte-ignore a11y_click_events_have_key_events -->
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<div class="log-detail" onclick={(e) => e.stopPropagation()}>
+									<div class="ld-row"><span class="ld-key">time</span><span class="ld-val">{entry.timestamp}</span></div>
+									<div class="ld-row"><span class="ld-key">level</span><span class="ld-val">{entry.level} [{entry.context}]</span></div>
+									<div class="ld-row"><span class="ld-key">message</span><span class="ld-val">{entry.message}</span></div>
+									{#if entry.userId !== null}
+										<div class="ld-row"><span class="ld-key">user</span><span class="ld-val">{userLabel(entry.userId)} (id {entry.userId})</span></div>
+									{/if}
+									{#if entry.ip}
+										<div class="ld-row"><span class="ld-key">ip</span><span class="ld-val">{entry.ip}</span></div>
+									{/if}
+									{#if entry.meta}
+										<pre class="ld-meta">{prettyMeta(entry.meta)}</pre>
+									{/if}
+								</div>
 							{/if}
 						</div>
 					{/each}
@@ -297,13 +353,25 @@
 						</thead>
 						<tbody>
 							{#each auditRows as row (row.id)}
-								<tr>
+								<!-- svelte-ignore a11y_click_events_have_key_events -->
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<tr class="at-row" class:expanded={expandedAudit.has(row.id)} onclick={() => toggleAudit(row.id)}>
 									<td class="at-when">{fmtDateTime(row.createdAt)}</td>
 									<td class="at-user">{row.userEmoji} {row.userName || '—'}</td>
 									<td class="at-board">{row.boardName}</td>
 									<td><span class="at-action" class:api={row.action.startsWith('api:')}>{row.action}</span></td>
-									<td class="at-detail" title={row.detail}>{row.detail}</td>
+									<td class="at-detail">{row.detail}</td>
 								</tr>
+								{#if expandedAudit.has(row.id)}
+									<tr class="at-expand-row">
+										<td colspan="5">
+											<div class="at-full-detail">
+												{#if row.cardId}<span class="at-full-ref">card #{row.cardId}</span>{/if}
+												<span class="at-full-text">{row.detail || '(no detail recorded)'}</span>
+											</div>
+										</td>
+									</tr>
+								{/if}
 							{/each}
 						</tbody>
 					</table>
@@ -321,14 +389,15 @@
 </div>
 
 <style>
+	/* Full-viewport flex column: header and tabs take their natural height,
+	   the active panel fills everything else and scrolls internally. */
 	.audit-page {
-		max-width: 1200px;
-		margin: 0 auto;
-		padding: var(--space-lg);
+		padding: var(--space-md) var(--space-lg);
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-md);
-		min-height: 100vh;
+		height: 100vh;
+		overflow: hidden;
 	}
 
 	.audit-header {
@@ -366,6 +435,7 @@
 		padding: var(--space-md);
 		display: flex; flex-direction: column; gap: var(--space-sm);
 		flex: 1;
+		min-height: 0;
 	}
 
 	.console-toolbar {
@@ -419,7 +489,8 @@
 		border: 1px solid var(--ctp-surface0);
 		border-radius: var(--radius-md);
 		padding: var(--space-sm);
-		height: 60vh;
+		flex: 1;
+		min-height: 0;
 		overflow-y: auto;
 		overflow-x: hidden;
 	}
@@ -434,19 +505,53 @@
 	}
 	.console-feed .console-empty { color: var(--ctp-overlay1); }
 
+	.log-row { cursor: pointer; border-radius: 3px; }
+	.log-row:hover .log-line, .log-row.expanded .log-line { background: var(--ctp-surface0); }
+
 	.log-line {
-		display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+		display: flex; gap: 8px; align-items: baseline; flex-wrap: nowrap;
+		overflow: hidden;
 		padding: 1px 4px; border-radius: 3px;
 	}
-	.log-line:hover { background: var(--ctp-surface0); }
+	.log-caret { color: var(--ctp-overlay0); flex-shrink: 0; width: 1ch; }
 	.log-time { color: var(--ctp-overlay0); flex-shrink: 0; }
 	.log-level { font-weight: 800; flex-shrink: 0; min-width: 3.4em; }
 	.log-context { color: var(--ctp-mauve); flex-shrink: 0; }
-	.log-message { color: var(--ctp-text); }
+	.log-message {
+		color: var(--ctp-text);
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+		flex-shrink: 1; min-width: 8ch;
+	}
 	.log-meta {
 		color: var(--ctp-overlay1);
 		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 		max-width: 40ch;
+	}
+
+	/* Expanded entry detail */
+	.log-detail {
+		margin: 2px 4px 6px 20px;
+		padding: 8px 10px;
+		background: var(--ctp-mantle);
+		border: 1px solid var(--ctp-surface0);
+		border-radius: 4px;
+		display: flex; flex-direction: column; gap: 4px;
+		cursor: default;
+	}
+	.ld-row { display: flex; gap: 10px; align-items: baseline; }
+	.ld-key {
+		color: var(--ctp-overlay0); flex-shrink: 0; min-width: 7ch;
+		font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+	}
+	.ld-val { color: var(--ctp-text); white-space: pre-wrap; word-break: break-word; }
+	.ld-meta {
+		margin: 2px 0 0;
+		padding: 6px 8px;
+		background: var(--ctp-base);
+		border-radius: 4px;
+		color: var(--ctp-subtext0);
+		font-size: 0.68rem;
+		white-space: pre-wrap; word-break: break-word;
 	}
 	.log-chip {
 		background: var(--ctp-surface0);
@@ -471,7 +576,7 @@
 		padding: 0 4px; border-radius: 3px;
 	}
 
-	.audit-table-wrap { overflow-x: auto; }
+	.audit-table-wrap { overflow: auto; flex: 1; min-height: 0; }
 	.audit-table {
 		width: 100%; border-collapse: collapse; font-size: 0.75rem;
 	}
@@ -494,6 +599,22 @@
 	.at-action.api { background: rgba(6, 182, 212, 0.12); color: var(--accent-cyan); }
 	.at-detail {
 		max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.at-row { cursor: pointer; }
+	.at-row:hover td, .at-row.expanded td { background: rgba(128, 128, 128, 0.06); }
+	.at-expand-row td { padding: 0 10px 10px; }
+	.at-full-detail {
+		background: rgba(128, 128, 128, 0.08);
+		border-radius: var(--radius-sm);
+		padding: var(--space-sm) var(--space-md);
+		display: flex; flex-direction: column; gap: 4px;
+	}
+	.at-full-ref {
+		font-size: 0.65rem; font-weight: 700; color: var(--accent-indigo);
+	}
+	.at-full-text {
+		color: var(--text-primary); font-size: 0.75rem;
+		white-space: pre-wrap; word-break: break-word;
 	}
 	.audit-more { display: flex; justify-content: center; padding: var(--space-sm); }
 </style>
