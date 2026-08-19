@@ -3,7 +3,10 @@ import { db } from '$lib/server/db';
 import { users, sessions } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { hashPassword } from '$lib/server/auth';
+import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
+
+const log = createLogger('AUTH');
 
 /** PUT — Change/reset a user's password. */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
@@ -37,7 +40,12 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 	// Invalidate all existing sessions for this user (except self if changing own)
 	if (!isSelf) {
-		db.delete(sessions).where(eq(sessions.userId, userId)).run();
+		const invalidated = db.delete(sessions).where(eq(sessions.userId, userId)).run();
+		log.info(
+			`Password reset for user ${userId} ("${target.username}") by "${locals.user.username}" — invalidated ${invalidated.changes} session(s)`,
+			{ targetUserId: userId, resetBy: locals.user.id },
+			{ userId: locals.user.id }
+		);
 	}
 
 	return json({ success: true });

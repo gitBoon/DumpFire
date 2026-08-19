@@ -9,8 +9,11 @@ import { hashSync, compareSync } from 'bcryptjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { db } from './db';
 import { users, sessions, apiKeys } from './db/schema';
-import { eq, and, gt, lt } from 'drizzle-orm';
+import { eq, lt } from 'drizzle-orm';
 import type { Cookies } from '@sveltejs/kit';
+import { createLogger } from './logger';
+
+const log = createLogger('AUTH');
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -51,6 +54,8 @@ export function createSession(userId: number): string {
 		.values({ id: token, userId, expiresAt })
 		.run();
 
+	log.info(`Session created for user ${userId}`, { tokenPrefix: token.slice(0, 8), expiresAt }, { userId });
+
 	return token;
 }
 
@@ -60,13 +65,24 @@ export function createSession(userId: number): string {
  */
 export function validateSession(token: string): SessionUser | null {
 	const now = new Date().toISOString();
+	const tokenPrefix = token.slice(0, 8);
 
 	const session = db.select()
 		.from(sessions)
-		.where(and(eq(sessions.id, token), gt(sessions.expiresAt, now)))
+		.where(eq(sessions.id, token))
 		.get();
 
-	if (!session) return null;
+	// Distinguish a deleted/unknown token from a naturally expired one — the
+	// difference matters when investigating "I got logged out" reports.
+	if (!session) {
+		log.warn('Session validation failed — token not in DB (deleted or never issued)', { tokenPrefix });
+		return null;
+	}
+
+	if (session.expiresAt <= now) {
+		log.info('Session validation failed — session expired', { tokenPrefix, expiresAt: session.expiresAt }, { userId: session.userId });
+		return null;
+	}
 
 	const user = db.select()
 		.from(users)
@@ -75,6 +91,7 @@ export function validateSession(token: string): SessionUser | null {
 
 	if (!user) {
 		// Orphaned session — clean up
+		log.warn('Orphaned session (user no longer exists) — deleting', { tokenPrefix, userId: session.userId });
 		db.delete(sessions).where(eq(sessions.id, token)).run();
 		return null;
 	}
@@ -95,15 +112,22 @@ export function validateSession(token: string): SessionUser | null {
 	};
 }
 
-/** Delete a session (logout). */
-export function deleteSession(token: string): void {
+/** Delete a session (logout). The reason is recorded in the system log. */
+export function deleteSession(token: string, reason = 'unspecified'): void {
+	const session = db.select({ userId: sessions.userId }).from(sessions).where(eq(sessions.id, token)).get();
 	db.delete(sessions).where(eq(sessions.id, token)).run();
+	if (session) {
+		log.info(`Session deleted (${reason})`, { tokenPrefix: token.slice(0, 8), reason }, { userId: session.userId });
+	}
 }
 
 /** Delete all expired sessions (housekeeping). */
 export function cleanExpiredSessions(): void {
 	const now = new Date().toISOString();
-	db.delete(sessions).where(lt(sessions.expiresAt, now)).run();
+	const result = db.delete(sessions).where(lt(sessions.expiresAt, now)).run();
+	if (result.changes > 0) {
+		log.info(`Cleaned up ${result.changes} expired session(s)`);
+	}
 }
 
 // ─── Cookie Utilities ────────────────────────────────────────────────────────

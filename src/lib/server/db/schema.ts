@@ -452,6 +452,21 @@ export const apiKeys = sqliteTable('api_keys', {
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 
+// ─── System Logs (structured application logging) ───────────────────────────
+
+export const systemLogs = sqliteTable('system_logs', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	timestamp: text('timestamp').notNull(),
+	level: text('level').notNull(), // 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'CRITICAL'
+	context: text('context').notNull(),
+	message: text('message').notNull(),
+	meta: text('meta'), // JSON string of structured fields
+	userId: integer('user_id'),
+	ip: text('ip')
+});
+
+export type SystemLog = typeof systemLogs.$inferSelect;
+
 // ─── Backup Log ──────────────────────────────────────────────────────────────
 
 export const backupLog = sqliteTable('backup_log', {

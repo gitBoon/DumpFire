@@ -56,6 +56,10 @@ export const actions: Actions = {
 		// Successful login — reset rate limit for this IP
 		resetRateLimit(`login:${clientIp}`);
 
+		log.info(`User "${user.username}" logged in`, {
+			identityType: identity.includes('@') ? 'email' : 'username'
+		}, { userId: user.id, ip: clientIp });
+
 		// Create session and set cookie
 		const token = createSession(user.id);
 		setSessionCookie(cookies, token);

@@ -3,7 +3,10 @@ import { db } from '$lib/server/db';
 import { users, sessions } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { hashPassword, verifyPassword, createSession, setSessionCookie, SESSION_COOKIE_NAME } from '$lib/server/auth';
+import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
+
+const log = createLogger('AUTH');
 
 /** PUT — Change own password. Requires current password verification. */
 export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
@@ -31,7 +34,8 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		.run();
 
 	// Invalidate all existing sessions for this user
-	db.delete(sessions).where(eq(sessions.userId, locals.user.id)).run();
+	const invalidated = db.delete(sessions).where(eq(sessions.userId, locals.user.id)).run();
+	log.info(`Password changed by user — invalidated ${invalidated.changes} session(s)`, undefined, { userId: locals.user.id });
 
 	// Create a fresh session so the current user stays logged in
 	const newToken = createSession(locals.user.id);

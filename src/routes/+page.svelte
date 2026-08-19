@@ -15,6 +15,7 @@
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import CategoryManager from '$lib/components/CategoryManager.svelte';
+	import VelocityModal from '$lib/components/VelocityModal.svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -38,6 +39,7 @@
 	let showCompletedSubs = $state(false);
 	let showCompletedBoards = $state(true);
 	let showCategoryManager = $state(false);
+	let showVelocityModal = $state(false);
 
 	// Active Tasks Modal
 	type ActiveTaskBoard = {
@@ -501,6 +503,14 @@
 						</svg>
 						Admin
 					</a>
+					<a href="/audit" class="nav-more-item" onclick={() => showMoreMenu = false}>
+						<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+							<circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.2"/>
+							<path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+							<path d="M5.5 7h3M7 5.5v3" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+						</svg>
+						Audit &amp; Logs
+					</a>
 					{/if}
 					<a href="/request" class="nav-more-item" onclick={() => showMoreMenu = false}>
 						<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -757,7 +767,9 @@
 					<div class="stat-sub">{a.completed} completed</div>
 				</div>
 
-				<div class="stat-card glass-glow accent-cyan">
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div class="stat-card glass-glow accent-cyan stat-card-clickable" onclick={() => (showVelocityModal = true)} id="velocity-card">
 					<div class="stat-header">
 						<span class="stat-label">Velocity</span>
 						<div class="trend-arrow" class:up={a.completedThisWeek > 0}>
@@ -1146,6 +1158,11 @@
 			{/if}
 		</div>
 	</div>
+{/if}
+
+<!-- Velocity graph modal -->
+{#if showVelocityModal}
+	<VelocityModal onclose={() => (showVelocityModal = false)} />
 {/if}
 
 <!-- Toast notifications for new requests -->
