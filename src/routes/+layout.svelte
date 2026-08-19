@@ -46,11 +46,14 @@
 				<span class="user-badge-role">{user.role}</span>
 			</div>
 		</a>
-		<a href="/logout" class="user-badge-logout" title="Sign out">
-			<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-				<path d="M5 1H3a1 1 0 00-1 1v10a1 1 0 001 1h2M9 10l3-3m0 0L9 4m3 3H5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-			</svg>
-		</a>
+		<!-- Logout must be a POST: a GET link gets preloaded on hover/touch and would kill the session -->
+		<form method="POST" action="/logout" class="user-badge-logout-form">
+			<button type="submit" class="user-badge-logout" title="Sign out" aria-label="Sign out">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+					<path d="M5 1H3a1 1 0 00-1 1v10a1 1 0 001 1h2M9 10l3-3m0 0L9 4m3 3H5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+			</button>
+		</form>
 	</div>
 {/if}
 
@@ -108,12 +111,21 @@
 		font-weight: 600;
 	}
 
+	.user-badge-logout-form {
+		display: contents;
+	}
+
 	.user-badge-logout {
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		width: 28px;
 		height: 28px;
+		padding: 0;
+		background: none;
+		border: none;
+		cursor: pointer;
+		font: inherit;
 		border-radius: var(--radius-sm);
 		color: var(--text-tertiary);
 		transition: all 0.15s ease;
