@@ -395,51 +395,73 @@
 	.ct-btn.primary { background: var(--accent-indigo); border-color: var(--accent-indigo); color: #fff; }
 	.ct-btn:disabled { opacity: 0.5; cursor: default; }
 
+	/* The console keeps a fixed Catppuccin Mocha palette regardless of app
+	   theme — a dark terminal with guaranteed contrast, light mode included. */
 	.console-feed {
+		--ctp-base: #1e1e2e;
+		--ctp-mantle: #181825;
+		--ctp-surface0: #313244;
+		--ctp-surface1: #45475a;
+		--ctp-overlay0: #6c7086;
+		--ctp-overlay1: #7f849c;
+		--ctp-subtext0: #a6adc8;
+		--ctp-text: #cdd6f4;
+		--ctp-mauve: #cba6f7;
+		--ctp-blue: #89b4fa;
+		--ctp-yellow: #f9e2af;
+		--ctp-red: #f38ba8;
+		--ctp-maroon: #eba0ac;
+
 		font-family: 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
 		font-size: 0.72rem;
 		line-height: 1.55;
-		background: rgba(0, 0, 0, 0.25);
-		border: 1px solid var(--glass-border);
+		background: var(--ctp-base);
+		border: 1px solid var(--ctp-surface0);
 		border-radius: var(--radius-md);
 		padding: var(--space-sm);
 		height: 60vh;
 		overflow-y: auto;
 		overflow-x: hidden;
 	}
+	.console-feed::-webkit-scrollbar { width: 10px; }
+	.console-feed::-webkit-scrollbar-track { background: var(--ctp-mantle); border-radius: 5px; }
+	.console-feed::-webkit-scrollbar-thumb { background: var(--ctp-surface1); border-radius: 5px; }
+	.console-feed::-webkit-scrollbar-thumb:hover { background: var(--ctp-overlay0); }
 
 	.console-empty {
 		color: var(--text-tertiary); text-align: center;
 		padding: var(--space-2xl); font-size: 0.8rem;
 	}
+	.console-feed .console-empty { color: var(--ctp-overlay1); }
 
 	.log-line {
 		display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
 		padding: 1px 4px; border-radius: 3px;
 	}
-	.log-line:hover { background: rgba(128, 128, 128, 0.08); }
-	.log-time { color: var(--text-tertiary); flex-shrink: 0; }
+	.log-line:hover { background: var(--ctp-surface0); }
+	.log-time { color: var(--ctp-overlay0); flex-shrink: 0; }
 	.log-level { font-weight: 800; flex-shrink: 0; min-width: 3.4em; }
-	.log-context { color: var(--accent-purple); flex-shrink: 0; }
-	.log-message { color: var(--text-primary); }
+	.log-context { color: var(--ctp-mauve); flex-shrink: 0; }
+	.log-message { color: var(--ctp-text); }
 	.log-meta {
-		color: var(--text-tertiary);
+		color: var(--ctp-overlay1);
 		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 		max-width: 40ch;
 	}
 	.log-chip {
-		background: rgba(128, 128, 128, 0.12);
+		background: var(--ctp-surface0);
 		border-radius: var(--radius-full);
 		padding: 0 8px; font-size: 0.65rem;
-		color: var(--text-secondary); flex-shrink: 0;
+		color: var(--ctp-subtext0); flex-shrink: 0;
 	}
 
-	.level-debug .log-level { color: var(--text-tertiary); }
-	.level-info .log-level { color: var(--accent-cyan); }
-	.level-warn .log-level { color: var(--accent-amber); }
-	.level-error .log-level { color: var(--accent-rose); }
-	.level-critical .log-level { color: var(--accent-rose); text-decoration: underline; }
-	.level-error .log-message, .level-critical .log-message { color: var(--accent-rose); }
+	.level-debug .log-level { color: var(--ctp-overlay1); }
+	.level-info .log-level { color: var(--ctp-blue); }
+	.level-warn .log-level { color: var(--ctp-yellow); }
+	.level-error .log-level { color: var(--ctp-red); }
+	.level-critical .log-level { color: var(--ctp-red); text-decoration: underline; }
+	.level-error .log-message { color: var(--ctp-red); }
+	.level-critical .log-message { color: var(--ctp-maroon); }
 
 	.console-footer {
 		font-size: 0.65rem; color: var(--text-tertiary);
