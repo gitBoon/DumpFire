@@ -351,12 +351,94 @@
 		boardCtx = { show: true, x: e.clientX, y: e.clientY, boardId, boardName };
 		showCatPicker = false;
 		showNewBoardCat = false;
+		showSubBoardForm = false;
 	}
 
 	function closeBoardContextMenu() {
 		boardCtx.show = false;
 		showCatPicker = false;
 		showNewBoardCat = false;
+		showSubBoardForm = false;
+	}
+
+	// ─── Sub-board creation (from context menu) ─────────────────────────────
+	// A sub-board hangs off a parent card, so the form offers the board's cards
+	// as parents and defaults to creating a fresh card named after the sub-board.
+	type PickerCard = { id: number; title: string; columnId: number; columnTitle: string };
+	type PickerColumn = { id: number; title: string; position: number };
+	let showSubBoardForm = $state(false);
+	let subBoardName = $state('');
+	let subBoardParent = $state<'new' | number>('new');
+	let subBoardCards = $state<PickerCard[]>([]);
+	let subBoardColumns = $state<PickerColumn[]>([]);
+	let subBoardLoading = $state(false);
+	let subBoardCreating = $state(false);
+	let subBoardError = $state('');
+
+	async function openSubBoardForm() {
+		showSubBoardForm = true;
+		subBoardName = '';
+		subBoardParent = 'new';
+		subBoardError = '';
+		subBoardLoading = true;
+		try {
+			const res = await fetch(`/api/boards/${boardCtx.boardId}/cards`);
+			if (res.ok) {
+				const body = await res.json();
+				subBoardCards = body.cards;
+				subBoardColumns = body.columns;
+			}
+		} catch { /* picker just shows the new-card option */ }
+		subBoardLoading = false;
+	}
+
+	async function createSubBoardInline() {
+		const name = subBoardName.trim();
+		if (!name || subBoardCreating) return;
+		subBoardCreating = true;
+		subBoardError = '';
+		try {
+			let parentCardId: number | null = subBoardParent === 'new' ? null : subBoardParent;
+
+			// Default path: create a card named after the sub-board in the first column
+			if (parentCardId === null) {
+				const firstCol = subBoardColumns[0];
+				if (!firstCol) {
+					subBoardError = 'This board has no columns to hold a parent card';
+					return;
+				}
+				const cardRes = await fetch('/api/cards', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ columnId: firstCol.id, boardId: boardCtx.boardId, title: name })
+				});
+				if (!cardRes.ok) {
+					subBoardError = 'Could not create the parent card';
+					return;
+				}
+				parentCardId = (await cardRes.json()).id;
+			}
+
+			const res = await fetch('/api/boards', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name, emoji: '🗂️', parentCardId })
+			});
+			if (!res.ok) {
+				subBoardError = 'Could not create the sub-board';
+				return;
+			}
+
+			// Reveal the new sub-board under its parent board
+			const next = new Set(expandedBoards);
+			next.add(boardCtx.boardId);
+			expandedBoards = next;
+
+			closeBoardContextMenu();
+			await invalidateAll();
+		} finally {
+			subBoardCreating = false;
+		}
 	}
 
 	async function setBoardCategory(boardId: number, categoryId: number | null) {
@@ -1065,6 +1147,33 @@
 						</button>
 					{/if}
 				</div>
+			{:else if showSubBoardForm}
+				<div class="ctx-new-cat">
+					<input type="text" class="ctx-cat-input" placeholder="Sub-board name..." bind:value={subBoardName} onkeydown={(e) => e.key === 'Enter' && createSubBoardInline()} autofocus />
+					<label class="ctx-field-label" for="sub-board-parent">Attach to card</label>
+					<select id="sub-board-parent" class="ctx-cat-input" bind:value={subBoardParent} disabled={subBoardLoading}>
+						<option value="new">＋ New card{subBoardName.trim() ? ` "${subBoardName.trim()}"` : ''}</option>
+						{#each subBoardColumns as col}
+							{@const colCards = subBoardCards.filter(c => c.columnId === col.id)}
+							{#if colCards.length > 0}
+								<optgroup label={col.title}>
+									{#each colCards as card}
+										<option value={card.id}>{card.title}</option>
+									{/each}
+								</optgroup>
+							{/if}
+						{/each}
+					</select>
+					{#if subBoardError}
+						<span class="ctx-error">{subBoardError}</span>
+					{/if}
+					<div class="ctx-cat-actions">
+						<button class="btn-primary small" onclick={createSubBoardInline} disabled={!subBoardName.trim() || subBoardCreating}>
+							{subBoardCreating ? 'Creating…' : 'Create'}
+						</button>
+						<button class="btn-ghost small" onclick={() => (showSubBoardForm = false)}>Cancel</button>
+					</div>
+				</div>
 			{:else}
 				<button class="ctx-item" onclick={() => (showCatPicker = true)}>
 					<span class="ctx-icon">🏷️</span> Set Category
@@ -1072,6 +1181,9 @@
 				<a href="/board/{boardCtx.boardId}" class="ctx-item">
 					<span class="ctx-icon">📝</span> Open Board
 				</a>
+				<button class="ctx-item ctx-new" onclick={openSubBoardForm}>
+					<span class="ctx-icon">🗂️</span> New Sub-board
+				</button>
 				<div class="ctx-divider"></div>
 				<button class="ctx-item ctx-danger" onclick={() => { closeBoardContextMenu(); confirmDeleteBoard(boardCtx.boardId, boardCtx.boardName); }}>
 					<span class="ctx-icon">🗑️</span> Delete Board
@@ -1655,6 +1767,11 @@
 		display: flex; align-items: center; justify-content: center;
 		font-size: 0.5rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5);
 	}
+	.ctx-field-label {
+		font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.04em; color: var(--text-tertiary);
+	}
+	.ctx-error { font-size: 0.72rem; color: #ef4444; }
 	.ctx-cat-actions { display: flex; gap: var(--space-sm); }
 	.ctx-cat-actions .small { padding: 2px var(--space-sm); font-size: 0.72rem; }
 	.color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
