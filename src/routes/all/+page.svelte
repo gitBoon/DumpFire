@@ -563,17 +563,6 @@
 								{/if}
 							</div>
 						</div>
-						{#if bucket.contributingBoards && bucket.contributingBoards.length > 0}
-							<div class="column-boards">
-								{#if bucket.contributingBoards.length === data.boards.length}
-									<span class="bucket-board-tag">All Boards</span>
-								{:else}
-									{#each bucket.contributingBoards as boardName}
-										<span class="bucket-board-tag">{boardName}</span>
-									{/each}
-								{/if}
-							</div>
-						{/if}
 					</div>
 					<div class="card-list">
 						{#each filteredCards as card (card.id)}
@@ -1044,23 +1033,6 @@
 		border-radius: var(--radius-full);
 	}
 
-	.column-boards {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 3px;
-		margin-top: 6px;
-	}
-
-	.bucket-board-tag {
-		font-size: 0.6rem;
-		font-weight: 500;
-		color: var(--text-tertiary);
-		background: var(--bg-base);
-		padding: 1px 6px;
-		border-radius: var(--radius-sm);
-		border: 1px solid var(--glass-border);
-		white-space: nowrap;
-	}
 
 	.card-list {
 		flex: 1;
