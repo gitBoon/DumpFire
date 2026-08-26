@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.1
+version: 1.2
 status: As-Built
-date: 2026-04-22
+date: 2026-08-26
 tags:
   - api
   - rest
@@ -104,6 +104,8 @@ flowchart TB
     subgraph Comments["Comments"]
         ListComments["GET /cards/:id/comments"]
         AddComment["POST /cards/:id/comments"]
+        GetComment["GET /comments/:id"]
+        EditComment["PUT /comments/:id"]
     end
 ```
 
@@ -256,6 +258,14 @@ List all comments on a card.
 #### `POST /api/v1/cards/:cardId/comments`
 
 Add a comment: `{ "content": "Your message here" }`
+
+#### `GET /api/v1/comments/:commentId`
+
+Fetch a single comment (requires view access to the card's board).
+
+#### `PUT /api/v1/comments/:commentId`
+
+Edit a comment's text: `{ "content": "Replacement text" }`. Only the comment's author or an admin may edit — the same rule as the web UI. Sets `updatedAt`, logs `api:comment_edited` to the activity feed and pushes a live board update. The text is stored exactly as sent (no tag prefixing).
 
 ---
 

@@ -10,6 +10,7 @@ import { db } from '$lib/server/db';
 import { reportSchedules, boards, boardCategories } from '$lib/server/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { canViewBoard, getAccessibleBoardIds } from '$lib/server/board-access';
+import { parseStatusFilter } from '$lib/server/reports';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -29,8 +30,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!user) return json({ error: 'Unauthorized' }, { status: 401 });
 
 	const body = await request.json();
-	const { name, scope, scopeId, frequency, dayOfWeek, dayOfMonth, timeOfDay, recipients, periodDays, detailLevel: rawDetailLevel } = body;
+	const { name, scope, scopeId, frequency, dayOfWeek, dayOfMonth, timeOfDay, recipients, periodDays, detailLevel: rawDetailLevel, statusFilter: rawStatusFilter } = body;
 	const detailLevel = rawDetailLevel === 'summary' ? 'summary' : 'detailed';
+	const statusFilter = parseStatusFilter(rawStatusFilter);
 
 	if (!name || !scope || !frequency) {
 		return json({ error: 'Missing required fields: name, scope, frequency' }, { status: 400 });
@@ -99,6 +101,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		recipients: recipients || '',
 		periodDays: periodDays || 7,
 		detailLevel,
+		statusFilter,
 		nextRunAt: nextRunAt.toISOString()
 	}).run();
 

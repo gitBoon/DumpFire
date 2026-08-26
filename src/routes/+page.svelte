@@ -245,8 +245,12 @@
 		expandedBoards = next;
 	}
 
-	let totalCards = $derived(data.boards.reduce((t, b) => t + b.totalCards, 0));
-	let completedCards = $derived(data.boards.reduce((t, b) => t + b.completedCards, 0));
+	// All Tasks row — same walk as the All Boards report (top-level boards plus
+	// every sub-board), so the dashboard and the PDF quote the same card count.
+	// Tasks = cards + their subtasks. Computed in +page.server.ts.
+	let totalCards = $derived(data.allTasksTotals.cards);
+	let completedCards = $derived(data.allTasksTotals.completedCards);
+	let totalTasks = $derived(data.allTasksTotals.tasks);
 
 	// ─── Board Favourites ────────────────────────────────────────────────────
 	let favouriteBoardIds = $state<Set<number>>(new Set(data.favouriteBoardIds || []));
@@ -661,7 +665,7 @@
 						<span class="board-row-emoji glass">🌐</span>
 						<span class="board-row-name">All Tasks</span>
 						<span class="board-row-activity"></span>
-						<span class="board-row-count">{totalCards} cards</span>
+						<span class="board-row-count" title="Cards: every non-archived card across all boards and sub-boards. Tasks: those cards plus their {data.allTasksTotals.subtasks} subtasks.">{totalCards} cards · {totalTasks} tasks</span>
 						<div class="board-row-progress">
 							{#if totalCards > 0}
 								<div class="progress-track"><div class="progress-fill fill-all" style="width: {(completedCards / totalCards) * 100}%"></div></div>
@@ -1609,6 +1613,8 @@
 	}
 	.board-row-activity { width: 80px; font-size: 0.7rem; color: var(--text-tertiary); font-weight: 500; white-space: nowrap; text-align: right; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; }
 	.board-row-count { width: 60px; font-size: 0.72rem; color: var(--text-tertiary); font-weight: 500; white-space: nowrap; text-align: right; flex-shrink: 0; }
+	/* The All Tasks row carries "N cards · M tasks" — let it take the width it needs */
+	.board-row-all .board-row-count { width: auto; }
 	.board-row-progress {
 		width: 100px; flex-shrink: 0; display: flex; align-items: center; gap: 6px;
 	}
