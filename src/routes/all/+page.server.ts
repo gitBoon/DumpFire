@@ -119,7 +119,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	// Track which board has which bucket and calculate average positions
 	const baseBuckets = ['To Do', 'On Hold', 'In Progress', 'Complete'];
-	const bucketBoardMap = new Map<string, Set<string>>();
 	const bucketPositions = new Map<string, number[]>();
 
 	// Group columns by board
@@ -136,8 +135,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		boardCols.forEach((col, index) => {
 			const bucketName = getBucket(col.title);
 			
-			if (!bucketBoardMap.has(bucketName)) bucketBoardMap.set(bucketName, new Set());
-			if (boardInfo) bucketBoardMap.get(bucketName)!.add(`${boardInfo.emoji} ${boardInfo.name}`);
 			
 			if (!bucketPositions.has(bucketName)) bucketPositions.set(bucketName, []);
 			// Normalize index inside the board (0.0 to 1.0)
@@ -182,8 +179,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		title: bucket,
 		cards: bucket === 'Complete'
 			? cappedCompleted
-			: enrichedCards.filter(c => c.bucket === bucket),
-		contributingBoards: Array.from(bucketBoardMap.get(bucket) || [])
+			: enrichedCards.filter(c => c.bucket === bucket)
 	}));
 
 	return {
