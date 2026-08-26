@@ -25,8 +25,26 @@
 	let genCustomStart = $state('');
 	let genCustomEnd = $state('');
 	let genDetailLevel = $state<'summary' | 'detailed'>('detailed');
+	let genStatusFilter = $state<StatusFilter>('all');
 	let generating = $state(false);
 	let genError = $state('');
+
+	// ─── Status filter (shared by the Generate and Schedule forms) ──────
+	// Mirrors ReportStatusFilter on the server. 'all' leads with completed work
+	// then lists everything still open; the others draw only their own slice.
+	type StatusFilter = 'all' | 'completed' | 'in_progress' | 'todo';
+	const statusFilterOptions: { value: StatusFilter; label: string; short: string; hint: string }[] = [
+		{ value: 'all', label: '🗂️ All work — completed first, then outstanding', short: '🗂️ All work', hint: 'Completed in period leads the report, followed by every open card.' },
+		{ value: 'completed', label: '✅ Completed only', short: '✅ Completed only', hint: 'Only cards completed within the period. Summary metrics still cover the whole scope.' },
+		{ value: 'in_progress', label: '🔧 In Progress only', short: '🔧 In Progress only', hint: 'Open cards that have left To Do — In Progress, On Hold, Review and similar columns.' },
+		{ value: 'todo', label: '📥 To Do only', short: '📥 To Do only', hint: 'Cards still sitting in a To Do / Backlog column, not yet started.' }
+	];
+	function statusFilterHint(v: string): string {
+		return statusFilterOptions.find(o => o.value === v)?.hint ?? '';
+	}
+	function statusFilterShort(v: string | null | undefined): string {
+		return statusFilterOptions.find(o => o.value === v)?.short ?? '🗂️ All work';
+	}
 
 	// PDF preview
 	let pdfUrl = $state<string | null>(null);
@@ -126,7 +144,8 @@
 					scopeId: genScopeId,
 					periodStart: start,
 					periodEnd: end,
-					detailLevel: genDetailLevel
+					detailLevel: genDetailLevel,
+					statusFilter: genStatusFilter
 				})
 			});
 			if (!res.ok) {
@@ -186,7 +205,8 @@
 					periodStart: start,
 					periodEnd: end,
 					recipients,
-					detailLevel: genDetailLevel
+					detailLevel: genDetailLevel,
+					statusFilter: genStatusFilter
 				})
 			});
 			const data = await res.json();
@@ -213,6 +233,7 @@
 	let schedRecipients = $state('');
 	let schedPeriodDays = $state(7);
 	let schedDetailLevel = $state<'summary' | 'detailed'>('detailed');
+	let schedStatusFilter = $state<StatusFilter>('all');
 	let schedCreating = $state(false);
 
 	let schedScope = $derived<'board' | 'category' | 'all'>(
@@ -237,7 +258,8 @@
 				timeOfDay: schedTime,
 				recipients: schedRecipients,
 				periodDays: schedPeriodDays,
-				detailLevel: schedDetailLevel
+				detailLevel: schedDetailLevel,
+				statusFilter: schedStatusFilter
 			})
 		});
 		showNewSchedule = false;
@@ -456,6 +478,15 @@
 							<option value="summary">📊 Summary — metrics and task listings only</option>
 						</select>
 					</div>
+					<div class="form-group">
+						<label for="gen-status">Include</label>
+						<select id="gen-status" bind:value={genStatusFilter}>
+							{#each statusFilterOptions as opt}
+								<option value={opt.value}>{opt.label}</option>
+							{/each}
+						</select>
+						<span class="form-hint">{statusFilterHint(genStatusFilter)}</span>
+					</div>
 				</div>
 
 				{#if genError}
@@ -576,6 +607,15 @@
 									<option value="summary">📊 Summary</option>
 								</select>
 							</div>
+							<div class="form-group">
+								<label for="sched-status">Include</label>
+								<select id="sched-status" bind:value={schedStatusFilter}>
+									{#each statusFilterOptions as opt}
+										<option value={opt.value}>{opt.short}</option>
+									{/each}
+								</select>
+								<span class="form-hint">{statusFilterHint(schedStatusFilter)}</span>
+							</div>
 						</div>
 						<button class="btn-primary" onclick={createSchedule} disabled={schedCreating}>
 							{schedCreating ? 'Creating…' : 'Create Schedule'}
@@ -594,6 +634,9 @@
 										<span class="freq-badge">{schedule.frequency === 'weekly' ? `Weekly on ${dayNames[schedule.dayOfWeek]}` : `Monthly on day ${schedule.dayOfMonth}`} at {schedule.timeOfDay}</span>
 										<span class="freq-badge">Last {schedule.periodDays} days</span>
 										<span class="freq-badge">{schedule.detailLevel === 'summary' ? '📊 Summary' : '📋 Detailed'}</span>
+										{#if schedule.statusFilter && schedule.statusFilter !== 'all'}
+											<span class="freq-badge">{statusFilterShort(schedule.statusFilter)}</span>
+										{/if}
 									</div>
 									{#if schedule.recipients}
 										<div class="schedule-recipients">

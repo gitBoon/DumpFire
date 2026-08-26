@@ -10,7 +10,7 @@ import { boards, boardCategories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import {
 	generateBoardReport, generateCategoryReport, generateAllBoardsReport,
-	generateReportPdf
+	generateReportPdf, parseStatusFilter
 } from '$lib/server/reports';
 import type { RequestHandler } from './$types';
 
@@ -19,8 +19,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!user) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
 
 	const body = await request.json();
-	const { scope, scopeId, periodStart, periodEnd, detailLevel: rawDetailLevel } = body;
+	const { scope, scopeId, periodStart, periodEnd, detailLevel: rawDetailLevel, statusFilter: rawStatusFilter } = body;
 	const detailLevel: 'summary' | 'detailed' = rawDetailLevel === 'summary' ? 'summary' : 'detailed';
+	const statusFilter = parseStatusFilter(rawStatusFilter);
 
 	if (!scope || !periodStart || !periodEnd) {
 		return new Response(JSON.stringify({ error: 'Missing required fields: scope, periodStart, periodEnd' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
@@ -39,21 +40,23 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	if (scope === 'board') {
 		if (!scopeId) return new Response(JSON.stringify({ error: 'scopeId required for board scope' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user);
+		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user, statusFilter);
 		if (!reportData) return new Response(JSON.stringify({ error: 'Board not found or no access' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
 		const board = db.select().from(boards).where(eq(boards.id, scopeId)).get();
 		filename = `dumpfire-report-${(board?.name || 'board').toLowerCase().replace(/\s+/g, '-')}`;
 	} else if (scope === 'category') {
 		if (!scopeId) return new Response(JSON.stringify({ error: 'scopeId required for category scope' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user);
+		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user, statusFilter);
 		if (!reportData) return new Response(JSON.stringify({ error: 'Category not found or no accessible boards' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
 		const cat = db.select().from(boardCategories).where(eq(boardCategories.id, scopeId)).get();
 		filename = `dumpfire-report-${(cat?.name || 'category').toLowerCase().replace(/\s+/g, '-')}`;
 	} else {
-		reportData = generateAllBoardsReport(periodStart, periodEnd, user);
+		reportData = generateAllBoardsReport(periodStart, periodEnd, user, statusFilter);
 		if (!reportData) return new Response(JSON.stringify({ error: 'Failed to generate report' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
 		filename = 'dumpfire-report-all-boards';
 	}
+
+	if (statusFilter !== 'all') filename += '-' + statusFilter.replace('_', '-');
 
 	// Generate PDF
 	const pdfBuffer = await generateReportPdf(reportData, detailLevel);

@@ -503,6 +503,7 @@ export const reportSchedules = sqliteTable('report_schedules', {
 	recipients: text('recipients').notNull().default(''), // comma-separated email addresses
 	periodDays: integer('period_days').notNull().default(7), // lookback period in days
 	detailLevel: text('detail_level').notNull().default('detailed'), // 'summary' | 'detailed'
+	statusFilter: text('status_filter').notNull().default('all'), // 'all' | 'completed' | 'in_progress' | 'todo'
 	lastRunAt: text('last_run_at'),
 	nextRunAt: text('next_run_at'),
 	createdAt: text('created_at')

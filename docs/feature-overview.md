@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.2
+version: 1.3
 status: As-Built
-date: 2026-04-22
+date: 2026-08-26
 tags:
   - features
   - overview
@@ -161,14 +161,20 @@ flowchart LR
 ### On-Demand Reports
 
 Generate PDF reports for any board, category, or the entire system. Reports include:
-- Executive summary with key metrics
+- Executive summary with key metrics — cards and tasks (cards + subtasks) shown side by side, the same figures as the dashboard's All Tasks row
 - Priority breakdown
 - Assignee performance stats
-- Outstanding and completed task lists
+- Completed work first, then the outstanding task lists
+
+Use the **Include** filter to choose what the report lists:
+- **All work** — completed in the period first, then everything still open
+- **Completed only** — just what was finished in the period
+- **In Progress only** — open cards that have left To Do (including On Hold and Review)
+- **To Do only** — cards not yet started
 
 ### Scheduled Reports
 
-Set up automatic weekly or monthly reports delivered to any email addresses.
+Set up automatic weekly or monthly reports delivered to any email addresses. Each schedule remembers its own detail level and Include filter.
 
 ### Charts
 

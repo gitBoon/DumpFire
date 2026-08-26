@@ -7,7 +7,7 @@ import { boards, boardCategories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import {
 	generateBoardReport, generateCategoryReport, generateAllBoardsReport,
-	generateReportPdf
+	generateReportPdf, parseStatusFilter
 } from '$lib/server/reports';
 import { sendEmailWithAttachment } from '$lib/server/email';
 import type { RequestHandler } from './$types';
@@ -17,8 +17,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!user) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
 
 	const body = await request.json();
-	const { scope, scopeId, periodStart, periodEnd, recipients, detailLevel: rawDetailLevel } = body;
+	const { scope, scopeId, periodStart, periodEnd, recipients, detailLevel: rawDetailLevel, statusFilter: rawStatusFilter } = body;
 	const detailLevel: 'summary' | 'detailed' = rawDetailLevel === 'summary' ? 'summary' : 'detailed';
+	const statusFilter = parseStatusFilter(rawStatusFilter);
 
 	if (!scope || !periodStart || !periodEnd) {
 		return new Response(JSON.stringify({ error: 'Missing required fields' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
@@ -44,16 +45,16 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	if (scope === 'board') {
 		if (!scopeId) return new Response(JSON.stringify({ error: 'scopeId required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user);
+		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user, statusFilter);
 		const board = db.select().from(boards).where(eq(boards.id, scopeId)).get();
 		scopeName = board?.name || 'Board';
 	} else if (scope === 'category') {
 		if (!scopeId) return new Response(JSON.stringify({ error: 'scopeId required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user);
+		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user, statusFilter);
 		const cat = db.select().from(boardCategories).where(eq(boardCategories.id, scopeId)).get();
 		scopeName = cat?.name || 'Category';
 	} else {
-		reportData = generateAllBoardsReport(periodStart, periodEnd, user);
+		reportData = generateAllBoardsReport(periodStart, periodEnd, user, statusFilter);
 		scopeName = 'All Boards';
 	}
 

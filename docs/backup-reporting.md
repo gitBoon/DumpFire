@@ -1,14 +1,15 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.0
+version: 1.1
 status: As-Built
-date: 2026-04-14
+date: 2026-08-26
 tags:
   - backup
   - reports
   - pdf
   - scheduling
+  - status-filter
   - sftp
   - s3
   - google-drive
@@ -146,7 +147,8 @@ flowchart TD
 
     subgraph Generation
         ScopeSelect["Select scope\nBoard / Category / All"]
-        ScopeSelect --> DataCollect["Collect cards, assignees,\nsubtasks, activity"]
+        ScopeSelect --> FilterSelect["Status filter\nAll / Completed / In Progress / To Do"]
+        FilterSelect --> DataCollect["Collect cards, assignees,\nsubtasks, activity"]
         DataCollect --> BuildReport["Build ReportData object"]
         BuildReport --> RenderPDF["Render PDF\nPDFKit"]
     end
@@ -170,12 +172,52 @@ flowchart TD
 | `category` | Board category | All boards in a category, aggregated |
 | `all` | All boards | Every board across the system |
 
+Every scope walks into sub-boards recursively (`collectSubBoardIds`), so a board report includes the cards on its sub-boards and an all-boards report counts every card in the system.
+
+### Status Filter
+
+Every report (one-off, emailed and scheduled) carries a `statusFilter` that decides which slice of the scope is listed. Summary metrics always describe the whole scope — the filter only changes the task listings and the priority breakdown.
+
+| Value | Lists | Section order |
+|-------|-------|---------------|
+| `all` (default) | Completed in period, then everything still open | **Completed in Period first**, then Outstanding per board |
+| `completed` | Only cards completed within the period | Completed in Period |
+| `in_progress` | Open cards that have left To Do (In Progress, On Hold, Review, Testing…) | In Progress per board |
+| `todo` | Open cards still in a To Do / Backlog style column | To Do per board |
+
+Cards are classified by the title of the column they sit in (`classifyColumnTitle`):
+
+```mermaid
+flowchart LR
+    Col["Column title"] --> Done{"complete / done?"}
+    Done -->|yes| Completed["completed"]
+    Done -->|no| Todo{"to do / todo / backlog / inbox /\nnot started / new / planned / ideas / later?"}
+    Todo -->|yes| ToDo["todo"]
+    Todo -->|no| InProgress["in_progress"]
+```
+
+A board with no recognisable To Do column still gets one: its left-most column that is not Done is treated as To Do. Unknown filter values fall back to `all` (`parseStatusFilter`), so existing schedules and hand-written API calls keep working.
+
+When a filter other than `all` is active the PDF header carries the filter label and a **SHOWING** banner under the metric tiles states how many cards are in that slice.
+
+### Cards vs Tasks
+
+Two figures appear side by side in the summary tiles, and the same two on the dashboard's **All Tasks** row:
+
+| Figure | Definition |
+|--------|------------|
+| **Cards** | Non-archived kanban cards across every board *and sub-board* in scope, regardless of period |
+| **Tasks** | Cards plus the subtasks hanging off them (`totalCards + totalSubtasks`) |
+
+The dashboard row uses the same board → cards → sub-boards walk as the report engine (`src/routes/+page.server.ts`), so an all-boards report and the dashboard always quote the same card count. Historically the row only summed top-level boards, which is why it used to show fewer cards than the report.
+
 ### Report Data Structure
 
 ```mermaid
 flowchart TD
     ReportData["ReportData"]
-    ReportData --> Summary["Summary\ntotal, completed, created\noutstanding, overdue"]
+    ReportData --> Filter["statusFilter\nall / completed / in_progress / todo"]
+    ReportData --> Summary["Summary\ncards, subtasks, tasks\ncompleted, created, outstanding\ntodo, inProgress, overdue"]
     ReportData --> Priority["Priority Breakdown\ncritical, high, medium, low"]
     ReportData --> Assignees["Assignee Stats\nper-user completed + outstanding"]
     ReportData --> Outstanding["Outstanding Tasks\ngrouped by board + category"]
@@ -189,12 +231,16 @@ flowchart TD
 
 PDFs are rendered server-side using PDFKit with a professional layout:
 
-- **Header** — DumpFire branding, report title, date range
-- **Executive Summary** — Key metrics in stat cards
-- **Priority Breakdown** — Visual bar chart
-- **Assignee Performance** — Table of completions per user
-- **Outstanding Tasks** — Grouped by board with full detail
-- **Completed Tasks** — Recent completions with timestamps
+- **Header** — DumpFire branding, report title, date range, detail level and (when set) the status filter
+- **Executive Summary** — Six stat tiles: Cards, Tasks incl. subtasks, Completed, Created, Outstanding, Overdue, with a caption spelling out what each one counts
+- **Status banner** — Only when a filter is active: "SHOWING Completed in period only — N cards" etc.
+- **Priority Breakdown** — Visual bar chart of the slice being reported (Outstanding by default, Completed in Period for the completed filter)
+- **Assignee Performance** — Table of completions per user (scope-wide)
+- **Board Breakdown** — Per-board totals with sub-boards nested under their parent (scope-wide)
+- **Completed Tasks** — Completions in the period with timestamps; drawn **before** the open work in the `all` report
+- **Outstanding / In Progress / To Do** — Open work grouped by category and board, sub-boards nested under their parent; the heading follows the filter
+
+All free text (titles, descriptions, business value, subtasks) passes through `stripTag()`, which removes the internal AI bookkeeping tags `[Antigravity]`, `[Claude]` and `[AI]` before printing.
 
 ### Report Scheduling
 
@@ -210,6 +256,8 @@ Configured per-user via the Reports page:
 | `timeOfDay` | HH:MM | When to generate |
 | `recipients` | comma-separated emails | Where to send |
 | `periodDays` | number | Lookback period in days |
+| `detailLevel` | summary/detailed | Metrics and listings only, or full descriptions, business value and subtasks |
+| `statusFilter` | all/completed/in_progress/todo | Which slice to list (see Status Filter); stored in `report_schedules.status_filter`, migration `0041` |
 | `enabled` | boolean | Active toggle |
 
 ### Schedule Execution
@@ -225,7 +273,7 @@ sequenceDiagram
     DB-->>Timer: Matching schedules
     
     loop Each schedule
-        Timer->>Engine: generateReport by scope
+        Timer->>Engine: generateReport by scope + statusFilter
         Engine->>DB: Query boards, cards, assignees
         DB-->>Engine: Raw data
         Engine->>Engine: Build ReportData
@@ -251,5 +299,5 @@ Individual card reports can be generated for completion notifications. These inc
 |------|-------|---------|
 | `src/lib/server/backup.ts` | 374 | Backup scheduling, data generation, upload orchestration |
 | `src/lib/server/backup-destinations.ts` | ~400 | SFTP, S3, Google Drive, OneDrive destination implementations |
-| `src/lib/server/reports.ts` | 1124 | Report data collection, PDF rendering, schedule management |
+| `src/lib/server/reports.ts` | ~1,430 | Report data collection, status filter, PDF rendering, schedule management |
 | `src/lib/server/snapshots.ts` | ~80 | Daily card count snapshots for CFD/burndown charts |

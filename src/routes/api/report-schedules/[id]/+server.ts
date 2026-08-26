@@ -9,6 +9,7 @@ import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { reportSchedules } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { parseStatusFilter } from '$lib/server/reports';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ locals, params, request }) => {
@@ -34,6 +35,7 @@ export const PUT: RequestHandler = async ({ locals, params, request }) => {
 	if (body.dayOfMonth !== undefined) updates.dayOfMonth = Math.min(body.dayOfMonth, 28);
 	if (body.timeOfDay !== undefined) updates.timeOfDay = body.timeOfDay;
 	if (body.recipients !== undefined) updates.recipients = body.recipients;
+	if (body.statusFilter !== undefined) updates.statusFilter = parseStatusFilter(body.statusFilter);
 
 	db.update(reportSchedules)
 		.set(updates)

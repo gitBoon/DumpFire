@@ -22,6 +22,33 @@ const log = createLogger('REPORTS');
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+/**
+ * Which slice of the board a report lists.
+ *  - all:         completed work first, then everything still open
+ *  - completed:   only cards completed within the reporting period
+ *  - in_progress: only open cards that have left To Do (incl. On Hold / Review / …)
+ *  - todo:        only cards still sitting in a To Do / Backlog style column
+ * Summary metrics always describe the whole scope; the filter controls which
+ * task listings (and the priority breakdown) are drawn.
+ */
+export type ReportStatusFilter = 'all' | 'completed' | 'in_progress' | 'todo';
+export const REPORT_STATUS_FILTERS: readonly ReportStatusFilter[] = ['all', 'completed', 'in_progress', 'todo'];
+export const REPORT_STATUS_FILTER_LABELS: Record<ReportStatusFilter, string> = {
+	all: 'All work',
+	completed: 'Completed only',
+	in_progress: 'In Progress only',
+	todo: 'To Do only'
+};
+
+/** Coerce an untrusted value (request body, DB column) to a valid filter, defaulting to 'all'. */
+export function parseStatusFilter(raw: unknown): ReportStatusFilter {
+	return typeof raw === 'string' && (REPORT_STATUS_FILTERS as readonly string[]).includes(raw)
+		? (raw as ReportStatusFilter)
+		: 'all';
+}
+
+type CardStatus = 'todo' | 'in_progress' | 'completed';
+
 interface SubtaskInfo {
 	title: string;
 	completed: boolean;
@@ -48,12 +75,22 @@ export interface ReportData {
 	periodEnd: string;
 	scope: 'board' | 'category' | 'all';
 	scopeName: string;
+	statusFilter: ReportStatusFilter;
 
 	summary: {
+		/** Non-archived cards in scope (every board and sub-board), regardless of period. */
+		totalCards: number;
+		/** Subtasks hanging off those cards. */
+		totalSubtasks: number;
+		/** Cards + subtasks — the "task" figure shown alongside the card count. */
 		totalTasks: number;
 		completedInPeriod: number;
 		createdInPeriod: number;
 		outstanding: number;
+		/** Open cards still in a To Do style column. */
+		todo: number;
+		/** Open cards that have left To Do but are not complete (In Progress, On Hold, Review…). */
+		inProgress: number;
 		overdue: number;
 	};
 
@@ -103,6 +140,21 @@ export interface ReportData {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+const DONE_COLUMN_TITLES = ['complete', 'done'];
+const TODO_COLUMN_TITLES = ['to do', 'todo', 'to-do', 'backlog', 'inbox', 'not started', 'new', 'planned', 'ideas', 'idea', 'later'];
+
+/**
+ * Classify a column by its title. Anything that is neither a Done nor a To Do
+ * column counts as In Progress — On Hold, Review, Testing, Blocked… have all
+ * left To Do, so for reporting purposes the work has started.
+ */
+function classifyColumnTitle(title: string): CardStatus {
+	const t = title.toLowerCase().trim();
+	if (DONE_COLUMN_TITLES.includes(t)) return 'completed';
+	if (TODO_COLUMN_TITLES.includes(t)) return 'todo';
+	return 'in_progress';
+}
+
 function getDoneColumnIds(boardIds: number[]): Set<number> {
 	if (boardIds.length === 0) return new Set();
 	const allCols = db.select().from(columns)
@@ -110,19 +162,35 @@ function getDoneColumnIds(boardIds: number[]): Set<number> {
 		.all();
 	return new Set(
 		allCols
-			.filter(c => ['complete', 'done'].includes(c.title.toLowerCase().trim()))
+			.filter(c => DONE_COLUMN_TITLES.includes(c.title.toLowerCase().trim()))
 			.map(c => c.id)
 	);
 }
 
-function getColumnMap(boardIds: number[]): Map<number, { title: string; boardId: number }> {
+interface ColumnInfo { title: string; boardId: number; status: CardStatus }
+
+function getColumnMap(boardIds: number[]): Map<number, ColumnInfo> {
 	if (boardIds.length === 0) return new Map();
 	const allCols = db.select().from(columns)
 		.where(inArray(columns.boardId, boardIds))
 		.all();
-	const map = new Map<number, { title: string; boardId: number }>();
+	const map = new Map<number, ColumnInfo>();
+	const byBoard = new Map<number, { position: number; info: ColumnInfo }[]>();
 	for (const col of allCols) {
-		map.set(col.id, { title: col.title, boardId: col.boardId });
+		const info: ColumnInfo = { title: col.title, boardId: col.boardId, status: classifyColumnTitle(col.title) };
+		map.set(col.id, info);
+		if (!byBoard.has(col.boardId)) byBoard.set(col.boardId, []);
+		byBoard.get(col.boardId)!.push({ position: col.position, info });
+	}
+	// A board with no recognisable To Do column (e.g. "Backlog" renamed to
+	// "Queue") still has one: its left-most column that isn't Done.
+	for (const cols of byBoard.values()) {
+		if (cols.some(c => c.info.status === 'todo')) continue;
+		const first = cols
+			.slice()
+			.sort((a, b) => a.position - b.position)
+			.find(c => c.info.status !== 'completed');
+		if (first) first.info.status = 'todo';
 	}
 	return map;
 }
@@ -193,13 +261,14 @@ function generateReportForBoards(
 	periodStart: string,
 	periodEnd: string,
 	scopeName: string,
-	scope: 'board' | 'category' | 'all'
+	scope: 'board' | 'category' | 'all',
+	statusFilter: ReportStatusFilter = 'all'
 ): ReportData {
 	if (boardIds.length === 0) {
 		return {
 			generatedAt: new Date().toISOString(),
-			periodStart, periodEnd, scope, scopeName,
-			summary: { totalTasks: 0, completedInPeriod: 0, createdInPeriod: 0, outstanding: 0, overdue: 0 },
+			periodStart, periodEnd, scope, scopeName, statusFilter,
+			summary: { totalCards: 0, totalSubtasks: 0, totalTasks: 0, completedInPeriod: 0, createdInPeriod: 0, outstanding: 0, todo: 0, inProgress: 0, overdue: 0 },
 			priorityBreakdown: { critical: 0, high: 0, medium: 0, low: 0 },
 			assigneeStats: [], outstandingTasks: [],
 			completedTasks: [], boardBreakdown: []
@@ -297,11 +366,28 @@ function generateReportForBoards(
 	const createdInPeriod = allCards.filter(c => c.createdAt >= periodStart && c.createdAt <= periodEnd);
 	const overdueCards = activeCards.filter(c => c.dueDate && c.dueDate < now);
 
+	// Split the open cards by where they sit on the board
+	const statusOf = (c: typeof allCards[number]): CardStatus => columnMap.get(c.columnId)?.status ?? 'in_progress';
+	const todoCards = activeCards.filter(c => statusOf(c) === 'todo');
+	const inProgressCards = activeCards.filter(c => statusOf(c) === 'in_progress');
+
+	// The open cards that get listed, according to the filter
+	const listedActiveCards =
+		statusFilter === 'todo' ? todoCards :
+		statusFilter === 'in_progress' ? inProgressCards :
+		statusFilter === 'completed' ? [] :
+		activeCards;
+
+	// Priority breakdown follows the filter: the outstanding slice by default,
+	// the completed-in-period set when only completed work is being reported
 	const priorityBreakdown = { critical: 0, high: 0, medium: 0, low: 0 };
-	for (const c of activeCards) {
+	for (const c of (statusFilter === 'completed' ? completedInPeriod : listedActiveCards)) {
 		const p = c.priority as keyof typeof priorityBreakdown;
 		if (p in priorityBreakdown) priorityBreakdown[p]++;
 	}
+
+	let totalSubtasks = 0;
+	for (const list of subtaskMap.values()) totalSubtasks += list.length;
 
 	// Per-assignee stats
 	const assigneeMap = new Map<number, { completedInPeriod: number; outstanding: number }>();
@@ -333,9 +419,9 @@ function generateReportForBoards(
 		})
 		.sort((a, b) => b.completedInPeriod - a.completedInPeriod);
 
-	// Outstanding tasks grouped by board
+	// Outstanding tasks grouped by board (only the slice the filter asks for)
 	const outstandingByBoard = new Map<number, typeof activeCards>();
-	for (const card of activeCards) {
+	for (const card of listedActiveCards) {
 		const colInfo = columnMap.get(card.columnId);
 		if (!colInfo) continue;
 		if (!outstandingByBoard.has(colInfo.boardId)) outstandingByBoard.set(colInfo.boardId, []);
@@ -373,8 +459,8 @@ function generateReportForBoards(
 		};
 	}).sort((a, b) => a.categoryName.localeCompare(b.categoryName));
 
-	// Completed tasks in period
-	const completedTasksList = completedInPeriod
+	// Completed tasks in period (not listed when the report is limited to open work)
+	const completedTasksList = (statusFilter === 'todo' || statusFilter === 'in_progress' ? [] : completedInPeriod)
 		.sort((a, b) => (b.completedAt || b.updatedAt).localeCompare(a.completedAt || a.updatedAt))
 		.map(c => {
 			const colInfo = columnMap.get(c.columnId);
@@ -417,12 +503,16 @@ function generateReportForBoards(
 
 	return {
 		generatedAt: new Date().toISOString(),
-		periodStart, periodEnd, scope, scopeName,
+		periodStart, periodEnd, scope, scopeName, statusFilter,
 		summary: {
-			totalTasks: allCards.length,
+			totalCards: allCards.length,
+			totalSubtasks,
+			totalTasks: allCards.length + totalSubtasks,
 			completedInPeriod: completedInPeriod.length,
 			createdInPeriod: createdInPeriod.length,
 			outstanding: activeCards.length,
+			todo: todoCards.length,
+			inProgress: inProgressCards.length,
 			overdue: overdueCards.length
 		},
 		priorityBreakdown,
@@ -436,18 +526,20 @@ function generateReportForBoards(
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export function generateBoardReport(
-	boardId: number, periodStart: string, periodEnd: string, user: SessionUser
+	boardId: number, periodStart: string, periodEnd: string, user: SessionUser,
+	statusFilter: ReportStatusFilter = 'all'
 ): ReportData | null {
 	if (!canViewBoard(user, boardId)) return null;
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) return null;
 	// Include all sub-boards recursively
 	const allBoardIds = collectSubBoardIds([boardId]);
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, board.name, 'board');
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, board.name, 'board', statusFilter);
 }
 
 export function generateCategoryReport(
-	categoryId: number, periodStart: string, periodEnd: string, user: SessionUser
+	categoryId: number, periodStart: string, periodEnd: string, user: SessionUser,
+	statusFilter: ReportStatusFilter = 'all'
 ): ReportData | null {
 	const cat = db.select().from(boardCategories).where(eq(boardCategories.id, categoryId)).get();
 	if (!cat) return null;
@@ -459,17 +551,18 @@ export function generateCategoryReport(
 	if (catBoards.length === 0) return null;
 	// Include all sub-boards recursively
 	const allBoardIds = collectSubBoardIds(catBoards.map(b => b.id));
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, cat.name, 'category');
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, cat.name, 'category', statusFilter);
 }
 
 export function generateAllBoardsReport(
-	periodStart: string, periodEnd: string, user: SessionUser
+	periodStart: string, periodEnd: string, user: SessionUser,
+	statusFilter: ReportStatusFilter = 'all'
 ): ReportData | null {
 	if (user.role !== 'admin' && user.role !== 'superadmin') return null;
 	// Start from top-level boards only, then expand to include sub-boards
 	const topLevelBoards = db.select().from(boards).where(isNull(boards.parentCardId)).all();
 	const allBoardIds = collectSubBoardIds(topLevelBoards.map(b => b.id));
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, 'All Boards', 'all');
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, 'All Boards', 'all', statusFilter);
 }
 
 /**
@@ -511,12 +604,17 @@ export function generateCardReport(cardId: number): ReportData | null {
 		periodEnd: now,
 		scope: 'board',
 		scopeName: `Task Report: ${card.title}`,
+		statusFilter: 'all',
 
 		summary: {
-			totalTasks: 1,
+			totalCards: 1,
+			totalSubtasks: subtaskInfos.length,
+			totalTasks: 1 + subtaskInfos.length,
 			completedInPeriod: card.completedAt ? 1 : 0,
 			createdInPeriod: 1,
 			outstanding: card.completedAt ? 0 : 1,
+			todo: !card.completedAt && classifyColumnTitle(col.title) === 'todo' ? 1 : 0,
+			inProgress: !card.completedAt && classifyColumnTitle(col.title) !== 'todo' ? 1 : 0,
 			overdue: 0
 		},
 
@@ -609,8 +707,10 @@ const C = {
 
 function stripTag(text: string): string {
 	if (!text) return '';
+	// AI bookkeeping tags never belong on a stakeholder document
 	return text
 		.replace(/\[Antigravity\]\s*/gi, '')
+		.replace(/\[Claude\]\s*/gi, '')
 		.replace(/\[AI\]\s*/gi, '')
 		.trim();
 }
@@ -892,10 +992,11 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 	// ─── Header Banner ───────────────────────────────────────────────────
 	doc.rect(0, 0, doc.page.width, 80).fill(C.headerBg);
 	const modeLabel = detailLevel === 'summary' ? 'Summary Report' : 'Detailed Report';
+	const filterLabel = data.statusFilter !== 'all' ? `  ·  ${REPORT_STATUS_FILTER_LABELS[data.statusFilter]}` : '';
 	doc.font('Helvetica-Bold').fontSize(18).fillColor(C.headerText)
 		.text('DumpFire Report', mx, 14, { width: pw });
 	doc.font('Helvetica-Bold').fontSize(11).fillColor(C.accentLight)
-		.text(`${data.scopeName}  ·  ${modeLabel}`, mx, 34, { width: pw });
+		.text(`${data.scopeName}  ·  ${modeLabel}${filterLabel}`, mx, 34, { width: pw });
 	doc.font('Helvetica-Bold').fontSize(10).fillColor(C.headerText)
 		.text(`${formatDate(data.periodStart)}  -  ${formatDate(data.periodEnd)}`, mx, 52, { width: pw });
 	doc.font('Helvetica').fontSize(7.5).fillColor(C.textLight)
@@ -912,31 +1013,70 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 	y += 40;
 
 	// ─── Summary Metrics ─────────────────────────────────────────────────
+	// Cards and tasks sit side by side so the two figures are never mistaken
+	// for each other: cards are the kanban cards in scope, tasks add every
+	// subtask on top. Both are scope-wide regardless of the status filter.
 	const metrics = [
-		{ label: 'Total Tasks', value: data.summary.totalTasks, bg: C.accentLight, fg: C.accent },
+		{ label: 'Cards', value: data.summary.totalCards, bg: C.accentLight, fg: C.accent },
+		{ label: 'Tasks incl. subtasks', value: data.summary.totalTasks, bg: C.accentLight, fg: C.accent },
 		{ label: 'Completed', value: data.summary.completedInPeriod, bg: C.emeraldLight, fg: C.emerald },
 		{ label: 'Created', value: data.summary.createdInPeriod, bg: C.blueLight, fg: C.blue },
 		{ label: 'Outstanding', value: data.summary.outstanding, bg: C.amberLight, fg: C.amber },
 		{ label: 'Overdue', value: data.summary.overdue, bg: C.redLight, fg: C.red }
 	];
 
-	const cardW = (pw - 4 * 10) / 5;
+	const metricGap = 8;
+	const cardW = (pw - (metrics.length - 1) * metricGap) / metrics.length;
 	for (let i = 0; i < metrics.length; i++) {
 		const m = metrics[i];
-		const cx = mx + i * (cardW + 10);
+		const cx = mx + i * (cardW + metricGap);
 		doc.roundedRect(cx, y, cardW, 44, 4).fill(m.bg);
 		doc.font('Helvetica-Bold').fontSize(20).fillColor(m.fg)
 			.text(String(m.value), cx, y + 6, { width: cardW, align: 'center' });
 		doc.font('Helvetica').fontSize(6).fillColor(m.fg)
 			.text(m.label.toUpperCase(), cx, y + 30, { width: cardW, align: 'center' });
 	}
-	y += 60;
+	y += 50;
+	doc.font('Helvetica').fontSize(6.5).fillColor(C.textLight)
+		.text(
+			`Cards = ${data.summary.totalCards} kanban cards across every board and sub-board in scope (archived excluded). ` +
+			`Tasks = those cards plus their ${data.summary.totalSubtasks} subtasks. ` +
+			`Completed and Created count cards within the reporting period; Outstanding = ${data.summary.todo} To Do + ${data.summary.inProgress} In Progress.`,
+			mx, y, { width: pw }
+		);
+	y = (doc as any).y + 12;
+
+	// ─── Status Filter Banner ────────────────────────────────────────────
+	if (data.statusFilter !== 'all') {
+		const focusCount =
+			data.statusFilter === 'completed' ? data.summary.completedInPeriod :
+			data.statusFilter === 'todo' ? data.summary.todo :
+			data.summary.inProgress;
+		const plural = focusCount === 1 ? '' : 's';
+		const focusText =
+			data.statusFilter === 'completed' ? `Completed in period only — ${focusCount} card${plural}` :
+			data.statusFilter === 'todo' ? `To Do only — ${focusCount} card${plural} not yet started` :
+			`In Progress only — ${focusCount} card${plural} started but not complete (includes On Hold, Review and similar columns)`;
+		doc.roundedRect(mx, y, pw, 28, 4).fill(C.amberLight);
+		doc.font('Helvetica-Bold').fontSize(7).fillColor(C.amber)
+			.text('SHOWING', mx + 12, y + 5);
+		doc.font('Helvetica-Bold').fontSize(9).fillColor(C.heading)
+			.text(focusText, mx + 12, y + 14, { width: pw - 24, lineBreak: false });
+		y += 40;
+	}
 
 
-	// ─── Priority Breakdown ──────────────────────────────────────────────
-	if (data.summary.outstanding > 0) {
-		y = drawSectionTitle(doc, 'Priority Distribution', mx, y);
-		const total = data.summary.outstanding;
+	// ─── Priority Breakdown (of whichever slice the filter reports) ──────
+	const priorityTotal = data.priorityBreakdown.critical + data.priorityBreakdown.high
+		+ data.priorityBreakdown.medium + data.priorityBreakdown.low;
+	if (priorityTotal > 0) {
+		const prioritySubject =
+			data.statusFilter === 'completed' ? 'Completed in Period' :
+			data.statusFilter === 'todo' ? 'To Do' :
+			data.statusFilter === 'in_progress' ? 'In Progress' :
+			'Outstanding';
+		y = drawSectionTitle(doc, `Priority Distribution — ${prioritySubject}`, mx, y);
+		const total = priorityTotal;
 		const barH = 14;
 		const priorities = [
 			{ label: 'Critical', count: data.priorityBreakdown.critical, color: C.critical },
@@ -1040,7 +1180,14 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 	}
 
 	// ─── Outstanding Tasks (grouped by category, sub-boards nested under parent) ──
-	if (data.outstandingTasks.length > 0) {
+	// Drawn as a function so the status filter can decide whether — and in what
+	// order relative to the completed work — this block appears.
+	const openLabel =
+		data.statusFilter === 'todo' ? 'To Do' :
+		data.statusFilter === 'in_progress' ? 'In Progress' :
+		'Outstanding';
+	function drawOpenWork() {
+		if (data.outstandingTasks.length === 0) return;
 		// Group boards by category for multi-board reports
 		const byCategory = new Map<string, typeof data.outstandingTasks>();
 		for (const group of data.outstandingTasks) {
@@ -1083,7 +1230,7 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 				rendered.add(group.boardName);
 
 				y = ensureSpace(doc, 60, y);
-				y = drawSectionTitle(doc, `Outstanding — ${group.boardName}`, mx, y);
+				y = drawSectionTitle(doc, `${openLabel} — ${group.boardName}`, mx, y);
 				y = drawTasksWithDetails(doc, group.tasks, [
 					{ header: 'Title', width: pw * 0.32, getter: t => stripTag(t.title) },
 					{ header: 'Column', width: pw * 0.15, getter: t => t.columnTitle },
@@ -1101,7 +1248,7 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 					doc.font('Helvetica').fontSize(7).fillColor(C.textMuted)
 						.text(`SUB-BOARD OF ${group.boardName.toUpperCase()}`, mx + 2, y, { width: pw - 4 });
 					y += 12;
-					y = drawSectionTitle(doc, `Outstanding — ${sub.boardName}`, mx, y);
+					y = drawSectionTitle(doc, `${openLabel} — ${sub.boardName}`, mx, y);
 					y = drawTasksWithDetails(doc, sub.tasks, [
 						{ header: 'Title', width: pw * 0.32, getter: t => stripTag(t.title) },
 						{ header: 'Column', width: pw * 0.15, getter: t => t.columnTitle },
@@ -1123,7 +1270,7 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 				}
 				rendered.add(`${group.parentBoardName}→${group.boardName}`);
 				y = ensureSpace(doc, 60, y);
-				y = drawSectionTitle(doc, `Outstanding — ${group.parentBoardName} └ ${group.boardName}`, mx, y);
+				y = drawSectionTitle(doc, `${openLabel} — ${group.parentBoardName} └ ${group.boardName}`, mx, y);
 				y = drawTasksWithDetails(doc, group.tasks, [
 					{ header: 'Title', width: pw * 0.32, getter: t => stripTag(t.title) },
 					{ header: 'Column', width: pw * 0.15, getter: t => t.columnTitle },
@@ -1136,7 +1283,8 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 	}
 
 	// ─── Completed Tasks (unified) ───────────────────────────────────────
-	if (data.completedTasks.length > 0) {
+	function drawCompletedWork() {
+		if (data.completedTasks.length === 0) return;
 		y = ensureSpace(doc, 60, y);
 		y = drawSectionTitle(doc, `Completed in Period (${data.completedTasks.length})`, mx, y);
 		const completedAsTaskDetails: TaskDetail[] = data.completedTasks.map(t => ({
@@ -1152,10 +1300,23 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 			{ header: 'Completed', width: pw * 0.19, getter: t => (t as any).completedAt ? formatDate((t as any).completedAt) : '—' },
 			{ header: 'Assignees', width: pw * 0.20, getter: t => t.assignees.join(', ') || '—' }
 		], mx, y, pw, detailLevel);
+		y += 16;
 	}
 
 
 
+
+	// ─── Section order ───────────────────────────────────────────────────
+	// The full report leads with what got finished, then lists what is still
+	// open; the filtered variants draw only their own slice.
+	if (data.statusFilter === 'completed') {
+		drawCompletedWork();
+	} else if (data.statusFilter === 'all') {
+		drawCompletedWork();
+		drawOpenWork();
+	} else {
+		drawOpenWork();
+	}
 
 	doc.end();
 	});
@@ -1218,13 +1379,15 @@ async function checkAndRunScheduledReports(): Promise<void> {
 
 			const { start, end } = getPeriodForSchedule(schedule, now);
 
+			const statusFilter = parseStatusFilter(schedule.statusFilter);
+
 			let reportData: ReportData | null = null;
 			if (schedule.scope === 'board' && schedule.scopeId) {
-				reportData = generateBoardReport(schedule.scopeId, start, end, sessionUser);
+				reportData = generateBoardReport(schedule.scopeId, start, end, sessionUser, statusFilter);
 			} else if (schedule.scope === 'category' && schedule.scopeId) {
-				reportData = generateCategoryReport(schedule.scopeId, start, end, sessionUser);
+				reportData = generateCategoryReport(schedule.scopeId, start, end, sessionUser, statusFilter);
 			} else if (schedule.scope === 'all') {
-				reportData = generateAllBoardsReport(start, end, sessionUser);
+				reportData = generateAllBoardsReport(start, end, sessionUser, statusFilter);
 			}
 
 			if (reportData) {

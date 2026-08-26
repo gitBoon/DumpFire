@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamMembers, boardCategories, users, boardFavourites, type Board } from '$lib/server/db/schema';
+import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamMembers, boardCategories, users, boardFavourites, subtasks, type Board } from '$lib/server/db/schema';
 import { desc, eq, inArray, isNull, isNotNull, and, gte, sql } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import type { PageServerLoad } from './$types';
@@ -67,7 +67,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 				const sbColIds = sbCols.map(c => c.id);
 				let done = 0, total = 0;
 				if (sbColIds.length > 0) {
-					const sbCards = db.select().from(cards).where(inArray(cards.columnId, sbColIds)).all();
+					// Non-archived only, the same rule as the parent board and the reports
+					const sbCards = db.select().from(cards).where(and(inArray(cards.columnId, sbColIds), isNull(cards.archivedAt))).all();
 					total = sbCards.length;
 					const sbCompleteCols = sbCols.filter(c => c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done');
 					const sbCompleteColIds = new Set(sbCompleteCols.map(c => c.id));
@@ -105,6 +106,54 @@ export const load: PageServerLoad = async ({ locals }) => {
 			categoryColor
 		};
 	});
+
+	// ─── All Tasks totals ───────────────────────────────────────────────────
+	// The All Tasks row must quote the same figures as the All Boards report and
+	// the /all page, both of which walk into sub-boards. Start from the accessible
+	// top-level boards and follow board → cards → sub-boards to any depth — the
+	// same walk the report engine does. Cards: non-archived only. Tasks: cards
+	// plus the subtasks hanging off them.
+	const isDoneTitle = (t: string) => { const l = t.toLowerCase().trim(); return l === 'complete' || l === 'done'; };
+	const walkedBoardIds = new Set<number>(allBoards.map(b => b.id));
+	const countedCardIds = new Set<number>();
+	let allTasksCards = 0;
+	let allTasksCompleted = 0;
+	let frontier = allBoards.map(b => b.id);
+	while (frontier.length > 0) {
+		const frontierCols = db.select({ id: columns.id, title: columns.title })
+			.from(columns)
+			.where(inArray(columns.boardId, frontier))
+			.all();
+		if (frontierCols.length === 0) break;
+		const frontierDoneCols = new Set(frontierCols.filter(c => isDoneTitle(c.title)).map(c => c.id));
+		const frontierCards = db.select({ id: cards.id, columnId: cards.columnId, archivedAt: cards.archivedAt })
+			.from(cards)
+			.where(inArray(cards.columnId, frontierCols.map(c => c.id)))
+			.all();
+		const next: number[] = [];
+		for (const c of frontierCards) {
+			if (!c.archivedAt) {
+				countedCardIds.add(c.id);
+				allTasksCards++;
+				if (frontierDoneCols.has(c.columnId)) allTasksCompleted++;
+			}
+			// Sub-boards hang off cards, archived or not — the report follows both
+			for (const sb of subBoardsByCard.get(c.id) || []) {
+				if (walkedBoardIds.has(sb.id)) continue;
+				walkedBoardIds.add(sb.id);
+				next.push(sb.id);
+			}
+		}
+		frontier = next;
+	}
+	const allTasksSubtasks = db.select({ cardId: subtasks.cardId }).from(subtasks).all()
+		.filter(s => countedCardIds.has(s.cardId)).length;
+	const allTasksTotals = {
+		cards: allTasksCards,
+		completedCards: allTasksCompleted,
+		subtasks: allTasksSubtasks,
+		tasks: allTasksCards + allTasksSubtasks
+	};
 
 	// ─── Personal Analytics ──────────────────────────────────────────────────
 
@@ -360,5 +409,5 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.all();
 	const favouriteBoardIds = userFavourites.map(f => f.boardId);
 
-	return { boards: enriched, analytics, allCategories, favouriteBoardIds };
+	return { boards: enriched, analytics, allCategories, favouriteBoardIds, allTasksTotals };
 };

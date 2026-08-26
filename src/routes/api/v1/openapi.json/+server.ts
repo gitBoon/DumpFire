@@ -1152,6 +1152,73 @@ const spec = {
 				}
 			}
 		},
+		'/api/v1/comments/{commentId}': {
+			get: {
+				tags: ['Comments'],
+				summary: 'Get a comment',
+				description: 'Returns a single comment with its author. Requires view access to the card\'s board.',
+				operationId: 'getComment',
+				parameters: [{ name: 'commentId', in: 'path', required: true, schema: { type: 'integer' }, description: 'Comment ID' }],
+				responses: {
+					'200': {
+						description: 'Comment',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Comment' }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			},
+			put: {
+				tags: ['Comments'],
+				summary: 'Edit a comment',
+				description: 'Replaces the comment text. Only the comment\'s author or an admin may edit — the same rule as the web UI. Sets updatedAt, logs api:comment_edited to the activity feed and emits a live board update. The text is stored exactly as sent (no tag prefixing).',
+				operationId: 'updateComment',
+				parameters: [{ name: 'commentId', in: 'path', required: true, schema: { type: 'integer' }, description: 'Comment ID' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['content'],
+								properties: {
+									content: { type: 'string', description: 'Replacement comment text (markdown supported)' }
+								}
+							},
+							example: { content: 'Root cause was a missing null check — fixed in the auth middleware.' }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Updated comment',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Comment' }
+							}
+						}
+					},
+					'400': {
+						description: 'Comment cannot be empty',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Error' } }
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'Not the comment author and not an admin',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Error' } }
+						}
+					},
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			}
+		},
 
 		// ─── Labels ─────────────────────────────────────────────────────────
 		'/api/v1/boards/{boardId}/labels': {
