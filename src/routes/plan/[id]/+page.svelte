@@ -548,6 +548,17 @@
 				title="Target date"
 				onchange={(e) => setTargetDate((e.target as HTMLInputElement).value)}
 			/>
+			<a
+				class="btn-ghost"
+				href="/api/milestones/{milestone.id}/pdf"
+				title="Download this plan as a PDF, in the same style as the board reports"
+			>
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+					<path d="M8 2v8m0 0L5 7m3 3l3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+					<path d="M2.5 11.5v1a1 1 0 001 1h9a1 1 0 001-1v-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+				</svg>
+				PDF
+			</a>
 			<button class="btn-ghost" onclick={toggleStatus} disabled={busy}>
 				{milestone.status === 'open' ? 'Close milestone' : 'Reopen'}
 			</button>
