@@ -837,8 +837,8 @@
 		<div class="board-header-right">
 			<!-- Scoped to this board: arriving from a board, the question is about
 			     this board's goals, not every goal in the workspace. -->
-			<a href="/plan?board={data.board.id}" class="btn-ghost" title="Planning — critical path and what is startable for this board">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+			<a href="/plan?board={data.board.id}" class="hdr-control hdr-action" title="Planning — critical path and what is startable for this board">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
 					<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
 					<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
 					<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
@@ -847,8 +847,8 @@
 				</svg>
 				Planning
 			</a>
-			<button class="btn-ghost" onclick={() => (showAddColumnModal = true)} title="Add column">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+			<button class="hdr-control hdr-action" onclick={() => (showAddColumnModal = true)} title="Add column">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
 					<rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
 					<path d="M8 5v6M5 8h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 				</svg>
@@ -857,8 +857,8 @@
 
 			<!-- More menu (progressive disclosure) -->
 			<div class="more-menu-wrapper">
-				<button class="btn-ghost more-menu-trigger" class:active-panel-btn={showMoreMenu} onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="More actions">
-					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<button class="hdr-control hdr-action more-menu-trigger" class:active-panel-btn={showMoreMenu} onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="More actions">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
 						<circle cx="3" cy="8" r="1.5" fill="currentColor"/>
 						<circle cx="8" cy="8" r="1.5" fill="currentColor"/>
 						<circle cx="13" cy="8" r="1.5" fill="currentColor"/>
@@ -1636,12 +1636,59 @@
 		position: absolute; left: 10px; color: var(--text-tertiary);
 		pointer-events: none;
 	}
+	/* ─── One control system for the board header ──────────────────────────
+	   Every control in this row is the same height, radius, type size and icon
+	   size. Before this the filters were bordered pills at 0.78rem/600 while
+	   the actions were borderless 6px-radius ghosts at 0.875rem/500 — three
+	   type sizes, two radii and three heights in one row.
+	   Filters and actions are distinguished by FILL, not by shape: a filter
+	   holds state and looks like a field, an action does something and sits
+	   flat until hovered. */
+	.hdr-control {
+		display: inline-flex; align-items: center; gap: 6px;
+		height: 32px; padding: 0 12px; white-space: nowrap;
+		border: 1px solid var(--glass-border); border-radius: var(--radius-full);
+		background: var(--bg-surface); color: var(--text-secondary);
+		font-family: var(--font-family); font-size: 0.78rem; font-weight: 600;
+		cursor: pointer; text-decoration: none;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.hdr-control:hover { color: var(--text-primary); border-color: var(--text-tertiary); }
+	.hdr-control svg { flex-shrink: 0; }
+
+	/* Actions sit flat so the filters read as the things holding state. */
+	.hdr-action { background: transparent; border-color: transparent; }
+	.hdr-action:hover { background: var(--glass-hover); border-color: var(--glass-border); }
+	.hdr-action.active-panel-btn {
+		background: var(--glass-hover); border-color: var(--glass-border);
+		color: var(--text-primary);
+	}
+
 	.search-input {
-		width: 100%; padding: 6px 30px 6px 32px;
+		width: 100%; height: 32px; padding: 0 30px 0 32px;
 		background: var(--bg-surface); border: 1px solid var(--glass-border);
 		border-radius: var(--radius-full); color: var(--text-primary);
-		font-family: var(--font-family); font-size: 0.8rem;
+		font-family: var(--font-family); font-size: 0.78rem;
 		transition: border-color var(--duration-fast) var(--ease-out);
+	}
+
+	.assignee-filter {
+		height: 32px; padding: 0 10px;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-full); color: var(--text-secondary);
+		font-family: var(--font-family); font-size: 0.78rem; font-weight: 600;
+		cursor: pointer;
+		transition: border-color var(--duration-fast) var(--ease-out);
+	}
+
+	.blocked-filter-toggle {
+		display: inline-flex; align-items: center; gap: 6px;
+		height: 32px; padding: 0 12px; white-space: nowrap;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-full); color: var(--text-secondary);
+		font-family: var(--font-family); font-size: 0.78rem; font-weight: 600;
+		cursor: pointer;
+		transition: all var(--duration-fast) var(--ease-out);
 	}
 	.search-input::placeholder { color: var(--text-tertiary); }
 	.search-input:focus { outline: none; border-color: var(--accent-indigo); }
@@ -1650,22 +1697,8 @@
 		opacity: 0.5;
 	}
 	.search-clear:hover { opacity: 1; }
-	.assignee-filter {
-		padding: 6px 10px; background: var(--bg-surface); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-full); color: var(--text-primary);
-		font-family: var(--font-family); font-size: 0.78rem; cursor: pointer;
-		transition: border-color var(--duration-fast) var(--ease-out);
-	}
 	.assignee-filter:focus { outline: none; border-color: var(--accent-indigo); }
 
-	.blocked-filter-toggle {
-		display: inline-flex; align-items: center; gap: 5px;
-		padding: 6px 12px; background: var(--bg-surface);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-full);
-		color: var(--text-secondary); font-family: var(--font-family);
-		font-size: 0.78rem; font-weight: 600; cursor: pointer; white-space: nowrap;
-		transition: all var(--duration-fast) var(--ease-out);
-	}
 	.blocked-filter-toggle:hover { border-color: rgba(245, 158, 11, 0.4); color: var(--text-primary); }
 	.blocked-filter-toggle.is-on {
 		background: rgba(245, 158, 11, 0.14); color: #f59e0b;

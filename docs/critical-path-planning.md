@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.4
+version: 1.5
 status: As-Built
 date: 2026-09-11
 tags:
@@ -454,6 +454,26 @@ Use `-NoGraph`, never `-Compact`: the wrapper's `-Compact` trims responses to
 
 See [External API Reference](api-reference.md) and `.agent/workflows/dumpfire-api-reference.md`
 for the full endpoint contracts.
+
+## When a plan appears, people are told
+
+Agents create milestones on their own when they spot that a set of cards forms a goal with
+a real order. That is useful, but **a plan that appears silently is a plan nobody agreed
+to** — so one is announced by email.
+
+It fires at the moment a plan becomes real: when a milestone that had **no cards** first
+gets some. A milestone is created empty and means nothing until there is work in it, so
+creation is the wrong trigger and every later attach would be noise.
+
+Recipients are the assignees of the cards in the plan, plus admins — a cross-board goal has
+no single board owner, and somebody needs to see a plan appear even when its cards are
+unassigned — minus whoever created it, who already knows. It respects an `email_planning`
+preference and, like every other notification, no-ops entirely when SMTP is unconfigured.
+
+The email carries the goal, who created it, how many cards and which boards, how much is
+startable versus waiting, and the critical path if one exists. It is wrapped in a `try` that
+swallows its own failures: the cards are attached either way, and a notification must never
+fail the write it is reporting on.
 
 ## Getting a plan out of the app
 

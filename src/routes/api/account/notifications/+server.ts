@@ -11,7 +11,8 @@ const DEFAULTS: Record<string, boolean> = {
 	email_comments: true,
 	email_moved: true,
 	email_requests: true,
-	email_board_shared: true
+	email_board_shared: true,
+	email_planning: true
 };
 
 /** GET — Return current user's notification preferences. */
