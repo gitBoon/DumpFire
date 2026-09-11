@@ -795,7 +795,7 @@
 			</div>
 		{/if}
 
-		<div class="search-wrapper">
+		<div class="search-wrapper hdr-search">
 			<svg class="search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
 				<circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
 				<path d="M9.5 9.5L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -812,7 +812,7 @@
 				</button>
 			{/if}
 		</div>
-		<select class="assignee-filter" bind:value={filterAssigneeId}>
+		<select class="hdr-control assignee-filter" bind:value={filterAssigneeId}>
 			<option value={null}>All assignees</option>
 			{#if currentUser}
 				<option value={currentUser.id}>👤 My Cards</option>
@@ -822,7 +822,7 @@
 			{/each}
 		</select>
 		<button
-			class="blocked-filter-toggle"
+			class="hdr-control blocked-filter-toggle"
 			class:is-on={hideBlocked}
 			onclick={() => (hideBlocked = !hideBlocked)}
 			title="Hide cards that are still waiting on another card"
@@ -1636,60 +1636,13 @@
 		position: absolute; left: 10px; color: var(--text-tertiary);
 		pointer-events: none;
 	}
-	/* ─── One control system for the board header ──────────────────────────
-	   Every control in this row is the same height, radius, type size and icon
-	   size. Before this the filters were bordered pills at 0.78rem/600 while
-	   the actions were borderless 6px-radius ghosts at 0.875rem/500 — three
-	   type sizes, two radii and three heights in one row.
-	   Filters and actions are distinguished by FILL, not by shape: a filter
-	   holds state and looks like a field, an action does something and sits
-	   flat until hovered. */
-	.hdr-control {
-		display: inline-flex; align-items: center; gap: 6px;
-		height: 32px; padding: 0 12px; white-space: nowrap;
-		border: 1px solid var(--glass-border); border-radius: var(--radius-full);
-		background: var(--bg-surface); color: var(--text-secondary);
-		font-family: var(--font-family); font-size: 0.78rem; font-weight: 600;
-		cursor: pointer; text-decoration: none;
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.hdr-control:hover { color: var(--text-primary); border-color: var(--text-tertiary); }
-	.hdr-control svg { flex-shrink: 0; }
+	/* Header controls come from .hdr-control / .hdr-search in app.css so the
+	   board, All Tasks and the planning view cannot drift apart again. Only
+	   what is genuinely local to this header stays here. */
+	.search-input { width: 100%; }
+	.assignee-filter { padding-right: 8px; }
 
-	/* Actions sit flat so the filters read as the things holding state. */
-	.hdr-action { background: transparent; border-color: transparent; }
-	.hdr-action:hover { background: var(--glass-hover); border-color: var(--glass-border); }
-	.hdr-action.active-panel-btn {
-		background: var(--glass-hover); border-color: var(--glass-border);
-		color: var(--text-primary);
-	}
 
-	.search-input {
-		width: 100%; height: 32px; padding: 0 30px 0 32px;
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-full); color: var(--text-primary);
-		font-family: var(--font-family); font-size: 0.78rem;
-		transition: border-color var(--duration-fast) var(--ease-out);
-	}
-
-	.assignee-filter {
-		height: 32px; padding: 0 10px;
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-full); color: var(--text-secondary);
-		font-family: var(--font-family); font-size: 0.78rem; font-weight: 600;
-		cursor: pointer;
-		transition: border-color var(--duration-fast) var(--ease-out);
-	}
-
-	.blocked-filter-toggle {
-		display: inline-flex; align-items: center; gap: 6px;
-		height: 32px; padding: 0 12px; white-space: nowrap;
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-full); color: var(--text-secondary);
-		font-family: var(--font-family); font-size: 0.78rem; font-weight: 600;
-		cursor: pointer;
-		transition: all var(--duration-fast) var(--ease-out);
-	}
 	.search-input::placeholder { color: var(--text-tertiary); }
 	.search-input:focus { outline: none; border-color: var(--accent-indigo); }
 	.search-clear {
@@ -1699,7 +1652,7 @@
 	.search-clear:hover { opacity: 1; }
 	.assignee-filter:focus { outline: none; border-color: var(--accent-indigo); }
 
-	.blocked-filter-toggle:hover { border-color: rgba(245, 158, 11, 0.4); color: var(--text-primary); }
+	/* Amber is specific to "blocked", so this state stays local to the filter. */
 	.blocked-filter-toggle.is-on {
 		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
 		border-color: rgba(245, 158, 11, 0.35);

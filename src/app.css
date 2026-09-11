@@ -618,6 +618,85 @@ button {
 	transform: translateY(0) scale(0.97);
 }
 
+/* === Header Control Row =====================================================
+   One control system for the header strips on the board, All Tasks and the
+   planning view. It lives here rather than in each page because it existed
+   three times with different values — pills at 0.78rem/600 on one screen,
+   10px-radius rounded rects at 0.8rem/500 on another, and borderless ghosts
+   at 0.875rem/500 for the actions on both. Three type sizes and three heights
+   in a single row is what that drift looks like.
+
+   Filters and actions differ by FILL, not by shape or size: a filter holds
+   state and looks like a field; an action does something and sits flat until
+   hovered. Same height, radius, type size and icon size throughout. */
+.hdr-control {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 32px;
+	padding: 0 12px;
+	white-space: nowrap;
+	border: 1px solid var(--glass-border);
+	border-radius: var(--radius-full);
+	background: var(--bg-surface);
+	color: var(--text-secondary);
+	font-family: var(--font-family);
+	font-size: 0.78rem;
+	font-weight: 600;
+	cursor: pointer;
+	text-decoration: none;
+	outline: none;
+	transition: all var(--duration-fast) var(--ease-out);
+}
+.hdr-control:hover {
+	color: var(--text-primary);
+	border-color: var(--text-tertiary);
+}
+.hdr-control:focus-visible { border-color: var(--accent-indigo); }
+.hdr-control svg { flex-shrink: 0; }
+
+/* Actions sit flat so the filters read as the things holding state. */
+.hdr-action {
+	background: transparent;
+	border-color: transparent;
+}
+.hdr-action:hover {
+	background: var(--glass-hover);
+	border-color: var(--glass-border);
+}
+.hdr-action.active-panel-btn,
+.hdr-action.is-on {
+	background: var(--glass-hover);
+	border-color: var(--glass-border);
+	color: var(--text-primary);
+}
+
+/* A search field is a control with an icon sitting inside it. */
+.hdr-search {
+	position: relative;
+	display: flex;
+	align-items: center;
+}
+.hdr-search > svg {
+	position: absolute;
+	left: 11px;
+	color: var(--text-tertiary);
+	pointer-events: none;
+}
+.hdr-search input {
+	height: 32px;
+	padding: 0 12px 0 31px;
+	border: 1px solid var(--glass-border);
+	border-radius: var(--radius-full);
+	background: var(--bg-surface);
+	color: var(--text-primary);
+	font-family: var(--font-family);
+	font-size: 0.78rem;
+	outline: none;
+	transition: border-color var(--duration-fast) var(--ease-out);
+}
+.hdr-search input:focus { border-color: var(--accent-indigo); }
+
 .btn-ghost {
 	display: inline-flex;
 	align-items: center;

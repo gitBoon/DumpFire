@@ -486,7 +486,7 @@
 			</div>
 		</div>
 		<div class="all-header-right">
-			<select class="board-filter" bind:value={boardFilter}>
+			<select class="hdr-control board-filter" bind:value={boardFilter}>
 				<option value="all">All Boards</option>
 				{#each (data.boardCategories || []) as cat}
 					{@const catBoards = data.boards.filter((b: any) => b.categoryId === cat.id)}
@@ -509,7 +509,7 @@
 					{/if}
 				{/each}
 			</select>
-			<div class="search-wrapper">
+			<div class="search-wrapper hdr-search">
 				<svg class="search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
 					<circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
 					<path d="M10 10l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -517,7 +517,7 @@
 				<input type="text" class="search-input" placeholder="Search tasks or #id..." bind:value={searchQuery} />
 			</div>
 			<button
-				class="blocked-filter-toggle"
+				class="hdr-control blocked-filter-toggle"
 				class:is-on={hideBlocked}
 				onclick={() => (hideBlocked = !hideBlocked)}
 				title="Hide cards that are still waiting on another card"
@@ -530,10 +530,10 @@
 			</button>
 			<a
 				href={boardFilter !== 'all' && !boardFilter.startsWith('cat:') ? `/plan?board=${boardFilter}` : '/plan'}
-				class="btn-ghost nav-btn"
+				class="hdr-control hdr-action"
 				title="Planning — critical path and what is startable"
 			>
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
 					<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
 					<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
 					<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
@@ -543,8 +543,8 @@
 				Planning
 			</a>
 			<div class="more-menu-container">
-				<button class="btn-ghost nav-btn" onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="Panels">
-					<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="3" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="13" r="1.2" fill="currentColor"/></svg>
+				<button class="hdr-control hdr-action" class:is-on={showMoreMenu} onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="Panels">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="3" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="13" r="1.2" fill="currentColor"/></svg>
 					More
 				</button>
 				{#if showMoreMenu}
@@ -569,8 +569,8 @@
 					</div>
 				{/if}
 			</div>
-			<a class="btn-ghost export-csv-btn" href={boardFilter !== 'all' && !boardFilter.startsWith('cat:') ? `/api/cards/export/csv?boardId=${boardFilter}` : '/api/cards/export/csv'} download title="Export to CSV">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+			<a class="hdr-control hdr-action export-csv-btn" href={boardFilter !== 'all' && !boardFilter.startsWith('cat:') ? `/api/cards/export/csv?boardId=${boardFilter}` : '/api/cards/export/csv'} download title="Export to CSV">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 			</a>
 			<ThemePicker />
 		</div>
@@ -993,26 +993,21 @@
 		margin-top: 1px;
 	}
 
-	.board-filter {
-		padding: 6px 12px;
-		border-radius: var(--radius-md);
-		border: 1px solid var(--glass-border);
-		background: var(--bg-elevated);
-		color: var(--text-primary);
-		font-size: 0.8rem;
-		font-weight: 500;
-		cursor: pointer;
-		outline: none;
-	}
 
 	.board-filter:focus {
 		border-color: var(--accent-purple);
 	}
 
-	.search-wrapper {
-		position: relative;
-		display: flex;
-		align-items: center;
+	/* Header controls come from .hdr-control / .hdr-search in app.css so this
+	   header and the board's cannot drift apart again. Only what is local to
+	   All Tasks stays here. */
+	.search-wrapper input { width: 210px; }
+	.board-filter { max-width: 190px; padding-right: 8px; }
+
+	/* Amber is specific to "blocked", so this state stays local. */
+	.blocked-filter-toggle.is-on {
+		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
+		border-color: rgba(245, 158, 11, 0.35);
 	}
 
 	.search-icon {
@@ -1022,17 +1017,6 @@
 		pointer-events: none;
 	}
 
-	.search-input {
-		padding: 6px 10px 6px 30px;
-		border-radius: var(--radius-md);
-		border: 1px solid var(--glass-border);
-		background: var(--bg-elevated);
-		color: var(--text-primary);
-		font-size: 0.8rem;
-		width: 200px;
-		outline: none;
-		transition: border-color var(--duration-fast) var(--ease-out);
-	}
 
 	.search-input:focus {
 		border-color: var(--accent-purple);
@@ -1263,15 +1247,6 @@
 
 	/* Blocked / milestone chips and the filter toggle — deliberately identical to
 	   the board so a card reads the same wherever it is seen. */
-	.blocked-filter-toggle {
-		display: inline-flex; align-items: center; gap: 5px;
-		padding: 6px 12px; background: var(--bg-surface);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-full);
-		color: var(--text-secondary); font-family: var(--font-family);
-		font-size: 0.78rem; font-weight: 600; cursor: pointer; white-space: nowrap;
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.blocked-filter-toggle:hover { border-color: rgba(245, 158, 11, 0.4); color: var(--text-primary); }
 	.blocked-filter-toggle.is-on {
 		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
 		border-color: rgba(245, 158, 11, 0.35);
