@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { canEditBoard } from '$lib/server/board-access';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
-import { applyUnblockEffects } from '$lib/server/planning';
+import { applyUnblockEffects, removeWorkNodeEdges } from '$lib/server/planning';
 import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
@@ -94,6 +94,8 @@ export const DELETE: RequestHandler = async ({ params, request, url, locals }) =
 	}
 
 	if (permanent) {
+		// Polymorphic dependency ids do not cascade — clear this card's edges.
+		removeWorkNodeEdges('card', id);
 		db.delete(cards).where(eq(cards.id, id)).run();
 	} else {
 		// Soft-delete: move to archive

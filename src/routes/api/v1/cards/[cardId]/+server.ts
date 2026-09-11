@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { cards, columns, subtasks, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
-import { getCardDependencies } from '$lib/server/planning';
+import { getCardDependencies, removeWorkNodeEdges } from '$lib/server/planning';
 import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
@@ -73,12 +73,16 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		labelIds: labelRows.map(r => r.labelId),
 		assignees: assigneeRows,
 		isBlocked: deps.isBlocked,
+		// `kind` and `parentCardId` matter: without them "#32" is ambiguous between
+		// card 32 and subtask 32, and a client cannot link to the right thing.
 		blockedBy: deps.blockedBy.map(d => ({
-			cardId: d.id, title: d.title, boardId: d.boardId, boardName: d.boardName,
+			kind: d.kind, cardId: d.id, parentCardId: d.parentCardId ?? null,
+			title: d.title, boardId: d.boardId, boardName: d.boardName,
 			columnName: d.columnTitle, resolved: d.isComplete
 		})),
 		blocks: deps.blocks.map(d => ({
-			cardId: d.id, title: d.title, boardId: d.boardId, boardName: d.boardName,
+			kind: d.kind, cardId: d.id, parentCardId: d.parentCardId ?? null,
+			title: d.title, boardId: d.boardId, boardName: d.boardName,
 			columnName: d.columnTitle, resolved: d.isComplete
 		}))
 	});
@@ -164,6 +168,8 @@ export const DELETE: RequestHandler = async ({ params, url, locals }) => {
 	const cardTitle = db.select({ title: cards.title }).from(cards).where(eq(cards.id, cardId)).get()?.title || 'Unknown';
 
 	if (permanent) {
+		// Polymorphic dependency ids do not cascade — clear this card's edges.
+		removeWorkNodeEdges('card', cardId);
 		db.delete(cards).where(eq(cards.id, cardId)).run();
 	} else {
 		db.update(cards)

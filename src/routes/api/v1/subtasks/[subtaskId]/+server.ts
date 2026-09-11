@@ -4,6 +4,8 @@ import { subtasks, cards, columns } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
+import { applyUnblockEffects, removeWorkNodeEdges } from '$lib/server/planning';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a subtask belongs to (via card → column → board). */
@@ -18,7 +20,7 @@ function getSubtaskBoardId(subtaskId: number): { boardId: number; cardId: number
 }
 
 /** PUT /api/v1/subtasks/:subtaskId — Update a subtask. */
-export const PUT: RequestHandler = async ({ params, request, locals }) => {
+export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const subtaskId = Number(params.subtaskId);
@@ -48,6 +50,10 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		throw error(400, 'Title too long (max 500 chars)');
 	}
 
+	// Snapshot before the write so "just completed" can be told from "was
+	// already complete" — re-ticking must not re-fire the unblock notice.
+	const before = db.select({ completed: subtasks.completed }).from(subtasks).where(eq(subtasks.id, subtaskId)).get();
+
 	const updated = db.update(subtasks)
 		.set(updateData)
 		.where(eq(subtasks.id, subtaskId))
@@ -55,6 +61,11 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		.get();
 
 	if (!updated) throw error(404, 'Subtask not found');
+
+	// A subtask can be the last thing blocking other work.
+	if (updateData.completed === true && before && !before.completed) {
+		applyUnblockEffects({ kind: 'subtask', id: subtaskId }, locals.user, resolveBaseUrl(request, url));
+	}
 
 	emit(ctx.boardId, 'update', { type: 'card' });
 
@@ -75,6 +86,10 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		throw error(403, 'No edit access to this subtask\'s board');
 	}
 
+	// work_dependencies ids are polymorphic and carry no foreign key, so nothing
+	// cascades — clear the edges explicitly or the graph keeps pointing at work
+	// that no longer exists.
+	removeWorkNodeEdges('subtask', subtaskId);
 	db.delete(subtasks).where(eq(subtasks.id, subtaskId)).run();
 
 	emit(ctx.boardId, 'update', { type: 'card' });

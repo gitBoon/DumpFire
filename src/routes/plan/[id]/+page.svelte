@@ -9,9 +9,13 @@
 	 *
 	 *   1. Progress        — how far along is this goal
 	 *   2. Critical path   — the one chain that cannot slip
-	 *   3. Next actionable — what can I start today
-	 *   4. Blocked         — what is waiting, and on what
-	 *   5. Dependency graph — the whole shape, laid out left to right
+	 *   3. The work        — every card, searchable and sortable
+	 *   4. Dependency graph — the whole shape, laid out left to right
+	 *
+	 * Block 3 used to be three stacked lists (actionable / blocked / unordered).
+	 * They were the same cards partitioned three ways and stopped being scannable
+	 * at about thirty, so they are one table with a state filter instead — the
+	 * partition is still there, as counts, and a specific card is now findable.
 	 *
 	 * Nothing here is computed in the browser. The server hands over a summary
 	 * from $lib/server/planning and this file draws it, so the page and the API
@@ -21,28 +25,58 @@
 
 	let { data } = $props();
 
-	type Node = {
-		id: number;
+	type WorkKind = 'card' | 'subtask';
+	type WorkRef = { kind: WorkKind; id: number };
+
+	type Node = WorkRef & {
 		title: string;
 		priority: string;
 		columnTitle: string;
 		boardId: number;
 		boardName: string;
 		isComplete: boolean;
+		parentCardId?: number;
 		external?: boolean;
 		layer: number;
-		blockedByIds: number[];
-		blocksIds: number[];
-		openBlockerIds: number[];
+		blockedBy: WorkRef[];
+		blocks: WorkRef[];
+		openBlockers: WorkRef[];
 		downstreamCount: number;
 		onCriticalPath: boolean;
 	};
 
+	/** `card:123` / `subtask:456` — matches the server's node key exactly. */
+	const key = (r: WorkRef) => `${r.kind}:${r.id}`;
+
 	const summary = $derived(data.summary);
 	const milestone = $derived(summary.milestone);
 	const nodes = $derived(summary.graph.nodes as Node[]);
-	const nodeById = $derived(new Map(nodes.map((n) => [n.id, n])));
-	const criticalSet = $derived(new Set(summary.criticalPath));
+	const nodeByKey = $derived(new Map(nodes.map((n) => [key(n), n])));
+	const criticalKeys = $derived(
+		new Set((summary.criticalPathNodes as WorkRef[]).map(key))
+	);
+
+	/** Subtask nodes grouped by the card they belong to. */
+	const subtasksByCard = $derived.by(() => {
+		const m = new Map<number, Node[]>();
+		for (const n of nodes) {
+			if (n.kind !== 'subtask' || n.parentCardId === undefined) continue;
+			if (!m.has(n.parentCardId)) m.set(n.parentCardId, []);
+			m.get(n.parentCardId)!.push(n);
+		}
+		for (const list of m.values()) list.sort((a, b) => a.id - b.id);
+		return m;
+	});
+
+	/** Cards whose subtask nodes are currently shown rather than rolled up. */
+	let expandedCards = $state<Set<number>>(new Set());
+
+	function toggleCardExpanded(cardId: number) {
+		const next = new Set(expandedCards);
+		if (next.has(cardId)) next.delete(cardId);
+		else next.add(cardId);
+		expandedCards = next;
+	}
 
 	let editingName = $state(false);
 	let nameDraft = $state('');
@@ -133,6 +167,162 @@
 		return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 	}
 
+	// ─── The work table ──────────────────────────────────────────────────────
+
+	type RowState = 'done' | 'ready' | 'blocked';
+
+	interface PlanRow {
+		kind: 'card' | 'subtask';
+		id: number;
+		title: string;
+		priority: string;
+		boardId: number;
+		boardName: string;
+		columnTitle: string;
+		downstreamCount: number;
+		onCriticalPath: boolean;
+		state: RowState;
+		blockers: { kind?: 'card' | 'subtask'; id: number; title: string; boardName: string; columnTitle: string; boardId: number }[];
+		/** 0 for a card, 1 for one of its subtasks. */
+		depth: number;
+		parentCardId?: number;
+	}
+
+	/**
+	 * One row per card in the milestone.
+	 *
+	 * External blockers are deliberately excluded: they are context for the
+	 * graph, not scope of the goal, and listing them as rows would misreport how
+	 * big the milestone is.
+	 */
+	const rows = $derived.by<PlanRow[]>(() => {
+		const blockersByKey = new Map(
+			(summary.blocked as { card: WorkRef; blockers: PlanRow['blockers'] }[]).map((b) => [
+				key(b.card),
+				b.blockers
+			])
+		);
+
+		const toRow = (n: Node, depth: number): PlanRow => ({
+			kind: n.kind,
+			id: n.id,
+			title: n.title,
+			priority: n.priority,
+			boardId: n.boardId,
+			boardName: n.boardName,
+			columnTitle: n.columnTitle,
+			downstreamCount: n.downstreamCount,
+			onCriticalPath: n.onCriticalPath,
+			state: (n.isComplete ? 'done' : n.openBlockers.length > 0 ? 'blocked' : 'ready') as RowState,
+			blockers: blockersByKey.get(key(n)) ?? [],
+			depth,
+			parentCardId: n.parentCardId
+		});
+
+		// Cards in id order, each immediately followed by its subtask rows, so an
+		// indented subtask always sits under the card it belongs to regardless of
+		// how the table is sorted afterwards.
+		const out: PlanRow[] = [];
+		for (const n of nodes.filter((x) => !x.external && x.kind === 'card')) {
+			out.push(toRow(n, 0));
+			for (const st of subtasksByCard.get(n.id) ?? []) {
+				if (st.external) continue;
+				out.push(toRow(st, 1));
+			}
+		}
+		return out;
+	});
+
+	const stateCounts = $derived({
+		all: rows.length,
+		ready: rows.filter((r) => r.state === 'ready').length,
+		blocked: rows.filter((r) => r.state === 'blocked').length,
+		done: rows.filter((r) => r.state === 'done').length
+	});
+
+	let tableSearch = $state('');
+	let stateFilter = $state<'all' | RowState>('all');
+	let sortKey = $state<'id' | 'title' | 'boardName' | 'columnTitle' | 'downstreamCount' | 'state'>('id');
+	let sortDir = $state<'asc' | 'desc'>('asc');
+	let expandedRow = $state<string | null>(null);
+
+	function toggleSort(key: typeof sortKey) {
+		if (sortKey === key) {
+			sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+		} else {
+			sortKey = key;
+			// Numbers are most useful biggest-first; everything else reads A–Z.
+			sortDir = key === 'downstreamCount' ? 'desc' : 'asc';
+		}
+	}
+
+	/** Blocked before ready before done, so a state sort surfaces problems. */
+	const STATE_ORDER: Record<RowState, number> = { blocked: 0, ready: 1, done: 2 };
+
+	const visibleRows = $derived.by(() => {
+		const q = tableSearch.trim().toLowerCase();
+		// "#123" or a bare number is an exact id match, not a substring one —
+		// same rule as the board and All Tasks search, so the same thing typed in
+		// three places does the same thing.
+		const idMatch = q.match(/^#?(\d+)$/);
+
+		let out = rows.filter((r) => {
+			if (stateFilter !== 'all' && r.state !== stateFilter) return false;
+			if (!q) return true;
+			if (idMatch) return r.id === Number(idMatch[1]);
+			return (
+				r.title.toLowerCase().includes(q) ||
+				r.boardName.toLowerCase().includes(q) ||
+				String(r.id).includes(q)
+			);
+		});
+
+		// A subtask that matches on its own is meaningless without the card it
+		// belongs to, so pull that card in for context rather than leaving an
+		// orphaned indented row.
+		if (q || stateFilter !== 'all') {
+			const present = new Set(out.map((r) => `${r.kind}:${r.id}`));
+			const extra: PlanRow[] = [];
+			for (const r of out) {
+				if (r.kind !== 'subtask' || r.parentCardId === undefined) continue;
+				const parentKey = `card:${r.parentCardId}`;
+				if (present.has(parentKey)) continue;
+				const parent = rows.find((x) => x.kind === 'card' && x.id === r.parentCardId);
+				if (parent) {
+					present.add(parentKey);
+					extra.push(parent);
+				}
+			}
+			out = [...out, ...extra];
+		}
+
+		const dir = sortDir === 'asc' ? 1 : -1;
+		out = [...out].sort((a, b) => {
+			let cmp: number;
+			switch (sortKey) {
+				case 'downstreamCount':
+					// Numeric, not lexical — the obvious bug in a table like this.
+					cmp = a.downstreamCount - b.downstreamCount;
+					break;
+				case 'state':
+					cmp = STATE_ORDER[a.state] - STATE_ORDER[b.state];
+					break;
+				case 'id':
+					cmp = a.id - b.id;
+					break;
+				default:
+					cmp = String(a[sortKey]).localeCompare(String(b[sortKey]));
+			}
+			if (cmp !== 0) return cmp * dir;
+			// Ties fall back to id, then to kind, so the order never jitters between
+			// renders now that a card and a subtask can share an id.
+			return a.id - b.id || a.kind.localeCompare(b.kind);
+		});
+		return out;
+	});
+
+	const STATE_LABEL: Record<RowState, string> = { done: 'Done', ready: 'Startable', blocked: 'Blocked' };
+
 	// ─── Graph geometry ──────────────────────────────────────────────────────
 	//
 	// Laid out by hand as inline SVG rather than with a force layout: the whole
@@ -143,26 +333,117 @@
 
 	const NODE_W = 190;
 	const NODE_H = 58;
+	const SUB_H = 26;
 	const GAP_X = 74;
 	const GAP_Y = 16;
 	const PAD = 24;
 
-	/** Layers with their nodes resolved, skipping any that ended up empty. */
-	const layers = $derived(
-		(summary.graph.layers as number[][])
-			.map((ids) => ids.map((id) => nodeById.get(id)).filter((n): n is Node => !!n))
-			.filter((l) => l.length > 0)
+	/**
+	 * Which node a ref is drawn as.
+	 *
+	 * A subtask whose card is collapsed is drawn as that card — so an edge into
+	 * the subtask becomes an edge into the card, rather than pointing at nothing.
+	 * Expanding the card reveals the real node and the edge follows it.
+	 */
+	function drawnKey(r: WorkRef): string {
+		if (r.kind !== 'subtask') return key(r);
+		const parent = nodeByKey.get(key(r))?.parentCardId;
+		if (parent === undefined) return key(r);
+		return expandedCards.has(parent) ? key(r) : key({ kind: 'card', id: parent });
+	}
+
+	/** Nodes actually drawn: every card, plus the subtasks of expanded cards. */
+	const drawnNodes = $derived(
+		nodes.filter((n) => n.kind === 'card' || (n.parentCardId !== undefined && expandedCards.has(n.parentCardId)))
 	);
 
+	/**
+	 * Edges between drawn nodes, with collapsed subtask ends rolled up to their
+	 * card. Rolling up can produce duplicates (two subtasks of the same card
+	 * blocking the same thing) and self-edges (a card's subtask blocking the same
+	 * card), so both are dropped here.
+	 */
+	const drawnEdges = $derived.by(() => {
+		const seen = new Set<string>();
+		const out: { from: string; to: string }[] = [];
+		for (const e of summary.graph.edges as { from: WorkRef; to: WorkRef }[]) {
+			const from = drawnKey(e.from);
+			const to = drawnKey(e.to);
+			if (from === to) continue;
+			const id = `${from}->${to}`;
+			if (seen.has(id)) continue;
+			seen.add(id);
+			out.push({ from, to });
+		}
+		return out;
+	});
+
+	/**
+	 * Layer the drawn graph here rather than reusing the server's layers.
+	 *
+	 * The server layers the FULL graph; rolling collapsed subtasks up to their
+	 * cards changes the edge set, and can even introduce a cycle the full graph
+	 * does not have (card A's subtask blocks B while B blocks another of A's
+	 * subtasks). So this is a Kahn pass over what is actually drawn, with the
+	 * same stranded-node fallback the server uses rather than dropping anything.
+	 */
+	const layers = $derived.by(() => {
+		const present = new Set(drawnNodes.map(key));
+		const indeg = new Map<string, number>();
+		const children = new Map<string, string[]>();
+		for (const k of present) {
+			indeg.set(k, 0);
+			children.set(k, []);
+		}
+		for (const e of drawnEdges) {
+			if (!present.has(e.from) || !present.has(e.to)) continue;
+			children.get(e.from)!.push(e.to);
+			indeg.set(e.to, (indeg.get(e.to) ?? 0) + 1);
+		}
+
+		const byKeyLocal = new Map(drawnNodes.map((n) => [key(n), n]));
+		const out: Node[][] = [];
+		const placed = new Set<string>();
+		let frontier = [...present].filter((k) => indeg.get(k) === 0).sort();
+
+		while (frontier.length > 0) {
+			out.push(frontier.map((k) => byKeyLocal.get(k)!).filter(Boolean));
+			for (const k of frontier) placed.add(k);
+			const next: string[] = [];
+			for (const k of frontier) {
+				for (const c of children.get(k) ?? []) {
+					const left = (indeg.get(c) ?? 0) - 1;
+					indeg.set(c, left);
+					if (left === 0) next.push(c);
+				}
+			}
+			frontier = next.sort();
+		}
+
+		const stranded = [...present].filter((k) => !placed.has(k)).sort();
+		if (stranded.length > 0) out.push(stranded.map((k) => byKeyLocal.get(k)!).filter(Boolean));
+
+		return out.filter((l) => l.length > 0);
+	});
+
+	/** How tall a node box is — a card grows to hold its expanded subtasks. */
+	function nodeHeight(n: Node): number {
+		if (n.kind !== 'card' || !expandedCards.has(n.id)) return n.kind === 'subtask' ? SUB_H : NODE_H;
+		const subs = subtasksByCard.get(n.id)?.length ?? 0;
+		return NODE_H + (subs > 0 ? 6 + subs * (SUB_H + 4) : 0);
+	}
+
 	const positions = $derived.by(() => {
-		const pos = new Map<number, { x: number; y: number }>();
+		const pos = new Map<string, { x: number; y: number; h: number }>();
 		layers.forEach((layer, li) => {
-			layer.forEach((n, ni) => {
-				pos.set(n.id, {
-					x: PAD + li * (NODE_W + GAP_X),
-					y: PAD + ni * (NODE_H + GAP_Y)
-				});
-			});
+			let y = PAD;
+			for (const n of layer) {
+				const h = nodeHeight(n);
+				pos.set(key(n), { x: PAD + li * (NODE_W + GAP_X), y, h });
+				// Stack by actual height so an expanded card never overlaps the node
+				// underneath it.
+				y += h + GAP_Y;
+			}
 		});
 		return pos;
 	});
@@ -170,33 +451,51 @@
 	const graphWidth = $derived(
 		layers.length === 0 ? 0 : PAD * 2 + layers.length * NODE_W + (layers.length - 1) * GAP_X
 	);
-	const graphHeight = $derived(
-		layers.length === 0
-			? 0
-			: PAD * 2 + Math.max(...layers.map((l) => l.length)) * (NODE_H + GAP_Y) - GAP_Y
-	);
+	const graphHeight = $derived.by(() => {
+		if (layers.length === 0) return 0;
+		let tallest = 0;
+		for (const layer of layers) {
+			const h = layer.reduce((sum, n) => sum + nodeHeight(n) + GAP_Y, 0) - GAP_Y;
+			if (h > tallest) tallest = h;
+		}
+		return PAD * 2 + tallest;
+	});
 
 	/**
 	 * Edge path: a horizontal cubic from the right edge of the blocker to the
-	 * left edge of the blocked card. Control points sit halfway across the gap so
+	 * left edge of the blocked node. Control points sit halfway across the gap so
 	 * the curve leaves and arrives horizontally and never doubles back.
 	 */
-	function edgePath(fromId: number, toId: number): string {
-		const a = positions.get(fromId);
-		const b = positions.get(toId);
+	function edgePath(fromKey: string, toKey: string): string {
+		const a = positions.get(fromKey);
+		const b = positions.get(toKey);
 		if (!a || !b) return '';
 		const x1 = a.x + NODE_W;
-		const y1 = a.y + NODE_H / 2;
+		const y1 = a.y + a.h / 2;
 		const x2 = b.x;
-		const y2 = b.y + NODE_H / 2;
+		const y2 = b.y + b.h / 2;
 		const mid = x1 + (x2 - x1) / 2;
 		return `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`;
 	}
 
-	function isCriticalEdge(fromId: number, toId: number): boolean {
-		const path = summary.criticalPath as number[];
-		const i = path.indexOf(fromId);
-		return i !== -1 && path[i + 1] === toId;
+	/**
+	 * Is this drawn edge a step along the critical path?
+	 *
+	 * Compared on drawn keys so a step that runs through a collapsed subtask
+	 * still highlights the card it rolled up into — the chain stays followable
+	 * whether or not it is expanded.
+	 */
+	const criticalSteps = $derived.by(() => {
+		const path = (summary.criticalPathNodes as WorkRef[]).map(drawnKey);
+		const steps = new Set<string>();
+		for (let i = 1; i < path.length; i++) {
+			if (path[i - 1] !== path[i]) steps.add(`${path[i - 1]}->${path[i]}`);
+		}
+		return steps;
+	});
+
+	function isCriticalEdge(fromKey: string, toKey: string): boolean {
+		return criticalSteps.has(`${fromKey}->${toKey}`);
 	}
 
 	/** Trim a title to something that fits a node box on one or two lines. */
@@ -205,7 +504,9 @@
 	}
 
 	const unorderedNodes = $derived(
-		(summary.graph.unordered as number[]).map((id) => nodeById.get(id)).filter((n): n is Node => !!n)
+		(summary.graph.unordered as number[])
+			.map((id) => nodeByKey.get(`card:${id}`))
+			.filter((n): n is Node => !!n)
 	);
 </script>
 
@@ -350,24 +651,28 @@
 				<span class="panel-note">The longest chain of work still to do — if any of these slips, the goal slips</span>
 			</div>
 
-			{#if summary.criticalPath.length === 0}
+			{#if summary.criticalPathNodes.length === 0}
 				<p class="muted">
-					No chain yet. Record which card blocks which — in a card's Dependencies
-					section — and the chain that cannot slip will show up here.
+					No chain yet. Record what blocks what — in a card's or subtask's
+					Dependencies section — and the chain that cannot slip shows up here.
 				</p>
 			{:else}
 				<ol class="chain">
-					{#each summary.criticalPath as id, i}
-						{@const n = nodeById.get(id)}
+					{#each summary.criticalPathNodes as step, i}
+						{@const n = nodeByKey.get(key(step))}
 						{#if n}
 							<li class="chain-step">
 								<span class="chain-index">{i + 1}</span>
-								<a class="chain-card" href={cardHref(n)}>
-									<span class="card-id">#{n.id}</span>
+								<a class="chain-card" href={n.kind === 'card' ? cardHref(n) : `/board/${n.boardId}?card=${n.parentCardId}`}>
+									{#if n.kind === 'subtask'}
+										<span class="kind-tag">subtask</span>
+									{:else}
+										<span class="card-id">#{n.id}</span>
+									{/if}
 									<span class="card-title">{n.title}</span>
 									<span class="card-where">
 										{#if n.external}<span class="ext-tag">outside this goal</span>{/if}
-										{n.boardName} / {n.columnTitle}
+										{#if n.kind === 'subtask'}of #{n.parentCardId} · {/if}{n.boardName} / {n.columnTitle}
 									</span>
 								</a>
 							</li>
@@ -377,85 +682,179 @@
 			{/if}
 		</section>
 
-		<!-- ── 3. Next actionable ──────────────────────────────────────────── -->
+		<!-- ── 3. The work ─────────────────────────────────────────────────── -->
 		<section class="panel">
 			<div class="panel-head">
-				<h2>Next actionable</h2>
-				<span class="panel-note">Nothing is blocking these — most-unblocking first</span>
+				<h2>The work</h2>
+				<span class="panel-note">Every card in this goal — search it, sort it, see what each one is waiting on</span>
 			</div>
 
-			{#if summary.nextActionable.length === 0}
+			<div class="table-controls">
+				<div class="table-search">
+					<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+						<circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
+						<path d="M9.5 9.5L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+					</svg>
+					<input type="text" placeholder="Search by #id, title or board…" bind:value={tableSearch} />
+					{#if tableSearch}
+						<button class="search-clear" onclick={() => (tableSearch = '')} title="Clear search">✕</button>
+					{/if}
+				</div>
+
+				<!-- The three lists this table replaced, preserved as counts: the
+				     partition is still readable at a glance, without scrolling
+				     three sections to find out how much is blocked. -->
+				<div class="state-filter">
+					<button class:active={stateFilter === 'all'} onclick={() => (stateFilter = 'all')}>
+						All <span class="fc">{stateCounts.all}</span>
+					</button>
+					<button class:active={stateFilter === 'ready'} onclick={() => (stateFilter = 'ready')}>
+						Startable <span class="fc">{stateCounts.ready}</span>
+					</button>
+					<button class:active={stateFilter === 'blocked'} onclick={() => (stateFilter = 'blocked')}>
+						Blocked <span class="fc">{stateCounts.blocked}</span>
+					</button>
+					<button class:active={stateFilter === 'done'} onclick={() => (stateFilter = 'done')}>
+						Done <span class="fc">{stateCounts.done}</span>
+					</button>
+				</div>
+			</div>
+
+			{#if rows.length === 0}
+				<p class="muted">No cards in this milestone yet — use “+ Add cards” above.</p>
+			{:else if visibleRows.length === 0}
 				<p class="muted">
-					{#if summary.progress.total === 0}
-						No cards in this milestone yet.
-					{:else if summary.progress.done === summary.progress.total}
-						Everything here is done.
+					{#if tableSearch.trim()}
+						Nothing matches “{tableSearch.trim()}”{#if stateFilter !== 'all'} among {stateFilter === 'ready' ? 'startable' : stateFilter} cards{/if}.
+					{:else if stateFilter === 'ready'}
+						Nothing is startable — every remaining card is waiting on something.
+					{:else if stateFilter === 'blocked'}
+						Nothing is blocked.
 					{:else}
-						Every remaining card is waiting on something. See Blocked below.
+						Nothing is complete yet.
 					{/if}
 				</p>
 			{:else}
-				<div class="card-list">
-					{#each summary.nextActionable as n}
-						<a class="list-card" class:on-critical={criticalSet.has(n.id)} href={cardHref(n)}>
-							<span class="prio-dot prio-{n.priority}" title="Priority: {n.priority}"></span>
-							<span class="card-id">#{n.id}</span>
-							<span class="card-title">{n.title}</span>
-							{#if n.downstreamCount > 0}
-								<span class="unblock-chip" title="Finishing this frees up {n.downstreamCount} card{n.downstreamCount === 1 ? '' : 's'} downstream">
-									unblocks {n.downstreamCount}
-								</span>
-							{/if}
-							{#if criticalSet.has(n.id)}<span class="crit-chip">critical path</span>{/if}
-							<span class="card-where">{n.boardName} / {n.columnTitle}</span>
-							<button
-								class="detach"
-								title="Remove from this milestone"
-								onclick={(e) => { e.preventDefault(); detachCard(n.id); }}
-							>✕</button>
-						</a>
-					{/each}
+				<div class="table-scroll">
+					<table class="work-table">
+						<thead>
+							<tr>
+								<th class="col-expand"><span class="sr-only">Blockers</span></th>
+								<th class="col-id">
+									<button class="sort-btn" class:sorted={sortKey === 'id'} onclick={() => toggleSort('id')}>
+										ID{#if sortKey === 'id'}<span class="sort-arrow">{sortDir === 'asc' ? '▲' : '▼'}</span>{/if}
+									</button>
+								</th>
+								<th class="col-title">
+									<button class="sort-btn" class:sorted={sortKey === 'title'} onclick={() => toggleSort('title')}>
+										Title{#if sortKey === 'title'}<span class="sort-arrow">{sortDir === 'asc' ? '▲' : '▼'}</span>{/if}
+									</button>
+								</th>
+								<th class="col-board">
+									<button class="sort-btn" class:sorted={sortKey === 'boardName'} onclick={() => toggleSort('boardName')}>
+										Board{#if sortKey === 'boardName'}<span class="sort-arrow">{sortDir === 'asc' ? '▲' : '▼'}</span>{/if}
+									</button>
+								</th>
+								<th class="col-col">
+									<button class="sort-btn" class:sorted={sortKey === 'columnTitle'} onclick={() => toggleSort('columnTitle')}>
+										Column{#if sortKey === 'columnTitle'}<span class="sort-arrow">{sortDir === 'asc' ? '▲' : '▼'}</span>{/if}
+									</button>
+								</th>
+								<th class="col-num">
+									<button class="sort-btn" class:sorted={sortKey === 'downstreamCount'} onclick={() => toggleSort('downstreamCount')}>
+										Unblocks{#if sortKey === 'downstreamCount'}<span class="sort-arrow">{sortDir === 'asc' ? '▲' : '▼'}</span>{/if}
+									</button>
+								</th>
+								<th class="col-state">
+									<button class="sort-btn" class:sorted={sortKey === 'state'} onclick={() => toggleSort('state')}>
+										State{#if sortKey === 'state'}<span class="sort-arrow">{sortDir === 'asc' ? '▲' : '▼'}</span>{/if}
+									</button>
+								</th>
+								<th class="col-actions"><span class="sr-only">Actions</span></th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each visibleRows as r (r.kind + ':' + r.id)}
+								<tr class="row-{r.state}" class:on-critical={r.onCriticalPath} class:is-subtask={r.kind === 'subtask'}>
+									<td class="col-expand">
+										{#if r.blockers.length > 0}
+											<button
+												class="expander"
+												class:open={expandedRow === r.kind + ':' + r.id}
+												title={expandedRow === r.kind + ':' + r.id ? 'Hide blockers' : `Show the ${r.blockers.length} thing${r.blockers.length === 1 ? '' : 's'} this is waiting on`}
+												onclick={() => (expandedRow = expandedRow === r.kind + ':' + r.id ? null : r.kind + ':' + r.id)}
+											>▸</button>
+										{/if}
+									</td>
+									<td class="col-id">
+										{#if r.kind === 'card'}
+											<a href={cardHref(r)}>#{r.id}</a>
+										{:else}
+											<span class="sub-id" title="Subtask of #{r.parentCardId}">↳</span>
+										{/if}
+									</td>
+									<td class="col-title" class:indented={r.depth > 0}>
+										<a class="title-link" href={r.kind === 'card' ? cardHref(r) : `/board/${r.boardId}?card=${r.parentCardId}`} title={r.title}>
+											<span class="prio-dot prio-{r.priority}" title="Priority: {r.priority}"></span>
+											<span class="title-text">{r.title}</span>
+										</a>
+										{#if r.onCriticalPath}<span class="crit-chip">critical path</span>{/if}
+									</td>
+									<td class="col-board">
+										{#if r.kind === 'card'}
+											<a class="board-link" href="/board/{r.boardId}">{r.boardName}</a>
+										{:else}
+											<span class="kind-tag">subtask</span>
+										{/if}
+									</td>
+									<td class="col-col">{r.kind === 'card' ? r.columnTitle : ''}</td>
+									<td class="col-num">
+										{#if r.downstreamCount > 0}
+											<span class="unblock-chip" title="Finishing this frees up {r.downstreamCount} thing{r.downstreamCount === 1 ? '' : 's'} downstream">
+												{r.downstreamCount}
+											</span>
+										{:else}
+											<span class="dash">—</span>
+										{/if}
+									</td>
+									<td class="col-state"><span class="state-chip state-{r.state}">{STATE_LABEL[r.state]}</span></td>
+									<td class="col-actions">
+										{#if r.kind === 'card'}
+											<button class="detach" title="Remove from this milestone" onclick={() => detachCard(r.id)}>✕</button>
+										{/if}
+									</td>
+								</tr>
+								{#if expandedRow === r.kind + ':' + r.id && r.blockers.length > 0}
+									<tr class="blocker-row">
+										<td></td>
+										<td colspan="7">
+											<div class="blocker-list">
+												{#each r.blockers as blocker}
+													<a class="blocker" href={blocker.kind === 'subtask' ? `/board/${blocker.boardId}` : cardHref(blocker)}>
+														waiting on
+														{#if blocker.kind === 'subtask'}
+															<span class="kind-tag">subtask</span>
+															<span class="blocker-title">{blocker.title}</span>
+														{:else}
+															<span class="card-id">#{blocker.id}</span>
+															<span class="blocker-title">{blocker.title}</span>
+														{/if}
+														<span class="card-where">{blocker.boardName} / {blocker.columnTitle}</span>
+													</a>
+												{/each}
+											</div>
+										</td>
+									</tr>
+								{/if}
+							{/each}
+						</tbody>
+					</table>
 				</div>
 			{/if}
 		</section>
 
-		<!-- ── 4. Blocked ──────────────────────────────────────────────────── -->
-		<section class="panel">
-			<div class="panel-head">
-				<h2>Blocked</h2>
-				<span class="panel-note">Waiting on work that is not finished</span>
-			</div>
 
-			{#if summary.blocked.length === 0}
-				<p class="muted">Nothing is blocked.</p>
-			{:else}
-				<div class="card-list">
-					{#each summary.blocked as b}
-						<div class="blocked-group">
-							<a class="list-card" class:on-critical={criticalSet.has(b.card.id)} href={cardHref(b.card)}>
-								<span class="prio-dot prio-{b.card.priority}" title="Priority: {b.card.priority}"></span>
-								<span class="card-id">#{b.card.id}</span>
-								<span class="card-title">{b.card.title}</span>
-								{#if criticalSet.has(b.card.id)}<span class="crit-chip">critical path</span>{/if}
-								<span class="card-where">{b.card.boardName} / {b.card.columnTitle}</span>
-							</a>
-							<div class="blocker-list">
-								{#each b.blockers as blocker}
-									<a class="blocker" href={cardHref(blocker)}>
-										waiting on
-										<span class="card-id">#{blocker.id}</span>
-										<span class="blocker-title">{blocker.title}</span>
-										<span class="card-where">{blocker.boardName} / {blocker.columnTitle}</span>
-									</a>
-								{/each}
-							</div>
-						</div>
-					{/each}
-				</div>
-			{/if}
-		</section>
-
-		<!-- ── 5. Dependency graph ─────────────────────────────────────────── -->
+		<!-- ── 4. Dependency graph ─────────────────────────────────────────── -->
 		<section class="panel">
 			<div class="panel-head">
 				<h2>Dependency graph</h2>
@@ -486,7 +885,7 @@
 							</marker>
 						</defs>
 
-						{#each summary.graph.edges as e}
+						{#each drawnEdges as e}
 							{@const crit = isCriticalEdge(e.from, e.to)}
 							<path
 								d={edgePath(e.from, e.to)}
@@ -498,37 +897,66 @@
 							/>
 						{/each}
 
-						{#each nodes as n}
-							{@const p = positions.get(n.id)}
+						{#each drawnNodes as n (key(n))}
+							{@const p = positions.get(key(n))}
 							{#if p}
 								{@const state = n.isComplete
 									? 'complete'
 									: n.external
 										? 'external'
-										: n.openBlockerIds.length > 0
+										: n.openBlockers.length > 0
 											? 'blocked'
 											: 'ready'}
-								<a href={cardHref(n)} class="node-link">
-									<g class="node node-{state}" class:node-critical={n.onCriticalPath}>
-										<rect x={p.x} y={p.y} width={NODE_W} height={NODE_H} rx="8" />
-										<text class="node-id" x={p.x + 11} y={p.y + 19}>#{n.id}</text>
-										<text class="node-col" x={p.x + NODE_W - 11} y={p.y + 19} text-anchor="end">
-											{n.columnTitle}
-										</text>
-										<text class="node-title" x={p.x + 11} y={p.y + 37}>{clip(n.title, 26)}</text>
-										<text class="node-sub" x={p.x + 11} y={p.y + 50}>
-											{#if n.external}
-												{clip(n.boardName, 20)} · outside goal
-											{:else if n.downstreamCount > 0}
-												unblocks {n.downstreamCount}
-											{:else if n.isComplete}
-												done
-											{:else}
-												{n.priority}
-											{/if}
-										</text>
-									</g>
-								</a>
+								{@const subs = n.kind === 'card' ? (subtasksByCard.get(n.id) ?? []) : []}
+								{@const isOpen = n.kind === 'card' && expandedCards.has(n.id)}
+								<g class="node node-{state}" class:node-critical={n.onCriticalPath} class:node-subtask={n.kind === 'subtask'}>
+									<rect x={p.x} y={p.y} width={NODE_W} height={p.h} rx={n.kind === 'subtask' ? 5 : 8} />
+
+									{#if n.kind === 'subtask'}
+										<a href="/board/{n.boardId}?card={n.parentCardId}" class="node-link">
+											<text class="node-sub-title" x={p.x + 10} y={p.y + 17}>↳ {clip(n.title, 28)}</text>
+										</a>
+									{:else}
+										<a href={cardHref(n)} class="node-link">
+											<text class="node-id" x={p.x + 11} y={p.y + 19}>#{n.id}</text>
+											<text class="node-col" x={p.x + NODE_W - 11} y={p.y + 19} text-anchor="end">
+												{n.columnTitle}
+											</text>
+											<text class="node-title" x={p.x + 11} y={p.y + 37}>{clip(n.title, 26)}</text>
+											<text class="node-sub" x={p.x + 11} y={p.y + 50}>
+												{#if n.external}
+													{clip(n.boardName, 20)} · outside goal
+												{:else if n.downstreamCount > 0}
+													unblocks {n.downstreamCount}
+												{:else if n.isComplete}
+													done
+												{:else}
+													{n.priority}
+												{/if}
+											</text>
+										</a>
+
+										{#if subs.length > 0}
+											<!-- Collapsed by default: drawing every ordered subtask inline
+											     would swamp a graph of any size, so the card carries a count
+											     and opens on demand. The critical path is computed over the
+											     full graph either way, so this is display only. -->
+											<!-- svelte-ignore a11y_click_events_have_key_events -->
+											<g
+												class="sub-toggle"
+												role="button"
+												tabindex="0"
+												aria-label="{isOpen ? 'Hide' : 'Show'} {subs.length} ordered subtask{subs.length === 1 ? '' : 's'}"
+												onclick={() => toggleCardExpanded(n.id)}
+											>
+												<rect x={p.x + NODE_W - 46} y={p.y + NODE_H - 21} width="38" height="16" rx="8" />
+												<text x={p.x + NODE_W - 27} y={p.y + NODE_H - 9} text-anchor="middle">
+													{isOpen ? '−' : '+'}{subs.length}
+												</text>
+											</g>
+										{/if}
+									{/if}
+								</g>
 							{/if}
 						{/each}
 					</svg>
@@ -733,6 +1161,175 @@
 	}
 	.chain-card:hover { background: var(--bg-elevated); }
 
+	/* ─── The work table ───────────────────────────────────────────────── */
+
+	.sr-only {
+		position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+		overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+	}
+
+	.table-controls {
+		display: flex; align-items: center; gap: var(--space-md);
+		flex-wrap: wrap; margin-bottom: var(--space-md);
+	}
+
+	.table-search {
+		position: relative; display: flex; align-items: center;
+		flex: 1 1 260px; min-width: 0;
+	}
+	.table-search svg {
+		position: absolute; left: 10px; color: var(--text-tertiary); pointer-events: none;
+	}
+	.table-search input {
+		width: 100%; padding: 7px 30px 7px 32px;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-full); color: var(--text-primary);
+		font-family: var(--font-family); font-size: 0.82rem;
+	}
+	.table-search input:focus { outline: none; border-color: var(--accent-indigo); }
+	.search-clear {
+		position: absolute; right: 8px; width: 18px; height: 18px; padding: 0;
+		display: flex; align-items: center; justify-content: center;
+		background: none; border: none; cursor: pointer; font: inherit;
+		font-size: 0.66rem; color: var(--text-tertiary); border-radius: 50%;
+	}
+	.search-clear:hover { background: var(--bg-elevated); color: var(--text-primary); }
+
+	.state-filter {
+		display: flex; flex-shrink: 0; border-radius: var(--radius-full);
+		border: 1px solid var(--glass-border); overflow: hidden;
+	}
+	.state-filter button {
+		display: inline-flex; align-items: center; gap: 5px;
+		padding: 6px 12px; background: var(--bg-surface); border: none;
+		border-right: 1px solid var(--glass-border);
+		color: var(--text-secondary); font-family: var(--font-family);
+		font-size: 0.75rem; font-weight: 600; cursor: pointer; white-space: nowrap;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.state-filter button:last-child { border-right: none; }
+	.state-filter button:hover { background: var(--bg-elevated); color: var(--text-primary); }
+	.state-filter button.active { background: var(--accent-indigo); color: #fff; }
+	.fc {
+		font-variant-numeric: tabular-nums; font-size: 0.68rem;
+		opacity: 0.75; font-weight: 700;
+	}
+
+	/* The table scrolls here, never the page body. */
+	.table-scroll {
+		overflow-x: auto;
+		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+	}
+
+	.work-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+
+	.work-table thead th {
+		position: sticky; top: 0; z-index: 1;
+		background: var(--bg-surface); text-align: left;
+		border-bottom: 1px solid var(--glass-border);
+		padding: 0; white-space: nowrap;
+	}
+
+	.sort-btn {
+		display: inline-flex; align-items: center; gap: 4px;
+		width: 100%; padding: 8px 10px;
+		background: none; border: none; cursor: pointer; font: inherit;
+		font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.04em; color: var(--text-tertiary); text-align: left;
+		transition: color var(--duration-fast) var(--ease-out);
+	}
+	.sort-btn:hover { color: var(--text-primary); }
+	.sort-btn.sorted { color: var(--accent-indigo); }
+	.sort-arrow { font-size: 0.55rem; }
+
+	.work-table tbody tr { border-bottom: 1px solid var(--glass-border); }
+	.work-table tbody tr:last-child { border-bottom: none; }
+	.work-table tbody tr:hover { background: var(--bg-elevated); }
+	.work-table td { padding: 7px 10px; vertical-align: middle; }
+
+	/* Done rows step back so open work reads first; the critical path keeps the
+	   same red marker it has in the chain and the graph. */
+	.work-table tbody tr.row-done { opacity: 0.55; }
+	.work-table tbody tr.on-critical td:first-child { box-shadow: inset 3px 0 0 var(--accent-rose); }
+
+	.col-expand { width: 26px; }
+	.col-id { width: 64px; }
+	.col-id a {
+		font-size: 0.72rem; font-weight: 700; color: var(--text-tertiary);
+		font-variant-numeric: tabular-nums; text-decoration: none;
+	}
+	.col-id a:hover { color: var(--accent-indigo); }
+
+	.col-title { max-width: 0; width: 45%; }
+	.title-link {
+		display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+		text-decoration: none; color: var(--text-primary); vertical-align: middle;
+	}
+	.title-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.title-link:hover .title-text { color: var(--accent-indigo); }
+
+	.col-board { width: 130px; }
+	.board-link {
+		font-size: 0.74rem; color: var(--text-secondary); text-decoration: none;
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block;
+	}
+	.board-link:hover { color: var(--accent-indigo); }
+
+	.col-col { width: 96px; font-size: 0.74rem; color: var(--text-tertiary); white-space: nowrap; }
+	.col-num { width: 82px; text-align: center; font-variant-numeric: tabular-nums; }
+	.dash { color: var(--text-tertiary); opacity: 0.5; }
+	.col-state { width: 96px; }
+	.col-actions { width: 34px; }
+
+	.state-chip {
+		display: inline-block; padding: 1px 8px; border-radius: var(--radius-full);
+		font-size: 0.64rem; font-weight: 700; white-space: nowrap;
+	}
+	.state-ready {
+		background: rgba(99, 102, 241, 0.12); color: #818cf8;
+		border: 1px solid rgba(99, 102, 241, 0.28);
+	}
+	.state-blocked {
+		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
+		border: 1px solid rgba(245, 158, 11, 0.3);
+	}
+	.state-done {
+		background: rgba(16, 185, 129, 0.12); color: var(--accent-emerald);
+		border: 1px solid rgba(16, 185, 129, 0.25);
+	}
+
+	.expander {
+		width: 20px; height: 20px; padding: 0;
+		display: flex; align-items: center; justify-content: center;
+		background: none; border: none; cursor: pointer; font: inherit;
+		font-size: 0.7rem; color: #f59e0b; border-radius: var(--radius-sm);
+		transition: transform var(--duration-fast) var(--ease-out);
+	}
+	.expander:hover { background: rgba(245, 158, 11, 0.15); }
+	.expander.open { transform: rotate(90deg); }
+
+	/* Subtask rows sit under their card, indented, and slightly recessed so a
+	   card row still reads as the top-level thing. */
+	.work-table tbody tr.is-subtask { background: rgba(139, 92, 246, 0.035); }
+	.work-table tbody tr.is-subtask:hover { background: rgba(139, 92, 246, 0.08); }
+	.col-title.indented { padding-left: 26px; }
+	.sub-id { color: #a78bfa; font-size: 0.8rem; }
+	.kind-tag {
+		display: inline-block; padding: 0 6px; border-radius: var(--radius-full);
+		font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+		background: rgba(139, 92, 246, 0.12); color: #a78bfa;
+		border: 1px solid rgba(139, 92, 246, 0.25);
+	}
+
+	.blocker-row { background: rgba(245, 158, 11, 0.04); }
+	.blocker-row td { padding: 4px 10px 8px; }
+
+	@media (max-width: 900px) {
+		/* Board and column are the first things worth losing on a narrow screen —
+		   id, title and state are what the table is actually for. */
+		.col-board, .col-col { display: none; }
+	}
+
 	/* ─── Card lists ───────────────────────────────────────────────────── */
 
 	.card-list { display: flex; flex-direction: column; gap: 4px; }
@@ -827,6 +1424,21 @@
 		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
 		background: var(--bg-surface);
 	}
+
+	/* Subtask nodes: smaller, indented visually by their shorter box, and
+	   dashed-free so they read as 'inside' rather than 'elsewhere'. */
+	.node-subtask rect { stroke-dasharray: none; }
+	.node-sub-title { font-size: 10.5px; fill: var(--text-primary); }
+
+	.sub-toggle { cursor: pointer; }
+	.sub-toggle rect {
+		fill: rgba(139, 92, 246, 0.16); stroke: rgba(139, 92, 246, 0.45); stroke-width: 1;
+	}
+	.sub-toggle text {
+		font-size: 9.5px; font-weight: 700; fill: #a78bfa;
+		font-family: var(--font-family); pointer-events: none;
+	}
+	.sub-toggle:hover rect { fill: rgba(139, 92, 246, 0.3); }
 
 	.node-link { text-decoration: none; }
 	.node rect {

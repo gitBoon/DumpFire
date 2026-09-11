@@ -229,6 +229,35 @@ export const webhooks = sqliteTable('webhooks', {
 // `cardId` is the card that is BLOCKED; `dependsOnCardId` is its BLOCKER.
 // A unique index on the pair (migration 0042) enforces one row per direction.
 
+/**
+ * Dependencies between any two pieces of work — card→card, subtask→subtask, or
+ * either mixed pair. One polymorphic table so the planning engine walks a single
+ * graph regardless of node type; `*Type` is 'card' or 'subtask', and the BLOCKED
+ * end waits on the BLOCKER end.
+ *
+ * The polymorphic ids carry no foreign key, so deleting a card or subtask must
+ * clear its edges in code (see `removeWorkNodeEdges` in planning.ts).
+ */
+export const workDependencies = sqliteTable('work_dependencies', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	blockedType: text('blocked_type').notNull().default('card'),
+	blockedId: integer('blocked_id').notNull(),
+	blockerType: text('blocker_type').notNull().default('card'),
+	blockerId: integer('blocker_id').notNull(),
+	createdByUserId: integer('created_by_user_id').references(() => users.id),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export type WorkDependency = typeof workDependencies.$inferSelect;
+
+/**
+ * Superseded by `workDependencies` in migration 0043, which carried every row
+ * across as a (card, card) pair. Left in place rather than dropped so the
+ * ordering decisions recorded before the change are recoverable; nothing reads
+ * it any more.
+ */
 export const cardDependencies = sqliteTable('card_dependencies', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	cardId: integer('card_id')
