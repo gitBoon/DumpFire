@@ -87,6 +87,20 @@
 	 * date is done, not late, and flagging it red would be nagging about
 	 * something nobody can act on.
 	 */
+	/**
+	 * Everything in the goal is done, but it has not been closed.
+	 *
+	 * Closing stays a deliberate act — all the cards you thought of being done is
+	 * not the same as the goal being delivered, and cards can still be added — so
+	 * nothing auto-closes. But "Open" next to 23/23 reads as a bug, so the chip
+	 * says what the state actually is and the Close button steps forward.
+	 */
+	const readyToClose = $derived(
+		milestone.status === 'open' &&
+			summary.progress.total > 0 &&
+			summary.progress.done === summary.progress.total
+	);
+
 	const targetOverdue = $derived.by(() => {
 		if (!milestone.targetDate) return false;
 		if (summary.progress.total > 0 && summary.progress.done === summary.progress.total) return false;
@@ -550,8 +564,14 @@
 					{milestone.name}
 				</h1>
 			{/if}
-			<span class="status-chip" class:closed={milestone.status !== 'open'} class:open={milestone.status === 'open'}>
-				{milestone.status === 'open' ? 'Open' : 'Closed'}
+			<span
+				class="status-chip"
+				class:open={milestone.status === 'open' && !readyToClose}
+				class:ready={readyToClose}
+				class:closed={milestone.status !== 'open'}
+				title={readyToClose ? 'Every card in this goal is complete — close it when you are satisfied it is delivered' : ''}
+			>
+				{#if readyToClose}Ready to close{:else if milestone.status === 'open'}Open{:else}Closed{/if}
 			</span>
 		</div>
 
@@ -605,7 +625,7 @@
 				PDF
 			</a>
 
-			<button class="hdr-btn" onclick={toggleStatus} disabled={busy}>
+			<button class="hdr-btn" class:ready={readyToClose} onclick={toggleStatus} disabled={busy}>
 				{milestone.status === 'open' ? 'Close' : 'Reopen'}
 			</button>
 
@@ -1095,6 +1115,15 @@
 	.status-chip.closed {
 		background: rgba(136, 136, 170, 0.12); color: var(--text-tertiary);
 		border: 1px solid rgba(136, 136, 170, 0.25);
+	}
+	.status-chip.ready {
+		background: rgba(99, 102, 241, 0.14); color: #818cf8;
+		border: 1px solid rgba(99, 102, 241, 0.3); cursor: help;
+	}
+	/* When there is nothing left to do, closing is the obvious next action. */
+	.hdr-btn.ready {
+		background: rgba(99, 102, 241, 0.14); color: #818cf8;
+		border-color: rgba(99, 102, 241, 0.35);
 	}
 	.status-chip.open {
 		background: rgba(16, 185, 129, 0.12); color: var(--accent-emerald);
