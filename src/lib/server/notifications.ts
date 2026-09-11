@@ -643,6 +643,53 @@ export async function notifyRequesterProgress(event: RequesterProgressEvent): Pr
 	);
 }
 
+// ─── Dependency Notifications ───────────────────────────────────────────────
+
+/**
+ * Tell a card's assignees that the last thing blocking it just finished.
+ *
+ * This is the whole point of recording dependencies for a small team: nobody
+ * has to poll the board to notice that their turn came round. Uses the
+ * `email_moved` preference rather than a new toggle — being unblocked is a
+ * column change on somebody else's card, and a user who muted moves does not
+ * want this either.
+ */
+export function notifyCardUnblocked(
+	boardId: number,
+	cardId: number,
+	cardTitle: string,
+	completedCardId: number,
+	completedCardTitle: string,
+	completerName: string,
+	baseUrl: string
+): void {
+	if (!isSmtpConfigured()) return;
+
+	const assignees = filterRecipientsByPref(getAssigneeEmails(cardId), 'email_moved');
+	if (assignees.length === 0) return;
+
+	const boardName = getBoardName(boardId);
+	const cardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
+
+	const html = emailTemplate('Ready to start', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #10b981;">
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
+			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">
+				Nothing is blocking this card any more — <strong>${esc(completerName)}</strong> completed
+				#${completedCardId} <strong>${esc(completedCardTitle)}</strong>, which was the last one.
+			</p>
+			<p style="margin: 4px 0 16px; font-size: 12px; color: #64748b;">Board: ${esc(boardName)}</p>
+			<a href="${cardUrl}" style="display: inline-block; padding: 8px 16px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a>
+		</div>
+	`);
+
+	for (const a of assignees) {
+		sendEmail(a.email, `Unblocked: ${cardTitle}`, html).catch(err =>
+			log.error(`Unblock notification failed for ${a.email}`, err)
+		);
+	}
+}
+
 // ─── @Mention Notifications ─────────────────────────────────────────────────
 
 /**

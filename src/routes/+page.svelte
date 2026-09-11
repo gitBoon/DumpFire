@@ -550,6 +550,16 @@
 				</svg>
 				Reports
 			</a>
+			<a href="/plan" class="nav-pill" id="plan-link">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+					<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+					<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+					<path d="M5.2 7.1L6.4 4.9M9.6 4.9l1.2 2.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+					<path d="M5.3 8.9l5.4 2.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
+				</svg>
+				Planning
+			</a>
 			<a href="/graph" class="nav-pill" id="graph-link">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 					<circle cx="4" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>

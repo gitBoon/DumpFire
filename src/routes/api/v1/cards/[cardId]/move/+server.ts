@@ -7,6 +7,7 @@ import { emit } from '$lib/server/events';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
 import { logActivity } from '$lib/server/logActivity';
 import { notifyRequesterProgress } from '$lib/server/notifications';
+import { applyUnblockEffects } from '$lib/server/planning';
 import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
@@ -233,6 +234,11 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 				userEmoji: locals.user.emoji || '\ud83d\udc64'
 			});
 		}
+	}
+
+	// Anything that was waiting on this card may now be startable.
+	if (isMovingColumn && isCompleteColumn) {
+		applyUnblockEffects(cardId, locals.user, resolveBaseUrl(request, url));
 	}
 
 	// Notify the original requester about progress (both same-board and cross-board)

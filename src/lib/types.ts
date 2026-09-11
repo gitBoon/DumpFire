@@ -60,7 +60,31 @@ export type CardType = {
 	assignees: { id: number; username: string; emoji: string }[];
 	archivedAt: string | null;
 	coverUrl: string | null;
+	/** The goal this card belongs to, if any. A card is in at most one milestone. */
+	milestoneId: number | null;
 	requestOrigin?: { requesterName: string; requesterEmail?: string; requestTitle: string } | null;
+};
+
+/** One end of a card dependency, as the board and card modal need it. */
+export type DependencyRefType = {
+	cardId: number;
+	title: string;
+	boardId: number;
+	boardName: string;
+	columnName: string;
+	priority: string;
+	/** True when this end sits in a Complete column, so it no longer blocks. */
+	resolved: boolean;
+};
+
+/** A milestone as the board and card modal need it (no derived planning data). */
+export type MilestoneType = {
+	id: number;
+	boardId: number | null;
+	name: string;
+	description: string;
+	targetDate: string | null;
+	status: string;
 };
 
 /** A label that can be attached to cards for tagging/filtering. */

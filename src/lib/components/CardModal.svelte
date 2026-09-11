@@ -13,7 +13,7 @@
 	import { highlightMentions } from '$lib/utils/mentions';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import type { CardType, CategoryType, LabelType, SubtaskType } from '$lib/types';
+	import type { CardType, CategoryType, LabelType, SubtaskType, DependencyRefType, MilestoneType } from '$lib/types';
 
 	let {
 		card = null,
@@ -27,7 +27,8 @@
 		onCreateSubBoard,
 		onDeleteSubBoard,
 		onLinkSubBoard,
-		availableBoards = []
+		availableBoards = [],
+		milestones = []
 	}: {
 		card: CardType | null;
 		categories: CategoryType[];
@@ -41,6 +42,7 @@
 		onDeleteSubBoard?: (boardId: number) => void;
 		onLinkSubBoard?: (boardId: number) => void;
 		availableBoards?: { id: number; name: string; emoji: string }[];
+		milestones?: MilestoneType[];
 	} = $props();
 
 	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
@@ -457,8 +459,137 @@
 	let currentUser = $derived($page.data.user);
 
 	onMount(() => {
-		if (card) loadComments();
+		if (card) {
+			loadComments();
+			loadDependencies();
+		}
 	});
+
+	// ─── Dependencies & milestone ────────────────────────────────────────────
+	//
+	// The two planning facts that are recorded by hand. Everything derived from
+	// them (critical path, what is startable) lives in the planning view at
+	// /plan — this section only edits the raw facts.
+
+	let blockedBy = $state<DependencyRefType[]>([]);
+	let blocks = $state<DependencyRefType[]>([]);
+	let depsLoading = $state(false);
+	let depError = $state('');
+
+	/** Which list the picker is adding to: this card waits on X, or X waits on this card. */
+	let pickerMode = $state<null | 'blocked-by' | 'blocks'>(null);
+	let pickerQuery = $state('');
+	let pickerResults = $state<{ id: number; title: string; boardId: number; boardName: string; boardEmoji: string; columnName: string; priority: string }[]>([]);
+	let pickerSearching = $state(false);
+	let pickerTimer: ReturnType<typeof setTimeout> | null = null;
+
+	// svelte-ignore state_referenced_locally
+	let milestoneId = $state<number | null>(card?.milestoneId ?? null);
+	let milestoneSaving = $state(false);
+
+	async function loadDependencies() {
+		if (!card) return;
+		depsLoading = true;
+		try {
+			const res = await fetch(`/api/cards/${card.id}/dependencies`);
+			if (res.ok) {
+				const data = await res.json();
+				blockedBy = data.blockedBy;
+				blocks = data.blocks;
+			}
+		} finally {
+			depsLoading = false;
+		}
+	}
+
+	/**
+	 * Search by "#id" or title across every board the user can see. Debounced —
+	 * the search runs on every keystroke otherwise, and a title search scans
+	 * cards across the whole workspace.
+	 */
+	function onPickerInput() {
+		if (pickerTimer) clearTimeout(pickerTimer);
+		const q = pickerQuery.trim();
+		if (q.length === 0) {
+			pickerResults = [];
+			return;
+		}
+		pickerSearching = true;
+		pickerTimer = setTimeout(async () => {
+			try {
+				const res = await fetch(`/api/cards/search?q=${encodeURIComponent(q)}&exclude=${card?.id ?? 0}`);
+				pickerResults = res.ok ? await res.json() : [];
+			} finally {
+				pickerSearching = false;
+			}
+		}, 250);
+	}
+
+	async function addDependency(otherCardId: number) {
+		if (!card || !pickerMode) return;
+		depError = '';
+		const body = pickerMode === 'blocked-by' ? { dependsOnCardId: otherCardId } : { blocksCardId: otherCardId };
+		const res = await fetch(`/api/cards/${card.id}/dependencies`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		});
+		if (res.ok) {
+			const data = await res.json();
+			blockedBy = data.blockedBy;
+			blocks = data.blocks;
+			pickerMode = null;
+			pickerQuery = '';
+			pickerResults = [];
+		} else {
+			// A rejected cycle names the loop it found, which is the whole value of
+			// the check — surface the server's message rather than a generic error.
+			const err = await res.json().catch(() => ({}));
+			depError = err.message || 'Could not add that dependency';
+		}
+	}
+
+	async function removeDependency(otherCardId: number, mode: 'blocked-by' | 'blocks') {
+		if (!card) return;
+		depError = '';
+		const body = mode === 'blocked-by' ? { dependsOnCardId: otherCardId } : { blocksCardId: otherCardId };
+		const res = await fetch(`/api/cards/${card.id}/dependencies`, {
+			method: 'DELETE',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body)
+		});
+		if (res.ok) {
+			const data = await res.json();
+			blockedBy = data.blockedBy;
+			blocks = data.blocks;
+		}
+	}
+
+	async function saveMilestone(next: number | null) {
+		if (!card) return;
+		milestoneSaving = true;
+		depError = '';
+		try {
+			const target = next ?? milestoneId;
+			if (target === null) return;
+			const res = await fetch(`/api/milestones/${target}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ cardId: card.id, attach: next !== null })
+			});
+			if (res.ok) {
+				milestoneId = next;
+			} else {
+				const err = await res.json().catch(() => ({}));
+				depError = err.message || 'Could not change the milestone';
+			}
+		} finally {
+			milestoneSaving = false;
+		}
+	}
+
+	/** How many blockers are still open — what the "Blocked" state actually means. */
+	const openBlockerCount = $derived(blockedBy.filter((d) => !d.resolved).length);
 
 	async function loadComments() {
 		if (!card) return;
@@ -575,6 +706,43 @@
 		dragOver = true;
 	}
 </script>
+
+<!--
+	The dependency picker, shared by both directions. Searches by "#id" or title
+	across every board the user can see, because dependencies are deliberately
+	cross-board — a migration touches several projects and the picker has to
+	reach those cards. Foreign cards show as "Board / column".
+-->
+{#snippet depPicker(placeholder: string)}
+	<div class="dep-picker">
+		<!-- svelte-ignore a11y_autofocus -->
+		<input
+			class="dep-picker-input"
+			type="text"
+			{placeholder}
+			bind:value={pickerQuery}
+			oninput={onPickerInput}
+			onkeydown={(e) => { if (e.key === 'Escape') { pickerMode = null; pickerQuery = ''; pickerResults = []; } }}
+			autofocus
+		/>
+		<button class="dep-picker-cancel" title="Cancel" onclick={() => { pickerMode = null; pickerQuery = ''; pickerResults = []; }}>✕</button>
+	</div>
+	{#if pickerSearching}
+		<p class="dep-empty">Searching…</p>
+	{:else if pickerQuery.trim() && pickerResults.length === 0}
+		<p class="dep-empty">No cards match “{pickerQuery.trim()}”.</p>
+	{:else if pickerResults.length > 0}
+		<div class="dep-results">
+			{#each pickerResults as r}
+				<button class="dep-result" onclick={() => addDependency(r.id)}>
+					<span class="dep-id">#{r.id}</span>
+					<span class="dep-title">{r.title}</span>
+					<span class="dep-where">{r.boardEmoji} {r.boardName} / {r.columnName}</span>
+				</button>
+			{/each}
+		</div>
+	{/if}
+{/snippet}
 
 <svelte:window onkeydown={handleKeydown} />
 
@@ -1034,6 +1202,103 @@
 
 			{#if showAdvanced}
 			<div class="advanced-content">
+				<!--
+					Planning: the two facts recorded by hand — what blocks this card,
+					and which goal it belongs to. Everything derived from them lives in
+					the planning view at /plan.
+				-->
+				{#if card}
+				<div class="form-group">
+					<label for="dep-milestone">Milestone</label>
+					<div class="milestone-row">
+						<select
+							id="dep-milestone"
+							class="milestone-select"
+							value={milestoneId ?? ''}
+							disabled={milestoneSaving}
+							onchange={(e) => {
+								const v = (e.target as HTMLSelectElement).value;
+								saveMilestone(v === '' ? null : Number(v));
+							}}
+						>
+							<option value="">No milestone</option>
+							{#each milestones as m}
+								<option value={m.id}>{m.name}{m.boardId === null ? ' (cross-board)' : ''}</option>
+							{/each}
+						</select>
+						{#if milestoneId}
+							<a class="milestone-plan-link" href="/plan/{milestoneId}" target="_blank" rel="noopener">Open plan ↗</a>
+						{/if}
+					</div>
+				</div>
+
+				<div class="form-group">
+					<label id="deps-label">Dependencies</label>
+					{#if depError}
+						<div class="dep-error">{depError}</div>
+					{/if}
+
+					<div class="dep-block" aria-labelledby="deps-label">
+						<div class="dep-heading">
+							<span class="dep-heading-label">Blocked by</span>
+							{#if openBlockerCount > 0}
+								<span class="dep-open-count">{openBlockerCount} still open</span>
+							{/if}
+						</div>
+						{#if depsLoading}
+							<p class="dep-empty">Loading…</p>
+						{:else if blockedBy.length === 0}
+							<p class="dep-empty">Nothing is blocking this card.</p>
+						{:else}
+							<div class="dep-list">
+								{#each blockedBy as d}
+									<div class="dep-row" class:is-resolved={d.resolved}>
+										<a class="dep-link" href="/board/{d.boardId}?card={d.cardId}" title={d.title}>
+											<span class="dep-id">#{d.cardId}</span>
+											<span class="dep-title">{d.title}</span>
+											<span class="dep-where">{#if d.boardId !== boardId}{d.boardName} / {/if}{d.columnName}</span>
+										</a>
+										<button class="dep-remove" title="Remove this dependency" onclick={() => removeDependency(d.cardId, 'blocked-by')}>✕</button>
+									</div>
+								{/each}
+							</div>
+						{/if}
+						{#if pickerMode === 'blocked-by'}
+							{@render depPicker('Search the card this one waits on…')}
+						{:else}
+							<button class="btn-ghost dep-add-btn" onclick={() => { pickerMode = 'blocked-by'; pickerQuery = ''; pickerResults = []; depError = ''; }}>+ Add a blocker</button>
+						{/if}
+					</div>
+
+					<div class="dep-block">
+						<div class="dep-heading">
+							<span class="dep-heading-label">Blocks</span>
+						</div>
+						{#if blocks.length === 0}
+							<p class="dep-empty">This card is not holding anything up.</p>
+						{:else}
+							<div class="dep-list">
+								{#each blocks as d}
+									<div class="dep-row" class:is-resolved={d.resolved}>
+										<a class="dep-link" href="/board/{d.boardId}?card={d.cardId}" title={d.title}>
+											<span class="dep-id">#{d.cardId}</span>
+											<span class="dep-title">{d.title}</span>
+											<span class="dep-where">{#if d.boardId !== boardId}{d.boardName} / {/if}{d.columnName}</span>
+										</a>
+										<button class="dep-remove" title="Remove this dependency" onclick={() => removeDependency(d.cardId, 'blocks')}>✕</button>
+									</div>
+								{/each}
+							</div>
+						{/if}
+						{#if pickerMode === 'blocks'}
+							{@render depPicker('Search the card that waits on this one…')}
+						{:else}
+							<button class="btn-ghost dep-add-btn" onclick={() => { pickerMode = 'blocks'; pickerQuery = ''; pickerResults = []; depError = ''; }}>+ Add a card this blocks</button>
+						{/if}
+					</div>
+				</div>
+				{/if}
+
 				<!-- Sub-board -->
 				<div class="form-group">
 					<label>Sub-board</label>
@@ -1484,6 +1749,131 @@
 		border-top: 1px solid var(--glass-border);
 		padding-top: var(--space-lg);
 		margin-bottom: var(--space-lg);
+	}
+
+	/* ─── Dependencies & milestone ─────────────────────────────────────── */
+
+	.milestone-row { display: flex; gap: var(--space-sm); align-items: center; }
+
+	.milestone-select {
+		flex: 1; min-width: 0;
+		padding: 7px 10px; background: var(--bg-surface);
+		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+		color: var(--text-primary); font-family: var(--font-family); font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.milestone-select:focus { outline: none; border-color: var(--accent-indigo); }
+	.milestone-select:disabled { opacity: 0.6; cursor: wait; }
+
+	.milestone-plan-link {
+		font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+		color: #a78bfa; text-decoration: none;
+	}
+	.milestone-plan-link:hover { text-decoration: underline; }
+
+	.dep-block { margin-bottom: var(--space-md); }
+	.dep-block:last-child { margin-bottom: 0; }
+
+	.dep-heading {
+		display: flex; align-items: baseline; gap: var(--space-sm);
+		margin-bottom: 6px;
+	}
+	.dep-heading-label {
+		font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.05em; color: var(--text-tertiary);
+	}
+	.dep-open-count {
+		font-size: 0.66rem; font-weight: 700; padding: 1px 7px;
+		border-radius: var(--radius-full);
+		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
+		border: 1px solid rgba(245, 158, 11, 0.3);
+	}
+
+	.dep-empty { margin: 0 0 6px; font-size: 0.75rem; color: var(--text-tertiary); }
+
+	.dep-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+
+	.dep-row {
+		display: flex; align-items: center; gap: 4px;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-sm); padding: 5px 6px 5px 9px;
+	}
+	/* A resolved end still shows — it is a record of the ordering decision, not
+	   noise — but it steps back so the open ones read first. */
+	.dep-row.is-resolved { opacity: 0.5; }
+	.dep-row.is-resolved .dep-title { text-decoration: line-through; }
+
+	.dep-link {
+		display: flex; align-items: baseline; gap: 6px;
+		flex: 1; min-width: 0; text-decoration: none; color: inherit;
+	}
+	.dep-link:hover .dep-title { color: var(--accent-indigo); }
+
+	.dep-id {
+		font-size: 0.68rem; font-weight: 700; color: var(--text-tertiary);
+		font-variant-numeric: tabular-nums; flex-shrink: 0;
+	}
+	.dep-title {
+		font-size: 0.78rem; color: var(--text-primary);
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+		transition: color var(--duration-fast) var(--ease-out);
+	}
+	.dep-where {
+		margin-left: auto; flex-shrink: 0;
+		font-size: 0.66rem; color: var(--text-tertiary); white-space: nowrap;
+	}
+
+	.dep-remove {
+		flex-shrink: 0; width: 20px; height: 20px; padding: 0;
+		display: flex; align-items: center; justify-content: center;
+		background: none; border: none; cursor: pointer; font: inherit;
+		font-size: 0.7rem; color: var(--text-tertiary);
+		border-radius: var(--radius-sm);
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.dep-remove:hover { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); }
+
+	.dep-add-btn { font-size: 0.72rem; padding: 4px 10px; }
+
+	.dep-picker { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
+
+	.dep-picker-input {
+		flex: 1; min-width: 0;
+		padding: 6px 10px; background: var(--bg-surface);
+		border: 1px solid var(--accent-indigo); border-radius: var(--radius-sm);
+		color: var(--text-primary); font-family: var(--font-family); font-size: 0.78rem;
+	}
+	.dep-picker-input:focus { outline: none; }
+
+	.dep-picker-cancel {
+		flex-shrink: 0; width: 24px; height: 24px; padding: 0;
+		display: flex; align-items: center; justify-content: center;
+		background: none; border: none; cursor: pointer; font: inherit;
+		font-size: 0.75rem; color: var(--text-tertiary); border-radius: var(--radius-sm);
+	}
+	.dep-picker-cancel:hover { background: var(--bg-elevated); color: var(--text-primary); }
+
+	.dep-results {
+		display: flex; flex-direction: column; gap: 2px;
+		max-height: 220px; overflow-y: auto; margin-bottom: 6px;
+		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
+		padding: 3px;
+	}
+
+	.dep-result {
+		display: flex; align-items: baseline; gap: 6px;
+		width: 100%; text-align: left; padding: 5px 8px;
+		background: none; border: none; cursor: pointer; font: inherit;
+		border-radius: var(--radius-sm);
+		transition: background var(--duration-fast) var(--ease-out);
+	}
+	.dep-result:hover { background: var(--bg-elevated); }
+
+	.dep-error {
+		margin-bottom: 8px; padding: 7px 10px;
+		font-size: 0.74rem; line-height: 1.4;
+		background: rgba(244, 63, 94, 0.1); color: var(--accent-rose);
+		border: 1px solid rgba(244, 63, 94, 0.25); border-radius: var(--radius-sm);
 	}
 
 	.subboard-list {

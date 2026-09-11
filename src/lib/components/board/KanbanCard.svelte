@@ -3,7 +3,8 @@
 
   Renders the card's title, description preview, category colour strip,
   priority badge, subtask progress ring, sub-board badges, due date badge,
-  labels, drag handle, pin indicator, and selection checkbox.
+  labels, drag handle, pin indicator, selection checkbox, and the blocked /
+  milestone chips that come from the planning view's two recorded facts.
 -->
 <script lang="ts">
   import type { CardType, CategoryType, LabelType } from '$lib/types';
@@ -21,6 +22,9 @@
    * @prop selectionMode — Whether bulk selection mode is active
    * @prop isSelected — Whether this card is currently selected
    * @prop matchesSearch — Whether this card matches the search query
+   * @prop blockers — Open blockers for this card, from the board loader's
+   *        single-pass blocked state. Empty or absent means nothing is blocking it.
+   * @prop milestoneName — Name of the milestone this card belongs to, if any
    */
   let {
     card,
@@ -32,7 +36,9 @@
     tick,
     selectionMode = false,
     isSelected = false,
-    matchesSearch = true
+    matchesSearch = true,
+    blockers = [],
+    milestoneName = null
   }: {
     card: CardType;
     columnTitle: string;
@@ -44,7 +50,25 @@
     selectionMode: boolean;
     isSelected: boolean;
     matchesSearch: boolean;
+    blockers?: { id: number; title: string; columnTitle: string; boardName: string; boardId: number }[];
+    milestoneName?: string | null;
   } = $props();
+
+  /**
+   * Tooltip listing every blocker with the column it is sitting in — "Blocked"
+   * on its own tells you to stop but not what to go and do.
+   */
+  const blockerTooltip = $derived(
+    blockers.length === 0
+      ? ''
+      : ['Blocked by']
+          .concat(
+            blockers.map(
+              (b) => `#${b.id} ${b.title} — ${b.columnTitle}${b.boardName ? ` (${b.boardName})` : ''}`
+            )
+          )
+          .join('\n')
+  );
 
   /** Compute subtask progress for the progress ring. */
   const progress = $derived(subtaskProgress(card));
@@ -108,6 +132,18 @@
   {/if}
   <!-- Metadata row: priority, category, subtask progress, sub-boards, due date, age -->
   <div class="card-meta">
+    {#if blockers.length > 0}
+      <span class="blocked-badge" title={blockerTooltip}>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+          <circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+        Blocked{#if blockers.length > 1}&nbsp;({blockers.length}){/if}
+      </span>
+    {/if}
+    {#if milestoneName}
+      <span class="milestone-badge" title="Milestone: {milestoneName}">🎯 {milestoneName}</span>
+    {/if}
     <span class="priority-badge priority-{card.priority}">
       {getPriorityLabel(card.priority)}
     </span>
@@ -229,6 +265,26 @@
   .due-badge.due-overdue { background: rgba(239, 68, 68, 0.12); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.25); }
   .due-badge.due-today { background: rgba(245, 158, 11, 0.12); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.25); }
   .due-badge.due-soon { background: rgba(234, 179, 8, 0.08); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.15); }
+
+  /* Amber, not red: a blocked card is waiting, not broken. On Hold already
+     owns red on this board and the two states must stay distinguishable. */
+  .blocked-badge {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 1px 8px; border-radius: var(--radius-full);
+    font-size: 0.68rem; font-weight: 700; white-space: nowrap;
+    background: rgba(245, 158, 11, 0.14); color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    cursor: help;
+  }
+
+  .milestone-badge {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 1px 8px; border-radius: var(--radius-full);
+    font-size: 0.66rem; font-weight: 600;
+    max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    background: rgba(139, 92, 246, 0.1); color: #a78bfa;
+    border: 1px solid rgba(139, 92, 246, 0.22);
+  }
 
   .subtask-badge {
     display: inline-flex; align-items: center; gap: 3px;

@@ -339,6 +339,26 @@
 		confirmState = { show: true, title, message, confirmText, onConfirm };
 	}
 
+	/**
+	 * Warn when a card that still has open blockers is started anyway.
+	 *
+	 * Deliberately a toast after the fact rather than a modal that blocks the
+	 * drop: the card says moving a blocked card to In Progress stays allowed, and
+	 * a confirmation dialog mid-drag would make the common case (the graph is out
+	 * of date, you know what you are doing) annoying enough to stop recording
+	 * dependencies at all.
+	 */
+	function warnIfStillBlocked(card: CardType, toColumnName: string) {
+		if (isCompleteColumn({ title: toColumnName } as ColumnType)) return;
+		if (toColumnName.toLowerCase() === 'to do') return;
+		const open = blockersFor(card.id);
+		if (open.length === 0) return;
+		toasts.add(
+			`"${card.title}" is still blocked by ${open.map((b) => `#${b.id}`).join(', ')} — moved to ${toColumnName} anyway`,
+			'warning'
+		);
+	}
+
 	// ─── Dropdown & Context Menu ─────────────────────────────────────────────
 
 	let openDropdown = $state<string | null>(null);
@@ -426,6 +446,54 @@
 
 	let searchQuery = $state('');
 	let filterAssigneeId = $state<number | null>(null);
+	let hideBlocked = $state(false);
+
+	/**
+	 * Open dependency blockers per card, computed server-side in one pass by the
+	 * board loader. Named `dependencyBlockers` and not `blockedState` — that name
+	 * is already taken on this page by the completion-blocker modal, which is a
+	 * different kind of "blocked" (incomplete subtasks, not an unfinished card).
+	 */
+	const dependencyBlockers = $derived(
+		(data.blockedState ?? {}) as Record<number, { id: number; title: string; columnTitle: string; boardName: string; boardId: number }[]>
+	);
+
+	const milestoneNameById = $derived(
+		new Map((data.milestones ?? []).map((m: { id: number; name: string }) => [m.id, m.name]))
+	);
+
+	/** Blockers for a card that are still open, or an empty list. */
+	function blockersFor(cardId: number) {
+		return dependencyBlockers[cardId] ?? [];
+	}
+
+	/**
+	 * Tooltip for the Blocked chip. "Blocked" on its own tells you to stop but
+	 * not what to go and do, so every blocker is listed with the column it is
+	 * sitting in, and its board when the blocker lives on a different one.
+	 */
+	function blockerTooltip(cardId: number): string {
+		const open = blockersFor(cardId);
+		if (open.length === 0) return '';
+		return ['Blocked by']
+			.concat(
+				open.map(
+					(b) =>
+						`#${b.id} ${b.title} — ${b.columnTitle}` +
+						(b.boardId !== data.board.id ? ` (${b.boardName})` : '')
+				)
+			)
+			.join('\n');
+	}
+
+	/**
+	 * A card is hidden by the blocked filter only when something is genuinely
+	 * still blocking it — a completed blocker has already dropped out of
+	 * dependencyBlockers server-side, so this never hides startable work.
+	 */
+	function passesBlockedFilter(cardId: number): boolean {
+		return !hideBlocked || blockersFor(cardId).length === 0;
+	}
 
 
 	// ─── Archive Panel ──────────────────────────────────────────────────────────
@@ -581,6 +649,10 @@
 						playMoveSound();
 						logActivity('card_moved', `${entry.card.title} (${entry.fromName} → ${entry.toName})`, entry.card.id);
 					}
+					// Starting something that is still waiting on another card is
+					// allowed — sometimes you know better than the graph — but it
+					// should never happen silently.
+					warnIfStillBlocked(entry.card, entry.toName);
 				}
 				// Check WIP limit on destination column
 				if (result.movedCards.length > 0) {
@@ -749,8 +821,32 @@
 				<option value={u.id}>{u.emoji || '👤'} {u.username}</option>
 			{/each}
 		</select>
+		<button
+			class="blocked-filter-toggle"
+			class:is-on={hideBlocked}
+			onclick={() => (hideBlocked = !hideBlocked)}
+			title="Hide cards that are still waiting on another card"
+		>
+			<svg width="13" height="13" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+				<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
+				<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+			</svg>
+			Hide blocked
+		</button>
 
 		<div class="board-header-right">
+			<!-- Scoped to this board: arriving from a board, the question is about
+			     this board's goals, not every goal in the workspace. -->
+			<a href="/plan?board={data.board.id}" class="btn-ghost" title="Planning — critical path and what is startable for this board">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+					<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+					<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+					<path d="M5.2 7.1L6.4 4.9M9.6 4.9l1.2 2.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+					<path d="M5.3 8.9l5.4 2.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
+				</svg>
+				Planning
+			</a>
 			<button class="btn-ghost" onclick={() => (showAddColumnModal = true)} title="Add column">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 					<rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
@@ -859,7 +955,7 @@
 									{column.title}
 								</h3>
 							{/if}
-							<span class="column-count" class:wip-over={column.wipLimit > 0 && column.cards.length >= column.wipLimit}>{#if searchQuery.trim() || filterAssigneeId !== null}{column.cards.filter(c => matchesSearch(c, searchQuery, boardCategories) && (filterAssigneeId === null || c.assignees?.some(a => a.id === filterAssigneeId))).length}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}{#if column.wipLimit > 0}<span class="wip-limit-label">/{column.wipLimit}</span>{/if}</span>
+							<span class="column-count" class:wip-over={column.wipLimit > 0 && column.cards.length >= column.wipLimit}>{#if searchQuery.trim() || filterAssigneeId !== null || hideBlocked}{column.cards.filter(c => matchesSearch(c, searchQuery, boardCategories) && (filterAssigneeId === null || c.assignees?.some(a => a.id === filterAssigneeId)) && passesBlockedFilter(c.id)).length}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}{#if column.wipLimit > 0}<span class="wip-limit-label">/{column.wipLimit}</span>{/if}</span>
 							{#if columnSorts[column.id] && columnSorts[column.id] !== 'none'}
 								<button class="sort-badge" onclick={() => setColumnSort(column.id, 'none')} title="Clear sort">
 									{getSortLabel(columnSorts[column.id])} ✕
@@ -993,7 +1089,7 @@
 								class="kanban-card"
 								class:card-completed={isCompleteColumn(column)}
 								class:card-on-hold={isOnHoldColumn(column.title)}
-								class:card-hidden={!matchesSearch(card, searchQuery, boardCategories) || (filterAssigneeId !== null && !card.assignees?.some(a => a.id === filterAssigneeId))}
+								class:card-hidden={!matchesSearch(card, searchQuery, boardCategories) || (filterAssigneeId !== null && !card.assignees?.some(a => a.id === filterAssigneeId)) || !passesBlockedFilter(card.id)}
 								class:card-stale={isStale(card.createdAt) && !isCompleteColumn(column)}
 								class:card-selected={selectedCards.has(card.id)}
 								class:card-pinned={card.pinned}
@@ -1055,6 +1151,24 @@
 									</div>
 								{/if}
 								<div class="card-meta">
+									{#if blockersFor(card.id).length > 0}
+										{@const blockers = blockersFor(card.id)}
+										<span class="blocked-badge" title={blockerTooltip(card.id)}>
+											<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+												<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
+												<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+											</svg>
+											Blocked{#if blockers.length > 1}&nbsp;({blockers.length}){/if}
+										</span>
+									{/if}
+									{#if card.milestoneId && milestoneNameById.get(card.milestoneId)}
+										<a
+											href="/plan/{card.milestoneId}"
+											class="milestone-badge"
+											title="Milestone: {milestoneNameById.get(card.milestoneId)} — open the planning view"
+											onclick={(e) => e.stopPropagation()}
+										>🎯 {milestoneNameById.get(card.milestoneId)}</a>
+									{/if}
 									<span class="priority-badge priority-{card.priority}">
 										{getPriorityLabel(card.priority)}
 									</span>
@@ -1271,6 +1385,7 @@
 		onDeleteSubBoard={editingCard ? (boardId) => deleteSubBoard(boardId) : undefined}
 		onLinkSubBoard={editingCard ? (boardId) => linkSubBoard(editingCard!.id, boardId) : undefined}
 		availableBoards={data.linkableBoards.map(b => ({ id: b.id, name: b.name, emoji: b.emoji || '📋' }))}
+		milestones={data.milestones ?? []}
 	/>
 {/if}
 
@@ -1542,6 +1657,42 @@
 		transition: border-color var(--duration-fast) var(--ease-out);
 	}
 	.assignee-filter:focus { outline: none; border-color: var(--accent-indigo); }
+
+	.blocked-filter-toggle {
+		display: inline-flex; align-items: center; gap: 5px;
+		padding: 6px 12px; background: var(--bg-surface);
+		border: 1px solid var(--glass-border); border-radius: var(--radius-full);
+		color: var(--text-secondary); font-family: var(--font-family);
+		font-size: 0.78rem; font-weight: 600; cursor: pointer; white-space: nowrap;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.blocked-filter-toggle:hover { border-color: rgba(245, 158, 11, 0.4); color: var(--text-primary); }
+	.blocked-filter-toggle.is-on {
+		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
+		border-color: rgba(245, 158, 11, 0.35);
+	}
+
+	/* Amber, not red: a blocked card is waiting, not broken. On Hold already owns
+	   red on this board and the two states have to stay distinguishable. */
+	.blocked-badge {
+		display: inline-flex; align-items: center; gap: 3px;
+		padding: 1px 8px; border-radius: var(--radius-full);
+		font-size: 0.68rem; font-weight: 700; white-space: nowrap;
+		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
+		border: 1px solid rgba(245, 158, 11, 0.3);
+		cursor: help;
+	}
+
+	.milestone-badge {
+		display: inline-flex; align-items: center; gap: 3px;
+		padding: 1px 8px; border-radius: var(--radius-full);
+		font-size: 0.66rem; font-weight: 600; text-decoration: none;
+		max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+		background: rgba(139, 92, 246, 0.1); color: #a78bfa;
+		border: 1px solid rgba(139, 92, 246, 0.22);
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.milestone-badge:hover { background: rgba(139, 92, 246, 0.2); border-color: rgba(139, 92, 246, 0.45); }
 
 	/* Sort badge */
 	.sort-badge {

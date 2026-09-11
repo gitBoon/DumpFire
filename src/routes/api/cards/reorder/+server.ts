@@ -7,6 +7,7 @@ import { canEditBoard } from '$lib/server/board-access';
 import { notifyCardMoved, notifyRequesterProgress } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
+import { applyUnblockEffects } from '$lib/server/planning';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ request, url, locals }) => {
@@ -112,6 +113,9 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 			.set({ completedAt: new Date().toISOString() })
 			.where(eq(cards.id, completedCardId))
 			.run();
+
+		// Anything that was waiting on this card may now be startable.
+		applyUnblockEffects(completedCardId, locals.user, resolveBaseUrl(request, url));
 	}
 
 	if (boardId) {
