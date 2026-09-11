@@ -195,7 +195,7 @@ function getColumnMap(boardIds: number[]): Map<number, ColumnInfo> {
 	return map;
 }
 
-function formatDate(iso: string): string {
+export function formatDate(iso: string): string {
 	if (!iso) return '—';
 	const d = new Date(iso);
 	return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -677,7 +677,12 @@ export function generateCardReport(cardId: number): ReportData | null {
 // ─── PDF Generation ──────────────────────────────────────────────────────────
 
 // Professional colour palette — clean, print-friendly
-const C = {
+/**
+ * The report palette. Exported because the milestone plan export draws with it
+ * too — these PDFs land in the same stakeholder packs, and a second look would
+ * read as coming from somewhere else.
+ */
+export const REPORT_COLORS = {
 	white: '#ffffff',
 	bg: '#f8f9fc',
 	headerBg: '#1e293b',
@@ -705,7 +710,9 @@ const C = {
 	low: '#64748b'
 };
 
-function stripTag(text: string): string {
+const C = REPORT_COLORS;
+
+export function stripTag(text: string): string {
 	if (!text) return '';
 	// AI bookkeeping tags never belong on a stakeholder document
 	return text
@@ -715,7 +722,7 @@ function stripTag(text: string): string {
 		.trim();
 }
 
-function drawSectionTitle(doc: PDFKit.PDFDocument, title: string, x: number, y: number): number {
+export function drawSectionTitle(doc: PDFKit.PDFDocument, title: string, x: number, y: number): number {
 	doc.font('Helvetica-Bold').fontSize(12).fillColor(C.heading)
 		.text(title, x, y);
 	y += 18;
@@ -723,7 +730,7 @@ function drawSectionTitle(doc: PDFKit.PDFDocument, title: string, x: number, y: 
 	return y + 10;
 }
 
-function ensureSpace(doc: PDFKit.PDFDocument, needed: number, y: number): number {
+export function ensureSpace(doc: PDFKit.PDFDocument, needed: number, y: number): number {
 	if (y + needed > doc.page.height - 50) {
 		doc.addPage();
 		return 40;

@@ -711,6 +711,33 @@ A card is in at most one milestone, so attaching replaces whatever it was in bef
 than erroring. A board-scoped milestone will not take a card from another board — make the
 milestone cross-board first, or move the card.
 
+#### Export a Plan as PDF
+
+```http
+GET /api/v1/milestones/{milestoneId}/pdf
+```
+
+Returns the plan as a PDF for a stakeholder pack — the same document the download button on
+the planning view produces. Contains progress, the chain that cannot slip, what can be
+started today with how much each one unblocks, what is waiting and on what, and the full
+list of work in the goal.
+
+Drawn with the same palette and helpers as the board reports, so it belongs in the same
+pack. The `[Claude]` tag is stripped from every title. The dependency graph is drawn only
+when it fits at a readable size; past that the document says how many items and stages
+there are instead of shrinking the picture into something illegible.
+
+`Content-Disposition` names the file after the goal and the date
+(`plan-azure-vm-migration-2026-09-11.pdf`), so a saved copy is still identifiable later.
+
+Access is governed by the same rule as reading the plan — exporting it is reading it.
+
+```powershell
+.\.agent\scripts\dumpfire-api.ps1 -Action milestone-pdf -ApiKey $KEY -MilestoneId 4 -OutFile plan.pdf
+```
+
+---
+
 #### Milestone Summary
 
 ```http

@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.3
+version: 1.4
 status: As-Built
 date: 2026-09-11
 tags:
@@ -455,6 +455,25 @@ Use `-NoGraph`, never `-Compact`: the wrapper's `-Compact` trims responses to
 See [External API Reference](api-reference.md) and `.agent/workflows/dumpfire-api-reference.md`
 for the full endpoint contracts.
 
+## Getting a plan out of the app
+
+A plan is only useful if it can leave the screen. `GET /api/v1/milestones/:id/pdf` (and the
+download button on the milestone view) produces the plan as a PDF for a stakeholder pack:
+progress, the chain that cannot slip, what can be started today, what is waiting and on
+what, and the full list of work.
+
+It is drawn with the palette and helpers exported from `reports.ts` rather than its own
+look. These documents land in the same packs as the board reports, and a second visual
+language would read as coming from somewhere else. The `[Claude]` tag is stripped from
+every title — these go to people who do not need that bookkeeping.
+
+The dependency graph is drawn **only when it fits at a readable size**. Past that, the
+document prints how many items and stages there are and points at the planning screen. A
+picture nobody can read is worse than a sentence admitting it does not fit.
+
+Because it takes the same `MilestoneSummary` the screen renders, the document and the view
+cannot disagree about what the critical path is.
+
 ## Files
 
 | File | Responsibility |
@@ -468,6 +487,7 @@ for the full endpoint contracts.
 | `src/routes/api/v1/milestones/**` | Bearer-token API |
 | `src/routes/api/milestones/**`, `src/routes/api/cards/[id]/dependencies` | Session-cookie siblings for the UI |
 | `src/routes/plan/**` | The planning view |
+| `src/lib/server/milestone-report.ts` | The plan as a PDF, in the board-report house style |
 | `src/lib/components/CardModal.svelte` | Dependency editor and milestone picker |
 
 ## Out of scope
