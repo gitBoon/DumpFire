@@ -33,6 +33,7 @@
 		targetDate: string | null;
 		status: string;
 		cardCount: number;
+		readyToClose?: boolean;
 		doneCount: number;
 		percent: number;
 		scope: string;
@@ -54,7 +55,12 @@
 						: (m.boardName ?? 'Unknown board'),
 				daysLeft: days,
 				// Only late while work remains — a goal finished after its date is done.
-				overdue: days !== null && days < 0 && m.doneCount < m.cardCount
+				overdue: days !== null && days < 0 && m.doneCount < m.cardCount,
+				// Everything carded is done, but the goal has not been closed. Closing
+				// stays a deliberate act — all the cards you thought of being done is
+				// not the same as the goal being delivered, and more can still be
+				// added — but "Open" next to 23/23 reads as a bug, so say what it is.
+				readyToClose: m.status === 'open' && m.cardCount > 0 && m.doneCount === m.cardCount
 			};
 		})
 	);
@@ -362,8 +368,14 @@
 									</div>
 								</td>
 								<td class="col-status">
-									<span class="status-chip" class:open={m.status === 'open'} class:closed={m.status !== 'open'}>
-										{m.status === 'open' ? 'Open' : 'Closed'}
+									<span
+										class="status-chip"
+										class:open={m.status === 'open' && !m.readyToClose}
+										class:ready={m.readyToClose}
+										class:closed={m.status !== 'open'}
+										title={m.readyToClose ? 'Every card in this goal is complete — close it when you are satisfied it is delivered' : ''}
+									>
+										{#if m.readyToClose}Ready{:else if m.status === 'open'}Open{:else}Closed{/if}
 									</span>
 								</td>
 							</tr>
@@ -648,6 +660,11 @@
 	.status-chip.open {
 		background: rgba(16, 185, 129, 0.12); color: var(--accent-emerald);
 		border: 1px solid rgba(16, 185, 129, 0.25);
+	}
+	.status-chip.ready {
+		background: rgba(99, 102, 241, 0.14); color: #818cf8;
+		border: 1px solid rgba(99, 102, 241, 0.3);
+		cursor: help;
 	}
 	.status-chip.closed {
 		background: rgba(136, 136, 170, 0.12); color: var(--text-tertiary);
