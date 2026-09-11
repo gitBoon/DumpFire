@@ -5,6 +5,9 @@ import { eq, inArray, isNull, and } from 'drizzle-orm';
 import { canEditBoard } from '$lib/server/board-access';
 import { requireMilestone, MilestoneError } from '$lib/server/milestones';
 import { emit } from '$lib/server/events';
+import { getMilestoneSummary } from '$lib/server/planning';
+import { notifyPlanCreated } from '$lib/server/notifications';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 interface CardRow {
@@ -54,7 +57,7 @@ function parseCardIds(body: { cardIds?: unknown }): number[] {
  * same list is safe. A card belonging to a *different* goal is moved, and the
  * response names those explicitly so it is never a silent surprise.
  */
-export const POST: RequestHandler = async ({ params, request, locals }) => {
+export const POST: RequestHandler = async ({ params, request, url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const milestoneId = Number(params.milestoneId);
@@ -122,6 +125,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		);
 	}
 
+	// Was this goal empty before? If so, this call is the moment the plan came
+	// into existence, which is what is worth telling people about — a milestone
+	// is created empty and only means something once it has work in it.
+	const wasEmpty =
+		db.select({ id: cards.id }).from(cards).where(eq(cards.milestoneId, milestoneId)).all().length === 0;
+
 	const now = new Date().toISOString();
 	for (const card of toAttach) {
 		db.update(cards).set({ milestoneId, updatedAt: now }).where(eq(cards.id, card.cardId)).run();
@@ -129,6 +138,34 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	const touched = new Set(toAttach.map((c) => c.boardId));
 	for (const boardId of touched) emit(boardId, 'update', { type: 'card' });
+
+	if (wasEmpty && toAttach.length > 0) {
+		// Never let a notification failure fail the attach.
+		try {
+			const summary = getMilestoneSummary(milestoneId);
+			if (summary) {
+				const titleOf = (id: number) =>
+					summary.graph.nodes.find((n) => n.kind === 'card' && n.id === id)?.title ?? '';
+				notifyPlanCreated(
+					{
+						milestoneId,
+						name: milestone.name,
+						cardCount: summary.progress.total,
+						boards: summary.progress.boards.map((b) => b.name),
+						criticalPath: summary.criticalPath.map((id) => ({ id, title: titleOf(id) })),
+						startable: summary.nextActionable.length,
+						blocked: summary.blocked.length
+					},
+					toAttach.map((c) => c.cardId),
+					locals.user.username,
+					locals.user.id,
+					resolveBaseUrl(request, url)
+				);
+			}
+		} catch {
+			/* notification only — the cards are attached either way */
+		}
+	}
 
 	return json({
 		milestoneId,

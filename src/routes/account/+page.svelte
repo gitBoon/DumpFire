@@ -132,7 +132,8 @@
 		{ key: 'email_moved', label: 'Card Moves', desc: 'When a card you are assigned to is moved' },
 		{ key: 'email_requests', label: 'Task Requests', desc: 'When someone submits or replies to a request' },
 		{ key: 'email_request_progress', label: 'Request Progress', desc: 'Updates on tasks you requested until completion' },
-		{ key: 'email_board_shared', label: 'Board Sharing', desc: 'When a board is shared with you' }
+		{ key: 'email_board_shared', label: 'Board Sharing', desc: 'When a board is shared with you' },
+		{ key: 'email_planning', label: 'Planning', desc: 'When a new plan is created from cards that depend on each other' }
 	];
 
 	let notifPrefs = $state<NotifPrefs>({});

@@ -22,6 +22,11 @@
 	 * can never disagree about what the critical path is.
 	 */
 	import { invalidateAll } from '$app/navigation';
+	import CardModal from '$lib/components/CardModal.svelte';
+	import Toast from '$lib/components/Toast.svelte';
+	import { toasts } from '$lib/stores/toast';
+	import * as cardActions from '$lib/board/card-actions';
+	import type { CardType } from '$lib/types';
 
 	let { data } = $props();
 
@@ -184,8 +189,76 @@
 		}
 	}
 
+	/**
+	 * Reaching the board itself, for anything the modal does not cover. Kept as a
+	 * deliberate act rather than the default — following a critical path used to
+	 * mean a round trip to another screen for every card on it.
+	 */
 	function cardHref(n: { id: number; boardId: number }): string {
 		return `/board/${n.boardId}?card=${n.id}`;
+	}
+
+	// ─── Card modal, opened in place ─────────────────────────────────────────
+
+	let modalCard = $state<CardType | null>(null);
+	let modalContext = $state<{
+		boardId: number;
+		categories: any[];
+		labels: any[];
+		boardUsers: { id: number; username: string; email?: string; emoji: string }[];
+		milestones: any[];
+	} | null>(null);
+	let modalLoading = $state(false);
+
+	/**
+	 * Open a card without leaving the plan.
+	 *
+	 * The board page has its whole payload to hand; this view spans boards, so it
+	 * fetches the one card's context on demand instead.
+	 */
+	async function openCard(ref: { kind?: string; id: number; parentCardId?: number }) {
+		// A subtask has no card of its own — open the card it belongs to.
+		const cardId = ref.kind === 'subtask' ? ref.parentCardId : ref.id;
+		if (!cardId) return;
+
+		modalLoading = true;
+		try {
+			const res = await fetch(`/api/cards/${cardId}/context`);
+			if (!res.ok) {
+				toasts.add('Could not open that card', 'error');
+				return;
+			}
+			const ctx = await res.json();
+			modalCard = ctx.card;
+			modalContext = {
+				boardId: ctx.boardId,
+				categories: ctx.categories,
+				labels: ctx.labels,
+				boardUsers: ctx.boardUsers,
+				milestones: ctx.milestones
+			};
+		} finally {
+			modalLoading = false;
+		}
+	}
+
+	function closeCard() {
+		modalCard = null;
+		modalContext = null;
+	}
+
+	/**
+	 * Saving goes through the same shared card-actions path the board uses, so
+	 * the two screens cannot drift on what a save does.
+	 */
+	async function saveCardFromPlan(cardData: Parameters<typeof cardActions.saveCard>[4]) {
+		if (!modalCard || !modalContext) return;
+		await cardActions.saveCard(modalCard, null, modalContext.boardId, [], cardData);
+		closeCard();
+		toasts.add('Card updated');
+		// A column change alters what is blocked and what is startable, so the
+		// plan has to be recomputed rather than patched locally.
+		await invalidateAll();
 	}
 
 	function formatDate(d: string | null): string {
@@ -746,7 +819,7 @@
 						{#if n}
 							<li class="chain-step">
 								<span class="chain-index">{i + 1}</span>
-								<a class="chain-card" href={n.kind === 'card' ? cardHref(n) : `/board/${n.boardId}?card=${n.parentCardId}`}>
+								<button class="chain-card" onclick={() => openCard(n)}>
 									{#if n.kind === 'subtask'}
 										<span class="kind-tag">subtask</span>
 									{:else}
@@ -757,7 +830,7 @@
 										{#if n.external}<span class="ext-tag">outside this goal</span>{/if}
 										{#if n.kind === 'subtask'}of #{n.parentCardId} · {/if}{n.boardName} / {n.columnTitle}
 									</span>
-								</a>
+								</button>
 							</li>
 						{/if}
 					{/each}
@@ -871,16 +944,16 @@
 									</td>
 									<td class="col-id">
 										{#if r.kind === 'card'}
-											<a href={cardHref(r)}>#{r.id}</a>
+											<button class="id-link" onclick={() => openCard(r)}>#{r.id}</button>
 										{:else}
 											<span class="sub-id" title="Subtask of #{r.parentCardId}">↳</span>
 										{/if}
 									</td>
 									<td class="col-title" class:indented={r.depth > 0}>
-										<a class="title-link" href={r.kind === 'card' ? cardHref(r) : `/board/${r.boardId}?card=${r.parentCardId}`} title={r.title}>
+										<button class="title-link" onclick={() => openCard(r)} title={r.title}>
 											<span class="prio-dot prio-{r.priority}" title="Priority: {r.priority}"></span>
 											<span class="title-text">{r.title}</span>
-										</a>
+										</button>
 										{#if r.onCriticalPath}<span class="crit-chip">critical path</span>{/if}
 									</td>
 									<td class="col-board">
@@ -913,7 +986,7 @@
 										<td colspan="7">
 											<div class="blocker-list">
 												{#each r.blockers as blocker}
-													<a class="blocker" href={blocker.kind === 'subtask' ? `/board/${blocker.boardId}` : cardHref(blocker)}>
+													<button class="blocker" onclick={() => openCard(blocker)}>
 														waiting on
 														{#if blocker.kind === 'subtask'}
 															<span class="kind-tag">subtask</span>
@@ -923,7 +996,7 @@
 															<span class="blocker-title">{blocker.title}</span>
 														{/if}
 														<span class="card-where">{blocker.boardName} / {blocker.columnTitle}</span>
-													</a>
+													</button>
 												{/each}
 											</div>
 										</td>
@@ -996,11 +1069,13 @@
 									<rect x={p.x} y={p.y} width={NODE_W} height={p.h} rx={n.kind === 'subtask' ? 5 : 8} />
 
 									{#if n.kind === 'subtask'}
-										<a href="/board/{n.boardId}?card={n.parentCardId}" class="node-link">
+										<!-- svelte-ignore a11y_click_events_have_key_events -->
+										<g class="node-link" role="button" tabindex="0" onclick={() => openCard(n)}>
 											<text class="node-sub-title" x={p.x + 10} y={p.y + 17}>↳ {clip(n.title, 28)}</text>
-										</a>
+										</g>
 									{:else}
-										<a href={cardHref(n)} class="node-link">
+										<!-- svelte-ignore a11y_click_events_have_key_events -->
+										<g class="node-link" role="button" tabindex="0" onclick={() => openCard(n)}>
 											<text class="node-id" x={p.x + 11} y={p.y + 19}>#{n.id}</text>
 											<text class="node-col" x={p.x + NODE_W - 11} y={p.y + 19} text-anchor="end">
 												{n.columnTitle}
@@ -1017,7 +1092,7 @@
 													{n.priority}
 												{/if}
 											</text>
-										</a>
+										</g>
 
 										{#if subs.length > 0}
 											<!-- Collapsed by default: drawing every ordered subtask inline
@@ -1056,12 +1131,12 @@
 						</p>
 						<div class="card-list">
 							{#each unorderedNodes as n}
-								<a class="list-card" href={cardHref(n)}>
+								<button class="list-card" onclick={() => openCard(n)}>
 									<span class="prio-dot prio-{n.priority}" title="Priority: {n.priority}"></span>
 									<span class="card-id">#{n.id}</span>
 									<span class="card-title">{n.title}</span>
 									<span class="card-where">{n.boardName} / {n.columnTitle}</span>
-								</a>
+								</button>
 							{/each}
 						</div>
 					</div>
@@ -1071,7 +1146,41 @@
 	</div>
 </div>
 
+<Toast />
+
+{#if modalCard && modalContext}
+	<CardModal
+		card={modalCard}
+		categories={modalContext.categories}
+		labels={modalContext.labels}
+		boardId={modalContext.boardId}
+		boardUsers={modalContext.boardUsers}
+		milestones={modalContext.milestones}
+		onSave={saveCardFromPlan}
+		onClose={closeCard}
+	/>
+{/if}
+
 <style>
+	/* These were links until cards started opening in place. They are buttons
+	   now — the browser's button defaults have to be undone so nothing shifts. */
+	.chain-card,
+	.title-link,
+	.id-link,
+	.blocker,
+	button.list-card {
+		appearance: none; background: none; border: none; font: inherit;
+		padding: 0; text-align: left; cursor: pointer; color: inherit;
+	}
+	.id-link {
+		padding: 0; font-size: 0.7rem; font-weight: 700; color: var(--text-tertiary);
+		font-variant-numeric: tabular-nums;
+	}
+	.id-link:hover { color: var(--accent-indigo); }
+	.chain-card:hover,
+	.blocker:hover { background: var(--bg-elevated); }
+	.node-link { cursor: pointer; }
+
 	.plan-page { display: flex; flex-direction: column; min-height: 100vh; background: var(--bg-deep); }
 
 	/* ─── Header ───────────────────────────────────────────────────────── */

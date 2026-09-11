@@ -690,6 +690,114 @@ export function notifyCardUnblocked(
 	}
 }
 
+// ─── Planning Notifications ─────────────────────────────────────────────────
+
+export interface PlanCreatedNotice {
+	milestoneId: number;
+	name: string;
+	/** Cards now in the plan, in the order the plan reports them. */
+	cardCount: number;
+	boards: string[];
+	/** Ordered card ids on the critical path, empty when nothing is sequenced yet. */
+	criticalPath: { id: number; title: string }[];
+	startable: number;
+	blocked: number;
+}
+
+/**
+ * Tell people a plan has appeared.
+ *
+ * Agents can now create a milestone on their own when they spot that a set of
+ * cards forms a goal with a real order. That is useful, but a plan that appears
+ * silently is a plan nobody agreed to — this is the oversight on it.
+ *
+ * Recipients are the assignees of the cards in the plan, plus admins (a
+ * cross-board goal has no single board owner to notify), minus whoever created
+ * it — they already know. Respects an `email_planning` preference.
+ */
+export function notifyPlanCreated(
+	notice: PlanCreatedNotice,
+	cardIds: number[],
+	creatorName: string,
+	creatorUserId: number,
+	baseUrl: string
+): void {
+	if (!isSmtpConfigured()) return;
+	if (cardIds.length === 0) return;
+
+	// Assignees of the cards in the plan.
+	const assigneeIds = new Set<number>();
+	for (let i = 0; i < cardIds.length; i += 500) {
+		const chunk = cardIds.slice(i, i + 500);
+		for (const r of db
+			.select({ userId: cardAssignees.userId })
+			.from(cardAssignees)
+			.where(inArray(cardAssignees.cardId, chunk))
+			.all()) {
+			assigneeIds.add(r.userId);
+		}
+	}
+
+	// Plus admins — a cross-board goal has no board owner, and somebody needs to
+	// see that a plan was created even when its cards are unassigned.
+	for (const a of db
+		.select({ id: users.id })
+		.from(users)
+		.where(inArray(users.role, ['admin', 'superadmin']))
+		.all()) {
+		assigneeIds.add(a.id);
+	}
+
+	assigneeIds.delete(creatorUserId);
+	if (assigneeIds.size === 0) return;
+
+	const recipients = db
+		.select({ email: users.email, username: users.username })
+		.from(users)
+		.where(inArray(users.id, [...assigneeIds]))
+		.all();
+
+	const toSend = filterRecipientsByPref(recipients, 'email_planning');
+	if (toSend.length === 0) return;
+
+	const planUrl = `${baseUrl}/plan/${notice.milestoneId}`;
+	const scope = notice.boards.length > 0 ? notice.boards.join(', ') : 'no boards yet';
+
+	const chainBlock =
+		notice.criticalPath.length > 0
+			? `<p style="margin: 12px 0 6px; font-size: 13px; font-weight: 600; color: #0f172a;">The chain that cannot slip</p>
+			   <ol style="margin: 0 0 8px; padding-left: 20px; font-size: 13px; color: #334155; line-height: 1.6;">
+			     ${notice.criticalPath.map((c) => `<li>#${c.id} ${esc(c.title)}</li>`).join('')}
+			   </ol>`
+			: `<p style="margin: 12px 0 8px; font-size: 13px; color: #64748b;">
+			     No ordering recorded yet — nothing in this goal is waiting on anything else.
+			   </p>`;
+
+	const html = emailTemplate('A plan was created', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(notice.name)}</p>
+			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">
+				<strong>${esc(creatorName)}</strong> grouped ${notice.cardCount} card${notice.cardCount === 1 ? '' : 's'}
+				into a goal because they have an order that has to be respected.
+			</p>
+			<p style="margin: 0 0 4px; font-size: 12px; color: #64748b;">Covering: ${esc(scope)}</p>
+			<p style="margin: 0 0 8px; font-size: 12px; color: #64748b;">
+				${notice.startable} can be started now &middot; ${notice.blocked} waiting
+			</p>
+			${chainBlock}
+			<div style="margin-top: 16px;">
+				<a href="${planUrl}" style="display: inline-block; padding: 8px 16px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View the plan</a>
+			</div>
+		</div>
+	`);
+
+	for (const r of toSend) {
+		sendEmail(r.email, `Plan created: ${notice.name}`, html).catch((err) =>
+			log.error(`Plan-created notification failed for ${r.email}`, err)
+		);
+	}
+}
+
 // ─── @Mention Notifications ─────────────────────────────────────────────────
 
 /**
