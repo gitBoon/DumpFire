@@ -1,31 +1,24 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
-import { cardDependencies, cards, columns } from '$lib/server/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { sqlite } from '$lib/server/db';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
-import { getCardDependencies, findDependencyCycle } from '$lib/server/planning';
+import {
+	getWorkDependencies,
+	validateDependencyBatch,
+	createDependencyBatch,
+	type WorkKind,
+	type WorkRef
+} from '$lib/server/planning';
+import { getCardBoardId, getWorkBoardId, describeWork as describe } from '$lib/server/work-access';
 import { logActivity } from '$lib/server/logActivity';
 import { emit } from '$lib/server/events';
 import type { RequestHandler } from './$types';
 
-/** Resolve the board a card belongs to. */
-function getCardBoardId(cardId: number): number | null {
-	const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, cardId)).get();
-	if (!card) return null;
-	const col = db
-		.select({ boardId: columns.boardId })
-		.from(columns)
-		.where(eq(columns.id, card.columnId))
-		.get();
-	return col?.boardId ?? null;
-}
-
 /**
  * GET /api/v1/cards/:cardId/dependencies — what blocks this card and what it blocks.
  *
- * `?direction=blocked-by|blocks|both` (default `both`). Each entry carries the
- * board it lives on so a cross-board dependency can be shown as "Board / #id",
- * and `resolved` says whether that end is already in a Complete column.
+ * `?direction=blocked-by|blocks|both` (default `both`). Each entry carries its
+ * `kind`, because "#32" is ambiguous between card 32 and subtask 32, and the
+ * board it lives on so a cross-board dependency shows as "Board / #id".
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
@@ -42,11 +35,13 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 		throw error(400, 'direction must be one of: blocked-by, blocks, both');
 	}
 
-	const state = getCardDependencies(cardId);
+	const state = getWorkDependencies({ kind: 'card', id: cardId });
 	const shape = (refs: typeof state.blockedBy) =>
 		refs.map((r) => ({
 			id: r.dependencyId,
+			kind: r.kind,
 			cardId: r.id,
+			parentCardId: r.parentCardId ?? null,
 			title: r.title,
 			boardId: r.boardId,
 			boardName: r.boardName,
@@ -66,10 +61,40 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 };
 
 /**
- * POST /api/v1/cards/:cardId/dependencies — record that this card is blocked by another.
+ * Work out the two ends from the request body.
  *
- * Body: `{ dependsOnCardId }` (this card waits on that one), or
- *       `{ blocksCardId }`    (that card waits on this one).
+ * `dependsOnCardId` / `blocksCardId` are the long-standing card-only spellings
+ * and keep working untouched. `dependsOnSubtaskId` / `blocksSubtaskId` are their
+ * subtask equivalents, so linking to a subtask needs no new endpoint.
+ */
+function resolveEnds(cardId: number, body: Record<string, unknown>): { blocked: WorkRef; blocker: WorkRef } {
+	const self: WorkRef = { kind: 'card', id: cardId };
+	const given = [
+		{ field: 'dependsOnCardId', kind: 'card' as WorkKind, thisCardWaits: true },
+		{ field: 'dependsOnSubtaskId', kind: 'subtask' as WorkKind, thisCardWaits: true },
+		{ field: 'blocksCardId', kind: 'card' as WorkKind, thisCardWaits: false },
+		{ field: 'blocksSubtaskId', kind: 'subtask' as WorkKind, thisCardWaits: false }
+	].filter((g) => body[g.field] !== undefined && body[g.field] !== null);
+
+	if (given.length === 0) {
+		throw error(
+			400,
+			'Provide one of dependsOnCardId, dependsOnSubtaskId (this card waits on it), blocksCardId or blocksSubtaskId (it waits on this card)'
+		);
+	}
+	if (given.length > 1) throw error(400, 'Provide only one of the dependsOn*/blocks* fields');
+
+	const g = given[0];
+	const otherId = Number(body[g.field]);
+	if (isNaN(otherId)) throw error(400, `${g.field} must be an id`);
+	const other: WorkRef = { kind: g.kind, id: otherId };
+
+	return g.thisCardWaits ? { blocked: self, blocker: other } : { blocked: other, blocker: self };
+}
+
+/**
+ * POST /api/v1/cards/:cardId/dependencies — record that this card waits on
+ * something, or that something waits on it.
  *
  * Cross-board dependencies are allowed — a migration touches several projects —
  * so edit access is required on both ends. A dependency that would close a loop
@@ -85,76 +110,38 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!boardId) throw error(404, 'Card not found');
 	if (!canEditBoard(locals.user, boardId)) throw error(403, 'No edit access to this card\'s board');
 
-	const body = await request.json();
-	const { dependsOnCardId, blocksCardId } = body;
+	const { blocked, blocker } = resolveEnds(cardId, await request.json());
 
-	if (!dependsOnCardId && !blocksCardId) {
-		throw error(400, 'Provide either dependsOnCardId (this card waits on it) or blocksCardId (it waits on this card)');
-	}
-	if (dependsOnCardId && blocksCardId) {
-		throw error(400, 'Provide only one of dependsOnCardId or blocksCardId');
-	}
-
-	// Normalise to the stored direction: blockedId waits on blockerId.
-	const blockedId = dependsOnCardId ? cardId : Number(blocksCardId);
-	const blockerId = dependsOnCardId ? Number(dependsOnCardId) : cardId;
-
-	if (isNaN(blockedId) || isNaN(blockerId)) throw error(400, 'Invalid target card ID');
-	if (blockedId === blockerId) throw error(400, 'A card cannot depend on itself');
-
-	const otherId = blockedId === cardId ? blockerId : blockedId;
-	const otherBoardId = getCardBoardId(otherId);
-	if (!otherBoardId) throw error(404, 'Target card not found');
+	const other = blocked.kind === 'card' && blocked.id === cardId ? blocker : blocked;
+	const otherBoardId = getWorkBoardId(other);
+	if (!otherBoardId) throw error(404, `${describe(other)} not found`);
 	if (!canEditBoard(locals.user, otherBoardId)) {
-		throw error(403, 'No edit access to the other card\'s board');
+		throw error(403, `No edit access to the board holding ${describe(other)}`);
 	}
 
-	const existing = db
-		.select({ id: cardDependencies.id })
-		.from(cardDependencies)
-		.where(
-			and(eq(cardDependencies.cardId, blockedId), eq(cardDependencies.dependsOnCardId, blockerId))
-		)
-		.get();
-	if (existing) throw error(409, 'That dependency already exists');
+	// One validation path shared with the bulk endpoint, so a single link and a
+	// batch can never disagree about what is allowed.
+	const v = validateDependencyBatch([
+		{ blocked: blocked.id, blockedType: blocked.kind, blocker: blocker.id, blockerType: blocker.kind }
+	]);
 
-	const cycle = findDependencyCycle(blockedId, blockerId);
-	if (cycle) {
-		// 409 with the chain named: "rejected" is not useful on its own when the
-		// loop runs through five cards on three boards.
-		return json(
-			{
-				error: 'That dependency would create a cycle',
-				cycle,
-				message: `Cycle: ${cycle.map((id) => `#${id}`).join(' → ')} → #${cycle[0]}`
-			},
-			{ status: 409 }
-		);
+	if (v.duplicates.length > 0) throw error(409, 'That dependency already exists');
+	if (v.rejected.length > 0) {
+		const r = v.rejected[0];
+		if (r.reason === 'cycle') {
+			return json({ error: 'That dependency would create a cycle', cycle: r.cycle, message: r.message }, { status: 409 });
+		}
+		throw error(400, r.message);
 	}
 
-	const dep = db
-		.insert(cardDependencies)
-		.values({ cardId: blockedId, dependsOnCardId: blockerId, createdByUserId: locals.user.id })
-		.returning()
-		.get();
-
-	const titles = db
-		.select({ id: cards.id, title: cards.title })
-		.from(cards)
-		.where(eq(cards.id, blockedId))
-		.get();
-	const blockerTitle = db
-		.select({ title: cards.title })
-		.from(cards)
-		.where(eq(cards.id, blockerId))
-		.get();
+	createDependencyBatch(v.valid, locals.user.id);
 
 	logActivity({
 		boardId,
 		cardId,
 		userId: locals.user.id,
 		action: 'api:dependency_added',
-		detail: `#${blockedId} "${titles?.title ?? ''}" now waits on #${blockerId} "${blockerTitle?.title ?? ''}"`,
+		detail: `${describe(blocked)} now waits on ${describe(blocker)}`,
 		userName: locals.user.username,
 		userEmoji: locals.user.emoji || '👤'
 	});
@@ -162,13 +149,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	emit(boardId, 'update', { type: 'card' });
 	if (otherBoardId !== boardId) emit(otherBoardId, 'update', { type: 'card' });
 
+	const state = getWorkDependencies({ kind: 'card', id: cardId });
 	return json(
 		{
-			id: dep.id,
-			blockedCardId: blockedId,
-			blockerCardId: blockerId,
-			title: blockerTitle?.title ?? '',
-			createdAt: dep.createdAt
+			blocked: { kind: blocked.kind, id: blocked.id },
+			blocker: { kind: blocker.kind, id: blocker.id },
+			isBlocked: state.isBlocked
 		},
 		{ status: 201 }
 	);
@@ -177,8 +163,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 /**
  * DELETE /api/v1/cards/:cardId/dependencies — remove a dependency.
  *
- * Body: `{ dependsOnCardId }` or `{ blocksCardId }` — the same two spellings
- * POST accepts, so a caller never has to work out which end stores the row.
+ * Takes the same body spellings as POST, so a caller never has to work out
+ * which end of the pair stores the row.
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
@@ -190,37 +176,28 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 	if (!boardId) throw error(404, 'Card not found');
 	if (!canEditBoard(locals.user, boardId)) throw error(403, 'No edit access to this card\'s board');
 
-	const body = await request.json();
-	const { dependsOnCardId, blocksCardId } = body;
+	const { blocked, blocker } = resolveEnds(cardId, await request.json());
 
-	if (!dependsOnCardId && !blocksCardId) {
-		throw error(400, 'Provide either dependsOnCardId or blocksCardId');
-	}
-
-	const blockedId = dependsOnCardId ? cardId : Number(blocksCardId);
-	const blockerId = dependsOnCardId ? Number(dependsOnCardId) : cardId;
-
-	const removed = db
-		.delete(cardDependencies)
-		.where(
-			and(eq(cardDependencies.cardId, blockedId), eq(cardDependencies.dependsOnCardId, blockerId))
+	const removed = sqlite
+		.prepare(
+			`DELETE FROM work_dependencies
+			 WHERE blocked_type = ? AND blocked_id = ? AND blocker_type = ? AND blocker_id = ?`
 		)
-		.returning()
-		.all();
+		.run(blocked.kind, blocked.id, blocker.kind, blocker.id).changes;
 
-	if (removed.length === 0) throw error(404, 'Dependency not found');
+	if (removed === 0) throw error(404, 'Dependency not found');
 
 	logActivity({
 		boardId,
 		cardId,
 		userId: locals.user.id,
 		action: 'api:dependency_removed',
-		detail: `#${blockedId} no longer waits on #${blockerId}`,
+		detail: `${describe(blocked)} no longer waits on ${describe(blocker)}`,
 		userName: locals.user.username,
 		userEmoji: locals.user.emoji || '👤'
 	});
 
 	emit(boardId, 'update', { type: 'card' });
 
-	return json({ success: true, removed: removed.length });
+	return json({ success: true, removed });
 };

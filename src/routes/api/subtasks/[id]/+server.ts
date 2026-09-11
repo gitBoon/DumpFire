@@ -6,6 +6,7 @@ import { emit } from '$lib/server/events';
 import { canEditBoard } from '$lib/server/board-access';
 import { notifyRequesterProgress } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
+import { applyUnblockEffects, removeWorkNodeEdges } from '$lib/server/planning';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a subtask belongs to (via card → column). */
@@ -35,6 +36,12 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	const updated = db.update(subtasks).set(updateData).where(eq(subtasks.id, id)).returning().get();
 	if (!updated) throw error(404, 'Subtask not found');
 	if (resolvedBoardId) emit(resolvedBoardId, 'update', { type: 'subtask' });
+
+	// A subtask can be the last thing blocking other work. Guarded on the
+	// before-state so re-ticking an already-complete subtask does not re-fire it.
+	if (updateData.completed === true && existing && !existing.completed) {
+		applyUnblockEffects({ kind: 'subtask', id }, locals.user, resolveBaseUrl(request, url));
+	}
 
 	// Log activity when subtask is completed
 	if (resolvedBoardId && updateData.completed === true && existing && !existing.completed) {
@@ -79,6 +86,8 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 		throw error(403, 'No edit access to this board');
 	}
 
+	// Polymorphic ids do not cascade — clear this node's edges explicitly.
+	removeWorkNodeEdges('subtask', id);
 	db.delete(subtasks).where(eq(subtasks.id, id)).run();
 	if (resolvedBoardId) emit(resolvedBoardId, 'update', { type: 'subtask' });
 	return json({ success: true });

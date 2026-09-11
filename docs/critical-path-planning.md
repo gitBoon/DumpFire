@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.1
+version: 1.3
 status: As-Built
 date: 2026-09-11
 tags:
@@ -75,6 +75,38 @@ flowchart LR
     style plan fill:#8b5cf6,stroke:#7c3aed,color:#fff
 ```
 
+## Cards and subtasks are both nodes
+
+A "piece of work" is a card **or** a subtask, and both are nodes in one graph
+keyed as `card:123` / `subtask:456`. Ordering genuinely exists at both levels —
+step two of a card cannot start before step one, and sometimes a whole card
+waits on one specific step of another. Before this, the only way to express that
+was to promote the subtask to a card, which distorts the board to satisfy the
+planning tool.
+
+**One polymorphic table, not three.** `work_dependencies` carries
+`(blocked_type, blocked_id, blocker_type, blocker_id)` rather than separate
+tables for card→card, subtask→subtask and the two mixed directions. The planning
+engine then walks a single graph regardless of node type; three tables would
+mean three near-identical traversals that can drift apart, which is exactly what
+this feature exists to prevent. The cost is losing foreign keys on the
+polymorphic ids, so deleting a card or subtask clears its edges explicitly via
+`removeWorkNodeEdges` — nothing cascades.
+
+**Done means different things.** A card is complete when it reaches a Complete
+column; a subtask when it is ticked. Both resolve through the same `isComplete`
+field, decided per type at load.
+
+**A subtask belongs to its parent card's milestone**, never to one directly, and
+inherits its parent's board for access checks.
+
+**Only subtasks that carry an edge become nodes.** Every subtask of every card
+would swamp the graph, and most carry no ordering at all.
+
+**Progress still counts cards.** Adding an ordering to a subtask must not
+silently change how big a goal looks, so `progress.total` covers the milestone's
+cards and subtasks stay in `openSubtasks` as before.
+
 ## Data model
 
 Two tables and one column carry every planning fact.
@@ -85,9 +117,10 @@ erDiagram
     COLUMNS ||--o{ CARDS : contains
     BOARDS ||--o{ MILESTONES : "may scope"
     MILESTONES ||--o{ CARDS : "groups (0..1 per card)"
-    CARDS ||--o{ CARD_DEPENDENCIES : "is blocked by"
-    CARDS ||--o{ CARD_DEPENDENCIES : "blocks"
-    USERS ||--o{ CARD_DEPENDENCIES : recorded
+    CARDS ||--o{ WORK_DEPENDENCIES : "either end"
+    CARDS ||--o{ SUBTASKS : "broken into"
+    SUBTASKS ||--o{ WORK_DEPENDENCIES : "either end"
+    USERS ||--o{ WORK_DEPENDENCIES : recorded
 
     MILESTONES {
         int id PK
@@ -99,10 +132,12 @@ erDiagram
         int created_by FK
     }
 
-    CARD_DEPENDENCIES {
+    WORK_DEPENDENCIES {
         int id PK
-        int card_id FK "the BLOCKED card"
-        int depends_on_card_id FK "its BLOCKER"
+        text blocked_type "card | subtask - the WAITING end"
+        int blocked_id
+        text blocker_type "card | subtask - what it waits ON"
+        int blocker_id
         int created_by_user_id FK
         text created_at
     }
@@ -115,18 +150,27 @@ erDiagram
         text priority
         text archived_at
     }
+
+    SUBTASKS {
+        int id PK
+        int card_id FK "inherits board and milestone"
+        text title
+        bool completed "done means ticked, not a column"
+    }
 ```
 
 ### Edge direction
 
 Stated once, because getting it backwards is the easiest mistake here:
 
-- `card_dependencies.card_id` is the card that is **blocked**
-- `card_dependencies.depends_on_card_id` is its **blocker**
+- `work_dependencies.blocked_*` is the work that is **waiting**
+- `work_dependencies.blocker_*` is what it is **waiting on**
 
 An edge points **blocker → blocked**, which is also the left-to-right reading order of the
-milestone graph. The API accepts both spellings (`dependsOnCardId` and `blocksCardId`) so a
-caller never has to work out which end owns the row.
+milestone graph. The API accepts both spellings (`dependsOnCardId` / `dependsOnSubtaskId`
+and `blocksCardId` / `blocksSubtaskId`) so a caller never has to work out which end owns
+the row. In bulk, a bare number means a card and `"subtask:42"` means a subtask, so
+card-only lists written before subtasks existed are untouched.
 
 ### Constraints worth knowing
 
@@ -276,6 +320,13 @@ assumption that it could is precisely what made migration `0036` destructive (se
 comment in that file). Putting it where it can be guarded, counted and rolled back is the
 difference between a conversion and a data-loss bug.
 
+**Migration 0043** adds `work_dependencies` and copies every `card_dependencies` row across
+as a `(card, card)` pair with `INSERT OR IGNORE`, so it is safe to re-run. The old table is
+deliberately **left in place** rather than dropped: this is the migration that could lose
+the ordering decisions already recorded, and a table nothing reads costs nothing. A later
+migration can drop it once `work_dependencies` has been in production long enough to trust.
+(Migration `0036` is the cautionary tale — see the comment in that file.)
+
 **Verified, not assumed.** The upgrade was run against three populated databases — one at
 `0041` with several hundred cards, comments, subtasks and assignees; the same database
 forced into the legacy dependency shape; and a real working database already upgraded. In
@@ -312,6 +363,15 @@ right is reading the order the work happens in, and a force layout scrambles exa
 Nodes keep a fixed size (190×58) and the container scrolls horizontally; shrinking nodes to
 fit thirty cards on one screen produces a picture nobody can read. The page body itself
 never scrolls sideways.
+
+**Subtasks are collapsed under their card by default.** A card with ordered subtasks shows
+a `+n` badge and expands inline on click. This was chosen over drawing them always-inline
+because node count is the real readability risk at this scale — and it costs nothing in
+accuracy: the critical path is computed over the **full** graph either way, so collapsing
+is purely a display choice. A collapsed subtask's edges roll up to its card, so nothing
+dangles; the client re-layers the rolled-up graph with the same Kahn pass and
+stranded-node fallback the server uses, because rolling up can produce a cycle the full
+graph does not have.
 
 | Node state | Appearance |
 |------------|------------|
@@ -350,6 +410,39 @@ stop people recording dependencies at all.
 to make to answer *"what should I work on next for milestone X"*. Add `?compact=true` to
 drop the graph (the bulky part, only needed for drawing) and get a `cardTitles` map instead.
 
+### Recording a plan
+
+Goals are recorded in bulk, not link by link. On a board of any size, entering dependencies
+one at a time is the thing that stops them being entered at all, so the batch endpoints are
+the intended path:
+
+```powershell
+$ms = & $API -Action create-milestone -ApiKey $KEY -Name "Azure VM migration" | ConvertFrom-Json
+& $API -Action add-milestone-cards -ApiKey $KEY -MilestoneId $ms.id -CardIds "1198,1686,1559,1444,1201"
+& $API -Action add-chain          -ApiKey $KEY -Chain "1198,1686,1559,1444,1201"
+```
+
+`add-chain` exists because a critical path *is* a linear chain; writing it out as pairs is
+where transcription mistakes come from. Branches go in with `add-dependencies -Links
+"1444:1320"`, where each entry reads `blocked:blocker`.
+
+A subtask end is written `s<id>` (or `subtask:<id>`); a bare number stays a card:
+
+```powershell
+& $API -Action add-chain -ApiKey $KEY -Chain "1686,s4821,s4822,1559"
+& $API -Action add-subtask-dependency -ApiKey $KEY -SubtaskId 4821 -SubtaskDependsOn 1686
+```
+
+A batch is validated as a whole and written all-or-nothing, reporting every problem at once
+rather than one per attempt. Two details matter:
+
+- **Duplicates are skipped rather than rejected**, so a batch can live in a file and be
+  replayed as the plan changes.
+- **Cycle detection covers the batch itself.** Two links can each be safe against the stored
+  graph and still close a loop between themselves; a per-link check would write both and
+  strand nodes in the milestone view. The proposed edges are layered on the stored graph and
+  added one at a time instead.
+
 From the wrapper script:
 
 ```powershell
@@ -367,6 +460,9 @@ for the full endpoint contracts.
 | File | Responsibility |
 |------|----------------|
 | `drizzle/0042_add_milestones_and_planning.sql` | Milestones table, `cards.milestone_id`, unique dependency pair index |
+| `drizzle/0043_add_work_dependencies.sql` | Polymorphic `work_dependencies`; carries every card dependency across |
+| `src/lib/server/work-access.ts` | Which board a piece of work lives on |
+| `src/lib/server/subtask-dependencies.ts` | Shared handler body for both subtask dependency routes |
 | `src/lib/server/planning.ts` | Every derived planning fact — graph, cycles, critical path, actionable, unblock hook |
 | `src/lib/server/milestones.ts` | Milestone CRUD, card assignment, access rules |
 | `src/routes/api/v1/milestones/**` | Bearer-token API |

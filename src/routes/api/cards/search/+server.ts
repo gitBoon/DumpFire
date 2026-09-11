@@ -4,10 +4,14 @@
  * Searches by "#id" or by title across every board the caller can see, because
  * dependencies are deliberately cross-board — a migration touches several
  * projects, and the picker has to be able to reach those cards.
+ *
+ * `?kinds=card,subtask` (default `card`) also returns subtasks, so one picker
+ * can link either. Every result carries a `kind`, because "#32" is ambiguous
+ * between card 32 and subtask 32.
  */
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { cards, columns, boards } from '$lib/server/db/schema';
+import { cards, columns, boards, subtasks } from '$lib/server/db/schema';
 import { eq, like, isNull, and, inArray } from 'drizzle-orm';
 import { canViewBoard } from '$lib/server/board-access';
 import type { RequestHandler } from './$types';
@@ -17,6 +21,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	const q = (url.searchParams.get('q') ?? '').trim();
 	const excludeId = Number(url.searchParams.get('exclude') ?? '0');
+	const kinds = (url.searchParams.get('kinds') ?? 'card').split(',').map((k) => k.trim());
 	if (q.length === 0) return json([]);
 
 	// "#1234" or a bare number is an id lookup, not a title search.
@@ -51,7 +56,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		return visible.get(boardId)!;
 	};
 
-	const results = matches
+	const cardResults = matches
 		.filter((c) => c.id !== excludeId)
 		.map((c) => {
 			const col = colById.get(c.columnId);
@@ -70,7 +75,41 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			};
 		})
 		.filter((r): r is NonNullable<typeof r> => r !== null)
-		.slice(0, 25);
+		.map((r) => ({ ...r, kind: 'card' as const, parentCardId: null as number | null }));
 
-	return json(results);
+	if (!kinds.includes('subtask')) return json(cardResults.slice(0, 25));
+
+	// Subtasks inherit their parent card's board, so visibility is the parent's.
+	const subMatches = idMatch
+		? db.select().from(subtasks).where(eq(subtasks.id, Number(idMatch[1]))).all()
+		: db.select().from(subtasks).where(like(subtasks.title, `%${q}%`)).limit(60).all();
+
+	const subResults = subMatches
+		.map((st) => {
+			const card = db.select({ id: cards.id, columnId: cards.columnId, title: cards.title, archivedAt: cards.archivedAt })
+				.from(cards).where(eq(cards.id, st.cardId)).get();
+			if (!card || card.archivedAt) return null;
+			const col = db.select().from(columns).where(eq(columns.id, card.columnId)).get();
+			if (!col || !isVisible(col.boardId)) return null;
+			const board = db.select({ name: boards.name, emoji: boards.emoji }).from(boards).where(eq(boards.id, col.boardId)).get();
+			return {
+				id: st.id,
+				kind: 'subtask' as const,
+				parentCardId: card.id,
+				title: st.title,
+				priority: st.priority,
+				// A subtask has no column of its own; showing its parent card here is
+				// what makes it findable in a picker.
+				columnName: `in #${card.id}`,
+				boardId: col.boardId,
+				boardName: board?.name ?? 'Unknown board',
+				boardEmoji: board?.emoji ?? '📋',
+				milestoneId: null as number | null
+			};
+		})
+		.filter((r): r is NonNullable<typeof r> => r !== null);
+
+	// Interleave rather than concatenate: a title search that matches both should
+	// not bury every subtask below twenty-five cards.
+	return json([...cardResults, ...subResults].slice(0, 40));
 };

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.2
+version: 1.3
 status: As-Built
 date: 2026-09-11
 tags:
@@ -197,6 +197,16 @@ erDiagram
         text created_at
     }
 
+    work_dependencies {
+        int id PK
+        text blocked_type
+        int blocked_id
+        text blocker_type
+        int blocker_id
+        int created_by_user_id FK
+        text created_at
+    }
+
     milestones {
         int id PK
         int board_id FK
@@ -383,10 +393,17 @@ erDiagram
 | `cards` | `card_comments` | CASCADE |
 | `cards` | `card_attachments` | CASCADE |
 | `cards` | `card_dependencies` | CASCADE (both ends) |
+| `cards` / `subtasks` | `work_dependencies` | **none — cleared in code** |
 | `boards` | `milestones` | CASCADE |
 | `milestones` | `cards.milestoneId` | SET NULL — **in code, not SQL** |
 | `categories` | `cards.categoryId` | SET NULL |
 | `boards` | `boards.createdBy` | SET NULL |
+
+`work_dependencies` holds dependencies between any two pieces of work — card or subtask —
+in one polymorphic table, so the planning engine walks a single graph. Polymorphic ids
+cannot carry a foreign key, so deleting a card or subtask clears its edges in code
+(`removeWorkNodeEdges`). It supersedes `card_dependencies`, which migration 0043 copied
+across and left in place; nothing reads the old table.
 
 `milestones → cards.milestoneId` is nulled by the delete handler rather than by a foreign
 key: SQLite cannot add a column with an `ON DELETE` clause to an existing table, and the

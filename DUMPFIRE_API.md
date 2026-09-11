@@ -16,6 +16,7 @@ DumpFire provides a REST API for automation and external integrations. You can p
   - [Subtasks](#subtasks)
   - [Dependencies](#dependencies)
   - [Milestones](#milestones)
+  - [Bulk Planning](#bulk-planning)
 - [Examples](#examples)
 
 ---
@@ -773,6 +774,145 @@ returns the whole plan in one payload, so nothing has to be re-derived per sessi
   would appear startable when it is not.
 - **`graph.unordered`** lists milestone cards with no dependencies recorded in either
   direction, so a card is never invisible just because nobody has sequenced it.
+
+---
+
+### Bulk Planning
+
+Recording a goal one link at a time does not scale past a toy example. These endpoints
+describe a whole plan in one call, and validate it as a whole before writing any of it.
+
+#### Create Many Dependencies
+
+```http
+POST /api/v1/dependencies/bulk
+```
+
+Deliberately not nested under a card — a batch spans many, and pretending it belongs to one
+would make the direction harder to reason about, which is already the easiest thing here to
+get wrong.
+
+**Request body**, one of:
+
+```json
+{ "links": [
+    { "blocked": 1559, "blocker": 1686 },
+    { "blocked": 1444, "blocker": 1559 }
+]}
+```
+
+```json
+{ "chain": [1686, 1559, 1444, 1201] }
+```
+
+`chain` is sugar for a linear sequence where each card waits on the one before it. A
+critical path *is* a linear chain, and writing it out as pairs is where transcription
+mistakes come from. `links` entries also accept the single-endpoint spelling
+(`cardId` / `dependsOnCardId`) so moving from the per-card route needs no relearning.
+
+**Response:** `201 Created`
+
+```json
+{
+  "created": 4,
+  "skippedAsDuplicate": 1,
+  "boardsTouched": [1, 8],
+  "links": [{ "blocked": 1559, "blocker": 1686 }]
+}
+```
+
+#### Attach and Detach Many Cards
+
+```http
+POST   /api/v1/milestones/{milestoneId}/cards/bulk    { "cardIds": [1686, 1559, 1444] }
+DELETE /api/v1/milestones/{milestoneId}/cards/bulk    { "cardIds": [1686, 1559] }
+```
+
+```json
+{
+  "milestoneId": 4,
+  "attached": 3,
+  "skippedAlreadyIn": 2,
+  "movedFromOtherGoal": [{ "cardId": 1444, "title": "DNS cutover", "fromMilestoneId": 2 }],
+  "boardsTouched": [1]
+}
+```
+
+A card belongs to at most one milestone, so attaching one that is already in a *different*
+goal moves it. `movedFromOtherGoal` names those explicitly, so it is never a silent
+surprise.
+
+#### Batch Semantics
+
+These rules apply to all three endpoints and are the reason they exist.
+
+| Rule | Why |
+|------|-----|
+| **Validated as a whole, then written** | If anything is wrong, *nothing* is written and every problem comes back at once. Fixing a fifty-line list one error per round trip is what makes bulk import not worth using. |
+| **Duplicates are skipped, not errors** | Re-running the same list is safe, so a batch can be kept in a file and replayed as the plan evolves. |
+| **Cycle detection covers the batch itself** | Two links can each be fine against the stored graph and still close a loop between themselves. Proposed edges are layered on the stored graph and added one at a time, so that case is caught — a per-link check would write both and strand nodes in the milestone view. |
+| **Max 500 entries per call** | |
+| **Edit access on both ends** | Cross-board links are allowed; each card's board is resolved once and cached, not re-checked per link. |
+
+**Rejection response:** `409 Conflict`, nothing written.
+
+```json
+{
+  "error": "Batch rejected — nothing was written",
+  "written": 0,
+  "rejected": [
+    {
+      "link": { "blocked": 1198, "blocker": 1201 },
+      "reason": "cycle",
+      "cycle": [1198, 1559, 1201],
+      "message": "#1198 waiting on #1201 would create a cycle: #1198 → #1559 → #1201 → #1198"
+    },
+    {
+      "link": { "blocked": 9999, "blocker": 1201 },
+      "reason": "missing-blocked",
+      "message": "Card #9999 does not exist or is archived"
+    }
+  ],
+  "forbidden": [],
+  "wouldSkipAsDuplicate": 2,
+  "wouldCreate": 7
+}
+```
+
+Rejection reasons: `self`, `missing-blocked`, `missing-blocker`, `cycle`,
+`duplicate-in-batch`.
+
+For the milestone endpoints the equivalent field is `problems`, each entry carrying a
+`cardId` and a `reason` — including the board-scope rule, whose message names the two ways
+out (make the milestone cross-board, or move the card).
+
+#### Worked Example — a goal in three commands
+
+```powershell
+$KEY = "df_…"
+$API = ".\.agent\scripts\dumpfire-api.ps1"
+
+# 1. The goal. No -BoardId means cross-board.
+$ms = & $API -Action create-milestone -ApiKey $KEY `
+        -Name "Azure VM migration, all environments" -TargetDate "2026-12-01" | ConvertFrom-Json
+
+# 2. Everything that belongs to it.
+& $API -Action add-milestone-cards -ApiKey $KEY `
+        -MilestoneId $ms.id -CardIds "1198,1686,1559,1444,1201,1320"
+
+# 3. The order it has to happen in.
+& $API -Action add-chain -ApiKey $KEY -Chain "1198,1686,1559,1444,1201"
+
+# Branches that are not on the main chain, as blocked:blocker pairs.
+& $API -Action add-dependencies -ApiKey $KEY -Links "1444:1320"
+
+# What falls out of it.
+& $API -Action milestone-summary -ApiKey $KEY -MilestoneId $ms.id -NoGraph
+```
+
+The last call returns `criticalPath` as an ordered card-id list, `nextActionable` sorted by
+how much each card unblocks, and `blocked` with each card's blockers — none of it stored,
+all of it derived from the two facts recorded above.
 
 ---
 
