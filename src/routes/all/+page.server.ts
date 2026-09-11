@@ -2,6 +2,8 @@ import { db } from '$lib/server/db';
 import { boards, columns, cards, categories, subtasks, labels, cardLabels, cardAssignees, users, boardCategories, taskRequests } from '$lib/server/db/schema';
 import { asc, inArray, eq, isNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { getBlockedStateForCards } from '$lib/server/planning';
+import { milestoneNamesForCards } from '$lib/server/milestones';
 import type { PageServerLoad } from './$types';
 
 const DEFAULT_COMPLETED_LIMIT = 50;
@@ -182,9 +184,17 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			: enrichedCards.filter(c => c.bucket === bucket)
 	}));
 
+	// Blocked state and milestone names for every card on the page, in one pass
+	// each. /all spans every accessible board and can run to thousands of cards,
+	// so a per-card lookup is not an option — these take the ids already loaded.
+	const blockedState = getBlockedStateForCards(cardIds);
+	const milestoneNames = milestoneNamesForCards(cardIds);
+
 	return {
 		boards: allBoards.map(b => ({ ...b, ...boardMap.get(b.id)! })),
 		buckets: grouped,
+		blockedState,
+		milestoneNames,
 		categories: allCategories,
 		boardCategories: allBoardCategories,
 		labels: allLabels,

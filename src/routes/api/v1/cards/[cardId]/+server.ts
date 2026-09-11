@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { cards, columns, subtasks, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
+import { getCardDependencies } from '$lib/server/planning';
 import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
@@ -60,13 +61,26 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		.where(eq(columns.id, card.columnId))
 		.get();
 
+	// Dependency state ships with the card so a planning caller never has to
+	// make a second request just to know whether this card is startable.
+	const deps = getCardDependencies(cardId);
+
 	return json({
 		...card,
 		boardId,
 		columnTitle: col?.title || 'Unknown',
 		subtasks: cardSubtasks,
 		labelIds: labelRows.map(r => r.labelId),
-		assignees: assigneeRows
+		assignees: assigneeRows,
+		isBlocked: deps.isBlocked,
+		blockedBy: deps.blockedBy.map(d => ({
+			cardId: d.id, title: d.title, boardId: d.boardId, boardName: d.boardName,
+			columnName: d.columnTitle, resolved: d.isComplete
+		})),
+		blocks: deps.blocks.map(d => ({
+			cardId: d.id, title: d.title, boardId: d.boardId, boardName: d.boardName,
+			columnName: d.columnTitle, resolved: d.isComplete
+		}))
 	});
 };
 
@@ -89,7 +103,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// Whitelist allowed fields
 	const updateData: Record<string, unknown> = {};
 	const allowed = ['title', 'description', 'priority', 'colorTag', 'categoryId', 'dueDate',
-		'onHoldNote', 'businessValue', 'pinned', 'coverUrl', 'archivedAt'];
+		'onHoldNote', 'businessValue', 'pinned', 'coverUrl', 'archivedAt', 'milestoneId'];
 	for (const key of allowed) {
 		if (key in data) updateData[key] = data[key];
 	}

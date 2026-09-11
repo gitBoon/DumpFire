@@ -146,6 +146,9 @@ export const cards = sqliteTable('cards', {
 	coverUrl: text('cover_url'),
 	recurrenceRule: text('recurrence_rule'),
 	nextRecurrence: text('next_recurrence'),
+	// A card belongs to at most one milestone. Nulled (not cascaded) when the
+	// milestone is deleted — losing a goal must never lose the work.
+	milestoneId: integer('milestone_id'),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
@@ -223,6 +226,8 @@ export const webhooks = sqliteTable('webhooks', {
 });
 
 // ─── Card Dependencies ──────────────────────────────────────────────────────
+// `cardId` is the card that is BLOCKED; `dependsOnCardId` is its BLOCKER.
+// A unique index on the pair (migration 0042) enforces one row per direction.
 
 export const cardDependencies = sqliteTable('card_dependencies', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
@@ -232,6 +237,7 @@ export const cardDependencies = sqliteTable('card_dependencies', {
 	dependsOnCardId: integer('depends_on_card_id')
 		.notNull()
 		.references(() => cards.id, { onDelete: 'cascade' }),
+	createdByUserId: integer('created_by_user_id').references(() => users.id),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
@@ -348,8 +354,35 @@ export const cardTemplates = sqliteTable('card_templates', {
 });
 
 
-// (time_entries and card_dependencies tables exist in DB from migrations
-// but are not yet used by the application)
+// ─── Milestones ──────────────────────────────────────────────────────────────
+
+/**
+ * A goal that spans many cards. `boardId` is nullable so a milestone can cover
+ * several projects (a migration touches more than one board). Deliberately has
+ * no per-card dates: sequencing comes from card_dependencies, and everything
+ * else the planning view shows is computed in `$lib/server/planning`.
+ */
+export const milestones = sqliteTable('milestones', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	boardId: integer('board_id').references(() => boards.id, { onDelete: 'cascade' }),
+	name: text('name').notNull(),
+	description: text('description').notNull().default(''),
+	targetDate: text('target_date'),
+	status: text('status').notNull().default('open'), // 'open' | 'closed'
+	createdBy: integer('created_by').references(() => users.id),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text('updated_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export type Milestone = typeof milestones.$inferSelect;
+export type CardDependency = typeof cardDependencies.$inferSelect;
+
+// (the time_entries table exists in the DB from migration 0028 but is not yet
+// used by the application)
 
 // ─── Card Attachments ────────────────────────────────────────────────────────
 

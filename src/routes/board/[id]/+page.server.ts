@@ -3,6 +3,8 @@ import { boards, columns, cards, categories, subtasks, labels, cardLabels, board
 import { eq, asc, inArray, isNull, and } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
 import { getBoardRole } from '$lib/server/board-access';
+import { getBoardBlockedState } from '$lib/server/planning';
+import { milestonesForBoard } from '$lib/server/milestones';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, locals }) => {
@@ -222,6 +224,10 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 			.all()
 		: [];
 
+	// Open blockers for every card on the board in one pass, so the "Blocked"
+	// chip costs one query for the board rather than one request per card face.
+	const blockedState = getBoardBlockedState(boardId);
+
 	return {
 		board,
 		breadcrumbs,
@@ -232,6 +238,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		canEdit,
 		canManage,
 		userBoardRole,
-		boardUsers
+		boardUsers,
+		blockedState,
+		milestones: milestonesForBoard(user, boardId)
 	};
 };

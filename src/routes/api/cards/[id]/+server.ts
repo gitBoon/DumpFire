@@ -5,6 +5,8 @@ import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { canEditBoard } from '$lib/server/board-access';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
+import { applyUnblockEffects } from '$lib/server/planning';
+import { resolveBaseUrl } from '$lib/server/email';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -15,7 +17,7 @@ function getCardBoardId(cardId: number): number | null {
 	return col?.boardId ?? null;
 }
 
-export const PUT: RequestHandler = async ({ params, request, locals }) => {
+export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const id = Number(params.id);
@@ -39,6 +41,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	}
 
 	// Block completion if columnId is being changed to a Complete column
+	let justCompleted = false;
 	if (updateData.columnId) {
 		const existingCard = db.select().from(cards).where(eq(cards.id, id)).get();
 		if (existingCard && existingCard.columnId !== updateData.columnId) {
@@ -48,6 +51,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 				if (blocker) {
 					throw error(409, blocker);
 				}
+				justCompleted = true;
 			}
 		}
 	}
@@ -61,6 +65,12 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		.returning()
 		.get();
 	if (!updated) throw error(404, 'Card not found');
+
+	// Anything that was waiting on this card may now be startable.
+	if (justCompleted) {
+		applyUnblockEffects(id, locals.user, resolveBaseUrl(request, url));
+	}
+
 	if (resolvedBoardId) emit(resolvedBoardId, 'update', { type: 'card' });
 	return json(updated);
 };

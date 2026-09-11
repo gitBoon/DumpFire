@@ -151,11 +151,41 @@
 
 	let searchQuery = $state('');
 	let boardFilter = $state('all');
+	let hideBlocked = $state(false);
+
+	/**
+	 * Open dependency blockers per card, computed server-side in one pass over
+	 * every board this user can see. Absent means nothing is blocking the card.
+	 */
+	const dependencyBlockers = $derived(
+		(data.blockedState ?? {}) as Record<number, { id: number; title: string; columnTitle: string; boardName: string; boardId: number }[]>
+	);
+	const milestoneNames = $derived((data.milestoneNames ?? {}) as Record<number, string>);
+
+	function blockersFor(cardId: number) {
+		return dependencyBlockers[cardId] ?? [];
+	}
+
+	/**
+	 * Tooltip for the Blocked chip. Every blocker is listed with the column it is
+	 * sitting in, and its board — on a cross-board view the board is always worth
+	 * showing, because the blocker is usually somewhere else entirely.
+	 */
+	function blockerTooltip(cardId: number): string {
+		const open = blockersFor(cardId);
+		if (open.length === 0) return '';
+		return ['Blocked by']
+			.concat(open.map((b) => `#${b.id} ${b.title} — ${b.boardName} / ${b.columnTitle}`))
+			.join('\n');
+	}
 
 	const priorityEmoji: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
 	const bucketColors: Record<string, string> = { 'To Do': '#6366f1', 'On Hold': '#ef4444', 'In Progress': '#f59e0b', 'Complete': '#10b981' };
 
 	function matchesFilters(card: any): boolean {
+		// Folded in here rather than at the render site so getFilteredCount picks
+		// it up for free and a filtered bucket cannot misreport its count.
+		if (hideBlocked && blockersFor(card.id).length > 0) return false;
 		if (boardFilter !== 'all') {
 			if (boardFilter.startsWith('cat:')) {
 				const catId = Number(boardFilter.slice(4));
@@ -216,7 +246,8 @@
 			pinned: card.pinned || false, onHoldNote: card.onHoldNote || '',
 			businessValue: card.businessValue || '',
 			subBoards: card.subBoards || [], assignees: card.assignees || [],
-			archivedAt: card.archivedAt || null, coverUrl: card.coverUrl || null
+			archivedAt: card.archivedAt || null, coverUrl: card.coverUrl || null,
+			milestoneId: card.milestoneId ?? null
 		};
 		editingBoardId = card.boardId;
 		showCardModal = true;
@@ -485,6 +516,32 @@
 				</svg>
 				<input type="text" class="search-input" placeholder="Search tasks or #id..." bind:value={searchQuery} />
 			</div>
+			<button
+				class="blocked-filter-toggle"
+				class:is-on={hideBlocked}
+				onclick={() => (hideBlocked = !hideBlocked)}
+				title="Hide cards that are still waiting on another card"
+			>
+				<svg width="13" height="13" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+					<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
+					<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+				</svg>
+				Hide blocked
+			</button>
+			<a
+				href={boardFilter !== 'all' && !boardFilter.startsWith('cat:') ? `/plan?board=${boardFilter}` : '/plan'}
+				class="btn-ghost nav-btn"
+				title="Planning — critical path and what is startable"
+			>
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+					<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+					<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+					<path d="M5.2 7.1L6.4 4.9M9.6 4.9l1.2 2.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+					<path d="M5.3 8.9l5.4 2.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
+				</svg>
+				Planning
+			</a>
 			<div class="more-menu-container">
 				<button class="btn-ghost nav-btn" onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="Panels">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="3" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="13" r="1.2" fill="currentColor"/></svg>
@@ -589,6 +646,24 @@
 									{/if}
 								</div>
 								<div class="card-meta">
+									{#if blockersFor(card.id).length > 0}
+										{@const blockers = blockersFor(card.id)}
+										<span class="blocked-badge" title={blockerTooltip(card.id)}>
+											<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+												<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
+												<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+											</svg>
+											Blocked{#if blockers.length > 1}&nbsp;({blockers.length}){/if}
+										</span>
+									{/if}
+									{#if card.milestoneId && milestoneNames[card.milestoneId]}
+										<a
+											href="/plan/{card.milestoneId}"
+											class="milestone-badge"
+											title="Milestone: {milestoneNames[card.milestoneId]} — open the planning view"
+											onclick={(e) => e.stopPropagation()}
+										>🎯 {milestoneNames[card.milestoneId]}</a>
+									{/if}
 									<span class="priority-badge priority-{card.priority}">
 										{priorityEmoji[card.priority] || '🟡'} {card.priority.toUpperCase()}
 									</span>
@@ -1185,6 +1260,42 @@
 		flex-wrap: wrap;
 		font-size: 0.7rem;
 	}
+
+	/* Blocked / milestone chips and the filter toggle — deliberately identical to
+	   the board so a card reads the same wherever it is seen. */
+	.blocked-filter-toggle {
+		display: inline-flex; align-items: center; gap: 5px;
+		padding: 6px 12px; background: var(--bg-surface);
+		border: 1px solid var(--glass-border); border-radius: var(--radius-full);
+		color: var(--text-secondary); font-family: var(--font-family);
+		font-size: 0.78rem; font-weight: 600; cursor: pointer; white-space: nowrap;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.blocked-filter-toggle:hover { border-color: rgba(245, 158, 11, 0.4); color: var(--text-primary); }
+	.blocked-filter-toggle.is-on {
+		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
+		border-color: rgba(245, 158, 11, 0.35);
+	}
+
+	.blocked-badge {
+		display: inline-flex; align-items: center; gap: 3px;
+		padding: 1px 8px; border-radius: var(--radius-full);
+		font-size: 0.68rem; font-weight: 700; white-space: nowrap;
+		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
+		border: 1px solid rgba(245, 158, 11, 0.3);
+		cursor: help;
+	}
+
+	.milestone-badge {
+		display: inline-flex; align-items: center; gap: 3px;
+		padding: 1px 8px; border-radius: var(--radius-full);
+		font-size: 0.66rem; font-weight: 600; text-decoration: none;
+		max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+		background: rgba(139, 92, 246, 0.1); color: #a78bfa;
+		border: 1px solid rgba(139, 92, 246, 0.22);
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.milestone-badge:hover { background: rgba(139, 92, 246, 0.2); border-color: rgba(139, 92, 246, 0.45); }
 
 	.priority-badge {
 		display: inline-flex; align-items: center; gap: 4px;

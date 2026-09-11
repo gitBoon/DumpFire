@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.1
+version: 1.2
 status: As-Built
-date: 2026-04-14
+date: 2026-09-11
 tags:
   - database
   - schema
@@ -135,6 +135,7 @@ erDiagram
         text cover_url
         text recurrence_rule
         text next_recurrence
+        int milestone_id FK
         text created_at
         text updated_at
     }
@@ -192,7 +193,20 @@ erDiagram
         int id PK
         int card_id FK
         int depends_on_card_id FK
+        int created_by_user_id FK
         text created_at
+    }
+
+    milestones {
+        int id PK
+        int board_id FK
+        text name
+        text description
+        text target_date
+        text status
+        int created_by FK
+        text created_at
+        text updated_at
     }
 
     card_templates {
@@ -339,6 +353,8 @@ erDiagram
     cards ||--o{ card_comments : "discussed"
     cards ||--o{ card_attachments : "attached"
     cards ||--o{ card_dependencies : "depends on"
+    boards ||--o{ milestones : "may scope"
+    milestones ||--o{ cards : "groups"
     categories ||--o{ cards : "categorises"
     labels ||--o{ card_labels : "applied to"
 
@@ -366,8 +382,19 @@ erDiagram
 | `cards` | `card_labels` | CASCADE |
 | `cards` | `card_comments` | CASCADE |
 | `cards` | `card_attachments` | CASCADE |
+| `cards` | `card_dependencies` | CASCADE (both ends) |
+| `boards` | `milestones` | CASCADE |
+| `milestones` | `cards.milestoneId` | SET NULL — **in code, not SQL** |
 | `categories` | `cards.categoryId` | SET NULL |
 | `boards` | `boards.createdBy` | SET NULL |
+
+`milestones → cards.milestoneId` is nulled by the delete handler rather than by a foreign
+key: SQLite cannot add a column with an `ON DELETE` clause to an existing table, and the
+behaviour matters — **deleting a goal must never delete the work**. The delete response
+reports how many cards were released.
+
+See [Critical-Path Planning](critical-path-planning.md) for how `card_dependencies` and
+`milestones` are read to derive the critical path and what is startable.
 
 ## Card Lifecycle
 

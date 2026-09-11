@@ -14,6 +14,8 @@ DumpFire provides a REST API for automation and external integrations. You can p
   - [Card Assignees](#card-assignees)
   - [Card Movement](#card-movement)
   - [Subtasks](#subtasks)
+  - [Dependencies](#dependencies)
+  - [Milestones](#milestones)
 - [Examples](#examples)
 
 ---
@@ -503,6 +505,274 @@ Permanently deletes the subtask.
 ```json
 { "success": true }
 ```
+
+---
+
+### Dependencies
+
+Records which card blocks which. This is one of only two planning facts stored by hand —
+everything the planning view shows (critical path, what is startable, what is blocked) is
+computed from it, so it can never go stale.
+
+Direction, stated once: **`cardId` is the card that is blocked; `dependsOnCardId` is its
+blocker.** Cross-board dependencies are allowed, and require edit access to both ends.
+
+#### List Dependencies
+
+```http
+GET /api/v1/cards/{cardId}/dependencies
+```
+
+**Query parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `direction` | `blocked-by`, `blocks`, or `both` (default) |
+
+**Response:**
+```json
+{
+  "cardId": 1559,
+  "isBlocked": true,
+  "blockedBy": [
+    {
+      "id": 12,
+      "cardId": 1686,
+      "title": "Compose network segmentation applied on the new host",
+      "boardId": 1,
+      "boardName": "VectorOMS",
+      "columnName": "In Progress",
+      "priority": "critical",
+      "resolved": false,
+      "createdByUserId": 2,
+      "createdAt": "2026-09-11 09:14:02"
+    }
+  ],
+  "blocks": []
+}
+```
+
+`resolved` is true once that end reaches a Complete column. `GET /api/v1/cards/{cardId}`
+also returns `isBlocked`, `blockedBy` and `blocks`, so a planning client needs only one
+request per card.
+
+#### Add a Dependency
+
+```http
+POST /api/v1/cards/{cardId}/dependencies
+```
+
+**Request body** — send exactly one of:
+
+| Field | Meaning |
+|-------|---------|
+| `dependsOnCardId` | This card waits on that one |
+| `blocksCardId` | That card waits on this one |
+
+Both spellings are accepted so a caller never has to work out which end of the pair owns
+the stored row.
+
+```json
+{ "dependsOnCardId": 1686 }
+```
+
+**Response:** `201 Created`
+```json
+{ "id": 12, "blockedCardId": 1559, "blockerCardId": 1686,
+  "title": "Compose network segmentation applied on the new host",
+  "createdAt": "2026-09-11 09:14:02" }
+```
+
+**Errors:**
+
+| Code | Cause |
+|------|-------|
+| `400` | A card cannot depend on itself; both or neither spelling supplied |
+| `403` | No edit access to one of the two boards |
+| `409` | That dependency already exists |
+| `409` | The dependency would create a cycle |
+
+A rejected cycle names the loop it found, because "rejected" on its own is not useful when
+the loop runs through five cards on three boards:
+
+```json
+{
+  "error": "That dependency would create a cycle",
+  "cycle": [1559, 1686, 1198],
+  "message": "Cycle: #1559 → #1686 → #1198 → #1559"
+}
+```
+
+#### Remove a Dependency
+
+```http
+DELETE /api/v1/cards/{cardId}/dependencies
+```
+
+Takes the same two body spellings as `POST`.
+
+**Response:**
+```json
+{ "success": true, "removed": 1 }
+```
+
+#### Unblock Behaviour
+
+When a card reaches a Complete column, every card whose **last** open blocker it was gets a
+system comment and its assignees are emailed:
+
+```
+Unblocked: #1686 "Compose network segmentation applied on the new host" completed —
+nothing is blocking this card now.
+```
+
+A card that still has other blockers outstanding is left alone. This fires on all three
+completion paths — drag-and-drop, the card update endpoint, and `PUT /api/v1/cards/{id}/move`.
+
+---
+
+### Milestones
+
+A milestone is a goal that spans many cards — the second and last planning fact recorded by
+hand. A card belongs to at most one milestone. `boardId` is nullable: omit it for a goal
+that spans several projects, which is the case a Kanban board cannot express on its own.
+
+There are deliberately no per-card dates or estimates. Sequencing comes from dependencies,
+and everything else is computed.
+
+#### List Milestones
+
+```http
+GET /api/v1/milestones
+```
+
+**Query parameters:** `boardId`, `status` (`open` | `closed`).
+
+**Response:**
+```json
+[
+  {
+    "id": 4,
+    "boardId": null,
+    "name": "Azure VM migration, all environments",
+    "description": "Every environment off the old host and onto Azure VMs.",
+    "targetDate": "2026-12-01",
+    "status": "open",
+    "createdBy": 2,
+    "boardName": null,
+    "cardCount": 9,
+    "doneCount": 1,
+    "boardIds": [1, 8]
+  }
+]
+```
+
+#### Create a Milestone
+
+```http
+POST /api/v1/milestones
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | ✅ | Max 200 chars |
+| `boardId` | | Omit or `null` for a cross-board goal |
+| `description` | | Free text |
+| `targetDate` | | `YYYY-MM-DD` |
+
+**Response:** `201 Created` with the milestone.
+
+#### Get, Update, Delete
+
+```http
+GET    /api/v1/milestones/{milestoneId}
+PATCH  /api/v1/milestones/{milestoneId}
+DELETE /api/v1/milestones/{milestoneId}
+```
+
+`PATCH` accepts `name`, `description`, `targetDate`, `status` and `boardId`.
+
+`DELETE` removes the goal but **never the work** — its cards are released back to having no
+milestone:
+
+```json
+{ "success": true, "cardsReleased": 9 }
+```
+
+#### Attach and Detach Cards
+
+```http
+POST   /api/v1/milestones/{milestoneId}/cards    { "cardId": 1559 }
+DELETE /api/v1/milestones/{milestoneId}/cards    { "cardId": 1559 }
+```
+
+A card is in at most one milestone, so attaching replaces whatever it was in before rather
+than erroring. A board-scoped milestone will not take a card from another board — make the
+milestone cross-board first, or move the card.
+
+#### Milestone Summary
+
+```http
+GET /api/v1/milestones/{milestoneId}/summary
+```
+
+**This is the endpoint to call to answer "what should I work on next for milestone X".** It
+returns the whole plan in one payload, so nothing has to be re-derived per session.
+
+| Field | Description |
+|-------|-------------|
+| `milestone` | The milestone record |
+| `progress` | `total`, `done`, `percent`, `byColumn[]`, `openSubtasks`, `boards[]` |
+| `graph` | `nodes[]`, `edges[]`, `layers[][]` (topological, left to right), `unordered[]` |
+| `criticalPath` | Ordered card ids — the longest chain of **open** dependencies |
+| `nextActionable` | Startable today, sorted by `downstreamCount` then priority |
+| `blocked` | `{ card, blockers[] }` pairs |
+
+**Query parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `compact` | `true` drops `graph` (only needed for drawing) and adds `cardTitles`, a card-id → title map so the ids stay readable |
+
+**Response (abridged):**
+```json
+{
+  "milestone": { "id": 4, "name": "Azure VM migration, all environments" },
+  "progress": {
+    "total": 9, "done": 1, "percent": 11,
+    "byColumn": [{ "columnTitle": "To Do", "count": 7 }],
+    "openSubtasks": 0,
+    "boards": [{ "id": 1, "name": "VectorOMS", "cardCount": 9 }]
+  },
+  "criticalPath": [1686, 1559, 1444, 1201],
+  "nextActionable": [
+    { "id": 1686, "title": "Compose network segmentation applied on the new host",
+      "priority": "critical", "downstreamCount": 3, "onCriticalPath": true,
+      "boardName": "VectorOMS", "columnTitle": "To Do" }
+  ],
+  "blocked": [
+    { "card": { "id": 1559, "title": "Backup restore drill on the new host" },
+      "blockers": [{ "id": 1686, "title": "Compose network segmentation applied on the new host",
+                     "columnTitle": "To Do", "boardName": "VectorOMS" }] }
+  ]
+}
+```
+
+**Notes on the derived fields:**
+
+- **`criticalPath`** is the longest chain of dependencies among cards that are **not yet
+  complete**. A finished prerequisite adds no risk, so it drops out of the chain. A path of
+  one card is not reported — that is just the next thing to do, and it appears in
+  `nextActionable`.
+- **`nextActionable`** is sorted by how many cards finishing it would unblock
+  (`downstreamCount`, transitive), then by priority. On a small team the card that frees
+  the most downstream work is the one worth starting.
+- **`graph.nodes`** includes cards from **outside** the milestone that directly block cards
+  inside it, flagged `external: true`. They never appear in `nextActionable` — they are
+  context, not scope — but without them a card whose only blocker sits on another board
+  would appear startable when it is not.
+- **`graph.unordered`** lists milestone cards with no dependencies recorded in either
+  direction, so a card is never invisible just because nobody has sequenced it.
 
 ---
 
