@@ -80,6 +80,18 @@
 
 	let editingName = $state(false);
 	let nameDraft = $state('');
+	let editingTarget = $state(false);
+
+	/**
+	 * Overdue only counts while work remains. A goal finished after its target
+	 * date is done, not late, and flagging it red would be nagging about
+	 * something nobody can act on.
+	 */
+	const targetOverdue = $derived.by(() => {
+		if (!milestone.targetDate) return false;
+		if (summary.progress.total > 0 && summary.progress.done === summary.progress.total) return false;
+		return new Date(milestone.targetDate).setHours(0, 0, 0, 0) < new Date().setHours(0, 0, 0, 0);
+	});
 	let busy = $state(false);
 	let actionError = $state('');
 
@@ -538,31 +550,71 @@
 					{milestone.name}
 				</h1>
 			{/if}
-			{#if milestone.status !== 'open'}<span class="status-chip closed">Closed</span>{/if}
+			<span class="status-chip" class:closed={milestone.status !== 'open'} class:open={milestone.status === 'open'}>
+				{milestone.status === 'open' ? 'Open' : 'Closed'}
+			</span>
 		</div>
+
 		<div class="plan-header-right">
-			<input
-				class="target-date"
-				type="date"
-				value={milestone.targetDate ?? ''}
-				title="Target date"
-				onchange={(e) => setTargetDate((e.target as HTMLInputElement).value)}
-			/>
+			<!--
+				The target date reads as a date until you go to change it. A permanent
+				empty dd/mm/yyyy input took more room than the milestone name and said
+				nothing; this says what the date IS, which is the question being asked.
+			-->
+			{#if editingTarget}
+				<!-- svelte-ignore a11y_autofocus -->
+				<input
+					class="target-input"
+					type="date"
+					value={milestone.targetDate ?? ''}
+					autofocus
+					onchange={(e) => { setTargetDate((e.target as HTMLInputElement).value); editingTarget = false; }}
+					onblur={() => (editingTarget = false)}
+					onkeydown={(e) => { if (e.key === 'Escape') editingTarget = false; }}
+				/>
+			{:else}
+				<button
+					class="target-btn"
+					class:is-set={!!milestone.targetDate}
+					class:overdue={targetOverdue}
+					onclick={() => (editingTarget = true)}
+					title={milestone.targetDate ? 'Change the target date' : 'Set a target date'}
+				>
+					<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+						<rect x="2" y="3" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/>
+						<path d="M2 6.5h12M5.5 2v2.5M10.5 2v2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+					</svg>
+					{#if milestone.targetDate}
+						{formatDate(milestone.targetDate)}
+						{#if targetOverdue}<span class="overdue-tag">overdue</span>{/if}
+					{:else}
+						Set target
+					{/if}
+				</button>
+			{/if}
+
 			<a
-				class="btn-ghost"
+				class="hdr-btn"
 				href="/api/milestones/{milestone.id}/pdf"
 				title="Download this plan as a PDF, in the same style as the board reports"
 			>
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+				<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
 					<path d="M8 2v8m0 0L5 7m3 3l3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
 					<path d="M2.5 11.5v1a1 1 0 001 1h9a1 1 0 001-1v-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
 				</svg>
 				PDF
 			</a>
-			<button class="btn-ghost" onclick={toggleStatus} disabled={busy}>
-				{milestone.status === 'open' ? 'Close milestone' : 'Reopen'}
+
+			<button class="hdr-btn" onclick={toggleStatus} disabled={busy}>
+				{milestone.status === 'open' ? 'Close' : 'Reopen'}
 			</button>
-			<button class="btn-primary" onclick={() => (picking = !picking)}>+ Add cards</button>
+
+			<button class="hdr-btn primary" class:is-on={picking} onclick={() => (picking = !picking)}>
+				<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+					<path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+				</svg>
+				Add cards
+			</button>
 		</div>
 	</header>
 
@@ -1011,7 +1063,7 @@
 		position: sticky; top: 0; z-index: 10;
 	}
 	.plan-header-left { display: flex; align-items: center; gap: var(--space-md); min-width: 0; flex: 1; }
-	.plan-header-right { display: flex; align-items: center; gap: var(--space-sm); flex-shrink: 0; }
+	.plan-header-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 
 	.back-btn {
 		display: flex; align-items: center; justify-content: center;
@@ -1044,13 +1096,56 @@
 		background: rgba(136, 136, 170, 0.12); color: var(--text-tertiary);
 		border: 1px solid rgba(136, 136, 170, 0.25);
 	}
-
-	.target-date {
-		padding: 6px 10px; background: var(--bg-elevated);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		color: var(--text-primary); font-family: var(--font-family); font-size: 0.78rem;
+	.status-chip.open {
+		background: rgba(16, 185, 129, 0.12); color: var(--accent-emerald);
+		border: 1px solid rgba(16, 185, 129, 0.25);
 	}
-	.target-date:focus { outline: none; border-color: var(--accent-indigo); }
+
+	/* Header controls share one size and never wrap — the title truncates when
+	   space runs out, because the controls are the part you still need. */
+	.hdr-btn {
+		display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+		height: 30px; padding: 0 11px;
+		background: var(--bg-elevated); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-sm); color: var(--text-secondary);
+		font-family: var(--font-family); font-size: 0.76rem; font-weight: 600;
+		cursor: pointer; text-decoration: none;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.hdr-btn:hover { color: var(--text-primary); border-color: var(--text-tertiary); }
+	.hdr-btn:disabled { opacity: 0.5; cursor: wait; }
+	.hdr-btn.primary {
+		background: var(--accent-indigo); border-color: var(--accent-indigo); color: #fff;
+	}
+	.hdr-btn.primary:hover { filter: brightness(1.08); border-color: var(--accent-indigo); }
+	.hdr-btn.primary.is-on { background: #4f46e5; }
+
+	/* Reads as a date, becomes an input only when you go to change it. */
+	.target-btn {
+		display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+		height: 30px; padding: 0 11px;
+		background: none; border: 1px dashed var(--glass-border);
+		border-radius: var(--radius-sm); color: var(--text-tertiary);
+		font-family: var(--font-family); font-size: 0.76rem; font-weight: 600;
+		cursor: pointer; transition: all var(--duration-fast) var(--ease-out);
+	}
+	.target-btn:hover { color: var(--text-primary); border-color: var(--text-tertiary); }
+	.target-btn.is-set { border-style: solid; color: var(--text-secondary); }
+	.target-btn.overdue {
+		background: rgba(244, 63, 94, 0.1); color: var(--accent-rose);
+		border-color: rgba(244, 63, 94, 0.3); border-style: solid;
+	}
+	.overdue-tag {
+		font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.04em; opacity: 0.85;
+	}
+
+	.target-input {
+		height: 30px; padding: 0 9px; background: var(--bg-elevated);
+		border: 1px solid var(--accent-indigo); border-radius: var(--radius-sm);
+		color: var(--text-primary); font-family: var(--font-family); font-size: 0.76rem;
+	}
+	.target-input:focus { outline: none; }
 
 	/* ─── Body & panels ────────────────────────────────────────────────── */
 
