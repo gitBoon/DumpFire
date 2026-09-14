@@ -43,6 +43,21 @@ export const MODEL_PRICES: Record<string, ModelPrice> = {
 };
 
 /**
+ * What this money figure is, and what it is not.
+ *
+ * These rates are what the API *would* charge for the usage recorded. On a
+ * fixed-price plan nobody is billed them — the figure exists to answer "what is
+ * this work worth in metered terms", which is a comparison, not an invoice.
+ *
+ * Kept separate from BLEND_NOTE on purpose. They qualify different things and
+ * collapsing them into one hedge ("hypothetical") would imply the measurement
+ * itself is soft. It is not: the tokens were counted and the rates are
+ * published. Only the billing relationship is notional.
+ */
+export const NOT_BILLED_NOTE =
+	'what the API would charge for this usage — not what you are billed on a fixed plan';
+
+/**
  * The assumed split when a caller reports only a total.
  *
  * Agentic coding is overwhelmingly input — the conversation is resent every

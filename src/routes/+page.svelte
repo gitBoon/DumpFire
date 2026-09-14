@@ -13,12 +13,13 @@
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { completionPercent } from '$lib/progress';
 	import { formatTokens } from '$lib/tokens';
-	import { formatUsd, BLEND_NOTE, SOURCE_NOTE } from '$lib/pricing';
+	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import CategoryManager from '$lib/components/CategoryManager.svelte';
 	import VelocityModal from '$lib/components/VelocityModal.svelte';
+	import SpendModal from '$lib/components/SpendModal.svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -43,6 +44,7 @@
 	let showCompletedBoards = $state(true);
 	let showCategoryManager = $state(false);
 	let showVelocityModal = $state(false);
+	let showSpendModal = $state(false);
 
 	// Active Tasks Modal
 	type ActiveTaskBoard = {
@@ -676,7 +678,7 @@
 						<button class="bch-cards bch-sort" class:active={sortBy === 'cards'} onclick={() => toggleSort('cards')}>Cards{sortArrow('cards')}</button>
 						<button class="bch-progress bch-sort" class:active={sortBy === 'progress'} onclick={() => toggleSort('progress')}>Progress{sortArrow('progress')}</button>
 						<button class="bch-tokens bch-sort" class:active={sortBy === 'tokens'} onclick={() => toggleSort('tokens')} title="Tokens spent on this board. Blank means nothing has been recorded — not that it was free.">Tokens{sortArrow('tokens')}</button>
-						<button class="bch-cost bch-sort" class:active={sortBy === 'cost'} onclick={() => toggleSort('cost')} title="Estimated cost at {SOURCE_NOTE} — {BLEND_NOTE}.">Cost{sortArrow('cost')}</button>
+						<button class="bch-cost bch-sort" class:active={sortBy === 'cost'} onclick={() => toggleSort('cost')} title="{NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">Cost{sortArrow('cost')}</button>
 						<span class="bch-actions"></span>
 					</div>
 
@@ -925,14 +927,24 @@
 				     empty state is the only thing that explains why the columns are
 				     blank. "Nothing recorded yet" is a statement about the data, not a
 				     claim that the work was free. -->
-				<div class="stat-card glass-glow accent-violet">
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					class="stat-card glass-glow accent-violet"
+					class:stat-card-clickable={data.allTasksTotals.tokenTotal != null}
+					onclick={() => { if (data.allTasksTotals.tokenTotal != null) showSpendModal = true; }}
+					id="spend-card"
+				>
 					<div class="stat-header">
-						<span class="stat-label">Spend</span>
+						<span class="stat-label" title="{NOT_BILLED_NOTE}.">Notional spend</span>
+						{#if data.allTasksTotals.tokenTotal != null}
+							<span class="stat-card-hint">by person →</span>
+						{/if}
 					</div>
 					{#if data.allTasksTotals.tokenTotal != null}
 						<div class="stat-value">{formatUsd(data.allTasksTotals.costUsd)}</div>
-						<div class="stat-sub" title="{SOURCE_NOTE} — {BLEND_NOTE}.">
-							{formatTokens(data.allTasksTotals.tokenTotal)} tokens · est.
+						<div class="stat-sub" title="{NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
+							{formatTokens(data.allTasksTotals.tokenTotal)} tokens · what the API would charge
 							{#if data.allTasksTotals.unpricedTokens > 0}
 								<span class="stat-warn" title="Recorded without a model, so they cannot be priced.">
 									· {formatTokens(data.allTasksTotals.unpricedTokens)} unpriced
@@ -1341,6 +1353,10 @@
 <!-- Velocity graph modal -->
 {#if showVelocityModal}
 	<VelocityModal onclose={() => (showVelocityModal = false)} />
+{/if}
+
+{#if showSpendModal}
+	<SpendModal rows={data.spendByUser ?? []} onclose={() => (showSpendModal = false)} />
 {/if}
 
 <!-- Toast notifications for new requests -->

@@ -49,7 +49,7 @@
 	import Toast from '$lib/components/Toast.svelte';
 	import KanbanCard from '$lib/components/board/KanbanCard.svelte';
 	import { formatTokens } from '$lib/tokens';
-	import { formatUsd, BLEND_NOTE, SOURCE_NOTE } from '$lib/pricing';
+	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
 	import ActivityPanel from '$lib/components/board/ActivityPanel.svelte';
 	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
 	import BulkActionBar from '$lib/components/board/BulkActionBar.svelte';
@@ -786,7 +786,7 @@
 			     a permanent "—" in the header would be noise on every board
 			     nobody reports against. -->
 			{#if data.boardTokenSummary}
-				<span class="hdr-cost" title="{formatTokens(data.boardTokenSummary.total)} tokens across this board · {SOURCE_NOTE} — {BLEND_NOTE}.">
+				<span class="hdr-cost" title="{formatTokens(data.boardTokenSummary.total)} tokens across this board · {NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
 					{formatTokens(data.boardTokenSummary.total)}
 					{#if data.boardTokenSummary.costUsd !== null}
 						<span class="hdr-cost-money">{formatUsd(data.boardTokenSummary.costUsd)}</span>
@@ -1234,7 +1234,7 @@
 									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt, tick)}</span>
 									{#if cardTokens[card.id]}
 										{@const tc = cardTokens[card.id]}
-										<span class="cost-badge" title="{formatTokens(tc.tokens)} tokens{tc.costUsd !== null ? ` · estimated ${formatUsd(tc.costUsd)}, ${BLEND_NOTE}` : ' · no model recorded, so it cannot be priced'}">
+										<span class="cost-badge" title="{formatTokens(tc.tokens)} tokens{tc.costUsd !== null ? ` · ${formatUsd(tc.costUsd)} at API rates — ${NOT_BILLED_NOTE}. ${BLEND_NOTE}` : ' · no model recorded, so it cannot be priced'}">
 											{formatTokens(tc.tokens)}{#if tc.costUsd !== null} · {formatUsd(tc.costUsd)}{/if}
 										</span>
 									{/if}

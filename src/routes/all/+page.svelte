@@ -8,7 +8,7 @@
 	 */
 	import type { PageData } from './$types';
 	import { formatTokens } from '$lib/tokens';
-	import { formatUsd, BLEND_NOTE, SOURCE_NOTE } from '$lib/pricing';
+	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
 	import { theme } from '$lib/stores/theme';
 	import { onMount, onDestroy } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
@@ -495,7 +495,7 @@
 				<p class="all-subtitle">
 					{data.totalCards} total · {data.completedCards} complete · {data.totalCards - data.completedCards} remaining
 					{#if data.allTokenSummary}
-						· <span class="subtitle-cost" title="{formatTokens(data.allTokenSummary.total)} tokens across every board here · {SOURCE_NOTE} — {BLEND_NOTE}.">
+						· <span class="subtitle-cost" title="{formatTokens(data.allTokenSummary.total)} tokens across every board here · {NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
 							{formatTokens(data.allTokenSummary.total)}{#if data.allTokenSummary.costUsd !== null} · {formatUsd(data.allTokenSummary.costUsd)}{/if}
 						</span>
 					{/if}
@@ -717,7 +717,7 @@
 									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt, tick)}</span>
 									{#if cardTokens[card.id]}
 										{@const tc = cardTokens[card.id]}
-										<span class="cost-badge" title="{formatTokens(tc.tokens)} tokens{tc.costUsd !== null ? ` · estimated ${formatUsd(tc.costUsd)}, ${BLEND_NOTE}` : ' · no model recorded, so it cannot be priced'}">
+										<span class="cost-badge" title="{formatTokens(tc.tokens)} tokens{tc.costUsd !== null ? ` · ${formatUsd(tc.costUsd)} at API rates — ${NOT_BILLED_NOTE}. ${BLEND_NOTE}` : ' · no model recorded, so it cannot be priced'}">
 											{formatTokens(tc.tokens)}{#if tc.costUsd !== null} · {formatUsd(tc.costUsd)}{/if}
 										</span>
 									{/if}
