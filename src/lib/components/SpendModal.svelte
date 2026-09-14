@@ -185,21 +185,15 @@
 										<!-- Why the cost is what it is. Without this the total is a
 										     number to be taken on trust, and a wrong one looks
 										     exactly like a right one. -->
-										<li class="parts-row">
-											<table class="parts">
-												<tbody>
-													{#each components(m) as c}
-														<tr>
-															<td class="p-label">{c.label}</td>
-															<td class="p-tokens">{c.tokens.toLocaleString('en-GB')}</td>
-															<td class="p-rate">&times;&thinsp;${c.rate.toFixed(2)}/M</td>
-															<td class="p-share">{((c.tokens / m.tokens) * 100).toFixed(1)}%</td>
-															<td class="p-cost">{formatUsd(c.cost)}</td>
-														</tr>
-													{/each}
-												</tbody>
-											</table>
-										</li>
+										{#each components(m) as c}
+											<li class="part">
+												<span class="p-label">{c.label}</span>
+												<span class="p-tokens">{formatTokens(c.tokens)}</span>
+												<span class="p-rate">&times; ${c.rate.toFixed(2)}/M</span>
+												<span class="p-share">{((c.tokens / m.tokens) * 100).toFixed(1)}%</span>
+												<span class="p-cost">{formatUsd(c.cost)}</span>
+											</li>
+										{/each}
 									{/if}
 								{/each}
 							</ul>
@@ -231,7 +225,8 @@
 		padding: var(--space-lg);
 	}
 	.modal {
-		width: 100%; max-width: 600px; max-height: 82vh; overflow-y: auto;
+		width: 100%; max-width: 640px; max-height: 82vh;
+		overflow-y: auto; overflow-x: hidden;
 		border: 1px solid var(--glass-border); border-radius: var(--radius-lg);
 		background: var(--bg-card); padding: var(--space-lg);
 		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
@@ -280,7 +275,8 @@
 	}
 	.chev.open { transform: rotate(90deg); }
 	.avatar { font-size: 1rem; flex-shrink: 0; }
-	.who { min-width: 150px; display: flex; flex-direction: column; gap: 1px; }
+	.who { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+	.name, .meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.name { font-size: 0.82rem; font-weight: 600; color: var(--text-primary); }
 	.meta { font-size: 0.68rem; color: var(--text-tertiary); }
 	.bar-wrap { flex: 1; min-width: 30px; height: 6px; border-radius: var(--radius-full); background: var(--glass-hover); overflow: hidden; }
@@ -293,23 +289,35 @@
 
 	.models { list-style: none; margin: 0 0 8px; padding: 0 0 0 26px; }
 	.model-row { display: flex; align-items: center; gap: var(--space-sm); padding: 4px 0; }
-	.model-name { min-width: 150px; font-size: 0.72rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+	.model-name { flex: 1 1 auto; min-width: 0; font-size: 0.72rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.model-row .money { font-size: 0.74rem; font-weight: 600; color: var(--text-secondary); }
 	.unpriced-tag { color: var(--accent-amber, #f59e0b); font-weight: 600; font-size: 0.68rem; }
 
-	.parts-row { padding: 0 0 6px 0; }
-	.parts { width: 100%; border-collapse: collapse; margin-left: 150px; }
-	.parts td { padding: 1px 0; font-size: 0.68rem; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-	.p-label { text-align: left; }
-	.p-tokens { text-align: right; padding-right: 8px !important; }
-	.p-rate { text-align: right; padding-right: 8px !important; }
-	.p-share { text-align: right; width: 46px; padding-right: 8px !important; }
-	.p-cost { text-align: right; width: 62px; color: var(--text-secondary); }
+	/* Component rows. Everything is fixed-width except the label, which absorbs
+	   the slack — so the figures stay aligned and nothing is pushed off the
+	   right edge however narrow the modal gets. */
+	.part {
+		display: flex; align-items: baseline; gap: 6px;
+		padding: 1px 0 1px 14px;
+		font-size: 0.68rem; color: var(--text-tertiary);
+		font-variant-numeric: tabular-nums;
+	}
+	.p-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.p-tokens { width: 58px; text-align: right; flex-shrink: 0; }
+	.p-rate { width: 74px; text-align: right; flex-shrink: 0; }
+	.p-share { width: 42px; text-align: right; flex-shrink: 0; }
+	.p-cost { width: 62px; text-align: right; flex-shrink: 0; color: var(--text-secondary); }
 	.est-tag {
 		margin-left: 4px; font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
 		color: var(--accent-amber, #f59e0b);
 	}
 
 	.empty { font-size: 0.8rem; color: var(--text-secondary); margin: var(--space-md) 0; }
+	@media (max-width: 560px) {
+		.bar-wrap { display: none; }
+		.p-share { display: none; }
+		.who { min-width: 0; }
+	}
+
 	.foot { margin: var(--space-md) 0 0; font-size: 0.68rem; color: var(--text-tertiary); line-height: 1.5; }
 </style>
