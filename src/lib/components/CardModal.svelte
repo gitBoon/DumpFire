@@ -10,6 +10,7 @@
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
+	import { completionPercent } from '$lib/progress';
 	import { highlightMentions } from '$lib/utils/mentions';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
@@ -425,7 +426,7 @@
 
 	const completedCount = $derived(cardSubtasks.filter((st) => st.completed).length);
 	const totalCount = $derived(cardSubtasks.length);
-	const progress = $derived(totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0);
+	const progress = $derived(completionPercent(completedCount, totalCount));
 
 	function getPriorityLabel(p: string) {
 		const m: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };

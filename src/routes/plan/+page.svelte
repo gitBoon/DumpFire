@@ -8,6 +8,7 @@
 	 * I start today". Same cards, different question.
 	 */
 	import { invalidateAll, goto } from '$app/navigation';
+	import { completionPercent } from '$lib/progress';
 
 	let { data } = $props();
 
@@ -43,7 +44,7 @@
 
 	const rows = $derived.by<Row[]>(() =>
 		(data.milestones as any[]).map((m) => {
-			const percent = m.cardCount === 0 ? 0 : Math.round((m.doneCount / m.cardCount) * 100);
+			const percent = completionPercent(m.doneCount, m.cardCount);
 			const days = daysUntil(m.targetDate);
 			return {
 				...m,

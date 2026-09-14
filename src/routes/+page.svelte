@@ -11,6 +11,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { theme } from '$lib/stores/theme';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
+	import { completionPercent } from '$lib/progress';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
@@ -678,8 +679,9 @@
 						<span class="board-row-count" title="Cards: every non-archived card across all boards and sub-boards. Tasks: those cards plus their {data.allTasksTotals.subtasks} subtasks.">{totalCards} cards · {totalTasks} tasks</span>
 						<div class="board-row-progress">
 							{#if totalCards > 0}
-								<div class="progress-track"><div class="progress-fill fill-all" style="width: {(completedCards / totalCards) * 100}%"></div></div>
-								<span class="progress-pct">{Math.round((completedCards / totalCards) * 100)}%</span>
+								{@const allPct = completionPercent(completedCards, totalCards)}
+								<div class="progress-track"><div class="progress-fill fill-all" style="width: {allPct}%"></div></div>
+								<span class="progress-pct">{allPct}%</span>
 							{/if}
 						</div>
 						<div class="board-row-actions"></div>
@@ -703,7 +705,7 @@
 										<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
 										<div class="board-row-progress">
 											{#if board.totalCards > 0}
-												{@const pct = Math.round((board.completedCards / board.totalCards) * 100)}
+												{@const pct = completionPercent(board.completedCards, board.totalCards)}
 												<div class="progress-track"><div class="progress-fill" class:complete={pct === 100} style="width: {pct}%"></div></div>
 												<span class="progress-pct" class:complete={pct === 100}>{pct}%</span>
 											{:else}
@@ -732,7 +734,7 @@
 								<span class="category-group-name" style={group.color ? `color: ${group.color}` : ''}>{group.name}</span>
 								<span class="category-group-count">{group.boards.length} board{group.boards.length !== 1 ? 's' : ''}</span>
 								<div class="group-mini-progress">
-									<div class="progress-track"><div class="progress-fill" style="background: {group.color || 'var(--text-tertiary)'}; width: {group.total > 0 ? (group.done / group.total) * 100 : 0}%"></div></div>
+									<div class="progress-track"><div class="progress-fill" style="background: {group.color || 'var(--text-tertiary)'}; width: {completionPercent(group.done, group.total)}%"></div></div>
 								</div>
 							</button>
 
@@ -760,7 +762,7 @@
 												<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
 												<div class="board-row-progress">
 													{#if board.totalCards > 0}
-														{@const pct = Math.round((board.completedCards / board.totalCards) * 100)}
+														{@const pct = completionPercent(board.completedCards, board.totalCards)}
 														<div class="progress-track"><div class="progress-fill" class:complete={pct === 100} style="width: {pct}%"></div></div>
 														<span class="progress-pct" class:complete={pct === 100}>{pct}%</span>
 													{:else}
@@ -796,7 +798,7 @@
 														<span class="board-row-count">{sb.total} card{sb.total !== 1 ? 's' : ''}</span>
 														<div class="board-row-progress">
 															{#if sb.total > 0}
-																{@const sbPct = Math.round((sb.done / sb.total) * 100)}
+																{@const sbPct = completionPercent(sb.done, sb.total)}
 																<div class="progress-track"><div class="progress-fill" class:complete={sbPct === 100} style="width: {sbPct}%"></div></div>
 																<span class="progress-pct" class:complete={sbPct === 100}>{sbPct}%</span>
 															{:else}
