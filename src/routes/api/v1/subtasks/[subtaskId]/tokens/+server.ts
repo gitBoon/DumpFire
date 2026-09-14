@@ -30,6 +30,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			body.model,
 			body.note,
 			{
+				apiCalls: body.apiCalls,
 				inputTokens: body.inputTokens,
 				outputTokens: body.outputTokens,
 				cacheReadTokens: body.cacheReadTokens,

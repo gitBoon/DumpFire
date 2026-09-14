@@ -76,6 +76,8 @@ export interface ReportData {
 	scope: 'board' | 'category' | 'all';
 	scopeName: string;
 	statusFilter: ReportStatusFilter;
+	/** Set when the report was narrowed to one person; null for everyone. */
+	assigneeName: string | null;
 
 	summary: {
 		/** Non-archived cards in scope (every board and sub-board), regardless of period. */
@@ -262,12 +264,21 @@ function generateReportForBoards(
 	periodEnd: string,
 	scopeName: string,
 	scope: 'board' | 'category' | 'all',
-	statusFilter: ReportStatusFilter = 'all'
+	statusFilter: ReportStatusFilter = 'all',
+	/**
+	 * Narrow the report to one person's work. Filters on assignment, so a card
+	 * with several assignees appears in each of their reports — the work was
+	 * genuinely theirs too, and dropping it would understate everyone but the
+	 * first name on the card.
+	 */
+	assigneeUserId: number | null = null,
+	assigneeName: string | null = null
 ): ReportData {
 	if (boardIds.length === 0) {
 		return {
 			generatedAt: new Date().toISOString(),
 			periodStart, periodEnd, scope, scopeName, statusFilter,
+			assigneeName,
 			summary: { totalCards: 0, totalSubtasks: 0, totalTasks: 0, completedInPeriod: 0, createdInPeriod: 0, outstanding: 0, todo: 0, inProgress: 0, overdue: 0 },
 			priorityBreakdown: { critical: 0, high: 0, medium: 0, low: 0 },
 			assigneeStats: [], outstandingTasks: [],
@@ -293,6 +304,18 @@ function generateReportForBoards(
 		: [];
 	const allUsers = db.select({ id: users.id, username: users.username }).from(users).all();
 	const userMap = new Map(allUsers.map(u => [u.id, u]));
+
+	// Narrow to one person's cards, if asked. Everything downstream — counts,
+	// breakdowns, outstanding and completed lists — derives from `allCards`, so
+	// filtering here keeps every figure internally consistent rather than
+	// leaving a total that disagrees with the list beneath it.
+	let scopedCards = allCards;
+	if (assigneeUserId !== null) {
+		const mine = new Set(
+			allAssignments.filter((a) => a.userId === assigneeUserId).map((a) => a.cardId)
+		);
+		scopedCards = allCards.filter((c) => mine.has(c.id));
+	}
 
 	const boardsInfo = db.select().from(boards).where(inArray(boards.id, boardIds)).all();
 	const boardMap = new Map(boardsInfo.map(b => [b.id, b]));
@@ -355,19 +378,19 @@ function generateReportForBoards(
 	}
 
 	const now = new Date().toISOString().split('T')[0];
-	const completedCards = allCards.filter(c => doneColIds.has(c.columnId));
-	const activeCards = allCards.filter(c => !doneColIds.has(c.columnId));
+	const completedCards = scopedCards.filter(c => doneColIds.has(c.columnId));
+	const activeCards = scopedCards.filter(c => !doneColIds.has(c.columnId));
 
 	const completedInPeriod = completedCards.filter(c => {
 		const completedDate = c.completedAt || c.updatedAt;
 		return completedDate >= periodStart && completedDate <= periodEnd;
 	});
 
-	const createdInPeriod = allCards.filter(c => c.createdAt >= periodStart && c.createdAt <= periodEnd);
+	const createdInPeriod = scopedCards.filter(c => c.createdAt >= periodStart && c.createdAt <= periodEnd);
 	const overdueCards = activeCards.filter(c => c.dueDate && c.dueDate < now);
 
 	// Split the open cards by where they sit on the board
-	const statusOf = (c: typeof allCards[number]): CardStatus => columnMap.get(c.columnId)?.status ?? 'in_progress';
+	const statusOf = (c: typeof scopedCards[number]): CardStatus => columnMap.get(c.columnId)?.status ?? 'in_progress';
 	const todoCards = activeCards.filter(c => statusOf(c) === 'todo');
 	const inProgressCards = activeCards.filter(c => statusOf(c) === 'in_progress');
 
@@ -387,7 +410,7 @@ function generateReportForBoards(
 	}
 
 	let totalSubtasks = 0;
-	for (const list of subtaskMap.values()) totalSubtasks += list.length;
+	for (const c of scopedCards) totalSubtasks += (subtaskMap.get(c.id) ?? []).length;
 
 	// Per-assignee stats
 	const assigneeMap = new Map<number, { completedInPeriod: number; outstanding: number }>();
@@ -395,7 +418,7 @@ function generateReportForBoards(
 		if (!assigneeMap.has(assignment.userId)) {
 			assigneeMap.set(assignment.userId, { completedInPeriod: 0, outstanding: 0 });
 		}
-		const card = allCards.find(c => c.id === assignment.cardId);
+		const card = scopedCards.find(c => c.id === assignment.cardId);
 		if (!card) continue;
 		const stats = assigneeMap.get(assignment.userId)!;
 		if (doneColIds.has(card.columnId)) {
@@ -482,7 +505,7 @@ function generateReportForBoards(
 	const boardBreakdown = boardIds.map(boardId => {
 		const b = boardMap.get(boardId);
 		const catInfo = getCatInfo(boardId);
-		const boardCards = allCards.filter(c => {
+		const boardCards = scopedCards.filter(c => {
 			const colInfo = columnMap.get(c.columnId);
 			return colInfo?.boardId === boardId;
 		});
@@ -504,10 +527,11 @@ function generateReportForBoards(
 	return {
 		generatedAt: new Date().toISOString(),
 		periodStart, periodEnd, scope, scopeName, statusFilter,
+		assigneeName,
 		summary: {
-			totalCards: allCards.length,
+			totalCards: scopedCards.length,
 			totalSubtasks,
-			totalTasks: allCards.length + totalSubtasks,
+			totalTasks: scopedCards.length + totalSubtasks,
 			completedInPeriod: completedInPeriod.length,
 			createdInPeriod: createdInPeriod.length,
 			outstanding: activeCards.length,
@@ -525,21 +549,30 @@ function generateReportForBoards(
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
+/** Resolve a user id to a name for the report header, or null when unfiltered. */
+function assigneeNameFor(userId: number | null): string | null {
+	if (userId === null) return null;
+	const u = db.select({ username: users.username }).from(users).where(eq(users.id, userId)).get();
+	return u?.username ?? `User #${userId}`;
+}
+
 export function generateBoardReport(
 	boardId: number, periodStart: string, periodEnd: string, user: SessionUser,
-	statusFilter: ReportStatusFilter = 'all'
+	statusFilter: ReportStatusFilter = 'all',
+	assigneeUserId: number | null = null
 ): ReportData | null {
 	if (!canViewBoard(user, boardId)) return null;
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) return null;
 	// Include all sub-boards recursively
 	const allBoardIds = collectSubBoardIds([boardId]);
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, board.name, 'board', statusFilter);
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, board.name, 'board', statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
 }
 
 export function generateCategoryReport(
 	categoryId: number, periodStart: string, periodEnd: string, user: SessionUser,
-	statusFilter: ReportStatusFilter = 'all'
+	statusFilter: ReportStatusFilter = 'all',
+	assigneeUserId: number | null = null
 ): ReportData | null {
 	const cat = db.select().from(boardCategories).where(eq(boardCategories.id, categoryId)).get();
 	if (!cat) return null;
@@ -551,18 +584,19 @@ export function generateCategoryReport(
 	if (catBoards.length === 0) return null;
 	// Include all sub-boards recursively
 	const allBoardIds = collectSubBoardIds(catBoards.map(b => b.id));
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, cat.name, 'category', statusFilter);
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, cat.name, 'category', statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
 }
 
 export function generateAllBoardsReport(
 	periodStart: string, periodEnd: string, user: SessionUser,
-	statusFilter: ReportStatusFilter = 'all'
+	statusFilter: ReportStatusFilter = 'all',
+	assigneeUserId: number | null = null
 ): ReportData | null {
 	if (user.role !== 'admin' && user.role !== 'superadmin') return null;
 	// Start from top-level boards only, then expand to include sub-boards
 	const topLevelBoards = db.select().from(boards).where(isNull(boards.parentCardId)).all();
 	const allBoardIds = collectSubBoardIds(topLevelBoards.map(b => b.id));
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, 'All Boards', 'all', statusFilter);
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, 'All Boards', 'all', statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
 }
 
 /**
@@ -605,6 +639,8 @@ export function generateCardReport(cardId: number): ReportData | null {
 		scope: 'board',
 		scopeName: `Task Report: ${card.title}`,
 		statusFilter: 'all',
+		// A single-card report is never scoped to one person.
+		assigneeName: null,
 
 		summary: {
 			totalCards: 1,
@@ -800,7 +836,12 @@ function drawTable(
 /**
  * Draw tasks with nested details — each task is a header row followed by
  * indented description + subtask rows within the same table structure.
- * When detailLevel is 'summary', only the main table rows are drawn (no detail sub-rows).
+ * Summary vs detailed differ in what the sub-row carries, not in whether there
+ * is one. A summary keeps the **business justification** — why the work is
+ * being done is the one thing a reader skimming a summary actually needs, and a
+ * list of titles without it says nothing about whether the work was worth
+ * doing. Description and subtasks are the implementation detail that a summary
+ * drops.
  */
 function drawTasksWithDetails(
 	doc: PDFKit.PDFDocument,
@@ -836,7 +877,11 @@ function drawTasksWithDetails(
 	for (let r = 0; r < tasks.length; r++) {
 		const task = tasks[r];
 		const pColor = priorityColors[task.priority] || C.medium;
-		const hasDetails = detailLevel === 'detailed' && (task.description || task.businessValue || task.subtasks.length > 0);
+		// Summary shows business value alone; detailed adds description and subtasks.
+		const showDescription = detailLevel === 'detailed' && !!task.description;
+		const showSubtasks = detailLevel === 'detailed' && task.subtasks.length > 0;
+		const showBusinessValue = !!task.businessValue;
+		const hasDetails = showDescription || showSubtasks || showBusinessValue;
 
 		// ─── Main Row ────────────────────────────────────────────────
 		let rowH = 16;
@@ -890,16 +935,16 @@ function drawTasksWithDetails(
 			// Measure detail height
 			let detailH = 6; // top padding
 			doc.font('Helvetica').fontSize(7.5);
-			if (task.description) {
+			if (showDescription) {
 				const desc = stripTag(task.description);
 				detailH += doc.heightOfString(desc, { width: detailW - 10 }) + 6;
 			}
-			if (task.businessValue) {
+			if (showBusinessValue) {
 				const bv = stripTag(task.businessValue);
 				detailH += 12; // "BUSINESS VALUE" label
 				detailH += doc.heightOfString(bv, { width: detailW - 10 }) + 6;
 			}
-			if (task.subtasks.length > 0) {
+			if (showSubtasks) {
 				detailH += 12; // "Subtasks" heading
 				for (const st of task.subtasks) {
 					detailH += doc.heightOfString(stripTag(st.title), { width: detailW - 30 }) + 3;
@@ -923,7 +968,7 @@ function drawTasksWithDetails(
 			let dy = y + 6;
 
 			// Description
-			if (task.description) {
+			if (showDescription) {
 				const desc = stripTag(task.description);
 				doc.font('Helvetica').fontSize(7.5).fillColor(C.textMuted)
 					.text(desc, detailX, dy, { width: detailW - 10 });
@@ -931,7 +976,7 @@ function drawTasksWithDetails(
 			}
 
 			// Business Value
-			if (task.businessValue) {
+			if (showBusinessValue) {
 				const bv = stripTag(task.businessValue);
 				doc.font('Helvetica-Bold').fontSize(6.5).fillColor(C.accent)
 					.text('BUSINESS VALUE', detailX, dy, { width: detailW - 10 });
@@ -942,7 +987,7 @@ function drawTasksWithDetails(
 			}
 
 			// Subtasks
-			if (task.subtasks.length > 0) {
+			if (showSubtasks) {
 				const done = task.subtasks.filter(s => s.completed).length;
 				doc.font('Helvetica-Bold').fontSize(7).fillColor(C.textMuted)
 					.text(`Subtasks (${done}/${task.subtasks.length})`, detailX, dy, { width: detailW - 10 });
@@ -982,7 +1027,7 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 		size: 'A4',
 		margins: { top: 36, bottom: 36, left: 40, right: 40 },
 		info: {
-			Title: `DumpFire Report - ${data.scopeName}`,
+			Title: `DumpFire Report - ${data.assigneeName ? `${data.scopeName} - ${data.assigneeName}` : data.scopeName}`,
 			Author: 'DumpFire',
 			Subject: `Report for ${data.scopeName} (${formatDate(data.periodStart)} - ${formatDate(data.periodEnd)})`
 		}
@@ -999,11 +1044,14 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 	// ─── Header Banner ───────────────────────────────────────────────────
 	doc.rect(0, 0, doc.page.width, 80).fill(C.headerBg);
 	const modeLabel = detailLevel === 'summary' ? 'Summary Report' : 'Detailed Report';
+	// A filtered report must say so on its face — the figures are that person's
+	// work only, and a reader who misses that will read them as the whole team's.
+	const scopeLabel = data.assigneeName ? `${data.scopeName} — ${data.assigneeName}` : data.scopeName;
 	const filterLabel = data.statusFilter !== 'all' ? `  ·  ${REPORT_STATUS_FILTER_LABELS[data.statusFilter]}` : '';
 	doc.font('Helvetica-Bold').fontSize(18).fillColor(C.headerText)
 		.text('DumpFire Report', mx, 14, { width: pw });
 	doc.font('Helvetica-Bold').fontSize(11).fillColor(C.accentLight)
-		.text(`${data.scopeName}  ·  ${modeLabel}${filterLabel}`, mx, 34, { width: pw });
+		.text(`${scopeLabel}  ·  ${modeLabel}${filterLabel}`, mx, 34, { width: pw });
 	doc.font('Helvetica-Bold').fontSize(10).fillColor(C.headerText)
 		.text(`${formatDate(data.periodStart)}  -  ${formatDate(data.periodEnd)}`, mx, 52, { width: pw });
 	doc.font('Helvetica').fontSize(7.5).fillColor(C.textLight)

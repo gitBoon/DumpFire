@@ -5,6 +5,7 @@
  *                     No storage — the PDF is ephemeral.
  */
 
+import { error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { boards, boardCategories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
@@ -22,6 +23,15 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const { scope, scopeId, periodStart, periodEnd, detailLevel: rawDetailLevel, statusFilter: rawStatusFilter } = body;
 	const detailLevel: 'summary' | 'detailed' = rawDetailLevel === 'summary' ? 'summary' : 'detailed';
 	const statusFilter = parseStatusFilter(rawStatusFilter);
+	// Optional: narrow the whole report to one person's assigned work.
+	const rawAssignee = body.assigneeUserId ?? body.userId ?? null;
+	const assigneeUserId =
+		rawAssignee === null || rawAssignee === '' || rawAssignee === 'all'
+			? null
+			: Number(rawAssignee);
+	if (assigneeUserId !== null && !Number.isInteger(assigneeUserId)) {
+		throw error(400, 'assigneeUserId must be a user id');
+	}
 
 	if (!scope || !periodStart || !periodEnd) {
 		return new Response(JSON.stringify({ error: 'Missing required fields: scope, periodStart, periodEnd' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
@@ -40,18 +50,18 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	if (scope === 'board') {
 		if (!scopeId) return new Response(JSON.stringify({ error: 'scopeId required for board scope' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user, statusFilter);
+		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId);
 		if (!reportData) return new Response(JSON.stringify({ error: 'Board not found or no access' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
 		const board = db.select().from(boards).where(eq(boards.id, scopeId)).get();
 		filename = `dumpfire-report-${(board?.name || 'board').toLowerCase().replace(/\s+/g, '-')}`;
 	} else if (scope === 'category') {
 		if (!scopeId) return new Response(JSON.stringify({ error: 'scopeId required for category scope' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user, statusFilter);
+		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId);
 		if (!reportData) return new Response(JSON.stringify({ error: 'Category not found or no accessible boards' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
 		const cat = db.select().from(boardCategories).where(eq(boardCategories.id, scopeId)).get();
 		filename = `dumpfire-report-${(cat?.name || 'category').toLowerCase().replace(/\s+/g, '-')}`;
 	} else {
-		reportData = generateAllBoardsReport(periodStart, periodEnd, user, statusFilter);
+		reportData = generateAllBoardsReport(periodStart, periodEnd, user, statusFilter, assigneeUserId);
 		if (!reportData) return new Response(JSON.stringify({ error: 'Failed to generate report' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
 		filename = 'dumpfire-report-all-boards';
 	}
