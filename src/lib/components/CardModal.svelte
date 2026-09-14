@@ -491,7 +491,7 @@
 		const id = card?.id;
 		if (!id) { tokenLedger = null; return; }
 		let cancelled = false;
-		fetch(`/api/v1/cards/${id}/tokens`)
+		fetch(`/api/cards/${id}/tokens`)
 			.then((r) => (r.ok ? r.json() : null))
 			.then((d) => { if (!cancelled) tokenLedger = d; })
 			.catch(() => { /* cost is supplementary — never block the card on it */ });
