@@ -6,6 +6,7 @@ import { getBoardRole } from '$lib/server/board-access';
 import { notifyCommentAdded, notifyRequesterProgress } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
 import { processMentions } from '$lib/server/mentions';
+import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
 
 /** GET — List all comments for a card (newest first). */
@@ -64,6 +65,14 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 		.values({ cardId, userId: locals.user.id, content: content.trim() })
 		.returning()
 		.get();
+
+	logUiActivity({
+		boardId: col.boardId,
+		cardId,
+		action: ACTIONS.commentAdded,
+		detail: `on "${card.title}"`,
+		...actorOf(locals.user)
+	});
 
 	// Notify all board members (fire-and-forget)
 	const baseUrl = resolveBaseUrl(request, url);

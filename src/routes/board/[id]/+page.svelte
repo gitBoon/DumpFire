@@ -58,6 +58,7 @@
 	import AddColumnModal from '$lib/components/board/AddColumnModal.svelte';
 	import CategoryModal from '$lib/components/board/CategoryModal.svelte';
 	import OnHoldModal from '$lib/components/board/OnHoldModal.svelte';
+	import CompletionPromptModal from '$lib/components/board/CompletionPromptModal.svelte';
 
 	// ─── Props & Core State ──────────────────────────────────────────────────
 
@@ -216,7 +217,7 @@
 		showCardModal = true;
 	}
 
-	async function saveCard(cardData: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[] }) {
+	async function saveCard(cardData: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[] }) {
 		const result = await cardActions.saveCard(editingCard, cardModalColumnId, data.board.id, boardColumns, cardData);
 		showCardModal = false;
 		if (result.isNew && cardData.title) {
@@ -572,6 +573,42 @@
 	let blockedState = $state<BlockedState>({ show: false, card: null, incomplete: 0, reason: 'subtasks' });
 	let onHoldState = $state<OnHoldState>({ show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 });
 
+	// ─── Completion prompt ───────────────────────────────────────────────────
+	// Asked after the move, never before it: the card is already complete and
+	// skipping costs nothing. Only cards actually missing one of the two fields
+	// are queued, so a card that already records them is never asked twice.
+	let completionQueue = $state<{ id: number; title: string }[]>([]);
+	let completionSummary = $state('');
+	let completionReason = $state('');
+	let completionCard = $derived(completionQueue[0] ?? null);
+
+	function queueCompletionPrompt(card: CardType) {
+		if (card.summary && card.closeReason) return;
+		completionQueue = [...completionQueue, { id: card.id, title: card.title }];
+	}
+
+	function nextCompletionPrompt() {
+		completionQueue = completionQueue.slice(1);
+		completionSummary = '';
+		completionReason = '';
+	}
+
+	async function saveCompletionPrompt() {
+		const current = completionQueue[0];
+		if (!current) return;
+		const patch: Record<string, string> = {};
+		if (completionSummary.trim()) patch.summary = completionSummary.trim();
+		if (completionReason) patch.closeReason = completionReason;
+
+		// Nothing typed is the same as skipping — do not write empty values over
+		// anything already recorded.
+		if (Object.keys(patch).length > 0) {
+			await api.updateCard(current.id, { ...patch, boardId: data.board.id });
+		}
+		nextCompletionPrompt();
+		if (completionQueue.length === 0) await invalidateAll();
+	}
+
 	async function confirmOnHold() {
 		await dndHandlers.confirmOnHold(onHoldState, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
 		logActivity('card_moved', `${onHoldState.cardTitle} → On Hold`, onHoldState.cardId);
@@ -656,6 +693,7 @@
 					if (entry.isComplete) {
 						playCompleteSound();
 						logActivity('card_completed', `${entry.card.title} (${entry.fromName} → ${entry.toName})`, entry.card.id);
+						queueCompletionPrompt(entry.card);
 					} else {
 						playMoveSound();
 						logActivity('card_moved', `${entry.card.title} (${entry.fromName} → ${entry.toName})`, entry.card.id);
@@ -1464,6 +1502,18 @@
 			addColumn();
 		}}
 		onClose={() => (showAddColumnModal = false)}
+	/>
+{/if}
+
+<!-- Completion prompt: summary and close reason, asked once per completed card -->
+{#if completionCard}
+	<CompletionPromptModal
+		cardTitle={completionCard.title}
+		bind:summary={completionSummary}
+		bind:closeReason={completionReason}
+		remaining={completionQueue.length - 1}
+		onSave={saveCompletionPrompt}
+		onSkip={nextCompletionPrompt}
 	/>
 {/if}
 

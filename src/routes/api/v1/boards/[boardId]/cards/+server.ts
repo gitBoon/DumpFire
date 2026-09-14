@@ -1,9 +1,11 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { cards, columns, subtasks, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
-import { eq, asc, and, isNull } from 'drizzle-orm';
+import { eq, asc, and, isNull, sql } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
+import { logActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
+import { normaliseReportingFields, ReportingFieldError } from '$lib/server/reporting-fields';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards/:boardId/cards — List all cards on a board. */
@@ -51,9 +53,35 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 
 	// Enrich with column title for convenience
 	const columnMap = new Map(boardColumns.map(c => [c.id, c.title]));
+
+	// Subtask counts, in one grouped query rather than one call per card.
+	// Reports need "3 of 7 done" for every card on a board; without this a
+	// 196-card report had to fetch each card individually, which is most of what
+	// made the first one cost 229 API calls.
+	const subtaskCounts = new Map<number, { total: number; completed: number }>();
+	if (allCards.length > 0) {
+		const rows = db
+			.select({
+				cardId: subtasks.cardId,
+				total: sql<number>`COUNT(*)`,
+				completed: sql<number>`SUM(CASE WHEN ${subtasks.completed} THEN 1 ELSE 0 END)`
+			})
+			.from(subtasks)
+			.innerJoin(cards, eq(subtasks.cardId, cards.id))
+			.innerJoin(columns, eq(cards.columnId, columns.id))
+			.where(eq(columns.boardId, boardId))
+			.groupBy(subtasks.cardId)
+			.all();
+		for (const r of rows) {
+			subtaskCounts.set(r.cardId, { total: Number(r.total), completed: Number(r.completed ?? 0) });
+		}
+	}
+
 	const enriched = allCards.map(card => ({
 		...card,
-		columnTitle: columnMap.get(card.columnId) || 'Unknown'
+		columnTitle: columnMap.get(card.columnId) || 'Unknown',
+		subtaskCount: subtaskCounts.get(card.id)?.total ?? 0,
+		subtaskCompleted: subtaskCounts.get(card.id)?.completed ?? 0
 	}));
 
 	return json(enriched);
@@ -72,6 +100,14 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	const body = await request.json();
 	const { columnId, title, description, priority, colorTag, categoryId, dueDate, businessValue, position } = body;
+
+	let reporting;
+	try {
+		reporting = normaliseReportingFields(body);
+	} catch (e) {
+		if (e instanceof ReportingFieldError) throw error(400, e.message);
+		throw e;
+	}
 
 	if (!columnId) throw error(400, 'columnId is required');
 	if (!title || !title.trim()) throw error(400, 'title is required');
@@ -94,10 +130,24 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			priority: priority || 'medium',
 			colorTag: colorTag || '',
 			dueDate: dueDate || null,
-			businessValue: businessValue || ''
+			businessValue: businessValue || '',
+			createdBy: locals.user.id,
+			...reporting
 		})
 		.returning()
 		.get();
+
+	// The creation event that never existed. Without it there was no way to find
+	// work that had been raised but not yet started, and no record of who raised
+	// it — `createdBy` answers the second half.
+	logActivity({
+		boardId,
+		cardId: card.id,
+		action: ACTIONS.cardCreated,
+		detail: card.title,
+		source: 'api',
+		...actorOf(locals.user)
+	});
 
 	emit(boardId, 'update', { type: 'card', action: 'created', cardTitle: card.title, userName: locals.user.username, userEmoji: locals.user.emoji || '\ud83d\udc64' });
 

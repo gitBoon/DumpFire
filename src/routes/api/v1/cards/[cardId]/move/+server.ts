@@ -5,7 +5,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
-import { logActivity } from '$lib/server/logActivity';
+import { logActivity, ACTIONS } from '$lib/server/logActivity';
 import { notifyRequesterProgress } from '$lib/server/notifications';
 import { applyUnblockEffects } from '$lib/server/planning';
 import { resolveBaseUrl } from '$lib/server/email';
@@ -224,12 +224,17 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 		});
 
 		if (isMovingColumn) {
+			// A completion is logged as a completion, not as a move. The UI does
+			// the same, so one query over `card_completed` counts every completion
+			// however it was performed \u2014 which is the whole point of a shared
+			// vocabulary, and what made an audit-based count under-report before.
 			logActivity({
 				boardId: sourceBoardId,
 				cardId,
 				userId: locals.user.id,
-				action: 'api:card_moved',
+				action: isCompleteColumn ? ACTIONS.cardCompleted : ACTIONS.cardMoved,
 				detail: `"${existingCard.title}" from ${fromCol?.title || 'Unknown'} to ${targetCol.title}`,
+				source: 'api',
 				userName: locals.user.username,
 				userEmoji: locals.user.emoji || '\ud83d\udc64'
 			});

@@ -149,6 +149,26 @@ export const cards = sqliteTable('cards', {
 	// A card belongs to at most one milestone. Nulled (not cascaded) when the
 	// milestone is deleted — losing a goal must never lose the work.
 	milestoneId: integer('milestone_id'),
+	// Who raised the card. Null for cards created before this was recorded —
+	// unknown authorship, not an unattributed guess.
+	createdBy: integer('created_by').references(() => users.id, { onDelete: 'set null' }),
+	// ─── Reporting fields ───────────────────────────────────────────────────
+	// What a management report needs and the technical card text cannot give it.
+	// All nullable: absent means "not recorded", which is an honest answer.
+	/** Plain English, ~12 words. Used verbatim in report appendices. */
+	summary: text('summary'),
+	/** new capability | customer issue | security & compliance | maintenance */
+	theme: text('theme'),
+	/** none | internal | live customers — optionally naming them. */
+	customerImpact: text('customer_impact'),
+	/**
+	 * delivered | not needed | superseded | parked.
+	 * All four land in a Complete column and are otherwise indistinguishable,
+	 * which is what made "145 completed" overstate what was actually built.
+	 */
+	closeReason: text('close_reason'),
+	/** built | on UAT | live */
+	releaseState: text('release_state'),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
@@ -190,6 +210,15 @@ export const activityLog = sqliteTable('activity_log', {
 	detail: text('detail').default(''),
 	userName: text('user_name').default(''),
 	userEmoji: text('user_emoji').default('👤'),
+	/**
+	 * Where the action came from: 'ui' or 'api'.
+	 *
+	 * Null on rows written before this column existed. Those are not backfilled
+	 * — the `api:` prefix on their action name already says which they were, and
+	 * readers derive it the same way (see `readSource` in logActivity.ts). A
+	 * guessed value would be indistinguishable from a recorded one.
+	 */
+	source: text('source'),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)

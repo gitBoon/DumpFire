@@ -4,6 +4,7 @@ import { subtasks, cards, columns } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
+import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
 
 /** Resolve the boardId for a given card. */
@@ -55,6 +56,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		.returning()
 		.get();
 
-	if (resolvedBoardId) emit(resolvedBoardId, 'update', { type: 'subtask' });
+	if (resolvedBoardId) {
+		logUiActivity({
+			boardId: resolvedBoardId,
+			cardId,
+			action: ACTIONS.subtaskCreated,
+			detail: subtask.title,
+			...actorOf(locals.user)
+		});
+		emit(resolvedBoardId, 'update', { type: 'subtask' });
+	}
 	return json(subtask, { status: 201 });
 };

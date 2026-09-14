@@ -3,13 +3,17 @@ import { db } from '$lib/server/db';
 import { cards, columns } from '$lib/server/db/schema';
 import { emit } from '$lib/server/events';
 import { canEditBoard } from '$lib/server/board-access';
+import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
+import { normaliseReportingFields } from '$lib/server/reporting-fields';
 import { eq } from 'drizzle-orm';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const { columnId, title, description, position, priority, colorTag, categoryId, dueDate, boardId, businessValue } = await request.json();
+	const body = await request.json();
+	const { columnId, title, description, position, priority, colorTag, categoryId, dueDate, boardId, businessValue } = body;
+	const reporting = normaliseReportingFields(body);
 
 	// Input length validation
 	if (title && title.length > 500) throw error(400, 'Title too long (max 500 chars)');
@@ -39,10 +43,25 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			priority: priority || 'medium',
 			colorTag: colorTag || '',
 			dueDate: dueDate || null,
-			businessValue: businessValue || ''
+			businessValue: businessValue || '',
+			createdBy: locals.user.id,
+			...reporting
 		})
 		.returning()
 		.get();
-	if (resolvedBoardId) emit(resolvedBoardId, 'update', { type: 'card', action: 'created', cardTitle: card.title, userName: locals.user.username, userEmoji: locals.user.emoji || '👤' });
+
+	if (resolvedBoardId) {
+		// A creation event at last. There was none — `card_created` never appeared
+		// in ~2,500 scanned entries — so "raised but not yet touched" work could
+		// not be found, and nothing recorded who raised it.
+		logUiActivity({
+			boardId: resolvedBoardId,
+			cardId: card.id,
+			action: ACTIONS.cardCreated,
+			detail: card.title,
+			...actorOf(locals.user)
+		});
+		emit(resolvedBoardId, 'update', { type: 'card', action: 'created', cardTitle: card.title, userName: locals.user.username, userEmoji: locals.user.emoji || '👤' });
+	}
 	return json(card, { status: 201 });
 };

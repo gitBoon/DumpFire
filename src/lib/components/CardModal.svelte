@@ -14,6 +14,14 @@
 	import { formatTokens } from '$lib/tokens';
 	import { costOf, formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
 	import { highlightMentions } from '$lib/utils/mentions';
+	import {
+		THEMES,
+		RELEASE_STATES,
+		CLOSE_REASONS,
+		CUSTOMER_IMPACTS,
+		SUMMARY_MAX,
+		FIELD_HINTS
+	} from '$lib/reporting';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import type { CardType, CategoryType, LabelType, SubtaskType, DependencyRefType, MilestoneType } from '$lib/types';
@@ -38,7 +46,7 @@
 		labels: LabelType[];
 		boardId: number;
 		boardUsers?: { id: number; username: string; email?: string; emoji: string }[];
-		onSave: (data: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[] }) => void;
+		onSave: (data: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[] }) => void;
 		onDelete?: () => void;
 		onClose: () => void;
 		onCreateSubBoard?: (name: string) => void;
@@ -96,6 +104,28 @@
 	let businessValue = $state(card?.businessValue || '');
 	let editingOnHold = $state(false);
 	let titleError = $state(false);
+
+	// ── Reporting fields ────────────────────────────────────────────────────
+	// Filled in here so a management report does not have to be reconstructed
+	// from technical card text later. Every one is optional: an empty field
+	// reports as "not recorded", which is a better answer than a guess.
+	let summary = $state(card?.summary || '');
+	let theme = $state(card?.theme || '');
+	let customerImpact = $state(card?.customerImpact || '');
+	let closeReason = $state(card?.closeReason || '');
+	let releaseState = $state(card?.releaseState || '');
+
+	// Open the section by default once anything in it has been recorded, so an
+	// existing value is never hidden behind a collapsed heading.
+	let showReporting = $state(
+		!!(card?.summary || card?.theme || card?.customerImpact || card?.closeReason || card?.releaseState)
+	);
+
+	/** How much is filled in, shown on the collapsed header so it is not forgotten. */
+	let reportingFilledCount = $derived(
+		[summary, theme, customerImpact, closeReason, releaseState].filter((v) => !!v && v.trim() !== '')
+			.length
+	);
 
 	// Chip dropdown visibility
 	let showPriorityDrop = $state(false);
@@ -313,6 +343,13 @@
 			title: title.trim(), description, priority, colorTag: '', categoryId,
 			dueDate: dueDate || null, onHoldNote: onHoldNote || undefined,
 			businessValue: businessValue || undefined,
+			// Sent as null rather than omitted when cleared, so emptying a field
+			// actually clears it instead of leaving the stored value in place.
+			summary: summary.trim() || null,
+			theme: theme || null,
+			customerImpact: customerImpact.trim() || null,
+			closeReason: closeReason || null,
+			releaseState: releaseState || null,
 			pendingSubtasks: pendingSubtasks.length > 0
 				? pendingSubtasks.map(s => JSON.stringify({ title: s.title, description: s.description, priority: s.priority, colorTag: s.colorTag, dueDate: s.dueDate }))
 				: undefined,
@@ -1000,6 +1037,78 @@
 			<textarea id="card-bv" placeholder="Why is this important? What value does it deliver?" bind:value={businessValue} rows="2"></textarea>
 		</div>
 		{/if}
+
+		<!--
+			Reporting — the five facts a management report needs that the technical
+			card text cannot supply. Collapsed by default so it stays out of the way
+			of writing a card, and expanded automatically once anything is recorded.
+		-->
+		<div class="form-group reporting-group">
+			<button type="button" class="reporting-toggle" onclick={() => (showReporting = !showReporting)}>
+				<span class="reporting-caret" class:open={showReporting}>▸</span>
+				Reporting
+				{#if !showReporting && reportingFilledCount > 0}
+					<span class="reporting-count">{reportingFilledCount} of 5 recorded</span>
+				{/if}
+			</button>
+
+			{#if showReporting}
+				<div class="reporting-fields">
+					<div class="reporting-row">
+						<label for="card-summary">Summary</label>
+						<input
+							id="card-summary"
+							type="text"
+							maxlength={SUMMARY_MAX}
+							placeholder="Plain English, about 12 words"
+							bind:value={summary}
+						/>
+						<small>{FIELD_HINTS.summary}</small>
+					</div>
+
+					<div class="reporting-grid">
+						<div class="reporting-row">
+							<label for="card-theme">Theme</label>
+							<select id="card-theme" bind:value={theme}>
+								<option value="">Not recorded</option>
+								{#each THEMES as t}<option value={t}>{t}</option>{/each}
+							</select>
+						</div>
+
+						<div class="reporting-row">
+							<label for="card-release">Release state</label>
+							<select id="card-release" bind:value={releaseState}>
+								<option value="">Not recorded</option>
+								{#each RELEASE_STATES as r}<option value={r}>{r}</option>{/each}
+							</select>
+						</div>
+
+						<div class="reporting-row">
+							<label for="card-close">Close reason</label>
+							<select id="card-close" bind:value={closeReason}>
+								<option value="">Not recorded</option>
+								{#each CLOSE_REASONS as r}<option value={r}>{r}</option>{/each}
+							</select>
+						</div>
+
+						<div class="reporting-row">
+							<label for="card-impact">Customer impact</label>
+							<input
+								id="card-impact"
+								type="text"
+								list="customer-impact-options"
+								placeholder="none / internal / live customers: Who"
+								bind:value={customerImpact}
+							/>
+							<datalist id="customer-impact-options">
+								{#each CUSTOMER_IMPACTS as c}<option value={c}></option>{/each}
+							</datalist>
+						</div>
+					</div>
+					<small class="reporting-note">{FIELD_HINTS.closeReason}</small>
+				</div>
+			{/if}
+		</div>
 
 		<!-- On Hold Note -->
 		{#if card?.onHoldNote}
@@ -1763,6 +1872,36 @@
 		text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: var(--space-sm);
 	}
 	.form-row { display: flex; gap: var(--space-lg); align-items: flex-start; }
+
+	/* Reporting fields — collapsed by default, so writing a card is unchanged. */
+	.reporting-group { border-top: 1px solid var(--border-subtle, rgba(128,128,128,0.18)); padding-top: var(--space-md); }
+	.reporting-toggle {
+		display: flex; align-items: center; gap: var(--space-sm);
+		background: none; border: none; padding: 0; cursor: pointer;
+		font-size: 0.7rem; font-weight: 600; color: var(--text-secondary);
+		text-transform: uppercase; letter-spacing: 0.05em;
+	}
+	.reporting-toggle:hover { color: var(--text-primary); }
+	.reporting-caret { display: inline-block; transition: transform 0.15s ease; }
+	.reporting-caret.open { transform: rotate(90deg); }
+	.reporting-count {
+		text-transform: none; letter-spacing: 0; font-weight: 500;
+		font-size: 0.68rem; color: var(--text-tertiary, var(--text-secondary)); opacity: 0.8;
+	}
+	.reporting-fields { margin-top: var(--space-md); display: flex; flex-direction: column; gap: var(--space-md); }
+	.reporting-grid {
+		display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+		gap: var(--space-md);
+	}
+	.reporting-row { display: flex; flex-direction: column; }
+	.reporting-row small {
+		margin-top: 4px; font-size: 0.68rem; line-height: 1.35;
+		color: var(--text-tertiary, var(--text-secondary)); opacity: 0.8;
+	}
+	.reporting-note {
+		font-size: 0.68rem; line-height: 1.35;
+		color: var(--text-tertiary, var(--text-secondary)); opacity: 0.8;
+	}
 
 	/* Inline category creation */
 	.new-cat-btn {

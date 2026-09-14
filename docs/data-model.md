@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.3
+version: 1.4
 status: As-Built
-date: 2026-09-11
+date: 2026-09-14
 tags:
   - database
   - schema
@@ -136,6 +136,12 @@ erDiagram
         text recurrence_rule
         text next_recurrence
         int milestone_id FK
+        int created_by FK
+        text summary
+        text theme
+        text customer_impact
+        text close_reason
+        text release_state
         text created_at
         text updated_at
     }
@@ -241,6 +247,7 @@ erDiagram
         text detail
         text user_name
         text user_emoji
+        text source
         text created_at
     }
 
@@ -433,9 +440,33 @@ stateDiagram-v2
 
 ## Key Schema Notes
 
-- **All timestamps** are stored as ISO 8601 text strings with `datetime('now')` default
+- **Timestamps come in two shapes, and they do not sort against each other.**
+  Columns defaulted by SQLite write `2026-04-09 13:53:46` (`datetime('now')`);
+  columns set from application code write `2026-04-09T13:54:01.210Z`
+  (`toISOString()`). Both are UTC. A space (`0x20`) sorts *before* `T` (`0x54`),
+  so comparing the two forms as strings — which is how every date filter in this
+  codebase works — gives the wrong answer: `'2026-09-14 09:00:00' <
+  '2026-09-14T00:00:00.000Z'` is **true**.
+
+  | Shape | Columns |
+  |---|---|
+  | `YYYY-MM-DD HH:MM:SS` | `cards.created_at`, `activity_log.created_at`, `card_comments.created_at` |
+  | ISO 8601 with `Z` | `cards.completed_at`, `cards.updated_at` |
+
+  Any query spanning both must normalise first. The reporting code does this with
+  `replace(substr(col, 1, 19), 'T', ' ')` on both sides; see
+  [Management Activity Reporting](management-reporting.md). Getting it wrong
+  silently includes or excludes a whole day at a window boundary.
 - **Positions** use `real` float type for fractional ordering — allows inserting between items without reordering all rows
 - **Sub-boards** are regular boards with a `parent_card_id` linking them to a card
 - **Soft delete** uses the `archived_at` column — a non-null value means the card is archived
 - **XP system** uses a separate `user_xp` table keyed by username for historical tracking
 - **Settings** is a simple key-value store for SMTP config, app URL, etc.
+- **Reporting fields** (`summary`, `theme`, `customer_impact`, `close_reason`,
+  `release_state`) are nullable and never backfilled — a null is "not recorded",
+  which is a different and more honest answer than a guess. Vocabularies are
+  enforced in the application rather than by `CHECK` constraints, because they
+  will change and SQLite cannot alter a `CHECK` without rebuilding the table.
+- **`cards.created_by`** records who raised a card; null for cards created before
+  it existed. **`activity_log.source`** records `ui` or `api`; null on older rows,
+  where the `api:` prefix on `action` carries the same fact and readers derive it.

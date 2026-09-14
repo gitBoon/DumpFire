@@ -30,6 +30,13 @@ export async function saveCard(
 		dueDate: string | null;
 		onHoldNote?: string;
 		businessValue?: string;
+		// Reporting fields travel straight through to the API with the rest of
+		// the card; null clears a value, undefined leaves it alone.
+		summary?: string | null;
+		theme?: string | null;
+		customerImpact?: string | null;
+		closeReason?: string | null;
+		releaseState?: string | null;
 		pendingSubtasks?: string[];
 	}
 ): Promise<{ isNew: boolean; title: string; cardId?: number }> {
