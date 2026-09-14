@@ -43,7 +43,7 @@
 		const p = priceFor(m.model === 'unspecified' ? null : m.model);
 		if (!p) return [];
 		const rows = [
-			{ label: 'cache read', tokens: m.cacheRead, rate: p.input * CACHE_READ_MULTIPLIER },
+			{ label: 'cache read', tokens: m.cacheRead, rate: p.input * (p.cacheReadMultiplier ?? CACHE_READ_MULTIPLIER) },
 			{ label: 'output', tokens: m.output, rate: p.output },
 			{ label: 'cache write 1h', tokens: m.cacheWrite1h, rate: p.input * CACHE_WRITE_1H_MULTIPLIER },
 			{ label: 'cache write 5m', tokens: m.cacheWrite5m, rate: p.input * CACHE_WRITE_5M_MULTIPLIER },
