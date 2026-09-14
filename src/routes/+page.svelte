@@ -12,6 +12,7 @@
 	import { theme } from '$lib/stores/theme';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { completionPercent } from '$lib/progress';
+	import { formatTokens } from '$lib/tokens';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
@@ -92,7 +93,7 @@
 	}
 
 	// Sort state
-	type SortColumn = 'name' | 'activity' | 'cards' | 'progress';
+	type SortColumn = 'name' | 'activity' | 'cards' | 'progress' | 'tokens';
 	let sortBy = $state<SortColumn>('name');
 	let sortDir = $state<'asc' | 'desc'>('asc');
 
@@ -321,6 +322,10 @@
 						const bPct = b.totalCards > 0 ? b.completedCards / b.totalCards : 0;
 						return dir * (aPct - bPct);
 					}
+					case 'tokens':
+						// Boards with nothing recorded sort as -1 so they group together
+						// at one end rather than mixing in with genuinely cheap boards.
+						return dir * ((a.tokenTotal ?? -1) - (b.tokenTotal ?? -1));
 					default:
 						return 0;
 				}
@@ -667,6 +672,7 @@
 						<button class="bch-activity bch-sort" class:active={sortBy === 'activity'} onclick={() => toggleSort('activity')}>Activity{sortArrow('activity')}</button>
 						<button class="bch-cards bch-sort" class:active={sortBy === 'cards'} onclick={() => toggleSort('cards')}>Cards{sortArrow('cards')}</button>
 						<button class="bch-progress bch-sort" class:active={sortBy === 'progress'} onclick={() => toggleSort('progress')}>Progress{sortArrow('progress')}</button>
+						<button class="bch-tokens bch-sort" class:active={sortBy === 'tokens'} onclick={() => toggleSort('tokens')} title="Tokens spent on this board. Blank means nothing has been recorded — not that it was free.">Tokens{sortArrow('tokens')}</button>
 						<span class="bch-actions"></span>
 					</div>
 
@@ -684,6 +690,10 @@
 								<span class="progress-pct">{allPct}%</span>
 							{/if}
 						</div>
+						<span class="board-row-tokens">
+							{#if data.allTasksTotals.tokenTotal != null}{formatTokens(data.allTasksTotals.tokenTotal)}
+							{:else}<span class="tok-empty">—</span>{/if}
+						</span>
 						<div class="board-row-actions"></div>
 					</a>
 
@@ -712,6 +722,7 @@
 												<span class="progress-pct empty">—</span>
 											{/if}
 										</div>
+											<span class="board-row-tokens">{#if board.tokenTotal !== null}{formatTokens(board.tokenTotal)}{:else}<span class="tok-empty" title="Nothing recorded — not the same as zero">—</span>{/if}</span>
 										<div class="board-row-actions">
 											<button class="row-fav-btn favourited" title="Remove from favourites" onclick={(e) => toggleFavourite(board.id, e)}>⭐</button>
 										</div>
@@ -769,6 +780,7 @@
 														<span class="progress-pct empty">—</span>
 													{/if}
 												</div>
+											<span class="board-row-tokens">{#if board.tokenTotal !== null}{formatTokens(board.tokenTotal)}{:else}<span class="tok-empty" title="Nothing recorded — not the same as zero">—</span>{/if}</span>
 												<div class="board-row-actions">
 									{#if board.subBoards && board.subBoards.length > 0}
 										{@const activeSubs = board.subBoards.filter((s: any) => showCompletedSubs || !(s.total > 0 && s.done === s.total))}
@@ -805,6 +817,7 @@
 																<span class="progress-pct empty">empty</span>
 															{/if}
 														</div>
+														<span class="board-row-tokens">{#if sb.tokenTotal !== null}{formatTokens(sb.tokenTotal)}{:else}<span class="tok-empty">—</span>{/if}</span>
 														<div class="board-row-actions">
 															<button class="row-delete-btn" title="Delete sub-board" onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(sb.id, sb.name); }}>
 																<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -1611,6 +1624,17 @@
 	.bch-activity { width: 80px; text-align: right; }
 	.bch-cards { width: 60px; text-align: right; }
 	.bch-progress { width: 100px; text-align: right; }
+	.bch-tokens { width: 74px; text-align: right; }
+	/* Cost is context, not the headline — it sits quieter than the card count
+	   so it informs without competing with name and progress. */
+	.board-row-tokens {
+		width: 74px; text-align: right; flex-shrink: 0;
+		font-size: 0.74rem; font-variant-numeric: tabular-nums;
+		color: var(--text-secondary); white-space: nowrap;
+	}
+	/* Nothing recorded. Deliberately fainter than a real figure: it is an
+	   absence of data, not a measurement of zero. */
+	.tok-empty { color: var(--text-tertiary); opacity: 0.55; }
 	.bch-actions { width: 80px; }
 
 	.board-row-link {

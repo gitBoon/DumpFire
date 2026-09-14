@@ -11,6 +11,7 @@
 	import DOMPurify from 'dompurify';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { completionPercent } from '$lib/progress';
+	import { formatTokens } from '$lib/tokens';
 	import { highlightMentions } from '$lib/utils/mentions';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
@@ -427,6 +428,41 @@
 	const completedCount = $derived(cardSubtasks.filter((st) => st.completed).length);
 	const totalCount = $derived(cardSubtasks.length);
 	const progress = $derived(completionPercent(completedCount, totalCount));
+
+	// ─── Token cost ──────────────────────────────────────────────────────────
+	// What this card actually cost, loaded on open. `recorded: false` means
+	// nothing has ever been reported — every card predating the ledger is in
+	// that state, and it must read as "not recorded" rather than as zero.
+	interface TokenLedger {
+		recorded: boolean;
+		total: number;
+		direct: number;
+		fromSubtasks: number;
+		entries: number;
+		byModel: { model: string; tokens: number }[];
+		entryList: {
+			id: number;
+			subtaskId: number | null;
+			subtaskTitle: string | null;
+			tokens: number;
+			model: string | null;
+			note: string | null;
+			createdAt: string;
+		}[];
+	}
+	let tokenLedger = $state<TokenLedger | null>(null);
+	let tokensExpanded = $state(false);
+
+	$effect(() => {
+		const id = card?.id;
+		if (!id) { tokenLedger = null; return; }
+		let cancelled = false;
+		fetch(`/api/v1/cards/${id}/tokens`)
+			.then((r) => (r.ok ? r.json() : null))
+			.then((d) => { if (!cancelled) tokenLedger = d; })
+			.catch(() => { /* cost is supplementary — never block the card on it */ });
+		return () => { cancelled = true; };
+	});
 
 	function getPriorityLabel(p: string) {
 		const m: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
@@ -969,6 +1005,50 @@
 				{#if totalCount > 0}
 					<div class="progress-bar-container">
 						<div class="progress-bar" style="width: {progress}%" class:complete={progress === 100}></div>
+					</div>
+				{/if}
+
+				{#if card && tokenLedger}
+					<!-- What this cost. Sits with the progress bar because "how much is
+					     done" and "what it took" are the same question asked twice. -->
+					<div class="token-cost">
+						{#if tokenLedger.recorded}
+							<button class="token-summary" onclick={() => (tokensExpanded = !tokensExpanded)} type="button">
+								<span class="token-label">Cost</span>
+								<span class="token-total">{formatTokens(tokenLedger.total)}</span>
+								<span class="token-sub">
+									tokens{#if tokenLedger.fromSubtasks !== 0} · incl. {formatTokens(tokenLedger.fromSubtasks)} from subtasks{/if}
+								</span>
+								<span class="token-chevron" class:open={tokensExpanded}>▾</span>
+							</button>
+							{#if tokensExpanded}
+								{#if tokenLedger.byModel.length > 1}
+									<div class="token-models">
+										{#each tokenLedger.byModel as m}
+											<span class="token-model-chip">{m.model} · {formatTokens(m.tokens)}</span>
+										{/each}
+									</div>
+								{/if}
+								<ul class="token-entries">
+									{#each tokenLedger.entryList as e}
+										<li class="token-entry" class:negative={e.tokens < 0}>
+											<span class="te-amount">{e.tokens > 0 ? '+' : ''}{formatTokens(e.tokens)}</span>
+											<span class="te-what">
+												{#if e.subtaskTitle}<span class="te-scope">{e.subtaskTitle}</span>{/if}
+												{#if e.note}<span class="te-note">{e.note}</span>{/if}
+												{#if !e.subtaskTitle && !e.note}<span class="te-note te-plain">card</span>{/if}
+											</span>
+											{#if e.model}<span class="te-model">{e.model}</span>{/if}
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						{:else}
+							<div class="token-summary token-none">
+								<span class="token-label">Cost</span>
+								<span class="token-sub">Not recorded</span>
+							</div>
+						{/if}
 					</div>
 				{/if}
 
@@ -1689,6 +1769,61 @@
 		background: var(--bg-base); padding: 1px 6px; border-radius: var(--radius-full);
 		text-transform: none; letter-spacing: 0;
 	}
+
+	/* === Token cost ==========================================================
+	   Cost is context for the work, not a headline, so it reads quieter than
+	   the title and the subtasks. The one thing it must never do is imply a
+	   measurement where none exists: "Not recorded" is a different statement
+	   from "0 tokens", and every card older than this feature is the former. */
+	.token-cost { margin-top: var(--space-sm); }
+	.token-summary {
+		display: flex; align-items: baseline; gap: var(--space-sm);
+		width: 100%; padding: 7px 10px;
+		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+		background: var(--bg-surface); color: inherit;
+		font-family: var(--font-family); text-align: left; cursor: pointer;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.token-summary:hover { border-color: var(--text-tertiary); }
+	.token-none { cursor: default; }
+	.token-none:hover { border-color: var(--glass-border); }
+	.token-label {
+		font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;
+		text-transform: uppercase; color: var(--text-tertiary);
+	}
+	.token-total {
+		font-size: 0.95rem; font-weight: 700; color: var(--text-primary);
+		font-variant-numeric: tabular-nums;
+	}
+	.token-sub { font-size: 0.74rem; color: var(--text-secondary); flex: 1; }
+	.token-chevron {
+		font-size: 0.7rem; color: var(--text-tertiary);
+		transition: transform var(--duration-fast) var(--ease-out);
+	}
+	.token-chevron.open { transform: rotate(180deg); }
+	.token-models { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+	.token-model-chip {
+		padding: 2px 8px; border-radius: var(--radius-full);
+		background: var(--glass-hover); color: var(--text-secondary);
+		font-size: 0.7rem; font-variant-numeric: tabular-nums;
+	}
+	.token-entries { list-style: none; margin: 8px 0 0; padding: 0; }
+	.token-entry {
+		display: flex; align-items: baseline; gap: var(--space-sm);
+		padding: 5px 10px; font-size: 0.74rem;
+		border-top: 1px solid var(--glass-border);
+	}
+	.te-amount {
+		min-width: 62px; font-weight: 600; font-variant-numeric: tabular-nums;
+		color: var(--text-primary);
+	}
+	/* A correction reads as a correction, not as more spend. */
+	.token-entry.negative .te-amount { color: var(--accent-amber, #f59e0b); }
+	.te-what { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+	.te-scope { color: var(--text-secondary); font-weight: 600; }
+	.te-note { color: var(--text-tertiary); }
+	.te-plain { font-style: italic; }
+	.te-model { color: var(--text-tertiary); font-size: 0.7rem; white-space: nowrap; }
 
 	.progress-bar-container {
 		height: 4px; background: var(--bg-base); border-radius: var(--radius-full);
