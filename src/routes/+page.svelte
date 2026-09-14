@@ -919,14 +919,17 @@
 					<div class="stat-sub">{a.pendingRequests} inbox pending</div>
 				</div>
 
-				<!-- Total cost across every board this user can see. Only rendered once
-				     something has actually been recorded: an empty card claiming "—"
-				     would be a permanent blank tile for anyone not using the feature. -->
-				{#if data.allTasksTotals.tokenTotal != null}
-					<div class="stat-card glass-glow accent-violet">
-						<div class="stat-header">
-							<span class="stat-label">Spend</span>
-						</div>
+				<!-- Total cost across every board this user can see.
+				     Always rendered, including when nothing has been recorded: a hidden
+				     tile is indistinguishable from a feature that did not ship, and the
+				     empty state is the only thing that explains why the columns are
+				     blank. "Nothing recorded yet" is a statement about the data, not a
+				     claim that the work was free. -->
+				<div class="stat-card glass-glow accent-violet">
+					<div class="stat-header">
+						<span class="stat-label">Spend</span>
+					</div>
+					{#if data.allTasksTotals.tokenTotal != null}
 						<div class="stat-value">{formatUsd(data.allTasksTotals.costUsd)}</div>
 						<div class="stat-sub" title="{SOURCE_NOTE} — {BLEND_NOTE}.">
 							{formatTokens(data.allTasksTotals.tokenTotal)} tokens · est.
@@ -936,8 +939,11 @@
 								</span>
 							{/if}
 						</div>
-					</div>
-				{/if}
+					{:else}
+						<div class="stat-value stat-muted">—</div>
+						<div class="stat-sub">Nothing recorded yet</div>
+					{/if}
+				</div>
 			</div>
 
 			<!-- Priority breakdown -->
@@ -1501,6 +1507,7 @@
 	/* Unpriced tokens are a gap in the data, not a small number — flagged rather
 	   than folded silently into the total. */
 	.stat-warn { color: var(--accent-amber, #f59e0b); }
+	.stat-muted { color: var(--text-tertiary); opacity: 0.6; }
 	.pulse-text { animation: pulse-red 2s infinite; }
 	@keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
