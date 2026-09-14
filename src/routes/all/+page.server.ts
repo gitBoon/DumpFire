@@ -4,6 +4,7 @@ import { asc, inArray, eq, isNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { getBlockedStateForCards } from '$lib/server/planning';
 import { milestoneNamesForCards } from '$lib/server/milestones';
+import { getCardTokenTotals } from '$lib/server/tokens';
 import type { PageServerLoad } from './$types';
 
 const DEFAULT_COMPLETED_LIMIT = 50;
@@ -190,7 +191,26 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const blockedState = getBlockedStateForCards(cardIds);
 	const milestoneNames = milestoneNamesForCards(cardIds);
 
+	// Cost per card across every board in scope, in one query. Cards with nothing
+	// recorded are omitted, so a card face shows no badge rather than a zero.
+	const allTaskTotals = getCardTokenTotals(allCards.map(c => c.id));
+	const cardTokens: Record<number, { tokens: number; costUsd: number | null }> = {};
+	let tokenSum = 0, costSum = 0, pricedAny = false, recordedAny = false;
+	for (const [id, t] of allTaskTotals) {
+		if (t.entries === 0) continue;
+		recordedAny = true;
+		cardTokens[id] = { tokens: t.total, costUsd: t.costUsd };
+		tokenSum += t.total;
+		if (t.costUsd !== null) { costSum += t.costUsd; pricedAny = true; }
+	}
+	// Null, not zero, when nothing anywhere has been recorded.
+	const allTokenSummary = recordedAny
+		? { total: tokenSum, costUsd: pricedAny ? costSum : null }
+		: null;
+
 	return {
+		cardTokens,
+		allTokenSummary,
 		boards: allBoards.map(b => ({ ...b, ...boardMap.get(b.id)! })),
 		buckets: grouped,
 		blockedState,
