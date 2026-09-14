@@ -24,6 +24,7 @@
 		tokens: number;
 		costUsd: number | null;
 		exact: boolean;
+		apiCalls: number | null;
 		input: number;
 		output: number;
 		cacheRead: number;
@@ -61,6 +62,7 @@
 		tokens: number;
 		costUsd: number | null;
 		entries: number;
+		apiCalls: number | null;
 		byModel: ModelRow[];
 	}
 	type Period = 'today' | 'week' | 'month' | 'year' | 'all';
@@ -89,6 +91,7 @@
 		rows.some((r) => r.costUsd !== null) ? rows.reduce((s, r) => s + (r.costUsd ?? 0), 0) : null
 	);
 	const maxTokens = $derived(Math.max(1, ...rows.map((r) => r.tokens)));
+	const totalCalls = $derived(rows.reduce((acc, r) => acc + (r.apiCalls ?? 0), 0));
 	/** Any figure still resting on the blend rather than a measured breakdown. */
 	const anyEstimated = $derived(rows.some((r) => r.byModel.some((m) => !m.exact)));
 
@@ -97,6 +100,20 @@
 		if (next.has(key)) next.delete(key);
 		else next.add(key);
 		expanded = next;
+	}
+
+	/**
+	 * The arithmetic behind a total, in one line.
+	 *
+	 * "196M tokens" reads as absurd; "408 calls x 470k context" reads as
+	 * arithmetic. The total is calls multiplied by the context each one re-read,
+	 * and separating them is the difference between a figure you can act on and
+	 * one you can only be alarmed by — a big number from many cheap calls and a
+	 * big number from a bloated context call for opposite responses.
+	 */
+	function perCall(tokens: number, calls: number | null, cost: number | null) {
+		if (!calls || calls <= 0) return null;
+		return { calls, context: Math.round(tokens / calls), cost: cost === null ? null : cost / calls };
 	}
 
 	/** Trim the vendor prefix so the column stays readable. */
@@ -139,6 +156,11 @@
 				<span class="totals-money">{formatUsd(totalCost)}</span>
 				<span class="totals-tokens">
 					{formatTokens(totalTokens)} tokens · {rows.length} {rows.length === 1 ? 'person' : 'people'}
+					{#if totalCalls > 0}
+						<br /><span class="totals-maths" title="Every API call re-reads the whole conversation, so the total is the number of round trips multiplied by the context size on each.">
+							{totalCalls.toLocaleString('en-GB')} API calls &times; ~{formatTokens(Math.round(totalTokens / totalCalls))} context each
+						</span>
+					{/if}
 				</span>
 			</div>
 
@@ -155,7 +177,7 @@
 								<span class="name">{r.username}</span>
 								<span class="meta">
 									{r.entries} {r.entries === 1 ? 'entry' : 'entries'} · {share}% ·
-									{r.byModel.length} {r.byModel.length === 1 ? 'model' : 'models'}
+									{r.byModel.length} {r.byModel.length === 1 ? 'model' : 'models'}{#if r.apiCalls} · {r.apiCalls.toLocaleString('en-GB')} calls{/if}
 								</span>
 							</div>
 							<div class="bar-wrap">
@@ -181,6 +203,15 @@
 											{#if !m.exact && m.costUsd !== null}<span class="est-tag" title="No measured breakdown for this model, so the cost assumes a 90/10 input/output split. Measure it with token-usage.mjs.">est</span>{/if}
 										</span>
 									</li>
+									{#if perCall(m.tokens, m.apiCalls, m.costUsd)}
+										{@const pc = perCall(m.tokens, m.apiCalls, m.costUsd)!}
+										<li class="part maths">
+											<span class="p-label">
+												{pc.calls.toLocaleString('en-GB')} calls &times; ~{formatTokens(pc.context)} context each
+											</span>
+											<span class="p-cost">{pc.cost === null ? '' : formatUsd(pc.cost) + ' / call'}</span>
+										</li>
+									{/if}
 									{#if components(m).length > 0}
 										<!-- Why the cost is what it is. Without this the total is a
 										     number to be taken on trust, and a wrong one looks
@@ -307,6 +338,15 @@
 	.p-rate { width: 74px; text-align: right; flex-shrink: 0; }
 	.p-share { width: 42px; text-align: right; flex-shrink: 0; }
 	.p-cost { width: 62px; text-align: right; flex-shrink: 0; color: var(--text-secondary); }
+	/* The arithmetic line reads as a derivation, not another component — it is
+	   the same tokens expressed a second way, so it sits apart from the sum. */
+	.part.maths {
+		color: var(--text-secondary);
+		border-top: 1px dashed var(--glass-border);
+		margin-top: 3px; padding-top: 4px;
+	}
+	.totals-maths { font-size: 0.72rem; color: var(--text-tertiary); }
+
 	.est-tag {
 		margin-left: 4px; font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
 		color: var(--accent-amber, #f59e0b);

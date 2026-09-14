@@ -1,0 +1,15 @@
+-- How many API calls a token entry covers.
+--
+-- Without this, a figure like "196M tokens" reads as absurd and has to be taken
+-- on trust. With it the number explains itself: 408 calls each re-reading a
+-- ~470k-token context is arithmetic, not a claim.
+--
+-- It is also the only way to see the two things that actually drive agentic
+-- cost, because the total conflates them: how many round trips were made, and
+-- how large the context was on each. A short session with a huge context and a
+-- long one with a small context can produce the same total for very different
+-- reasons, and only one of them is worth acting on.
+--
+-- Nullable and purely additive. Entries recorded before this keep working and
+-- simply have no call count; nothing is backfilled or inferred.
+ALTER TABLE token_usage ADD COLUMN api_calls INTEGER;

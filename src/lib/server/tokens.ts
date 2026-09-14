@@ -54,6 +54,7 @@ export interface TokenEntry {
 	cacheReadTokens: number | null;
 	cacheWrite5mTokens: number | null;
 	cacheWrite1hTokens: number | null;
+	apiCalls: number | null;
 	note: string | null;
 	createdAt: string;
 }
@@ -78,11 +79,16 @@ export interface TokenTotal {
 	costExact: boolean;
 	/** Tokens excluded from the cost because their model is unknown. */
 	unpricedTokens: number;
+	/**
+	 * API round trips behind the total, or null when no entry recorded it.
+	 * Total = calls x context size; without this the two cannot be separated.
+	 */
+	apiCalls: number | null;
 }
 
 const EMPTY: TokenTotal = {
 	total: 0, direct: 0, fromSubtasks: 0, entries: 0, byModel: [],
-	costUsd: null, costExact: false, unpricedTokens: 0
+	costUsd: null, costExact: false, unpricedTokens: 0, apiCalls: null
 };
 
 /** A total with no entries behind it. Callers render this as "—". */
@@ -124,6 +130,8 @@ function clean(value: unknown, max: number, field: string): string | null {
 }
 
 export interface BreakdownInput {
+	/** Round trips this entry covers. Optional, but it makes the total legible. */
+	apiCalls?: unknown;
 	inputTokens?: unknown;
 	outputTokens?: unknown;
 	cacheReadTokens?: unknown;
@@ -144,6 +152,14 @@ const NO_BREAKDOWN: StoredBreakdown = {
 	cacheReadTokens: null, cacheWrite5mTokens: null, cacheWrite1hTokens: null
 };
 
+/** Call counts are a plain positive integer, or absent. */
+function parseCallCount(v: unknown): number | null {
+	if (v === undefined || v === null || v === '') return null;
+	const n = Number(v);
+	if (!Number.isInteger(n) || n < 0) throw new TokenError(400, 'apiCalls must be a whole number');
+	return n;
+}
+
 /**
  * Validate a measured breakdown.
  *
@@ -158,7 +174,7 @@ const NO_BREAKDOWN: StoredBreakdown = {
  * about an order of magnitude in one direction or the other.
  */
 function validateBreakdown(total: number, b: BreakdownInput): StoredBreakdown {
-	const parts: (keyof BreakdownInput)[] = [
+	const parts: (keyof StoredBreakdown)[] = [
 		'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWrite5mTokens', 'cacheWrite1hTokens'
 	];
 	const given = parts.filter((k) => b[k] !== undefined && b[k] !== null);
@@ -245,6 +261,7 @@ export function recordTokenUsage(
 	note?: unknown,
 	breakdown?: BreakdownInput
 ): RecordResult {
+	const calls = parseCallCount(breakdown?.apiCalls);
 	const amount = validateAmount(tokens);
 	const modelName = clean(model, MAX_MODEL_LEN, 'model');
 	const noteText = clean(note, MAX_NOTE_LEN, 'note');
@@ -265,6 +282,7 @@ export function recordTokenUsage(
 			cacheReadTokens: split.cacheReadTokens,
 			cacheWrite5mTokens: split.cacheWrite5mTokens,
 			cacheWrite1hTokens: split.cacheWrite1hTokens,
+			apiCalls: calls,
 			note: noteText,
 			reportedByUserId: user.id
 		})
@@ -280,6 +298,7 @@ export interface BatchEntryInput {
 	tokens?: unknown;
 	model?: unknown;
 	note?: unknown;
+	apiCalls?: unknown;
 	inputTokens?: unknown;
 	outputTokens?: unknown;
 	cacheReadTokens?: unknown;
@@ -315,6 +334,7 @@ export function recordTokenUsageBatch(
 		model: string | null;
 		note: string | null;
 		split: StoredBreakdown;
+		calls: number | null;
 		boardId: number;
 		cardId: number;
 	}[] = [];
@@ -338,9 +358,10 @@ export function recordTokenUsageBatch(
 			const model = clean(e.model, MAX_MODEL_LEN, 'model');
 			const note = clean(e.note, MAX_NOTE_LEN, 'note');
 			const split = validateBreakdown(tokens, e);
+			const calls = parseCallCount(e.apiCalls);
 			const boardId = resolveTarget(user, target);
 			const cardId = target.kind === 'card' ? target.id : getSubtaskCardId(target.id)!;
-			prepared.push({ target, tokens, model, note, split, boardId, cardId });
+			prepared.push({ target, tokens, model, note, split, calls, boardId, cardId });
 		} catch (err) {
 			problems.push({ index, reason: err instanceof TokenError ? err.message : String(err) });
 		}
@@ -361,6 +382,7 @@ export function recordTokenUsageBatch(
 					cacheReadTokens: p.split.cacheReadTokens,
 					cacheWrite5mTokens: p.split.cacheWrite5mTokens,
 					cacheWrite1hTokens: p.split.cacheWrite1hTokens,
+					apiCalls: p.calls,
 					note: p.note,
 					reportedByUserId: user.id
 				})
@@ -444,7 +466,8 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 			byModel: [],
 			costUsd: null,
 			costExact: false,
-			unpricedTokens: 0
+			unpricedTokens: 0,
+			apiCalls: null
 		});
 	}
 
@@ -461,6 +484,8 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 			        SUM(tu.cache_read_tokens)       AS cacheReadTokens,
 			        SUM(tu.cache_write_5m_tokens)   AS cw5m,
 			        SUM(tu.cache_write_1h_tokens)   AS cw1h,
+			        SUM(tu.api_calls)               AS apiCalls,
+			        COUNT(tu.api_calls)             AS withCalls,
 			        COUNT(*)                        AS n,
 			        COUNT(tu.input_tokens)          AS withSplit,
 			        COUNT(tu.cache_read_tokens)     AS withBreakdown
@@ -473,6 +498,7 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 		cardId: number; model: string | null; tokens: number;
 		inputTokens: number | null; outputTokens: number | null;
 		cacheReadTokens: number | null; cw5m: number | null; cw1h: number | null;
+		apiCalls: number | null; withCalls: number;
 		n: number; withSplit: number; withBreakdown: number;
 	}[];
 
@@ -510,6 +536,11 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 		existing.costUsd = cost.usd;
 		existing.costExact = cost.exact;
 		existing.unpricedTokens = cost.unpricedTokens;
+		// Only usable when EVERY entry carried a count: dividing the full token
+		// total by a partial call count yields an impossible context-per-call.
+		const complete = rows2.every((r) => r.withCalls === r.n);
+		const calls = rows2.reduce((sum, r) => sum + (r.apiCalls ?? 0), 0);
+		existing.apiCalls = complete && calls > 0 ? calls : null;
 	}
 	return out;
 }
@@ -578,6 +609,7 @@ export function getCardTokenEntries(cardId: number): TokenEntry[] {
 			        tu.cache_read_tokens      AS cacheReadTokens,
 			        tu.cache_write_5m_tokens  AS cacheWrite5mTokens,
 			        tu.cache_write_1h_tokens  AS cacheWrite1hTokens,
+			        tu.api_calls              AS apiCalls,
 			        tu.note          AS note,
 			        tu.created_at    AS createdAt
 			   FROM token_usage tu
@@ -707,10 +739,14 @@ export interface UserSpendRow {
 	 * point of recording the model: the same token count on Opus and on Haiku is
 	 * very different money, so a person's total says little without it.
 	 */
+	/** Round trips behind this person's figure, or null when unrecorded. */
+	apiCalls: number | null;
 	byModel: {
 		model: string;
 		tokens: number;
 		costUsd: number | null;
+		/** Round trips for this model. Total = calls x context size. */
+		apiCalls: number | null;
 		/** True when this model's whole figure came from measured breakdowns. */
 		exact: boolean;
 		/** The components, so a reader can see *why* the cost is what it is. */
@@ -757,6 +793,8 @@ export function getUserSpendByPeriod(
 			        SUM(tu.cache_read_tokens)     AS cacheReadTokens,
 			        SUM(tu.cache_write_5m_tokens) AS cw5m,
 			        SUM(tu.cache_write_1h_tokens) AS cw1h,
+			        SUM(tu.api_calls)       AS apiCalls,
+			        COUNT(tu.api_calls)     AS withCalls,
 			        COUNT(*)                AS n,
 			        COUNT(tu.input_tokens)  AS withSplit,
 			        COUNT(tu.cache_read_tokens) AS withBreakdown
@@ -773,6 +811,7 @@ export function getUserSpendByPeriod(
 		model: string | null; day: string; tokens: number;
 		inputTokens: number | null; outputTokens: number | null;
 		cacheReadTokens: number | null; cw5m: number | null; cw1h: number | null;
+		apiCalls: number | null; withCalls: number;
 		n: number; withSplit: number; withBreakdown: number;
 	}[];
 
@@ -827,7 +866,7 @@ export function getUserSpendByPeriod(
 			// Same person, same model, several days — fold the days together.
 			const modelTotals = new Map<string, {
 				tokens: number; input: number | null; output: number | null;
-				cacheRead: number; cw5m: number; cw1h: number;
+				cacheRead: number; cw5m: number; cw1h: number; apiCalls: number; withCalls: number;
 				n: number; withSplit: number; withBreakdown: number;
 			}>();
 			for (const r of group) {
@@ -837,6 +876,8 @@ export function getUserSpendByPeriod(
 					tokens: (prev?.tokens ?? 0) + r.tokens,
 					input: r.inputTokens === null ? (prev?.input ?? null) : (prev?.input ?? 0) + r.inputTokens,
 					output: r.outputTokens === null ? (prev?.output ?? null) : (prev?.output ?? 0) + r.outputTokens,
+					apiCalls: (prev?.apiCalls ?? 0) + (r.apiCalls ?? 0),
+					withCalls: (prev?.withCalls ?? 0) + r.withCalls,
 					cacheRead: (prev?.cacheRead ?? 0) + (r.cacheReadTokens ?? 0),
 					cw5m: (prev?.cw5m ?? 0) + (r.cw5m ?? 0),
 					cw1h: (prev?.cw1h ?? 0) + (r.cw1h ?? 0),
@@ -850,6 +891,7 @@ export function getUserSpendByPeriod(
 					model,
 					tokens: t.tokens,
 					exact: t.withBreakdown === t.n && t.input !== null && t.output !== null,
+					apiCalls: t.withCalls === t.n && t.apiCalls > 0 ? t.apiCalls : null,
 					input: t.input ?? 0,
 					output: t.output ?? 0,
 					cacheRead: t.cacheRead,
@@ -875,6 +917,9 @@ export function getUserSpendByPeriod(
 				tokens: group.reduce((sum, r) => sum + r.tokens, 0),
 				costUsd: cost.usd,
 				entries: group.reduce((sum, r) => sum + r.n, 0),
+				apiCalls: group.every((r) => r.withCalls === r.n)
+					? group.reduce((sum, r) => sum + (r.apiCalls ?? 0), 0) || null
+					: null,
 				byModel
 			});
 		}

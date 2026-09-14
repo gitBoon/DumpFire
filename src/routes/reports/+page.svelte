@@ -26,6 +26,12 @@
 	let genCustomEnd = $state('');
 	let genDetailLevel = $state<'summary' | 'detailed'>('detailed');
 	let genStatusFilter = $state<StatusFilter>('all');
+	/**
+	 * Narrow the report to one person's assigned work. 'all' means everyone —
+	 * every figure in the report then derives from the filtered card set, so a
+	 * person report's totals agree with the lists beneath them.
+	 */
+	let genAssignee = $state<string>('all');
 	let generating = $state(false);
 	let genError = $state('');
 
@@ -145,7 +151,8 @@
 					periodStart: start,
 					periodEnd: end,
 					detailLevel: genDetailLevel,
-					statusFilter: genStatusFilter
+					statusFilter: genStatusFilter,
+					assigneeUserId: genAssignee === 'all' ? null : Number(genAssignee)
 				})
 			});
 			if (!res.ok) {
@@ -206,7 +213,8 @@
 					periodEnd: end,
 					recipients,
 					detailLevel: genDetailLevel,
-					statusFilter: genStatusFilter
+					statusFilter: genStatusFilter,
+					assigneeUserId: genAssignee === 'all' ? null : Number(genAssignee)
 				})
 			});
 			const data = await res.json();
@@ -477,6 +485,20 @@
 							<option value="detailed">📋 Detailed — full descriptions, business value, subtasks</option>
 							<option value="summary">📊 Summary — metrics and task listings only</option>
 						</select>
+					</div>
+					<div class="form-group">
+						<label for="gen-assignee">Person</label>
+						<select id="gen-assignee" bind:value={genAssignee}>
+							<option value="all">👥 Everyone</option>
+							{#each data.assignableUsers as u}
+								<option value={String(u.id)}>{u.emoji} {u.username}</option>
+							{/each}
+						</select>
+						<span class="form-hint">
+							{genAssignee === 'all'
+								? 'Every assignee on the selected boards.'
+								: 'Only cards assigned to this person — a card they share with someone else still counts for both.'}
+						</span>
 					</div>
 					<div class="form-group">
 						<label for="gen-status">Include</label>

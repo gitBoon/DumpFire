@@ -614,6 +614,12 @@ export const tokenUsage = sqliteTable('token_usage', {
 	cacheReadTokens: integer('cache_read_tokens'),
 	cacheWrite5mTokens: integer('cache_write_5m_tokens'),
 	cacheWrite1hTokens: integer('cache_write_1h_tokens'),
+	/**
+	 * API calls this entry covers. The total is calls x context size, and only
+	 * this separates the two — a figure alone cannot say whether it was many
+	 * round trips or a large context, and only one of those is worth acting on.
+	 */
+	apiCalls: integer('api_calls'),
 	note: text('note'),
 	reportedByUserId: integer('reported_by_user_id').references(() => users.id, {
 		onDelete: 'set null'
