@@ -10,11 +10,15 @@
  * derived from it is labelled an estimate. A cost number people trust without
  * knowing what it rests on is worse than no cost number.
  *
- * Prices verified 2026-06-24. They are list rates and change — SOURCE_NOTE is
- * rendered next to the totals so nobody has to guess how stale this is.
+ * Every rate here was checked against the published pricing table on
+ * 2026-09-14 — base input, both cache-write tiers, cache read and output, for
+ * all seventeen models. They are list rates and change, so SOURCE_NOTE is
+ * rendered next to the totals and nobody has to guess how stale this is.
+ *
+ * Source: https://platform.claude.com/docs/en/about-claude/pricing
  */
 
-export const PRICING_VERIFIED = '2026-06-24';
+export const PRICING_VERIFIED = '2026-09-14';
 export const SOURCE_NOTE = `Anthropic list prices, USD, verified ${PRICING_VERIFIED}`;
 
 export interface ModelPrice {
@@ -23,6 +27,13 @@ export interface ModelPrice {
 	/** USD per million output tokens. */
 	output: number;
 	label: string;
+	/**
+	 * Cache-read multiplier, when the model does not use the standard 0.1x.
+	 * Claude Fable 5.1 and Mythos 5.1 read cache at 0.025x — pricing them at
+	 * 0.1x would overstate their cache reads fourfold, and cache reads are
+	 * ~99% of agentic usage.
+	 */
+	cacheReadMultiplier?: number;
 }
 
 /**
@@ -30,16 +41,26 @@ export interface ModelPrice {
  * dated variant (`claude-haiku-4-5-20251001`) still matches its family.
  */
 export const MODEL_PRICES: Record<string, ModelPrice> = {
-	'claude-fable-5-1': { input: 10, output: 50, label: 'Fable 5.1' },
-	'claude-mythos-5-1': { input: 10, output: 50, label: 'Mythos 5.1' },
+	// Cache-read rates confirmed against the published table: Opus 5 $0.50/MTok,
+	// Sonnet 5 $0.20, Haiku 4.5 $0.10 — all 0.1x of base input. The two 5.1
+	// models are the exception at 0.025x ($0.25 on a $10 base).
+	'claude-fable-5-1': { input: 10, output: 50, label: 'Fable 5.1', cacheReadMultiplier: 0.025 },
+	'claude-mythos-5-1': { input: 10, output: 50, label: 'Mythos 5.1', cacheReadMultiplier: 0.025 },
 	'claude-fable-5': { input: 10, output: 50, label: 'Fable 5' },
+	'claude-mythos-5': { input: 10, output: 50, label: 'Mythos 5' },
 	'claude-opus-5': { input: 5, output: 25, label: 'Opus 5' },
 	'claude-opus-4-8': { input: 5, output: 25, label: 'Opus 4.8' },
 	'claude-opus-4-7': { input: 5, output: 25, label: 'Opus 4.7' },
 	'claude-opus-4-6': { input: 5, output: 25, label: 'Opus 4.6' },
+	'claude-opus-4-5': { input: 5, output: 25, label: 'Opus 4.5' },
+	'claude-opus-4-1': { input: 15, output: 75, label: 'Opus 4.1' },
+	'claude-opus-4': { input: 15, output: 75, label: 'Opus 4' },
 	'claude-sonnet-5': { input: 2, output: 10, label: 'Sonnet 5' },
 	'claude-sonnet-4-6': { input: 3, output: 15, label: 'Sonnet 4.6' },
-	'claude-haiku-4-5': { input: 1, output: 5, label: 'Haiku 4.5' }
+	'claude-sonnet-4-5': { input: 3, output: 15, label: 'Sonnet 4.5' },
+	'claude-sonnet-4': { input: 3, output: 15, label: 'Sonnet 4' },
+	'claude-haiku-4-5': { input: 1, output: 5, label: 'Haiku 4.5' },
+	'claude-haiku-3-5': { input: 0.8, output: 4, label: 'Haiku 3.5' }
 };
 
 /**
@@ -132,7 +153,7 @@ export function costOfBreakdown(b: TokenBreakdown, model: string | null): number
 	return (
 		(b.input / m) * price.input +
 		(b.output / m) * price.output +
-		(b.cacheRead / m) * price.input * CACHE_READ_MULTIPLIER +
+		(b.cacheRead / m) * price.input * (price.cacheReadMultiplier ?? CACHE_READ_MULTIPLIER) +
 		(b.cacheWrite5m / m) * price.input * CACHE_WRITE_5M_MULTIPLIER +
 		(b.cacheWrite1h / m) * price.input * CACHE_WRITE_1H_MULTIPLIER
 	);
