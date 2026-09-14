@@ -589,6 +589,81 @@ export function getBoardTokenTotals(
 	return out;
 }
 
+/**
+ * Token spend grouped by the person each entry was reported under.
+ *
+ * A caveat worth stating wherever this is shown: the ledger records **who
+ * reported the entry**, which is the owner of the API key or session that made
+ * the call. When an agent reports on someone's behalf the spend lands against
+ * that person — which is usually what you want, since it was their session that
+ * incurred it, but it is "reported by", not "typed by".
+ *
+ * Scoped to the same boards as the caller's other totals so the breakdown adds
+ * up to the headline figure rather than quietly covering a different set.
+ */
+export function getUserTokenTotals(
+	boardIds: number[]
+): { userId: number | null; username: string; emoji: string; tokens: number; costUsd: number | null; entries: number }[] {
+	if (boardIds.length === 0) return [];
+	const placeholders = boardIds.map(() => '?').join(',');
+
+	// Grouped by user AND model, because each model prices differently and a
+	// user's total is the sum of their per-model spend.
+	const rows = sqlite
+		.prepare(
+			`SELECT tu.reported_by_user_id AS userId,
+			        u.username             AS username,
+			        u.emoji                AS emoji,
+			        tu.model               AS model,
+			        SUM(tu.tokens)         AS tokens,
+			        SUM(tu.input_tokens)   AS inputTokens,
+			        SUM(tu.output_tokens)  AS outputTokens,
+			        COUNT(*)               AS n,
+			        COUNT(tu.input_tokens) AS withSplit
+			   FROM token_usage tu
+			   LEFT JOIN subtasks s ON s.id = tu.subtask_id
+			   JOIN cards c    ON c.id = COALESCE(tu.card_id, s.card_id)
+			   JOIN columns co ON co.id = c.column_id
+			   LEFT JOIN users u ON u.id = tu.reported_by_user_id
+			  WHERE co.board_id IN (${placeholders}) AND c.archived_at IS NULL
+			  GROUP BY tu.reported_by_user_id, tu.model`
+		)
+		.all(...boardIds) as {
+		userId: number | null; username: string | null; emoji: string | null; model: string | null;
+		tokens: number; inputTokens: number | null; outputTokens: number | null;
+		n: number; withSplit: number;
+	}[];
+
+	const byUser = new Map<number | null, typeof rows>();
+	for (const r of rows) {
+		if (!byUser.has(r.userId)) byUser.set(r.userId, []);
+		byUser.get(r.userId)!.push(r);
+	}
+
+	const out = [];
+	for (const [userId, group] of byUser) {
+		const cost = costOf(
+			group.map((r) => ({
+				tokens: r.tokens,
+				model: r.model,
+				inputTokens: r.withSplit === r.n ? r.inputTokens : null,
+				outputTokens: r.withSplit === r.n ? r.outputTokens : null
+			}))
+		);
+		out.push({
+			userId,
+			// A deleted user leaves its entries behind — the spend happened, so it
+			// is still counted rather than dropped from the total.
+			username: group[0].username ?? 'Deleted user',
+			emoji: group[0].emoji ?? '👤',
+			tokens: group.reduce((sum, r) => sum + r.tokens, 0),
+			costUsd: cost.usd,
+			entries: group.reduce((sum, r) => sum + r.n, 0)
+		});
+	}
+	return out.sort((a, b) => b.tokens - a.tokens);
+}
+
 /** Total across one milestone's cards, for the planning view. */
 export function getMilestoneTokenTotal(milestoneId: number): { total: number; entries: number } {
 	const memberIds = db

@@ -12,7 +12,7 @@
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { completionPercent } from '$lib/progress';
 	import { formatTokens } from '$lib/tokens';
-	import { costOf, formatUsd, BLEND_NOTE, SOURCE_NOTE } from '$lib/pricing';
+	import { costOf, formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
 	import { highlightMentions } from '$lib/utils/mentions';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
@@ -1051,7 +1051,7 @@
 								<span class="token-label">Cost</span>
 								<span class="token-total">{formatTokens(tokenLedger.total)}</span>
 								{#if tokenLedger.costUsd !== null}
-									<span class="token-money" title="{SOURCE_NOTE}{tokenLedger.costExact ? ' — exact, from reported input/output splits' : ` — ${BLEND_NOTE}`}.">
+									<span class="token-money" title="{NOT_BILLED_NOTE}. {SOURCE_NOTE}{tokenLedger.costExact ? ' — exact, from reported input/output splits' : ` — ${BLEND_NOTE}`}.">
 										{formatUsd(tokenLedger.costUsd)}{#if !tokenLedger.costExact}<span class="token-est">est</span>{/if}
 									</span>
 								{/if}
@@ -1109,7 +1109,7 @@
 									<span class="subtask-title">{subtask.title}</span>
 									{#if subtaskCost.get(subtask.id)}
 										{@const sc = subtaskCost.get(subtask.id)!}
-										<span class="st-cost" title="{formatTokens(sc.tokens)} tokens · {SOURCE_NOTE} — {BLEND_NOTE}.">
+										<span class="st-cost" title="{formatTokens(sc.tokens)} tokens · {NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
 											{formatTokens(sc.tokens)}{#if sc.costUsd !== null} · {formatUsd(sc.costUsd)}{/if}
 										</span>
 									{/if}
