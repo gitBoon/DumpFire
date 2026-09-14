@@ -10,6 +10,8 @@
   import type { CardType, CategoryType, LabelType } from '$lib/types';
   import { subtaskProgress, getCategoryById, getLabelById, getPriorityLabel, isCompleteColumn, isOnHoldColumn } from '$lib/utils/card-utils';
   import { getRelativeAge, getDueStatus, getDueRelative, isStale, parseUTC } from '$lib/utils/date-utils';
+  import { formatTokens } from '$lib/tokens';
+  import { formatUsd, BLEND_NOTE } from '$lib/pricing';
 
   /**
    * @prop card — The card data to render
@@ -25,6 +27,9 @@
    * @prop blockers — Open blockers for this card, from the board loader's
    *        single-pass blocked state. Empty or absent means nothing is blocking it.
    * @prop milestoneName — Name of the milestone this card belongs to, if any
+   * @prop tokenCost — What this card cost, or null when nothing has been recorded.
+   *   Absent renders as nothing at all rather than a zero, because a card that
+   *   predates the ledger was not free — its cost is simply unknown.
    */
   let {
     card,
@@ -38,7 +43,8 @@
     isSelected = false,
     matchesSearch = true,
     blockers = [],
-    milestoneName = null
+    milestoneName = null,
+    tokenCost = null
   }: {
     card: CardType;
     columnTitle: string;
@@ -52,6 +58,7 @@
     matchesSearch: boolean;
     blockers?: { id: number; title: string; columnTitle: string; boardName: string; boardId: number }[];
     milestoneName?: string | null;
+    tokenCost?: { tokens: number; costUsd: number | null } | null;
   } = $props();
 
   /**
@@ -182,6 +189,11 @@
       </span>
     {/if}
     <span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt, tick)}</span>
+    {#if tokenCost}
+      <span class="cost-badge" title="{formatTokens(tokenCost.tokens)} tokens{tokenCost.costUsd !== null ? ` · estimated ${formatUsd(tokenCost.costUsd)}, ${BLEND_NOTE}` : ' · no model recorded, so it cannot be priced'}">
+        {formatTokens(tokenCost.tokens)}{#if tokenCost.costUsd !== null} · {formatUsd(tokenCost.costUsd)}{/if}
+      </span>
+    {/if}
   </div>
   <!-- Label chips -->
   {#if card.labelIds && card.labelIds.length > 0}
@@ -247,6 +259,16 @@
   .card-description { font-size: 0.75rem; color: var(--text-tertiary); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: var(--space-sm); }
   .card-meta { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
   .card-date { font-size: 0.65rem; color: var(--text-secondary); margin-left: auto; flex-shrink: 0; }
+  /* Cost sits beside the creation date: both are facts about the card over
+     time, and reading them together answers "how long, and how much". Only
+     present when something was recorded — never a zero or a dash, which would
+     put a false measurement on every historical card. */
+  .cost-badge {
+    font-size: 0.65rem; flex-shrink: 0; white-space: nowrap;
+    padding: 1px 6px; border-radius: var(--radius-full);
+    background: var(--glass-hover); color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+  }
   .category-badge { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: var(--radius-full); font-size: 0.68rem; font-weight: 600; }
 
   .drag-handle {

@@ -4,6 +4,7 @@ import { eq, asc, inArray, isNull, and } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
 import { getBoardRole } from '$lib/server/board-access';
 import { getBoardBlockedState } from '$lib/server/planning';
+import { getCardTokenTotals, getBoardTokenTotals } from '$lib/server/tokens';
 import { milestonesForBoard } from '$lib/server/milestones';
 import type { PageServerLoad } from './$types';
 
@@ -228,6 +229,17 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	// chip costs one query for the board rather than one request per card face.
 	const blockedState = getBoardBlockedState(boardId);
 
+	// Cost per card, one query for the board rather than one per card face.
+	// Cards absent from the map have nothing recorded, which the face renders as
+	// nothing at all — never as a zero.
+	const cardTotals = getCardTokenTotals(cardIds);
+	const cardTokens: Record<number, { tokens: number; costUsd: number | null }> = {};
+	for (const [id, t] of cardTotals) {
+		if (t.entries > 0) cardTokens[id] = { tokens: t.total, costUsd: t.costUsd };
+	}
+	// Board-wide total for the header strip. Null, not zero, when unrecorded.
+	const boardTokenSummary = getBoardTokenTotals([boardId]).get(boardId) ?? null;
+
 	return {
 		board,
 		breadcrumbs,
@@ -240,6 +252,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		userBoardRole,
 		boardUsers,
 		blockedState,
+		cardTokens,
+		boardTokenSummary,
 		milestones: milestonesForBoard(user, boardId)
 	};
 };

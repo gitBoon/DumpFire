@@ -7,6 +7,8 @@
 	 * Live-updates via global SSE and shows celebrations on task completion.
 	 */
 	import type { PageData } from './$types';
+	import { formatTokens } from '$lib/tokens';
+	import { formatUsd, BLEND_NOTE, SOURCE_NOTE } from '$lib/pricing';
 	import { theme } from '$lib/stores/theme';
 	import { onMount, onDestroy } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
@@ -21,6 +23,14 @@
 	import { playMoveSound, playCompleteSound, playCreateSound, playNotifySound } from '$lib/utils/sounds';
 
 	let { data }: { data: PageData } = $props();
+
+	/**
+	 * Cost per card. Cards absent from this map have nothing recorded and show
+	 * no badge — never a zero, which would assert a measurement never taken.
+	 */
+	const cardTokens = $derived(
+		(data.cardTokens ?? {}) as Record<number, { tokens: number; costUsd: number | null }>
+	);
 	let currentTheme = $state('light');
 	theme.subscribe((v) => (currentTheme = v));
 
@@ -482,7 +492,14 @@
 			<span class="all-icon">🌐</span>
 			<div>
 				<h1 class="all-title">All Tasks</h1>
-				<p class="all-subtitle">{data.totalCards} total · {data.completedCards} complete · {data.totalCards - data.completedCards} remaining</p>
+				<p class="all-subtitle">
+					{data.totalCards} total · {data.completedCards} complete · {data.totalCards - data.completedCards} remaining
+					{#if data.allTokenSummary}
+						· <span class="subtitle-cost" title="{formatTokens(data.allTokenSummary.total)} tokens across every board here · {SOURCE_NOTE} — {BLEND_NOTE}.">
+							{formatTokens(data.allTokenSummary.total)}{#if data.allTokenSummary.costUsd !== null} · {formatUsd(data.allTokenSummary.costUsd)}{/if}
+						</span>
+					{/if}
+				</p>
 			</div>
 		</div>
 		<div class="all-header-right">
@@ -698,6 +715,12 @@
 										</span>
 									{/if}
 									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt, tick)}</span>
+									{#if cardTokens[card.id]}
+										{@const tc = cardTokens[card.id]}
+										<span class="cost-badge" title="{formatTokens(tc.tokens)} tokens{tc.costUsd !== null ? ` · estimated ${formatUsd(tc.costUsd)}, ${BLEND_NOTE}` : ' · no model recorded, so it cannot be priced'}">
+											{formatTokens(tc.tokens)}{#if tc.costUsd !== null} · {formatUsd(tc.costUsd)}{/if}
+										</span>
+									{/if}
 								</div>
 								{#if card.onHoldNote && bucket.title === 'On Hold'}
 									<div class="on-hold-note-badge" title={card.onHoldNote}>
@@ -1315,6 +1338,17 @@
 	.due-today { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
 	.due-soon { background: rgba(249, 115, 22, 0.12); color: #f97316; }
 
+	/* Cost sits beside the creation date: both are facts about the card over
+	   time, and read together they answer "how long, and how much". Only shown
+	   when something was recorded — never a zero or a dash, which would put a
+	   false measurement on every card that predates the ledger. */
+	.cost-badge {
+		font-size: 0.65rem; flex-shrink: 0; white-space: nowrap;
+		padding: 1px 6px; border-radius: var(--radius-full);
+		background: var(--glass-hover); color: var(--text-secondary);
+		font-variant-numeric: tabular-nums;
+	}
+	.subtitle-cost { color: var(--accent-violet, #8b5cf6); font-weight: 600; font-variant-numeric: tabular-nums; }
 	.card-date {
 		font-size: 0.65rem;
 		color: var(--text-secondary);
