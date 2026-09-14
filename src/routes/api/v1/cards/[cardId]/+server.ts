@@ -6,6 +6,7 @@ import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { getCardDependencies, removeWorkNodeEdges } from '$lib/server/planning';
 import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
+import { normaliseReportingFields, ReportingFieldError } from '$lib/server/reporting-fields';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -110,6 +111,16 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		'onHoldNote', 'businessValue', 'pinned', 'coverUrl', 'archivedAt', 'milestoneId'];
 	for (const key of allowed) {
 		if (key in data) updateData[key] = data[key];
+	}
+
+	// Reporting fields go through their own vocabularies. An invalid value is a
+	// 400 rather than a silent drop: a rejected value that reported as "not
+	// recorded" would be indistinguishable from never having set one.
+	try {
+		Object.assign(updateData, normaliseReportingFields(data));
+	} catch (e) {
+		if (e instanceof ReportingFieldError) throw error(400, e.message);
+		throw e;
 	}
 
 	if (Object.keys(updateData).length === 0) {

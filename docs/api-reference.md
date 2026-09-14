@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.2
+version: 1.3
 status: As-Built
-date: 2026-08-26
+date: 2026-09-14
 tags:
   - api
   - rest
@@ -86,6 +86,12 @@ flowchart TB
         UpdateCard["PUT /cards/:id"]
         DeleteCard["DELETE /cards/:id"]
         MoveCard["PUT /cards/:id/move"]
+        BoardHistory["GET /cards/:id/board-history"]
+    end
+
+    subgraph Reporting["Reporting & Audit"]
+        Report["GET /reports/activity"]
+        Audit["GET /audit-log"]
     end
 
     subgraph Assignees["Assignees"]
@@ -108,6 +114,54 @@ flowchart TB
         EditComment["PUT /comments/:id"]
     end
 ```
+
+---
+
+## Reporting
+
+### `GET /api/v1/reports/activity`
+
+A whole management activity report in one call — what previously took 229 calls
+and about 18 minutes of hand collation.
+
+| Param | Default | Meaning |
+|---|---|---|
+| `userId` | everyone | Report on one person. Another user requires admin. |
+| `from`, `to` | last 30 days | Bare dates are whole days; `to` is inclusive. |
+| `boardIds` | all visible | Comma-separated. |
+| `include` | — | `subtasks`, `comments` |
+| `commentLimit` | 3 (max 20) | Most recent comments per card. |
+
+Cards are grouped by board and bucketed `completed`, `closed`, `progressed`,
+`on hold`, `created`. **Completion is decided by each card's `completedAt`, never
+by audit events**, so a window predating the audit-completeness work still
+reports correctly.
+
+`meta` carries the caveats that make a figure quotable —
+`closeReasonAssumedCount`, `completedOutsideWindow`, `missingSummaryCount`,
+`attribution`, `boardsExcludedForAccess`. Read it before quoting a headline
+number.
+
+Full design rationale: [Management Activity Reporting](management-reporting.md).
+
+### `GET /api/v1/audit-log` (admin)
+
+Params: `boardId`, `userId`, `cardId`, `action`, `source` (`ui` | `api`), `from`,
+`to`, `limit` (default **100**, max **500**), `offset`.
+
+UI and API actions share one vocabulary. `action` comes back canonical (no `api:`
+prefix) so one filter matches both sources; `rawAction` keeps the stored
+spelling; `source` says which. A completion is logged as `card_completed`
+whichever route performed it.
+
+`pagination` carries `total` and `hasMore` — check it, because a full default
+page of 100 used to be indistinguishable from a complete result.
+
+### `GET /api/v1/cards/:cardId/board-history`
+
+Which board a card was on, and when — spans oldest first, `to: null` on the
+current one. Needed because a card that changes board mid-window appears in the
+audit log under two different `boardId`s.
 
 ---
 

@@ -63,3 +63,15 @@ export function isCompleteColumnTitle(title: string): boolean {
 	const lower = title.toLowerCase();
 	return lower === 'complete' || lower === 'done';
 }
+
+/**
+ * Returns true if the given column title represents work deliberately paused.
+ *
+ * Reports need this separate from "in progress": a board with nine cards on hold
+ * and one being worked is not the same as ten in flight, and reading them the
+ * same way overstates what is moving.
+ */
+export function isHoldColumnTitle(title: string): boolean {
+	const lower = title.toLowerCase().trim();
+	return lower === 'on hold' || lower === 'hold' || lower === 'blocked' || lower === 'parked';
+}

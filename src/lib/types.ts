@@ -62,6 +62,22 @@ export type CardType = {
 	coverUrl: string | null;
 	/** The goal this card belongs to, if any. A card is in at most one milestone. */
 	milestoneId: number | null;
+	/** Who raised the card. Null for cards created before this was recorded. */
+	createdBy?: number | null;
+	// ── Reporting fields ────────────────────────────────────────────────────
+	// What a management report needs and the technical card text cannot give it.
+	// All null when not recorded, which reports honestly as "not recorded".
+	// Vocabularies live in `$lib/reporting`.
+	/** Plain English, ~12 words. Quoted verbatim into report appendices. */
+	summary?: string | null;
+	/** new capability | customer issue | security & compliance | maintenance */
+	theme?: string | null;
+	/** none | internal | live customers — optionally naming them after a colon. */
+	customerImpact?: string | null;
+	/** delivered | not needed | superseded | parked */
+	closeReason?: string | null;
+	/** built | on UAT | live */
+	releaseState?: string | null;
 	requestOrigin?: { requesterName: string; requesterEmail?: string; requestTitle: string } | null;
 };
 

@@ -1,12 +1,13 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { subtasks, cards, columns, activityLog } from '$lib/server/db/schema';
+import { subtasks, cards, columns } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { canEditBoard } from '$lib/server/board-access';
 import { notifyRequesterProgress } from '$lib/server/notifications';
 import { resolveBaseUrl } from '$lib/server/email';
 import { applyUnblockEffects, removeWorkNodeEdges } from '$lib/server/planning';
+import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a subtask belongs to (via card → column). */
@@ -43,17 +44,20 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 		applyUnblockEffects({ kind: 'subtask', id }, locals.user, resolveBaseUrl(request, url));
 	}
 
-	// Log activity when subtask is completed
+	// Log activity when subtask is completed.
+	//
+	// This used to insert into activity_log directly, which meant no webhook
+	// dispatch and — worse — no userId, so the entry could not be filtered by
+	// person. A per-user activity report simply did not see these.
 	if (resolvedBoardId && updateData.completed === true && existing && !existing.completed) {
 		const parentCard = db.select().from(cards).where(eq(cards.id, updated.cardId)).get();
-		db.insert(activityLog).values({
+		logUiActivity({
 			boardId: resolvedBoardId,
 			cardId: updated.cardId,
-			action: 'subtask_completed',
+			action: ACTIONS.subtaskCompleted,
 			detail: `${updated.title} (on ${parentCard?.title || 'Unknown'})`,
-			userName: locals.user.username,
-			userEmoji: locals.user.emoji || '👤'
-		}).run();
+			...actorOf(locals.user)
+		});
 
 		// Notify the original requester about this subtask completion
 		const baseUrl = resolveBaseUrl(request, url);
@@ -86,9 +90,20 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 		throw error(403, 'No edit access to this board');
 	}
 
+	const doomed = db.select().from(subtasks).where(eq(subtasks.id, id)).get();
+
 	// Polymorphic ids do not cascade — clear this node's edges explicitly.
 	removeWorkNodeEdges('subtask', id);
 	db.delete(subtasks).where(eq(subtasks.id, id)).run();
-	if (resolvedBoardId) emit(resolvedBoardId, 'update', { type: 'subtask' });
+	if (resolvedBoardId) {
+		logUiActivity({
+			boardId: resolvedBoardId,
+			cardId: doomed?.cardId ?? null,
+			action: ACTIONS.subtaskDeleted,
+			detail: `"${doomed?.title ?? 'Unknown'}"`,
+			...actorOf(locals.user)
+		});
+		emit(resolvedBoardId, 'update', { type: 'subtask' });
+	}
 	return json({ success: true });
 };

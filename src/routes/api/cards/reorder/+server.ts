@@ -8,6 +8,7 @@ import { notifyCardMoved, notifyRequesterProgress } from '$lib/server/notificati
 import { resolveBaseUrl } from '$lib/server/email';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
 import { applyUnblockEffects } from '$lib/server/planning';
+import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ request, url, locals }) => {
@@ -24,23 +25,28 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 		throw error(403, 'No edit access to this board');
 	}
 
-	// Snapshot old column assignments to detect moves to Complete
-	let movedToComplete = false;
-	let completedCardTitle = '';
-	let completedCardPriority = 'medium';
-	let completedCardId = 0;
-	let cardAlreadyCompleted = false;
+	// Snapshot old column assignments to detect moves to Complete.
+	//
+	// Every card that completes in this request is collected, not just the last
+	// one. These were single variables, each overwritten by the next qualifying
+	// card, so dragging two cards to Complete in one drop stamped `completedAt`
+	// on one of them, awarded XP once and ran the unblock hook once — and the
+	// other card sat in the Complete column with no completion date, invisible
+	// to every report that buckets by `completedAt`.
+	const completions: {
+		id: number;
+		title: string;
+		priority: string;
+		alreadyCompleted: boolean;
+	}[] = [];
 
 	if (boardId) {
 		const completeColumns = db
-			.select({ id: columns.id })
+			.select({ id: columns.id, title: columns.title })
 			.from(columns)
 			.where(eq(columns.boardId, boardId))
 			.all()
-			.filter((col) => {
-				const full = db.select().from(columns).where(eq(columns.id, col.id)).get();
-				return full && isCompleteColumnTitle(full.title);
-			})
+			.filter((col) => isCompleteColumnTitle(col.title))
 			.map((c) => c.id);
 
 		if (completeColumns.length > 0) {
@@ -54,17 +60,22 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 						if (blocker) {
 							throw error(409, blocker);
 						}
-						movedToComplete = true;
-						completedCardTitle = existing.title;
-						completedCardPriority = existing.priority;
-						completedCardId = existing.id;
-						// Check if it was already completed before (XP exploit prevention)
-						cardAlreadyCompleted = !!existing.completedAt;
+						completions.push({
+							id: existing.id,
+							title: existing.title,
+							priority: existing.priority,
+							// Already completed once before — no XP, to close the
+							// out-and-back-in exploit.
+							alreadyCompleted: !!existing.completedAt
+						});
 					}
 				}
 			}
 		}
 	}
+
+	const movedToComplete = completions.length > 0;
+	const completedIds = new Set(completions.map((c) => c.id));
 
 	// Track the most recent cross-column move for toast notification
 	let movedCardTitle = '';
@@ -90,12 +101,26 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 				movedFromCol = fromCol.title;
 				movedToCol = toCol.title;
 				const baseUrl = resolveBaseUrl(request, url);
+
+				// Record EVERY card that changed column, not just the last one the
+				// loop happened to see. This is the write that was missing entirely:
+				// a card dragged to Complete in the UI produced notifications, XP and
+				// a celebration, but no audit entry — so the log said 103 completions
+				// where the cards said 145.
+				const completing = isCompleteColumnTitle(toCol.title);
+				logUiActivity({
+					boardId,
+					cardId: update.id,
+					action: completing ? ACTIONS.cardCompleted : ACTIONS.cardMoved,
+					detail: `${existingCard.title}: ${fromCol.title} → ${toCol.title}`,
+					...actorOf(locals.user)
+				});
 				notifyCardMoved(boardId, update.id, existingCard.title, userName, fromCol.title, toCol.title, baseUrl);
 
 				// Notify the original requester about progress
 				notifyRequesterProgress({
 					cardId: update.id,
-					action: movedToComplete && completedCardId === update.id ? 'completed' : 'moved',
+					action: completedIds.has(update.id) ? 'completed' : 'moved',
 					summary: `${fromCol.title} → ${toCol.title}`,
 					actorName: userName,
 					baseUrl,
@@ -107,15 +132,18 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 		}
 	}
 
-	// Set completedAt timestamp when moved to Complete (only if not already set)
-	if (movedToComplete && completedCardId) {
-		db.update(cards)
-			.set({ completedAt: new Date().toISOString() })
-			.where(eq(cards.id, completedCardId))
-			.run();
+	// Stamp completedAt on every card that completed, not just one of them.
+	// Reports bucket by this field, so a card that lands in Complete without it
+	// is delivered work that no report will ever count.
+	if (movedToComplete) {
+		const completedAt = new Date().toISOString();
+		const baseUrl = resolveBaseUrl(request, url);
+		for (const c of completions) {
+			db.update(cards).set({ completedAt }).where(eq(cards.id, c.id)).run();
 
-		// Anything that was waiting on this card may now be startable.
-		applyUnblockEffects(completedCardId, locals.user, resolveBaseUrl(request, url));
+			// Anything that was waiting on this card may now be startable.
+			applyUnblockEffects(c.id, locals.user, baseUrl);
+		}
 	}
 
 	if (boardId) {
@@ -128,37 +156,34 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 			userName,
 			userEmoji
 		});
-		// Only award XP on FIRST completion (not re-completions)
-		if (movedToComplete && userName && !cardAlreadyCompleted) {
-			// Award XP based on priority
+		// XP for every first-time completion in this request, summed. Cards
+		// completed once before earn nothing, which is what closes the
+		// out-of-Complete-and-back-in exploit.
+		if (movedToComplete && userName) {
 			const xpMap: Record<string, number> = { low: 50, medium: 100, high: 150, critical: 200 };
-			const xpAmount = xpMap[completedCardPriority] || 100;
+			const xpAmount = completions
+				.filter((c) => !c.alreadyCompleted)
+				.reduce((sum, c) => sum + (xpMap[c.priority] || 100), 0);
 
-			const existing = db.select().from(userXp).where(eq(userXp.name, userName)).get();
-			if (existing) {
-				db.update(userXp)
-					.set({ xp: existing.xp + xpAmount, emoji: userEmoji || existing.emoji })
-					.where(eq(userXp.name, userName)).run();
-			} else {
-				db.insert(userXp).values({ name: userName, xp: xpAmount, emoji: userEmoji || '👤' }).run();
+			if (xpAmount > 0) {
+				const existing = db.select().from(userXp).where(eq(userXp.name, userName)).get();
+				if (existing) {
+					db.update(userXp)
+						.set({ xp: existing.xp + xpAmount, emoji: userEmoji || existing.emoji })
+						.where(eq(userXp.name, userName)).run();
+				} else {
+					db.insert(userXp).values({ name: userName, xp: xpAmount, emoji: userEmoji || '👤' }).run();
+				}
+				emit(boardId, 'xp-update', {});
 			}
 
+			// One celebration names the last card completed, as it always did.
 			emit(boardId, 'celebrate', {
 				type: 'complete',
-				cardTitle: completedCardTitle,
+				cardTitle: completions[completions.length - 1].title,
 				userName: userName,
 				userEmoji: userEmoji || '👤',
 				xpGained: xpAmount
-			});
-			emit(boardId, 'xp-update', {});
-		} else if (movedToComplete && userName && cardAlreadyCompleted) {
-			// Show celebration but no XP (already earned)
-			emit(boardId, 'celebrate', {
-				type: 'complete',
-				cardTitle: completedCardTitle,
-				userName: userName,
-				userEmoji: userEmoji || '👤',
-				xpGained: 0
 			});
 		}
 	}

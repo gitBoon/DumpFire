@@ -7,6 +7,8 @@ import { canEditBoard } from '$lib/server/board-access';
 import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
 import { applyUnblockEffects, removeWorkNodeEdges } from '$lib/server/planning';
 import { resolveBaseUrl } from '$lib/server/email';
+import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
+import { normaliseReportingFields, ReportingFieldError } from '$lib/server/reporting-fields';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -40,6 +42,16 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 		if (key in rawData) updateData[key] = rawData[key];
 	}
 
+	// Reporting fields carry fixed vocabularies, so they are validated rather
+	// than whitelisted through. A bad value is a 400: dropped silently it would
+	// read as "not recorded", which is a different and misleading answer.
+	try {
+		Object.assign(updateData, normaliseReportingFields(rawData));
+	} catch (e) {
+		if (e instanceof ReportingFieldError) throw error(400, e.message);
+		throw e;
+	}
+
 	// Block completion if columnId is being changed to a Complete column
 	let justCompleted = false;
 	if (updateData.columnId) {
@@ -58,6 +70,13 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 
 	updateData.updatedAt = new Date().toISOString();
 
+	// Completing a card through this route stamped no completion date unless the
+	// client happened to send one, so a card completed from the modal rather than
+	// by dragging was invisible to every report that buckets by completedAt.
+	if (justCompleted && !('completedAt' in updateData)) {
+		updateData.completedAt = new Date().toISOString();
+	}
+
 	const updated = db
 		.update(cards)
 		.set(updateData)
@@ -71,7 +90,19 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 		applyUnblockEffects(id, locals.user, resolveBaseUrl(request, url));
 	}
 
-	if (resolvedBoardId) emit(resolvedBoardId, 'update', { type: 'card' });
+	if (resolvedBoardId) {
+		const changed = Object.keys(updateData).filter((k) => k !== 'updatedAt');
+		logUiActivity({
+			boardId: resolvedBoardId,
+			cardId: id,
+			action: justCompleted ? ACTIONS.cardCompleted : ACTIONS.cardUpdated,
+			detail: justCompleted
+				? `"${updated.title}"`
+				: `Updated fields: ${changed.join(', ')} on "${updated.title}"`,
+			...actorOf(locals.user)
+		});
+		emit(resolvedBoardId, 'update', { type: 'card' });
+	}
 	return json(updated);
 };
 
@@ -93,6 +124,10 @@ export const DELETE: RequestHandler = async ({ params, request, url, locals }) =
 		throw error(403, 'No edit access to this board');
 	}
 
+	// Read the title before the row goes, or the log entry says "Unknown".
+	const cardTitle =
+		db.select({ title: cards.title }).from(cards).where(eq(cards.id, id)).get()?.title ?? 'Unknown';
+
 	if (permanent) {
 		// Polymorphic dependency ids do not cascade — clear this card's edges.
 		removeWorkNodeEdges('card', id);
@@ -104,6 +139,15 @@ export const DELETE: RequestHandler = async ({ params, request, url, locals }) =
 			.where(eq(cards.id, id))
 			.run();
 	}
-	if (resolvedBoardId) emit(resolvedBoardId, 'update', { type: 'card' });
+	if (resolvedBoardId) {
+		logUiActivity({
+			boardId: resolvedBoardId,
+			cardId: permanent ? null : id,
+			action: permanent ? ACTIONS.cardDeleted : 'card_archived',
+			detail: `"${cardTitle}"`,
+			...actorOf(locals.user)
+		});
+		emit(resolvedBoardId, 'update', { type: 'card' });
+	}
 	return json({ success: true });
 };
