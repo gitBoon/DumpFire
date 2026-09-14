@@ -458,8 +458,12 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 			        SUM(tu.tokens)                  AS tokens,
 			        SUM(tu.input_tokens)            AS inputTokens,
 			        SUM(tu.output_tokens)           AS outputTokens,
+			        SUM(tu.cache_read_tokens)       AS cacheReadTokens,
+			        SUM(tu.cache_write_5m_tokens)   AS cw5m,
+			        SUM(tu.cache_write_1h_tokens)   AS cw1h,
 			        COUNT(*)                        AS n,
-			        COUNT(tu.input_tokens)          AS withSplit
+			        COUNT(tu.input_tokens)          AS withSplit,
+			        COUNT(tu.cache_read_tokens)     AS withBreakdown
 			   FROM token_usage tu
 			   LEFT JOIN subtasks s ON s.id = tu.subtask_id
 			  WHERE COALESCE(tu.card_id, s.card_id) IN (${placeholders})
@@ -468,7 +472,8 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 		.all(...cardIds) as {
 		cardId: number; model: string | null; tokens: number;
 		inputTokens: number | null; outputTokens: number | null;
-		n: number; withSplit: number;
+		cacheReadTokens: number | null; cw5m: number | null; cw1h: number | null;
+		n: number; withSplit: number; withBreakdown: number;
 	}[];
 
 	const byCard = new Map<number, typeof costRows>();
@@ -486,7 +491,20 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 				// Only trust the summed split when EVERY entry in the group had one;
 				// a partial sum would understate the tokens it covers.
 				inputTokens: r.withSplit === r.n ? r.inputTokens : null,
-				outputTokens: r.withSplit === r.n ? r.outputTokens : null
+				outputTokens: r.withSplit === r.n ? r.outputTokens : null,
+				// Cache reads are ~99% of agentic usage, so a cost without them is
+				// not an approximation — it is the wrong number by two orders of
+				// magnitude. Only trusted when EVERY entry in the group carried one.
+				breakdown:
+					r.withBreakdown === r.n && r.inputTokens !== null && r.outputTokens !== null
+						? {
+								input: r.inputTokens,
+								output: r.outputTokens,
+								cacheRead: r.cacheReadTokens ?? 0,
+								cacheWrite5m: r.cw5m ?? 0,
+								cacheWrite1h: r.cw1h ?? 0
+						  }
+						: null
 			}))
 		);
 		existing.costUsd = cost.usd;
@@ -620,8 +638,12 @@ export function getBoardTokenTotals(
 			        SUM(tu.tokens)        AS tokens,
 			        SUM(tu.input_tokens)  AS inputTokens,
 			        SUM(tu.output_tokens) AS outputTokens,
+			        SUM(tu.cache_read_tokens)     AS cacheReadTokens,
+			        SUM(tu.cache_write_5m_tokens) AS cw5m,
+			        SUM(tu.cache_write_1h_tokens) AS cw1h,
 			        COUNT(*)              AS n,
-			        COUNT(tu.input_tokens) AS withSplit
+			        COUNT(tu.input_tokens) AS withSplit,
+			        COUNT(tu.cache_read_tokens) AS withBreakdown
 			   FROM token_usage tu
 			   LEFT JOIN subtasks s ON s.id = tu.subtask_id
 			   JOIN cards c    ON c.id = COALESCE(tu.card_id, s.card_id)
@@ -632,7 +654,8 @@ export function getBoardTokenTotals(
 		.all(...boardIds) as {
 		boardId: number; model: string | null; tokens: number;
 		inputTokens: number | null; outputTokens: number | null;
-		n: number; withSplit: number;
+		cacheReadTokens: number | null; cw5m: number | null; cw1h: number | null;
+		n: number; withSplit: number; withBreakdown: number;
 	}[];
 
 	const byBoard = new Map<number, typeof costRows>();
@@ -648,7 +671,20 @@ export function getBoardTokenTotals(
 				tokens: r.tokens,
 				model: r.model,
 				inputTokens: r.withSplit === r.n ? r.inputTokens : null,
-				outputTokens: r.withSplit === r.n ? r.outputTokens : null
+				outputTokens: r.withSplit === r.n ? r.outputTokens : null,
+				// Cache reads are ~99% of agentic usage, so a cost without them is
+				// not an approximation — it is the wrong number by two orders of
+				// magnitude. Only trusted when EVERY entry in the group carried one.
+				breakdown:
+					r.withBreakdown === r.n && r.inputTokens !== null && r.outputTokens !== null
+						? {
+								input: r.inputTokens,
+								output: r.outputTokens,
+								cacheRead: r.cacheReadTokens ?? 0,
+								cacheWrite5m: r.cw5m ?? 0,
+								cacheWrite1h: r.cw1h ?? 0
+						  }
+						: null
 			}))
 		);
 		existing.costUsd = cost.usd;
@@ -671,7 +707,19 @@ export interface UserSpendRow {
 	 * point of recording the model: the same token count on Opus and on Haiku is
 	 * very different money, so a person's total says little without it.
 	 */
-	byModel: { model: string; tokens: number; costUsd: number | null }[];
+	byModel: {
+		model: string;
+		tokens: number;
+		costUsd: number | null;
+		/** True when this model's whole figure came from measured breakdowns. */
+		exact: boolean;
+		/** The components, so a reader can see *why* the cost is what it is. */
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite5m: number;
+		cacheWrite1h: number;
+	}[];
 }
 
 /**
@@ -706,8 +754,12 @@ export function getUserSpendByPeriod(
 			        SUM(tu.tokens)          AS tokens,
 			        SUM(tu.input_tokens)    AS inputTokens,
 			        SUM(tu.output_tokens)   AS outputTokens,
+			        SUM(tu.cache_read_tokens)     AS cacheReadTokens,
+			        SUM(tu.cache_write_5m_tokens) AS cw5m,
+			        SUM(tu.cache_write_1h_tokens) AS cw1h,
 			        COUNT(*)                AS n,
-			        COUNT(tu.input_tokens)  AS withSplit
+			        COUNT(tu.input_tokens)  AS withSplit,
+			        COUNT(tu.cache_read_tokens) AS withBreakdown
 			   FROM token_usage tu
 			   LEFT JOIN subtasks s ON s.id = tu.subtask_id
 			   JOIN cards c    ON c.id = COALESCE(tu.card_id, s.card_id)
@@ -720,7 +772,8 @@ export function getUserSpendByPeriod(
 		userId: number | null; username: string | null; emoji: string | null;
 		model: string | null; day: string; tokens: number;
 		inputTokens: number | null; outputTokens: number | null;
-		n: number; withSplit: number;
+		cacheReadTokens: number | null; cw5m: number | null; cw1h: number | null;
+		n: number; withSplit: number; withBreakdown: number;
 	}[];
 
 	// `date()` yields YYYY-MM-DD, so a plain string compare is a date compare.
@@ -758,11 +811,25 @@ export function getUserSpendByPeriod(
 					tokens: r.tokens,
 					model: r.model,
 					inputTokens: r.withSplit === r.n ? r.inputTokens : null,
-					outputTokens: r.withSplit === r.n ? r.outputTokens : null
+					outputTokens: r.withSplit === r.n ? r.outputTokens : null,
+					breakdown:
+						r.withBreakdown === r.n && r.inputTokens !== null && r.outputTokens !== null
+							? {
+									input: r.inputTokens,
+									output: r.outputTokens,
+									cacheRead: r.cacheReadTokens ?? 0,
+									cacheWrite5m: r.cw5m ?? 0,
+									cacheWrite1h: r.cw1h ?? 0
+							  }
+							: null
 				}))
 			);
 			// Same person, same model, several days — fold the days together.
-			const modelTotals = new Map<string, { tokens: number; input: number | null; output: number | null; n: number; withSplit: number }>();
+			const modelTotals = new Map<string, {
+				tokens: number; input: number | null; output: number | null;
+				cacheRead: number; cw5m: number; cw1h: number;
+				n: number; withSplit: number; withBreakdown: number;
+			}>();
 			for (const r of group) {
 				const key = r.model ?? 'unspecified';
 				const prev = modelTotals.get(key);
@@ -770,19 +837,33 @@ export function getUserSpendByPeriod(
 					tokens: (prev?.tokens ?? 0) + r.tokens,
 					input: r.inputTokens === null ? (prev?.input ?? null) : (prev?.input ?? 0) + r.inputTokens,
 					output: r.outputTokens === null ? (prev?.output ?? null) : (prev?.output ?? 0) + r.outputTokens,
+					cacheRead: (prev?.cacheRead ?? 0) + (r.cacheReadTokens ?? 0),
+					cw5m: (prev?.cw5m ?? 0) + (r.cw5m ?? 0),
+					cw1h: (prev?.cw1h ?? 0) + (r.cw1h ?? 0),
 					n: (prev?.n ?? 0) + r.n,
-					withSplit: (prev?.withSplit ?? 0) + r.withSplit
+					withSplit: (prev?.withSplit ?? 0) + r.withSplit,
+					withBreakdown: (prev?.withBreakdown ?? 0) + r.withBreakdown
 				});
 			}
 			const byModel = [...modelTotals.entries()]
 				.map(([model, t]) => ({
 					model,
 					tokens: t.tokens,
+					exact: t.withBreakdown === t.n && t.input !== null && t.output !== null,
+					input: t.input ?? 0,
+					output: t.output ?? 0,
+					cacheRead: t.cacheRead,
+					cacheWrite5m: t.cw5m,
+					cacheWrite1h: t.cw1h,
 					costUsd: costOf([{
 						tokens: t.tokens,
 						model: model === 'unspecified' ? null : model,
 						inputTokens: t.withSplit === t.n ? t.input : null,
-						outputTokens: t.withSplit === t.n ? t.output : null
+						outputTokens: t.withSplit === t.n ? t.output : null,
+						breakdown:
+							t.withBreakdown === t.n && t.input !== null && t.output !== null
+								? { input: t.input, output: t.output, cacheRead: t.cacheRead ?? 0, cacheWrite5m: t.cw5m ?? 0, cacheWrite1h: t.cw1h ?? 0 }
+								: null
 					}]).usd
 				}))
 				.sort((a, b) => b.tokens - a.tokens);
