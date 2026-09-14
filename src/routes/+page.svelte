@@ -1356,7 +1356,7 @@
 {/if}
 
 {#if showSpendModal}
-	<SpendModal rows={data.spendByUser ?? []} onclose={() => (showSpendModal = false)} />
+	<SpendModal spend={data.spendByUser} onclose={() => (showSpendModal = false)} />
 {/if}
 
 <!-- Toast notifications for new requests -->

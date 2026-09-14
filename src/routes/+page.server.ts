@@ -3,7 +3,7 @@ import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamM
 import { desc, eq, inArray, isNull, isNotNull, and, gte, sql } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { completionPercent } from '$lib/progress';
-import { getBoardTokenTotals, getUserTokenTotals } from '$lib/server/tokens';
+import { getBoardTokenTotals, getUserSpendByPeriod } from '$lib/server/tokens';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -175,7 +175,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const pricedBoards = walkedTokenTotals.filter(t => t.costUsd !== null);
 	// Who the spend was reported under, over exactly the same boards as the
 	// headline figure so the breakdown adds up to it rather than to some other set.
-	const spendByUser = getUserTokenTotals([...walkedBoardIds]);
+	const spendByUser = getUserSpendByPeriod([...walkedBoardIds]);
 
 	const allTasksTotals = {
 		cards: allTasksCards,

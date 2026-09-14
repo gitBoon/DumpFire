@@ -29,8 +29,13 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			body.tokens,
 			body.model,
 			body.note,
-			body.inputTokens,
-			body.outputTokens
+			{
+				inputTokens: body.inputTokens,
+				outputTokens: body.outputTokens,
+				cacheReadTokens: body.cacheReadTokens,
+				cacheWrite5mTokens: body.cacheWrite5mTokens,
+				cacheWrite1hTokens: body.cacheWrite1hTokens
+			}
 		);
 		emit(result.boardId, 'update', { type: 'card' });
 		return json(

@@ -89,12 +89,67 @@ export function priceFor(model: string | null | undefined): ModelPrice | null {
 	return best;
 }
 
+/**
+ * Cache multipliers, relative to a model's base input rate.
+ *
+ * These are what make an agentic figure meaningful. A long coding session is
+ * ~99% cache reads — the conversation is re-read on every call — and a cache
+ * read costs a tenth of fresh input. Pricing those at the full input rate
+ * overstates the bill by roughly an order of magnitude.
+ *
+ * Cache writes cost *more* than fresh input because the write buys reuse: the
+ * 5-minute tier at 1.25x, the 1-hour tier at 2x.
+ */
+export const CACHE_READ_MULTIPLIER = 0.1;
+export const CACHE_WRITE_5M_MULTIPLIER = 1.25;
+export const CACHE_WRITE_1H_MULTIPLIER = 2.0;
+
+/**
+ * A measured breakdown, as Claude Code's session transcripts record it.
+ *
+ * When an entry carries one of these the cost is exact — no assumed split, no
+ * assumption about caching. This is the accurate path and should be preferred
+ * everywhere it can be obtained.
+ */
+export interface TokenBreakdown {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite5m: number;
+	cacheWrite1h: number;
+}
+
+/** Sum of every component — the figure reported as an entry's `tokens`. */
+export function breakdownTotal(b: TokenBreakdown): number {
+	return b.input + b.output + b.cacheRead + b.cacheWrite5m + b.cacheWrite1h;
+}
+
+/** Exact cost of a measured breakdown. Null when the model cannot be priced. */
+export function costOfBreakdown(b: TokenBreakdown, model: string | null): number | null {
+	const price = priceFor(model);
+	if (!price) return null;
+	const m = 1_000_000;
+	return (
+		(b.input / m) * price.input +
+		(b.output / m) * price.output +
+		(b.cacheRead / m) * price.input * CACHE_READ_MULTIPLIER +
+		(b.cacheWrite5m / m) * price.input * CACHE_WRITE_5M_MULTIPLIER +
+		(b.cacheWrite1h / m) * price.input * CACHE_WRITE_1H_MULTIPLIER
+	);
+}
+
 export interface CostInput {
 	tokens: number;
 	model: string | null;
 	/** Exact split when the caller reported one; otherwise the blend is used. */
 	inputTokens?: number | null;
 	outputTokens?: number | null;
+	/**
+	 * A full measured breakdown. When present this is used and everything else
+	 * is ignored — it is the only path that gets cache pricing right, and cache
+	 * reads are the overwhelming majority of agentic usage.
+	 */
+	breakdown?: TokenBreakdown | null;
 }
 
 export interface CostResult {
@@ -110,6 +165,12 @@ export interface CostResult {
 export function costOfEntry(e: CostInput): { usd: number | null; exact: boolean } {
 	const price = priceFor(e.model);
 	if (!price) return { usd: null, exact: false };
+
+	// A measured breakdown beats every assumption available.
+	if (e.breakdown) {
+		const usd = costOfBreakdown(e.breakdown, e.model);
+		return { usd, exact: usd !== null };
+	}
 
 	const hasSplit =
 		typeof e.inputTokens === 'number' &&
