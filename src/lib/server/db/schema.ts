@@ -579,6 +579,38 @@ export const reportSchedules = sqliteTable('report_schedules', {
 export type ReportSchedule = typeof reportSchedules.$inferSelect;
 export type NewReportSchedule = typeof reportSchedules.$inferInsert;
 
+// ─── Token Usage ─────────────────────────────────────────────────────────────
+
+/**
+ * What a piece of work actually cost, in tokens.
+ *
+ * A ledger rather than a counter: entries accumulate as the work proceeds, so
+ * the total climbs toward completion and the accrual stays visible. A mistake
+ * is corrected by writing a negative entry, never by editing history.
+ *
+ * Exactly one of `cardId` / `subtaskId` is set. A card's reported total is its
+ * own entries plus those of every subtask beneath it.
+ */
+export const tokenUsage = sqliteTable('token_usage', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	cardId: integer('card_id').references(() => cards.id, { onDelete: 'cascade' }),
+	subtaskId: integer('subtask_id').references(() => subtasks.id, { onDelete: 'cascade' }),
+	/** Signed: a correction is a negative entry. */
+	tokens: integer('tokens').notNull(),
+	/** Which model spent them — without it a total cannot be turned into cost. */
+	model: text('model'),
+	note: text('note'),
+	reportedByUserId: integer('reported_by_user_id').references(() => users.id, {
+		onDelete: 'set null'
+	}),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export type TokenUsage = typeof tokenUsage.$inferSelect;
+export type NewTokenUsage = typeof tokenUsage.$inferInsert;
+
 // ─── Insert Types ────────────────────────────────────────────────────────────
 
 export type NewBoard = typeof boards.$inferInsert;

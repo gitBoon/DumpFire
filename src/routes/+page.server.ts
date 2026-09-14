@@ -3,6 +3,7 @@ import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamM
 import { desc, eq, inArray, isNull, isNotNull, and, gte, sql } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { completionPercent } from '$lib/progress';
+import { getBoardTokenTotals } from '$lib/server/tokens';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -39,13 +40,22 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// Fetch all categories for board grouping
 	const allCategories = db.select().from(boardCategories).all();
 
+	// What each board has cost. A board absent from this map has nothing
+	// recorded, which surfaces as null and renders as "—" — deliberately not 0,
+	// because every board predating the token ledger is in that state and we
+	// cannot know what its work cost.
+	// Every board id, not just the accessible top-level ones — sub-boards are
+	// boards too and are discovered later, inside the enrichment loop.
+	const boardTokenTotals = getBoardTokenTotals(db.select({ id: boards.id }).from(boards).all().map(b => b.id));
+	const tokensFor = (id: number) => boardTokenTotals.get(id)?.total ?? null;
+
 	// Enrich each board with card stats and sub-board info
 	const enriched = allBoards.map(board => {
 		const boardCols = db.select().from(columns).where(eq(columns.boardId, board.id)).all();
 		const colIds = boardCols.map(c => c.id);
 	if (colIds.length === 0) {
 			const cat = board.categoryId ? allCategories.find(c => c.id === board.categoryId) : null;
-			return { ...board, totalCards: 0, completedCards: 0, lastActivity: board.updatedAt, subBoards: [] as any[], categoryName: cat?.name || null, categoryColor: cat?.color || null };
+			return { ...board, totalCards: 0, completedCards: 0, tokenTotal: tokensFor(board.id), lastActivity: board.updatedAt, subBoards: [] as any[], categoryName: cat?.name || null, categoryColor: cat?.color || null };
 		}
 
 		const boardCards = db.select().from(cards).where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt))).all();
@@ -59,7 +69,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		}
 
 		// Find sub-boards for cards on this board
-		const subBoardsForBoard: { id: number; name: string; emoji: string; parentCardTitle: string; done: number; total: number }[] = [];
+		const subBoardsForBoard: { id: number; name: string; emoji: string; parentCardTitle: string; done: number; total: number; tokenTotal: number | null }[] = [];
 		for (const card of boardCards) {
 			const subs = subBoardsByCard.get(card.id);
 			if (!subs) continue;
@@ -81,7 +91,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 					emoji: sb.emoji || '🗂️',
 					parentCardTitle: card.title,
 					done,
-					total
+					total,
+					tokenTotal: tokensFor(sb.id)
 				});
 			}
 		}
@@ -101,6 +112,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			...board,
 			totalCards: boardCards.length,
 			completedCards,
+			tokenTotal: tokensFor(board.id),
 			lastActivity,
 			subBoards: subBoardsForBoard,
 			categoryName,
@@ -149,11 +161,20 @@ export const load: PageServerLoad = async ({ locals }) => {
 	}
 	const allTasksSubtasks = db.select({ cardId: subtasks.cardId }).from(subtasks).all()
 		.filter(s => countedCardIds.has(s.cardId)).length;
+	// Token cost over exactly the boards this walk covered, so the All Tasks row
+	// quotes the same scope as its card and task counts. Null — not zero — when
+	// nothing has been recorded anywhere yet.
+	const walkedTokenTotals = [...walkedBoardIds]
+		.map(id => boardTokenTotals.get(id))
+		.filter((t): t is { total: number; entries: number } => t !== undefined);
 	const allTasksTotals = {
 		cards: allTasksCards,
 		completedCards: allTasksCompleted,
 		subtasks: allTasksSubtasks,
-		tasks: allTasksCards + allTasksSubtasks
+		tasks: allTasksCards + allTasksSubtasks,
+		tokenTotal: walkedTokenTotals.length > 0
+			? walkedTokenTotals.reduce((sum, t) => sum + t.total, 0)
+			: null
 	};
 
 	// ─── Personal Analytics ──────────────────────────────────────────────────
