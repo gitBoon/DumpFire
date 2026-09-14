@@ -39,6 +39,7 @@ import { isCompleteColumnTitle } from './card-completion';
 import { notifyCardUnblocked } from './notifications';
 import { emit } from './events';
 import { createLogger } from './logger';
+import { completionPercent } from '$lib/progress';
 
 const log = createLogger('PLAN');
 
@@ -990,7 +991,7 @@ export function getMilestoneSummary(milestoneId: number): MilestoneSummary | nul
 		progress: {
 			total: memberCardNodes.length,
 			done,
-			percent: memberCardNodes.length === 0 ? 0 : Math.round((done / memberCardNodes.length) * 100),
+			percent: completionPercent(done, memberCardNodes.length),
 			byColumn: [...byColumnMap.entries()].map(([columnTitle, count]) => ({ columnTitle, count })),
 			openSubtasks,
 			boards: [...boardMap.values()].sort((a, b) => b.cardCount - a.cardCount)

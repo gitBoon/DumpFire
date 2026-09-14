@@ -2,6 +2,7 @@ import { db } from '$lib/server/db';
 import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamMembers, boardCategories, users, boardFavourites, subtasks, type Board } from '$lib/server/db/schema';
 import { desc, eq, inArray, isNull, isNotNull, and, gte, sql } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { completionPercent } from '$lib/progress';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -259,7 +260,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			emoji: b.emoji || '📋',
 			totalCards: b.totalCards,
 			completedCards: b.completedCards,
-			pct: Math.round((b.completedCards / b.totalCards) * 100)
+			pct: completionPercent(b.completedCards, b.totalCards)
 		}))
 		.sort((a, b) => b.pct - a.pct)
 		.slice(0, 8);
@@ -382,7 +383,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		totalAssigned: myCards.length,
 		active: myActiveCards.length,
 		completed: myCompletedCards.length,
-		completionRate: myCards.length > 0 ? Math.round((myCompletedCards.length / myCards.length) * 100) : 0,
+		completionRate: completionPercent(myCompletedCards.length, myCards.length),
 		overdue: overdueCards.length,
 		completedThisWeek,
 		completedThisMonth,
