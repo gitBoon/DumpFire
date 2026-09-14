@@ -172,10 +172,17 @@ export function costOfEntry(e: CostInput): { usd: number | null; exact: boolean 
 		return { usd, exact: usd !== null };
 	}
 
-	const hasSplit =
+	// An input/output split is only usable when it accounts for the WHOLE total.
+	// Once cache components exist, input + output no longer sums to `tokens` —
+	// and treating a partial split as complete silently prices only the fraction
+	// it covers. That is how a 155M-token figure once came out at $7.52: the
+	// cache reads, 99.5% of it, were dropped on the floor. If the split does not
+	// add up, the breakdown is incomplete and the blend is the honest fallback.
+	const splitCoversTotal =
 		typeof e.inputTokens === 'number' &&
 		typeof e.outputTokens === 'number' &&
-		e.inputTokens + e.outputTokens !== 0;
+		e.inputTokens + e.outputTokens === e.tokens;
+	const hasSplit = splitCoversTotal && e.tokens !== 0;
 
 	const inTok = hasSplit ? e.inputTokens! : e.tokens * ASSUMED_INPUT_SHARE;
 	const outTok = hasSplit ? e.outputTokens! : e.tokens * (1 - ASSUMED_INPUT_SHARE);

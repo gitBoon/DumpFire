@@ -14,13 +14,46 @@
 -->
 <script lang="ts">
 	import { formatTokens } from '$lib/tokens';
-	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
+	import {
+		formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE,
+		priceFor, CACHE_READ_MULTIPLIER, CACHE_WRITE_5M_MULTIPLIER, CACHE_WRITE_1H_MULTIPLIER
+	} from '$lib/pricing';
 
 	interface ModelRow {
 		model: string;
 		tokens: number;
 		costUsd: number | null;
+		exact: boolean;
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite5m: number;
+		cacheWrite1h: number;
 	}
+
+	/**
+	 * The components behind a model's cost, each with the rate it was charged at.
+	 *
+	 * This is the part that makes a figure checkable. Cache reads are ~99% of
+	 * agentic usage and cost a tenth of fresh input — without seeing that split
+	 * the total is just a number to be taken on trust, and a wrong one is
+	 * indistinguishable from a right one.
+	 */
+	function components(m: ModelRow) {
+		const p = priceFor(m.model === 'unspecified' ? null : m.model);
+		if (!p) return [];
+		const rows = [
+			{ label: 'cache read', tokens: m.cacheRead, rate: p.input * CACHE_READ_MULTIPLIER },
+			{ label: 'output', tokens: m.output, rate: p.output },
+			{ label: 'cache write 1h', tokens: m.cacheWrite1h, rate: p.input * CACHE_WRITE_1H_MULTIPLIER },
+			{ label: 'cache write 5m', tokens: m.cacheWrite5m, rate: p.input * CACHE_WRITE_5M_MULTIPLIER },
+			{ label: 'input', tokens: m.input, rate: p.input }
+		].filter((r) => r.tokens > 0);
+		return rows
+			.map((r) => ({ ...r, cost: (r.tokens / 1_000_000) * r.rate }))
+			.sort((a, b) => b.cost - a.cost);
+	}
+
 	interface Row {
 		userId: number | null;
 		username: string;
@@ -56,6 +89,8 @@
 		rows.some((r) => r.costUsd !== null) ? rows.reduce((s, r) => s + (r.costUsd ?? 0), 0) : null
 	);
 	const maxTokens = $derived(Math.max(1, ...rows.map((r) => r.tokens)));
+	/** Any figure still resting on the blend rather than a measured breakdown. */
+	const anyEstimated = $derived(rows.some((r) => r.byModel.some((m) => !m.exact)));
 
 	function toggle(key: string) {
 		const next = new Set(expanded);
@@ -143,8 +178,29 @@
 											{#if m.costUsd === null}
 												<span class="unpriced-tag" title="No model recorded, so this cannot be priced.">unpriced</span>
 											{:else}{formatUsd(m.costUsd)}{/if}
+											{#if !m.exact && m.costUsd !== null}<span class="est-tag" title="No measured breakdown for this model, so the cost assumes a 90/10 input/output split. Measure it with token-usage.mjs.">est</span>{/if}
 										</span>
 									</li>
+									{#if components(m).length > 0}
+										<!-- Why the cost is what it is. Without this the total is a
+										     number to be taken on trust, and a wrong one looks
+										     exactly like a right one. -->
+										<li class="parts-row">
+											<table class="parts">
+												<tbody>
+													{#each components(m) as c}
+														<tr>
+															<td class="p-label">{c.label}</td>
+															<td class="p-tokens">{c.tokens.toLocaleString('en-GB')}</td>
+															<td class="p-rate">&times;&thinsp;${c.rate.toFixed(2)}/M</td>
+															<td class="p-share">{((c.tokens / m.tokens) * 100).toFixed(1)}%</td>
+															<td class="p-cost">{formatUsd(c.cost)}</td>
+														</tr>
+													{/each}
+												</tbody>
+											</table>
+										</li>
+									{/if}
 								{/each}
 							</ul>
 						{/if}
@@ -155,7 +211,13 @@
 			<p class="foot">
 				Attributed to whoever <strong>reported</strong> each entry — the owner of the key or
 				session that made the call, which is not always who did the typing.
-				<br />{SOURCE_NOTE} — {BLEND_NOTE}.
+				<br />{SOURCE_NOTE}.
+				{#if anyEstimated}
+					Figures marked <span class="est-tag">est</span> have no measured breakdown and {BLEND_NOTE}.
+					Everything else is priced from measured input, output and cache tokens.
+				{:else}
+					Every figure here is priced from measured input, output and cache tokens — no assumed split.
+				{/if}
 			</p>
 		{/if}
 	</div>
@@ -234,6 +296,19 @@
 	.model-name { min-width: 150px; font-size: 0.72rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 	.model-row .money { font-size: 0.74rem; font-weight: 600; color: var(--text-secondary); }
 	.unpriced-tag { color: var(--accent-amber, #f59e0b); font-weight: 600; font-size: 0.68rem; }
+
+	.parts-row { padding: 0 0 6px 0; }
+	.parts { width: 100%; border-collapse: collapse; margin-left: 150px; }
+	.parts td { padding: 1px 0; font-size: 0.68rem; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+	.p-label { text-align: left; }
+	.p-tokens { text-align: right; padding-right: 8px !important; }
+	.p-rate { text-align: right; padding-right: 8px !important; }
+	.p-share { text-align: right; width: 46px; padding-right: 8px !important; }
+	.p-cost { text-align: right; width: 62px; color: var(--text-secondary); }
+	.est-tag {
+		margin-left: 4px; font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+		color: var(--accent-amber, #f59e0b);
+	}
 
 	.empty { font-size: 0.8rem; color: var(--text-secondary); margin: var(--space-md) 0; }
 	.foot { margin: var(--space-md) 0 0; font-size: 0.68rem; color: var(--text-tertiary); line-height: 1.5; }
