@@ -23,7 +23,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { canEditBoard } from './board-access';
 import { getCardBoardId, getSubtaskCardId } from './work-access';
 import type { SessionUser } from './auth';
-import { costOf } from '$lib/pricing';
+import { costOf, breakdownTotal, type TokenBreakdown } from '$lib/pricing';
 
 /** A single entry is capped well above any real turn, to catch a fat-fingered paste. */
 export const MAX_TOKENS_PER_ENTRY = 100_000_000;
@@ -51,6 +51,9 @@ export interface TokenEntry {
 	model: string | null;
 	inputTokens: number | null;
 	outputTokens: number | null;
+	cacheReadTokens: number | null;
+	cacheWrite5mTokens: number | null;
+	cacheWrite1hTokens: number | null;
 	note: string | null;
 	createdAt: string;
 }
@@ -120,37 +123,79 @@ function clean(value: unknown, max: number, field: string): string | null {
 	return trimmed;
 }
 
+export interface BreakdownInput {
+	inputTokens?: unknown;
+	outputTokens?: unknown;
+	cacheReadTokens?: unknown;
+	cacheWrite5mTokens?: unknown;
+	cacheWrite1hTokens?: unknown;
+}
+
+export interface StoredBreakdown {
+	inputTokens: number | null;
+	outputTokens: number | null;
+	cacheReadTokens: number | null;
+	cacheWrite5mTokens: number | null;
+	cacheWrite1hTokens: number | null;
+}
+
+const NO_BREAKDOWN: StoredBreakdown = {
+	inputTokens: null, outputTokens: null,
+	cacheReadTokens: null, cacheWrite5mTokens: null, cacheWrite1hTokens: null
+};
+
 /**
- * An optional exact input/output split.
+ * Validate a measured breakdown.
  *
- * Both halves or neither: one without the other cannot be costed and would
- * silently behave as if the missing half were zero. When present they must
- * agree with the total, because a split that contradicts it means the caller
- * has sent two different claims about the same work.
+ * Cache components are optional on top of input/output, because a caller with
+ * only an input/output split is still better off than one with neither. But
+ * whatever is given must sum to the total: a breakdown that contradicts it
+ * means two different claims about the same work.
+ *
+ * Cache reads are the reason this exists. In a measured Claude Code session on
+ * 2026-09-14 they were 99.3% of all tokens and are billed at a tenth of fresh
+ * input, so a figure without them is not approximately right — it is wrong by
+ * about an order of magnitude in one direction or the other.
  */
-function validateSplit(
-	total: number,
-	input: unknown,
-	output: unknown
-): { inputTokens: number | null; outputTokens: number | null } {
-	const hasIn = input !== undefined && input !== null;
-	const hasOut = output !== undefined && output !== null;
-	if (!hasIn && !hasOut) return { inputTokens: null, outputTokens: null };
-	if (hasIn !== hasOut) {
-		throw new TokenError(400, 'inputTokens and outputTokens must be given together, or not at all');
+function validateBreakdown(total: number, b: BreakdownInput): StoredBreakdown {
+	const parts: (keyof BreakdownInput)[] = [
+		'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWrite5mTokens', 'cacheWrite1hTokens'
+	];
+	const given = parts.filter((k) => b[k] !== undefined && b[k] !== null);
+	if (given.length === 0) return { ...NO_BREAKDOWN };
+
+	if (!given.includes('inputTokens') || !given.includes('outputTokens')) {
+		throw new TokenError(400, 'A breakdown must include at least inputTokens and outputTokens');
 	}
-	const i = Number(input);
-	const o = Number(output);
-	if (!Number.isInteger(i) || !Number.isInteger(o)) {
-		throw new TokenError(400, 'inputTokens and outputTokens must be whole numbers');
+
+	const out = { ...NO_BREAKDOWN };
+	let sum = 0;
+	for (const k of parts) {
+		const raw = b[k];
+		if (raw === undefined || raw === null) {
+			// Absent cache components mean zero, not unknown: a caller reporting a
+			// breakdown at all is claiming it is complete.
+			if (k !== 'inputTokens' && k !== 'outputTokens') out[k] = 0;
+			continue;
+		}
+		const n = Number(raw);
+		if (!Number.isInteger(n)) throw new TokenError(400, `${k} must be a whole number`);
+		if (n < 0) throw new TokenError(400, `${k} must not be negative`);
+		out[k] = n;
+		sum += n;
 	}
-	if (i + o !== total) {
+
+	// A correction is a negative total; its components describe the magnitude.
+	if (sum !== Math.abs(total)) {
 		throw new TokenError(
 			400,
-			`inputTokens + outputTokens (${i + o}) must equal tokens (${total})`
+			`The breakdown sums to ${sum} but tokens is ${total}. Every component must be included and they must add up.`
 		);
 	}
-	return { inputTokens: i, outputTokens: o };
+	if (total < 0) {
+		for (const k of parts) if (out[k] !== null) out[k] = -out[k]!;
+	}
+	return out;
 }
 
 /**
@@ -198,13 +243,12 @@ export function recordTokenUsage(
 	tokens: number,
 	model?: unknown,
 	note?: unknown,
-	inputTokens?: unknown,
-	outputTokens?: unknown
+	breakdown?: BreakdownInput
 ): RecordResult {
 	const amount = validateAmount(tokens);
 	const modelName = clean(model, MAX_MODEL_LEN, 'model');
 	const noteText = clean(note, MAX_NOTE_LEN, 'note');
-	const split = validateSplit(amount, inputTokens, outputTokens);
+	const split = validateBreakdown(amount, breakdown ?? {});
 	const boardId = resolveTarget(user, target);
 
 	const cardId = target.kind === 'card' ? target.id : getSubtaskCardId(target.id)!;
@@ -218,6 +262,9 @@ export function recordTokenUsage(
 			model: modelName,
 			inputTokens: split.inputTokens,
 			outputTokens: split.outputTokens,
+			cacheReadTokens: split.cacheReadTokens,
+			cacheWrite5mTokens: split.cacheWrite5mTokens,
+			cacheWrite1hTokens: split.cacheWrite1hTokens,
 			note: noteText,
 			reportedByUserId: user.id
 		})
@@ -235,6 +282,9 @@ export interface BatchEntryInput {
 	note?: unknown;
 	inputTokens?: unknown;
 	outputTokens?: unknown;
+	cacheReadTokens?: unknown;
+	cacheWrite5mTokens?: unknown;
+	cacheWrite1hTokens?: unknown;
 }
 
 export interface BatchProblem {
@@ -264,7 +314,7 @@ export function recordTokenUsageBatch(
 		tokens: number;
 		model: string | null;
 		note: string | null;
-		split: { inputTokens: number | null; outputTokens: number | null };
+		split: StoredBreakdown;
 		boardId: number;
 		cardId: number;
 	}[] = [];
@@ -287,7 +337,7 @@ export function recordTokenUsageBatch(
 			const tokens = validateAmount(e.tokens);
 			const model = clean(e.model, MAX_MODEL_LEN, 'model');
 			const note = clean(e.note, MAX_NOTE_LEN, 'note');
-			const split = validateSplit(tokens, e.inputTokens, e.outputTokens);
+			const split = validateBreakdown(tokens, e);
 			const boardId = resolveTarget(user, target);
 			const cardId = target.kind === 'card' ? target.id : getSubtaskCardId(target.id)!;
 			prepared.push({ target, tokens, model, note, split, boardId, cardId });
@@ -308,6 +358,9 @@ export function recordTokenUsageBatch(
 					model: p.model,
 					inputTokens: p.split.inputTokens,
 					outputTokens: p.split.outputTokens,
+					cacheReadTokens: p.split.cacheReadTokens,
+					cacheWrite5mTokens: p.split.cacheWrite5mTokens,
+					cacheWrite1hTokens: p.split.cacheWrite1hTokens,
 					note: p.note,
 					reportedByUserId: user.id
 				})
@@ -467,7 +520,19 @@ export function getCardTokenTotal(cardId: number): TokenTotal {
 			tokens: e.tokens,
 			model: e.model,
 			inputTokens: e.inputTokens,
-			outputTokens: e.outputTokens
+			outputTokens: e.outputTokens,
+			// A measured breakdown prices exactly; without cache components the
+			// figure falls back to the blend, which is wrong for cached work.
+			breakdown:
+				e.cacheReadTokens !== null && e.inputTokens !== null && e.outputTokens !== null
+					? {
+							input: e.inputTokens,
+							output: e.outputTokens,
+							cacheRead: e.cacheReadTokens,
+							cacheWrite5m: e.cacheWrite5mTokens ?? 0,
+							cacheWrite1h: e.cacheWrite1hTokens ?? 0
+					  }
+					: null
 		}))
 	);
 
@@ -492,6 +557,9 @@ export function getCardTokenEntries(cardId: number): TokenEntry[] {
 			        tu.model         AS model,
 			        tu.input_tokens  AS inputTokens,
 			        tu.output_tokens AS outputTokens,
+			        tu.cache_read_tokens      AS cacheReadTokens,
+			        tu.cache_write_5m_tokens  AS cacheWrite5mTokens,
+			        tu.cache_write_1h_tokens  AS cacheWrite1hTokens,
 			        tu.note          AS note,
 			        tu.created_at    AS createdAt
 			   FROM token_usage tu
@@ -589,79 +657,149 @@ export function getBoardTokenTotals(
 	return out;
 }
 
-/**
- * Token spend grouped by the person each entry was reported under.
- *
- * A caveat worth stating wherever this is shown: the ledger records **who
- * reported the entry**, which is the owner of the API key or session that made
- * the call. When an agent reports on someone's behalf the spend lands against
- * that person — which is usually what you want, since it was their session that
- * incurred it, but it is "reported by", not "typed by".
- *
- * Scoped to the same boards as the caller's other totals so the breakdown adds
- * up to the headline figure rather than quietly covering a different set.
- */
-export function getUserTokenTotals(
-	boardIds: number[]
-): { userId: number | null; username: string; emoji: string; tokens: number; costUsd: number | null; entries: number }[] {
-	if (boardIds.length === 0) return [];
-	const placeholders = boardIds.map(() => '?').join(',');
+export type SpendPeriod = 'today' | 'week' | 'month' | 'year' | 'all';
 
-	// Grouped by user AND model, because each model prices differently and a
-	// user's total is the sum of their per-model spend.
+export interface UserSpendRow {
+	userId: number | null;
+	username: string;
+	emoji: string;
+	tokens: number;
+	costUsd: number | null;
+	entries: number;
+	/**
+	 * This person's spend split by model, largest first. The split is the whole
+	 * point of recording the model: the same token count on Opus and on Haiku is
+	 * very different money, so a person's total says little without it.
+	 */
+	byModel: { model: string; tokens: number; costUsd: number | null }[];
+}
+
+/**
+ * Per-person spend for each time window, from one query.
+ *
+ * Five windows rather than five queries: the rows come back grouped by user,
+ * model and day, and are bucketed here. Grouping by day is what bounds the row
+ * count — it cannot grow with the number of entries, only with users x models x
+ * days active.
+ *
+ * Boundaries are calendar periods in the server's local time, converted to the
+ * UTC string form the ledger stores. Calendar rather than rolling windows
+ * because a fixed-price plan renews on a calendar month, so "this month" is the
+ * comparison that actually means something.
+ */
+export function getUserSpendByPeriod(
+	boardIds: number[]
+): Record<SpendPeriod, UserSpendRow[]> {
+	const empty: Record<SpendPeriod, UserSpendRow[]> = {
+		today: [], week: [], month: [], year: [], all: []
+	};
+	if (boardIds.length === 0) return empty;
+
+	const placeholders = boardIds.map(() => '?').join(',');
 	const rows = sqlite
 		.prepare(
-			`SELECT tu.reported_by_user_id AS userId,
-			        u.username             AS username,
-			        u.emoji                AS emoji,
-			        tu.model               AS model,
-			        SUM(tu.tokens)         AS tokens,
-			        SUM(tu.input_tokens)   AS inputTokens,
-			        SUM(tu.output_tokens)  AS outputTokens,
-			        COUNT(*)               AS n,
-			        COUNT(tu.input_tokens) AS withSplit
+			`SELECT tu.reported_by_user_id  AS userId,
+			        u.username              AS username,
+			        u.emoji                 AS emoji,
+			        tu.model                AS model,
+			        date(tu.created_at)     AS day,
+			        SUM(tu.tokens)          AS tokens,
+			        SUM(tu.input_tokens)    AS inputTokens,
+			        SUM(tu.output_tokens)   AS outputTokens,
+			        COUNT(*)                AS n,
+			        COUNT(tu.input_tokens)  AS withSplit
 			   FROM token_usage tu
 			   LEFT JOIN subtasks s ON s.id = tu.subtask_id
 			   JOIN cards c    ON c.id = COALESCE(tu.card_id, s.card_id)
 			   JOIN columns co ON co.id = c.column_id
 			   LEFT JOIN users u ON u.id = tu.reported_by_user_id
 			  WHERE co.board_id IN (${placeholders}) AND c.archived_at IS NULL
-			  GROUP BY tu.reported_by_user_id, tu.model`
+			  GROUP BY tu.reported_by_user_id, tu.model, date(tu.created_at)`
 		)
 		.all(...boardIds) as {
-		userId: number | null; username: string | null; emoji: string | null; model: string | null;
-		tokens: number; inputTokens: number | null; outputTokens: number | null;
+		userId: number | null; username: string | null; emoji: string | null;
+		model: string | null; day: string; tokens: number;
+		inputTokens: number | null; outputTokens: number | null;
 		n: number; withSplit: number;
 	}[];
 
-	const byUser = new Map<number | null, typeof rows>();
-	for (const r of rows) {
-		if (!byUser.has(r.userId)) byUser.set(r.userId, []);
-		byUser.get(r.userId)!.push(r);
-	}
+	// `date()` yields YYYY-MM-DD, so a plain string compare is a date compare.
+	const localStart = (d: Date) => {
+		const z = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+		return `${z.getFullYear()}-${String(z.getMonth() + 1).padStart(2, '0')}-${String(z.getDate()).padStart(2, '0')}`;
+	};
+	const now = new Date();
+	const startOfToday = localStart(now);
+	// Week starts Monday — the working week, not the American Sunday.
+	const dow = (now.getDay() + 6) % 7;
+	const startOfWeek = localStart(new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow));
+	const startOfMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+	const startOfYear = `${now.getFullYear()}-01-01`;
 
-	const out = [];
-	for (const [userId, group] of byUser) {
-		const cost = costOf(
-			group.map((r) => ({
-				tokens: r.tokens,
-				model: r.model,
-				inputTokens: r.withSplit === r.n ? r.inputTokens : null,
-				outputTokens: r.withSplit === r.n ? r.outputTokens : null
-			}))
-		);
-		out.push({
-			userId,
-			// A deleted user leaves its entries behind — the spend happened, so it
-			// is still counted rather than dropped from the total.
-			username: group[0].username ?? 'Deleted user',
-			emoji: group[0].emoji ?? '👤',
-			tokens: group.reduce((sum, r) => sum + r.tokens, 0),
-			costUsd: cost.usd,
-			entries: group.reduce((sum, r) => sum + r.n, 0)
-		});
+	const bounds: Record<SpendPeriod, string> = {
+		today: startOfToday, week: startOfWeek, month: startOfMonth, year: startOfYear, all: ''
+	};
+
+	const out = {} as Record<SpendPeriod, UserSpendRow[]>;
+	for (const period of Object.keys(bounds) as SpendPeriod[]) {
+		const cutoff = bounds[period];
+		const inWindow = cutoff ? rows.filter((r) => r.day >= cutoff) : rows;
+
+		const byUser = new Map<number | null, typeof inWindow>();
+		for (const r of inWindow) {
+			if (!byUser.has(r.userId)) byUser.set(r.userId, []);
+			byUser.get(r.userId)!.push(r);
+		}
+
+		const list: UserSpendRow[] = [];
+		for (const [userId, group] of byUser) {
+			const cost = costOf(
+				group.map((r) => ({
+					tokens: r.tokens,
+					model: r.model,
+					inputTokens: r.withSplit === r.n ? r.inputTokens : null,
+					outputTokens: r.withSplit === r.n ? r.outputTokens : null
+				}))
+			);
+			// Same person, same model, several days — fold the days together.
+			const modelTotals = new Map<string, { tokens: number; input: number | null; output: number | null; n: number; withSplit: number }>();
+			for (const r of group) {
+				const key = r.model ?? 'unspecified';
+				const prev = modelTotals.get(key);
+				modelTotals.set(key, {
+					tokens: (prev?.tokens ?? 0) + r.tokens,
+					input: r.inputTokens === null ? (prev?.input ?? null) : (prev?.input ?? 0) + r.inputTokens,
+					output: r.outputTokens === null ? (prev?.output ?? null) : (prev?.output ?? 0) + r.outputTokens,
+					n: (prev?.n ?? 0) + r.n,
+					withSplit: (prev?.withSplit ?? 0) + r.withSplit
+				});
+			}
+			const byModel = [...modelTotals.entries()]
+				.map(([model, t]) => ({
+					model,
+					tokens: t.tokens,
+					costUsd: costOf([{
+						tokens: t.tokens,
+						model: model === 'unspecified' ? null : model,
+						inputTokens: t.withSplit === t.n ? t.input : null,
+						outputTokens: t.withSplit === t.n ? t.output : null
+					}]).usd
+				}))
+				.sort((a, b) => b.tokens - a.tokens);
+
+			list.push({
+				userId,
+				username: group[0].username ?? 'Deleted user',
+				emoji: group[0].emoji ?? '👤',
+				tokens: group.reduce((sum, r) => sum + r.tokens, 0),
+				costUsd: cost.usd,
+				entries: group.reduce((sum, r) => sum + r.n, 0),
+				byModel
+			});
+		}
+		out[period] = list.sort((a, b) => b.tokens - a.tokens);
 	}
-	return out.sort((a, b) => b.tokens - a.tokens);
+	return out;
 }
 
 /** Total across one milestone's cards, for the planning view. */

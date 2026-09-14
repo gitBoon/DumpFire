@@ -606,6 +606,14 @@ export const tokenUsage = sqliteTable('token_usage', {
 	 */
 	inputTokens: integer('input_tokens'),
 	outputTokens: integer('output_tokens'),
+	/**
+	 * Cache components, which dominate agentic usage — a measured session was
+	 * 99.3% cache reads. Priced at 0.1x input (read), 1.25x (5-minute write)
+	 * and 2x (1-hour write), so omitting them is an order-of-magnitude error.
+	 */
+	cacheReadTokens: integer('cache_read_tokens'),
+	cacheWrite5mTokens: integer('cache_write_5m_tokens'),
+	cacheWrite1hTokens: integer('cache_write_1h_tokens'),
 	note: text('note'),
 	reportedByUserId: integer('reported_by_user_id').references(() => users.id, {
 		onDelete: 'set null'
