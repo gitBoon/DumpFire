@@ -12,6 +12,7 @@
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { completionPercent } from '$lib/progress';
 	import { formatTokens } from '$lib/tokens';
+	import { costOf, formatUsd, BLEND_NOTE, SOURCE_NOTE } from '$lib/pricing';
 	import { highlightMentions } from '$lib/utils/mentions';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
@@ -436,6 +437,9 @@
 	interface TokenLedger {
 		recorded: boolean;
 		total: number;
+		costUsd: number | null;
+		costExact: boolean;
+		unpricedTokens: number;
 		direct: number;
 		fromSubtasks: number;
 		entries: number;
@@ -446,12 +450,42 @@
 			subtaskTitle: string | null;
 			tokens: number;
 			model: string | null;
+			inputTokens: number | null;
+			outputTokens: number | null;
 			note: string | null;
 			createdAt: string;
 		}[];
 	}
 	let tokenLedger = $state<TokenLedger | null>(null);
 	let tokensExpanded = $state(false);
+
+	/**
+	 * Per-subtask cost, folded out of the card's own ledger.
+	 *
+	 * A subtask only appears here if something was reported against it; the rest
+	 * show nothing at all rather than a zero, for the same reason cards do.
+	 */
+	const subtaskCost = $derived.by(() => {
+		const m = new Map<number, { tokens: number; costUsd: number | null }>();
+		for (const e of tokenLedger?.entryList ?? []) {
+			if (e.subtaskId === null) continue;
+			const prev = m.get(e.subtaskId);
+			m.set(e.subtaskId, { tokens: (prev?.tokens ?? 0) + e.tokens, costUsd: null });
+		}
+		for (const [id] of m) {
+			const mine = (tokenLedger?.entryList ?? []).filter((e) => e.subtaskId === id);
+			const c = costOf(
+				mine.map((e) => ({
+					tokens: e.tokens,
+					model: e.model,
+					inputTokens: e.inputTokens,
+					outputTokens: e.outputTokens
+				}))
+			);
+			m.get(id)!.costUsd = c.usd;
+		}
+		return m;
+	});
 
 	$effect(() => {
 		const id = card?.id;
@@ -1016,8 +1050,13 @@
 							<button class="token-summary" onclick={() => (tokensExpanded = !tokensExpanded)} type="button">
 								<span class="token-label">Cost</span>
 								<span class="token-total">{formatTokens(tokenLedger.total)}</span>
+								{#if tokenLedger.costUsd !== null}
+									<span class="token-money" title="{SOURCE_NOTE}{tokenLedger.costExact ? ' — exact, from reported input/output splits' : ` — ${BLEND_NOTE}`}.">
+										{formatUsd(tokenLedger.costUsd)}{#if !tokenLedger.costExact}<span class="token-est">est</span>{/if}
+									</span>
+								{/if}
 								<span class="token-sub">
-									tokens{#if tokenLedger.fromSubtasks !== 0} · incl. {formatTokens(tokenLedger.fromSubtasks)} from subtasks{/if}
+									tokens{#if tokenLedger.fromSubtasks !== 0} · incl. {formatTokens(tokenLedger.fromSubtasks)} from subtasks{/if}{#if tokenLedger.unpricedTokens > 0} · <span class="token-unpriced" title="Recorded without a model, so they cannot be priced.">{formatTokens(tokenLedger.unpricedTokens)} unpriced</span>{/if}
 								</span>
 								<span class="token-chevron" class:open={tokensExpanded}>▾</span>
 							</button>
@@ -1039,6 +1078,7 @@
 												{#if !e.subtaskTitle && !e.note}<span class="te-note te-plain">card</span>{/if}
 											</span>
 											{#if e.model}<span class="te-model">{e.model}</span>{/if}
+											<span class="te-cost">{formatUsd(costOf([{ tokens: e.tokens, model: e.model, inputTokens: e.inputTokens, outputTokens: e.outputTokens }]).usd)}</span>
 										</li>
 									{/each}
 								</ul>
@@ -1067,6 +1107,12 @@
 								<div class="subtask-title-row">
 									<span class="st-priority">{getPriorityLabel(subtask.priority)}</span>
 									<span class="subtask-title">{subtask.title}</span>
+									{#if subtaskCost.get(subtask.id)}
+										{@const sc = subtaskCost.get(subtask.id)!}
+										<span class="st-cost" title="{formatTokens(sc.tokens)} tokens · {SOURCE_NOTE} — {BLEND_NOTE}.">
+											{formatTokens(sc.tokens)}{#if sc.costUsd !== null} · {formatUsd(sc.costUsd)}{/if}
+										</span>
+									{/if}
 								</div>
 								{#if subtask.description || subtask.dueDate}
 									<div class="subtask-detail-row">
@@ -1776,6 +1822,13 @@
 	   measurement where none exists: "Not recorded" is a different statement
 	   from "0 tokens", and every card older than this feature is the former. */
 	.token-cost { margin-top: var(--space-sm); }
+	/* Per-subtask cost. Only present where something was recorded, so it never
+	   becomes a row of dashes down the list. */
+	.st-cost {
+		margin-left: auto; padding: 1px 7px; border-radius: var(--radius-full);
+		background: var(--glass-hover); color: var(--text-secondary);
+		font-size: 0.68rem; font-variant-numeric: tabular-nums; white-space: nowrap;
+	}
 	.token-summary {
 		display: flex; align-items: baseline; gap: var(--space-sm);
 		width: 100%; padding: 7px 10px;
@@ -1801,6 +1854,21 @@
 		transition: transform var(--duration-fast) var(--ease-out);
 	}
 	.token-chevron.open { transform: rotate(180deg); }
+	.token-money {
+		font-size: 0.9rem; font-weight: 700; color: var(--accent-violet, #8b5cf6);
+		font-variant-numeric: tabular-nums;
+	}
+	/* "est" is small but always present on a blended figure — the reader should
+	   never have to hover to learn the number is an estimate. */
+	.token-est {
+		margin-left: 3px; font-size: 0.6rem; font-weight: 600;
+		text-transform: uppercase; opacity: 0.7;
+	}
+	.token-unpriced { color: var(--accent-amber, #f59e0b); }
+	.te-cost {
+		min-width: 54px; text-align: right; color: var(--text-secondary);
+		font-variant-numeric: tabular-nums;
+	}
 	.token-models { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
 	.token-model-chip {
 		padding: 2px 8px; border-radius: var(--radius-full);

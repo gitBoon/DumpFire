@@ -48,6 +48,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// boards too and are discovered later, inside the enrichment loop.
 	const boardTokenTotals = getBoardTokenTotals(db.select({ id: boards.id }).from(boards).all().map(b => b.id));
 	const tokensFor = (id: number) => boardTokenTotals.get(id)?.total ?? null;
+	const costFor = (id: number) => boardTokenTotals.get(id)?.costUsd ?? null;
 
 	// Enrich each board with card stats and sub-board info
 	const enriched = allBoards.map(board => {
@@ -55,7 +56,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const colIds = boardCols.map(c => c.id);
 	if (colIds.length === 0) {
 			const cat = board.categoryId ? allCategories.find(c => c.id === board.categoryId) : null;
-			return { ...board, totalCards: 0, completedCards: 0, tokenTotal: tokensFor(board.id), lastActivity: board.updatedAt, subBoards: [] as any[], categoryName: cat?.name || null, categoryColor: cat?.color || null };
+			return { ...board, totalCards: 0, completedCards: 0, tokenTotal: tokensFor(board.id), costUsd: costFor(board.id), lastActivity: board.updatedAt, subBoards: [] as any[], categoryName: cat?.name || null, categoryColor: cat?.color || null };
 		}
 
 		const boardCards = db.select().from(cards).where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt))).all();
@@ -69,7 +70,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		}
 
 		// Find sub-boards for cards on this board
-		const subBoardsForBoard: { id: number; name: string; emoji: string; parentCardTitle: string; done: number; total: number; tokenTotal: number | null }[] = [];
+		const subBoardsForBoard: { id: number; name: string; emoji: string; parentCardTitle: string; done: number; total: number; tokenTotal: number | null; costUsd: number | null }[] = [];
 		for (const card of boardCards) {
 			const subs = subBoardsByCard.get(card.id);
 			if (!subs) continue;
@@ -92,7 +93,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 					parentCardTitle: card.title,
 					done,
 					total,
-					tokenTotal: tokensFor(sb.id)
+					tokenTotal: tokensFor(sb.id),
+					costUsd: costFor(sb.id)
 				});
 			}
 		}
@@ -113,6 +115,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			totalCards: boardCards.length,
 			completedCards,
 			tokenTotal: tokensFor(board.id),
+			costUsd: costFor(board.id),
 			lastActivity,
 			subBoards: subBoardsForBoard,
 			categoryName,
@@ -166,7 +169,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// nothing has been recorded anywhere yet.
 	const walkedTokenTotals = [...walkedBoardIds]
 		.map(id => boardTokenTotals.get(id))
-		.filter((t): t is { total: number; entries: number } => t !== undefined);
+		.filter(t => t !== undefined);
+	// Cost sums only the boards that could actually be priced; tokens whose model
+	// is unknown are carried separately so the figure is never quietly short.
+	const pricedBoards = walkedTokenTotals.filter(t => t.costUsd !== null);
 	const allTasksTotals = {
 		cards: allTasksCards,
 		completedCards: allTasksCompleted,
@@ -174,7 +180,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 		tasks: allTasksCards + allTasksSubtasks,
 		tokenTotal: walkedTokenTotals.length > 0
 			? walkedTokenTotals.reduce((sum, t) => sum + t.total, 0)
-			: null
+			: null,
+		costUsd: pricedBoards.length > 0
+			? pricedBoards.reduce((sum, t) => sum + (t.costUsd ?? 0), 0)
+			: null,
+		unpricedTokens: walkedTokenTotals.reduce((sum, t) => sum + t.unpricedTokens, 0)
 	};
 
 	// ─── Personal Analytics ──────────────────────────────────────────────────

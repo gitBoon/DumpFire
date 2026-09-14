@@ -65,7 +65,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			{ kind: 'card', id: cardId },
 			body.tokens,
 			body.model,
-			body.note
+			body.note,
+			body.inputTokens,
+			body.outputTokens
 		);
 		emit(result.boardId, 'update', { type: 'card' });
 		return json(

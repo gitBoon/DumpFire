@@ -23,6 +23,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { canEditBoard } from './board-access';
 import { getCardBoardId, getSubtaskCardId } from './work-access';
 import type { SessionUser } from './auth';
+import { costOf } from '$lib/pricing';
 
 /** A single entry is capped well above any real turn, to catch a fat-fingered paste. */
 export const MAX_TOKENS_PER_ENTRY = 100_000_000;
@@ -48,6 +49,8 @@ export interface TokenEntry {
 	subtaskTitle: string | null;
 	tokens: number;
 	model: string | null;
+	inputTokens: number | null;
+	outputTokens: number | null;
 	note: string | null;
 	createdAt: string;
 }
@@ -63,9 +66,21 @@ export interface TokenTotal {
 	entries: number;
 	/** Tokens per model, largest first. Empty when nothing is recorded. */
 	byModel: { model: string; tokens: number }[];
+	/**
+	 * Estimated cost in USD, or null when no contributing entry named a model
+	 * we can price. Never silently zero — see `unpricedTokens`.
+	 */
+	costUsd: number | null;
+	/** True only when every priced entry carried an exact input/output split. */
+	costExact: boolean;
+	/** Tokens excluded from the cost because their model is unknown. */
+	unpricedTokens: number;
 }
 
-const EMPTY: TokenTotal = { total: 0, direct: 0, fromSubtasks: 0, entries: 0, byModel: [] };
+const EMPTY: TokenTotal = {
+	total: 0, direct: 0, fromSubtasks: 0, entries: 0, byModel: [],
+	costUsd: null, costExact: false, unpricedTokens: 0
+};
 
 /** A total with no entries behind it. Callers render this as "—". */
 export function emptyTotal(): TokenTotal {
@@ -103,6 +118,39 @@ function clean(value: unknown, max: number, field: string): string | null {
 	if (!trimmed) return null;
 	if (trimmed.length > max) throw new TokenError(400, `${field} must be ${max} characters or fewer`);
 	return trimmed;
+}
+
+/**
+ * An optional exact input/output split.
+ *
+ * Both halves or neither: one without the other cannot be costed and would
+ * silently behave as if the missing half were zero. When present they must
+ * agree with the total, because a split that contradicts it means the caller
+ * has sent two different claims about the same work.
+ */
+function validateSplit(
+	total: number,
+	input: unknown,
+	output: unknown
+): { inputTokens: number | null; outputTokens: number | null } {
+	const hasIn = input !== undefined && input !== null;
+	const hasOut = output !== undefined && output !== null;
+	if (!hasIn && !hasOut) return { inputTokens: null, outputTokens: null };
+	if (hasIn !== hasOut) {
+		throw new TokenError(400, 'inputTokens and outputTokens must be given together, or not at all');
+	}
+	const i = Number(input);
+	const o = Number(output);
+	if (!Number.isInteger(i) || !Number.isInteger(o)) {
+		throw new TokenError(400, 'inputTokens and outputTokens must be whole numbers');
+	}
+	if (i + o !== total) {
+		throw new TokenError(
+			400,
+			`inputTokens + outputTokens (${i + o}) must equal tokens (${total})`
+		);
+	}
+	return { inputTokens: i, outputTokens: o };
 }
 
 /**
@@ -149,11 +197,14 @@ export function recordTokenUsage(
 	target: TokenTarget,
 	tokens: number,
 	model?: unknown,
-	note?: unknown
+	note?: unknown,
+	inputTokens?: unknown,
+	outputTokens?: unknown
 ): RecordResult {
 	const amount = validateAmount(tokens);
 	const modelName = clean(model, MAX_MODEL_LEN, 'model');
 	const noteText = clean(note, MAX_NOTE_LEN, 'note');
+	const split = validateSplit(amount, inputTokens, outputTokens);
 	const boardId = resolveTarget(user, target);
 
 	const cardId = target.kind === 'card' ? target.id : getSubtaskCardId(target.id)!;
@@ -165,6 +216,8 @@ export function recordTokenUsage(
 			subtaskId: target.kind === 'subtask' ? target.id : null,
 			tokens: amount,
 			model: modelName,
+			inputTokens: split.inputTokens,
+			outputTokens: split.outputTokens,
 			note: noteText,
 			reportedByUserId: user.id
 		})
@@ -180,6 +233,8 @@ export interface BatchEntryInput {
 	tokens?: unknown;
 	model?: unknown;
 	note?: unknown;
+	inputTokens?: unknown;
+	outputTokens?: unknown;
 }
 
 export interface BatchProblem {
@@ -209,6 +264,7 @@ export function recordTokenUsageBatch(
 		tokens: number;
 		model: string | null;
 		note: string | null;
+		split: { inputTokens: number | null; outputTokens: number | null };
 		boardId: number;
 		cardId: number;
 	}[] = [];
@@ -231,9 +287,10 @@ export function recordTokenUsageBatch(
 			const tokens = validateAmount(e.tokens);
 			const model = clean(e.model, MAX_MODEL_LEN, 'model');
 			const note = clean(e.note, MAX_NOTE_LEN, 'note');
+			const split = validateSplit(tokens, e.inputTokens, e.outputTokens);
 			const boardId = resolveTarget(user, target);
 			const cardId = target.kind === 'card' ? target.id : getSubtaskCardId(target.id)!;
-			prepared.push({ target, tokens, model, note, boardId, cardId });
+			prepared.push({ target, tokens, model, note, split, boardId, cardId });
 		} catch (err) {
 			problems.push({ index, reason: err instanceof TokenError ? err.message : String(err) });
 		}
@@ -249,6 +306,8 @@ export function recordTokenUsageBatch(
 					subtaskId: p.target.kind === 'subtask' ? p.target.id : null,
 					tokens: p.tokens,
 					model: p.model,
+					inputTokens: p.split.inputTokens,
+					outputTokens: p.split.outputTokens,
 					note: p.note,
 					reportedByUserId: user.id
 				})
@@ -329,8 +388,57 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 			direct,
 			fromSubtasks,
 			entries: r.entries ?? 0,
-			byModel: []
+			byModel: [],
+			costUsd: null,
+			costExact: false,
+			unpricedTokens: 0
 		});
+	}
+
+	// Cost needs per-model figures, which the totals query deliberately does not
+	// carry. One extra grouped query covers the whole batch rather than one per
+	// card, which matters on a dashboard listing every board.
+	const costRows = sqlite
+		.prepare(
+			`SELECT COALESCE(tu.card_id, s.card_id) AS cardId,
+			        tu.model                        AS model,
+			        SUM(tu.tokens)                  AS tokens,
+			        SUM(tu.input_tokens)            AS inputTokens,
+			        SUM(tu.output_tokens)           AS outputTokens,
+			        COUNT(*)                        AS n,
+			        COUNT(tu.input_tokens)          AS withSplit
+			   FROM token_usage tu
+			   LEFT JOIN subtasks s ON s.id = tu.subtask_id
+			  WHERE COALESCE(tu.card_id, s.card_id) IN (${placeholders})
+			  GROUP BY COALESCE(tu.card_id, s.card_id), tu.model`
+		)
+		.all(...cardIds) as {
+		cardId: number; model: string | null; tokens: number;
+		inputTokens: number | null; outputTokens: number | null;
+		n: number; withSplit: number;
+	}[];
+
+	const byCard = new Map<number, typeof costRows>();
+	for (const r of costRows) {
+		if (!byCard.has(r.cardId)) byCard.set(r.cardId, []);
+		byCard.get(r.cardId)!.push(r);
+	}
+	for (const [cardId, rows2] of byCard) {
+		const existing = out.get(cardId);
+		if (!existing) continue;
+		const cost = costOf(
+			rows2.map((r) => ({
+				tokens: r.tokens,
+				model: r.model,
+				// Only trust the summed split when EVERY entry in the group had one;
+				// a partial sum would understate the tokens it covers.
+				inputTokens: r.withSplit === r.n ? r.inputTokens : null,
+				outputTokens: r.withSplit === r.n ? r.outputTokens : null
+			}))
+		);
+		existing.costUsd = cost.usd;
+		existing.costExact = cost.exact;
+		existing.unpricedTokens = cost.unpricedTokens;
 	}
 	return out;
 }
@@ -351,7 +459,25 @@ export function getCardTokenTotal(cardId: number): TokenTotal {
 		)
 		.all(cardId, cardId) as { model: string; tokens: number }[];
 
-	return { ...base, byModel: models };
+	// Cost from the entries themselves rather than from the per-model subtotals,
+	// so an entry carrying an exact input/output split is costed exactly and only
+	// the rest falls back to the blend.
+	const cost = costOf(
+		getCardTokenEntries(cardId).map((e) => ({
+			tokens: e.tokens,
+			model: e.model,
+			inputTokens: e.inputTokens,
+			outputTokens: e.outputTokens
+		}))
+	);
+
+	return {
+		...base,
+		byModel: models,
+		costUsd: cost.usd,
+		costExact: cost.exact,
+		unpricedTokens: cost.unpricedTokens
+	};
 }
 
 /** Every entry behind a card, newest first — the card modal's breakdown. */
@@ -364,6 +490,8 @@ export function getCardTokenEntries(cardId: number): TokenEntry[] {
 			        s.title          AS subtaskTitle,
 			        tu.tokens        AS tokens,
 			        tu.model         AS model,
+			        tu.input_tokens  AS inputTokens,
+			        tu.output_tokens AS outputTokens,
 			        tu.note          AS note,
 			        tu.created_at    AS createdAt
 			   FROM token_usage tu
@@ -380,8 +508,10 @@ export function getCardTokenEntries(cardId: number): TokenEntry[] {
  * Boards with nothing recorded are absent from the map rather than present with
  * a zero, for the same reason as cards.
  */
-export function getBoardTokenTotals(boardIds: number[]): Map<number, { total: number; entries: number }> {
-	const out = new Map<number, { total: number; entries: number }>();
+export function getBoardTokenTotals(
+	boardIds: number[]
+): Map<number, { total: number; entries: number; costUsd: number | null; unpricedTokens: number }> {
+	const out = new Map<number, { total: number; entries: number; costUsd: number | null; unpricedTokens: number }>();
 	if (boardIds.length === 0) return out;
 
 	const placeholders = boardIds.map(() => '?').join(',');
@@ -409,7 +539,52 @@ export function getBoardTokenTotals(boardIds: number[]): Map<number, { total: nu
 		.all(...boardIds, ...boardIds) as { boardId: number; total: number; entries: number }[];
 
 	for (const r of rows) {
-		if ((r.entries ?? 0) > 0) out.set(r.boardId, { total: r.total ?? 0, entries: r.entries });
+		if ((r.entries ?? 0) > 0) {
+			out.set(r.boardId, { total: r.total ?? 0, entries: r.entries, costUsd: null, unpricedTokens: 0 });
+		}
+	}
+
+	// Per-board cost, grouped by model so each family is priced at its own rate.
+	const costRows = sqlite
+		.prepare(
+			`SELECT co.board_id           AS boardId,
+			        tu.model              AS model,
+			        SUM(tu.tokens)        AS tokens,
+			        SUM(tu.input_tokens)  AS inputTokens,
+			        SUM(tu.output_tokens) AS outputTokens,
+			        COUNT(*)              AS n,
+			        COUNT(tu.input_tokens) AS withSplit
+			   FROM token_usage tu
+			   LEFT JOIN subtasks s ON s.id = tu.subtask_id
+			   JOIN cards c    ON c.id = COALESCE(tu.card_id, s.card_id)
+			   JOIN columns co ON co.id = c.column_id
+			  WHERE co.board_id IN (${placeholders}) AND c.archived_at IS NULL
+			  GROUP BY co.board_id, tu.model`
+		)
+		.all(...boardIds) as {
+		boardId: number; model: string | null; tokens: number;
+		inputTokens: number | null; outputTokens: number | null;
+		n: number; withSplit: number;
+	}[];
+
+	const byBoard = new Map<number, typeof costRows>();
+	for (const r of costRows) {
+		if (!byBoard.has(r.boardId)) byBoard.set(r.boardId, []);
+		byBoard.get(r.boardId)!.push(r);
+	}
+	for (const [boardId, rows2] of byBoard) {
+		const existing = out.get(boardId);
+		if (!existing) continue;
+		const cost = costOf(
+			rows2.map((r) => ({
+				tokens: r.tokens,
+				model: r.model,
+				inputTokens: r.withSplit === r.n ? r.inputTokens : null,
+				outputTokens: r.withSplit === r.n ? r.outputTokens : null
+			}))
+		);
+		existing.costUsd = cost.usd;
+		existing.unpricedTokens = cost.unpricedTokens;
 	}
 	return out;
 }

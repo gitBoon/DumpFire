@@ -13,6 +13,7 @@
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { completionPercent } from '$lib/progress';
 	import { formatTokens } from '$lib/tokens';
+	import { formatUsd, BLEND_NOTE, SOURCE_NOTE } from '$lib/pricing';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
@@ -93,7 +94,7 @@
 	}
 
 	// Sort state
-	type SortColumn = 'name' | 'activity' | 'cards' | 'progress' | 'tokens';
+	type SortColumn = 'name' | 'activity' | 'cards' | 'progress' | 'tokens' | 'cost';
 	let sortBy = $state<SortColumn>('name');
 	let sortDir = $state<'asc' | 'desc'>('asc');
 
@@ -322,6 +323,8 @@
 						const bPct = b.totalCards > 0 ? b.completedCards / b.totalCards : 0;
 						return dir * (aPct - bPct);
 					}
+					case 'cost':
+						return dir * ((a.costUsd ?? -1) - (b.costUsd ?? -1));
 					case 'tokens':
 						// Boards with nothing recorded sort as -1 so they group together
 						// at one end rather than mixing in with genuinely cheap boards.
@@ -673,6 +676,7 @@
 						<button class="bch-cards bch-sort" class:active={sortBy === 'cards'} onclick={() => toggleSort('cards')}>Cards{sortArrow('cards')}</button>
 						<button class="bch-progress bch-sort" class:active={sortBy === 'progress'} onclick={() => toggleSort('progress')}>Progress{sortArrow('progress')}</button>
 						<button class="bch-tokens bch-sort" class:active={sortBy === 'tokens'} onclick={() => toggleSort('tokens')} title="Tokens spent on this board. Blank means nothing has been recorded — not that it was free.">Tokens{sortArrow('tokens')}</button>
+						<button class="bch-cost bch-sort" class:active={sortBy === 'cost'} onclick={() => toggleSort('cost')} title="Estimated cost at {SOURCE_NOTE} — {BLEND_NOTE}.">Cost{sortArrow('cost')}</button>
 						<span class="bch-actions"></span>
 					</div>
 
@@ -692,6 +696,10 @@
 						</div>
 						<span class="board-row-tokens">
 							{#if data.allTasksTotals.tokenTotal != null}{formatTokens(data.allTasksTotals.tokenTotal)}
+							{:else}<span class="tok-empty">—</span>{/if}
+						</span>
+						<span class="board-row-cost">
+							{#if data.allTasksTotals.costUsd != null}{formatUsd(data.allTasksTotals.costUsd)}
 							{:else}<span class="tok-empty">—</span>{/if}
 						</span>
 						<div class="board-row-actions"></div>
@@ -723,6 +731,7 @@
 											{/if}
 										</div>
 											<span class="board-row-tokens">{#if board.tokenTotal !== null}{formatTokens(board.tokenTotal)}{:else}<span class="tok-empty" title="Nothing recorded — not the same as zero">—</span>{/if}</span>
+											<span class="board-row-cost">{#if board.costUsd !== null}{formatUsd(board.costUsd)}{:else}<span class="tok-empty">—</span>{/if}</span>
 										<div class="board-row-actions">
 											<button class="row-fav-btn favourited" title="Remove from favourites" onclick={(e) => toggleFavourite(board.id, e)}>⭐</button>
 										</div>
@@ -781,6 +790,7 @@
 													{/if}
 												</div>
 											<span class="board-row-tokens">{#if board.tokenTotal !== null}{formatTokens(board.tokenTotal)}{:else}<span class="tok-empty" title="Nothing recorded — not the same as zero">—</span>{/if}</span>
+											<span class="board-row-cost">{#if board.costUsd !== null}{formatUsd(board.costUsd)}{:else}<span class="tok-empty">—</span>{/if}</span>
 												<div class="board-row-actions">
 									{#if board.subBoards && board.subBoards.length > 0}
 										{@const activeSubs = board.subBoards.filter((s: any) => showCompletedSubs || !(s.total > 0 && s.done === s.total))}
@@ -818,6 +828,7 @@
 															{/if}
 														</div>
 														<span class="board-row-tokens">{#if sb.tokenTotal !== null}{formatTokens(sb.tokenTotal)}{:else}<span class="tok-empty">—</span>{/if}</span>
+														<span class="board-row-cost">{#if sb.costUsd !== null}{formatUsd(sb.costUsd)}{:else}<span class="tok-empty">—</span>{/if}</span>
 														<div class="board-row-actions">
 															<button class="row-delete-btn" title="Delete sub-board" onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteBoard(sb.id, sb.name); }}>
 																<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -907,6 +918,26 @@
 					<div class="stat-value {a.overdue > 0 ? 'pulse-text' : ''}">{a.overdue} <span class="text-sm">overdue</span></div>
 					<div class="stat-sub">{a.pendingRequests} inbox pending</div>
 				</div>
+
+				<!-- Total cost across every board this user can see. Only rendered once
+				     something has actually been recorded: an empty card claiming "—"
+				     would be a permanent blank tile for anyone not using the feature. -->
+				{#if data.allTasksTotals.tokenTotal != null}
+					<div class="stat-card glass-glow accent-violet">
+						<div class="stat-header">
+							<span class="stat-label">Spend</span>
+						</div>
+						<div class="stat-value">{formatUsd(data.allTasksTotals.costUsd)}</div>
+						<div class="stat-sub" title="{SOURCE_NOTE} — {BLEND_NOTE}.">
+							{formatTokens(data.allTasksTotals.tokenTotal)} tokens · est.
+							{#if data.allTasksTotals.unpricedTokens > 0}
+								<span class="stat-warn" title="Recorded without a model, so they cannot be priced.">
+									· {formatTokens(data.allTasksTotals.unpricedTokens)} unpriced
+								</span>
+							{/if}
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			<!-- Priority breakdown -->
@@ -1466,6 +1497,10 @@
 	.accent-cyan .stat-label { color: #06b6d4; }
 	.accent-rose { border-top-color: rgba(244, 63, 94, 0.5); border-left-color: rgba(244, 63, 94, 0.5); }
 	.accent-rose .stat-value { color: var(--accent-rose); }
+	.accent-violet .stat-value { color: var(--accent-violet, #8b5cf6); }
+	/* Unpriced tokens are a gap in the data, not a small number — flagged rather
+	   than folded silently into the total. */
+	.stat-warn { color: var(--accent-amber, #f59e0b); }
 	.pulse-text { animation: pulse-red 2s infinite; }
 	@keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
@@ -1625,6 +1660,7 @@
 	.bch-cards { width: 60px; text-align: right; }
 	.bch-progress { width: 100px; text-align: right; }
 	.bch-tokens { width: 74px; text-align: right; }
+	.bch-cost { width: 66px; text-align: right; }
 	/* Cost is context, not the headline — it sits quieter than the card count
 	   so it informs without competing with name and progress. */
 	.board-row-tokens {
@@ -1635,6 +1671,13 @@
 	/* Nothing recorded. Deliberately fainter than a real figure: it is an
 	   absence of data, not a measurement of zero. */
 	.tok-empty { color: var(--text-tertiary); opacity: 0.55; }
+	/* Money reads a touch stronger than the raw count — it is the figure people
+	   actually act on — but still below name and progress in the hierarchy. */
+	.board-row-cost {
+		width: 66px; text-align: right; flex-shrink: 0;
+		font-size: 0.74rem; font-variant-numeric: tabular-nums;
+		color: var(--text-primary); white-space: nowrap;
+	}
 	.bch-actions { width: 80px; }
 
 	.board-row-link {

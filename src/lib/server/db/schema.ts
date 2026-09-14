@@ -599,6 +599,13 @@ export const tokenUsage = sqliteTable('token_usage', {
 	tokens: integer('tokens').notNull(),
 	/** Which model spent them — without it a total cannot be turned into cost. */
 	model: text('model'),
+	/**
+	 * Exact split, when the caller knows it. Input and output are priced ~5x
+	 * apart, so an entry carrying these is costed exactly; one without falls
+	 * back to a stated blend assumption. Never inferred or backfilled.
+	 */
+	inputTokens: integer('input_tokens'),
+	outputTokens: integer('output_tokens'),
 	note: text('note'),
 	reportedByUserId: integer('reported_by_user_id').references(() => users.id, {
 		onDelete: 'set null'
