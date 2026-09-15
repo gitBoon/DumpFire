@@ -4,6 +4,13 @@
  * Manages the SSE connection lifecycle: connecting, handling events,
  * and auto-reconnecting on failure. Accepts callbacks so the board page
  * can react to server events without managing the EventSource directly.
+ *
+ * Reconnecting is not the same as catching up. A dropped stream misses every
+ * event sent while it was down and nothing replays them, so the page has to
+ * re-read its data on the way back up. Without that, a figure recorded during
+ * the gap — `add-tokens` run from a terminal while the laptop was asleep, or
+ * an idle proxy closing the stream — stays stale on screen indefinitely, and
+ * looks exactly like work that cost nothing.
  */
 
 export interface SSECallbacks {
@@ -26,9 +33,17 @@ export interface SSECallbacks {
 export function connectSSE(boardId: number, callbacks: SSECallbacks): () => void {
 	let eventSource: EventSource | null = null;
 	let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+	// Whether a stream has been established before. The first open is the page
+	// loading its own data and needs no re-read; every later one follows a gap.
+	let hasConnected = false;
 
 	function connect() {
 		eventSource = new EventSource(`/api/boards/${boardId}/events`);
+
+		eventSource.onopen = () => {
+			if (hasConnected) callbacks.onUpdate();
+			hasConnected = true;
+		};
 
 		eventSource.addEventListener('update', () => {
 			callbacks.onUpdate();
@@ -64,10 +79,22 @@ export function connectSSE(boardId: number, callbacks: SSECallbacks): () => void
 		};
 	}
 
+	/**
+	 * The other moment the page can be behind. A backgrounded tab can have its
+	 * stream torn down without an error this page ever sees, so coming back to
+	 * the front is treated as its own reason to re-read — which is also what
+	 * makes a figure recorded in a terminal current on alt-tab.
+	 */
+	function onVisibilityChange() {
+		if (document.visibilityState === 'visible') callbacks.onUpdate();
+	}
+	document.addEventListener('visibilitychange', onVisibilityChange);
+
 	connect();
 
 	/** Cleanup: close the connection and cancel any pending reconnect. */
 	return () => {
+		document.removeEventListener('visibilitychange', onVisibilityChange);
 		if (reconnectTimeout) clearTimeout(reconnectTimeout);
 		if (eventSource) {
 			eventSource.close();
