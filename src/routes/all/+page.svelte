@@ -40,6 +40,9 @@
 	// ─── SSE Live Updates ─────────────────────────────────────────────────
 	let eventSource: EventSource | null = null;
 	let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+	// Whether a stream has been established before. The first open is this page
+	// loading its own data; every later one follows a gap that missed events.
+	let hasConnectedSSE = false;
 
 	// ─── Fireworks Celebration ────────────────────────────────────────────
 	let showFireworks = $state(false);
@@ -100,6 +103,14 @@
 	function connectGlobalSSE() {
 		eventSource = new EventSource('/api/events');
 
+		// A dropped stream misses every event sent while it was down and nothing
+		// replays them, so re-read on the way back up rather than waiting for the
+		// next change. Without this a figure recorded during the gap stays stale.
+		eventSource.onopen = () => {
+			if (hasConnectedSSE) invalidateAll();
+			hasConnectedSSE = true;
+		};
+
 		eventSource.addEventListener('update', (e) => {
 			try {
 				const d = JSON.parse(e.data);
@@ -143,14 +154,26 @@
 		};
 	}
 
+	/**
+	 * The other moment this page can be behind. A backgrounded tab can have its
+	 * stream torn down without an error the page ever sees, so coming back to the
+	 * front is its own reason to re-read — which is also what makes a figure
+	 * recorded in a terminal current on alt-tab.
+	 */
+	function onVisibilityChange() {
+		if (document.visibilityState === 'visible') invalidateAll();
+	}
+
 	onMount(() => {
 		tickInterval = setInterval(() => { tick++; }, 15000);
 		if (browser) {
 			connectGlobalSSE();
+			document.addEventListener('visibilitychange', onVisibilityChange);
 		}
 	});
 
 	onDestroy(() => {
+		if (browser) document.removeEventListener('visibilitychange', onVisibilityChange);
 		if (tickInterval) clearInterval(tickInterval);
 		if (reconnectTimeout) clearTimeout(reconnectTimeout);
 		if (eventSource) {
@@ -494,13 +517,19 @@
 				<h1 class="all-title">All Tasks</h1>
 				<p class="all-subtitle">
 					{data.totalCards} total · {data.completedCards} complete · {data.totalCards - data.completedCards} remaining
-					{#if data.allTokenSummary}
-						· <span class="subtitle-cost" title="{formatTokens(data.allTokenSummary.total)} tokens across every board here · {NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
-							{formatTokens(data.allTokenSummary.total)}{#if data.allTokenSummary.costUsd !== null} · {formatUsd(data.allTokenSummary.costUsd)}{/if}
-						</span>
-					{/if}
 				</p>
 			</div>
+			<!-- Spend across every board here. Lifted out of the subtitle line so it
+			     can carry the same weight as the board header chip rather than
+			     trailing a row of counts at subtitle size. -->
+			{#if data.allTokenSummary}
+				<span class="hdr-cost" title="{formatTokens(data.allTokenSummary.total)} tokens across every board here · {NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
+					{formatTokens(data.allTokenSummary.total)}
+					{#if data.allTokenSummary.costUsd !== null}
+						<span class="hdr-cost-money">{formatUsd(data.allTokenSummary.costUsd)}</span>
+					{/if}
+				</span>
+			{/if}
 		</div>
 		<div class="all-header-right">
 			<select class="hdr-control board-filter" bind:value={boardFilter}>
@@ -1348,7 +1377,20 @@
 		background: var(--glass-hover); color: var(--text-secondary);
 		font-variant-numeric: tabular-nums;
 	}
-	.subtitle-cost { color: var(--accent-violet, #8b5cf6); font-weight: 600; font-variant-numeric: tabular-nums; }
+	/* What has been spent, on the header strip. Sized to be read at a glance:
+	   this is the figure the whole ledger exists to surface, and inline in the
+	   subtitle at 0.8rem it was easy to miss entirely. The money carries the
+	   most weight because it is the part people act on. Matches the board. */
+	.hdr-cost {
+		display: inline-flex; align-items: baseline; gap: 8px;
+		padding: 5px 14px; border-radius: var(--radius-full);
+		background: var(--bg-surface);
+		border: 1px solid var(--accent-purple-glow, var(--glass-border));
+		font-size: 1rem; font-weight: 600; line-height: 1.25;
+		color: var(--text-primary);
+		font-variant-numeric: tabular-nums; white-space: nowrap;
+	}
+	.hdr-cost-money { font-weight: 800; font-size: 1.1rem; color: var(--accent-purple, #8b5cf6); }
 	.card-date {
 		font-size: 0.65rem;
 		color: var(--text-secondary);

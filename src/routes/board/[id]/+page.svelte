@@ -1689,17 +1689,20 @@
 		flex-shrink: 0;
 	}
 
-	/* Board-level cost in the header strip. Reads as a quiet fact beside the
-	   board name, with the money emphasised because that is the figure people
-	   actually act on. */
+	/* What has been spent, on the header strip. Sized to be read at a glance:
+	   this is the figure the whole ledger exists to surface, and at 0.72rem it
+	   was easy to miss entirely. The money carries the most weight because it
+	   is the part people act on. Identical on the board and All Tasks headers. */
 	.hdr-cost {
-		display: inline-flex; align-items: baseline; gap: 5px;
-		padding: 2px 9px; border-radius: var(--radius-full);
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		font-size: 0.72rem; color: var(--text-secondary);
+		display: inline-flex; align-items: baseline; gap: 8px;
+		padding: 5px 14px; border-radius: var(--radius-full);
+		background: var(--bg-surface);
+		border: 1px solid var(--accent-purple-glow, var(--glass-border));
+		font-size: 1rem; font-weight: 600; line-height: 1.25;
+		color: var(--text-primary);
 		font-variant-numeric: tabular-nums; white-space: nowrap;
 	}
-	.hdr-cost-money { font-weight: 700; color: var(--accent-violet, #8b5cf6); }
+	.hdr-cost-money { font-weight: 800; font-size: 1.1rem; color: var(--accent-purple, #8b5cf6); }
 	.board-name {
 		font-size: 1.25rem; cursor: pointer; padding: 2px var(--space-sm);
 		border-radius: var(--radius-sm); transition: background var(--duration-fast) var(--ease-out);

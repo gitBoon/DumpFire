@@ -9,6 +9,7 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { onMount, onDestroy } from 'svelte';
+	import { connectLiveRefresh } from '$lib/live-refresh';
 	import { theme } from '$lib/stores/theme';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { completionPercent } from '$lib/progress';
@@ -170,6 +171,9 @@
 	let toasts = $state<Toast[]>([]);
 	let toastIdCounter = 0;
 	let inboxPollTimer: ReturnType<typeof setInterval> | null = null;
+	// Closes the live stream that keeps the board rows, token totals and cost
+	// current. Without it this screen only told the truth as at page load.
+	let stopLiveRefresh: (() => void) | null = null;
 
 	function addToast(title: string, requesterName: string, priority: string) {
 		const id = ++toastIdCounter;
@@ -183,6 +187,7 @@
 
 	onMount(async () => {
 		runTypewriter();
+		stopLiveRefresh = connectLiveRefresh(() => invalidateAll());
 		const res = await fetch('/api/requests');
 		if (res.ok) {
 			const requests = await res.json();
@@ -211,6 +216,7 @@
 	});
 
 	onDestroy(() => {
+		if (stopLiveRefresh) stopLiveRefresh();
 		if (typewriterTimer) clearTimeout(typewriterTimer);
 		if (inboxPollTimer) clearInterval(inboxPollTimer);
 	});
