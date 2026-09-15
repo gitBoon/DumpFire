@@ -195,6 +195,9 @@ interface CardRow {
 	releaseState: string | null;
 	priority: string;
 	columnTitle: string;
+	/** Where this column sits on its board, and where the board's first column sits. */
+	columnPosition: number;
+	firstColumnPosition: number;
 	boardId: number;
 	boardName: string;
 	boardEmoji: string | null;
@@ -289,6 +292,8 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 			c.priority          AS priority,
 			c.on_hold_note      AS onHoldNote,
 			col.title           AS columnTitle,
+			col.position        AS columnPosition,
+			(SELECT MIN(c2.position) FROM columns c2 WHERE c2.board_id = col.board_id) AS firstColumnPosition,
 			col.board_id        AS boardId,
 			b.name              AS boardName,
 			b.emoji             AS boardEmoji,
@@ -454,12 +459,25 @@ function bucketOf(r: CardRow, from: string, to: string): ActivityBucket {
 
 	if (isHoldColumnTitle(r.columnTitle) || (r.onHoldNote ?? '').trim() !== '') return 'on hold';
 
-	// Raised in the window and nothing has happened to it since. Both timestamps
-	// default to the same value on insert, so equal keys mean untouched — and
-	// they are compared as keys because the two columns are written in different
-	// formats the moment anything edits the card.
+	// Raised in the window and nothing has happened to it since.
+	//
+	// Two signals have to agree, because neither is sufficient on its own:
+	//
+	// `updatedAt` alone is not enough. Dragging a card between columns did not
+	// stamp it (fixed, but every card moved before that fix still carries the
+	// creation timestamp), so a card actively being worked on can still look
+	// untouched. Checked against a hand-built report, that put 20 in-flight cards
+	// in the "to do" bucket and reported one finished card as not started.
+	//
+	// The column alone is not enough either, because a card genuinely raised and
+	// left alone sits in the first column exactly as a card moved back there does.
+	//
+	// So: untouched *and* still where it was raised. `columnPosition` is the
+	// board's first column, which is where new cards land; anything further along
+	// has been moved by somebody, whatever the timestamps say.
 	const raisedInWindow = tsKey(r.createdAt) >= from && tsKey(r.createdAt) <= to;
-	if (raisedInWindow && tsKey(r.updatedAt) === tsKey(r.createdAt)) return 'created';
+	const neverMoved = r.columnPosition === r.firstColumnPosition;
+	if (raisedInWindow && tsKey(r.updatedAt) === tsKey(r.createdAt) && neverMoved) return 'created';
 
 	// Sitting in a Complete column is deliberately NOT enough to count as a
 	// completion. A card finished in May that picked up one comment in September
