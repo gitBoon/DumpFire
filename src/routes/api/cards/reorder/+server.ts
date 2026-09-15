@@ -87,8 +87,21 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 		const existingCard = db.select().from(cards).where(eq(cards.id, update.id)).get();
 		const movedColumn = existingCard && existingCard.columnId !== update.columnId;
 
+		// Moving a card IS an edit, and `updatedAt` has to say so. It did not:
+		// the v1 move endpoint stamped it and this one did not, so a card dragged
+		// across the board kept `updatedAt === createdAt` and still looked as
+		// though nothing had ever happened to it. Reports read that as "raised and
+		// untouched", which is how work that was actively in flight came out in a
+		// management report as "to do".
+		//
+		// Position-only reordering within a column is excluded deliberately —
+		// nothing about the card changed, only its neighbours.
 		db.update(cards)
-			.set({ columnId: update.columnId, position: update.position })
+			.set({
+				columnId: update.columnId,
+				position: update.position,
+				...(movedColumn ? { updatedAt: new Date().toISOString() } : {})
+			})
 			.where(eq(cards.id, update.id))
 			.run();
 
