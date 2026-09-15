@@ -531,13 +531,18 @@
 
 <div class="dashboard">
 	<header class="dashboard-header">
-		<div class="brand">
+		<!--
+			The brand is a link home, like the logo on every other page. From the
+			dashboard that is a reload rather than a navigation, which is the point:
+			it is the obvious way to clear a drill-down and get back to the top.
+		-->
+		<a href="/" class="brand" aria-label="DumpFire — back to the dashboard">
 			<span class="brand-icon">🔥</span>
 			<div>
 				<h1>DumpFire</h1>
 				<p class="brand-tagline"><span class="typewriter-text">{typedText}</span><span class="typewriter-cursor">|</span></p>
 			</div>
-		</div>
+		</a>
 		<nav class="header-nav">
 			<a href="/all" class="nav-pill">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -1460,9 +1465,25 @@
 		background: var(--accent-rose); color: white;
 		font-size: 0.65rem; font-weight: 800; line-height: 1;
 	}
-	.brand { display: flex; align-items: center; gap: var(--space-lg); flex-shrink: 0; }
+	.brand {
+		display: flex; align-items: center; gap: var(--space-lg); flex-shrink: 0;
+		/* It is a link now, so undo the link defaults and keep the original look. */
+		text-decoration: none; color: inherit;
+		border-radius: var(--radius-lg);
+		transition: opacity var(--duration-fast) var(--ease-out);
+	}
+	.brand:hover { opacity: 0.85; }
+	.brand:hover .brand-icon { transform: scale(1.06) rotate(-4deg); }
+	/* Keyboard users need to see where they are; the mouse has the hover state. */
+	.brand:focus-visible {
+		outline: 2px solid var(--accent-indigo);
+		outline-offset: 4px;
+	}
 	.brand > div { position: relative; }
-	.brand-icon { font-size: 2.5rem; filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.4)); }
+	.brand-icon {
+		font-size: 2.5rem; filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.4));
+		transition: transform var(--duration-fast) var(--ease-out);
+	}
 	.brand h1 {
 		font-size: 1.75rem;
 		background: linear-gradient(135deg, var(--text-primary), var(--accent-purple));
