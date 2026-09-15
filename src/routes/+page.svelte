@@ -535,8 +535,11 @@
 			The brand is a link home, like the logo on every other page. From the
 			dashboard that is a reload rather than a navigation, which is the point:
 			it is the obvious way to clear a drill-down and get back to the top.
+			data-sveltekit-reload is what forces it: the client router treats a click
+			on a link to the page you are already on as a no-op — loads do not re-run
+			and component state survives — so nothing would visibly happen without it.
 		-->
-		<a href="/" class="brand" aria-label="DumpFire — back to the dashboard">
+		<a href="/" class="brand" data-sveltekit-reload aria-label="DumpFire — back to the dashboard">
 			<span class="brand-icon">🔥</span>
 			<div>
 				<h1>DumpFire</h1>
