@@ -25,8 +25,28 @@ import { getCardBoardId, getSubtaskCardId } from './work-access';
 import type { SessionUser } from './auth';
 import { costOf, breakdownTotal, type TokenBreakdown } from '$lib/pricing';
 
-/** A single entry is capped well above any real turn, to catch a fat-fingered paste. */
-export const MAX_TOKENS_PER_ENTRY = 100_000_000;
+/**
+ * A backstop against a fat-fingered paste, not a plausibility test.
+ *
+ * The total is a poor signal on its own: cache reads dominate agentic work (98%
+ * of a measured session) and a long session on a 1M-context model genuinely
+ * passes 100M. The old 100M cap refused a real 137,205,251-token measurement on
+ * 2026-09-24 and forced it to be split into invented halves. Ten billion is
+ * ~5,000 calls at a full 1M context — beyond any single piece of work.
+ */
+export const MAX_TOKENS_PER_ENTRY = 10_000_000_000;
+
+/**
+ * The real plausibility test, applied whenever `apiCalls` is given.
+ *
+ * One call cannot consume more than a context window (input, cache reads and
+ * cache writes together) plus its output. The largest window is 1M tokens and
+ * output tops out well under 200k, so anything above this per call is impossible
+ * whatever the model — which is what a running total or a doubled paste
+ * produces. Model-agnostic on purpose: model ids are free text and pricing does
+ * not carry context sizes.
+ */
+export const MAX_TOKENS_PER_CALL = 1_200_000;
 const MAX_MODEL_LEN = 80;
 const MAX_NOTE_LEN = 500;
 
@@ -98,7 +118,7 @@ export function emptyTotal(): TokenTotal {
 
 // ─── Recording ───────────────────────────────────────────────────────────────
 
-function validateAmount(tokens: unknown): number {
+function validateAmount(tokens: unknown, calls: number | null): number {
 	if (typeof tokens !== 'number' || !Number.isFinite(tokens)) {
 		throw new TokenError(400, 'tokens must be a number');
 	}
@@ -114,7 +134,18 @@ function validateAmount(tokens: unknown): number {
 		throw new TokenError(
 			400,
 			`tokens is implausible (max ${MAX_TOKENS_PER_ENTRY.toLocaleString()} per entry). ` +
-				'Report the usage for this step, not a running total.'
+				'Report the usage for this step, not a running total. A genuinely larger ' +
+				'measurement should be recorded as one entry per session or per subtask.'
+		);
+	}
+	if (calls !== null && calls > 0 && Math.abs(tokens) / calls > MAX_TOKENS_PER_CALL) {
+		const perCall = Math.round(Math.abs(tokens) / calls);
+		throw new TokenError(
+			400,
+			`tokens is implausible: ${Math.abs(tokens).toLocaleString()} over ${calls.toLocaleString()} ` +
+				`API calls is ${perCall.toLocaleString()} per call, more than any model's context window ` +
+				`(max ${MAX_TOKENS_PER_CALL.toLocaleString()} per call). Check this is the usage for this ` +
+				'step rather than a running total, and that apiCalls covers the same window.'
 		);
 	}
 	return tokens;
@@ -262,7 +293,7 @@ export function recordTokenUsage(
 	breakdown?: BreakdownInput
 ): RecordResult {
 	const calls = parseCallCount(breakdown?.apiCalls);
-	const amount = validateAmount(tokens);
+	const amount = validateAmount(tokens, calls);
 	const modelName = clean(model, MAX_MODEL_LEN, 'model');
 	const noteText = clean(note, MAX_NOTE_LEN, 'note');
 	const split = validateBreakdown(amount, breakdown ?? {});
@@ -354,11 +385,11 @@ export function recordTokenUsageBatch(
 			return;
 		}
 		try {
-			const tokens = validateAmount(e.tokens);
+			const calls = parseCallCount(e.apiCalls);
+			const tokens = validateAmount(e.tokens, calls);
 			const model = clean(e.model, MAX_MODEL_LEN, 'model');
 			const note = clean(e.note, MAX_NOTE_LEN, 'note');
 			const split = validateBreakdown(tokens, e);
-			const calls = parseCallCount(e.apiCalls);
 			const boardId = resolveTarget(user, target);
 			const cardId = target.kind === 'card' ? target.id : getSubtaskCardId(target.id)!;
 			prepared.push({ target, tokens, model, note, split, calls, boardId, cardId });
