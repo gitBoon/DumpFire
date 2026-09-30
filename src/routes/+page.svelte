@@ -585,6 +585,13 @@
 				</svg>
 				Planning
 			</a>
+			<a href="/burndown" class="nav-pill" id="burndown-link">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<path d="M2 2v12h12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+					<path d="M4.5 4.5l3 3 2-1.5 3.5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+				Burndown
+			</a>
 			<a href="/graph" class="nav-pill" id="graph-link">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 					<circle cx="4" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>

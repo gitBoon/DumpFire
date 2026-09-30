@@ -17,6 +17,7 @@ DumpFire provides a REST API for automation and external integrations. You can p
   - [Dependencies](#dependencies)
   - [Milestones](#milestones)
   - [Bulk Planning](#bulk-planning)
+  - [Burndown](#burndown)
 - [Examples](#examples)
 
 ---
@@ -940,6 +941,80 @@ $ms = & $API -Action create-milestone -ApiKey $KEY `
 The last call returns `criticalPath` as an ordered card-id list, `nextActionable` sorted by
 how much each card unblocks, and `blocked` with each card's blockers — none of it stored,
 all of it derived from the two facts recorded above.
+
+---
+
+### Burndown
+
+```http
+GET /api/v1/burndown
+```
+
+How much work was open on each day, and where it is heading — for a board,
+several boards, a board category, a milestone, or everything you can see,
+narrowed by card category, label, assignee or priority. The series is rebuilt
+from each card's own created, completed and archived dates, so any filter works
+over any window (up to 730 days). Days are UTC.
+
+**Query parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `boardIds` | Comma-separated board ids. View access to each is required. |
+| `boardCategoryId` | Every board in this board category that you can see. Not with `boardIds`. |
+| `milestoneId` | The milestone's cards, wherever they live. Combine with `boardIds` to narrow. |
+| `categoryIds` | Card category ids; `none` = uncategorised. |
+| `labelIds` | A card matches if it carries any of these labels. |
+| `assigneeIds` | User ids; `me` = you, `none` = unassigned. |
+| `priorities` | Any of `critical`, `high`, `medium`, `low`. |
+| `from`, `to` | UTC days. `to` defaults to today; later dates are clamped. |
+| `days` | 1–730, ending at `to`. Default 30, or since creation for a milestone. Not with `from`. |
+| `target` | `YYYY-MM-DD` draws an ideal line to zero; defaults to the milestone's target date; `none` hides it. |
+| `groupBy` | `board`, `category`, `label`, `assignee` or `priority` — adds per-group series. |
+| `options` | `true` adds the filter values present in scope, with counts. |
+
+**Response (abridged):**
+```json
+{
+  "scope": { "kind": "milestone", "label": "Azure VM migration, all environments" },
+  "range": { "from": "2026-09-11", "to": "2026-09-30", "days": 20 },
+  "series": [
+    { "date": "2026-09-11", "scope": 32, "done": 5, "remaining": 27, "added": 32, "completed": 5, "removed": 0 }
+  ],
+  "summary": { "remainingStart": 0, "remainingNow": 27, "added": 32, "completed": 5, "removed": 0 },
+  "forecast": {
+    "status": "not-converging", "basisDays": 19, "completionRate": 0, "scopeRate": 0,
+    "projectedDate": null, "projectedDateNoNewScope": null
+  },
+  "target": { "date": "2026-12-01", "source": "milestone", "onTrack": false, "daysLate": null },
+  "groups": [],
+  "meta": {
+    "basis": "card-timestamps", "timezone": "UTC", "cardCount": 32,
+    "notes": [
+      "5 cards sit in Complete with no completion date; the date of their last update is used instead.",
+      "Milestone membership is as it stands today, applied to the whole window."
+    ]
+  }
+}
+```
+
+**How to read it:**
+
+- **`forecast.status`** is `converging` (with `projectedDate`), `not-converging`
+  (work is arriving as fast as it is finished, or nothing has been finished),
+  `done`, or `insufficient-data` (under a week of history). The pace is the
+  trailing 28 days; a scope younger than that is measured from the day after it
+  began, so a milestone carded in one burst is not read as scope growth.
+  `projectedDateNoNewScope` is the date if nothing more were added.
+- **`target.onTrack`** compares the forecast with the target date; `daysLate` is
+  negative when early.
+- **`groups`** carry `remaining[]` and `scope[]` aligned to `series`. A card with
+  several labels or assignees counts in each of their groups.
+- **`meta.notes`** lists only the caveats that bear on this result — read it
+  before quoting a figure.
+
+**Errors:** every invalid parameter is a `400` naming it; `403` for a board or
+milestone you cannot see; `404` for one that does not exist.
 
 ---
 

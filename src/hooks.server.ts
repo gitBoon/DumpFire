@@ -24,7 +24,7 @@ initBackupScheduler();
 // Start the scheduled report timer
 initReportScheduler();
 
-// Start the daily snapshot scheduler (for CFD / burndown)
+// Start the daily snapshot scheduler (for the CFD)
 initSnapshotScheduler();
 
 /** Public routes that don't require authentication. */

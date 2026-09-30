@@ -11,6 +11,7 @@
   import { onMount } from 'svelte';
   import CfdChart from './CfdChart.svelte';
   import BurndownChart from './BurndownChart.svelte';
+  import type { BurndownResult } from '$lib/burndown';
 
   /**
    * @prop boardColumns — All columns on the board (for per-column stats)
@@ -100,21 +101,39 @@
   }
 
   // ─── Burndown Data ──────────────────────────────────────────────────────
-  type BurndownPoint = { date: string; total: number; completed: number; remaining: number };
-  let burndownData = $state<BurndownPoint[]>([]);
+  let burndown = $state<BurndownResult | null>(null);
   let burndownLoading = $state(false);
+  /** Card category to narrow the burndown to; '' = all, 'none' = uncategorised. */
+  let burndownCategory = $state('');
 
   async function loadBurndown() {
     if (!boardId) return;
     burndownLoading = true;
     try {
-      const res = await fetch(`/api/boards/${boardId}/burndown?days=30`);
-      if (res.ok) {
-        const json = await res.json();
-        burndownData = json.data || [];
-      }
+      // options=true brings back the categories actually used on this board,
+      // with counts — the panel's own list is every category in the workspace.
+      const cat = burndownCategory ? `&categoryIds=${burndownCategory}` : '';
+      const res = await fetch(`/api/burndown?boardIds=${boardId}&days=30&options=true${cat}`);
+      if (res.ok) burndown = await res.json();
     } finally { burndownLoading = false; }
   }
+
+  const burndownHref = $derived(
+    `/burndown?boardIds=${boardId}${burndownCategory ? `&categoryIds=${burndownCategory}` : ''}`
+  );
+
+  /** The forecast in a few words, under the chart. */
+  const burndownForecast = $derived.by(() => {
+    const f = burndown?.forecast;
+    if (!f) return '';
+    if (f.status === 'done') return 'All done';
+    if (f.status === 'not-converging') return 'Not converging at the current pace';
+    if (f.status === 'converging' && f.projectedDate) {
+      const d = new Date(`${f.projectedDate}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+      return `Forecast ${d} at the current pace`;
+    }
+    return 'Too early to forecast';
+  });
 
   onMount(() => { loadMetrics(); loadCfd(); loadBurndown(); });
 </script>
@@ -225,11 +244,33 @@
     {/if}
 
     <!-- Burndown Chart -->
-    <h4 class="stats-section-title">Burndown (30 days)</h4>
-    {#if burndownLoading}
+    <h4 class="stats-section-title">
+      Burndown (30 days)
+      {#if burndown?.options && (burndown.options.categories.length > 1 || burndownCategory)}
+        <select class="metrics-period-select" bind:value={burndownCategory} onchange={() => loadBurndown()} aria-label="Burndown category">
+          <option value="">All categories</option>
+          {#each burndown.options.categories as c (c.id)}
+            <option value={String(c.id)}>{c.name}</option>
+          {/each}
+        </select>
+      {/if}
+    </h4>
+    {#if burndownLoading && !burndown}
       <div class="metrics-loading">Loading chart...</div>
-    {:else}
-      <BurndownChart data={burndownData} />
+    {:else if burndown}
+      <BurndownChart
+        compact
+        series={burndown.series}
+        forecast={burndown.forecast}
+        target={burndown.target}
+        loading={burndownLoading}
+        label="Burndown for {burndown.scope.label}"
+        --bd-surface="var(--bg-surface)"
+      />
+      <div class="burndown-foot">
+        <span>{burndownForecast}</span>
+        <a href={burndownHref}>Full chart →</a>
+      </div>
     {/if}
   </div>
 </aside>
@@ -279,4 +320,10 @@
   }
   .metrics-loading { text-align: center; padding: var(--space-md); color: var(--text-tertiary); font-size: 0.8rem; }
   .metrics-footnote { font-size: 0.68rem; color: var(--text-tertiary); text-align: center; padding-top: var(--space-xs); }
+  .burndown-foot {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm);
+    padding-top: var(--space-xs); font-size: 0.68rem; color: var(--text-tertiary);
+  }
+  .burndown-foot a { color: var(--accent-indigo); font-weight: 600; text-decoration: none; white-space: nowrap; }
+  .burndown-foot a:hover { text-decoration: underline; }
 </style>

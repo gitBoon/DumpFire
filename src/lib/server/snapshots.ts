@@ -1,5 +1,10 @@
 /**
- * snapshots.ts — Daily snapshot capture for CFD and burndown charts.
+ * snapshots.ts — Daily snapshot capture for the cumulative flow diagram.
+ *
+ * Burndowns no longer read these: they are rebuilt from card timestamps (see
+ * $lib/burndown), which can be filtered and have no gaps where the server was
+ * down. The CFD still needs them — which column a card sat in on a past day is
+ * not recorded anywhere else.
  *
  * Captures per-column card counts for every board once per day.
  * Called from a setInterval timer in hooks.server.ts.

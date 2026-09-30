@@ -1,9 +1,9 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.1
+version: 1.2
 status: As-Built
-date: 2026-08-26
+date: 2026-09-30
 tags:
   - backup
   - reports
@@ -300,4 +300,4 @@ Individual card reports can be generated for completion notifications. These inc
 | `src/lib/server/backup.ts` | 374 | Backup scheduling, data generation, upload orchestration |
 | `src/lib/server/backup-destinations.ts` | ~400 | SFTP, S3, Google Drive, OneDrive destination implementations |
 | `src/lib/server/reports.ts` | ~1,430 | Report data collection, status filter, PDF rendering, schedule management |
-| `src/lib/server/snapshots.ts` | ~80 | Daily card count snapshots for CFD/burndown charts |
+| `src/lib/server/snapshots.ts` | ~85 | Daily card count snapshots for the CFD (burndowns use card timestamps) |
