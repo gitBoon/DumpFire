@@ -1088,9 +1088,10 @@
 
 	/* ─── Figures ────────────────────────────────────────────────────── */
 
+	/* Full width, like the tiles below it: a narrow measure left it bunched to one side. */
 	.story {
 		margin: 0; font-size: 0.95rem; line-height: 1.6; color: var(--text-primary);
-		max-width: 76ch; transition: opacity var(--duration-normal) ease;
+		transition: opacity var(--duration-normal) ease;
 	}
 	.story.loading { opacity: 0.5; }
 	.info-icon { color: var(--text-tertiary); flex-shrink: 0; }
