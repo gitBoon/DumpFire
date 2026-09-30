@@ -1,13 +1,16 @@
 <!--
-  BurndownChart.svelte — remaining work over time, with scope, target and forecast.
+  BurndownChart.svelte — remaining work over time, with work in play, target and forecast.
 
   Inline SVG, no charting library, drawn at the container's real pixel width so
   labels stay legible from the 340px stats panel to a full page.
 
-  Burndown mode draws remaining work (line + wash) with total scope as its own
-  line, so a rise in remaining can be read as "work was added" rather than
-  "nothing got done". Burn-up mode draws the same data as done rising towards
-  scope. Either way the ideal line appears only when there is a target date —
+  Burndown mode draws remaining work (line + wash) under "work in play": what
+  was open when the window began plus everything added since. The gap between
+  the two is what got finished, and a rise in remaining can be read as "work
+  was added" rather than "nothing got done". Burn-up mode draws finished-since-
+  start rising towards work in play. All-time scope is deliberately not plotted
+  — on a board with history it dwarfs the open work and flattens the chart —
+  and appears only in the tooltip. Either way the ideal line appears only when there is a target date —
   a line to zero on the last day of an arbitrary window means nothing — and
   the forecast continues from today at the pace of the last 28 days.
 
@@ -21,13 +24,17 @@
   import {
     addDays,
     daysBetween,
+    finishedSinceStart,
     idealRemaining,
+    summarise,
     todayUtc,
+    workInPlay,
     type BurndownForecast,
     type BurndownPoint,
     type BurndownTarget,
     type Day
   } from '$lib/burndown';
+  import InfoTip from '$lib/components/InfoTip.svelte';
 
   let {
     series = [],
@@ -65,6 +72,14 @@
   const last = $derived(n ? series[n - 1] : null);
   const first = $derived(n ? series[0] : null);
 
+  // The window's own lines. Work in play replaces all-time scope, which on a
+  // board with any history dwarfs the open work and flattens the chart.
+  const remainingValues = $derived(series.map((p) => p.remaining));
+  const inPlayValues = $derived(workInPlay(series));
+  const finishedValues = $derived(finishedSinceStart(series));
+  const lastInPlay = $derived(inPlayValues[n - 1] ?? 0);
+  const lastFinished = $derived(finishedValues[n - 1] ?? 0);
+
   /** A forecast is drawn only when it starts from the chart's last day. */
   const projecting = $derived(
     !!forecast && !!last &&
@@ -90,7 +105,7 @@
 
   const span = $derived(first ? Math.max(1, daysBetween(first.date, domainEnd)) : 1);
 
-  /** Projection from the last point: remaining (or done/scope) `t` days on. */
+  /** Projection of remaining from the last point, `t` days on. */
   function projectRemaining(t: number): number {
     return Math.max(0, (last?.remaining ?? 0) - (forecast?.netBurnRate ?? 0) * t);
   }
@@ -104,13 +119,13 @@
   const projectionDays = $derived(zeroAt !== null ? Math.min(zeroAt, futureDays) : futureDays);
 
   const yMax = $derived.by(() => {
-    let max = 1;
-    for (const p of series) max = Math.max(max, mode === 'burnup' ? p.scope : Math.max(p.scope, p.remaining));
+    // Work in play is remaining + finished, so it tops both lines.
+    let max = Math.max(1, ...inPlayValues);
     if (target && mode === 'burndown') max = Math.max(max, target.idealStart.remaining);
     if (projecting && last && forecast) {
       const end = projectionDays;
       if (mode === 'burndown') max = Math.max(max, projectRemaining(end));
-      else max = Math.max(max, last.scope + forecast.scopeRate * end);
+      else max = Math.max(max, lastInPlay + forecast.scopeRate * end);
     }
     return niceMax(max);
   });
@@ -147,12 +162,8 @@
     return `${linePath(values)}L${x(last.date).toFixed(1)},${y(0).toFixed(1)}L${x(first.date).toFixed(1)},${y(0).toFixed(1)}Z`;
   }
 
-  const remainingValues = $derived(series.map((p) => p.remaining));
-  const scopeValues = $derived(series.map((p) => p.scope));
-  const doneValues = $derived(series.map((p) => p.done));
-
-  /** Primary series for the mode: remaining for a burndown, done for a burn-up. */
-  const primaryValues = $derived(mode === 'burnup' ? doneValues : remainingValues);
+  /** Primary series for the mode: remaining for a burndown, finished for a burn-up. */
+  const primaryValues = $derived(mode === 'burnup' ? finishedValues : remainingValues);
 
   const idealLine = $derived.by(() => {
     if (!target || mode !== 'burndown') return null;
@@ -173,8 +184,8 @@
       return [{ key: 'remaining', x1, y1: y(last.remaining), x2, y2: y(projectRemaining(t)) }];
     }
     return [
-      { key: 'done', x1, y1: y(last.done), x2, y2: y(last.done + forecast.completionRate * t) },
-      { key: 'scope', x1, y1: y(last.scope), x2, y2: y(last.scope + forecast.scopeRate * t) }
+      { key: 'done', x1, y1: y(lastFinished), x2, y2: y(lastFinished + forecast.completionRate * t) },
+      { key: 'inplay', x1, y1: y(lastInPlay), x2, y2: y(lastInPlay + forecast.scopeRate * t) }
     ];
   });
 
@@ -203,7 +214,7 @@
     const px = xOffset(last.date, t);
     const py = mode === 'burndown'
       ? y(projectRemaining(t))
-      : y(last.done + forecast.completionRate * t);
+      : y(lastFinished + forecast.completionRate * t);
     const text = forecast.status === 'converging' && forecast.projectedDate
       ? `Forecast ${formatDay(forecast.projectedDate)}${forecast.projectedDate > domainEnd ? ' →' : ''}`
       : 'Not converging';
@@ -222,9 +233,9 @@
     if (compact || !last) return [];
     const px = x(last.date) + 7;
     const primary = mode === 'burnup'
-      ? { key: 'done', value: last.done, y: y(last.done) }
+      ? { key: 'done', value: lastFinished, y: y(lastFinished) }
       : { key: 'remaining', value: last.remaining, y: y(last.remaining) };
-    const secondary = { key: 'scope', value: last.scope, y: y(last.scope) };
+    const secondary = { key: 'inplay', value: lastInPlay, y: y(lastInPlay) };
     const out = [primary];
     if (Math.abs(primary.y - secondary.y) >= 14) out.push(secondary);
     // Above the point, unless that would run into the marker labels on top.
@@ -267,18 +278,14 @@
       hovered.completed ? `${hovered.completed} completed` : '',
       hovered.removed ? `${hovered.removed} dropped` : ''
     ].filter(Boolean);
-    const rows = mode === 'burnup'
-      ? [
-          { key: 'done', label: 'Done', value: formatCount(hovered.done) },
-          { key: 'scope', label: 'Scope', value: formatCount(hovered.scope) },
-          { key: 'remaining', label: 'Remaining', value: formatCount(hovered.remaining) }
-        ]
-      : [
-          { key: 'remaining', label: 'Remaining', value: formatCount(hovered.remaining) },
-          { key: 'scope', label: 'Scope', value: formatCount(hovered.scope) },
-          { key: 'done', label: 'Done', value: formatCount(hovered.done) }
-        ];
+    const i = hoverIndex;
+    const remaining = { key: 'remaining', label: 'Remaining', value: formatCount(hovered.remaining) };
+    const inPlay = { key: 'inplay', label: 'Work in play', value: formatCount(inPlayValues[i]) };
+    const finished = { key: 'done', label: 'Finished since start', value: formatCount(finishedValues[i]) };
+    const rows = mode === 'burnup' ? [finished, inPlay, remaining] : [remaining, inPlay, finished];
     if (ideal !== null) rows.push({ key: 'ideal', label: 'Ideal', value: ideal.toFixed(1).replace(/\.0$/, '') });
+    // Context, not a plotted line: every card that exists, finished or not.
+    rows.push({ key: '', label: 'All cards ever', value: formatCount(hovered.scope) });
     return {
       x: px,
       flip: px > W * 0.62,
@@ -291,9 +298,10 @@
   /** One-sentence summary for screen readers and the keyboard readout. */
   const summary = $derived.by(() => {
     if (!first || !last) return `${label}: no data.`;
+    const s = summarise(series);
     const parts = [
       `${label}, ${formatDay(first.date, true)} to ${formatDay(last.date, true)}.`,
-      `${formatCount(last.remaining)} remaining of ${formatCount(last.scope)}, from ${formatCount(first.remaining)} at the start.`
+      `${formatCount(s.remainingNow)} remaining, from ${formatCount(s.remainingStart)} at the start; ${formatCount(s.completed)} finished and ${formatCount(s.added)} added in the period.`
     ];
     if (forecast?.status === 'converging' && forecast.projectedDate) parts.push(`Forecast to finish ${formatDay(forecast.projectedDate, true)}.`);
     else if (forecast?.status === 'not-converging') parts.push('Not converging at the current pace.');
@@ -306,7 +314,10 @@
     tooltip ? `${tooltip.title}: ${tooltip.rows.map((r) => `${r.label} ${r.value}`).join(', ')}. ${tooltip.changes}.` : ''
   );
 
-  const empty = $derived(n < 2 || series.every((p) => p.scope === 0));
+  const noCards = $derived(series.every((p) => p.scope === 0));
+  // Cards that were all finished before the window, with nothing added since,
+  // would draw two flat lines along zero.
+  const empty = $derived(n < 2 || noCards || inPlayValues.every((v) => v === 0));
   // Hydration-safe: the same id on the server and in the browser.
   const uid = $props.id();
   const clipId = `bd-clip-${uid}`;
@@ -391,7 +402,11 @@
 <div class="bd-chart" class:compact class:loading bind:clientWidth={measured}>
   {#if empty}
     <div class="bd-empty" style="height: {H}px">
-      {n < 2 ? 'Not enough history to draw a burndown yet.' : 'No cards in this scope for this period.'}
+      {n < 2
+        ? 'Not enough history to draw a burndown yet.'
+        : noCards
+          ? 'No cards in this scope for this period.'
+          : 'Nothing was open or added in this period — everything here was already finished.'}
     </div>
   {:else}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -442,7 +457,7 @@
 
           <!-- Primary: remaining (burndown) or done (burn-up), with its wash -->
           <path class="area {mode === 'burnup' ? 'done' : 'remaining'}" d={areaPath(primaryValues)} />
-          <path class="line scope" d={linePath(scopeValues)} />
+          <path class="line inplay" d={linePath(inPlayValues)} />
           <path class="line {mode === 'burnup' ? 'done' : 'remaining'}" d={linePath(primaryValues)} />
 
           {#each projections as p}
@@ -452,8 +467,8 @@
 
         <!-- End markers and selective labels -->
         {#if last}
-          <circle class="dot scope" cx={x(last.date)} cy={y(last.scope)} r="4" />
-          <circle class="dot {mode === 'burnup' ? 'done' : 'remaining'}" cx={x(last.date)} cy={y(mode === 'burnup' ? last.done : last.remaining)} r="4" />
+          <circle class="dot inplay" cx={x(last.date)} cy={y(lastInPlay)} r="4" />
+          <circle class="dot {mode === 'burnup' ? 'done' : 'remaining'}" cx={x(last.date)} cy={y(mode === 'burnup' ? lastFinished : last.remaining)} r="4" />
         {/if}
         {#each endLabels as l}
           <text class="end-label" x={l.x} y={l.y}>{formatCount(l.value)}</text>
@@ -467,8 +482,8 @@
         <!-- Crosshair -->
         {#if tooltip && hovered}
           <line class="crosshair" x1={tooltip.x} x2={tooltip.x} y1={padT} y2={padT + plotH} />
-          <circle class="dot scope" cx={tooltip.x} cy={y(hovered.scope)} r="4" />
-          <circle class="dot {mode === 'burnup' ? 'done' : 'remaining'}" cx={tooltip.x} cy={y(mode === 'burnup' ? hovered.done : hovered.remaining)} r="4" />
+          <circle class="dot inplay" cx={tooltip.x} cy={y(inPlayValues[hoverIndex ?? 0])} r="4" />
+          <circle class="dot {mode === 'burnup' ? 'done' : 'remaining'}" cx={tooltip.x} cy={y(mode === 'burnup' ? finishedValues[hoverIndex ?? 0] : hovered.remaining)} r="4" />
         {/if}
 
         <!-- Hit area: the whole plot, so the pointer only has to find the day -->
@@ -489,7 +504,7 @@
           <div class="tt-title">{tooltip.title}</div>
           {#each tooltip.rows as r}
             <div class="tt-row">
-              <span class="tt-key {r.key}"></span>
+              <span class="tt-key {r.key || 'none'}"></span>
               <span class="tt-value">{r.value}</span>
               <span class="tt-label">{r.label}</span>
             </div>
@@ -500,16 +515,24 @@
       <div class="sr-only" aria-live="polite">{readout}</div>
     </div>
 
+    <!-- Keys drawn as SVG, the same marks as the chart. Their classes are
+         prefixed (k- kind, s- series) because sharing the chart's own .area
+         class gave the Remaining key the area wash's 10% opacity. -->
+    {#snippet lgKey(kind: 'area' | 'line' | 'dash' | 'dot', cls: string)}
+      <svg class="lg-svg" width="18" height="10" viewBox="0 0 18 10" aria-hidden="true">
+        {#if kind === 'area'}<rect class="lg-wash s-{cls}" x="0" y="2" width="18" height="8" rx="1.5" />{/if}
+        <line class="lg-line k-{kind} s-{cls}" x1="1.5" x2="16.5" y1={kind === 'area' ? 2 : 5} y2={kind === 'area' ? 2 : 5} />
+      </svg>
+    {/snippet}
     <div class="bd-legend">
       {#if mode === 'burnup'}
-        <span class="lg"><span class="lg-key area done"></span>Done</span>
-        <span class="lg"><span class="lg-key line scope"></span>Scope</span>
+        <span class="lg">{@render lgKey('area', 'done')}<InfoTip width={260}>Finished{#snippet tip()}<p>Cards finished since the start of the period, added up day by day.</p>{/snippet}</InfoTip></span>
       {:else}
-        <span class="lg"><span class="lg-key area remaining"></span>Remaining</span>
-        <span class="lg"><span class="lg-key line scope"></span>Scope</span>
+        <span class="lg">{@render lgKey('area', 'remaining')}<InfoTip width={260}>Remaining{#snippet tip()}<p>Cards open at the end of each day: not in a Complete column and not archived.</p>{/snippet}</InfoTip></span>
       {/if}
-      {#if idealLine}<span class="lg"><span class="lg-key ideal"></span>Ideal</span>{/if}
-      {#if projections.length}<span class="lg"><span class="lg-key projection {mode === 'burnup' ? 'done' : 'remaining'}"></span>Forecast</span>{/if}
+      <span class="lg">{@render lgKey('line', 'inplay')}<InfoTip width={280}>Work in play{#snippet tip()}<p>What was open at the start of the period, plus everything added since, less anything dropped.</p><p>{mode === 'burnup' ? 'When Finished meets it, everything is done.' : 'The gap down to Remaining is what got finished.'}</p>{/snippet}</InfoTip></span>
+      {#if idealLine}<span class="lg">{@render lgKey('dash', 'ref')}<InfoTip width={260}>Ideal{#snippet tip()}<p>A straight line from the work open at the start down to zero on the target date: the steady pace that would land exactly on time.</p>{/snippet}</InfoTip></span>{/if}
+      {#if projections.length}<span class="lg">{@render lgKey('dot', mode === 'burnup' ? 'done' : 'remaining')}<InfoTip width={260}>Forecast{#snippet tip()}<p>Where the {mode === 'burnup' ? 'lines head' : 'line heads'} if work keeps arriving and being finished at the pace of the last {forecast?.basisDays ?? 28} days.</p>{/snippet}</InfoTip></span>{/if}
     </div>
   {/if}
 </div>
@@ -543,7 +566,7 @@
 
   .line { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .line.remaining { stroke: var(--bd-remaining); }
-  .line.scope { stroke: var(--bd-scope); }
+  .line.inplay { stroke: var(--bd-scope); }
   .line.done { stroke: var(--bd-done); }
   .area { stroke: none; }
   .area.remaining { fill: var(--bd-remaining); opacity: 0.1; }
@@ -554,7 +577,7 @@
   .projection { stroke-width: 2; stroke-dasharray: 2 4; stroke-linecap: round; }
   .projection.remaining { stroke: var(--bd-remaining); }
   .projection.done { stroke: var(--bd-done); }
-  .projection.scope { stroke: var(--bd-scope); }
+  .projection.inplay { stroke: var(--bd-scope); }
 
   .marker { stroke: var(--bd-ref); stroke-width: 1; opacity: 0.6; shape-rendering: crispEdges; }
   .marker.target { opacity: 0.9; }
@@ -564,7 +587,7 @@
 
   .dot { stroke: var(--bd-ring); stroke-width: 2; }
   .dot.remaining { fill: var(--bd-remaining); }
-  .dot.scope { fill: var(--bd-scope); }
+  .dot.inplay { fill: var(--bd-scope); }
   .dot.done { fill: var(--bd-done); }
   .end-label {
     font-size: 11px; font-weight: 700; fill: var(--text-primary);
@@ -588,9 +611,10 @@
   .tt-row { display: flex; align-items: center; gap: 6px; line-height: 1.6; }
   .tt-key { width: 12px; height: 0; border-top: 2px solid; flex-shrink: 0; }
   .tt-key.remaining { border-color: var(--bd-remaining); }
-  .tt-key.scope { border-color: var(--bd-scope); }
+  .tt-key.inplay { border-color: var(--bd-scope); }
   .tt-key.done { border-color: var(--bd-done); }
   .tt-key.ideal { border-color: var(--bd-ref); border-top-style: dashed; }
+  .tt-key.none { border-color: transparent; }
   .tt-value { font-weight: 700; min-width: 28px; font-variant-numeric: tabular-nums; }
   .tt-label { color: var(--text-secondary); }
   .tt-changes { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--glass-border); color: var(--text-tertiary); }
@@ -601,16 +625,16 @@
   }
   .compact .bd-legend { justify-content: center; font-size: 0.65rem; gap: 4px 10px; }
   .lg { display: inline-flex; align-items: center; gap: 5px; }
-  .lg-key { display: inline-block; width: 16px; }
-  .lg-key.line { height: 0; border-top: 2px solid; }
-  .lg-key.line.scope { border-color: var(--bd-scope); }
-  .lg-key.area { height: 8px; border-radius: 2px; border-top: 2px solid; }
-  .lg-key.area.remaining { border-color: var(--bd-remaining); background: color-mix(in srgb, var(--bd-remaining) 12%, transparent); }
-  .lg-key.area.done { border-color: var(--bd-done); background: color-mix(in srgb, var(--bd-done) 14%, transparent); }
-  .lg-key.ideal { height: 0; border-top: 2px dashed var(--bd-ref); }
-  .lg-key.projection { height: 0; border-top: 2px dotted; }
-  .lg-key.projection.remaining { border-color: var(--bd-remaining); }
-  .lg-key.projection.done { border-color: var(--bd-done); }
+  .lg-svg { display: block; flex-shrink: 0; overflow: visible; }
+  .lg-line { stroke-width: 2; stroke-linecap: round; }
+  .lg-line.s-remaining { stroke: var(--bd-remaining); }
+  .lg-line.s-inplay { stroke: var(--bd-scope); }
+  .lg-line.s-done { stroke: var(--bd-done); }
+  .lg-line.s-ref { stroke: var(--bd-ref); }
+  .lg-line.k-dash { stroke-dasharray: 4 3; stroke-linecap: butt; }
+  .lg-line.k-dot { stroke-dasharray: 0.1 4; }
+  .lg-wash.s-remaining { fill: var(--bd-remaining); opacity: 0.16; }
+  .lg-wash.s-done { fill: var(--bd-done); opacity: 0.18; }
 
   .bd-empty {
     display: flex; align-items: center; justify-content: center; text-align: center;

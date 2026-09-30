@@ -29,6 +29,8 @@
 	import type { CardType } from '$lib/types';
 	import BurndownChart from '$lib/components/board/BurndownChart.svelte';
 	import type { BurndownResult } from '$lib/burndown';
+	import { chancePercent, deliveryText, paceText, targetVerdict } from '$lib/burndown-text';
+	import InfoTip from '$lib/components/InfoTip.svelte';
 
 	let { data } = $props();
 
@@ -92,30 +94,25 @@
 		return new Date(`${day}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 	}
 
-	/** Forecast against the target, in one line a reader can act on. */
+	/** How long the open work would take, and the chance of making the date. */
+	const burndownEta = $derived(burndown ? deliveryText(burndown.delivery) : null);
+
+	/**
+	 * The verdict in one line a reader can act on. With a target it is the same
+	 * verdict as the burndown page (targetVerdict), so the two never disagree;
+	 * without one, where the open work is heading at the recent pace.
+	 */
 	const burndownStatus = $derived.by(() => {
 		if (!burndown) return null;
 		const f = burndown.forecast;
-		const t = burndown.target;
-		const days = (n: number) => `${n} day${n === 1 ? '' : 's'}`;
 		if (f.status === 'done') return { tone: 'good', icon: '✓', text: 'Done — nothing remaining' };
-		if (t) {
-			if (t.onTrack === true && f.projectedDate) {
-				return { tone: 'good', icon: '✓', text: `On track — forecast ${formatDay(f.projectedDate)}, target ${formatDay(t.date)}` };
-			}
-			if (t.onTrack === false && t.daysLate !== null && f.projectedDate) {
-				return { tone: 'bad', icon: '!', text: `Behind — forecast ${formatDay(f.projectedDate)}, ${days(t.daysLate)} after the target` };
-			}
-			if (t.onTrack === false) {
-				return { tone: 'bad', icon: '!', text: `At risk — not converging towards the ${formatDay(t.date)} target at the current pace` };
-			}
-			return { tone: 'neutral', icon: '?', text: `Too early to forecast against the ${formatDay(t.date)} target` };
+		if (burndown.target) {
+			const v = targetVerdict(burndown.target, burndown.delivery, f);
+			return { tone: v.tone, icon: v.icon, text: `${v.value} — ${v.detail}` };
 		}
-		if (f.status === 'converging' && f.projectedDate) {
-			return { tone: 'neutral', icon: '→', text: `Forecast ${formatDay(f.projectedDate)} at the current pace` };
-		}
-		if (f.status === 'not-converging') return { tone: 'bad', icon: '!', text: 'Not converging at the current pace' };
-		return { tone: 'neutral', icon: '?', text: 'Too early to forecast — needs a week of history' };
+		const p = paceText(f);
+		const icon = p.tone === 'good' ? '→' : p.tone === 'bad' ? '!' : '?';
+		return { tone: p.tone === 'good' ? 'neutral' : p.tone, icon, text: `${p.value} — ${p.sub.charAt(0).toLowerCase()}${p.sub.slice(1)}` };
 	});
 	const nodes = $derived(summary.graph.nodes as Node[]);
 	const nodeByKey = $derived(new Map(nodes.map((n) => [key(n), n])));
@@ -867,12 +864,50 @@
 			<div class="panel-head">
 				<h2>Burndown</h2>
 				{#if burndownStatus}
-					<span class="bd-status {burndownStatus.tone}">
-						<span class="bd-status-icon" aria-hidden="true">{burndownStatus.icon}</span>{burndownStatus.text}
-					</span>
+					<InfoTip title="Against the target" width={320}>
+						<span class="bd-status {burndownStatus.tone}">
+							<span class="bd-status-icon" aria-hidden="true">{burndownStatus.icon}</span>{burndownStatus.text}
+						</span>
+						{#snippet tip()}
+							<p>
+								Compares where the goal's open work is heading, at the pace of the last
+								{burndown?.forecast.basisDays} days, with its target date. <strong>On track</strong> means it clears
+								in time; <strong>behind</strong> means it clears after the date; <strong>at risk</strong> means
+								work is arriving at least as fast as it is finished, so it is not clearing at all.
+							</p>
+							<p class="muted">The dashed line on the chart is the ideal: a steady path from the start down to zero on the target date.</p>
+						{/snippet}
+					</InfoTip>
 				{/if}
 				<a class="panel-link" href="/burndown?milestoneId={milestone.id}">Full chart →</a>
 			</div>
+			{#if burndown && burndownEta}
+				<div class="bd-eta">
+					<InfoTip title="Time to deliver" width={320}>
+						<span class="bd-eta-label">Time to deliver</span>
+						<strong>{burndownEta.value}</strong>
+						{#snippet tip()}
+							<p>How long the <strong>{burndown?.delivery.remaining}</strong> cards open in this goal would take to finish if nothing new were added.</p>
+							{#if burndown?.delivery.status === 'estimated' && burndown.delivery.p50}
+								<div class="calc">
+									half of {burndown.delivery.trials.toLocaleString('en-GB')} simulated futures finish by <b>{formatDay(burndown.delivery.p50.date)}</b><br />
+									{#if burndown.delivery.p85}85% by <b>{formatDay(burndown.delivery.p85.date)}</b><br />{/if}
+									{#if burndown.delivery.p95}95% by <b>{formatDay(burndown.delivery.p95.date)}</b>{/if}
+								</div>
+								<p>Each future replays the goal's real daily completions from the last {burndown.delivery.basisDays} days in random order, so quiet days and busy spells are both allowed for.</p>
+							{:else}
+								<p>{burndownEta.sub}.</p>
+							{/if}
+							{#if burndown?.delivery.chanceByTarget != null && burndown.target}
+								<p class="muted">{chancePercent(burndown.delivery.chanceByTarget)} of those futures finish by the {formatDay(burndown.target.date)} target.</p>
+							{/if}
+						{/snippet}
+					</InfoTip>
+					<span class="bd-eta-sub">
+						{burndownEta.sub}{#if burndown.delivery.chanceByTarget != null && burndown.target && burndown.delivery.status !== 'done'} · {chancePercent(burndown.delivery.chanceByTarget)} chance by the {formatDay(burndown.target.date)} target{/if}
+					</span>
+				</div>
+			{/if}
 			{#if burndown}
 				<BurndownChart
 					series={burndown.series}
@@ -1417,6 +1452,12 @@
 	}
 	.bd-status.good .bd-status-icon { background: #059669; }
 	.bd-status.bad .bd-status-icon { background: #dc2626; }
+	.bd-status.warn .bd-status-icon { background: #d97706; }
+
+	.bd-eta { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: -4px 0 12px; font-size: 0.8rem; }
+	.bd-eta-label { font-size: 0.72rem; font-weight: 600; color: var(--text-secondary); margin-right: 4px; }
+	.bd-eta strong { font-size: 0.95rem; color: var(--text-primary); }
+	.bd-eta-sub { font-size: 0.74rem; color: var(--text-tertiary); }
 
 	.muted { margin: 0; font-size: 0.8rem; line-height: 1.55; color: var(--text-secondary); }
 

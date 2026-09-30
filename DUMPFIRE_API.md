@@ -986,12 +986,16 @@ over any window (up to 730 days). Days are UTC.
     "status": "not-converging", "basisDays": 19, "completionRate": 0, "scopeRate": 0,
     "projectedDate": null, "projectedDateNoNewScope": null
   },
+  "delivery": {
+    "status": "no-pace", "remaining": 27, "basisDays": 19, "throughputPerWeek": 0,
+    "trials": 0, "p50": null, "p85": null, "p95": null, "chanceByTarget": 0
+  },
   "target": { "date": "2026-12-01", "source": "milestone", "onTrack": false, "daysLate": null },
   "groups": [],
   "meta": {
-    "basis": "card-timestamps", "timezone": "UTC", "cardCount": 32,
+    "basis": "card-timestamps", "timezone": "UTC", "cardCount": 32, "inferredInWindow": 5,
     "notes": [
-      "5 cards sit in Complete with no completion date; the date of their last update is used instead.",
+      "5 cards sit in Complete with no completion date; the date of their last update is used instead. All of them fall in this period, so every completion counted here rests on an estimated date.",
       "Milestone membership is as it stands today, applied to the whole window."
     ]
   }
@@ -1006,10 +1010,30 @@ over any window (up to 730 days). Days are UTC.
   trailing 28 days; a scope younger than that is measured from the day after it
   began, so a milestone carded in one burst is not read as scope growth.
   `projectedDateNoNewScope` is the date if nothing more were added.
-- **`target.onTrack`** compares the forecast with the target date; `daysLate` is
-  negative when early.
-- **`groups`** carry `remaining[]` and `scope[]` aligned to `series`. A card with
-  several labels or assignees counts in each of their groups.
+- **`delivery`** answers "how long will the work open now take to finish?" as a
+  range. It is a Monte Carlo simulation: 2,000 trials each replay randomly chosen
+  days of the basis (their real completion counts) until the open work runs out.
+  `p50` is the likely date, `p85` a date to commit to, and `p95` the cautious one.
+  With a target, `chanceByTarget` is the share of trials finished by then. It
+  assumes nothing new is added, and `arrivalPerWeek` shows how much that
+  assumption carries. The generator is seeded from the inputs, so the same data
+  always gives the same answer. Status is `estimated`, `done`, `no-pace`,
+  `beyond-horizon` or `insufficient-data`. Example with a pace:
+  ```json
+  { "status": "estimated", "remaining": 32, "throughputPerWeek": 1.25, "arrivalPerWeek": 8.25,
+    "trials": 2000, "p50": { "days": 187, "date": "2027-04-05" },
+    "p85": { "days": 265, "date": "2027-06-22" }, "p95": { "days": 324, "date": "2027-08-20" },
+    "chanceByTarget": 0.785 }
+  ```
+- **`target.onTrack`** compares the net forecast with the target date; `daysLate`
+  is negative when early. The page's verdict leads with `delivery.chanceByTarget`
+  instead (85%+ on track, 50–85% tight, under 50% behind).
+- **`groups`** carry `remaining[]` and `scope[]` aligned to `series`, plus their
+  own `forecast` and `delivery` (500 trials). A card with several labels or
+  assignees counts in each of their groups.
+- **`meta.inferredInWindow`** counts the cards with no completion stamp whose
+  stand-in date falls inside the window: those are the ones that can inflate the
+  completed figure.
 - **`meta.notes`** lists only the caveats that bear on this result — read it
   before quoting a figure.
 

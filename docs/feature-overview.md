@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.4
+version: 1.5
 status: As-Built
 date: 2026-09-30
 tags:
@@ -178,7 +178,7 @@ Set up automatic weekly or monthly reports delivered to any email addresses. Eac
 
 ### Charts
 
-- **Burndown & burn-up charts** — for any board, several boards, a board group, a milestone or everything, narrowed by category, label, assignee or priority; with scope growth, an ideal line to the target date and a forecast. Full page at `/burndown`, a compact chart in board Statistics, and a panel on every milestone plan. See [Burndown Charts](burndown-charts.md)
+- **Burndown & burn-up charts** — for any board, several boards, a board group, a milestone or everything, narrowed by category, label, assignee or priority; with work in play, an ideal line to the target date, a forecast and a time-to-deliver estimate (likely and 85% dates, and the chance of hitting a target). Every figure explains itself on hover. Full page at `/burndown`, a compact chart in board Statistics, and a panel on every milestone plan. See [Burndown Charts](burndown-charts.md)
 - **Cumulative Flow Diagram** — visualise workload distribution across columns
 
 ### Graph View
