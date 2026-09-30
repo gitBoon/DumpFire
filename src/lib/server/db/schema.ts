@@ -224,7 +224,7 @@ export const activityLog = sqliteTable('activity_log', {
 		.default(sql`(datetime('now'))`)
 });
 
-// ─── Daily Snapshots (for CFD / Burndown) ────────────────────────────────────
+// ─── Daily Snapshots (for the CFD) ───────────────────────────────────────────
 
 export const dailySnapshots = sqliteTable('daily_snapshots', {
 	id: integer('id').primaryKey({ autoIncrement: true }),

@@ -27,6 +27,8 @@
 	import { toasts } from '$lib/stores/toast';
 	import * as cardActions from '$lib/board/card-actions';
 	import type { CardType } from '$lib/types';
+	import BurndownChart from '$lib/components/board/BurndownChart.svelte';
+	import type { BurndownResult } from '$lib/burndown';
 
 	let { data } = $props();
 
@@ -55,6 +57,66 @@
 
 	const summary = $derived(data.summary);
 	const milestone = $derived(summary.milestone);
+
+	// ─── Burndown ────────────────────────────────────────────────────────────
+	//
+	// Fetched rather than loaded with the plan: it is a second, independent
+	// question ("will this land by its date?") and the plan must not wait on it.
+
+	let burndown = $state<BurndownResult | null>(null);
+	let burndownLoading = $state(false);
+	let burndownError = $state('');
+
+	async function loadBurndown(id: number) {
+		burndownLoading = true;
+		try {
+			const res = await fetch(`/api/burndown?milestoneId=${id}`);
+			if (res.ok) {
+				burndown = await res.json();
+				burndownError = '';
+			} else {
+				burndownError = (await res.json().catch(() => ({}))).message ?? 'Could not load the burndown';
+			}
+		} finally {
+			burndownLoading = false;
+		}
+	}
+
+	// Re-read whenever the plan is: an edit that moves a card moves the burndown too.
+	$effect(() => {
+		void summary;
+		loadBurndown(milestone.id);
+	});
+
+	function formatDay(day: string): string {
+		return new Date(`${day}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+	}
+
+	/** Forecast against the target, in one line a reader can act on. */
+	const burndownStatus = $derived.by(() => {
+		if (!burndown) return null;
+		const f = burndown.forecast;
+		const t = burndown.target;
+		const days = (n: number) => `${n} day${n === 1 ? '' : 's'}`;
+		if (f.status === 'done') return { tone: 'good', icon: '✓', text: 'Done — nothing remaining' };
+		if (t) {
+			if (t.onTrack === true && f.projectedDate) {
+				return { tone: 'good', icon: '✓', text: `On track — forecast ${formatDay(f.projectedDate)}, target ${formatDay(t.date)}` };
+			}
+			if (t.onTrack === false && t.daysLate !== null && f.projectedDate) {
+				return { tone: 'bad', icon: '!', text: `Behind — forecast ${formatDay(f.projectedDate)}, ${days(t.daysLate)} after the target` };
+			}
+			if (t.onTrack === false) {
+				return { tone: 'bad', icon: '!', text: `At risk — not converging towards the ${formatDay(t.date)} target at the current pace` };
+			}
+			return { tone: 'neutral', icon: '?', text: `Too early to forecast against the ${formatDay(t.date)} target` };
+		}
+		if (f.status === 'converging' && f.projectedDate) {
+			return { tone: 'neutral', icon: '→', text: `Forecast ${formatDay(f.projectedDate)} at the current pace` };
+		}
+		if (f.status === 'not-converging') return { tone: 'bad', icon: '!', text: 'Not converging at the current pace' };
+		return { tone: 'neutral', icon: '?', text: 'Too early to forecast — needs a week of history' };
+	});
 	const nodes = $derived(summary.graph.nodes as Node[]);
 	const nodeByKey = $derived(new Map(nodes.map((n) => [key(n), n])));
 	const criticalKeys = $derived(
@@ -800,6 +862,34 @@
 			</div>
 		</section>
 
+		<!-- ── Burndown: will it land by its date? ──────────────────────────── -->
+		<section class="panel">
+			<div class="panel-head">
+				<h2>Burndown</h2>
+				{#if burndownStatus}
+					<span class="bd-status {burndownStatus.tone}">
+						<span class="bd-status-icon" aria-hidden="true">{burndownStatus.icon}</span>{burndownStatus.text}
+					</span>
+				{/if}
+				<a class="panel-link" href="/burndown?milestoneId={milestone.id}">Full chart →</a>
+			</div>
+			{#if burndown}
+				<BurndownChart
+					series={burndown.series}
+					forecast={burndown.forecast}
+					target={burndown.target}
+					height={240}
+					loading={burndownLoading}
+					label="Burndown for {milestone.name}"
+					--bd-surface="var(--bg-card)"
+				/>
+			{:else if burndownError}
+				<p class="muted">{burndownError}</p>
+			{:else}
+				<p class="muted">Loading the burndown…</p>
+			{/if}
+		</section>
+
 		<!-- ── 2. Critical path ────────────────────────────────────────────── -->
 		<section class="panel">
 			<div class="panel-head">
@@ -1312,6 +1402,21 @@
 		text-transform: uppercase; letter-spacing: 0.05em;
 	}
 	.panel-note { font-size: 0.74rem; color: var(--text-tertiary); line-height: 1.4; }
+	.panel-link {
+		margin-left: auto; font-size: 0.75rem; font-weight: 600;
+		color: var(--accent-indigo); text-decoration: none; white-space: nowrap;
+	}
+	.panel-link:hover { text-decoration: underline; }
+
+	/* Status carries an icon and words, never colour alone. */
+	.bd-status { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; font-weight: 600; color: var(--text-primary); }
+	.bd-status-icon {
+		display: inline-flex; align-items: center; justify-content: center;
+		width: 17px; height: 17px; border-radius: 50%;
+		font-size: 0.68rem; font-weight: 800; color: #fff; background: var(--text-tertiary);
+	}
+	.bd-status.good .bd-status-icon { background: #059669; }
+	.bd-status.bad .bd-status-icon { background: #dc2626; }
 
 	.muted { margin: 0; font-size: 0.8rem; line-height: 1.55; color: var(--text-secondary); }
 

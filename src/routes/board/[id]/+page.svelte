@@ -949,6 +949,9 @@
 
 						<div class="more-dropdown-section">
 							<div class="more-dropdown-label">Board</div>
+							<a class="more-dropdown-item" href="/burndown?boardIds={data.board.id}" onclick={() => (showMoreMenu = false)}>
+								<span class="more-item-icon">📉</span> Burndown
+							</a>
 							<button class="more-dropdown-item" onclick={() => { showCategoryModal = true; showMoreMenu = false; }}>
 								<span class="more-item-icon">🏷️</span> Manage Categories
 							</button>

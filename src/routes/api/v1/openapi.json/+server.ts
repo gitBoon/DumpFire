@@ -156,6 +156,127 @@ const spec = {
 					dependsOnCompleted: { type: 'boolean' }
 				}
 			},
+			BurndownPoint: {
+				type: 'object',
+				description: 'The state at the end of one UTC day, and what changed during it.',
+				properties: {
+					date: { type: 'string', format: 'date' },
+					scope: { type: 'integer', description: 'Cards in scope: arrived and not dropped' },
+					done: { type: 'integer', description: 'Of which completed' },
+					remaining: { type: 'integer', description: 'scope - done' },
+					added: { type: 'integer', description: 'Cards that arrived this day' },
+					completed: { type: 'integer', description: 'Cards completed this day' },
+					removed: { type: 'integer', description: 'Open cards dropped (archived) this day' }
+				}
+			},
+			BurndownSummary: {
+				type: 'object',
+				description: 'Start values are before the first day of the window, so remainingNow = remainingStart + added - completed - removed.',
+				properties: {
+					scopeStart: { type: 'integer' },
+					scopeNow: { type: 'integer' },
+					doneStart: { type: 'integer' },
+					doneNow: { type: 'integer' },
+					remainingStart: { type: 'integer' },
+					remainingNow: { type: 'integer' },
+					added: { type: 'integer' },
+					completed: { type: 'integer' },
+					removed: { type: 'integer' }
+				}
+			},
+			BurndownForecast: {
+				type: 'object',
+				description: 'Where remaining is heading at the pace of the trailing 28 days, or since the day after the scope began if it is younger.',
+				properties: {
+					status: { type: 'string', enum: ['done', 'converging', 'not-converging', 'insufficient-data'] },
+					basisDays: { type: 'integer' },
+					asOf: { type: 'string', format: 'date' },
+					completionRate: { type: 'number', description: 'Cards completed per day' },
+					scopeRate: { type: 'number', description: 'Net scope change per day (added - dropped)' },
+					netBurnRate: { type: 'number', description: 'completionRate - scopeRate' },
+					projectedDate: { type: ['string', 'null'], format: 'date', description: 'Remaining reaches zero at the net rate' },
+					projectedDateNoNewScope: { type: ['string', 'null'], format: 'date', description: 'Remaining reaches zero if nothing more is added' }
+				}
+			},
+			BurndownTarget: {
+				type: 'object',
+				properties: {
+					date: { type: 'string', format: 'date' },
+					source: { type: 'string', enum: ['milestone', 'query'] },
+					idealStart: {
+						type: 'object',
+						description: 'The ideal line runs from here to zero on date: the start of the window, or the first day with work if the window opens before any existed',
+						properties: { date: { type: 'string', format: 'date' }, remaining: { type: 'integer' } }
+					},
+					onTrack: { type: ['boolean', 'null'] },
+					daysLate: { type: ['integer', 'null'], description: 'Negative means the forecast lands early' }
+				}
+			},
+			BurndownResult: {
+				type: 'object',
+				properties: {
+					scope: {
+						type: 'object',
+						properties: {
+							kind: { type: 'string', enum: ['workspace', 'boards', 'boardCategory', 'milestone'] },
+							label: { type: 'string' },
+							boards: {
+								type: 'array',
+								items: { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' }, emoji: { type: 'string' } } }
+							},
+							boardCategory: { type: ['object', 'null'] },
+							milestone: { type: ['object', 'null'] }
+						}
+					},
+					filters: { type: 'object', description: 'The filters applied, normalised ("me" resolved to your user id)' },
+					range: {
+						type: 'object',
+						properties: { from: { type: 'string', format: 'date' }, to: { type: 'string', format: 'date' }, days: { type: 'integer' } }
+					},
+					series: { type: 'array', items: { $ref: '#/components/schemas/BurndownPoint' } },
+					summary: { $ref: '#/components/schemas/BurndownSummary' },
+					forecast: { $ref: '#/components/schemas/BurndownForecast' },
+					target: { oneOf: [{ $ref: '#/components/schemas/BurndownTarget' }, { type: 'null' }] },
+					groupBy: { type: 'string', enum: ['none', 'board', 'category', 'label', 'assignee', 'priority'] },
+					groups: {
+						type: 'array',
+						description: 'One per board, category, label, assignee or priority. remaining and scope are arrays aligned to the series dates. A card with several labels or assignees counts in each of their groups.',
+						items: {
+							type: 'object',
+							properties: {
+								key: { type: 'string' },
+								kind: { type: 'string' },
+								id: { type: ['integer', 'string'], description: 'The value to filter on to drill in; "none" for the empty bucket' },
+								name: { type: 'string' },
+								color: { type: ['string', 'null'] },
+								cardCount: { type: 'integer' },
+								remaining: { type: 'array', items: { type: 'integer' } },
+								scope: { type: 'array', items: { type: 'integer' } },
+								summary: { $ref: '#/components/schemas/BurndownSummary' },
+								forecast: { $ref: '#/components/schemas/BurndownForecast' }
+							}
+						}
+					},
+					options: {
+						type: 'object',
+						description: 'Only with options=true: filter values present in scope, each counted with every other filter applied.'
+					},
+					meta: {
+						type: 'object',
+						description: 'Read notes before quoting a figure.',
+						properties: {
+							basis: { type: 'string', enum: ['card-timestamps'] },
+							timezone: { type: 'string', enum: ['UTC'] },
+							cardCount: { type: 'integer' },
+							inferredCompletionDates: { type: 'integer', description: 'In Complete with no completion stamp; last update used' },
+							reopenedCards: { type: 'integer', description: 'Completed once, since moved out of Complete; charted as open' },
+							archivedDoneCards: { type: 'integer', description: 'Completed and since archived; still counted as done' },
+							notes: { type: 'array', items: { type: 'string' } },
+							generatedAt: { type: 'string', format: 'date-time' }
+						}
+					}
+				}
+			},
 			AuditLogEntry: {
 				type: 'object',
 				properties: {
@@ -1871,6 +1992,41 @@ const spec = {
 			}
 		},
 
+		// ─── Burndown ───────────────────────────────────────────────────────
+		'/api/v1/burndown': {
+			get: {
+				tags: ['Burndown'],
+				summary: 'Burndown series and forecast',
+				description:
+					'How much work was open on each UTC day, and where it is heading, for a board, several boards, a board category, a milestone or everything you can see, narrowed by card category, label, assignee or priority. Rebuilt from each card\'s created, completed and archived dates rather than daily snapshots, so any filter works over any window. Read meta.notes before quoting a figure.',
+				operationId: 'getBurndown',
+				parameters: [
+					{ name: 'boardIds', in: 'query', schema: { type: 'string' }, description: 'Comma-separated board ids. View access to each is required.' },
+					{ name: 'boardCategoryId', in: 'query', schema: { type: 'integer' }, description: 'Every board in this board category that you can see. Not with boardIds.' },
+					{ name: 'milestoneId', in: 'query', schema: { type: 'integer' }, description: 'The milestone\'s cards, wherever they live. Combines with boardIds to narrow.' },
+					{ name: 'categoryIds', in: 'query', schema: { type: 'string' }, description: 'Card category ids; "none" = uncategorised.' },
+					{ name: 'labelIds', in: 'query', schema: { type: 'string' }, description: 'Label ids; a card matches if it carries any of them.' },
+					{ name: 'assigneeIds', in: 'query', schema: { type: 'string' }, description: 'User ids; "me" = you, "none" = unassigned.' },
+					{ name: 'priorities', in: 'query', schema: { type: 'string' }, description: 'Any of critical, high, medium, low.' },
+					{ name: 'from', in: 'query', schema: { type: 'string', format: 'date' }, description: 'First day (UTC). Not with days.' },
+					{ name: 'to', in: 'query', schema: { type: 'string', format: 'date' }, description: 'Last day (UTC), default today. A future date is clamped to today.' },
+					{ name: 'days', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 730 }, description: 'Window length ending at to, 1 to 730. Default 30, or since creation for a milestone.' },
+					{ name: 'target', in: 'query', schema: { type: 'string' }, description: 'Draw an ideal line to zero on this day (YYYY-MM-DD). Defaults to the milestone\'s target date; "none" hides it.' },
+					{ name: 'groupBy', in: 'query', schema: { type: 'string', enum: ['none', 'board', 'category', 'label', 'assignee', 'priority'] }, description: 'Per-group series for a breakdown.' },
+					{ name: 'options', in: 'query', schema: { type: 'boolean' }, description: 'true adds the filter values present in scope, with counts.' },
+				],
+				responses: {
+					'200': {
+						description: 'Burndown for the requested scope',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/BurndownResult' } } }
+					},
+					'400': { description: 'A parameter is invalid; the message names it' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { description: 'No access to a requested board or milestone' },
+					'404': { $ref: '#/components/responses/NotFound' }
+				}
+			}
+		},
 		// ─── Audit Log ──────────────────────────────────────────────────────
 		'/api/v1/audit-log': {
 			get: {
@@ -1921,6 +2077,7 @@ const spec = {
 		{ name: 'Categories', description: 'Card categories (per-board tags for cards)' },
 		{ name: 'Board Categories', description: 'Dashboard categories for grouping boards' },
 		{ name: 'Webhooks', description: 'Webhook subscriptions for board events' },
+		{ name: 'Burndown', description: 'Remaining work over time, with a forecast, for any board, group, milestone or filter' },
 		{ name: 'Audit', description: 'Activity audit log' }
 	]
 };

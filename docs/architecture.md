@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.1
+version: 1.2
 status: As-Built
-date: 2026-04-14
+date: 2026-09-30
 tags:
   - architecture
   - sveltekit
@@ -222,7 +222,7 @@ stateDiagram-v2
 |-----------|----------|---------|
 | Backup Scheduler | Configurable | Push DB backup to SFTP/S3/GDrive/OneDrive |
 | Report Scheduler | Weekly/Monthly | Generate and email PDF reports |
-| Snapshot Scheduler | Daily midnight | Card counts per column for CFD/burndown |
+| Snapshot Scheduler | Hourly check, once a day | Card counts per column for the CFD (burndowns are rebuilt from card timestamps — see [Burndown Charts](burndown-charts.md)) |
 | Session Cleanup | On startup | Remove expired session tokens |
 
 ## Key Design Decisions

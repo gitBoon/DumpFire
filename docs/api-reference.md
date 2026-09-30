@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.3
+version: 1.4
 status: As-Built
-date: 2026-09-14
+date: 2026-09-30
 tags:
   - api
   - rest
@@ -91,6 +91,7 @@ flowchart TB
 
     subgraph Reporting["Reporting & Audit"]
         Report["GET /reports/activity"]
+        Burndown["GET /burndown"]
         Audit["GET /audit-log"]
     end
 
@@ -143,6 +144,36 @@ reports correctly.
 number.
 
 Full design rationale: [Management Activity Reporting](management-reporting.md).
+
+### `GET /api/v1/burndown`
+
+How much work was open on each UTC day, and where it is heading, for any slice
+of the workspace. Rebuilt from each card's created, completed and archived dates
+rather than daily snapshots, so every filter works over any window up to 730
+days.
+
+| Param | Default | Meaning |
+|---|---|---|
+| `boardIds` | — | Comma-separated; view access to each is required. |
+| `boardCategoryId` | — | Every board in the group that you can see. Not with `boardIds`. |
+| `milestoneId` | — | The milestone's cards; combine with `boardIds` to narrow. |
+| *(no scope)* | — | Every board you can see. |
+| `categoryIds`, `labelIds` | any | `categoryIds=none` = uncategorised. |
+| `assigneeIds` | anyone | `me`, `none`, or user ids. |
+| `priorities` | any | `critical,high,medium,low` |
+| `from`, `to` / `days` | 30 days to today | A milestone defaults to since its creation. |
+| `target` | milestone's date | `YYYY-MM-DD` draws the ideal line; `none` hides it. |
+| `groupBy` | `none` | `board`, `category`, `label`, `assignee`, `priority` |
+| `options` | `false` | `true` adds faceted filter values with counts. |
+
+Returns `series` (per day: `scope`, `done`, `remaining`, `added`, `completed`,
+`removed`), `summary`, `forecast` (`converging` with a `projectedDate`,
+`not-converging`, `done` or `insufficient-data`, measured over the trailing 28
+days), `target` (`onTrack`, `daysLate`) and `groups`. **Read `meta.notes`
+before quoting a figure** — it names every assumption that bears on the result.
+Every bad parameter is a 400 that names it.
+
+Full design: [Burndown Charts](burndown-charts.md).
 
 ### `GET /api/v1/audit-log` (admin)
 
