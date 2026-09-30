@@ -1,19 +1,21 @@
 ---
 title: "Burndown Charts"
 category: Reporting & Analytics
-version: 1.0
+version: 1.1
 status: As-Built
 date: 2026-09-30
 tags:
   - burndown
   - burn-up
   - forecast
+  - delivery-estimate
+  - monte-carlo
   - charts
   - milestones
   - categories
   - reporting
   - api
-description: "How DumpFire draws burndown and burn-up charts for any board, board group, milestone or filter — rebuilt from card timestamps, with an honest forecast"
+description: "How DumpFire draws burndown and burn-up charts for any board, board group, milestone or filter — rebuilt from card timestamps, with an honest forecast, a time-to-deliver estimate and plain-English explanations"
 ---
 
 # Burndown Charts
@@ -39,11 +41,36 @@ years.
 It appears in three places:
 
 - **`/burndown`** — the full page, from the dashboard's *Burndown* link or a
-  board's *More → Burndown*. Every control is in the URL, so a view is a link.
+  board's *More → Burndown*. It opens with a plain-English summary, then six
+  figures, the chart and a breakdown. Every control is in the URL, so a view is a
+  link.
 - **Board → More → Statistics** — a compact 30-day chart for the board, with a
-  category selector and a link to the full page.
+  category selector, a "Done in 2–3 weeks" line and a link to the full page.
 - **Milestone plan (`/plan/:id`)** — a Burndown panel with the ideal line to the
-  milestone's target date and a one-line verdict: on track, behind, or at risk.
+  milestone's target date, a one-line verdict (on track, tight, behind or at
+  risk) and the time to deliver with the chance of making the date.
+
+Every figure has a **hover explanation**: a themed floating panel saying what the
+figure means and how it was worked out, with the real numbers. Keyboard focus and
+a tap on a touch screen open it too.
+
+## Reading the page
+
+The summary sentence and the six tiles are written from the same response, so
+they never disagree.
+
+| Tile | What it means | How it is worked out (shown on hover) |
+|---|---|---|
+| **Remaining** | Cards open now: not in Complete, not archived | open at the start + added − finished − dropped |
+| **Finished** | Cards that reached Complete in the period | counted on the day each got there; pace = finished in the basis ÷ days × 7 |
+| **Added** | New cards in the period, and how many open cards were dropped | net arrivals in the basis ÷ days × 7 |
+| **At this pace** | Where the open pile is heading if work keeps arriving and being finished as lately | finishing a week − arriving a week; *Clears 14 Nov*, *Growing*, *Holding steady*, *Stalled* |
+| **Time to deliver** | How long the work open **now** would take if nothing new were added | Monte Carlo over real daily completions: likely, 85% and 95% dates |
+| **Target** | Will it land by the date? | the chance of finishing by then, from the same simulation |
+
+The controls are one row of pills, each stating the current choice —
+`All boards` `Last 30 days` `Filters · 2` `Target 1 Dec` — and each opening a
+panel with the detail. Active filters show as removable chips beside the row.
 
 ## Architecture
 
@@ -176,6 +203,14 @@ response:
 - `remainingNow = remainingStart + added − completed − removed`, where the
   `*Start` values are **before** the first day's changes
 
+Two lines are derived from the series for the chart, both relative to the start
+of the window:
+
+- **Work in play** = remaining at the start + added since − dropped since. It
+  always equals remaining + finished since the start, so the gap between it and
+  remaining is exactly what was finished in the window.
+- **Finished since start** = the running total of `completed`.
+
 `buildSeries` makes one pass over the cards into a per-day delta map, then one
 pass over the days. It is O(cards + days), so a two-year window costs the same
 as a fortnight: 5,000 cards over 730 days build in well under 100 ms.
@@ -209,6 +244,42 @@ flowchart TD
 - **Beyond five years is not a forecast.** A date a decade away suggests a
   precision that is not there, so it is reported as not converging.
 
+## Time to deliver
+
+"How long will it take to finish?" is a different question from where the pile
+is heading. On a board where work arrives as fast as it is finished, the net
+forecast never finishes, yet the work open **today** will be done at some point.
+The delivery estimate answers that question, as a range with confidence levels,
+because a single date sounds more certain than any forecast is.
+
+```mermaid
+flowchart TD
+    A["Basis: the same days as the forecast<br/>(trailing 28, or since the day after the scope began)"] --> B["Samples: cards finished on each basis day"]
+    B --> C{"Anything finished in the basis?"}
+    C -- no --> NP[no-pace]
+    C -- yes --> D{"Open work ÷ mean pace over 730 days?"}
+    D -- yes --> BH[beyond-horizon]
+    D -- no --> E["2,000 trials: each future day draws a random<br/>basis day's completions until the open work is used up"]
+    E --> F["Sort the finish days"]
+    F --> G["p50 likely · p85 commit · p95 cautious"]
+    F --> H["chanceByTarget = share of trials done by the target"]
+```
+
+- **Sampling real calendar days** carries weekends, holidays and bursty weeks
+  into the estimate without modelling any of them. With perfectly steady
+  throughput the range collapses to the simple arithmetic answer (20 open at 2 a
+  day is 10 days at every percentile).
+- **Seeded, so it is stable.** The generator (Mulberry32) is seeded from a hash
+  of the inputs, so the same data always gives the same estimate and the numbers
+  never jitter on a refresh.
+- **The work open now, and nothing new.** New work is deliberately left out,
+  because that is the question being asked. `arrivalPerWeek` is reported beside
+  it, and the page says every new card pushes the dates out.
+- Statuses: `estimated`, `done`, `no-pace` (nothing finished in the basis),
+  `insufficient-data` (under a week of history), `beyond-horizon` (over two years).
+- Each breakdown row gets its own estimate with 500 trials. Twenty deliberately
+  slow rows take about 70 ms.
+
 ### The target and the ideal line
 
 The ideal line only exists when there is a **target date**: the milestone's own,
@@ -219,9 +290,28 @@ work**; otherwise a new milestone would draw a line from zero to zero along the
 axis. The old chart's line to zero on the last day of an arbitrary window has
 gone, because it meant nothing.
 
-`onTrack` is true when the forecast lands on or before the target, and false
+`onTrack` is true when the net forecast lands on or before the target, and false
 when it lands after or is not converging. `daysLate` is negative when the
 forecast is early.
+
+### The target verdict
+
+The page's Target tile and the milestone panel share one verdict
+(`targetVerdict` in `$lib/burndown-text`), so they cannot disagree. Showing the net
+forecast and the delivery estimate as separate verdicts once produced "At risk"
+beside "79% chance" for the same date, because they answer different questions.
+The verdict now leads with the chance:
+
+| Chance of finishing by the target | Verdict |
+|---|---|
+| 85% or more | **On track** |
+| 50–85% | **Tight** |
+| under 50% | **Behind** |
+
+When the pile is growing, the chance is stated as holding "if nothing new is
+added". With no pace to simulate from, it falls back to the net forecast and
+says *At risk* without quoting a percentage: a 0% there would come from having no
+data, not from an estimate.
 
 ## The chart
 
@@ -231,11 +321,18 @@ from the 340 px stats panel to the full page.
 
 | Element | Burndown | Burn-up |
 |---|---|---|
-| Primary line + 10% wash | Remaining (indigo `#6366f1`) | Done (green `#059669`) |
-| Secondary line | Scope (amber `#d97706`) | Scope (amber) |
+| Primary line + wash | Remaining (indigo `#6366f1`) | Finished since start (green `#059669`) |
+| Secondary line | Work in play (amber `#d97706`) | Work in play (amber) |
 | Dashed | Ideal to the target date | — |
-| Dotted | Forecast of remaining | Forecasts of done and scope, meeting on the projected date |
+| Dotted | Forecast of remaining | Forecasts of finished and work in play, meeting on the projected date |
 | Markers | Today, Target | Today, Target |
+
+**All-time scope is not plotted.** It counts every card that has ever existed,
+finished or not. On the all-boards view of real data it ran from 1,450 to 1,812
+against 158–200 open, which squashed the remaining line into the bottom tenth of
+the chart. Work in play starts at the remaining work, so both lines share one
+scale, and the gap between them means something. All-time scope is still in the
+hover, the table and the API.
 
 - The **colours are the chart's own tokens**, not the theme accent. They were
   run through the dataviz palette validator against the light and dark surfaces
@@ -247,13 +344,31 @@ from the 340 px stats panel to the full page.
 - The x axis runs past today far enough to show the target and forecast, capped
   at max(14 days, 1.5× the window) so history is never squashed. Anything beyond
   is pointed at from the right edge.
-- **Hover** shows a crosshair and a tooltip: the day's remaining, scope and done,
-  what was added, completed and dropped, and the ideal value.
+- **Hover** shows a crosshair and a tooltip: the day's remaining, work in play,
+  finished since start, the ideal value, all cards ever, and what was added,
+  finished and dropped that day.
+- **The legend explains itself.** Each entry has a hover explanation. The keys
+  are drawn as inline SVG with prefixed classes, because sharing the chart's
+  `.area` class once gave the Remaining key the wash's 10% opacity and made it
+  almost invisible.
 - **Keyboard:** the chart is focusable. ←/→ move a day, Shift+←/→ a week,
   Home/End jump to either end, and each reading is announced through a polite
   live region.
-- **Table view:** *Show table* on the full page, plus a CSV of the daily series.
-  Tooltips never gate a value.
+- **Table view:** *Show table* on the full page, plus a CSV of the daily series
+  (with `in_play`, `finished_since_start`, `all_cards` and `all_done`). Tooltips
+  never gate a value.
+
+### Explanations and controls
+
+`InfoTip.svelte` wraps whatever it explains and opens a `FloatingPanel`: the app's
+card surface, border and shadow with the theme's accent along the top, so it
+matches every theme. It opens on hover (with a short delay, and a grace period to
+move into it), on keyboard focus, or on a tap on a touch screen. It closes on
+blur, Escape or a tap elsewhere. `Popover.svelte` is the click-to-open
+counterpart behind the control pills: it moves focus into the panel on opening
+and returns it to the pill on closing. Both are placed by `placeFloating` (below
+the trigger if it fits, above if not, kept on screen, arrow on the trigger) and
+portalled to `<body>`, so nothing can clip them.
 
 ## API
 
@@ -288,6 +403,7 @@ classDiagram
         +series BurndownPoint[]
         +summary BurndownSummary
         +forecast BurndownForecast
+        +delivery DeliveryEstimate
         +target BurndownTarget
         +groupBy
         +groups BurndownGroup[]
@@ -313,6 +429,19 @@ classDiagram
         +projectedDate
         +projectedDateNoNewScope
     }
+    class DeliveryEstimate {
+        +status
+        +remaining
+        +asOf
+        +basisDays
+        +throughputPerWeek
+        +arrivalPerWeek
+        +trials
+        +p50
+        +p85
+        +p95
+        +chanceByTarget
+    }
     class BurndownTarget {
         +date
         +source
@@ -331,8 +460,11 @@ classDiagram
         +scope int[]
         +summary
         +forecast
+        +delivery
     }
     BurndownResult --> BurndownPoint
+    BurndownResult --> DeliveryEstimate
+    BurndownGroup --> DeliveryEstimate
     BurndownResult --> BurndownForecast
     BurndownResult --> BurndownTarget
     BurndownResult --> BurndownGroup
@@ -349,6 +481,11 @@ classDiagram
   bear on this result: inferred completion dates, reopened cards, archived
   finished cards, membership applied today, cards moved in from other boards,
   and boards in a group that are hidden from you.
+- **`meta.inferredInWindow`** counts how many cards with no completion stamp have
+  their stand-in date (the last update) inside the window. Those are the only
+  ones that can inflate the finished figure, and the note says by how many:
+  "12 of them fall in this period, so up to 12 of the 354 completions here may
+  have happened earlier."
 
 ```bash
 # How is the Development group doing, by board, over the last quarter?
@@ -357,7 +494,7 @@ curl -H "Authorization: Bearer $DUMPFIRE_KEY" \
 
 # Will milestone 16 land by its date?
 curl -H "Authorization: Bearer $DUMPFIRE_KEY" \
-  "$BASE/api/v1/burndown?milestoneId=16" | jq '{forecast, target}'
+  "$BASE/api/v1/burndown?milestoneId=16" | jq '{delivery, target}'
 ```
 
 ## Access
@@ -376,7 +513,12 @@ curl -H "Authorization: Bearer $DUMPFIRE_KEY" \
 
 | File | Role |
 |---|---|
-| `src/lib/burndown.ts` | Pure: types, `buildSeries`, `summarise`, `forecast`, `forecastCards`, `assessTarget`, `idealRemaining`, day arithmetic |
+| `src/lib/burndown.ts` | Pure: types, `buildSeries`, `summarise`, `workInPlay`, `finishedSinceStart`, `forecast`, `forecastBasis`, `estimateDelivery`, `assessTarget`, `idealRemaining`, day arithmetic |
+| `src/lib/burndown-text.ts` | Plain-English wording shared by the page and both panels: `paceText`, `deliveryText`, `targetVerdict`, `durationRange`, `chancePercent` |
+| `src/lib/floating.ts` | `placeFloating` (pure placement) and the `portal` action |
+| `src/lib/components/FloatingPanel.svelte` | The themed floating canvas |
+| `src/lib/components/InfoTip.svelte` | Hover / focus / tap explanations |
+| `src/lib/components/Popover.svelte` | The click-to-open control pills |
 | `src/lib/server/burndown.ts` | `parseBurndownQuery`, `getBurndown`: scope resolution, access, card loading, groups, facets, notes |
 | `src/routes/api/burndown/+server.ts` | Session endpoint for the embeds |
 | `src/routes/api/v1/burndown/+server.ts` | API-key endpoint |
@@ -396,5 +538,7 @@ caller was the stats panel.
 - A reopened card's earlier completion is not shown.
 - Cards count equally. There are no estimates on cards by design, and token cost
   is measured after the work, so it cannot size what remains.
+- The delivery estimate replays the recent pace. It cannot foresee a change in
+  who is working on the scope, and it leaves new arrivals out on purpose.
 - Days are UTC, like the snapshots and the activity report. Work completed just
   after midnight BST lands on the previous UTC day.

@@ -12,6 +12,8 @@
   import CfdChart from './CfdChart.svelte';
   import BurndownChart from './BurndownChart.svelte';
   import type { BurndownResult } from '$lib/burndown';
+  import { deliveryText, paceText } from '$lib/burndown-text';
+  import InfoTip from '$lib/components/InfoTip.svelte';
 
   /**
    * @prop boardColumns — All columns on the board (for per-column stats)
@@ -122,17 +124,17 @@
     `/burndown?boardIds=${boardId}${burndownCategory ? `&categoryIds=${burndownCategory}` : ''}`
   );
 
-  /** The forecast in a few words, under the chart. */
-  const burndownForecast = $derived.by(() => {
-    const f = burndown?.forecast;
-    if (!f) return '';
-    if (f.status === 'done') return 'All done';
-    if (f.status === 'not-converging') return 'Not converging at the current pace';
-    if (f.status === 'converging' && f.projectedDate) {
-      const d = new Date(`${f.projectedDate}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
-      return `Forecast ${d} at the current pace`;
+  /** How long the open work would take, in a few words, under the chart. */
+  const burndownEta = $derived(burndown ? deliveryText(burndown.delivery) : null);
+  const burndownPace = $derived(burndown ? paceText(burndown.forecast) : null);
+  const burndownEtaShort = $derived.by(() => {
+    switch (burndown?.delivery.status) {
+      case 'done': return 'All done';
+      case 'estimated': return `Done in ${burndownEta?.value}`;
+      case 'no-pace': return 'No recent pace to go on';
+      case 'beyond-horizon': return 'Over two years to go';
+      default: return 'Too early to forecast';
     }
-    return 'Too early to forecast';
   });
 
   onMount(() => { loadMetrics(); loadCfd(); loadBurndown(); });
@@ -245,7 +247,13 @@
 
     <!-- Burndown Chart -->
     <h4 class="stats-section-title">
-      Burndown (30 days)
+      <InfoTip title="Burndown" width={280}>
+        Burndown (30 days)
+        {#snippet tip()}
+          <p>The blue line is how many of this board's cards were open at the end of each day. The orange line is what was open 30 days ago plus everything added since, so the gap between them is what got finished.</p>
+          <p class="muted">Pick a category to chart just that part of the board.</p>
+        {/snippet}
+      </InfoTip>
       {#if burndown?.options && (burndown.options.categories.length > 1 || burndownCategory)}
         <select class="metrics-period-select" bind:value={burndownCategory} onchange={() => loadBurndown()} aria-label="Burndown category">
           <option value="">All categories</option>
@@ -268,7 +276,16 @@
         --bd-surface="var(--bg-surface)"
       />
       <div class="burndown-foot">
-        <span>{burndownForecast}</span>
+        {#if burndownEta && burndownPace}
+          <InfoTip title="Time to deliver" width={280} prefer="top">
+            {burndownEtaShort}
+            {#snippet tip()}
+              <p>How long the <strong>{burndown?.delivery.remaining}</strong> cards open now would take to finish if nothing new were added: {burndownEta.sub.charAt(0).toLowerCase() + burndownEta.sub.slice(1)}.</p>
+              <p>Worked out by replaying the board's real daily completions from the last {burndown?.delivery.basisDays} days thousands of times in random order.</p>
+              <p class="muted">At this pace: {burndownPace.value.toLowerCase()} — {burndownPace.sub.charAt(0).toLowerCase() + burndownPace.sub.slice(1)}.</p>
+            {/snippet}
+          </InfoTip>
+        {/if}
         <a href={burndownHref}>Full chart →</a>
       </div>
     {/if}

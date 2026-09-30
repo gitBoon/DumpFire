@@ -36,7 +36,9 @@ import {
 	assessTarget,
 	buildSeries,
 	daysBetween,
-	forecastCards,
+	estimateDelivery,
+	forecast,
+	forecastBasis,
 	isDay,
 	summarise,
 	toDay,
@@ -487,13 +489,15 @@ export function getBurndown(user: SessionUser, q: BurndownQuery): BurndownResult
 
 	const series = buildSeries(lifelines, from, to);
 	const summary = summarise(series);
-	const fc = forecastCards(lifelines, to);
+	// One basis for both, so the forecast and the delivery estimate agree on
+	// what "the recent pace" was.
+	const basis = forecastBasis(lifelines, to);
+	const fc = forecast(basis);
+	const targetDate = q.target === 'none' ? null : (q.target ?? scope.milestone?.targetDate ?? null);
+	const delivery = estimateDelivery(basis, { target: targetDate });
 
 	let target: BurndownResult['target'] = null;
-	if (q.target !== 'none') {
-		const date = q.target ?? scope.milestone?.targetDate ?? null;
-		if (date) target = assessTarget(date, q.target ? 'query' : 'milestone', series, fc);
-	}
+	if (targetDate) target = assessTarget(targetDate, q.target ? 'query' : 'milestone', series, fc);
 
 	// Lookups for naming boards, categories, labels and people.
 	const boardsInPlay =
@@ -510,9 +514,25 @@ export function getBurndown(user: SessionUser, q: BurndownQuery): BurndownResult
 	const inferred = cards.filter((c) => c.inferredDone).length;
 	const reopened = cards.filter((c) => c.reopened).length;
 	const archivedDone = cards.filter((c) => c.archivedDone).length;
+	// The stand-in date only distorts this chart if it falls inside the window —
+	// that is when a card finished long ago can be counted as finished here.
+	const inferredInWindow = cards.filter(
+		(c) => c.inferredDone && c.lifeline.done !== null && c.lifeline.done >= from && c.lifeline.done <= to
+	).length;
 	if (inferred) {
+		const lead = `${inferred} card${inferred === 1 ? ' sits' : 's sit'} in Complete with no completion date; the date of ${inferred === 1 ? 'its' : 'their'} last update is used instead.`;
+		const falls =
+			inferredInWindow === inferred
+				? inferred === 1 ? 'It falls' : 'All of them fall'
+				: `${inferredInWindow} of them fall`;
+		const effect =
+			inferredInWindow >= summary.completed
+				? 'so every completion counted here rests on an estimated date'
+				: `so up to ${inferredInWindow} of the ${summary.completed.toLocaleString('en-GB')} completions here may have happened earlier`;
 		notes.push(
-			`${inferred} card${inferred === 1 ? ' sits' : 's sit'} in Complete with no completion date; the date of ${inferred === 1 ? 'its' : 'their'} last update is used instead.`
+			inferredInWindow
+				? `${lead} ${falls} in this period, ${effect}.`
+				: `${lead} None of those dates fall in this period, so the completions here are unaffected.`
 		);
 	}
 	if (reopened) {
@@ -561,6 +581,7 @@ export function getBurndown(user: SessionUser, q: BurndownQuery): BurndownResult
 		series,
 		summary,
 		forecast: fc,
+		delivery,
 		target,
 		groupBy: q.groupBy,
 		groups,
@@ -569,6 +590,7 @@ export function getBurndown(user: SessionUser, q: BurndownQuery): BurndownResult
 			timezone: 'UTC',
 			cardCount: cards.length,
 			inferredCompletionDates: inferred,
+			inferredInWindow,
 			reopenedCards: reopened,
 			archivedDoneCards: archivedDone,
 			notes,
@@ -704,6 +726,7 @@ function buildGroups(
 		const series = buildSeries(b.cards, from, to);
 		if (series.every((p) => p.scope === 0)) continue;
 		const { name, color } = describe(kind, b.id);
+		const basis = forecastBasis(b.cards, to);
 		groups.push({
 			key,
 			kind,
@@ -714,7 +737,9 @@ function buildGroups(
 			remaining: series.map((p) => p.remaining),
 			scope: series.map((p) => p.scope),
 			summary: summarise(series),
-			forecast: forecastCards(b.cards, to)
+			forecast: forecast(basis),
+			// Fewer trials per row: a breakdown can have dozens of groups.
+			delivery: estimateDelivery(basis, { trials: 500 })
 		});
 	}
 

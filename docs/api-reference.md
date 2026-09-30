@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.4
+version: 1.5
 status: As-Built
 date: 2026-09-30
 tags:
@@ -169,7 +169,14 @@ days.
 Returns `series` (per day: `scope`, `done`, `remaining`, `added`, `completed`,
 `removed`), `summary`, `forecast` (`converging` with a `projectedDate`,
 `not-converging`, `done` or `insufficient-data`, measured over the trailing 28
-days), `target` (`onTrack`, `daysLate`) and `groups`. **Read `meta.notes`
+days), `delivery`, `target` (`onTrack`, `daysLate`) and `groups`.
+
+`delivery` answers "how long will the work open now take?": a seeded Monte Carlo
+over the scope's own daily completions, giving `p50` (likely), `p85` and `p95`
+finish dates and, with a target, `chanceByTarget`. It assumes nothing new is
+added and reports `arrivalPerWeek` beside it. Every group has one too.
+`meta.inferredInWindow` says how many estimated completion dates fall inside the
+window. **Read `meta.notes`
 before quoting a figure** — it names every assumption that bears on the result.
 Every bad parameter is a 400 that names it.
 

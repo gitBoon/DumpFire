@@ -198,6 +198,32 @@ const spec = {
 					projectedDateNoNewScope: { type: ['string', 'null'], format: 'date', description: 'Remaining reaches zero if nothing more is added' }
 				}
 			},
+			DeliveryEstimate: {
+				type: 'object',
+				description:
+					'How long the work open now would take to finish if nothing new were added. A Monte Carlo simulation: each of the trials replays randomly chosen days of the basis (their real completion counts) until the open work is used up. Seeded from the inputs, so the same data always gives the same answer.',
+				properties: {
+					status: { type: 'string', enum: ['estimated', 'done', 'no-pace', 'beyond-horizon', 'insufficient-data'] },
+					remaining: { type: 'integer', description: 'The open work being estimated, as of asOf' },
+					asOf: { type: 'string', format: 'date' },
+					basisDays: { type: 'integer' },
+					throughputPerWeek: { type: 'number', description: 'Average finished per week over the basis' },
+					arrivalPerWeek: { type: 'number', description: 'Net new work per week over the basis; not included in the estimate' },
+					trials: { type: 'integer', description: '2,000 for the result, 500 per group; 0 when nothing was simulated' },
+					p50: { $ref: '#/components/schemas/DeliveryPoint' },
+					p85: { $ref: '#/components/schemas/DeliveryPoint' },
+					p95: { $ref: '#/components/schemas/DeliveryPoint' },
+					chanceByTarget: { type: ['number', 'null'], description: 'Share of trials finished by the target date (0-1), when there is a target' }
+				}
+			},
+			DeliveryPoint: {
+				type: ['object', 'null'],
+				description: 'A percentile of the simulated finish days; null when beyond two years or not simulated',
+				properties: {
+					days: { type: 'integer', description: 'Days after asOf' },
+					date: { type: 'string', format: 'date' }
+				}
+			},
 			BurndownTarget: {
 				type: 'object',
 				properties: {
@@ -236,6 +262,7 @@ const spec = {
 					series: { type: 'array', items: { $ref: '#/components/schemas/BurndownPoint' } },
 					summary: { $ref: '#/components/schemas/BurndownSummary' },
 					forecast: { $ref: '#/components/schemas/BurndownForecast' },
+					delivery: { $ref: '#/components/schemas/DeliveryEstimate' },
 					target: { oneOf: [{ $ref: '#/components/schemas/BurndownTarget' }, { type: 'null' }] },
 					groupBy: { type: 'string', enum: ['none', 'board', 'category', 'label', 'assignee', 'priority'] },
 					groups: {
@@ -253,7 +280,8 @@ const spec = {
 								remaining: { type: 'array', items: { type: 'integer' } },
 								scope: { type: 'array', items: { type: 'integer' } },
 								summary: { $ref: '#/components/schemas/BurndownSummary' },
-								forecast: { $ref: '#/components/schemas/BurndownForecast' }
+								forecast: { $ref: '#/components/schemas/BurndownForecast' },
+								delivery: { $ref: '#/components/schemas/DeliveryEstimate' }
 							}
 						}
 					},
@@ -269,6 +297,7 @@ const spec = {
 							timezone: { type: 'string', enum: ['UTC'] },
 							cardCount: { type: 'integer' },
 							inferredCompletionDates: { type: 'integer', description: 'In Complete with no completion stamp; last update used' },
+							inferredInWindow: { type: 'integer', description: 'Of those, how many have that stand-in date inside the window (and so can inflate the completed figure)' },
 							reopenedCards: { type: 'integer', description: 'Completed once, since moved out of Complete; charted as open' },
 							archivedDoneCards: { type: 'integer', description: 'Completed and since archived; still counted as done' },
 							notes: { type: 'array', items: { type: 'string' } },

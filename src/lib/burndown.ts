@@ -248,6 +248,31 @@ export function summarise(series: BurndownPoint[]): BurndownSummary {
 	};
 }
 
+// ─── The window's own view ──────────────────────────────────────────────────
+
+/**
+ * Work in play on each day: what was open when the window began, plus every
+ * card added since, less every card dropped since. Equivalently, remaining
+ * plus what has been finished since the start — so the gap between this line
+ * and remaining is exactly the work finished in the window.
+ *
+ * This is what the chart plots instead of `scope`. Scope counts every card that
+ * has ever existed, finished or not, and on a board with a few years of history
+ * it dwarfs the work actually open: 1,812 cards against 194 remaining squashed
+ * the line people care about into the bottom tenth of the chart. Work in play
+ * starts at the remaining work, so both lines share one scale.
+ */
+export function workInPlay(series: BurndownPoint[]): number[] {
+	let v = summarise(series).remainingStart;
+	return series.map((p) => (v += p.added - p.removed));
+}
+
+/** Cards finished since the window began, per day — the burn-up's rising line. */
+export function finishedSinceStart(series: BurndownPoint[]): number[] {
+	let v = 0;
+	return series.map((p) => (v += p.completed));
+}
+
 // ─── The forecast ───────────────────────────────────────────────────────────
 
 /**
@@ -324,20 +349,181 @@ export function forecast(basis: BurndownPoint[]): BurndownForecast {
  * the day it was written down.
  */
 export function forecastCards(cards: CardLifeline[], to: Day): BurndownForecast {
+	return forecast(forecastBasis(cards, to));
+}
+
+/**
+ * The days a pace is measured over — shared by the forecast and the delivery
+ * estimate so the two can never disagree about what "recently" means. When
+ * everything arrived today there is no pace yet, and the single day returned
+ * still lets "done" be recognised.
+ */
+export function forecastBasis(cards: CardLifeline[], to: Day): BurndownPoint[] {
 	const earliest = firstDay(cards);
 	const trailing = addDays(to, -(FORECAST_BASIS_DAYS - 1));
 	const from = earliest !== null && earliest >= trailing ? addDays(earliest, 1) : trailing;
-	if (from > to) {
-		// Everything arrived today: no pace to measure yet, but "done" is still known.
-		const today = buildSeries(cards, to, to);
-		const fc = forecast(today);
-		return fc.status === 'done' ? fc : { ...fc, basisDays: 0 };
-	}
-	return forecast(buildSeries(cards, from, to));
+	return buildSeries(cards, from > to ? to : from, to);
 }
 
 function round3(n: number): number {
 	return Math.round(n * 1000) / 1000;
+}
+
+// ─── Time to deliver ────────────────────────────────────────────────────────
+
+export type DeliveryStatus = 'done' | 'estimated' | 'no-pace' | 'beyond-horizon' | 'insufficient-data';
+
+export interface DeliveryPoint {
+	/** Days from `asOf`. */
+	days: number;
+	date: Day;
+}
+
+/**
+ * "How long will it take to finish what is open now?" — as a range with
+ * confidence levels, because a single date sounds more certain than any
+ * forecast is.
+ */
+export interface DeliveryEstimate {
+	status: DeliveryStatus;
+	/** The open work being estimated, as of `asOf`. */
+	remaining: number;
+	asOf: Day;
+	basisDays: number;
+	/** Average finished per week over the basis. */
+	throughputPerWeek: number;
+	/** New work arriving per week over the basis — deliberately not in the estimate. */
+	arrivalPerWeek: number;
+	trials: number;
+	/** Half of the simulated futures finish by here: the likely date. */
+	p50: DeliveryPoint | null;
+	/** 85% of them do: a date to commit to. */
+	p85: DeliveryPoint | null;
+	/** 95% of them do: the cautious date. */
+	p95: DeliveryPoint | null;
+	/** Share of simulated futures finished by the target date (0–1), when there is one. */
+	chanceByTarget: number | null;
+}
+
+export const DELIVERY_TRIALS = 2000;
+/** Beyond two years an estimate is not something anyone can plan around. */
+const DELIVERY_HORIZON_DAYS = 730;
+
+/**
+ * Monte Carlo estimate of when the work open now will be finished.
+ *
+ * Each trial walks forward a day at a time, and for each future day draws the
+ * number of cards finished on a randomly chosen past day of the basis, until
+ * the open work is used up. Sampling real calendar days carries weekends,
+ * holidays and bursty weeks into the estimate without modelling any of them.
+ * The percentiles of the trials give the range.
+ *
+ * It estimates the work open NOW and assumes nothing new is added — that is
+ * the question "how long will this take?" asks. Arrivals are reported
+ * alongside so the page can say how much that assumption is carrying.
+ *
+ * The generator is seeded from the inputs, so the same data always gives the
+ * same answer: an estimate that shifted on every refresh would not be trusted.
+ */
+export function estimateDelivery(
+	basis: BurndownPoint[],
+	opts: { trials?: number; target?: Day | null } = {}
+): DeliveryEstimate {
+	const trials = opts.trials ?? DELIVERY_TRIALS;
+	const last = basis[basis.length - 1];
+	const basisDays = basis.length;
+	let added = 0;
+	let removed = 0;
+	let completed = 0;
+	for (const p of basis) {
+		added += p.added;
+		removed += p.removed;
+		completed += p.completed;
+	}
+	const result: DeliveryEstimate = {
+		status: 'insufficient-data',
+		remaining: last?.remaining ?? 0,
+		asOf: last?.date ?? '',
+		basisDays,
+		throughputPerWeek: basisDays ? round3((completed / basisDays) * 7) : 0,
+		arrivalPerWeek: basisDays ? round3(((added - removed) / basisDays) * 7) : 0,
+		trials: 0,
+		p50: null,
+		p85: null,
+		p95: null,
+		chanceByTarget: null
+	};
+
+	if (!last || last.scope === 0) return result;
+	if (last.remaining <= 0) {
+		const now = { days: 0, date: last.date };
+		return { ...result, status: 'done', p50: now, p85: now, p95: now, chanceByTarget: opts.target ? 1 : null };
+	}
+	if (basisDays < FORECAST_MIN_DAYS) return result;
+	if (completed === 0) return { ...result, status: 'no-pace', chanceByTarget: opts.target ? 0 : null };
+
+	// Far enough out on average that no percentile would be usable: skip the work.
+	if (last.remaining / (completed / basisDays) > DELIVERY_HORIZON_DAYS) {
+		return { ...result, status: 'beyond-horizon', chanceByTarget: opts.target ? 0 : null };
+	}
+
+	const samples = basis.map((p) => p.completed);
+	const rand = mulberry32(hash(`${last.date}|${last.remaining}|${samples.join(',')}`));
+	const finishes = new Float64Array(trials);
+	for (let t = 0; t < trials; t++) {
+		let open = last.remaining;
+		let day = 0;
+		while (open > 0 && day <= DELIVERY_HORIZON_DAYS) {
+			open -= samples[Math.floor(rand() * samples.length)];
+			day++;
+		}
+		finishes[t] = open > 0 ? Infinity : day;
+	}
+	finishes.sort();
+
+	const at = (q: number): DeliveryPoint | null => {
+		const d = finishes[Math.min(trials - 1, Math.ceil(q * trials) - 1)];
+		return Number.isFinite(d) ? { days: d, date: addDays(last.date, d) } : null;
+	};
+	let chanceByTarget: number | null = null;
+	if (opts.target) {
+		const by = daysBetween(last.date, opts.target);
+		let hits = 0;
+		for (let t = 0; t < trials; t++) if (finishes[t] <= by) hits++;
+		chanceByTarget = round3(hits / trials);
+	}
+	const p50 = at(0.5);
+	return {
+		...result,
+		status: p50 ? 'estimated' : 'beyond-horizon',
+		trials,
+		p50,
+		p85: at(0.85),
+		p95: at(0.95),
+		chanceByTarget
+	};
+}
+
+/** FNV-1a, 32-bit: a stable seed from the inputs. */
+function hash(text: string): number {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) {
+		h ^= text.charCodeAt(i);
+		h = Math.imul(h, 0x01000193);
+	}
+	return h >>> 0;
+}
+
+/** Mulberry32: small, fast and good enough for sampling — and seedable, unlike Math.random. */
+function mulberry32(seed: number): () => number {
+	let a = seed >>> 0;
+	return () => {
+		a = (a + 0x6d2b79f5) >>> 0;
+		let t = a;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
 }
 
 // ─── The target ─────────────────────────────────────────────────────────────
@@ -427,6 +613,7 @@ export interface BurndownGroup {
 	scope: number[];
 	summary: BurndownSummary;
 	forecast: BurndownForecast;
+	delivery: DeliveryEstimate;
 }
 
 /** A value offered in a filter, with how many in-scope cards carry it. */
@@ -462,6 +649,8 @@ export interface BurndownResult {
 	series: BurndownPoint[];
 	summary: BurndownSummary;
 	forecast: BurndownForecast;
+	/** How long the work open now will take to finish, as a range. */
+	delivery: DeliveryEstimate;
 	target: BurndownTarget | null;
 	groupBy: BurndownGroupBy;
 	groups: BurndownGroup[];
@@ -479,6 +668,8 @@ export interface BurndownResult {
 		cardCount: number;
 		/** In a Complete column with no completion stamp; last update used. */
 		inferredCompletionDates: number;
+		/** Of those, how many have that stand-in date inside the window. */
+		inferredInWindow: number;
 		/** Completed once, since moved out of Complete; charted as open. */
 		reopenedCards: number;
 		/** Completed and since archived; still counted as done. */
