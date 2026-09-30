@@ -12,7 +12,7 @@
   import CfdChart from './CfdChart.svelte';
   import BurndownChart from './BurndownChart.svelte';
   import type { BurndownResult } from '$lib/burndown';
-  import { deliveryText, paceText } from '$lib/burndown-text';
+  import { deliveryText, isThin, paceText, plural } from '$lib/burndown-text';
   import InfoTip from '$lib/components/InfoTip.svelte';
 
   /**
@@ -282,6 +282,9 @@
             {#snippet tip()}
               <p>How long the <strong>{burndown?.delivery.remaining}</strong> cards open now would take to finish if nothing new were added: {burndownEta.sub.charAt(0).toLowerCase() + burndownEta.sub.slice(1)}.</p>
               <p>Worked out by replaying the board's real daily completions from the last {burndown?.delivery.basisDays} days thousands of times in random order.</p>
+              {#if burndown && burndown.delivery.status === 'estimated' && isThin(burndown.delivery.basisFinished)}
+                <p class="muted">This rests on only {plural(burndown.delivery.basisFinished, 'finished card')}, so treat it as a rough guide.</p>
+              {/if}
               <p class="muted">At this pace: {burndownPace.value.toLowerCase()} — {burndownPace.sub.charAt(0).toLowerCase() + burndownPace.sub.slice(1)}.</p>
             {/snippet}
           </InfoTip>

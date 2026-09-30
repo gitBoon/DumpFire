@@ -24,7 +24,11 @@
 		paceText,
 		perWeek,
 		plural,
-		targetVerdict
+		targetVerdict,
+		deliveryNotes,
+		isThin,
+		leftOut,
+		nameList
 	} from '$lib/burndown-text';
 	import { finishedSinceStart, workInPlay } from '$lib/burndown';
 	import type { BurndownGroup, BurndownGroupBy, BurndownOption } from '$lib/burndown';
@@ -284,13 +288,36 @@
 			out.push(`${flow}.`);
 		}
 
-		if (d.status === 'estimated' && d.p50) {
+		const when = (p50: { days: number; date: string }, p85: { date: string } | null) =>
+			`${durationText(p50.days)} (around ${formatDay(p50.date)}` + (p85 ? `; 85% likely by ${formatDay(p85.date)})` : '; the cautious end runs past two years)');
+		const out2 = leftOut(d);
+		if (d.method === 'slowest-board' && d.bottleneck) {
+			// Several boards: the whole is done when the slowest board is.
+			const b = d.bottleneck;
+			const thin = isThin(b.basisFinished) ? `, though that rests on only ${plural(b.basisFinished, 'finished card')}` : '';
+			if (d.status === 'estimated' && d.p50) {
+				out.push(`If nothing new came in, finishing everything open now would most likely take ${when(d.p50, d.p85)}, because ${b.name} is the slowest board${thin}.`);
+				if (d.pooled?.p50 && d.pooled.p50.days < d.p50.days * 0.6) {
+					out.push(`Pooled into one pile it would be ${durationText(d.pooled.p50.days)}, but only if people could move freely between boards.`);
+				}
+			} else if (d.status === 'beyond-horizon') {
+				out.push(`At its recent pace ${b.name} alone would take more than two years${thin}, so there is no useful finish date for everything.`);
+			}
+		} else if (d.status === 'estimated' && d.p50) {
+			const thin = isThin(d.basisFinished) ? ` That rests on only ${plural(d.basisFinished, 'finished card')}, so treat it as a rough guide.` : '';
+			out.push(`If nothing new came in, the ${fmt(d.remaining)} open now would most likely take ${when(d.p50, d.p85)}.${thin}`);
+		}
+		// When the pace sentence already said nothing was finished, saying it again adds nothing.
+		if (d.status === 'no-pace' && f.completionRate > 0) {
 			out.push(
-				`If nothing new came in, the ${fmt(d.remaining)} open now would most likely take ${durationText(d.p50.days)} to finish (around ${formatDay(d.p50.date)})` +
-					(d.p85 ? `, and it is 85% likely to be done by ${formatDay(d.p85.date)}.` : ', though the cautious estimate runs past two years.')
+				d.method === 'slowest-board'
+					? `None of the boards with open work has had anything finished in the last ${plural(d.basisDays, 'day')}, so there is no pace to estimate a finish date from.`
+					: 'With nothing finished recently, there is no pace to estimate a finish date from.'
 			);
-		} else if (d.status === 'no-pace') {
-			out.push('With nothing finished recently, there is no pace to estimate a finish date from.');
+		} else if (out2.length && (d.status === 'estimated' || d.status === 'beyond-horizon')) {
+			out.push(
+				`${nameList(out2.map((p) => p.name), 3)} ${out2.length === 1 ? 'has' : 'have'} had nothing finished in the last ${plural(d.basisDays, 'day')}, so ${out2.length === 1 ? 'it is' : 'they are'} left out of that date.`
+			);
 		}
 
 		// A chance is only a finding when there was a pace to simulate; with none
@@ -641,8 +668,30 @@
 							<span class="kpi-label">Time to deliver {@render infoIcon()}</span>
 							<span class="kpi-value">{eta.value}</span>
 							<span class="kpi-sub">{eta.sub}</span>
+							{#each deliveryNotes(r.delivery) as note}<span class="kpi-note">{note}</span>{/each}
 							{#snippet tip()}
 								<p>How long the <strong>{fmt(r.delivery.remaining)}</strong> cards open now would take to finish if no new work were added.</p>
+								{#if r.delivery.method === 'slowest-board'}
+									{@const dated = r.delivery.parts.filter((p) => p.status === 'estimated' || p.status === 'beyond-horizon')}
+									<p>
+										Each board is simulated at <strong>its own pace</strong>, and everything is done only when the
+										slowest board is. The people finishing one board's cards are not clearing another's.
+									</p>
+									{#if dated.length}
+										<div class="calc">
+											{#each dated.slice(0, 5) as p (p.key)}
+												{p.name}: <b>{p.status === 'beyond-horizon' || !p.p50 ? 'over 2 years' : p.p85 ? `${formatDay(p.p50.date)} – ${formatDay(p.p85.date)}` : formatDay(p.p50.date)}</b>{#if isThin(p.basisFinished)} <span class="thin-mark">({plural(p.basisFinished, 'card')})</span>{/if}<br />
+											{/each}
+											{#if dated.length > 5}and {dated.length - 5} quicker {dated.length - 5 === 1 ? 'board' : 'boards'}{/if}
+										</div>
+									{/if}
+									{#if leftOut(r.delivery).length}
+										<p class="muted">Left out, with no recent pace to go on: {leftOut(r.delivery).map((p) => `${p.name} (${plural(p.remaining, 'card')} open)`).join(', ')}.</p>
+									{/if}
+									{#if r.delivery.pooled?.p50}
+										<p class="muted">Pooled into one pile it would be {durationText(r.delivery.pooled.p50.days)} — but only if effort could move freely between boards.</p>
+									{/if}
+								{/if}
 								{#if r.delivery.status === 'estimated' && r.delivery.p50}
 									<div class="calc">
 										{fmt(r.delivery.trials)} simulated futures:<br />
@@ -655,13 +704,16 @@
 										{plural(r.delivery.basisDays, 'day')}, in random order, until the open work runs out — so slow
 										days, weekends and busy spells are all accounted for. The gap between the dates is the uncertainty.
 									</p>
+									{#if r.delivery.method === 'pooled' && isThin(r.delivery.basisFinished)}
+										<p class="muted">This rests on only {plural(r.delivery.basisFinished, 'finished card')}, so treat it as a rough guide.</p>
+									{/if}
 									{#if r.delivery.arrivalPerWeek > 0}
 										<p class="muted">New work has been arriving at about {perWeek(r.delivery.arrivalPerWeek / 7)} a week. Every new card pushes these dates out.</p>
 									{/if}
 								{:else if r.delivery.status === 'no-pace'}
 									<p>Nothing was finished in the last {plural(r.delivery.basisDays, 'day')}, so there is no pace to project from.</p>
 								{:else if r.delivery.status === 'beyond-horizon'}
-									<p>At the recent pace of {perWeek(r.delivery.throughputPerWeek / 7)} a week, finishing would take more than two years.</p>
+									<p>{r.delivery.method === 'slowest-board' && r.delivery.bottleneck ? `At its recent pace, ${r.delivery.bottleneck.name} alone would take more than two years.` : `At the recent pace of ${perWeek(r.delivery.throughputPerWeek / 7)} a week, finishing would take more than two years.`}</p>
 								{:else if r.delivery.status === 'insufficient-data'}
 									<p>There is less than a week of history to measure a pace from.</p>
 								{/if}
@@ -838,7 +890,7 @@
 										<td class="num">{fmt(g.summary.completed)}</td>
 										<td class="forecast">
 											<InfoTip title={g.name} width={280}>
-												{gEta.value}
+												{gEta.value}{#if (g.delivery.status === 'estimated' || g.delivery.status === 'beyond-horizon') && isThin(g.delivery.basisFinished)}<span class="thin-mark"> · from {plural(g.delivery.basisFinished, 'card')}</span>{/if}
 												{#snippet tip()}
 													<p>{gEta.sub}.</p>
 													{#if g.delivery.status === 'estimated' && g.delivery.p50}
@@ -848,6 +900,7 @@
 															{#if g.delivery.p95}95% by <b>{formatDay(g.delivery.p95.date, true)}</b>{/if}
 														</div>
 													{/if}
+													{#each deliveryNotes(g.delivery) as note}<p class="muted">{note}.</p>{/each}
 													<p class="muted">At this pace: {gPace.value.toLowerCase()} — {gPace.sub.charAt(0).toLowerCase() + gPace.sub.slice(1)}.</p>
 												{/snippet}
 											</InfoTip>
@@ -930,7 +983,12 @@
 	.pick-row:hover { background: var(--glass-hover); }
 	.pick-row:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: -2px; }
 	.pick-row.checked { font-weight: 600; }
-	.pick-row input[type='checkbox'] { accent-color: var(--accent-indigo); margin: 0 2px 0 4px; }
+	/* app.css gives every input width: 100% and 12px/16px padding. A checkbox
+	   inherited that, filled the row and squeezed the board name to nothing. */
+	.pick-row input[type='checkbox'] {
+		flex: none; width: 15px; height: 15px; padding: 0; margin: 0 2px 0 4px;
+		accent-color: var(--accent-indigo); cursor: pointer; box-shadow: none;
+	}
 	.check { width: 16px; flex-shrink: 0; text-align: center; font-weight: 800; color: var(--accent-indigo); }
 	.pick-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.pick-meta { font-size: 0.7rem; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
@@ -945,7 +1003,8 @@
 	.pick-search:focus { outline: none; border-color: var(--accent-indigo); }
 	.hairline { border: none; border-top: 1px solid var(--glass-border); margin: 8px 0 4px; }
 	.custom-range { display: flex; flex-direction: column; gap: 6px; padding: 6px 0 2px 26px; }
-	.custom-range .ctl { flex: 1; }
+	.custom-range .field { display: flex; justify-content: space-between; }
+	.custom-range .ctl { flex: none; width: 150px; }
 	.filter-field {
 		display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px;
 		font-size: 0.72rem; font-weight: 600; color: var(--text-secondary);
@@ -1039,6 +1098,8 @@
 	.kpi-label { display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; font-weight: 600; color: var(--text-secondary); }
 	.kpi-value { font-size: 1.45rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; line-height: 1.25; }
 	.kpi-sub { font-size: 0.72rem; color: var(--text-tertiary); }
+	.kpi-note { font-size: 0.7rem; color: var(--text-secondary); font-weight: 600; }
+	.thin-mark { font-size: 0.7rem; color: var(--text-tertiary); font-weight: 500; }
 	.status { display: inline-flex; align-items: center; gap: 6px; }
 	.status-icon {
 		display: inline-flex; align-items: center; justify-content: center;

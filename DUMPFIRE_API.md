@@ -1018,9 +1018,19 @@ over any window (up to 730 days). Days are UTC.
   assumes nothing new is added, and `arrivalPerWeek` shows how much that
   assumption carries. The generator is seeded from the inputs, so the same data
   always gives the same answer. Status is `estimated`, `done`, `no-pace`,
-  `beyond-horizon` or `insufficient-data`. Example with a pace:
+  `beyond-horizon` or `insufficient-data`.
+- **Several boards** (`delivery.method: "slowest-board"`): each board is simulated
+  at its own pace and the dates are when the **slowest** board is done, because
+  the people finishing one board's cards are not clearing another's. `bottleneck`
+  names that board, `parts` lists every board with open work (slowest first;
+  boards with no recent pace are listed last and left out of the dates), and
+  `pooled` keeps the one-pile figure "as if effort could move freely between
+  boards". A single board uses `method: "pooled"`. `basisFinished` is how many
+  finished cards the dates rest on; under 5, treat them as a rough guide.
+  Example with a pace:
   ```json
-  { "status": "estimated", "remaining": 32, "throughputPerWeek": 1.25, "arrivalPerWeek": 8.25,
+  { "status": "estimated", "method": "pooled", "basisFinished": 5,
+    "remaining": 32, "throughputPerWeek": 1.25, "arrivalPerWeek": 8.25,
     "trials": 2000, "p50": { "days": 187, "date": "2027-04-05" },
     "p85": { "days": 265, "date": "2027-06-22" }, "p95": { "days": 324, "date": "2027-08-20" },
     "chanceByTarget": 0.785 }

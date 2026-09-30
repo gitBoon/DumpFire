@@ -6,7 +6,7 @@
  * figure never reads one way on the board and another on the page.
  */
 
-import type { BurndownForecast, DeliveryEstimate, Day } from './burndown';
+import { LOW_EVIDENCE_FINISHED, type BurndownForecast, type DeliveryEstimate, type DeliveryPart, type Day } from './burndown';
 
 export function formatDay(day: Day, year = false): string {
 	return new Date(`${day}T00:00:00Z`).toLocaleDateString('en-GB', {
@@ -93,9 +93,13 @@ export function deliveryText(d: DeliveryEstimate): { value: string; sub: string 
 			return { value, sub };
 		}
 		case 'no-pace':
-			return { value: 'Unknown', sub: `Nothing finished in the last ${plural(d.basisDays, 'day')} to go on` };
+			return d.method === 'slowest-board'
+				? { value: 'Unknown', sub: `No board with open work has finished anything in ${plural(d.basisDays, 'day')}` }
+				: { value: 'Unknown', sub: `Nothing finished in the last ${plural(d.basisDays, 'day')} to go on` };
 		case 'beyond-horizon':
-			return { value: 'Over 2 years', sub: `At ${perWeek(d.throughputPerWeek / 7)} finished a week` };
+			return d.method === 'slowest-board' && d.bottleneck
+				? { value: 'Over 2 years', sub: `${d.bottleneck.name} alone would take that long at its pace` }
+				: { value: 'Over 2 years', sub: `At ${perWeek(d.throughputPerWeek / 7)} finished a week` };
 		case 'insufficient-data':
 			return { value: 'Too early', sub: 'Needs a week of history' };
 	}
@@ -134,7 +138,10 @@ export function targetVerdict(
 	if (delivery.status === 'estimated' && delivery.chanceByTarget !== null) {
 		const c = delivery.chanceByTarget;
 		const growing = f.status === 'not-converging' && f.netBurnRate < 0;
-		const detail = `${chancePercent(c)} chance by ${date}${growing ? ' if nothing new is added' : ''}`;
+		const out = leftOut(delivery).length;
+		const detail =
+			`${chancePercent(c)} chance by ${date}${growing ? ' if nothing new is added' : ''}` +
+			(out ? `, not counting ${plural(out, 'stalled board')}` : '');
 		if (c >= 0.85) return { tone: 'good', icon: '✓', value: 'On track', detail };
 		if (c >= 0.5) return { tone: 'warn', icon: '~', value: 'Tight', detail };
 		return { tone: 'bad', icon: '!', value: 'Behind', detail };
@@ -153,6 +160,41 @@ export function targetVerdict(
 		};
 	}
 	return { tone: 'neutral', icon: '?', value: 'Too early to say', detail: `Target ${date}` };
+}
+
+/** "A", "A and B", "A, B and 3 more". */
+export function nameList(names: string[], max = 2): string {
+	if (names.length <= max) return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+	return `${names.slice(0, max).join(', ')} and ${names.length - max} more`;
+}
+
+/** A pace resting on so few finished cards that it is closer to a guess. */
+export function isThin(finished: number): boolean {
+	return finished < LOW_EVIDENCE_FINISHED;
+}
+
+/** Boards with open work that the dates leave out, because they have no recent pace. */
+export function leftOut(d: DeliveryEstimate): DeliveryPart[] {
+	return d.parts.filter((p) => p.status === 'no-pace' || p.status === 'insufficient-data');
+}
+
+/**
+ * The short lines that qualify a delivery estimate: which board sets the
+ * date, whether that rests on thin evidence, and which boards are left out.
+ */
+export function deliveryNotes(d: DeliveryEstimate): string[] {
+	const notes: string[] = [];
+	if (d.method === 'slowest-board' && d.bottleneck && (d.status === 'estimated' || d.status === 'beyond-horizon')) {
+		const b = d.bottleneck;
+		notes.push(`Slowest board: ${b.name}${isThin(b.basisFinished) ? `, from only ${plural(b.basisFinished, 'finished card')}` : ''}`);
+	} else if (d.status === 'estimated' && isThin(d.basisFinished)) {
+		notes.push(`From only ${plural(d.basisFinished, 'finished card')}`);
+	}
+	const out = leftOut(d);
+	if (out.length && d.status === 'estimated') {
+		notes.push(`Leaves out ${nameList(out.map((p) => p.name))}: no recent pace`);
+	}
+	return notes;
 }
 
 /** A 0–1 chance as a whole percentage, never claiming certainty it does not have. */
