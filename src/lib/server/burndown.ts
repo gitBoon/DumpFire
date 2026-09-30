@@ -37,6 +37,7 @@ import {
 	buildSeries,
 	daysBetween,
 	estimateDelivery,
+	estimateDeliveryByParts,
 	forecast,
 	forecastBasis,
 	isDay,
@@ -45,6 +46,7 @@ import {
 	todayUtc,
 	PRIORITIES,
 	type BurndownBoardRef,
+	type DeliveryEstimate,
 		type BurndownGroup,
 	type BurndownGroupBy,
 	type BurndownOption,
@@ -494,21 +496,23 @@ export function getBurndown(user: SessionUser, q: BurndownQuery): BurndownResult
 	const basis = forecastBasis(lifelines, to);
 	const fc = forecast(basis);
 	const targetDate = q.target === 'none' ? null : (q.target ?? scope.milestone?.targetDate ?? null);
-	const delivery = estimateDelivery(basis, { target: targetDate });
-
-	let target: BurndownResult['target'] = null;
-	if (targetDate) target = assessTarget(targetDate, q.target ? 'query' : 'milestone', series, fc);
 
 	// Lookups for naming boards, categories, labels and people.
 	const boardsInPlay =
 		scope.boardIds !== null ? loadBoards(scope.boardIds) : loadBoards([...new Set(windowed.map((c) => c.boardId))]);
 	const boardName = new Map(boardsInPlay.map((b) => [b.id, b]));
 	const multiBoard = new Set(windowed.map((c) => c.boardId)).size > 1;
+	const nameOf = (id: number) => boardName.get(id)?.name ?? `Board ${id}`;
+
+	const delivery = deliveryFor(cards, to, { target: targetDate, nameOf });
+
+	let target: BurndownResult['target'] = null;
+	if (targetDate) target = assessTarget(targetDate, q.target ? 'query' : 'milestone', series, fc);
 
 	const lookups = loadLookups(windowed, needLabels, needAssignees, q.groupBy === 'category' || q.options);
 	const describe = describer(lookups, boardName, multiBoard);
 
-	const groups = q.groupBy === 'none' ? [] : buildGroups(cards, q.groupBy, from, to, describe);
+	const groups = q.groupBy === 'none' ? [] : buildGroups(cards, q.groupBy, from, to, describe, nameOf);
 
 	// Honest footnotes: only the ones that bear on this particular chart.
 	const inferred = cards.filter((c) => c.inferredDone).length;
@@ -699,17 +703,45 @@ function keysFor(card: ScopedCard, kind: Exclude<BurndownGroupBy, 'none'>): (num
 	}
 }
 
+/**
+ * The delivery estimate for a set of cards. One board: one pile, because a
+ * team shares its effort within a board. Several boards: each at its own pace,
+ * done when the slowest is — see estimateDeliveryByParts. The pooled figure is
+ * kept alongside as "if effort could move freely between boards".
+ */
+function deliveryFor(
+	cards: ScopedCard[],
+	to: Day,
+	opts: { trials?: number; target?: Day | null; nameOf: (boardId: number) => string }
+): DeliveryEstimate {
+	const pooled = estimateDelivery(forecastBasis(cards.map((c) => c.lifeline), to), opts);
+	const byBoard = new Map<number, CardLifeline[]>();
+	for (const c of cards) {
+		const list = byBoard.get(c.boardId);
+		if (list) list.push(c.lifeline);
+		else byBoard.set(c.boardId, [c.lifeline]);
+	}
+	if (byBoard.size <= 1) return pooled;
+	const parts = [...byBoard].map(([boardId, lifelines]) => ({
+		key: `board:${boardId}`,
+		name: opts.nameOf(boardId),
+		basis: forecastBasis(lifelines, to)
+	}));
+	return estimateDeliveryByParts(parts, pooled, opts);
+}
+
 function buildGroups(
 	cards: ScopedCard[],
 	kind: Exclude<BurndownGroupBy, 'none'>,
 	from: Day,
 	to: Day,
-	describe: Describer
+	describe: Describer,
+	nameOf: (boardId: number) => string
 ): BurndownGroup[] {
 	// A card with two labels belongs to both groups, so label and assignee
 	// groups can sum to more than the whole. That is the honest reading of
 	// "work carrying this label", and the page says so.
-	const buckets = new Map<string, { id: number | string | null; cards: CardLifeline[] }>();
+	const buckets = new Map<string, { id: number | string | null; cards: ScopedCard[] }>();
 	for (const card of cards) {
 		const keys = keysFor(card, kind);
 		const list = keys.length ? keys : [null];
@@ -717,16 +749,17 @@ function buildGroups(
 			const key = `${kind}:${id ?? 'none'}`;
 			let b = buckets.get(key);
 			if (!b) buckets.set(key, (b = { id, cards: [] }));
-			b.cards.push(card.lifeline);
+			b.cards.push(card);
 		}
 	}
 
 	const groups: BurndownGroup[] = [];
 	for (const [key, b] of buckets) {
-		const series = buildSeries(b.cards, from, to);
+		const lifelines = b.cards.map((c) => c.lifeline);
+		const series = buildSeries(lifelines, from, to);
 		if (series.every((p) => p.scope === 0)) continue;
 		const { name, color } = describe(kind, b.id);
-		const basis = forecastBasis(b.cards, to);
+		const basis = forecastBasis(lifelines, to);
 		groups.push({
 			key,
 			kind,
@@ -738,8 +771,10 @@ function buildGroups(
 			scope: series.map((p) => p.scope),
 			summary: summarise(series),
 			forecast: forecast(basis),
-			// Fewer trials per row: a breakdown can have dozens of groups.
-			delivery: estimateDelivery(basis, { trials: 500 })
+			// Fewer trials per row: a breakdown can have dozens of groups. A row
+			// that spans several boards (a category, a label) is done when its
+			// slowest board is, exactly like the scope as a whole.
+			delivery: deliveryFor(b.cards, to, { trials: 500, nameOf })
 		});
 	}
 

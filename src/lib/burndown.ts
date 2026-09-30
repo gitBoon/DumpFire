@@ -379,6 +379,18 @@ export interface DeliveryPoint {
 	date: Day;
 }
 
+/** One board's own estimate, inside an estimate that spans several. */
+export interface DeliveryPart {
+	key: string;
+	name: string;
+	remaining: number;
+	status: DeliveryStatus;
+	/** Cards finished in this board's basis: how much evidence its pace rests on. */
+	basisFinished: number;
+	p50: DeliveryPoint | null;
+	p85: DeliveryPoint | null;
+}
+
 /**
  * "How long will it take to finish what is open now?" — as a range with
  * confidence levels, because a single date sounds more certain than any
@@ -386,11 +398,22 @@ export interface DeliveryPoint {
  */
 export interface DeliveryEstimate {
 	status: DeliveryStatus;
+	/**
+	 * `pooled`: one pile at one pace — right for a single board, whose team
+	 * shares its effort. `slowest-board`: each board at its own pace, done when
+	 * the slowest is — right for anything spanning several boards.
+	 */
+	method: 'pooled' | 'slowest-board';
 	/** The open work being estimated, as of `asOf`. */
 	remaining: number;
 	asOf: Day;
 	basisDays: number;
-	/** Average finished per week over the basis. */
+	/**
+	 * Cards finished in the basis that the dates rest on — the slowest board's,
+	 * for `slowest-board`. Under LOW_EVIDENCE_FINISHED the page says so.
+	 */
+	basisFinished: number;
+	/** Average finished per week over the basis, across the whole scope. */
 	throughputPerWeek: number;
 	/** New work arriving per week over the basis — deliberately not in the estimate. */
 	arrivalPerWeek: number;
@@ -403,35 +426,41 @@ export interface DeliveryEstimate {
 	p95: DeliveryPoint | null;
 	/** Share of simulated futures finished by the target date (0–1), when there is one. */
 	chanceByTarget: number | null;
+	/** `slowest-board` only: the board most likely to finish last. */
+	bottleneck: DeliveryPart | null;
+	/** `slowest-board` only: every board with open work, slowest first; stalled ones last. */
+	parts: DeliveryPart[];
+	/** `slowest-board` only: the one-pile figure, as if effort could move freely between boards. */
+	pooled: { status: DeliveryStatus; p50: DeliveryPoint | null; p85: DeliveryPoint | null } | null;
 }
 
 export const DELIVERY_TRIALS = 2000;
+/** Below this many finished cards a pace is closer to a guess, and the page says so. */
+export const LOW_EVIDENCE_FINISHED = 5;
 /** Beyond two years an estimate is not something anyone can plan around. */
 const DELIVERY_HORIZON_DAYS = 730;
 
+/** One scope's simulation: its status, and the sorted finish day of every trial. */
+interface Simulation {
+	status: DeliveryStatus;
+	remaining: number;
+	asOf: Day;
+	basisDays: number;
+	basisFinished: number;
+	added: number;
+	removed: number;
+	/** Sorted ascending; Infinity for a trial not finished within the horizon. Only when simulated. */
+	finishes: Float64Array | null;
+}
+
 /**
- * Monte Carlo estimate of when the work open now will be finished.
- *
- * Each trial walks forward a day at a time, and for each future day draws the
- * number of cards finished on a randomly chosen past day of the basis, until
- * the open work is used up. Sampling real calendar days carries weekends,
- * holidays and bursty weeks into the estimate without modelling any of them.
- * The percentiles of the trials give the range.
- *
- * It estimates the work open NOW and assumes nothing new is added — that is
- * the question "how long will this take?" asks. Arrivals are reported
- * alongside so the page can say how much that assumption is carrying.
- *
- * The generator is seeded from the inputs, so the same data always gives the
- * same answer: an estimate that shifted on every refresh would not be trusted.
+ * Each trial walks forward a day at a time, drawing the number of cards
+ * finished on a randomly chosen past day of the basis, until the open work is
+ * used up. Seeded from the inputs, so the same data always gives the same
+ * answer: an estimate that shifted on every refresh would not be trusted.
  */
-export function estimateDelivery(
-	basis: BurndownPoint[],
-	opts: { trials?: number; target?: Day | null } = {}
-): DeliveryEstimate {
-	const trials = opts.trials ?? DELIVERY_TRIALS;
+function simulate(basis: BurndownPoint[], trials: number): Simulation {
 	const last = basis[basis.length - 1];
-	const basisDays = basis.length;
 	let added = 0;
 	let removed = 0;
 	let completed = 0;
@@ -440,32 +469,22 @@ export function estimateDelivery(
 		removed += p.removed;
 		completed += p.completed;
 	}
-	const result: DeliveryEstimate = {
+	const sim: Simulation = {
 		status: 'insufficient-data',
 		remaining: last?.remaining ?? 0,
 		asOf: last?.date ?? '',
-		basisDays,
-		throughputPerWeek: basisDays ? round3((completed / basisDays) * 7) : 0,
-		arrivalPerWeek: basisDays ? round3(((added - removed) / basisDays) * 7) : 0,
-		trials: 0,
-		p50: null,
-		p85: null,
-		p95: null,
-		chanceByTarget: null
+		basisDays: basis.length,
+		basisFinished: completed,
+		added,
+		removed,
+		finishes: null
 	};
-
-	if (!last || last.scope === 0) return result;
-	if (last.remaining <= 0) {
-		const now = { days: 0, date: last.date };
-		return { ...result, status: 'done', p50: now, p85: now, p95: now, chanceByTarget: opts.target ? 1 : null };
-	}
-	if (basisDays < FORECAST_MIN_DAYS) return result;
-	if (completed === 0) return { ...result, status: 'no-pace', chanceByTarget: opts.target ? 0 : null };
-
+	if (!last || last.scope === 0) return sim;
+	if (last.remaining <= 0) return { ...sim, status: 'done' };
+	if (basis.length < FORECAST_MIN_DAYS) return sim;
+	if (completed === 0) return { ...sim, status: 'no-pace' };
 	// Far enough out on average that no percentile would be usable: skip the work.
-	if (last.remaining / (completed / basisDays) > DELIVERY_HORIZON_DAYS) {
-		return { ...result, status: 'beyond-horizon', chanceByTarget: opts.target ? 0 : null };
-	}
+	if (last.remaining / (completed / basis.length) > DELIVERY_HORIZON_DAYS) return { ...sim, status: 'beyond-horizon' };
 
 	const samples = basis.map((p) => p.completed);
 	const rand = mulberry32(hash(`${last.date}|${last.remaining}|${samples.join(',')}`));
@@ -480,27 +499,175 @@ export function estimateDelivery(
 		finishes[t] = open > 0 ? Infinity : day;
 	}
 	finishes.sort();
+	return { ...sim, status: 'estimated', finishes };
+}
 
-	const at = (q: number): DeliveryPoint | null => {
-		const d = finishes[Math.min(trials - 1, Math.ceil(q * trials) - 1)];
-		return Number.isFinite(d) ? { days: d, date: addDays(last.date, d) } : null;
-	};
-	let chanceByTarget: number | null = null;
-	if (opts.target) {
-		const by = daysBetween(last.date, opts.target);
-		let hits = 0;
-		for (let t = 0; t < trials; t++) if (finishes[t] <= by) hits++;
-		chanceByTarget = round3(hits / trials);
+/** Share of trials finished on or before `day`. */
+function finishedBy(finishes: Float64Array, day: number): number {
+	let lo = 0;
+	let hi = finishes.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >> 1;
+		if (finishes[mid] <= day) lo = mid + 1;
+		else hi = mid;
 	}
-	const p50 = at(0.5);
+	return lo / finishes.length;
+}
+
+function point(asOf: Day, days: number | null): DeliveryPoint | null {
+	return days === null ? null : { days, date: addDays(asOf, days) };
+}
+
+function quantile(finishes: Float64Array, q: number): number | null {
+	const d = finishes[Math.min(finishes.length - 1, Math.ceil(q * finishes.length) - 1)];
+	return Number.isFinite(d) ? d : null;
+}
+
+/**
+ * Monte Carlo estimate of when the work open now will be finished, as one
+ * pile at one pace.
+ *
+ * Sampling real calendar days carries weekends, holidays and bursty weeks into
+ * the estimate without modelling any of them. It estimates the work open NOW
+ * and assumes nothing new is added — that is the question "how long will this
+ * take?" asks — and reports arrivals alongside so the page can say how much
+ * that assumption is carrying.
+ */
+export function estimateDelivery(
+	basis: BurndownPoint[],
+	opts: { trials?: number; target?: Day | null } = {}
+): DeliveryEstimate {
+	const trials = opts.trials ?? DELIVERY_TRIALS;
+	const sim = simulate(basis, trials);
+	const result: DeliveryEstimate = {
+		status: sim.status,
+		method: 'pooled',
+		remaining: sim.remaining,
+		asOf: sim.asOf,
+		basisDays: sim.basisDays,
+		basisFinished: sim.basisFinished,
+		throughputPerWeek: sim.basisDays ? round3((sim.basisFinished / sim.basisDays) * 7) : 0,
+		arrivalPerWeek: sim.basisDays ? round3(((sim.added - sim.removed) / sim.basisDays) * 7) : 0,
+		trials: 0,
+		p50: null,
+		p85: null,
+		p95: null,
+		chanceByTarget: null,
+		bottleneck: null,
+		parts: [],
+		pooled: null
+	};
+
+	if (sim.status === 'done') {
+		const now = point(sim.asOf, 0);
+		return { ...result, p50: now, p85: now, p95: now, chanceByTarget: opts.target ? 1 : null };
+	}
+	if (!sim.finishes) {
+		return { ...result, chanceByTarget: opts.target && sim.status !== 'insufficient-data' ? 0 : null };
+	}
+	const p50 = quantile(sim.finishes, 0.5);
 	return {
 		...result,
-		status: p50 ? 'estimated' : 'beyond-horizon',
+		status: p50 === null ? 'beyond-horizon' : 'estimated',
 		trials,
-		p50,
-		p85: at(0.85),
-		p95: at(0.95),
-		chanceByTarget
+		p50: point(sim.asOf, p50),
+		p85: point(sim.asOf, quantile(sim.finishes, 0.85)),
+		p95: point(sim.asOf, quantile(sim.finishes, 0.95)),
+		chanceByTarget: opts.target ? round3(finishedBy(sim.finishes, daysBetween(sim.asOf, opts.target))) : null
+	};
+}
+
+/**
+ * When everything open across several boards will be finished: each board at
+ * its own pace, and the whole done only when the slowest board is.
+ *
+ * Pooling boards into one pile treats a card finished anywhere as paying off
+ * any board's backlog. On real data that turned 106 completions on one board
+ * into "about 3 weeks" for all boards, while two of them needed months at
+ * their own pace. The people clearing one board are not doing another's cards.
+ *
+ * Boards progress independently, so the chance everything is finished by day
+ * d is the product of each board's chance — exact, and far cheaper than
+ * simulating the boards jointly. Boards with open work but no recent pace
+ * cannot be dated at all: they are left out of the dates and listed, rather
+ * than turning every multi-board answer into "unknown".
+ */
+export function estimateDeliveryByParts(
+	parts: { key: string; name: string; basis: BurndownPoint[] }[],
+	pooled: DeliveryEstimate,
+	opts: { trials?: number; target?: Day | null } = {}
+): DeliveryEstimate {
+	const trials = opts.trials ?? DELIVERY_TRIALS;
+	const asOf = pooled.asOf;
+
+	const sims = parts
+		.map((p) => ({ key: p.key, name: p.name, sim: simulate(p.basis, trials) }))
+		.filter((p) => p.sim.remaining > 0);
+
+	const summary = (p: (typeof sims)[number]): DeliveryPart => ({
+		key: p.key,
+		name: p.name,
+		remaining: p.sim.remaining,
+		status: p.sim.status,
+		basisFinished: p.sim.basisFinished,
+		p50: p.sim.finishes ? point(asOf, quantile(p.sim.finishes, 0.5)) : null,
+		p85: p.sim.finishes ? point(asOf, quantile(p.sim.finishes, 0.85)) : null
+	});
+	// Slowest first: beyond the horizon, then by the 85% date, then the likely one.
+	// Boards that cannot be dated go last — they are listed, not ranked.
+	const rank = (p: DeliveryPart) => {
+		if (p.status === 'beyond-horizon') return 1e12;
+		if (p.status === 'estimated') return (p.p85?.days ?? 99_999) * 100_000 + (p.p50?.days ?? 99_999);
+		return -1;
+	};
+	const partSummaries = sims.map(summary).sort((a, b) => rank(b) - rank(a) || a.name.localeCompare(b.name));
+
+	const base: DeliveryEstimate = {
+		...pooled,
+		method: 'slowest-board',
+		trials: 0,
+		p50: null,
+		p85: null,
+		p95: null,
+		chanceByTarget: null,
+		bottleneck: null,
+		parts: partSummaries,
+		pooled: { status: pooled.status, p50: pooled.p50, p85: pooled.p85 }
+	};
+
+	if (sims.length === 0) {
+		const now = point(asOf, 0);
+		return { ...base, status: 'done', p50: now, p85: now, p95: now, chanceByTarget: opts.target ? 1 : null };
+	}
+
+	const slow = partSummaries.find((p) => p.status === 'beyond-horizon' || (p.status === 'estimated' && !p.p50));
+	if (slow) {
+		return { ...base, status: 'beyond-horizon', bottleneck: slow, basisFinished: slow.basisFinished, chanceByTarget: opts.target ? 0 : null };
+	}
+
+	const dated = sims.filter((p) => p.sim.finishes);
+	if (dated.length === 0) {
+		const status = sims.some((p) => p.sim.status === 'no-pace') ? 'no-pace' : 'insufficient-data';
+		return { ...base, status, chanceByTarget: opts.target && status === 'no-pace' ? 0 : null };
+	}
+
+	const all = (day: number) => dated.reduce((chance, p) => chance * finishedBy(p.sim.finishes!, day), 1);
+	const at = (q: number): number | null => {
+		for (let d = 0; d <= DELIVERY_HORIZON_DAYS; d++) if (all(d) >= q) return d;
+		return null;
+	};
+	const p50 = at(0.5);
+	const bottleneck = partSummaries.find((p) => p.status === 'estimated') ?? null;
+	return {
+		...base,
+		status: p50 === null ? 'beyond-horizon' : 'estimated',
+		trials,
+		p50: point(asOf, p50),
+		p85: point(asOf, at(0.85)),
+		p95: point(asOf, at(0.95)),
+		chanceByTarget: opts.target ? round3(all(daysBetween(asOf, opts.target))) : null,
+		bottleneck,
+		basisFinished: bottleneck?.basisFinished ?? pooled.basisFinished
 	};
 }
 

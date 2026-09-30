@@ -201,10 +201,12 @@ const spec = {
 			DeliveryEstimate: {
 				type: 'object',
 				description:
-					'How long the work open now would take to finish if nothing new were added. A Monte Carlo simulation: each of the trials replays randomly chosen days of the basis (their real completion counts) until the open work is used up. Seeded from the inputs, so the same data always gives the same answer.',
+					'How long the work open now would take to finish if nothing new were added. A Monte Carlo simulation: each of the trials replays randomly chosen days of the basis (their real completion counts) until the open work is used up. Seeded from the inputs, so the same data always gives the same answer. For a scope spanning several boards each board is simulated at its own pace and the dates are when the slowest board is done (method slowest-board); boards with no recent pace are left out of the dates and listed in parts.',
 				properties: {
 					status: { type: 'string', enum: ['estimated', 'done', 'no-pace', 'beyond-horizon', 'insufficient-data'] },
+					method: { type: 'string', enum: ['pooled', 'slowest-board'], description: 'pooled: one pile at one pace (a single board). slowest-board: each board at its own pace, done when the slowest is.' },
 					remaining: { type: 'integer', description: 'The open work being estimated, as of asOf' },
+					basisFinished: { type: 'integer', description: 'Cards finished in the basis that the dates rest on (for slowest-board, those of the slowest board). Under 5 is thin evidence.' },
 					asOf: { type: 'string', format: 'date' },
 					basisDays: { type: 'integer' },
 					throughputPerWeek: { type: 'number', description: 'Average finished per week over the basis' },
@@ -213,7 +215,31 @@ const spec = {
 					p50: { $ref: '#/components/schemas/DeliveryPoint' },
 					p85: { $ref: '#/components/schemas/DeliveryPoint' },
 					p95: { $ref: '#/components/schemas/DeliveryPoint' },
-					chanceByTarget: { type: ['number', 'null'], description: 'Share of trials finished by the target date (0-1), when there is a target' }
+					chanceByTarget: { type: ['number', 'null'], description: 'Share of trials finished by the target date (0-1), when there is a target' },
+					bottleneck: { oneOf: [{ $ref: '#/components/schemas/DeliveryPart' }, { type: 'null' }], description: 'slowest-board only: the board most likely to finish last' },
+					parts: { type: 'array', items: { $ref: '#/components/schemas/DeliveryPart' }, description: 'slowest-board only: every board with open work, slowest first; boards with no recent pace last' },
+					pooled: {
+						type: ['object', 'null'],
+						description: 'slowest-board only: the one-pile figure, as if effort could move freely between boards',
+						properties: {
+							status: { type: 'string' },
+							p50: { $ref: '#/components/schemas/DeliveryPoint' },
+							p85: { $ref: '#/components/schemas/DeliveryPoint' }
+						}
+					}
+				}
+			},
+			DeliveryPart: {
+				type: 'object',
+				description: "One board's own estimate inside a multi-board one",
+				properties: {
+					key: { type: 'string', example: 'board:10' },
+					name: { type: 'string' },
+					remaining: { type: 'integer' },
+					status: { type: 'string', enum: ['estimated', 'done', 'no-pace', 'beyond-horizon', 'insufficient-data'] },
+					basisFinished: { type: 'integer' },
+					p50: { $ref: '#/components/schemas/DeliveryPoint' },
+					p85: { $ref: '#/components/schemas/DeliveryPoint' }
 				}
 			},
 			DeliveryPoint: {

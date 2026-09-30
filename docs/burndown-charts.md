@@ -1,7 +1,7 @@
 ---
 title: "Burndown Charts"
 category: Reporting & Analytics
-version: 1.1
+version: 1.2
 status: As-Built
 date: 2026-09-30
 tags:
@@ -65,7 +65,7 @@ they never disagree.
 | **Finished** | Cards that reached Complete in the period | counted on the day each got there; pace = finished in the basis ÷ days × 7 |
 | **Added** | New cards in the period, and how many open cards were dropped | net arrivals in the basis ÷ days × 7 |
 | **At this pace** | Where the open pile is heading if work keeps arriving and being finished as lately | finishing a week − arriving a week; *Clears 14 Nov*, *Growing*, *Holding steady*, *Stalled* |
-| **Time to deliver** | How long the work open **now** would take if nothing new were added | Monte Carlo over real daily completions: likely, 85% and 95% dates |
+| **Time to deliver** | How long the work open **now** would take if nothing new were added | Monte Carlo over real daily completions: likely, 85% and 95% dates. Across several boards, when the **slowest board** is done |
 | **Target** | Will it land by the date? | the chance of finishing by then, from the same simulation |
 
 The controls are one row of pills, each stating the current choice —
@@ -279,6 +279,50 @@ flowchart TD
   `insufficient-data` (under a week of history), `beyond-horizon` (over two years).
 - Each breakdown row gets its own estimate with 500 trials. Twenty deliberately
   slow rows take about 70 ms.
+- **Thin evidence is flagged.** When the dates rest on fewer than 5 finished
+  cards (`LOW_EVIDENCE_FINISHED`), the page says "from only 1 finished card"
+  rather than presenting the estimate with the same confidence as one built on
+  ninety.
+
+### Several boards: the slowest board sets the date
+
+The first version pooled every board into one pile. On production data that
+gave all boards "about 3 weeks" (198 open at 84 finished a week), while the same
+page's breakdown showed Service Provider at 3–4 months and DespatchSystem at
+8–11 months. Pooling treats a card finished anywhere as paying off any board's
+backlog: one board's 106 completions were effectively clearing another board's
+work. That is not how the work flows, and "everything done" cannot come before
+the slowest board is done.
+
+```mermaid
+flowchart LR
+    Cards["Cards in scope"] --> Split{"How many boards<br/>have cards here?"}
+    Split -- one --> Pooled["One pile, one pace<br/>(method: pooled)"]
+    Split -- several --> Each["Simulate each board<br/>at its own pace"]
+    Each --> Stalled{"Open work but<br/>nothing finished lately?"}
+    Stalled -- yes --> Left["Left out of the dates,<br/>listed by name"]
+    Stalled -- no --> CDF["P(all done by day d) =<br/>product of each board's P(done by d)"]
+    CDF --> Dates["p50 · p85 · p95 · chance by target<br/>(method: slowest-board)"]
+    Each --> Keep["Pooled figure kept as a secondary:<br/>'if effort could move freely'"]
+```
+
+- A scope that spans several boards (all boards, several boards, a board
+  group, a cross-board milestone, or a breakdown row such as a category that
+  spans boards) is estimated **per board, at each board's own pace**. The
+  whole is done when the slowest board is.
+- Boards progress independently, so the chance everything is finished by day
+  *d* is the product of each board's chance. That is exact, and much cheaper
+  than simulating the boards jointly: 20 boards × 2,000 trials take about 30 ms.
+- The **bottleneck** (the board with the latest 85% date) is named, and so is
+  its evidence: "Slowest board: DespatchSystem, from only 1 finished card".
+- Boards with open work but **nothing finished in the basis** cannot be dated at
+  all. They are left out of the dates and named ("Leaves out Reporting: no
+  recent pace"), rather than turning every multi-board answer into "unknown".
+  Only when every board with open work has stalled is the whole `no-pace`.
+- The pooled figure is kept, labelled for what it assumes: "only if effort could
+  move freely between boards". The summary mentions it when it is much shorter
+  than the real estimate, because that gap is exactly what used to mislead.
+- A single board keeps one pile: a team shares its effort within its board.
 
 ### The target and the ideal line
 
@@ -431,6 +475,11 @@ classDiagram
     }
     class DeliveryEstimate {
         +status
+        +method pooled or slowest-board
+        +basisFinished
+        +bottleneck DeliveryPart
+        +parts DeliveryPart[]
+        +pooled
         +remaining
         +asOf
         +basisDays
@@ -441,6 +490,15 @@ classDiagram
         +p85
         +p95
         +chanceByTarget
+    }
+    class DeliveryPart {
+        +key
+        +name
+        +remaining
+        +status
+        +basisFinished
+        +p50
+        +p85
     }
     class BurndownTarget {
         +date
@@ -465,6 +523,7 @@ classDiagram
     BurndownResult --> BurndownPoint
     BurndownResult --> DeliveryEstimate
     BurndownGroup --> DeliveryEstimate
+    DeliveryEstimate --> DeliveryPart
     BurndownResult --> BurndownForecast
     BurndownResult --> BurndownTarget
     BurndownResult --> BurndownGroup
@@ -540,5 +599,8 @@ caller was the stats panel.
   is measured after the work, so it cannot size what remains.
 - The delivery estimate replays the recent pace. It cannot foresee a change in
   who is working on the scope, and it leaves new arrivals out on purpose.
+- Across boards it assumes each board keeps its own people. If effort really
+  does move between boards, the truth lies between the slowest-board date and
+  the pooled figure, and the page shows both.
 - Days are UTC, like the snapshots and the activity report. Work completed just
   after midnight BST lands on the previous UTC day.

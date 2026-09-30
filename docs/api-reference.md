@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.5
+version: 1.6
 status: As-Built
 date: 2026-09-30
 tags:
@@ -174,7 +174,12 @@ days), `delivery`, `target` (`onTrack`, `daysLate`) and `groups`.
 `delivery` answers "how long will the work open now take?": a seeded Monte Carlo
 over the scope's own daily completions, giving `p50` (likely), `p85` and `p95`
 finish dates and, with a target, `chanceByTarget`. It assumes nothing new is
-added and reports `arrivalPerWeek` beside it. Every group has one too.
+added and reports `arrivalPerWeek` beside it. Every group has one too. Across
+several boards `method` is `slowest-board`: each board is simulated at its own
+pace, the dates are when the slowest is done, `bottleneck` and `parts` say which
+boards set them (boards with no recent pace are listed but left out of the
+dates), and `pooled` keeps the one-pile figure. `basisFinished` under 5 means
+the dates rest on thin evidence.
 `meta.inferredInWindow` says how many estimated completion dates fall inside the
 window. **Read `meta.notes`
 before quoting a figure** — it names every assumption that bears on the result.

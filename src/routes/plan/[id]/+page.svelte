@@ -29,7 +29,7 @@
 	import type { CardType } from '$lib/types';
 	import BurndownChart from '$lib/components/board/BurndownChart.svelte';
 	import type { BurndownResult } from '$lib/burndown';
-	import { chancePercent, deliveryText, paceText, targetVerdict } from '$lib/burndown-text';
+	import { chancePercent, deliveryNotes, deliveryText, durationText, paceText, targetVerdict } from '$lib/burndown-text';
 	import InfoTip from '$lib/components/InfoTip.svelte';
 
 	let { data } = $props();
@@ -888,6 +888,12 @@
 						<strong>{burndownEta.value}</strong>
 						{#snippet tip()}
 							<p>How long the <strong>{burndown?.delivery.remaining}</strong> cards open in this goal would take to finish if nothing new were added.</p>
+							{#if burndown?.delivery.method === 'slowest-board'}
+								<p>This goal spans several boards. Each is simulated at its own pace, and the goal is done only when the slowest board is{burndown.delivery.bottleneck ? ` — currently ${burndown.delivery.bottleneck.name}` : ''}.</p>
+								{#if burndown.delivery.pooled?.p50}
+									<p class="muted">Pooled into one pile it would be {durationText(burndown.delivery.pooled.p50.days)}, but only if effort could move freely between boards.</p>
+								{/if}
+							{/if}
 							{#if burndown?.delivery.status === 'estimated' && burndown.delivery.p50}
 								<div class="calc">
 									half of {burndown.delivery.trials.toLocaleString('en-GB')} simulated futures finish by <b>{formatDay(burndown.delivery.p50.date)}</b><br />
@@ -904,7 +910,7 @@
 						{/snippet}
 					</InfoTip>
 					<span class="bd-eta-sub">
-						{burndownEta.sub}{#if burndown.delivery.chanceByTarget != null && burndown.target && burndown.delivery.status !== 'done'} · {chancePercent(burndown.delivery.chanceByTarget)} chance by the {formatDay(burndown.target.date)} target{/if}
+						{burndownEta.sub}{#if burndown.delivery.chanceByTarget != null && burndown.target && burndown.delivery.status === 'estimated'} · {chancePercent(burndown.delivery.chanceByTarget)} chance by the {formatDay(burndown.target.date)} target{/if}{#each deliveryNotes(burndown.delivery) as note} · {note}{/each}
 					</span>
 				</div>
 			{/if}
