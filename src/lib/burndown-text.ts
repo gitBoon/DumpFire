@@ -88,7 +88,7 @@ export function deliveryText(d: DeliveryEstimate): { value: string; sub: string 
 		case 'estimated': {
 			const value = d.p85 ? durationRange(d.p50!.days, d.p85.days) : `${durationText(d.p50!.days)}+`;
 			const sub = d.p85
-				? `Likely ${formatDay(d.p50!.date)} · 85% sure by ${formatDay(d.p85.date)}`
+				? `Likely ${formatDay(d.p50!.date)} · 85% by ${formatDay(d.p85.date)}`
 				: `Likely ${formatDay(d.p50!.date)} · the cautious end is beyond two years`;
 			return { value, sub };
 		}
@@ -195,6 +195,44 @@ export function deliveryNotes(d: DeliveryEstimate): string[] {
 		notes.push(`Leaves out ${nameList(out.map((p) => p.name))}: no recent pace`);
 	}
 	return notes;
+}
+
+export interface DeliveryTag {
+	text: string;
+	/** 'warn' marks thin evidence: shown with a caution icon, never by colour alone. */
+	tone: 'neutral' | 'warn';
+	/** The full sentence, for a title and for screen readers. */
+	title: string;
+}
+
+/**
+ * The same qualifiers as deliveryNotes, cut down to tags that fit under a
+ * figure. A tile holds a number and one line; the sentences belong in the
+ * hover explanation and the summary, where there is room for them.
+ */
+export function deliveryTags(d: DeliveryEstimate): DeliveryTag[] {
+	const tags: DeliveryTag[] = [];
+	const dated = d.status === 'estimated' || d.status === 'beyond-horizon';
+	if (d.method === 'slowest-board' && d.bottleneck && dated) {
+		tags.push({ text: `Slowest: ${d.bottleneck.name}`, tone: 'neutral', title: `${d.bottleneck.name} is the slowest board and sets the date` });
+	}
+	const finished = d.method === 'slowest-board' ? d.bottleneck?.basisFinished : d.basisFinished;
+	if (dated && finished !== undefined && isThin(finished)) {
+		tags.push({
+			text: `Only ${plural(finished, 'finished card')}`,
+			tone: 'warn',
+			title: `The pace behind this date rests on only ${plural(finished, 'finished card')}, so treat it as a rough guide`
+		});
+	}
+	const out = leftOut(d);
+	if (out.length && d.status === 'estimated') {
+		tags.push({
+			text: `${plural(out.length, 'board')} left out`,
+			tone: 'neutral',
+			title: `Leaves out ${nameList(out.map((p) => p.name), 5)}: nothing finished recently, so no pace to date them by`
+		});
+	}
+	return tags;
 }
 
 /** A 0–1 chance as a whole percentage, never claiming certainty it does not have. */
