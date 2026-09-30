@@ -26,6 +26,7 @@
 		plural,
 		targetVerdict,
 		deliveryNotes,
+		deliveryTags,
 		isThin,
 		leftOut,
 		nameList
@@ -242,6 +243,7 @@
 	const change = $derived(r ? r.summary.remainingNow - r.summary.remainingStart : 0);
 	const pace = $derived(r ? paceText(r.forecast) : null);
 	const eta = $derived(r ? deliveryText(r.delivery) : null);
+	const etaTags = $derived(r ? deliveryTags(r.delivery) : []);
 	/** The pace window's counts, back from its rates, for the worked examples. */
 	const basisFinished = $derived(r ? Math.round(r.forecast.completionRate * r.forecast.basisDays) : 0);
 	const basisArrived = $derived(r ? Math.round(r.forecast.scopeRate * r.forecast.basisDays) : 0);
@@ -668,7 +670,18 @@
 							<span class="kpi-label">Time to deliver {@render infoIcon()}</span>
 							<span class="kpi-value">{eta.value}</span>
 							<span class="kpi-sub">{eta.sub}</span>
-							{#each deliveryNotes(r.delivery) as note}<span class="kpi-note">{note}</span>{/each}
+							{#if etaTags.length}
+								<span class="kpi-tags">
+									{#each etaTags as tag (tag.text)}
+										<span class="kpi-tag" class:warn={tag.tone === 'warn'} title={tag.title}>
+											{#if tag.tone === 'warn'}
+												<svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.2L11 10.5H1L6 1.2z" fill="#d97706"/><path d="M6 4.6v3M6 8.9v.1" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg>
+											{/if}
+											<span class="kpi-tag-text">{tag.text}</span>
+										</span>
+									{/each}
+								</span>
+							{/if}
 							{#snippet tip()}
 								<p>How long the <strong>{fmt(r.delivery.remaining)}</strong> cards open now would take to finish if no new work were added.</p>
 								{#if r.delivery.method === 'slowest-board'}
@@ -1098,7 +1111,17 @@
 	.kpi-label { display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; font-weight: 600; color: var(--text-secondary); }
 	.kpi-value { font-size: 1.45rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.02em; line-height: 1.25; }
 	.kpi-sub { font-size: 0.72rem; color: var(--text-tertiary); }
-	.kpi-note { font-size: 0.7rem; color: var(--text-secondary); font-weight: 600; }
+	/* Qualifiers under a figure: short tags, the full sentence on hover. */
+	.kpi-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+	.kpi-tag {
+		display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+		padding: 1px 7px; border-radius: var(--radius-full);
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		font-size: 0.66rem; font-weight: 600; line-height: 1.6; color: var(--text-secondary);
+	}
+	.kpi-tag svg { flex-shrink: 0; }
+	.kpi-tag-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.kpi-tag.warn { border-color: color-mix(in srgb, #d97706 35%, var(--glass-border)); }
 	.thin-mark { font-size: 0.7rem; color: var(--text-tertiary); font-weight: 500; }
 	.status { display: inline-flex; align-items: center; gap: 6px; }
 	.status-icon {
