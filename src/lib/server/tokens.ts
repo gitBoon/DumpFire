@@ -24,7 +24,7 @@ import { eq } from 'drizzle-orm';
 import { canEditBoard } from './board-access';
 import { getCardBoardId, getSubtaskCardId } from './work-access';
 import type { SessionUser } from './auth';
-import { costOf } from '$lib/pricing';
+import { costOf, costInputOf, type CostInput } from '$lib/pricing';
 
 /**
  * A backstop against a fat-fingered paste, not a plausibility test.
@@ -455,6 +455,64 @@ interface RawRow {
 }
 
 /**
+ * How one entry is priced, as SQL, for the grouped totals to GROUP BY.
+ *
+ * The grouped totals sum a model's entries before pricing them, and a sum can
+ * only be priced one way. They used to price the whole group at the blend when
+ * any one entry had no breakdown, so a card with one measured and one total-only
+ * entry of the same model read $0.50 in its own window and $5.66 on the board.
+ * Grouping by this keeps entries priced differently apart, and each part's sum
+ * prices exactly as the sum of its entries would (every way of pricing is linear
+ * in the tokens), so every total agrees with `costInputOf` entry by entry:
+ *
+ * - `measured`: cache reads, input and output all recorded, the rule in
+ *   `costInputOf`. Absent cache writes count as zero, as there.
+ * - `split`: input and output recorded and adding up to the tokens, the rule in
+ *   `costOfEntry`. Only entries from before the cache columns are like this.
+ * - `blend`: anything else, priced at the assumed 90/10 split.
+ */
+const PRICED_AS = `CASE
+	WHEN tu.cache_read_tokens IS NOT NULL AND tu.input_tokens IS NOT NULL AND tu.output_tokens IS NOT NULL THEN 'measured'
+	WHEN tu.input_tokens IS NOT NULL AND tu.output_tokens IS NOT NULL
+	     AND tu.tokens <> 0 AND tu.input_tokens + tu.output_tokens = tu.tokens THEN 'split'
+	ELSE 'blend' END`;
+
+/** The priced sums of one group of entries priced the same way. */
+interface PricedGroup {
+	model: string | null;
+	pricedAs: 'measured' | 'split' | 'blend';
+	tokens: number;
+	inputTokens: number | null;
+	outputTokens: number | null;
+	cacheReadTokens: number | null;
+	cw5m: number | null;
+	cw1h: number | null;
+}
+
+/**
+ * One group's sums to what `costOf` takes. A `split` group goes in as a breakdown
+ * with no cache components, which `costOfBreakdown` prices exactly as
+ * `costOfEntry` prices a split; that way the group is not refused for a sum of
+ * tokens that comes to zero, as a correction and the entry it corrects can.
+ */
+function groupCostInput(r: PricedGroup): CostInput {
+	if (r.pricedAs === 'blend') return { tokens: r.tokens, model: r.model, breakdown: null };
+	return {
+		tokens: r.tokens,
+		model: r.model,
+		inputTokens: r.inputTokens,
+		outputTokens: r.outputTokens,
+		breakdown: {
+			input: r.inputTokens ?? 0,
+			output: r.outputTokens ?? 0,
+			cacheRead: r.pricedAs === 'measured' ? r.cacheReadTokens ?? 0 : 0,
+			cacheWrite5m: r.pricedAs === 'measured' ? r.cw5m ?? 0 : 0,
+			cacheWrite1h: r.pricedAs === 'measured' ? r.cw1h ?? 0 : 0
+		}
+	};
+}
+
+/**
  * Totals for many cards in one query, rolling each card's subtasks up into it.
  *
  * Cards with nothing recorded are simply absent from the returned map, which is
@@ -505,11 +563,13 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 
 	// Cost needs per-model figures, which the totals query deliberately does not
 	// carry. One extra grouped query covers the whole batch rather than one per
-	// card, which matters on a dashboard listing every board.
+	// card, which matters on a dashboard listing every board. Grouped by how each
+	// entry is priced too (PRICED_AS), so the card prices as its own window does.
 	const costRows = sqlite
 		.prepare(
 			`SELECT COALESCE(tu.card_id, s.card_id) AS cardId,
 			        tu.model                        AS model,
+			        ${PRICED_AS}                    AS pricedAs,
 			        SUM(tu.tokens)                  AS tokens,
 			        SUM(tu.input_tokens)            AS inputTokens,
 			        SUM(tu.output_tokens)           AS outputTokens,
@@ -518,21 +578,15 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 			        SUM(tu.cache_write_1h_tokens)   AS cw1h,
 			        SUM(tu.api_calls)               AS apiCalls,
 			        COUNT(tu.api_calls)             AS withCalls,
-			        COUNT(*)                        AS n,
-			        COUNT(tu.input_tokens)          AS withSplit,
-			        COUNT(tu.cache_read_tokens)     AS withBreakdown
+			        COUNT(*)                        AS n
 			   FROM token_usage tu
 			   LEFT JOIN subtasks s ON s.id = tu.subtask_id
 			  WHERE COALESCE(tu.card_id, s.card_id) IN (${placeholders})
-			  GROUP BY COALESCE(tu.card_id, s.card_id), tu.model`
+			  GROUP BY COALESCE(tu.card_id, s.card_id), tu.model, pricedAs`
 		)
-		.all(...cardIds) as {
-		cardId: number; model: string | null; tokens: number;
-		inputTokens: number | null; outputTokens: number | null;
-		cacheReadTokens: number | null; cw5m: number | null; cw1h: number | null;
-		apiCalls: number | null; withCalls: number;
-		n: number; withSplit: number; withBreakdown: number;
-	}[];
+		.all(...cardIds) as (PricedGroup & {
+		cardId: number; apiCalls: number | null; withCalls: number; n: number;
+	})[];
 
 	const byCard = new Map<number, typeof costRows>();
 	for (const r of costRows) {
@@ -542,29 +596,7 @@ export function getCardTokenTotals(cardIds: number[]): Map<number, TokenTotal> {
 	for (const [cardId, rows2] of byCard) {
 		const existing = out.get(cardId);
 		if (!existing) continue;
-		const cost = costOf(
-			rows2.map((r) => ({
-				tokens: r.tokens,
-				model: r.model,
-				// Only trust the summed split when EVERY entry in the group had one;
-				// a partial sum would understate the tokens it covers.
-				inputTokens: r.withSplit === r.n ? r.inputTokens : null,
-				outputTokens: r.withSplit === r.n ? r.outputTokens : null,
-				// Cache reads are ~99% of agentic usage, so a cost without them is
-				// not an approximation — it is the wrong number by two orders of
-				// magnitude. Only trusted when EVERY entry in the group carried one.
-				breakdown:
-					r.withBreakdown === r.n && r.inputTokens !== null && r.outputTokens !== null
-						? {
-								input: r.inputTokens,
-								output: r.outputTokens,
-								cacheRead: r.cacheReadTokens ?? 0,
-								cacheWrite5m: r.cw5m ?? 0,
-								cacheWrite1h: r.cw1h ?? 0
-						  }
-						: null
-			}))
-		);
+		const cost = costOf(rows2.map(groupCostInput));
 		existing.costUsd = cost.usd;
 		existing.costExact = cost.exact;
 		existing.unpricedTokens = cost.unpricedTokens;
@@ -595,27 +627,9 @@ export function getCardTokenTotal(cardId: number): TokenTotal {
 
 	// Cost from the entries themselves rather than from the per-model subtotals,
 	// so an entry carrying an exact input/output split is costed exactly and only
-	// the rest falls back to the blend.
-	const cost = costOf(
-		getCardTokenEntries(cardId).map((e) => ({
-			tokens: e.tokens,
-			model: e.model,
-			inputTokens: e.inputTokens,
-			outputTokens: e.outputTokens,
-			// A measured breakdown prices exactly; without cache components the
-			// figure falls back to the blend, which is wrong for cached work.
-			breakdown:
-				e.cacheReadTokens !== null && e.inputTokens !== null && e.outputTokens !== null
-					? {
-							input: e.inputTokens,
-							output: e.outputTokens,
-							cacheRead: e.cacheReadTokens,
-							cacheWrite5m: e.cacheWrite5mTokens ?? 0,
-							cacheWrite1h: e.cacheWrite1hTokens ?? 0
-					  }
-					: null
-		}))
-	);
+	// the rest falls back to the blend. `costInputOf` is the card window's rule
+	// for its rows too, so the rows add up to this figure.
+	const cost = costOf(getCardTokenEntries(cardId).map(costInputOf));
 
 	return {
 		...base,
@@ -694,33 +708,27 @@ export function getBoardTokenTotals(
 		}
 	}
 
-	// Per-board cost, grouped by model so each family is priced at its own rate.
+	// Per-board cost, grouped by model so each family is priced at its own rate,
+	// and by how each entry is priced (PRICED_AS) so it agrees with every card's.
 	const costRows = sqlite
 		.prepare(
 			`SELECT co.board_id           AS boardId,
 			        tu.model              AS model,
+			        ${PRICED_AS}          AS pricedAs,
 			        SUM(tu.tokens)        AS tokens,
 			        SUM(tu.input_tokens)  AS inputTokens,
 			        SUM(tu.output_tokens) AS outputTokens,
 			        SUM(tu.cache_read_tokens)     AS cacheReadTokens,
 			        SUM(tu.cache_write_5m_tokens) AS cw5m,
-			        SUM(tu.cache_write_1h_tokens) AS cw1h,
-			        COUNT(*)              AS n,
-			        COUNT(tu.input_tokens) AS withSplit,
-			        COUNT(tu.cache_read_tokens) AS withBreakdown
+			        SUM(tu.cache_write_1h_tokens) AS cw1h
 			   FROM token_usage tu
 			   LEFT JOIN subtasks s ON s.id = tu.subtask_id
 			   JOIN cards c    ON c.id = COALESCE(tu.card_id, s.card_id)
 			   JOIN columns co ON co.id = c.column_id
 			  WHERE co.board_id IN (${placeholders}) AND c.archived_at IS NULL
-			  GROUP BY co.board_id, tu.model`
+			  GROUP BY co.board_id, tu.model, pricedAs`
 		)
-		.all(...boardIds) as {
-		boardId: number; model: string | null; tokens: number;
-		inputTokens: number | null; outputTokens: number | null;
-		cacheReadTokens: number | null; cw5m: number | null; cw1h: number | null;
-		n: number; withSplit: number; withBreakdown: number;
-	}[];
+		.all(...boardIds) as (PricedGroup & { boardId: number })[];
 
 	const byBoard = new Map<number, typeof costRows>();
 	for (const r of costRows) {
@@ -730,27 +738,7 @@ export function getBoardTokenTotals(
 	for (const [boardId, rows2] of byBoard) {
 		const existing = out.get(boardId);
 		if (!existing) continue;
-		const cost = costOf(
-			rows2.map((r) => ({
-				tokens: r.tokens,
-				model: r.model,
-				inputTokens: r.withSplit === r.n ? r.inputTokens : null,
-				outputTokens: r.withSplit === r.n ? r.outputTokens : null,
-				// Cache reads are ~99% of agentic usage, so a cost without them is
-				// not an approximation — it is the wrong number by two orders of
-				// magnitude. Only trusted when EVERY entry in the group carried one.
-				breakdown:
-					r.withBreakdown === r.n && r.inputTokens !== null && r.outputTokens !== null
-						? {
-								input: r.inputTokens,
-								output: r.outputTokens,
-								cacheRead: r.cacheReadTokens ?? 0,
-								cacheWrite5m: r.cw5m ?? 0,
-								cacheWrite1h: r.cw1h ?? 0
-						  }
-						: null
-			}))
-		);
+		const cost = costOf(rows2.map(groupCostInput));
 		existing.costUsd = cost.usd;
 		existing.unpricedTokens = cost.unpricedTokens;
 	}
@@ -828,24 +816,19 @@ export function getUserSpendByPeriod(
 			        SUM(tu.api_calls)       AS apiCalls,
 			        COUNT(tu.api_calls)     AS withCalls,
 			        COUNT(*)                AS n,
-			        COUNT(tu.input_tokens)  AS withSplit,
-			        COUNT(tu.cache_read_tokens) AS withBreakdown
+			        ${PRICED_AS}            AS pricedAs
 			   FROM token_usage tu
 			   LEFT JOIN subtasks s ON s.id = tu.subtask_id
 			   JOIN cards c    ON c.id = COALESCE(tu.card_id, s.card_id)
 			   JOIN columns co ON co.id = c.column_id
 			   LEFT JOIN users u ON u.id = tu.reported_by_user_id
 			  WHERE co.board_id IN (${placeholders}) AND c.archived_at IS NULL
-			  GROUP BY tu.reported_by_user_id, tu.model, date(tu.created_at)`
+			  GROUP BY tu.reported_by_user_id, tu.model, date(tu.created_at), pricedAs`
 		)
-		.all(...boardIds) as {
+		.all(...boardIds) as (PricedGroup & {
 		userId: number | null; username: string | null; emoji: string | null;
-		model: string | null; day: string; tokens: number;
-		inputTokens: number | null; outputTokens: number | null;
-		cacheReadTokens: number | null; cw5m: number | null; cw1h: number | null;
-		apiCalls: number | null; withCalls: number;
-		n: number; withSplit: number; withBreakdown: number;
-	}[];
+		day: string; apiCalls: number | null; withCalls: number; n: number;
+	})[];
 
 	// `date()` yields YYYY-MM-DD, so a plain string compare is a date compare.
 	const localStart = (d: Date) => {
@@ -877,69 +860,34 @@ export function getUserSpendByPeriod(
 
 		const list: UserSpendRow[] = [];
 		for (const [userId, group] of byUser) {
-			const cost = costOf(
-				group.map((r) => ({
-					tokens: r.tokens,
-					model: r.model,
-					inputTokens: r.withSplit === r.n ? r.inputTokens : null,
-					outputTokens: r.withSplit === r.n ? r.outputTokens : null,
-					breakdown:
-						r.withBreakdown === r.n && r.inputTokens !== null && r.outputTokens !== null
-							? {
-									input: r.inputTokens,
-									output: r.outputTokens,
-									cacheRead: r.cacheReadTokens ?? 0,
-									cacheWrite5m: r.cw5m ?? 0,
-									cacheWrite1h: r.cw1h ?? 0
-							  }
-							: null
-				}))
-			);
-			// Same person, same model, several days — fold the days together.
-			const modelTotals = new Map<string, {
-				tokens: number; input: number | null; output: number | null;
-				cacheRead: number; cw5m: number; cw1h: number; apiCalls: number; withCalls: number;
-				n: number; withSplit: number; withBreakdown: number;
-			}>();
+			const cost = costOf(group.map(groupCostInput));
+			// Same person, same model, several days (and ways of pricing) — fold them
+			// together. The cost is the sum of each group's, priced as it is above.
+			const modelGroups = new Map<string, typeof group>();
 			for (const r of group) {
 				const key = r.model ?? 'unspecified';
-				const prev = modelTotals.get(key);
-				modelTotals.set(key, {
-					tokens: (prev?.tokens ?? 0) + r.tokens,
-					input: r.inputTokens === null ? (prev?.input ?? null) : (prev?.input ?? 0) + r.inputTokens,
-					output: r.outputTokens === null ? (prev?.output ?? null) : (prev?.output ?? 0) + r.outputTokens,
-					apiCalls: (prev?.apiCalls ?? 0) + (r.apiCalls ?? 0),
-					withCalls: (prev?.withCalls ?? 0) + r.withCalls,
-					cacheRead: (prev?.cacheRead ?? 0) + (r.cacheReadTokens ?? 0),
-					cw5m: (prev?.cw5m ?? 0) + (r.cw5m ?? 0),
-					cw1h: (prev?.cw1h ?? 0) + (r.cw1h ?? 0),
-					n: (prev?.n ?? 0) + r.n,
-					withSplit: (prev?.withSplit ?? 0) + r.withSplit,
-					withBreakdown: (prev?.withBreakdown ?? 0) + r.withBreakdown
-				});
+				if (!modelGroups.has(key)) modelGroups.set(key, []);
+				modelGroups.get(key)!.push(r);
 			}
-			const byModel = [...modelTotals.entries()]
-				.map(([model, t]) => ({
-					model,
-					tokens: t.tokens,
-					exact: t.withBreakdown === t.n && t.input !== null && t.output !== null,
-					apiCalls: t.withCalls === t.n && t.apiCalls > 0 ? t.apiCalls : null,
-					input: t.input ?? 0,
-					output: t.output ?? 0,
-					cacheRead: t.cacheRead,
-					cacheWrite5m: t.cw5m,
-					cacheWrite1h: t.cw1h,
-					costUsd: costOf([{
-						tokens: t.tokens,
-						model: model === 'unspecified' ? null : model,
-						inputTokens: t.withSplit === t.n ? t.input : null,
-						outputTokens: t.withSplit === t.n ? t.output : null,
-						breakdown:
-							t.withBreakdown === t.n && t.input !== null && t.output !== null
-								? { input: t.input, output: t.output, cacheRead: t.cacheRead ?? 0, cacheWrite5m: t.cw5m ?? 0, cacheWrite1h: t.cw1h ?? 0 }
-								: null
-					}]).usd
-				}))
+			const sum = (rs: typeof group, f: (r: (typeof group)[number]) => number | null) =>
+				rs.reduce((acc, r) => acc + (f(r) ?? 0), 0);
+			const byModel = [...modelGroups.entries()]
+				.map(([model, rs]) => {
+					const calls = sum(rs, (r) => r.apiCalls);
+					return {
+						model,
+						tokens: sum(rs, (r) => r.tokens),
+						// The whole figure came from measured breakdowns.
+						exact: rs.every((r) => r.pricedAs === 'measured'),
+						apiCalls: rs.every((r) => r.withCalls === r.n) && calls > 0 ? calls : null,
+						input: sum(rs, (r) => r.inputTokens),
+						output: sum(rs, (r) => r.outputTokens),
+						cacheRead: sum(rs, (r) => r.cacheReadTokens),
+						cacheWrite5m: sum(rs, (r) => r.cw5m),
+						cacheWrite1h: sum(rs, (r) => r.cw1h),
+						costUsd: costOf(rs.map(groupCostInput)).usd
+					};
+				})
 				.sort((a, b) => b.tokens - a.tokens);
 
 			list.push({

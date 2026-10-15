@@ -93,7 +93,11 @@ const spec = {
 			'and POST /api/v1/boards with a parentCardId sends the board that card is on a live update, so that the sub-board shows on its card on the pages open there, where it sent none; its answer is unchanged; ' +
 			'(44) PUT /api/v1/cards/{cardId} records only what it changes: a field sent with the value the card already holds is not a change, null and empty text being the same value when comparing (description, onHoldNote and businessValue still take text only, and empty text clears them), so a request that changes nothing writes nothing, records no activity entry, sends no card.updated and answers 200 with the card as it is, and api:card_updated names only the fields that changed, where every field sent was written and named; ' +
 			'(45) a move out of an On Hold column (one titled On Hold, Hold, Blocked, Parked or Waiting) to one that is not clears the card\'s onHoldNote, by PUT /api/v1/cards/{cardId}/move and by every move in the web application, with no entry beside the move\'s own, where only a drag on the board page cleared it; ' +
-			'(46) an archived card on a sub-board holds nothing back: PUT /api/v1/cards/{cardId}/move to a Complete column is still refused 409 for open subtasks, and the sub-board part of the check counts only cards on the card\'s sub-boards that are not archived and not in a Complete column, and the refusal counts those alone, in the same words, where an archived card held the card back and was counted, so a card held back only by archived cards could not be completed. ' +
+			'(46) an archived card on a sub-board holds nothing back: PUT /api/v1/cards/{cardId}/move to a Complete column is still refused 409 for open subtasks, and the sub-board part of the check counts only cards on the card\'s sub-boards that are not archived and not in a Complete column, and the refusal counts those alone, in the same words, where an archived card held the card back and was counted, so a card held back only by archived cards could not be completed; ' +
+			'(47) costUsd on the token answers prices claude-opus-5-5 at its own rate, $4 / $20 per million with cache reads at $0.20, where it was priced as claude-opus-5 at about twice that, ' +
+			'and prices claude-sonnet-5-5 and claude-haiku-5-5 (at its rate for prompts of 100K tokens or fewer), where Haiku 5.5 was unpriced; a model id that is a listed one followed by a version ' +
+			'DumpFire does not list (claude-opus-5-6) is unpriced and counted in unpricedTokens, where it was priced as the shorter id; cost is worked out when it is read, so these re-price past entries; ' +
+			'the totals POST /api/v1/tokens/bulk answers for each card price each entry as GET /api/v1/cards/{cardId}/tokens does, where a model with a measured entry and an entry with no breakdown was priced as a whole at the 90/10 blend, several times its cost. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -1506,10 +1510,18 @@ const spec = {
 					},
 					costUsd: {
 						type: ['number', 'null'],
-						description: 'Estimated cost in US dollars. null when no entry named a model DumpFire has a price for.'
+						description:
+							'Estimated cost in US dollars, at Anthropic\'s list rates. It is worked out when it is read, so a change of rate re-prices past entries. ' +
+							'null when no entry named a model DumpFire has a price for.'
 					},
 					costExact: { type: 'boolean', description: 'true only when every priced entry carried a breakdown, so that nothing in the cost is an assumption' },
-					unpricedTokens: { type: 'integer', format: 'int64', description: 'Tokens left out of the cost because their model is unknown' },
+					unpricedTokens: {
+						type: 'integer',
+						format: 'int64',
+						description:
+							'Tokens left out of the cost: recorded with no model, or with a model DumpFire has no price for. An id is priced when it is one in DumpFire\'s table, or one of them ' +
+							'followed by a date (eight digits) or a tag (claude-haiku-4-5-20251001, claude-opus-4-6[1m]); one followed by a version the table does not list (claude-opus-5-6, claude-opus-50) is not priced.'
+					},
 					apiCalls: { type: ['integer', 'null'], description: 'Calls of the model behind the total. null unless every entry said how many.' },
 					entryList: { type: 'array', items: { $ref: '#/components/schemas/TokenEntry' }, description: 'Every entry, newest first' }
 				},

@@ -11,14 +11,19 @@
  * knowing what it rests on is worse than no cost number.
  *
  * Every rate here was checked against the published pricing table on
- * 2026-09-14 — base input, both cache-write tiers, cache read and output, for
- * all seventeen models. They are list rates and change, so SOURCE_NOTE is
+ * 2026-10-14 — base input, both cache-write tiers, cache read and output, for
+ * all twenty models. They are list rates and change, so SOURCE_NOTE is
  * rendered next to the totals and nobody has to guess how stale this is.
+ *
+ * Cost is worked out every time it is read, from the token counts and the model
+ * id each entry carries; no price is stored. A change to this table re-prices
+ * every past entry on its next read, which is the point: a wrong rate is put
+ * right everywhere at once.
  *
  * Source: https://platform.claude.com/docs/en/about-claude/pricing
  */
 
-export const PRICING_VERIFIED = '2026-09-14';
+export const PRICING_VERIFIED = '2026-10-14';
 export const SOURCE_NOTE = `Anthropic list prices, USD, verified ${PRICING_VERIFIED}`;
 
 export interface ModelPrice {
@@ -34,20 +39,30 @@ export interface ModelPrice {
 	 * ~99% of agentic usage.
 	 */
 	cacheReadMultiplier?: number;
+	/**
+	 * Something about the rate a person checking a figure needs to know, shown
+	 * on the model's row in the Spend window.
+	 */
+	note?: string;
 }
 
 /**
  * Keyed by the model id an agent would report. Lookup is prefix-tolerant so a
- * dated variant (`claude-haiku-4-5-20251001`) still matches its family.
+ * dated variant (`claude-haiku-4-5-20251001`) still matches its family, but
+ * never across a version: see VERSION_AFTER_KEY.
  */
 export const MODEL_PRICES: Record<string, ModelPrice> = {
 	// Cache-read rates confirmed against the published table: Opus 5 $0.50/MTok,
-	// Sonnet 5 $0.20, Haiku 4.5 $0.10 — all 0.1x of base input. The two 5.1
-	// models are the exception at 0.025x ($0.25 on a $10 base).
+	// Sonnet 5 and Sonnet 5.5 $0.20, Haiku 4.5 $0.10 — all 0.1x of base input.
+	// Three models are the exception: the two 5.1 models at 0.025x ($0.25 on a
+	// $10 base), and Opus 5.5 at 0.05x ($0.20 on a $4 base).
 	'claude-fable-5-1': { input: 10, output: 50, label: 'Fable 5.1', cacheReadMultiplier: 0.025 },
 	'claude-mythos-5-1': { input: 10, output: 50, label: 'Mythos 5.1', cacheReadMultiplier: 0.025 },
 	'claude-fable-5': { input: 10, output: 50, label: 'Fable 5' },
 	'claude-mythos-5': { input: 10, output: 50, label: 'Mythos 5' },
+	// Fast mode is $8 / $40. Not priced: the ledger has no field that says a call
+	// was fast, and the id is the same. token-usage.mjs says when a call was.
+	'claude-opus-5-5': { input: 4, output: 20, label: 'Opus 5.5', cacheReadMultiplier: 0.05 },
 	'claude-opus-5': { input: 5, output: 25, label: 'Opus 5' },
 	'claude-opus-4-8': { input: 5, output: 25, label: 'Opus 4.8' },
 	'claude-opus-4-7': { input: 5, output: 25, label: 'Opus 4.7' },
@@ -55,10 +70,20 @@ export const MODEL_PRICES: Record<string, ModelPrice> = {
 	'claude-opus-4-5': { input: 5, output: 25, label: 'Opus 4.5' },
 	'claude-opus-4-1': { input: 15, output: 75, label: 'Opus 4.1' },
 	'claude-opus-4': { input: 15, output: 75, label: 'Opus 4' },
+	'claude-sonnet-5-5': { input: 2, output: 10, label: 'Sonnet 5.5' },
 	'claude-sonnet-5': { input: 2, output: 10, label: 'Sonnet 5' },
 	'claude-sonnet-4-6': { input: 3, output: 15, label: 'Sonnet 4.6' },
 	'claude-sonnet-4-5': { input: 3, output: 15, label: 'Sonnet 4.5' },
 	'claude-sonnet-4': { input: 3, output: 15, label: 'Sonnet 4' },
+	// Billed by the size of each call's prompt: $0.10 / $0.50 up to 100K tokens,
+	// $0.50 / $2.50 above. An entry is a sum of calls and does not say how many
+	// were long, so every token is priced at the lower rate, and the row says so.
+	'claude-haiku-5-5': {
+		input: 0.1,
+		output: 0.5,
+		label: 'Haiku 5.5',
+		note: 'Priced at the rate for prompts of 100K tokens or fewer. A call with a longer prompt is billed five times as much ($0.50 / $2.50 per million), and DumpFire cannot tell which calls those were.'
+	},
 	'claude-haiku-4-5': { input: 1, output: 5, label: 'Haiku 4.5' },
 	'claude-haiku-3-5': { input: 0.8, output: 4, label: 'Haiku 3.5' }
 };
@@ -93,7 +118,23 @@ export const ASSUMED_INPUT_SHARE = 0.9;
 export const BLEND_NOTE =
 	`assumes ${Math.round(ASSUMED_INPUT_SHARE * 100)}/${Math.round((1 - ASSUMED_INPUT_SHARE) * 100)} input/output and no caching, so it errs high`;
 
-/** Resolve a reported model id to a price, tolerating dated suffixes. */
+/**
+ * What may not follow a key for a longer id to be priced as that key: a digit
+ * (the key's own last number carries on: `claude-opus-50`, `claude-fable-5-10`),
+ * or a dash and a number of one to seven digits. Either is a version, not a date
+ * — a date is a dash and eight digits (`-20251001`). Without this rule
+ * `claude-opus-5-5` was priced as `claude-opus-5` for three weeks, at about
+ * twice its rate, and the next model would have been mispriced as silently. An
+ * id with a version this table does not list is unpriced, and says so, rather
+ * than priced at another model's rate.
+ */
+export const VERSION_AFTER_KEY = /^(?:\d|-\d{1,7}(?!\d))/;
+
+/**
+ * Resolve a reported model id to a price: exactly, or by the longest key it
+ * begins with whose remainder is not a version (a date or a tag like `[1m]` or
+ * `-fast` is fine).
+ */
 export function priceFor(model: string | null | undefined): ModelPrice | null {
 	if (!model) return null;
 	const key = model.trim().toLowerCase();
@@ -102,12 +143,35 @@ export function priceFor(model: string | null | undefined): ModelPrice | null {
 	let best: ModelPrice | null = null;
 	let bestLen = 0;
 	for (const [id, price] of Object.entries(MODEL_PRICES)) {
-		if (key.startsWith(id) && id.length > bestLen) {
+		if (key.startsWith(id) && id.length > bestLen && !VERSION_AFTER_KEY.test(key.slice(id.length))) {
 			best = price;
 			bestLen = id.length;
 		}
 	}
 	return best;
+}
+
+/**
+ * Why a figure has tokens it could not price, where tokens are summed across
+ * models (a card's badge, a board's header, the dashboard's tile) and so the
+ * reason for any one of them cannot be told.
+ */
+export const UNPRICED_SUM_NOTE = 'recorded without a model, or with a model DumpFire has no price for';
+
+/** Why one model's tokens could not be priced, where the model is known. */
+export function unpricedReason(model: string | null | undefined): string {
+	if (!model) return 'No model recorded, so this cannot be priced.';
+	return `No price for ${model} in DumpFire's table (prices verified ${PRICING_VERIFIED}).`;
+}
+
+/**
+ * A rate, in dollars per million: two places, or three where the third is not
+ * zero. Haiku 5.5's 5-minute cache write is $0.125, which two places would show
+ * as $0.13.
+ */
+export function formatRate(usd: number): string {
+	const three = usd.toFixed(3);
+	return `$${three.endsWith('0') ? usd.toFixed(2) : three}`;
 }
 
 /**
@@ -171,6 +235,45 @@ export interface CostInput {
 	 * reads are the overwhelming majority of agentic usage.
 	 */
 	breakdown?: TokenBreakdown | null;
+}
+
+/** One recorded entry, as `GET /api/cards/:id/tokens` answers it in `entryList`. */
+export interface RecordedEntry {
+	tokens: number;
+	model: string | null;
+	inputTokens: number | null;
+	outputTokens: number | null;
+	cacheReadTokens?: number | null;
+	cacheWrite5mTokens?: number | null;
+	cacheWrite1hTokens?: number | null;
+}
+
+/**
+ * One entry to what `costOf` takes, with its measured breakdown when it has one
+ * (cache reads, input and output). The card's total and the card window's rows
+ * both go through here, so a row can never be priced another way than the total
+ * it adds up to: without the breakdown a measured entry fell back to the blend at
+ * the full input rate, and its row read about ten times its share.
+ */
+export function costInputOf(e: RecordedEntry): CostInput {
+	return {
+		tokens: e.tokens,
+		model: e.model,
+		inputTokens: e.inputTokens,
+		outputTokens: e.outputTokens,
+		// A measured breakdown prices exactly; without cache components the
+		// figure falls back to the blend, which is wrong for cached work.
+		breakdown:
+			e.cacheReadTokens != null && e.inputTokens !== null && e.outputTokens !== null
+				? {
+						input: e.inputTokens,
+						output: e.outputTokens,
+						cacheRead: e.cacheReadTokens,
+						cacheWrite5m: e.cacheWrite5mTokens ?? 0,
+						cacheWrite1h: e.cacheWrite1hTokens ?? 0
+				  }
+				: null
+	};
 }
 
 export interface CostResult {

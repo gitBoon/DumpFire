@@ -15,7 +15,7 @@
 	import { completionPercent } from '$lib/progress';
 	import { firstOpenColumn } from '$lib/column-role';
 	import { formatTokens } from '$lib/tokens';
-	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
+	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	// The shared toast, for a write that failed (card 2148: each in the server's
 	// words). Renamed here: this page has `toasts` of its own, which are the
@@ -1037,7 +1037,7 @@
 						<div class="stat-sub" title="{NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
 							{formatTokens(data.allTasksTotals.tokenTotal)} tokens · what the API would charge
 							{#if data.allTasksTotals.unpricedTokens > 0}
-								<span class="stat-warn" title="Recorded without a model, so they cannot be priced.">
+								<span class="stat-warn" title="Tokens {UNPRICED_SUM_NOTE}, so they cannot be priced.">
 									· {formatTokens(data.allTasksTotals.unpricedTokens)} unpriced
 								</span>
 							{/if}

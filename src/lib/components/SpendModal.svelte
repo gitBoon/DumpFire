@@ -15,7 +15,7 @@
 <script lang="ts">
 	import { formatTokens } from '$lib/tokens';
 	import {
-		formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE,
+		formatUsd, formatRate, unpricedReason, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE,
 		priceFor, CACHE_READ_MULTIPLIER, CACHE_WRITE_5M_MULTIPLIER, CACHE_WRITE_1H_MULTIPLIER
 	} from '$lib/pricing';
 
@@ -198,11 +198,15 @@
 										<span class="tokens">{formatTokens(m.tokens)}</span>
 										<span class="money">
 											{#if m.costUsd === null}
-												<span class="unpriced-tag" title="No model recorded, so this cannot be priced.">unpriced</span>
+												<span class="unpriced-tag" title={unpricedReason(m.model === 'unspecified' ? null : m.model)}>unpriced</span>
 											{:else}{formatUsd(m.costUsd)}{/if}
 											{#if !m.exact && m.costUsd !== null}<span class="est-tag" title="No measured breakdown for this model, so the cost assumes a 90/10 input/output split. Measure it with token-usage.mjs.">est</span>{/if}
 										</span>
 									</li>
+									{#if m.costUsd !== null && priceFor(m.model)?.note}
+										<!-- What the rate leaves out, said where the rate is used. -->
+										<li class="part rate-note"><span class="p-label">* {priceFor(m.model)?.note}</span></li>
+									{/if}
 									{#if perCall(m.tokens, m.apiCalls, m.costUsd)}
 										{@const pc = perCall(m.tokens, m.apiCalls, m.costUsd)!}
 										<li class="part maths">
@@ -220,7 +224,7 @@
 											<li class="part">
 												<span class="p-label">{c.label}</span>
 												<span class="p-tokens">{formatTokens(c.tokens)}</span>
-												<span class="p-rate">&times; ${c.rate.toFixed(2)}/M</span>
+												<span class="p-rate">&times; {formatRate(c.rate)}/M</span>
 												<span class="p-share">{((c.tokens / m.tokens) * 100).toFixed(1)}%</span>
 												<span class="p-cost">{formatUsd(c.cost)}</span>
 											</li>
@@ -345,6 +349,8 @@
 		border-top: 1px dashed var(--glass-border);
 		margin-top: 3px; padding-top: 4px;
 	}
+	/* A caveat about the model's rate: read in full, so it wraps. */
+	.part.rate-note .p-label { white-space: normal; font-style: italic; }
 	.totals-maths { font-size: 0.72rem; color: var(--text-tertiary); }
 
 	.est-tag {
