@@ -7,6 +7,7 @@
 <script lang="ts">
   import type { ColumnType } from '$lib/types';
   import { COLUMN_COLORS } from '$lib/utils/constants';
+  import { drawnColour } from '$lib/colours';
 
   /**
    * @prop columns — Existing columns (for position dropdown options)
@@ -60,7 +61,7 @@
         {/each}
         <label class="color-custom-wrapper">
           <input type="color" bind:value={color} class="color-native-input" />
-          <span class="color-swatch custom" style="background: {color}">✎</span>
+          <span class="color-swatch custom" style="background: {drawnColour(color)}">✎</span>
         </label>
       </div>
     </div>

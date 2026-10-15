@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.23
+version: 1.25
 status: As-Built
 date: 2026-10-15
 tags:
@@ -24,7 +24,10 @@ tags:
   - client-address
   - rate-limiting
   - security-headers
-description: "Docker deployment, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add, updating and going back, and production configuration for DumpFire"
+  - content-security-policy
+  - csp-mode
+  - fonts
+description: "Docker deployment, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -197,6 +200,7 @@ On the Docker host itself there is usually no Node to run the suite with outside
 | `SCHEDULERS` | `on` in a built server, `off` under `npm run dev` | No | `on` or `off`: whether the backup, report and snapshot schedulers run. Set it to `off` for any instance that holds production's data and is not production. Such an instance holds production's backup destinations, report schedules and mail settings, and with its schedulers running it backs up to production's destinations, prunes the backups there and sends production's reports. When they are off, one `[WARN] [SCHEDULERS]` line at start says so. "Run Backup Now" in the admin panel works either way, and so do email and webhooks sent in answer to an action. To make such a copy harmless in itself, import the backup as a working copy: see [Admin Guide](admin-guide.md#restoring-from-backup) |
 | `PASSWORD_THREADS` | not set: two, or one on a machine with one or two CPUs | No: **leave it unset** | How many worker threads hash and check passwords, so that the server's own thread is never held by one (card 2191). Unset, it is `min(2, max(1, CPUs - 1))`. A whole number from `0` to `8` is taken as it is; `0` checks every password on the server's own thread, as the tests do, which holds every other request for about a fifth of a second each time, and is not for a server. Anything else is one `[WARN] [AUTH]` line, `PASSWORD_THREADS="…" is not a whole number from 0 to 8: password checks run on N worker thread(s)`, and the default. Read once, at the first check. See [Password Hashing](authentication-security.md#password-hashing) |
 | `SIGN_IN_ONE_AT_A_TIME` | not set, which is `on` | No: **set it only as** [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out) **says, and remove it after** | `on` or `off`, in any case, trimmed; empty is `on`. `off` turns off the rule that holds sign-ins from browsers not remembered for an account to one at a time while the account is being guessed at (card 2194): every browser is then let in after the account's wait. While it is `off`, one `[WARN] [STARTUP]` line at every start says so, to the console whatever `LOG_LEVEL` is. Anything else is one `[WARN] [AUTH]` line, `SIGN_IN_ONE_AT_A_TIME is "…", which is neither on nor off: sign-ins from browsers not remembered are held to one at a time`, and `on`. Read once, at start. See [Browsers That Have Signed In Before](authentication-security.md#browsers-that-have-signed-in-before) |
+| `CSP_MODE` | not set, which is `enforce` | No: **set it only for the first deploy of the policy**, as [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy) says, **and remove it after** | `enforce` or `report-only`, written exactly so. `report-only` sends every page its Content-Security-Policy as `Content-Security-Policy-Report-Only`: the browser names in its console what the policy would refuse, and refuses nothing. While it is set, one `[WARN] [STARTUP]` line at every start says so, to the console whatever `LOG_LEVEL` is. Any other value, `REPORT-ONLY` and ` report-only` among them, is enforced, and one `[WARN] [STARTUP]` line at every start names it: `CSP_MODE is "…", which is neither enforce nor report-only: the Content-Security-Policy is enforced.` Read at every request. See [The Content-Security-Policy](authentication-security.md#the-content-security-policy) |
 
 > ⚠️ **CRITICAL**: `ORIGIN` must be set to your actual public URL (e.g. `https://dumpfire.example.com`). Leaving it as localhost will cause CSRF token validation failures on all form submissions.
 
@@ -399,7 +403,7 @@ One more refusal comes after the migrations, before the server listens. If the d
 
 Expired sessions are then cleared, the system log is pruned to its retention, the backup, report and snapshot schedulers start, and the server listens. On a database that is already up to date, steps 1 to 6 change nothing and log nothing.
 
-Last, seven things about the installation are said in the log if they are so. None stops the server, and none changes anything: there are user accounts and none of them is the superadmin (`[CRITICAL] [STARTUP]`, see [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin)); `ORIGIN` is still the address the image is built with and no App URL is set (`[WARN] [STARTUP]`, see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)); and a board hangs beneath one of its own cards, a loop left by a move made before card 2141, the legacy JSON import or a restored backup (`[WARN] [STARTUP]`, naming up to 20 such boards with the card each hangs from, see [A board beneath one of its own cards](admin-guide.md#a-board-beneath-one-of-its-own-cards) in the admin guide). The third reads the boards once and finds the loops in memory, so it costs next to nothing however deep the boards nest, and an import of a backup that brings a loop writes the same line at once, as `[WARN] [IMPORT]`, without waiting for the next start. The other three are about the database (card 2083), each a `[WARN] [STARTUP]` line: there was no database file, or an empty one, before this start opened it (`No database was at <path>: a new, empty one was created at this start.`, said once by a new installation, and the alarm on one that had data: stop the container before anyone opens the site); the folder the database is in is the container's own file system and not a mounted volume, at every start; and a database file is at `/app/dumpfire.db` beside the image's `/app/data/dumpfire.db`, which has data and is the one in use, at every start, naming both with their sizes and when each was last written. The seventh is that `SIGN_IN_ONE_AT_A_TIME` is `off` (card 2194), a `[WARN] [STARTUP]` line at every start while it is, written to the console whatever `LOG_LEVEL` is, as are the first two about the database: it is meant to be set for one sign-in and removed (see [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out)). The first two about the database (no database file before this start, and the folder not on a mounted volume) are written to the console whatever `LOG_LEVEL` is, even `ERROR`, because the checks after a deploy look for them in `docker logs`; with `LOG_LEVEL` at `ERROR` or `CRITICAL` they are printed but not kept in `system_logs`, as for any line. The second knows a container's own file system from `/proc/self/mountinfo`: the mount that holds the folder is the root and an overlay (`overlay`, as Docker has it, `fuse-overlayfs`, as rootless Podman has it, or `aufs`), or it is `tmpfs`. A container on another storage driver (`btrfs`, `zfs`, `vfs`) is not recognised and nothing is said, and where there is no `/proc/self/mountinfo` (Windows, macOS) nothing is said either. An in-memory database has no folder and is not looked at. A check that cannot be made is said on the console, one line for each such check, and the server starts all the same.
+Last, eight things about the installation are said in the log if they are so. None stops the server, and none changes anything: there are user accounts and none of them is the superadmin (`[CRITICAL] [STARTUP]`, see [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin)); `ORIGIN` is still the address the image is built with and no App URL is set (`[WARN] [STARTUP]`, see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)); and a board hangs beneath one of its own cards, a loop left by a move made before card 2141, the legacy JSON import or a restored backup (`[WARN] [STARTUP]`, naming up to 20 such boards with the card each hangs from, see [A board beneath one of its own cards](admin-guide.md#a-board-beneath-one-of-its-own-cards) in the admin guide). The third reads the boards once and finds the loops in memory, so it costs next to nothing however deep the boards nest, and an import of a backup that brings a loop writes the same line at once, as `[WARN] [IMPORT]`, without waiting for the next start. The other three are about the database (card 2083), each a `[WARN] [STARTUP]` line: there was no database file, or an empty one, before this start opened it (`No database was at <path>: a new, empty one was created at this start.`, said once by a new installation, and the alarm on one that had data: stop the container before anyone opens the site); the folder the database is in is the container's own file system and not a mounted volume, at every start; and a database file is at `/app/dumpfire.db` beside the image's `/app/data/dumpfire.db`, which has data and is the one in use, at every start, naming both with their sizes and when each was last written. The seventh is that `SIGN_IN_ONE_AT_A_TIME` is `off` (card 2194), a `[WARN] [STARTUP]` line at every start while it is, written to the console whatever `LOG_LEVEL` is, as are the first two about the database: it is meant to be set for one sign-in and removed (see [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out)). The eighth is that `CSP_MODE` is `report-only`, or holds a value that is neither mode (card 2162), a `[WARN] [STARTUP]` line at every start while it does, written to the console whatever `LOG_LEVEL` is: `report-only` is meant for the policy's first deploy and then removed (see [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy)). The first two about the database (no database file before this start, and the folder not on a mounted volume) are written to the console whatever `LOG_LEVEL` is, even `ERROR`, because the checks after a deploy look for them in `docker logs`; with `LOG_LEVEL` at `ERROR` or `CRITICAL` they are printed but not kept in `system_logs`, as for any line. The second knows a container's own file system from `/proc/self/mountinfo`: the mount that holds the folder is the root and an overlay (`overlay`, as Docker has it, `fuse-overlayfs`, as rootless Podman has it, or `aufs`), or it is `tmpfs`. A container on another storage driver (`btrfs`, `zfs`, `vfs`) is not recognised and nothing is said, and where there is no `/proc/self/mountinfo` (Windows, macOS) nothing is said either. An in-memory database has no folder and is not looked at. A check that cannot be made is said on the console, one line for each such check, and the server starts all the same.
 
 Nothing at start-up touches the uploads folder. The log is pruned again every six hours, and the same six-hourly tick empties the [uploads trash](#the-trash) of what has been in it for more than 30 days; the trash is also emptied once, ten minutes after the start.
 
@@ -426,6 +430,8 @@ What stops a start, and what is only reported:
 | The database's folder is in the container's own file system, not on a mounted volume | `[WARN] [STARTUP]`, at every start | Yes. The database and the uploads are lost when the container is replaced: move them onto a volume before it is |
 | A database file is at `/app/dumpfire.db` beside `/app/data/dumpfire.db`, which has data | `[WARN] [STARTUP]`, at every start until one of them is moved | Yes, on `/app/data/dumpfire.db`. If the other is this installation's database, start with `DB_PATH` set to it, or move it onto the volume |
 | `SIGN_IN_ONE_AT_A_TIME=off` | `[WARN] [STARTUP]`, at every start while it is set, on the console whatever `LOG_LEVEL` is: `SIGN_IN_ONE_AT_A_TIME=off: sign-ins from browsers not remembered are not held to one at a time. Remove it and restart once the sign-in it was set for is made: see docs/deployment.md, under "If an Attack Keeps an Owner Out".` | Yes. A guesser who sends many attempts at once at one account is slowed by its waits alone. Remove it and restart: see [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out) |
+| `CSP_MODE=report-only` | `[WARN] [STARTUP]`, at every start while it is set, on the console whatever `LOG_LEVEL` is: `CSP_MODE=report-only: pages are sent the Content-Security-Policy to report only, not to enforce; remove CSP_MODE once the trial is over. See docs/deployment.md.` | Yes. Pages are not protected by the policy: a browser reports what it would refuse and refuses nothing. Remove it and make the container again: see [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy) |
+| `CSP_MODE` holds anything but `enforce` or `report-only` | `[WARN] [STARTUP]`, at every start while it does, on the console whatever `LOG_LEVEL` is: `CSP_MODE is "<value>", which is neither enforce nor report-only: the Content-Security-Policy is enforced.` | Yes, with the policy enforced. Correct the value or remove it |
 
 How the runner, the rebuild and the comparison work is described in [Data Model](data-model.md#migrations-and-schema-reconciliation).
 
@@ -750,6 +756,7 @@ Every line the application logs has the form `[time] [LEVEL] [CONTEXT] message`.
 - **What a successful update prints.** One line beginning `Applied migration:` for each file applied; one line for each table rebuilt, naming the table, the number of rows carried across and what differed in it; one line for each sub-board detached from a card that no longer exists; and one line if the backfills had anything to fill in. Then `Listening on`.
 - **Those are `WARN` lines.** The default level, `INFO`, prints them. With `LOG_LEVEL=ERROR` they are not printed, and a successful update shows `Listening on` and nothing from the runner.
 - **A new, empty database** is given every file. 25 statements in 19 of the oldest files repeat something an earlier file has already done and are skipped, each with a `WARN` line. That is expected.
+- **Two `[STARTUP]` lines are about the Content-Security-Policy, not the update.** `CSP_MODE=report-only: pages are sent the Content-Security-Policy to report only, not to enforce; remove CSP_MODE once the trial is over. See docs/deployment.md.` is expected during the first deploy of the policy and nowhere else; `CSP_MODE is "…", which is neither enforce nor report-only: the Content-Security-Policy is enforced.` means the variable was mistyped. See [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy).
 - **Judge a run by two markers and nothing else**: `[ERROR] [DB]` and `[CRITICAL] [DB]`. A `CRITICAL` line means start-up stopped. An `ERROR` line means the server started and something needs attention; the line says what, and it is repeated at every start until the cause is dealt with. Errors from other contexts, such as `[BACKUP]` or `[REPORTS]`, come from the schedulers and say nothing about the update.
 
 ```bash
@@ -1223,6 +1230,202 @@ Then sign in again, or sign out and in, on every browser you will want during an
 
 **Going back to the previous image** needs nothing done to the database: no table changed. The previous image ignores the `dumpfire_known_<id>` cookies and checks passwords on the server's thread again; the log lines this release rewrote stay rewritten. It leaves the `known_browser_secret` row in `settings`, and **its backups would hold that row**, since it does not know to take it out: after going back, delete it with the command under [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out). This release makes a new one when it is deployed again, and every browser is remembered again at its next sign-in.
 
+### The Update That Brings the Content-Security-Policy
+
+The release that checks every colour from a request and gives every page a
+Content-Security-Policy (card 2162), cleans Markdown one way for descriptions and comments
+(2202), serves the Inter font from DumpFire (2203) and draws mentions in text only (2210)
+brings no migration file and no change to the schema. Nothing stored is changed. The image
+gains seven font files and a licence text; `jsdom`, which only the tests use, is a
+development dependency and is pruned from the image with the rest.
+
+```mermaid
+flowchart TD
+    Before["Before: command 3, SQL 1, SQL 2 and SQL 4"] --> Proxy{"A policy from the proxy,<br/>or scripts it adds?"}
+    Proxy -->|"Yes"| Fix["Take them away at the proxy first"]
+    Fix --> Before
+    Proxy -->|"No"| Trial["Deploy with CSP_MODE=report-only<br/>and walk the pages with the console open"]
+    Trial --> Reports{"A report that is not<br/>a browser extension's?"}
+    Reports -->|"Yes"| Hold["Keep report-only.<br/>A fix, or a card, first"]
+    Hold --> Trial
+    Reports -->|"No"| Enforce["Remove CSP_MODE,<br/>make the container again"]
+    Enforce --> Done["Pages are protected by the policy"]
+```
+
+What changes for the people who use it, and for API callers:
+
+- **Every page loads the font from DumpFire, and no page asks Google, or any other site, for
+  anything.** Until now every page, the sign-in page included, loaded Inter from Google's
+  font service, which told Google the address of whoever opened DumpFire, and when. The
+  files are the ones Google served, byte for byte, so nothing looks different. They are
+  fetched once from `/_app/immutable/assets/` and cached for a year; the licence is served
+  at `/licences/inter-OFL.txt`.
+- **A colour sent to the API is `#rrggbb` or it is refused.** Every operation that takes
+  `color` or `colorTag`, in both trees, answers `400` `color must be a colour written #rrggbb`
+  (for a colour tag `colorTag must be a colour written #rrggbb, or empty`) for anything
+  else, `red` and `#fff` included, where any text was stored. The pages send only
+  `#rrggbb`. Through the tracking wrapper, quote the colour, `-Color '#ef4444'`: an unquoted
+  `#` begins a PowerShell comment, so `-Color #ef4444` sends nothing and the call stops with
+  "Missing an argument for parameter 'Color'".
+- **A stored colour that is more than a colour is drawn grey** (`#94a3b8`) until someone
+  picks it a colour; every other stored colour looks as it did, one with spaces around it
+  included. SQL 1 below lists them. How a grey one is fixed depends on what it colours: a
+  label's, a category's, a column's or a board grouping's by picking a colour in its own
+  colour picker; a card's or a subtask's colour tag has no control on the page, so only
+  through the API, with the wrapper `update-card` or `update-subtask` with
+  `-ColorTag '#rrggbb'` or `-ColorTag none` to clear it. Renaming any of them sends the old
+  value back unchanged, and it is kept, grey or not.
+- **A description or comment is drawn without style, a borrowed class, SVG or MathML, a
+  form, a dialog or popover, an image map, a `<template>`, or the `srcset`, `background` and
+  `poster` attributes**, and **an image from another site, or from any address on DumpFire
+  but a card attachment's, shows as a link** reading 🖼 and its alt text, which opens the
+  picture's address.
+  Stored text is not changed. SQL 2 and SQL 4 below count what will look different.
+- **An email address in a comment is a working link**, and a link's tooltip and an image's
+  description no longer show chip markup. A mention inside code or link text is still drawn
+  as a chip, because it is still mailed.
+- **Pages are protected by the policy only once `CSP_MODE` is removed.** The colour rule and
+  the Markdown rules protect them from the first deploy.
+
+**Before the deploy.** The commands in this section are written for Git Bash or the Docker
+host's shell, not PowerShell (where `curl` is another command: use `curl.exe`, and the
+heredocs below do not work), and the database queries need `sqlite3` installed on that
+host. Command 3 reads the public sign-in page and nothing else. Put your own address in
+`SITE`:
+
+```bash
+SITE=https://dumpfire.example.com
+curl -s -D - -o login.html "$SITE/login" | grep -i -E "^(server|cf-ray|content-security-policy)"
+grep -c -i -E "cdn-cgi|rocket|cloudflareinsights|data-cf" login.html
+grep -c "<script" login.html
+grep -c -i -E "fonts\.(googleapis|gstatic)\.com" login.html
+```
+
+Expected before the deploy: no `content-security-policy` line, `0`, `2` (the theme script
+and SvelteKit's) and `3` (the old font links).
+
+- **A `content-security-policy` line means the proxy sends a policy of its own**, which
+  browsers would enforce beside DumpFire's, and which, holding no page's nonce, would stop
+  every page's scripts: take it away at the proxy before the deploy. See
+  [Security Headers From the Proxy](#security-headers-from-the-proxy).
+- **A count above `0` on the second line means the front may put scripts into pages**
+  (Cloudflare's Rocket Loader, its automatic Web Analytics beacon). It counts words such as
+  `data-cf`, not scripts, so it does not say the policy will refuse anything: read the
+  console in the report-only trial below, and turn that feature off only if a report names
+  it. **More than two scripts** means one was put in: the trial's console says whether the
+  policy refuses it, and the same rule holds.
+
+Then, on a copy of the database, three read-only queries say how much of production each
+rule reaches. None changes anything, and nothing waits on their answers. Copy the database
+out as for the sign-in queries above, into a folder only you can read; a missing `-wal` file
+is expected:
+
+```bash
+mkdir -m 700 "$HOME/dumpfire-csp"
+docker cp "<container>:/app/data/dumpfire.db" "$HOME/dumpfire-csp/"
+docker cp "<container>:/app/data/dumpfire.db-wal" "$HOME/dumpfire-csp/" || echo "No -wal file: expected"
+```
+
+Run each by pasting it between a quoted heredoc's lines, which the shell leaves exactly as
+written:
+
+```bash
+sqlite3 -readonly -header -column "$HOME/dumpfire-csp/dumpfire.db" <<'SQL'
+<the query>
+SQL
+```
+
+**SQL 1: stored colours that are not `#rrggbb`, by table and value, and how each will be
+drawn.** Its `CASE` is `isSafeColour` in `src/lib/colours.ts`, written in SQL, on the value
+with its leading and trailing spaces, tabs and line breaks trimmed, as `drawnColour` trims
+it: the two change together.
+
+```sql
+SELECT t, value, n, CASE WHEN v = '' THEN 'no colour' WHEN (v GLOB '#*' AND length(v) IN (4, 5, 7, 9) AND substr(v, 2) NOT GLOB '*[^0-9A-Fa-f]*') OR (length(v) BETWEEN 1 AND 30 AND v NOT GLOB '*[^A-Za-z]*') OR (lower(v) GLOB 'var(--?*)' AND substr(v, 7, length(v) - 7) NOT GLOB '*[^A-Za-z0-9-]*') THEN 'drawn as stored' ELSE 'drawn grey' END AS drawn FROM (SELECT t, value, n, trim(value, char(32, 9, 10, 12, 13)) AS v FROM (SELECT 'labels' AS t, color AS value, COUNT(*) AS n FROM labels GROUP BY color UNION ALL SELECT 'categories', color, COUNT(*) FROM categories GROUP BY color UNION ALL SELECT 'board_categories', color, COUNT(*) FROM board_categories GROUP BY color UNION ALL SELECT 'columns', color, COUNT(*) FROM columns GROUP BY color UNION ALL SELECT 'cards.color_tag', color_tag, COUNT(*) FROM cards WHERE color_tag <> '' GROUP BY color_tag UNION ALL SELECT 'subtasks.color_tag', color_tag, COUNT(*) FROM subtasks WHERE color_tag <> '' GROUP BY color_tag)) WHERE value NOT GLOB '#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]' ORDER BY t, n DESC
+```
+
+No rows: nothing changes on any page, and no stored value was ever more than a colour. A row
+"drawn grey": that item shows grey after the deploy; one whose value holds `url(` is
+evidence the fault was used. A row "drawn as stored" (`red`, `#fff`): it looks as it does
+now, and an API caller that sent it will be refused the next time.
+
+**SQL 2: descriptions and comments with an image, a `<style>` element or a style
+attribute.**
+
+```sql
+SELECT 'cards' AS t, COUNT(*) AS rows_with_any, SUM(description LIKE '%![%](http%' OR description LIKE '%![%](//%' OR description LIKE '%<img%') AS outside_images, SUM(description LIKE '%<style%') AS style_elements, SUM(description LIKE '% style=%') AS style_attributes FROM cards WHERE description LIKE '%![%' OR description LIKE '%<img%' OR description LIKE '%<style%' OR description LIKE '% style=%' UNION ALL SELECT 'card_comments', COUNT(*), SUM(content LIKE '%![%](http%' OR content LIKE '%![%](//%' OR content LIKE '%<img%'), SUM(content LIKE '%<style%'), SUM(content LIKE '% style=%') FROM card_comments WHERE content LIKE '%![%' OR content LIKE '%<img%' OR content LIKE '%<style%' OR content LIKE '% style=%'
+```
+
+`outside_images` counts `<img` of any address, DumpFire's own attachments included: read a
+non-zero count row by row.
+
+**SQL 4: stored descriptions and comments that the Markdown rules draw differently.** The
+counts are an upper bound: `class=`, `style=`, `<input` and `<label` written as text in a code block count too,
+so read a non-zero row by hand.
+
+```sql
+SELECT t, COUNT(*) AS rows_with_html_or_images, SUM(body LIKE '%<style%') AS style_elements, SUM(body LIKE '%style=%') AS style_attributes, SUM(body LIKE '%class=%') AS class_attributes, SUM(body LIKE '%<svg%' OR body LIKE '%<math%') AS svg_or_mathml, SUM(body LIKE '%![%](http%' OR body LIKE '%![%](//%' OR body LIKE '%src=%http%' OR body LIKE '%src=%//%') AS outside_images, SUM(body LIKE '%srcset=%' OR body LIKE '%poster=%' OR body LIKE '%background=%') AS other_media_attributes, SUM(body LIKE '%<form%' OR body LIKE '%<input%' OR body LIKE '%<button%' OR body LIKE '%<select%' OR body LIKE '%<textarea%' OR body LIKE '%<label%') AS forms_or_controls FROM (SELECT 'cards' AS t, description AS body FROM cards UNION ALL SELECT 'card_comments', content FROM card_comments) WHERE body LIKE '%<%' OR body LIKE '%![%' GROUP BY t ORDER BY t
+```
+
+All zero but `rows_with_html_or_images`: nothing anyone wrote looks different. A non-zero
+column: those descriptions or comments are drawn without that feature after the deploy, an
+outside image as a link. A non-zero `forms_or_controls`: boxes and controls written as raw
+HTML (`<form>`, `<input>`, `<button>`, `<select>`, `<textarea>`, `<label>`) are dropped and
+drawn as their text alone; a Markdown task list, `- [ ]` and `- [x]`, keeps its boxes. An
+image on DumpFire's own address that is not a card attachment (`![](/api/…)`, `![](x.png)`)
+is drawn as a link too, and no column counts it: read the rows with `![` or `<img` by hand.
+
+**The deploy, report-only first.** Start the new image as for any update, with
+`-e CSP_MODE=report-only` added to the command it is run with (in Compose, `- CSP_MODE=report-only`
+under `environment:`). Then:
+
+1. `docker logs <container> 2>&1` has
+   `[WARN] [STARTUP] CSP_MODE=report-only: pages are sent the Content-Security-Policy to report only, not to enforce; remove CSP_MODE once the trial is over. See docs/deployment.md.`
+2. Command 3 again: the header line is now `content-security-policy-report-only`, the font
+   count is `0`, and the script count is still `2`.
+3. With the browser's console open, walk the pages: `/login`; `/`; a board; a card's window,
+   its description, its comments and its attachment image; `/all`; `/plan` and a plan, with
+   its PDF button; `/burndown`; `/graph`; `/reports`, previewing a PDF; `/admin`; `/audit`,
+   whose live log runs; `/account`; `/teams`; `/inbox`; `/archived`; `/docs`; a path that is
+   no page; and, signed out, `/request`, an invite link, and a request's confirm and reply
+   pages. Choose the dark theme and reload: no flash of the light one. Move a card with the
+   board open in a second browser: it moves there within a moment. In the network tab, Inter
+   comes from `/_app/immutable/assets/inter-latin-wght-normal-<hash>.woff2` and no request
+   goes to any Google host.
+4. Preview a report's PDF in every browser family the team uses (Chrome or Edge, Firefox,
+   Safari). How a browser's PDF viewer meets the policy differs by family. **If the preview
+   fails in one of them, `CSP_MODE` stays `report-only`** and the preview gets its own card;
+   the report's Download button is not affected.
+5. Use DumpFire as usual for one working day with the console open. Nothing is collected
+   from anyone else's browser: the trial is what an open console shows.
+
+**Reading a report.** In report-only mode the console names what the policy would have
+refused, beginning `[Report Only]`, and refuses nothing. A report whose source is
+`chrome-extension:` or `moz-extension:` comes from a browser extension (a password manager,
+a dark-mode extension), not from DumpFire, and does not hold up the next step. Any other
+report is either a page the policy breaks, for a build that allows its source, or a script
+the front puts into pages, for that feature to be turned off: deal with it before enforcing.
+
+**Then enforce.** Remove `CSP_MODE` and make the container again: `docker restart` cannot
+take a setting away, so stop it, remove it (the database and the uploads are on the volume
+and stay) and run it with its first command, without the setting; in Compose, take the line
+out and run `docker compose up -d`. The start log then has no `CSP_MODE` line, command 3's
+header line is `content-security-policy`, and step 3's walk works as before. A policy line
+in the console now means something was refused: a fault to report.
+
+**If enforcing breaks a page**, it can be undone without changing the image: set
+`CSP_MODE=report-only` again and make the container again the same way (stop, remove, run
+with the setting, or put the line back and `docker compose up -d`). The start log has the
+`CSP_MODE=report-only` line again and the policy refuses nothing. Once the fault is fixed,
+walk step 3 again, then remove the setting as above.
+
+**If an embedded request form is used**, open the page of the other site that frames it: the
+form still shows, since the policy has no `frame-ancestors`.
+
+**Going back to the previous image** needs nothing done to the database: no table changed.
+The previous image takes any colour again, draws Markdown with DOMPurify's defaults, and
+loads the font from Google; it does not read `CSP_MODE`.
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -1357,6 +1560,8 @@ add_header X-Content-Type-Options $dumpfire_nosniff always;
 
 Do not add `X-Frame-Options` from the proxy for every answer: DumpFire leaves it off the public request form's three pages on purpose, so that the form can be embedded in another site's page. A location that sets an `add_header` of its own stops inheriting the server block's, so set it in each such location as well.
 
+**Do not add a `Content-Security-Policy` at the proxy.** Every page carries DumpFire's own, with a new nonce for its scripts each time (see [The Content-Security-Policy](authentication-security.md#the-content-security-policy)). A browser enforces a second policy beside it, and one written at the proxy holds no page's nonce, so it stops every page's scripts. For the same reason a script that a proxy or front **puts into pages** (Cloudflare's Rocket Loader, its automatic Web Analytics beacon, any "optimisation" that rewrites HTML) is refused by the policy. Command 3 under [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy) shows whether a policy is there, and a count above `0` on its second line whether such a feature may be: read the browser's console in the report-only trial, and turn the feature off only if a report names it.
+
 ## Upload Size Limits
 
 A request's body passes three limits on its way in, and each answers differently when it is too large:
@@ -1461,6 +1666,7 @@ is left as it is.
 | `Referrer-Policy` | `strict-origin-when-cross-origin` |
 | `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` |
 | `X-XSS-Protection` | `0`: switches off the filter old browsers ran over a page, which could itself be used to make a page leak |
+| `Content-Security-Policy` | On pages only, set by SvelteKit with a new nonce on every page; `Content-Security-Policy-Report-Only` instead while `CSP_MODE=report-only`. No API answer, redirect or gate refusal carries one, and an attachment keeps its own `sandbox` |
 
 The public request form and the two pages its mails link to carry no `X-Frame-Options`, so
 that the form can be embedded in another site's page; every other page refuses to be

@@ -1,5 +1,5 @@
 /**
- * startup-checks.ts — seven things about an installation that are said in the
+ * startup-checks.ts — eight things about an installation that are said in the
  * system log when the server starts, because nothing else would say them.
  *
  * None stops the server and none changes anything. They are looked for by
@@ -17,7 +17,10 @@
  * console whatever LOG_LEVEL is, because the deploy checks look for them in
  * `docker logs`. The seventh, that sign-ins from browsers not remembered are
  * not held to one at a time (`SIGN_IN_ONE_AT_A_TIME=off`, card 2194), is
- * written there too: it is meant to be set for one sign-in and removed.
+ * written there too: it is meant to be set for one sign-in and removed. So is
+ * the eighth, that pages are sent their Content-Security-Policy to report only
+ * (`CSP_MODE=report-only`, card 2162), or that `CSP_MODE` holds a value that
+ * is neither mode: it is meant for the policy's first deploy, and removed.
  *
  * And one that does stop the server, after the migrations and before it
  * listens: `refuseUserlessBesideAnother`, when the database in use has no
@@ -34,6 +37,7 @@ import { PLACEHOLDER_ORIGIN, configuredOrigin, getAppUrl } from './email';
 import { createLogger, isLogged } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { signInsOneAtATime } from './known-browsers';
+import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
 
 const log = createLogger('STARTUP');
@@ -345,7 +349,36 @@ export function reportSignInsNotOneAtATime(off: boolean = !signInsOneAtATime()):
 }
 
 /**
- * Say all seven, if they are so. Called once, from hooks.server.ts, as the
+ * One WARN line at every start while `CSP_MODE` is not `enforce` or unset
+ * (card 2162, decision 10), to the console whatever LOG_LEVEL is. Returns
+ * whether it was said.
+ *
+ * `report-only` sends every page its Content-Security-Policy to report, not to
+ * enforce (`secured` in gate-answers.ts): meant for the first deploy of the
+ * policy, while its pages are walked with the browser's console open, and then
+ * removed. This line is what says it was left set. Any other value is a typing
+ * slip: the policy is enforced, and the line names the value so that it can be
+ * put right.
+ */
+export function reportCspMode(value: string | undefined = process.env.CSP_MODE): boolean {
+	if (value === undefined || value === 'enforce') return false;
+
+	if (cspMode(value) === 'report-only') {
+		warnOnConsoleAlways(
+			'CSP_MODE=report-only: pages are sent the Content-Security-Policy to report only, not to enforce; ' +
+				'remove CSP_MODE once the trial is over. See docs/deployment.md.'
+		);
+	} else {
+		warnOnConsoleAlways(
+			`CSP_MODE is ${JSON.stringify(printable(value))}, which is neither enforce nor report-only: the ` +
+				'Content-Security-Policy is enforced.'
+		);
+	}
+	return true;
+}
+
+/**
+ * Say all eight, if they are so. Called once, from hooks.server.ts, as the
  * server loads.
  *
  * It never throws, whatever goes wrong in looking: a fault here must not be
@@ -360,7 +393,8 @@ export function reportInstallation(): void {
 		() => reportNewDatabase(),
 		() => reportDatabaseOffVolume(),
 		() => reportOtherDatabase(),
-		() => reportSignInsNotOneAtATime()
+		() => reportSignInsNotOneAtATime(),
+		() => reportCspMode()
 	]) {
 		try {
 			check();

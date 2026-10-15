@@ -1,9 +1,9 @@
 ---
 title: "SBOM Analysis: DumpFire"
 category: "Identity & Security"
-version: 1.0
+version: 1.2
 status: As-Built
-date: 2026-05-15
+date: 2026-10-15
 tags:
   - sbom
   - licensing
@@ -11,22 +11,25 @@ tags:
   - open-source
   - audit
   - security
-description: "Software Bill of Materials and open-source posture analysis for the DumpFire Kanban board application"
+  - fonts
+  - jsdom
+  - dompurify
+description: "Software Bill of Materials and open-source posture analysis for the DumpFire Kanban board application, with the changes of 2026-10-15: jsdom for the tests, dompurify raised to 3.4.17, and the Inter font bundled under the SIL Open Font License 1.1"
 ---
 
 # SBOM Analysis: DumpFire
 
-Based on production dependency analysis via `license-checker` and `npm audit` (scanned 2026-05-15, post-update), here is an architectural summary and open-source posture analysis of the DumpFire application.
+Based on production dependency analysis via `license-checker` and `npm audit` (scanned 2026-05-15, post-update), here is an architectural summary and open-source posture analysis of the DumpFire application. The counts and tables of sections 2 to 6 are that scan's. What changed on 2026-10-15 (cards 2202 and 2203) is in [section 9](#9-changes-on-2026-10-15), and is folded into the rows it touches below.
 
 ## 1. Application Summary
 
 DumpFire is a self-hosted, real-time **Kanban board** built for teams on a local network. It is a full-stack **SvelteKit 5** (Runes) web application running on **Node.js 22**, backed by an embedded **SQLite** database. By analysing its dependency tree, we can deduce its core architecture and capabilities:
 
-**UI Framework (SvelteKit 5 + Svelte Runes):** The frontend is a server-rendered SvelteKit application using the Svelte 5 Runes reactivity model. The `@sveltejs/adapter-node` compiles the app into a standalone Node.js server, containerised via a multi-stage Dockerfile. Drag-and-drop Kanban interactions are powered by `svelte-dnd-action`. Rich text rendering uses `marked` (Markdown parser) with `dompurify` for XSS sanitisation.
+**UI Framework (SvelteKit 5 + Svelte Runes):** The frontend is a server-rendered SvelteKit application using the Svelte 5 Runes reactivity model. The `@sveltejs/adapter-node` compiles the app into a standalone Node.js server, containerised via a multi-stage Dockerfile. Drag-and-drop Kanban interactions are powered by `svelte-dnd-action`. Rich text rendering uses `marked` (Markdown parser) with `dompurify` for XSS sanitisation, both through one module, `src/lib/markdown.ts`, which configures DOMPurify for descriptions and comments (card 2202). Text is set in Inter, a font bundled with the application and served by it (card 2203), not fetched from Google.
 
 **Data Layer (SQLite + Drizzle ORM):** All data is stored in a single SQLite file via `better-sqlite3` (a synchronous, native N-API binding). Schema management and queries use `drizzle-orm` with `drizzle-kit` for migration generation. WAL mode is enabled for concurrent read performance.
 
-**Authentication & Security:** User passwords are hashed with `bcryptjs` (BSD-3-Clause, pure JS). Session-based auth with 30-day sliding windows, API key bearer tokens, and rate limiting are implemented in server hooks. Security headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, X-XSS-Protection) are applied globally.
+**Authentication & Security:** User passwords are hashed with `bcryptjs` (BSD-3-Clause, pure JS). Session-based auth with 30-day sliding windows, API key bearer tokens, and rate limiting are implemented in server hooks. Security headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, X-XSS-Protection) are applied globally, and every page carries a Content-Security-Policy with a nonce per page (card 2162).
 
 **Cloud Backup Providers:** The backup system supports four destination providers via dedicated SDK integrations:
 
@@ -71,7 +74,7 @@ Eight packages use dual/multi-licence or non-standard SPDX identifiers. Each has
 
 | Package | Version | Declared Licence | Status | Notes |
 |---|---|---|---|---|
-| dompurify | 3.4.3 | (MPL-2.0 OR Apache-2.0) | ✅ Compliant | Dual-licensed. The Apache-2.0 option is selected, which is fully permissive. MPL-2.0 is file-level copyleft but the OR clause allows choosing Apache-2.0 instead. |
+| dompurify | 3.4.17 (range `^3.4.17` since 2026-10-15) | (MPL-2.0 OR Apache-2.0) | ✅ Compliant | Dual-licensed. The Apache-2.0 option is selected, which is fully permissive. MPL-2.0 is file-level copyleft but the OR clause allows choosing Apache-2.0 instead. |
 | pako | 1.0.11 | (MIT AND Zlib) | ✅ Compliant | Dual-licensed under both MIT and Zlib. Both are maximally permissive. Zlib licence permits use in commercial software without attribution. |
 | rc | 1.2.8 | (BSD-2-Clause OR MIT OR Apache-2.0) | ✅ Compliant | Triple-licensed. Any of the three options is permissive. MIT is the most common selection. |
 | expand-template | 2.0.3 | (MIT OR WTFPL) | ✅ Compliant | Dual-licensed. MIT is the standard selection. WTFPL is maximally permissive. |
@@ -135,7 +138,13 @@ The following tables list all 237 production-scoped packages compiled into the p
 | Package | Version | Licence | Integration |
 |---|---|---|---|
 | marked | 18.0.3 | MIT | Bundled — Markdown to HTML parser |
-| dompurify | 3.4.3 | (MPL-2.0 OR Apache-2.0) | Bundled — HTML sanitiser |
+| dompurify | 3.4.17 | (MPL-2.0 OR Apache-2.0) | Bundled — HTML sanitiser. `package.json` asks for `^3.4.17` since 2026-10-15 (it was `^3.3.3`, which admitted the release before 3.4.3's fix of a `FORBID_TAGS` bypass, and the renderer relies on `FORBID_TAGS`; then `^3.4.3`, below the releases that clear the advisories `npm audit` listed that day) |
+
+### Font — Inter (OFL-1.1, bundled, not an npm package)
+
+| Asset | Version | Licence | Integration |
+|---|---|---|---|
+| Inter, seven `woff2` files under `src/lib/fonts/inter/` (cyrillic-ext, cyrillic, greek-ext, greek, vietnamese, latin-ext, latin; 218,512 bytes) | 4.001 | OFL-1.1, "Copyright 2016 The Inter Project Authors", no Reserved Font Name | Bundled — served by DumpFire from `/_app/immutable/assets/`. Taken from the tarball of `@fontsource-variable/inter@5.3.0` (`npm pack` in a scratch folder; nothing installed, so it is in neither `package.json` nor the lock), and each file compared by SHA-256 with what Google Fonts served on 2026-10-15: identical. The licence's text is `static/licences/inter-OFL.txt`, served at `/licences/inter-OFL.txt`, as the OFL asks of a bundled copy |
 
 ### PDF Generation (MIT)
 
@@ -297,7 +306,8 @@ The following packages are used exclusively for development and build tooling. T
 | **TypeScript** | typescript 5.9.3, svelte-check 4.4.8, tsx 4.22.0 | Apache-2.0 / MIT |
 | **Database Tooling** | drizzle-kit 0.31.10 | MIT |
 | **Dev Utilities** | chokidar 4.0.3, picocolors, nanoid 3.3.12, deepmerge, cookie 0.7.2 | MIT / ISC |
-| **Type Definitions** | @types/bcryptjs, @types/cookie, @types/d3-force, @types/dompurify, @types/ssh2-sftp-client, @types/ssh2 | MIT |
+| **Type Definitions** | @types/bcryptjs, @types/cookie, @types/d3-force, @types/dompurify, @types/ssh2-sftp-client, @types/ssh2, @types/jsdom 28.0.3 | MIT |
+| **Test DOM** (since 2026-10-15) | 40 packages: jsdom 29.1.1 and @types/jsdom 28.0.3, and what each brings | MIT, MIT-0, ISC, BSD-2-Clause, BSD-3-Clause, Apache-2.0, BlueOak-1.0.0, CC0-1.0 (section 9) |
 
 ## 6. Security Audit
 
@@ -347,3 +357,64 @@ These overrides are safe because both packages maintain backwards-compatible API
 DumpFire is a well-architected SvelteKit 5 self-hosted Kanban application with a comprehensive feature set including multi-provider cloud backups, real-time SSE sync, PDF report generation, and role-based access control. Its open-source footprint is **excellent**, relying almost entirely on permissive **MIT (217 packages)** and **Apache-2.0 (64 packages)** licences.
 
 With zero copyleft-licensed components in the production build, all dual-licensed packages resolvable to permissive terms, zero known vulnerabilities across 310 dependencies, and a clean Dockerfile build pipeline that properly separates dev and production dependencies, the application's legal and licensing posture is **fully compliant and ready for enterprise deployment**.
+
+## 9. Changes on 2026-10-15
+
+Cards 2202 (one Markdown renderer) and 2203 (the font served by DumpFire) changed what the
+application is built from. Nothing was removed and no production package changed version.
+
+**`jsdom` 29.1.1 and `@types/jsdom` 28.0.3, development dependencies** (`^29.1.1`,
+`^28.0.3`, both MIT). They are used by `tests/markdown.test.ts` alone, which hands
+DOMPurify a jsdom window: DOMPurify needs a DOM, and jsdom is the one its own documentation
+names for use outside a browser. They are installed in the image's build stage, which runs
+the tests, and pruned with every other development dependency by `npm ci --omit=dev`, so
+none reaches the production image. **29.1.1, not the current 30.x:** `.npmrc` sets
+`engine-strict=true`, and jsdom 30 requires Node `^22.22.2 || ^24.15.0 || >=26.0.0`; the
+workstation that built this runs Node 22.18.0, and 29.1.1 (2026-04-30) is the newest whose
+engines (`^20.19.0 || ^22.13.0 || >=24.0.0`) accept it. `@types/jsdom` has no 29.x; 28.0.3
+is the newest before 30.0.0. Revisit when Node is at least 22.22.2.
+
+The lock gained 40 packages, every one `dev: true`; nothing already in it changed or went.
+Their licences:
+
+| Licence | Packages | Risk |
+|---|---|---|
+| MIT | 31 (jsdom, @types/jsdom, @types/tough-cookie, parse5, undici, whatwg-url, tr46, css-tree, tldts and the rest) | ✅ Very Low |
+| MIT-0 | 2 (@csstools/color-helpers, @csstools/css-syntax-patches-for-csstree) | ✅ Very Low |
+| BSD-2-Clause | 2 (entities, webidl-conversions) | ✅ Very Low |
+| BSD-3-Clause | 1 (tough-cookie) | ✅ Very Low |
+| ISC | 1 (saxes) | ✅ Very Low |
+| Apache-2.0 | 1 (xml-name-validator) | ✅ Very Low |
+| BlueOak-1.0.0 | 1 (lru-cache 11.5.3) | ✅ Very Low: permissive, no copyleft |
+| CC0-1.0 | 1 (mdn-data) | ✅ Very Low: public domain dedication |
+| **Total** | **40, all dev-only** | |
+
+No copyleft licence came in, and none of them ships.
+
+**`dompurify` raised to 3.4.17.** The range in `package.json` became `^3.4.3` (it was
+`^3.3.3`), so that a fresh resolution can no longer pick the release before the
+`FORBID_TAGS` fix of section 6, on which the renderer relies; the lock already held 3.4.3.
+Then, on the review of the same work, it was raised with npm to 3.4.17, the newest 3.4
+release that day: the range is `^3.4.17`, and the lock's `dompurify` entry and its root
+range are the only lines of the lock that changed (3.4.17 needs no package 3.4.3 did not).
+`tests/markdown.test.ts` holds both files at 3.4.17 or later, and every rule of the
+renderer passed unchanged across the upgrade.
+
+**The Inter font, bundled.** Seven `woff2` files of Inter 4.001 (OFL-1.1), with their
+licence at `/licences/inter-OFL.txt`: see the row under section 4. The SIL Open Font License
+allows the font to be bundled and redistributed with software, subset or converted, if each
+copy carries the copyright notice and the licence and the font is not sold on its own. It
+binds the font, not the software it is bundled with, and places nothing on DumpFire's own
+code. Every page now loads it from DumpFire, and no page asks Google, or any other site, for
+anything.
+
+**`npm audit`, 2026-10-15.** Before the raise, ten advisories, none from the packages added:
+1 low, 3 moderate, 6 high, in `@sveltejs/kit`, `devalue`, `dompurify`, `esbuild`, `nanoid`,
+`nodemailer`, `postcss`, `qs`, `source-map-js` and `vite`, each with a fix available. For
+`dompurify` it listed eleven advisories for releases up to 3.4.15. They concern `IN_PLACE`
+sanitising, `setConfig()` and `clearConfig()`, a hook that changes `data.allowedTags` or
+`data.allowedAttributes`, `SAFE_FOR_TEMPLATES`, Trusted Types and
+`CUSTOM_ELEMENT_HANDLING`. The renderer uses none of them: it calls `sanitize()` on its own
+instance with `RETURN_DOM_FRAGMENT`, and its one hook sets only `keepAttr` and `attrValue`.
+After the raise to 3.4.17, `npm audit` lists nine, 1 low, 2 moderate and 6 high, none of
+them in `dompurify`: the other nine packages above, as before.

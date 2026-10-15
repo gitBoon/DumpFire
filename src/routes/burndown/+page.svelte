@@ -33,6 +33,7 @@
 	} from '$lib/burndown-text';
 	import { finishedSinceStart, workInPlay } from '$lib/burndown';
 	import type { BurndownGroup, BurndownGroupBy, BurndownOption } from '$lib/burndown';
+	import { drawnColour } from '$lib/colours';
 
 	let { data } = $props();
 
@@ -432,7 +433,7 @@
 								{@const on = activeMode === 'boardCategory' && selectedGroup?.id === c.id}
 								<button class="pick-row" class:checked={on} onclick={() => { chooseBoardCategory(c.id); close(); }}>
 									<span class="check" aria-hidden="true">{on ? '✓' : ''}</span>
-									<span class="swatch" style="background: {c.color}"></span>
+									<span class="swatch" style="background: {drawnColour(c.color)}"></span>
 									<span class="pick-name">{c.name}</span>
 								</button>
 							{/each}
@@ -897,7 +898,7 @@
 									<tr>
 										<td class="name">
 											<button class="row-link" onclick={() => drill(g)} title="Chart just this">
-												{#if g.color}<span class="swatch" style="background: {g.color}"></span>{/if}
+												{#if g.color}<span class="swatch" style="background: {drawnColour(g.color)}"></span>{/if}
 												{g.name}
 											</button>
 										</td>

@@ -166,7 +166,10 @@
 				// a parser error.
 				genError = await failureMessage(res, 'Failed to generate report');
 			} else {
-				const blob = await res.blob();
+				// Typed as a PDF whatever the answer says it is: the preview frame
+				// shows this blob: address as this page's own origin, where an
+				// answer that is HTML would be drawn as a page (card 2162's review).
+				const blob = new Blob([await res.arrayBuffer()], { type: 'application/pdf' });
 				pdfUrl = URL.createObjectURL(blob);
 			}
 		} catch (e: any) {

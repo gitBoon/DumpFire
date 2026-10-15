@@ -32,6 +32,7 @@
 	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, isStale, isNew } from '$lib/utils/date-utils';
 	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel } from '$lib/utils/card-utils';
 	import { isCoverValue } from '$lib/colours';
+	import { drawnColour } from '$lib/colours';
 	import { activityLabel } from '$lib/utils/activity-labels';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
@@ -1259,7 +1260,7 @@
 			{#each boardColumns as column (column.id)}
 				<div class="kanban-column glass" class:wip-warning={column.wipLimit > 0 && column.cards.length >= column.wipLimit} animate:flip={{ duration: FLIP_DURATION_MS }}>
 					<div class="column-header">
-						<div class="column-top-bar" style="background: {column.color}"></div>
+						<div class="column-top-bar" style="background: {drawnColour(column.color)}"></div>
 						<div class="column-title-row">
 							{#if editingColumn === column.id && canManage}
 								<input
@@ -1291,7 +1292,7 @@
 							<div class="column-actions">
 							<div class="color-picker-wrapper">
 								<button class="btn-ghost column-action-btn" title="Change color" onclick={(e) => { e.stopPropagation(); toggleDropdown(`color-${column.id}`); }}>
-									<span class="color-dot" style="background: {column.color}"></span>
+									<span class="color-dot" style="background: {drawnColour(column.color)}"></span>
 								</button>
 								{#if openDropdown === `color-${column.id}`}
 									<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -1301,7 +1302,7 @@
 											<button
 												class="color-swatch"
 												class:active={column.color === color}
-												style="background: {color}"
+												style="background: {drawnColour(color)}"
 												onclick={() => { updateColumn(column.id, { color }); column.color = color; closeDropdowns(); }}
 											></button>
 										{/each}
@@ -1442,7 +1443,7 @@
 									</svg>
 								</div>
 									{#if getCategoryById(card.categoryId, boardCategories)?.color}
-									<div class="card-color-strip" style="background: {getCategoryById(card.categoryId, boardCategories)?.color}; --strip-color: {getCategoryById(card.categoryId, boardCategories)?.color}"></div>
+									<div class="card-color-strip" style="background: {drawnColour(getCategoryById(card.categoryId, boardCategories)?.color)}; --strip-color: {drawnColour(getCategoryById(card.categoryId, boardCategories)?.color)}"></div>
 								{/if}
 								{#if inlineEditCardId === card.id}
 								<!-- svelte-ignore a11y_autofocus -->
@@ -1497,7 +1498,7 @@
 									</span>
 									{#if getCategoryById(card.categoryId, boardCategories)}
 										{@const cat = getCategoryById(card.categoryId, boardCategories)!}
-										<span class="category-badge" style="background: {cat.color}20; color: {cat.color}; border: 1px solid {cat.color}40">
+										<span class="category-badge" style="background: {drawnColour(cat.color)}20; color: {drawnColour(cat.color)}; border: 1px solid {drawnColour(cat.color)}40">
 											{cat.name}
 										</span>
 									{/if}
@@ -1545,7 +1546,7 @@
 										{#each card.labelIds as labelId}
 										{@const label = getLabelById(labelId, boardLabels)}
 											{#if label}
-												<span class="label-chip" style="background: {label.color}25; color: {label.color}; border: 1px solid {label.color}40">{label.name}</span>
+												<span class="label-chip" style="background: {drawnColour(label.color)}25; color: {drawnColour(label.color)}; border: 1px solid {drawnColour(label.color)}40">{label.name}</span>
 											{/if}
 										{/each}
 									</div>

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.30
+version: 1.32
 status: As-Built
 date: 2026-10-15
 tags:
@@ -32,7 +32,13 @@ tags:
   - worker-threads
   - remembered-browsers
   - ipv6
-description: "Deep-dive into DumpFire's authentication system, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, and how attachments are served"
+  - content-security-policy
+  - colours
+  - markdown
+  - dompurify
+  - mentions
+  - fonts
+description: "Deep-dive into DumpFire's authentication system, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -2107,6 +2113,7 @@ redirects, to a caller who is signed in or not.
 | `Referrer-Policy` | `strict-origin-when-cross-origin` | Limits referrer leakage |
 | `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` | Disables unused browser APIs |
 | `X-XSS-Protection` | `0` | Switches off the filter old browsers ran over a page, which could itself be used to make a page leak. Current browsers have dropped it. It was `1; mode=block` |
+| `Content-Security-Policy` | **On pages only**, and set by SvelteKit, not by `secured()`: the directives below, with a new nonce on every page | Says where a page may load scripts, styles, images, fonts and connections from, and that no page asks another site for anything. See [The Content-Security-Policy](#the-content-security-policy) |
 
 - **A header the answer already has is never replaced.** An attachment keeps the
   `X-Content-Type-Options` and `Content-Security-Policy: sandbox` it is served with (see
@@ -2114,8 +2121,10 @@ redirects, to a caller who is signed in or not.
 - **The public request form may be framed by another site.** `/request`,
   `/request/[id]/confirm` and `/request/[id]/reply`, by route id, exactly, carry every header
   but `X-Frame-Options`, in case the form is embedded in an intranet page. Every other page,
-  the login page included, refuses to be framed. No `Content-Security-Policy:
-  frame-ancestors` is sent: the application has no policy to add it to.
+  the login page included, refuses to be framed. The pages' Content-Security-Policy has no
+  `frame-ancestors` (card 2162): it is one policy for every page, so it would refuse these
+  three as well. Without that directive `X-Frame-Options`, set route by route, is the frame
+  rule every current browser reads.
 - **The gate's redirects are answers it returns.** They were thrown, and SvelteKit made
   each into an answer after the gate had returned, with none of the five on it. The gate
   makes each as SvelteKit would have: a `303` with `Location`, or, for a page's script
@@ -2139,6 +2148,262 @@ refusals carried none.
   failed.
 
 Covered by `tests/gate.test.ts`.
+
+### The Content-Security-Policy
+
+Every page SvelteKit renders, its error pages included, carries a `Content-Security-Policy`
+(card 2162), from `kit.csp` in `svelte.config.js`, `mode: 'auto'`. No page is prerendered,
+so that is a new nonce on every page. SvelteKit puts the nonce on its own start-up script
+and on the one other inline script, the theme script in `src/app.html`
+(`<script nonce="%sveltekit.nonce%">`), which sets the dark theme before the page's CSS is
+applied; it was in the root layout's `<svelte:head>`, where it had no nonce. Every other
+script is a file under `/_app/`.
+
+| Directive | Value | Why this and not more |
+|-----------|-------|-----------------------|
+| `default-src` | `'self'` | Anything not named below |
+| `script-src` | `'self'` and the page's nonce | SvelteKit's start-up script and the theme script carry the nonce. No page has an inline handler, a `javascript:` address or `eval`. An attachment cannot be run as a script: it is served as an image type or `application/octet-stream`, with `nosniff` |
+| `style-src` | `'self' 'unsafe-inline'` | Read only by a browser that knows neither of the next two; it keeps such a browser working, at the cost of letting it have `<style>` elements |
+| `style-src-elem` | `'self'` | No `<style>` element. A built page links its CSS from files and writes none, so one smuggled into a description could not restyle the page even if the sanitiser missed it. Under `vite dev`, which injects style elements, SvelteKit adds `'unsafe-inline'` to the style directives itself; a built server does not |
+| `style-src-attr` | `'unsafe-inline'` | Svelte writes `style="…"` into the server's HTML and its own templates: every colour strip, bar width and menu position. What makes one safe is [Colours From a Request](#colours-from-a-request), the sanitiser that takes `style` out of Markdown, and `img-src` |
+| `img-src` | `'self' data:` | Attachments are DumpFire's; the tab icon and the select arrow are `data:`. This is what stops a `url()` in any style, stored before the colour rule or not, from fetching from another site. Not `https:`, which would allow it again |
+| `font-src` | `'self'` | Inter, served by DumpFire itself (card 2203): see [Architecture](architecture.md#technology-stack) |
+| `connect-src` | `'self'` | Every `fetch`, and the three live streams, `/api/events`, `/api/boards/[id]/events` and `/api/logs/stream`, are DumpFire's own |
+| `frame-src`, `object-src` | `blob:` | The reports page shows its PDF in a frame from a `blob:` address, and the browser's PDF viewer in it is a plugin. Only the page's own script can make a `blob:` address, and the sanitiser keeps no `<object>`, `<embed>` or frame. The page makes that blob `application/pdf` whatever type the answer gave, since a `blob:` frame runs as the page's own origin: an answer that was HTML, a proxy's page among them, is never drawn there as a page |
+| `base-uri`, `form-action` | `'self'` | The sign-in, set-up, invite and sign-out forms post to DumpFire |
+| Not set: `upgrade-insecure-requests` | | An installation served over plain HTTP, such as `http://localhost:3000`, would have every script and style asked for over HTTPS and fail |
+| Not set: `frame-ancestors` | | One policy for every page would refuse the request form's three frameable pages: `X-Frame-Options` stays the frame rule |
+| Not set: `report-uri`, `report-to` | | Nothing is collected. A report's document address can carry an invite's token |
+
+**Every directive is `'self'` or narrower but `style-src-attr` and the PDF frame's `blob:`:
+no page asks another site for anything.** The font was the last thing that did: until card
+2203 every page, signed out included, loaded Inter from Google, which told Google the
+address of whoever opened DumpFire, and when.
+
+**Nothing but a page carries one.** An answer of the internal or the documented API, the
+gate's own refusals and its redirects carry no policy and are given none; an attachment
+keeps its own `Content-Security-Policy: sandbox`. Static files, the font files and
+`/licences/inter-OFL.txt` among them, are served before the gate and carry none either.
+
+**Report-only mode.** With `CSP_MODE=report-only`, `secured()` moves a page's policy,
+unchanged and with its nonce, from `Content-Security-Policy` to
+`Content-Security-Policy-Report-Only`: the browser then names in its console what the policy
+would have refused, and refuses nothing. A page is an answer SvelteKit rendered, which
+carries `x-sveltekit-page: true`; nothing else is touched, so an attachment's `sandbox` stays
+enforced. `cspMode()` in `src/lib/server/gate-answers.ts` reads the variable: `report-only`,
+exactly, is report-only, and anything else, nothing set included, is enforced, so an
+installation nobody told is protected. `REPORT-ONLY` and ` report-only` are enforced too.
+While it is set, and for a value that is neither mode, one `[WARN] [STARTUP]` line at every
+start says so (`reportCspMode()` in `src/lib/server/startup-checks.ts`), on the console
+whatever `LOG_LEVEL` is. It is meant for the policy's first deploy and is then removed: see
+[Deployment](deployment.md#the-update-that-brings-the-content-security-policy). SvelteKit's
+own report-only policy is not used: it refuses to start without a `report-uri`, a public
+route that would write browsers' reports, whose page addresses can carry an invite's token,
+to the log.
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant H as handle (hooks.server.ts)
+    participant K as SvelteKit's renderer
+    participant S as secured() (gate-answers.ts)
+    B->>H: GET /board/7
+    H->>K: resolve(event), after the gate's own checks
+    K->>K: a new nonce, on its start-up script and on app.html's theme script
+    K-->>H: 200 text/html, x-sveltekit-page true,<br/>Content-Security-Policy with the nonce
+    H->>S: secured(response, '/board/[id]')
+    opt CSP_MODE=report-only, and the answer is a page
+        S->>S: the same policy, moved to Content-Security-Policy-Report-Only
+    end
+    S->>S: each of the five headers the answer lacks<br/>(X-Frame-Options but on the request form's three pages)
+    S-->>B: the answer
+    Note over B,S: An API answer, a redirect or a gate refusal has no policy and gets none.<br/>An attachment keeps its own Content-Security-Policy sandbox.
+```
+
+The suite renders pages through SvelteKit in development mode, which adds `'unsafe-inline'`
+to the style directives of the header, so it reads the configured style directives from
+`svelte.config.js` instead. That a built server sends `style-src-elem 'self'` alone was
+checked by hand on 2026-10-15, with a production build on a scratch database: `/login`
+carried the policy with a script nonce, `style-src-elem 'self'` and `font-src 'self'`, two
+nonced scripts, no `<style>` and nothing from Google; the fonts were served from
+`/_app/immutable/assets/` as `font/woff2`, cached for a year as immutable;
+`/licences/inter-OFL.txt` answered `200`; and an API `401` carried no policy.
+
+Covered by `tests/content-security-policy.test.ts`.
+
+## Colours From a Request
+
+A colour is written into a `style` attribute, or an SVG `fill` or `stroke`, on every page
+that draws it: a column's top bar, a label's chip, a category's badge, a board grouping, a
+card's colour tag. Until card 2162 every route stored whatever text it was sent as a colour,
+so `red;background:url(//x.io)` made the browser of everyone who opened the board fetch
+from another site, and `red;position:fixed;inset:0;z-index:9999` laid one chip over the
+whole page. A board grouping can be made by any signed-in account or API key. Two rules
+close it, one where a colour is written and one where it is drawn, with the policy's
+`img-src 'self' data:` behind them.
+
+**Written: `#rrggbb` and nothing else.** Every route that stores a colour reads it with
+`readColour` in `src/lib/server/request-body.ts`, which asks `isHexColour` in
+`src/lib/colours.ts`: `#` and six hex digits, in either case, trimmed, and stored as sent.
+Anything else, `red` and `#fff` included, and a value that is not text, is `400`
+`color must be a colour written #rrggbb`, or for a colour tag
+`colorTag must be a colour written #rrggbb, or empty`, where `''` clears the tag. Nothing is
+written. A colour the row already holds, sent back unchanged, is accepted as it is, so
+renaming a column whose colour was stored before the rule never fails over it. `#fff` is
+refused because the pages make a pale shade of a colour by appending two hex digits to it
+(`{cat.color}20`), which only works on six. The 24 routes:
+
+| Tree | Routes |
+|------|--------|
+| Internal (`color`) | `POST /api/board-categories`, `PUT /api/board-categories/{id}`, `POST /api/categories`, `PUT /api/categories/{id}`, `POST /api/columns`, `PUT /api/columns/{id}`, `POST` and `PATCH /api/labels` |
+| Internal (`colorTag`) | `POST /api/cards`, `PUT /api/cards/{id}`, `POST /api/subtasks`, `PUT /api/subtasks/{id}` |
+| `/api/v1/` (`color`) | `POST /board-categories`, `PUT /board-categories/{categoryId}`, `POST /boards/{boardId}/categories`, `/columns` and `/labels`, `PUT /categories/{categoryId}`, `/columns/{columnId}` and `/labels/{labelId}` |
+| `/api/v1/` (`colorTag`) | `POST /boards/{boardId}/cards`, `PUT /cards/{cardId}`, `POST /cards/{cardId}/subtasks`, `PUT /subtasks/{subtaskId}` |
+
+A page that copies a stored colour tag into a new card or subtask (Duplicate, the duplicate's
+subtasks and the card window's pending subtasks) sends it only when it is `#rrggbb`, and
+`''` otherwise (`colourToCopy` in `src/lib/utils/card-utils.ts`), so a copy is never refused
+over an old tag.
+
+**Drawn: a colour and nothing more, or grey.** Colours stored before the rule are kept, and
+answered by the API as stored. A page draws every one through `drawnColour` in
+`src/lib/colours.ts`:
+
+- no value (`null`, `undefined`, `''`): `''`, so nothing is drawn where nothing was;
+- a value for which `isSafeColour` holds once its leading and trailing spaces, tabs and line
+  breaks are trimmed, `#` and 3, 4, 6 or 8 hex digits, one word of 1 to 30 letters such as
+  `red`, or `var(--name)`, in any case: the value, trimmed, so a stored `red`, `#fff` or
+  `#ef4444 ` looks as it did;
+- anything else: `NEUTRAL_COLOUR`, `#94a3b8`, the grey the reports use for
+  "Uncategorised", so a stored `red;background:url(//x.io)` is drawn grey and fetches
+  nothing.
+
+None of the forms `isSafeColour` takes can end a declaration, call any function but `var()`
+(so never `url()`), or leave the attribute. Every colour interpolated into a `style`, `fill`
+or `stroke` attribute of a `.svelte` file goes through `drawnColour`, constants included, so
+that one rule can be held by a test that reads every `.svelte` file under `src`. SQL 1 under
+[Deployment](deployment.md#the-update-that-brings-the-content-security-policy) is
+`isSafeColour` written in SQL, on the value trimmed the same way: it lists, on production,
+the stored colours that will be drawn grey.
+
+**Why a style attribute is allowed at all.** Svelte writes `style="…"` into the server's HTML
+and its own templates, so the policy has `style-src-attr 'unsafe-inline'`. A style attribute
+is safe because of the two rules above, because the Markdown sanitiser takes every `style`
+out of a description or comment, and because `img-src 'self' data:` stops any `url()` from
+fetching from another site whatever is drawn.
+
+```mermaid
+flowchart LR
+    Req["A colour in a request<br/>(a page, or an API key, either tree)"] --> RC{"readColour:<br/>#rrggbb?"}
+    RC -->|"No"| R400["400: the field must be a colour written #rrggbb<br/>nothing written"]
+    RC -->|"Yes"| DB[("labels, categories, board_categories,<br/>columns, cards.color_tag, subtasks.color_tag")]
+    Old["Stored before the rule,<br/>or brought back by a restore"] --> DB
+    DB --> DC{"drawnColour, on the value trimmed:<br/>a colour and nothing more?"}
+    DC -->|"Yes"| Draw["drawn as stored, trimmed"]
+    DC -->|"No"| Grey["drawn #94a3b8"]
+    DC -->|"No value"| None["nothing drawn"]
+    Draw --> Pol["the browser, under the policy:<br/>img-src 'self' data:"]
+    Grey --> Pol
+```
+
+Covered by `tests/colours.test.ts`, and by `tests/request-body.test.ts` for `readColour`'s
+own rule.
+
+## Markdown in Descriptions and Comments
+
+A card's description and its comments are written by one person and drawn for everyone who
+opens the card. Both are Markdown, drawn in the card window (the description's Preview, and
+every comment) by `renderMarkdown` in `src/lib/markdown.ts` (cards 2202 and 2210), as
+`{@html renderMarkdown(...)}`. It is the only module that imports `marked` or `dompurify`.
+Until then each place ran `DOMPurify.sanitize(marked(...))` with DOMPurify's defaults, which
+keep `style` attributes, `<style>` elements, any class of the page's own, forms, SVG and
+images from any address, and put mention chips into the HTML, attributes included.
+
+```mermaid
+flowchart TD
+    Text["The stored text, as written"] --> Win{"A window to clean with?"}
+    Win -->|"No: a server render"| Esc["The text HTML-escaped,<br/>no HTML at all"]
+    Win -->|"Yes: the browser"| Marked["marked: Markdown to HTML,<br/>raw HTML passed through"]
+    Marked --> Purify["DOMPurify, an instance of the renderer's own:<br/>the HTML profile, no SVG or MathML,<br/>no style element, no form or its controls,<br/>no dialog, template, map or area,<br/>no style, srcset, background, poster, usemap or popover attribute,<br/>class kept only as language-…,<br/>id and name prefixed user-content-"]
+    Purify --> Clean["A pass over its DOM:<br/>every input removed but a disabled checkbox,<br/>src kept only when a card attachment or data:"]
+    Clean --> Img{"Any other image,<br/>another site's or another address here?"}
+    Img -->|"Inside a link"| ImgText["its text alone: 🖼 and the alt text"]
+    Img -->|"Elsewhere"| ImgLink["a link to its address,<br/>reading 🖼 and the alt text"]
+    Img -->|"None"| Kind{"A comment?"}
+    ImgText --> Kind
+    ImgLink --> Kind
+    Kind -->|"Yes"| Chips["findMentions in every text node:<br/>each mention a span made with textContent"]
+    Kind -->|"No: a description"| Out["HTML drawn in the card window"]
+    Chips --> Out
+    Esc --> Out
+```
+
+What a description or comment may hold:
+
+| What | Rule | Why |
+|------|------|-----|
+| The profile | DOMPurify's HTML profile (`USE_PROFILES: { html: true }`) | No SVG and no MathML. SVG's `<image href>` fetches from wherever it names |
+| `<style>` | Removed with its content (`FORBID_TAGS`) | It restyles the whole page |
+| Forms | `form`, `button`, `select`, `option`, `textarea`, `fieldset` and `label` removed, their text kept (`FORBID_TAGS`); every `input` removed but `<input type="checkbox" disabled>`, checked or not, which is what marked makes for a task list | A comment could draw a password form asking everyone who opens the card to "sign in again". The policy's `form-action 'self'` stays behind it |
+| Things drawn over the window | `dialog` removed, its text kept (`FORBID_TAGS`); the attributes `popover`, `popovertarget` and `popovertargetaction` removed (`FORBID_ATTR`) | `<dialog open>` and a popover are drawn above the page with no style at all: the same "sign in again" box, without a form |
+| `template` | Removed with what it holds (`FORBID_TAGS`) | What it holds is out of reach of the passes below, which read the drawn elements |
+| Image maps | `map` and `area` removed (`FORBID_TAGS`), and `usemap` (`FORBID_ATTR`) | An area lays a link of any shape over a picture, so a picture of a button can lead anywhere |
+| Attributes | `style`, `srcset`, `background` and `poster` removed (`FORBID_ATTR`) | `style` draws an overlay over the window; the other three fetch |
+| `id`, `name` | Kept with `user-content-` put before the value (`SANITIZE_NAMED_PROPS`) | A comment's `id="…"` cannot stand for one of the page's own elements, nor a name for one of the document's properties. So a link to an anchor written in the same text must name it with the prefix: `<a href="#user-content-sec">` for `<a id="sec">` |
+| `class` | Only the tokens `language-<name>` kept, which marked puts on a fenced code block; the attribute goes when none is left | Any other class is one of the page's own: `modal-overlay` covers the window with no style attribute. A typed `mention-chip` goes too: a chip is made only by the renderer |
+| `src`, on any element | Kept only when it is a card attachment on this DumpFire (`isAttachmentAddress`), or a `data:` address where DOMPurify allows one (images, audio, video). On anything but an image any other `src` is removed | An outside address tells another server who opened the card, and when. Any other address here makes the browser of everyone who opens the card call that route as them: `/api/admin/export` as an administrator, `/api/events` holding a stream open |
+| Any other image | Another site's, or another address here: becomes a link to its address reading `🖼 ` and its alt text, or the address when it has none, made with `textContent`, never HTML. Inside a link it becomes that text alone, so links never nest | The reader keeps the address, and nothing is fetched |
+| DOMPurify's own | `on…` handlers, `javascript:` addresses and `<script>` removed, as by default | |
+
+**A picture may show a card attachment and nothing else.** `isAttachmentAddress(value,
+origin)` reads the address as the browser's URL parser does: leading and trailing spaces and
+control characters removed, tabs and new lines taken out. It is an attachment when it is the
+path `/api/cards/<id>/attachments/<id>` exactly, or a full `http` or `https` address whose
+origin is the page's own (`window.location.origin`) with that same path and no query,
+fragment, name or password. So `/api/cards/1/attachments/2` and
+`https://<DumpFire's address>/api/cards/1/attachments/2` show as pictures. Every other
+address is drawn as a link, whatever it points at: another site's (`//host`, `/\host`,
+`\\host`, `/<tab>/host`, `ht<tab>tp://host`, `HTTPS://host`, the same path on another
+origin), and every other address on DumpFire (`/api/admin/export?1`, `/api/events`, `x.png`,
+`../x.png`, a path with `?`, `/..` or a trailing `/`), since a picture there would make the
+viewer's browser call that route, signed in as them. A `data:` image still shows; an
+attachment's `<video>` or `<audio>` keeps its address, and any other address on one is
+removed.
+
+**With no DOM, no HTML.** `createMarkdownRenderer()` with no window, or one DOMPurify cannot
+use, and `renderMarkdown` where there is no `window`, give back the text HTML-escaped (`&`,
+`<`, `>`, `"` and `'`), never HTML, and never throw. The card window renders only in the
+browser; a render on the server would show the text plainly. Before, DOMPurify with no window
+had no `sanitize` at all, and such a render would have been a `500`.
+
+**Stored text is kept exactly as written.** Nothing stored is changed: the API answers a
+description and a comment as stored, and editing a description shows the text as written.
+These rules decide only what is drawn. SQL 4 under
+[Deployment](deployment.md#the-update-that-brings-the-content-security-policy) counts, on
+production, the stored text they draw differently.
+
+**Mentions are made last, in text, never in an attribute.** In a comment, after the sanitiser
+and the image pass, every text node is read by `findMentions` in `src/lib/mentions.ts`, and
+each mention becomes a `<span class="mention-chip">` made with `createElement` and
+`textContent`. It is the function the server's `parseMentions` reads to decide who is mailed,
+so for text written as text the page chips what the server mails, in code, fenced blocks and
+link text too; a chip in a link's text is a `span` inside the link, which is valid. The
+server reads the stored text and the page the text of the HTML drawn, so until card 2207 the
+two differ where a comment is written as HTML: a mention inside an HTML comment, an
+attribute or a link's address is mailed but not chipped, and one written with an entity,
+`&#64;name`, is chipped but not mailed. A link's address, its title and an
+image's alt text are attributes, and keep their text: an email address in a comment is a
+working `mailto:` link. Today's rule is `@` followed by letters, digits or `_`, so
+`a@example.com` still mails an account called `example`, and its link text shows a chip on
+`@example`; card 2207 changes the rule in that one function. The card window passes its
+board's usernames as `mentions` (the rule does not read them yet); a description is drawn
+with none, and has no chips.
+
+**The policy is the second line.** The sanitiser removes, before the browser sees them,
+what the policy's `style-src-elem` and `img-src` would refuse in a description or comment,
+so a description no longer makes a policy report. What it misses, the policy refuses.
+
+Covered by `tests/markdown.test.ts`, which renders through a jsdom window.
 
 ## When Something Fails
 
@@ -2237,7 +2502,14 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/request-access.ts` | Who may read, answer and resolve a task request |
 | `src/lib/server/request-tokens.ts` | Form tokens and per-request tokens for callers without an account |
 | `src/hooks.server.ts` | Request-level auth guard and the list of public routes, the v1 rate limit, the JSON answer to every failure under `/api/v1/`, and `handleError` |
-| `src/lib/server/gate-answers.ts` | The gate's own answers: whether a request is a navigation, the `401` for an internal route with no session, its redirects in the form SvelteKit gives them, and the security headers with `secured()` |
+| `src/lib/server/gate-answers.ts` | The gate's own answers: whether a request is a navigation, the `401` for an internal route with no session, its redirects in the form SvelteKit gives them, and the security headers with `secured()`, which moves a page's Content-Security-Policy to report only while `cspMode()` says `CSP_MODE=report-only` (card 2162) |
+| `svelte.config.js` | `kit.csp`: the pages' Content-Security-Policy, each directive with why it is there. See [The Content-Security-Policy](#the-content-security-policy) |
+| `src/app.html` | The theme script, with `nonce="%sveltekit.nonce%"`; no link to any other site |
+| `src/lib/colours.ts` | `isHexColour()`, what a colour from a request may be; `isSafeColour()`, `NEUTRAL_COLOUR` and `drawnColour()`, how a stored colour is drawn (card 2162). See [Colours From a Request](#colours-from-a-request) |
+| `src/lib/server/request-body.ts` | Besides every other reader, `readColour()`, the one way a route reads `color` or `colorTag` |
+| `src/lib/markdown.ts` | `renderMarkdown()` and `createMarkdownRenderer()`, the one way a description or comment becomes HTML, and `isAttachmentAddress()`, the one address a picture may show (cards 2202 and 2210). See [Markdown in Descriptions and Comments](#markdown-in-descriptions-and-comments) |
+| `src/lib/mentions.ts` | `findMentions()`, where a mention is in a text: the one rule the server mails by and the card window chips by |
+| `src/lib/fonts/inter.css`, `static/licences/inter-OFL.txt` | Inter, served by DumpFire (card 2203), and its licence, served at `/licences/inter-OFL.txt` |
 | `src/hooks.client.ts`, `src/lib/signed-out.ts` | In the browser: the watch on `fetch` that sends a signed-in page to `/login` on the first `401` that says its session has ended |
 | `src/lib/live-stream.ts` | In the browser: the live-update streams, opened again after a failure with a growing wait, and not at all after a `401`, `403` or `404` |
 | `src/lib/server/api-errors.ts` | `guardBody()`, which makes a body the caller got wrong a `400` and a body over the size limit a `413`, and `failureAsJson()`, which answers a failure that is not JSON again as JSON |
@@ -2247,7 +2519,7 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites and the key remembered browsers are signed with |
 | `src/lib/server/db/restore.ts` | What a restore brings in and what it never does; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
-| `src/lib/server/startup-checks.ts` | The seven lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it; and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
+| `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it; and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, and the headers an attachment is served with |
 | `src/lib/server/db/transaction.ts` | `inTransaction()`: the check and the write it guards are one transaction |

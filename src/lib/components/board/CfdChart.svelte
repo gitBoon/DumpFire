@@ -6,6 +6,8 @@
   and hover tooltips.
 -->
 <script lang="ts">
+  import { drawnColour } from '$lib/colours';
+
   type CfdColumn = { id: number; title: string; color: string };
   type CfdDataPoint = { date: string; columns: { columnId: number; count: number }[] };
 
@@ -124,7 +126,7 @@
 
       <!-- Stacked areas -->
       {#each layers() as layer}
-        <path d={layer.path} fill="{layer.color}40" stroke={layer.color} stroke-width="1.5" />
+        <path d={layer.path} fill="{drawnColour(layer.color)}40" stroke={drawnColour(layer.color)} stroke-width="1.5" />
       {/each}
 
       <!-- X-axis labels -->
@@ -137,7 +139,7 @@
     <div class="cfd-legend">
       {#each columns as col}
         <span class="cfd-legend-item">
-          <span class="cfd-legend-dot" style="background: {col.color}"></span>
+          <span class="cfd-legend-dot" style="background: {drawnColour(col.color)}"></span>
           {col.title}
         </span>
       {/each}

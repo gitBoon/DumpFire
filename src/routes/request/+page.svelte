@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { PageData } from './$types';
+	import { drawnColour } from '$lib/colours';
 
 	let { data }: { data: PageData } = $props();
 
@@ -195,7 +196,7 @@
 								type="button"
 								class="priority-pill"
 								class:active={priority === p.value}
-								style="--pill-color: {p.color}"
+								style="--pill-color: {drawnColour(p.color)}"
 								onclick={() => priority = p.value}
 							>
 								{p.label}

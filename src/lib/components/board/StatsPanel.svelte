@@ -15,6 +15,7 @@
   import type { BurndownResult } from '$lib/burndown';
   import { deliveryText, isThin, paceText, plural } from '$lib/burndown-text';
   import InfoTip from '$lib/components/InfoTip.svelte';
+  import { drawnColour } from '$lib/colours';
 
   /**
    * @prop boardColumns — All columns on the board (for per-column stats)
@@ -175,7 +176,7 @@
         <div class="stats-bar-row">
           <span class="stats-bar-label">{col.title}</span>
           <div class="stats-bar-track">
-            <div class="stats-bar-fill" style="width: {pct}%; background: {col.color}"></div>
+            <div class="stats-bar-fill" style="width: {pct}%; background: {drawnColour(col.color)}"></div>
           </div>
           <span class="stats-bar-count">{col.cards.length}</span>
         </div>
@@ -190,9 +191,9 @@
           {@const count = allCards.filter(c => c.categoryId === cat.id).length}
           {@const pct = totalCards > 0 ? (count / totalCards) * 100 : 0}
           <div class="stats-bar-row">
-            <span class="stats-bar-label" style="color: {cat.color}">{cat.name}</span>
+            <span class="stats-bar-label" style="color: {drawnColour(cat.color)}">{cat.name}</span>
             <div class="stats-bar-track">
-              <div class="stats-bar-fill" style="width: {pct}%; background: {cat.color}"></div>
+              <div class="stats-bar-fill" style="width: {pct}%; background: {drawnColour(cat.color)}"></div>
             </div>
             <span class="stats-bar-count">{count}</span>
           </div>

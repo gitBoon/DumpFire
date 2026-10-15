@@ -8,15 +8,14 @@
 	 */
 	import SubtaskModal from './SubtaskModal.svelte';
 	import LabelPicker from './LabelPicker.svelte';
-	import { marked } from 'marked';
-	import DOMPurify from 'dompurify';
+	import { renderMarkdown } from '$lib/markdown';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { COVER_PRESETS, isCoverValue } from '$lib/colours';
+	import { drawnColour } from '$lib/colours';
 	import { priorityToCopy } from '$lib/utils/card-utils';
 	import { completionPercent } from '$lib/progress';
 	import { formatTokens } from '$lib/tokens';
 	import { costOf, costInputOf, formatUsd, unpricedReason, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
-	import { highlightMentions } from '$lib/utils/mentions';
 	import { templateLabelIds } from '$lib/templates';
 	import { answerBody, deleteFailure, dependencyEndBody, dependencyRow, failureMessage, uploadFailure, uploadNoAnswer, uploadNotRead } from '$lib/api';
 	import {
@@ -1173,7 +1172,7 @@
 			{#if descPreview}
 				<div class="desc-preview markdown-body">
 					{#if description.trim()}
-						{@html DOMPurify.sanitize(marked(description) as string)}
+						{@html renderMarkdown(description)}
 					{:else}
 						<p class="desc-empty">Nothing to preview</p>
 					{/if}
@@ -1191,7 +1190,7 @@
 				<!-- Priority chip -->
 				<div class="dropdown-wrapper">
 					<button class="chip" onclick={(e) => { e.stopPropagation(); toggleDrop('priority'); }}>
-						<span class="chip-dot" style="background: {getPriorityColor(priority)}"></span>
+						<span class="chip-dot" style="background: {drawnColour(getPriorityColor(priority))}"></span>
 						<span>{priority.charAt(0).toUpperCase() + priority.slice(1)}</span>
 						<svg class="chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
 					</button>
@@ -1199,7 +1198,7 @@
 					<div class="chip-dropdown" onclick={(e) => e.stopPropagation()}>
 						{#each ['critical', 'high', 'medium', 'low'] as p}
 							<button class="chip-dropdown-item" class:selected={priority === p} onclick={() => { priority = p; showPriorityDrop = false; }}>
-								<span class="chip-dot" style="background: {getPriorityColor(p)}"></span>
+								<span class="chip-dot" style="background: {drawnColour(getPriorityColor(p))}"></span>
 								{p.charAt(0).toUpperCase() + p.slice(1)}
 							</button>
 						{/each}
@@ -1219,7 +1218,7 @@
 						<button class="chip-dropdown-item" class:selected={!categoryId} onclick={() => { categoryId = null; showCategoryDrop = false; }}>None</button>
 						{#each pickableCategories as cat}
 							<button class="chip-dropdown-item" class:selected={categoryId === cat.id} onclick={() => { categoryId = cat.id; showCategoryDrop = false; }}>
-								<span class="chip-dot" style="background: {cat.color}"></span>
+								<span class="chip-dot" style="background: {drawnColour(cat.color)}"></span>
 								{cat.name}
 							</button>
 						{/each}
@@ -1592,7 +1591,7 @@
 										<button class="btn-ghost small" onclick={() => (editingCommentId = null)}>Cancel</button>
 									</div>
 								{:else}
-									<div class="comment-content markdown-body">{@html DOMPurify.sanitize(highlightMentions(marked(comment.content) as string))}</div>
+									<div class="comment-content markdown-body">{@html renderMarkdown(comment.content, { mentions: boardUsers.map((u) => u.username) })}</div>
 									{#if currentUser && (currentUser.id === comment.userId || currentUser.role === 'admin' || currentUser.role === 'superadmin')}
 										<div class="comment-actions">
 											{#if currentUser.id === comment.userId}
@@ -1675,11 +1674,11 @@
 			<input type="text" class="inline-cat-input" placeholder="Category name..." bind:value={newCatName} onkeydown={(e) => e.key === 'Enter' && createCategoryInline()} autofocus />
 			<div class="inline-cat-colors">
 				{#each COLUMN_COLORS.slice(0, 8) as color}
-					<button class="cat-color-swatch" class:active={newCatColor === color} style="background: {color}" onclick={() => (newCatColor = color)} type="button"></button>
+					<button class="cat-color-swatch" class:active={newCatColor === color} style="background: {drawnColour(color)}" onclick={() => (newCatColor = color)} type="button"></button>
 				{/each}
 				<label class="color-custom-wrapper">
 					<input type="color" bind:value={newCatColor} class="color-native-input" />
-					<span class="cat-color-swatch custom" style="background: {newCatColor}">✎</span>
+					<span class="cat-color-swatch custom" style="background: {drawnColour(newCatColor)}">✎</span>
 				</label>
 			</div>
 			<div class="inline-cat-actions">
@@ -1904,7 +1903,7 @@
 				{#each templateLabels as labelId (labelId)}
 					{@const label = labels.find((l) => l.id === labelId)}
 					{#if label}
-						<span class="template-label" style="--lc: {label.color}">{label.name}</span>
+						<span class="template-label" style="--lc: {drawnColour(label.color)}">{label.name}</span>
 					{/if}
 				{/each}
 			</div>

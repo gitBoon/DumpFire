@@ -1,4 +1,9 @@
 <script lang="ts">
+	// Inter, served by DumpFire (card 2203), before app.css, which names it.
+	// The theme script that was in <svelte:head> below is in src/app.html,
+	// with the page's nonce: the Content-Security-Policy refuses an inline
+	// script without one (card 2162).
+	import '$lib/fonts/inter.css';
 	import '../app.css';
 	import { onMount } from 'svelte';
 	import { theme } from '$lib/stores/theme';
@@ -47,13 +52,6 @@
 
 <svelte:head>
 	<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>" />
-	<script>
-		// Prevent flash of wrong theme
-		(function() {
-			const t = localStorage.getItem('dumpfire-theme');
-			if (t) document.documentElement.setAttribute('data-theme', t);
-		})();
-	</script>
 </svelte:head>
 
 <div class="app-layout">

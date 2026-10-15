@@ -7,6 +7,7 @@
 <script lang="ts">
   import type { CategoryType } from '$lib/types';
   import { COLUMN_COLORS } from '$lib/utils/constants';
+  import { drawnColour } from '$lib/colours';
 
   /**
    * @prop categories — Current board categories
@@ -47,9 +48,9 @@
     <!-- Existing categories -->
     <div class="category-list">
       {#each categories as cat (cat.id)}
-        <span class="category-chip" style="background: {cat.color}15; color: {cat.color}; border: 1px solid {cat.color}35">
+        <span class="category-chip" style="background: {drawnColour(cat.color)}15; color: {drawnColour(cat.color)}; border: 1px solid {drawnColour(cat.color)}35">
           {cat.name}
-          <button class="chip-delete" onclick={() => onDeleteCategory(cat.id)} title="Delete" style="color: {cat.color}">
+          <button class="chip-delete" onclick={() => onDeleteCategory(cat.id)} title="Delete" style="color: {drawnColour(cat.color)}">
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           </button>
         </span>
@@ -62,11 +63,11 @@
       <input type="text" placeholder="Category name..." bind:value={newName} onkeydown={(e) => e.key === 'Enter' && addCategory()} />
       <div class="color-row compact">
         {#each COLUMN_COLORS.slice(0, 8) as color}
-          <button class="color-swatch small" class:active={newColor === color} style="background: {color}" onclick={() => (newColor = color)}></button>
+          <button class="color-swatch small" class:active={newColor === color} style="background: {drawnColour(color)}" onclick={() => (newColor = color)}></button>
         {/each}
         <label class="color-custom-wrapper">
           <input type="color" bind:value={newColor} class="color-native-input" />
-          <span class="color-swatch small custom" style="background: {newColor}">✎</span>
+          <span class="color-swatch small custom" style="background: {drawnColour(newColor)}">✎</span>
         </label>
       </div>
       <button class="btn-primary small" onclick={addCategory} disabled={!newName.trim()}>Add</button>

@@ -20,6 +20,7 @@
 	import * as api from '$lib/api';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import type { LabelType } from '$lib/types';
+	import { drawnColour } from '$lib/colours';
 
 	let {
 		cardId,
@@ -204,9 +205,9 @@
 		<div class="label-chips">
 			{#each list as label (label.id)}
 				{#if editMode}
-					<button class="label-toggle" class:active={editingId === label.id} style="--lc: {label.color}" onclick={() => startEditing(label)} title="Edit this label" type="button">{label.name}</button>
+					<button class="label-toggle" class:active={editingId === label.id} style="--lc: {drawnColour(label.color)}" onclick={() => startEditing(label)} title="Edit this label" type="button">{label.name}</button>
 				{:else}
-					<button class="label-toggle" class:active={selected.includes(label.id)} aria-pressed={selected.includes(label.id)} style="--lc: {label.color}" onclick={() => toggleLabel(label.id)} type="button">{label.name}</button>
+					<button class="label-toggle" class:active={selected.includes(label.id)} aria-pressed={selected.includes(label.id)} style="--lc: {drawnColour(label.color)}" onclick={() => toggleLabel(label.id)} type="button">{label.name}</button>
 				{/if}
 			{/each}
 		</div>
@@ -220,7 +221,7 @@
 				<input type="text" class="label-input" placeholder="Label name" maxlength="200" bind:value={editName} onkeydown={(e) => e.key === 'Enter' && saveLabel()} aria-label="Label name" />
 				<div class="label-colors">
 					{#each COLUMN_COLORS as color}
-						<button class="label-swatch" class:active={editColor === color} style="background: {color}" onclick={() => (editColor = color)} aria-label="Colour {color}" type="button"></button>
+						<button class="label-swatch" class:active={editColor === color} style="background: {drawnColour(color)}" onclick={() => (editColor = color)} aria-label="Colour {color}" type="button"></button>
 					{/each}
 				</div>
 				{#if confirmingDelete}
@@ -246,7 +247,7 @@
 			<input type="text" class="label-input" placeholder="Label name" maxlength="200" bind:value={newName} onkeydown={(e) => e.key === 'Enter' && createLabel()} aria-label="New label name" autofocus />
 			<div class="label-colors">
 				{#each COLUMN_COLORS as color}
-					<button class="label-swatch" class:active={newColor === color} style="background: {color}" onclick={() => (newColor = color)} aria-label="Colour {color}" type="button"></button>
+					<button class="label-swatch" class:active={newColor === color} style="background: {drawnColour(color)}" onclick={() => (newColor = color)} aria-label="Colour {color}" type="button"></button>
 				{/each}
 			</div>
 			<div class="label-actions">

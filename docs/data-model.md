@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.21
+version: 1.23
 status: As-Built
 date: 2026-10-15
 tags:
@@ -1094,13 +1094,14 @@ of about zero.
     URL, whatever its name says: it is drawn as a `background`, as a strip across the top
     of the card on the board and in the card window, and a page draws it only when
     `isCoverValue` takes it, so a value stored before the rule is kept and not drawn;
-  - `cards.color_tag` and `subtasks.color_tag` are `#rrggbb` or empty text. A `color` is
-    `#rrggbb` where a board grouping, a label or a category is created, and where a
-    column or a label is changed (`PATCH /api/labels`, card 2010), by the web
-    application; a board grouping made through the API too. A category or a grouping
-    changed, and a column, label or category
-    made or changed through the API, still take any text of 1 to 32 characters, until
-    card 2162 holds them to `#rrggbb` as well;
+  - `cards.color_tag` and `subtasks.color_tag` are `#rrggbb` or empty text, and
+    `labels.color`, `categories.color`, `board_categories.color` and `columns.color` are
+    `#rrggbb`, on every route of both trees that writes one (`readColour`, card 2162).
+    An older value in any of the six is kept and answered as stored, and a page draws it,
+    trimmed of spaces, tabs and line breaks at either end, only if `isSafeColour`
+    (`src/lib/colours.ts`) takes it so, a colour and nothing more (`red`, `#fff`,
+    `var(--x)`, `#ef4444 `), and grey (`#94a3b8`) otherwise: see
+    [Colours From a Request](authentication-security.md#colours-from-a-request);
   - `position` on `cards`, `subtasks` and `columns` is a number, never text;
   - `api_keys.expires_at` is null or a timestamp as `toISOString()` writes it, because
     `findApiKey()` compares it with the time as text.

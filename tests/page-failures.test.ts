@@ -182,6 +182,16 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 		expect(page.getText()).toMatch(/import \{[^}]*\bfailureMessage\b[^}]*\} from '\$lib\/api';/);
 	});
 
+	// Card 2162's review: the preview frame shows a blob: address, which runs
+	// as this page's own origin. Typed as the answer's type, an answer that is
+	// HTML (a proxy's page among them) would be drawn there as a page. Typed
+	// as a PDF it is only ever handed to the PDF viewer.
+	it('makes the preview a PDF whatever type the answer gives', () => {
+		const generate = functionNamed(page, 'generateReport').getText();
+		expect(generate).toContain("new Blob([await res.arrayBuffer()], { type: 'application/pdf' })");
+		expect(generate).not.toContain('res.blob()');
+	});
+
 	// Card 2182: the page reads a list as the server does, and a schedule kept
 	// with more than 10 addresses, which the scheduler switches off, shows them,
 	// since the page cannot edit one and its owner is told to remake it (R2).

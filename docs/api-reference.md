@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.44
+version: 1.45
 status: As-Built
 date: 2026-10-15
 tags:
@@ -185,7 +185,7 @@ number or an id is read.
 | `priority` | `low`, `medium`, `high` or `critical`, in any case. It is stored in lower case | `priority must be one of: low, medium, high, critical` |
 | `dueDate`, `targetDate` | A day of the calendar written `YYYY-MM-DD`: not `2026-02-30`, not a timestamp. `null` or `''` clears it | `dueDate must be a date written YYYY-MM-DD` |
 | `colorTag` | A colour written `#rrggbb`, or `''` for none | `colorTag must be a colour written #rrggbb, or empty` |
-| `color` | On a new board category, a colour written `#rrggbb`. On a column, a label or a category, and on a board category that is changed, text of 1 to 32 characters | `color must be a colour written #rrggbb`, `color cannot be empty` |
+| `color` | A colour written `#rrggbb`: `#` and six hex digits, in either case, trimmed, on a column, a label, a category and a board category, created or changed. `red`, `#fff` and `''` are refused | `color must be a colour written #rrggbb` |
 | `position` | A finite number | `position must be a number` |
 | `pinned`, a subtask's `completed`, `isPublic`, `showAddCard`, a webhook's `active` | `true` or `false` | `pinned must be true or false` |
 | An id in the body: `columnId`, `categoryId`, `userId`, `cardId`, `milestoneId`, `parentCardId`, `labelId`, a milestone's `boardId` | A whole number of 1 or more, or one written as text (`"7"`, `"1.0"`) | `columnId must be an id` |
@@ -292,6 +292,8 @@ Every answer DumpFire's gate gives carries `X-Content-Type-Options: nosniff`,
 header itself. The last switches off the filter old browsers ran over a page, which could
 itself be used to make a page leak; current browsers have dropped it. Until 2026-10-14 an
 answer under `/api/v1/` carried `nosniff` alone, and the `401` and `429` none. The three answers above are made before the gate, and carry none.
+No answer of the API carries a `Content-Security-Policy`: the web application's pages carry
+one, and an attachment keeps its own `sandbox`.
 See [Security Headers](authentication-security.md#security-headers).
 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes and Failures](#writes-and-failures).
@@ -344,8 +346,9 @@ new; these answers and fields are:
   unchanged, is accepted as it is.
   - A name or a title is text, trimmed, of 1 to 200 characters. One that was not text was
     turned into text, or was a `500`.
-  - A `color` is text of 1 to 32 characters. Any value was stored; `''` gave the default on
-    create and is now `400` `color cannot be empty`.
+  - A `color` is a colour written `#rrggbb` (`color must be a colour written #rrggbb`): see
+    **Every colour is a colour written `#rrggbb`** below. Any text was stored; `''` gave
+    the default on create and is now `400` in those words.
   - A column's `position` is a number, or a number written as text: text was stored, and
     `null` gave the default. `showAddCard` and a webhook's `active` are `true` or `false`:
     `"false"` was stored as true. `wipLimit` is read as before.
@@ -416,11 +419,9 @@ new; these answers and fields are:
   - A `dueDate` or a `targetDate` is a day of the calendar written `YYYY-MM-DD`
     (`dueDate must be a date written YYYY-MM-DD`), and `null` or `''` clears it. Any text
     was stored.
-  - A `colorTag` is a colour written `#rrggbb`, or `''` for none, and a new board category's
-    `color` a colour written `#rrggbb` (`color must be a colour written #rrggbb`). Any text
-    was stored. The operations above that create or change a column, a label or a category,
-    and that change a board category, still take a `color` of any text of 1 to 32
-    characters.
+  - A `colorTag` is a colour written `#rrggbb`, or `''` for none, and a board category's
+    `color` a colour written `#rrggbb`: see **Every colour is a colour written `#rrggbb`**
+    below. Any text was stored.
   - A `position` is a number, or a number written as text: `"top"` was stored, and on
     `PUT /cards/:cardId/move` a position that was not a number was ignored. `pinned` and a
     subtask's `completed` are `true` or `false`: `"false"` was stored as true.
@@ -693,6 +694,24 @@ new; these answers and fields are:
   when it is an IPv4 address written as IPv6, and without a port, so the 61st request in a
   minute from any address of one IPv6 network is answered `429`, where each address had its
   own sixty. A key's own count is unchanged.
+- **Every colour is a colour written `#rrggbb`** (card 2162). Every operation that takes a
+  `color` or a `colorTag` reads it as `#` and six hex digits, in either case, trimmed, and
+  answers `400` for anything else, `red` and `#fff` included, and for a value that is not
+  text: `color must be a colour written #rrggbb` on `POST /boards/:boardId/columns`,
+  `/labels` and `/categories`, `POST /board-categories`, and `PUT /columns/:columnId`,
+  `/labels/:labelId`, `/categories/:categoryId` and `/board-categories/:categoryId`;
+  `colorTag must be a colour written #rrggbb, or empty` on `POST /boards/:boardId/cards`,
+  `PUT /cards/:cardId`, `POST /cards/:cardId/subtasks` and `PUT /subtasks/:subtaskId`, where
+  `''` clears the tag. Nothing is written. Until then any text was stored, up to 32
+  characters where a length was checked, a style such as `red;background:url(//x.io)`
+  included, and a colour is drawn into the page of everyone who opens the board. A colour
+  the row already holds, sent back unchanged, is accepted as it is, and one stored before
+  this rule is answered as stored; the pages draw it as it is when it is a colour and
+  nothing more (`red`, `#fff`), and grey otherwise. Through the tracking wrapper, quote a
+  colour, `-Color '#ef4444'`: in PowerShell an unquoted `#` begins a comment, so the
+  parameter gets no value and the call stops with "Missing an argument for parameter
+  'Color'". The web application's routes take a colour by the same rule
+  (below).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -760,7 +779,7 @@ API:
   - `DELETE /api/boards/{id}/share`: `type` `user` or `team`, `type must be "user" or "team"`,
     where another was `200` doing nothing; `targetId` a required id.
   - `PUT /api/categories/{id}` and `PUT /api/board-categories/{id}`: `name` text, trimmed, of
-    1 to 200 characters, `color` of 1 to 32.
+    1 to 200 characters, `color` a colour written `#rrggbb` (card 2162, below).
   - `PUT /api/cards/{id}/comments/{commentId}`: `content` is text of at most 50,000
     characters, `content must be text` where it was a `500`. There was no limit.
   - `POST /api/cards/{id}/comments`, a new comment, the same: text of 1 to 50,000
@@ -1238,6 +1257,15 @@ API:
   drawn nowhere; a colour set through the API now survives a save there, and a subtask it
   creates is stored with `''`. A subtask's `colorTag` is still accepted and returned by
   both trees, and Duplicate still copies it; no screen sets or shows it.
+- **The web application's routes read a colour as the API's do** (card 2162): `color` on
+  `POST /api/board-categories`, `PUT /api/board-categories/{id}`, `POST /api/categories`,
+  `PUT /api/categories/{id}`, `POST /api/columns`, `PUT /api/columns/{id}`, and `POST` and
+  `PATCH /api/labels`, and `colorTag` on `POST /api/cards`, `PUT /api/cards/{id}`,
+  `POST /api/subtasks` and `PUT /api/subtasks/{id}`, each a colour written `#rrggbb` (a
+  colour tag may be `''`), with the same refusals, where `PUT /api/categories/{id}` and
+  `PUT /api/board-categories/{id}` took any text of 1 to 32 characters. Duplicate, and the
+  card window's subtasks made with a new card, copy a colour tag only when it is one, and
+  `''` otherwise, so a copy is never refused over a tag stored before the rule.
 - **A report's recipients are read as the mailer reads them, and bounded** (card 2182). Any
   address may still be one. `POST /api/reports/email`, `POST /api/report-schedules`,
   `PUT /api/report-schedules/{id}`, the scheduler and the Reports page read a list one way:

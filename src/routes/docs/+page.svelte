@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { answerFile, curlSample, formatDescription, powershellSample, pythonSample, typeLabel, type Sample } from '$lib/docs-format';
+	import { drawnColour } from '$lib/colours';
 
 	type Schema = { type?: string | string[]; properties?: Record<string, any>; items?: any; $ref?: string; enum?: string[]; required?: string[]; description?: string; format?: string; default?: any; maxLength?: number };
 	type Param = { name: string; in: string; required?: boolean; schema?: Schema; description?: string };
@@ -388,7 +389,7 @@
 								{@const isExpanded = expandedEndpoint === eid}
 								<div class="endpoint-card glass" class:expanded={isExpanded}>
 									<button class="endpoint-header" onclick={() => toggleEndpoint(eid)}>
-										<span class="method-badge" style="background: {METHOD_COLORS[method] || '#888'}">
+										<span class="method-badge" style="background: {drawnColour(METHOD_COLORS[method] || '#888')}">
 											{method.toUpperCase()}
 										</span>
 										<span class="endpoint-path">{path}</span>

@@ -29,6 +29,7 @@
 	import { cardArchiveWarning, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
 	import { keepStreamOpen } from '$lib/live-stream';
 	import { playMoveSound, playCompleteSound, playCreateSound, playNotifySound } from '$lib/utils/sounds';
+	import { drawnColour } from '$lib/colours';
 
 	let { data }: { data: PageData } = $props();
 
@@ -715,7 +716,7 @@
 				<div class="column">
 					<div class="column-header">
 						<div class="column-title-row">
-							<span class="column-color-dot" style="background: {bucketColors[bucket.title] || '#8b5cf6'}"></span>
+							<span class="column-color-dot" style="background: {drawnColour(bucketColors[bucket.title] || '#8b5cf6')}"></span>
 							<h2 class="column-title">{bucket.title}</h2>
 							<span class="column-count">
 								{#if bucket.title === 'Complete' && data.hasMoreCompleted}
@@ -757,7 +758,7 @@
 						{#each filteredCards as card (card.id)}
 							<div class="card" class:card-pinned={card.pinned} onclick={() => openCard(card)} role="button" tabindex="0">
 								{#if card.colorTag}
-									<div class="card-color-bar" style="background: {card.colorTag}"></div>
+									<div class="card-color-bar" style="background: {drawnColour(card.colorTag)}"></div>
 								{/if}
 								{#if card.pinned}
 									<span class="pin-badge" title="Pinned">📌</span>
@@ -774,7 +775,7 @@
 								<div class="card-board-tag">
 									<span class="board-tag" title={boardTag(card)}>{boardTag(card)}</span>
 									{#if card.boardCategoryName}
-										<span class="board-cat-badge" style="background: {card.boardCategoryColor}20; color: {card.boardCategoryColor}; border: 1px solid {card.boardCategoryColor}40">{card.boardCategoryName}</span>
+										<span class="board-cat-badge" style="background: {drawnColour(card.boardCategoryColor)}20; color: {drawnColour(card.boardCategoryColor)}; border: 1px solid {drawnColour(card.boardCategoryColor)}40">{card.boardCategoryName}</span>
 									{/if}
 								</div>
 								<div class="card-meta">
@@ -802,7 +803,7 @@
 									{#if card.categoryId}
 										{@const cat = data.categories.find((c: any) => c.id === card.categoryId)}
 										{#if cat}
-											<span class="category-badge" style="background: {cat.color}20; color: {cat.color}; border: 1px solid {cat.color}40">{cat.name}</span>
+											<span class="category-badge" style="background: {drawnColour(cat.color)}20; color: {drawnColour(cat.color)}; border: 1px solid {drawnColour(cat.color)}40">{cat.name}</span>
 										{/if}
 									{/if}
 									{#if subtaskProgress(card as any)}
@@ -848,7 +849,7 @@
 										{#each card.labelIds as labelId}
 											{@const label = data.labels.find((l: any) => l.id === labelId)}
 											{#if label}
-												<span class="label-chip" style="background: {label.color}25; color: {label.color}; border: 1px solid {label.color}40">{label.name}</span>
+												<span class="label-chip" style="background: {drawnColour(label.color)}25; color: {drawnColour(label.color)}; border: 1px solid {drawnColour(label.color)}40">{label.name}</span>
 											{/if}
 										{/each}
 									</div>

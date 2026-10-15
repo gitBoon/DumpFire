@@ -4,7 +4,7 @@ import { labels } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { inTransaction } from '$lib/server/db/transaction';
-import { pathId, readBody, readText } from '$lib/server/request-body';
+import { pathId, readBody, readColour, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
@@ -37,7 +37,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			max: 200,
 			says: { missing: 'name is required', empty: 'name is required', invalid: 'Label name too long (max 200 chars)' }
 		});
-		const color = readText(body, 'color', { min: 1, max: 32 });
+		const color = readColour(body, 'color', {});
 
 		const row = db.insert(labels)
 			.values({ boardId, name, color: color ?? '#6366f1' })

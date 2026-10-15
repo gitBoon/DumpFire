@@ -104,7 +104,9 @@ export async function saveCard(
 					title: stData.title,
 					description: stData.description || '',
 					priority: stData.priority || 'medium',
-					colorTag: stData.colorTag || '',
+					// Only a colour the server takes (card 2162, decision 4), so a
+					// pending subtask is made even if its colour tag is no colour.
+					colorTag: colourToCopy(stData.colorTag),
 					dueDate: stData.dueDate || null,
 					completed: false,
 					boardId

@@ -41,7 +41,63 @@ const config = {
 		// (/_app/version.json, served before the gate), and the root layout says
 		// so when one has (card 2167). With no interval a page never asked, so a
 		// tab left open across a deploy ran the old scripts until reloaded by hand.
-		version: { pollInterval: 60_000 }
+		version: { pollInterval: 60_000 },
+		// The Content-Security-Policy of every page (card 2162; why each directive
+		// is here, and what was not chosen, is in
+		// docs/authentication-security.md#the-content-security-policy).
+		// SvelteKit sets it on every page it renders, its error pages included,
+		// with a fresh nonce each time ('auto' is a nonce, since no page is
+		// prerendered), on its own start-up script and on the theme script in
+		// src/app.html (`%sveltekit.nonce%`). Nothing else gets it: an API answer,
+		// a redirect and the gate's own refusals carry none, and an attachment
+		// keeps its own `sandbox`. `secured()` in src/lib/server/gate-answers.ts
+		// sends it to report only while CSP_MODE=report-only. Every directive is
+		// 'self' or narrower but two: no page asks another site for anything.
+		csp: {
+			mode: 'auto',
+			directives: {
+				'default-src': ['self'],
+				// And the page's nonce, which SvelteKit adds. Every other script is
+				// a file under /_app/; no page has an inline handler, a
+				// `javascript:` address or `eval`.
+				'script-src': ['self'],
+				// Read only by a browser that knows neither of the next two; it
+				// keeps such a browser working, at the cost of letting it have
+				// <style> elements.
+				'style-src': ['self', 'unsafe-inline'],
+				// No <style> element: a built page links its CSS from files, so
+				// one smuggled into a description cannot restyle the page. (Under
+				// `vite dev`, which injects them, SvelteKit allows them itself.)
+				'style-src-elem': ['self'],
+				// Svelte writes style="..." into the server's HTML and its own
+				// templates: every colour strip, bar width and menu position.
+				// What makes one safe is that a colour is checked when it is
+				// written and again when it is drawn, and img-src below.
+				'style-src-attr': ['unsafe-inline'],
+				// Attachments are DumpFire's; the tab icon and the select arrow are
+				// data:. This is what stops a url() in any style from fetching
+				// from another site. Not https:, which would allow it again.
+				'img-src': ['self', 'data:'],
+				// Inter, from DumpFire (card 2203): src/lib/fonts/inter.css.
+				'font-src': ['self'],
+				// Every fetch and the live streams (/api/events, a board's
+				// events, /api/logs/stream) are DumpFire's own.
+				'connect-src': ['self'],
+				// The reports page shows its PDF in a frame from a blob: address,
+				// and the browser's PDF viewer in it is a plugin. Only the page's
+				// own script can make a blob: address.
+				'frame-src': ['blob:'],
+				'object-src': ['blob:'],
+				'base-uri': ['self'],
+				// The sign-in, set-up, invite and sign-out forms post to DumpFire.
+				'form-action': ['self']
+				// Not set: upgrade-insecure-requests, which would break an
+				// installation served over plain HTTP; frame-ancestors, since
+				// X-Frame-Options, set by secured() route by route, is the frame
+				// rule and the request form's pages may be framed; and report-uri
+				// or report-to, since nothing is collected.
+			}
+		}
 	}
 };
 
