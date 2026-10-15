@@ -27,7 +27,7 @@ const spec = {
 			'where some were answered 403 or 404; what a field holds is still looked at after the 404 and the 403; (8) the operations that create or change a ' +
 			'column, a label, a category or a webhook, that change a board category, and that put a label on a card or take it off, answer 400 naming the field for a ' +
 			'field of the wrong type or one it may not hold, where it was stored as sent or was a 500: a name or a title is text, trimmed, of 1 to 200 ' +
-			'characters, a colour text of 1 to 32, a position a number, showAddCard and active true or false, a webhook\'s url an http or https address of at ' +
+			'characters, a colour written #rrggbb (item 52), a position a number, showAddCard and active true or false, a webhook\'s url an http or https address of at ' +
 			'most 2048 characters, its secret at most 256 characters and its events names among the six, each trimmed, and an id in the path or the body a ' +
 			'whole number of 1 or more; a value the row already holds, sent back unchanged, is accepted as it is; (9) taking a label off a card that does ' +
 			'not have it is answered 404 where it was 200, and a label, column, category, board category or webhook deleted while its update was arriving ' +
@@ -105,6 +105,11 @@ const spec = {
 			'and PUT /api/v1/cards/{cardId}/move to another board answers 409 `Card "<title>" cannot go onto "<board>": its sub-boards would then be nested more than 20 levels deep.` and moves nothing when the card\'s sub-boards would end up deeper than that and deeper than they are now, where both were accepted at any depth; a tree already deeper keeps working, and a move that leaves it no deeper is allowed. ' +
 			'(51) a request with no key DumpFire accepts is counted against its address by the address\'s network: an IPv6 address by its /64, an IPv4 address written as IPv6 (::ffff:198.51.100.7) as the IPv4 address, and without a port, ' +
 			'so the 61st request in a minute from any address of one IPv6 network is answered 429, where each address had sixty of its own; a key\'s own count is unchanged. ' +
+			'(52) every operation that takes a color or a colorTag reads it as a colour written #rrggbb, # and six hex digits in either case, trimmed, and answers 400 for anything else, red and #fff included: ' +
+			'"color must be a colour written #rrggbb" on POST /api/v1/boards/{boardId}/columns, /labels and /categories, POST /api/v1/board-categories and PUT /api/v1/columns/{columnId}, /labels/{labelId}, /categories/{categoryId} and /board-categories/{categoryId}, ' +
+			'and "colorTag must be a colour written #rrggbb, or empty" on POST /api/v1/boards/{boardId}/cards, PUT /api/v1/cards/{cardId}, POST /api/v1/cards/{cardId}/subtasks and PUT /api/v1/subtasks/{subtaskId}, where empty text clears the tag; ' +
+			'until then any text was stored, up to 32 characters where a length was checked, a style such as red;background:url(//x.io) included, and a colour is drawn into the page of everyone who opens the board; ' +
+			'a colour the row already holds, sent back unchanged, is accepted as it is, and one stored before this rule is returned as stored. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -226,7 +231,7 @@ const spec = {
 					boardId: { type: 'integer' },
 					title: { type: 'string' },
 					position: { type: 'number', description: 'Order on the board, lowest first. Not always a whole number.' },
-					color: { type: 'string', description: 'Hex colour code' },
+					color: { type: 'string', description: 'A colour written #rrggbb; one stored before this rule is returned as stored' },
 					wipLimit: { type: 'integer', minimum: 0, description: 'Work-in-progress limit. 0 means no limit. Never null.' },
 					showAddCard: { type: 'boolean' }
 				},
@@ -262,7 +267,7 @@ const spec = {
 					description: { type: ['string', 'null'] },
 					position: { type: 'number', description: 'Order within the column, lowest first. Not always a whole number.' },
 					priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
-					colorTag: { type: ['string', 'null'], description: 'Hex colour, or an empty string for none' },
+					colorTag: { type: ['string', 'null'], description: 'A colour written #rrggbb, or an empty string for none; one stored before this rule is returned as stored' },
 					dueDate: { type: ['string', 'null'] },
 					onHoldNote: { type: ['string', 'null'], description: 'Why the card is on hold' },
 					businessValue: { type: ['string', 'null'] },
@@ -449,7 +454,7 @@ const spec = {
 					title: { type: 'string' },
 					description: { type: ['string', 'null'] },
 					priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
-					colorTag: { type: ['string', 'null'], description: 'Hex colour, or an empty string for none' },
+					colorTag: { type: ['string', 'null'], description: 'A colour written #rrggbb, or an empty string for none; one stored before this rule is returned as stored' },
 					dueDate: { type: ['string', 'null'] },
 					completed: { type: 'boolean' },
 					position: { type: 'number', description: 'Order within the card, lowest first. Not always a whole number.' }
@@ -462,7 +467,7 @@ const spec = {
 					id: { type: 'integer' },
 					boardId: { type: ['integer', 'null'], description: 'Board this category belongs to' },
 					name: { type: 'string' },
-					color: { type: 'string', description: 'Hex colour code' }
+					color: { type: 'string', description: 'A colour written #rrggbb; one stored before this rule is returned as stored' }
 				},
 				required: ['id', 'boardId', 'name', 'color']
 			},
@@ -472,7 +477,7 @@ const spec = {
 				properties: {
 					id: { type: 'integer' },
 					name: { type: 'string' },
-					color: { type: 'string', description: 'Hex colour code' }
+					color: { type: 'string', description: 'A colour written #rrggbb; one stored before this rule is returned as stored' }
 				},
 				required: ['id', 'name', 'color']
 			},
@@ -482,7 +487,7 @@ const spec = {
 					id: { type: 'integer' },
 					boardId: { type: 'integer' },
 					name: { type: 'string' },
-					color: { type: 'string', description: 'Hex colour code' }
+					color: { type: 'string', description: 'A colour written #rrggbb; one stored before this rule is returned as stored' }
 				},
 				required: ['id', 'boardId', 'name', 'color']
 			},
@@ -2363,7 +2368,7 @@ const spec = {
 								required: ['title'],
 								properties: {
 									title: { type: 'string', maxLength: 200 },
-									color: { type: 'string', minLength: 1, maxLength: 32, description: 'Hex colour code (default: #6366f1)' },
+									color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'A colour written #rrggbb, trimmed (default: #6366f1). Anything else is 400 color must be a colour written #rrggbb.' },
 									position: { type: 'number', description: 'Order on the board, lowest first. Default: after the last column.' }
 								}
 							},
@@ -2438,7 +2443,7 @@ const spec = {
 								type: 'object',
 								properties: {
 									title: { type: 'string', maxLength: 200 },
-									color: { type: 'string', minLength: 1, maxLength: 32 },
+									color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'A colour written #rrggbb, trimmed. Anything else is 400 color must be a colour written #rrggbb; a colour the row already holds, sent back unchanged, is accepted as it is.' },
 									position: { type: 'number' },
 									wipLimit: {
 										type: ['integer', 'null'],
@@ -2460,7 +2465,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'None of the five fields was sent, a field of the wrong type (a title or colour that is not text, a position that is not a number, showAddCard that is not true or false), the title is empty or over 200 characters, the colour over 32, columnId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'None of the five fields was sent, a field of the wrong type (a title that is not text, a position that is not a number, showAddCard that is not true or false), the title is empty or over 200 characters, a colour that is not written #rrggbb (`color must be a colour written #rrggbb`), columnId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -3484,7 +3489,7 @@ const spec = {
 								required: ['name'],
 								properties: {
 									name: { type: 'string', maxLength: 200 },
-									color: { type: 'string', minLength: 1, maxLength: 32, description: 'Hex colour code (default: #6366f1)' }
+									color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'A colour written #rrggbb, trimmed (default: #6366f1). Anything else is 400 color must be a colour written #rrggbb.' }
 								}
 							},
 							example: { name: 'Frontend', color: '#3b82f6' }
@@ -3558,7 +3563,7 @@ const spec = {
 								type: 'object',
 								properties: {
 									name: { type: 'string', maxLength: 200 },
-									color: { type: 'string', minLength: 1, maxLength: 32 }
+									color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'A colour written #rrggbb, trimmed. Anything else is 400 color must be a colour written #rrggbb; a colour the row already holds, sent back unchanged, is accepted as it is.' }
 								}
 							},
 							example: { name: 'Backend', color: '#10b981' }
@@ -3573,7 +3578,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'Neither name nor color was sent, either is not text, the name is empty or over 200 characters, the colour over 32, labelId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'Neither name nor color was sent, the name is not text or is empty or over 200 characters, a colour that is not written #rrggbb (`color must be a colour written #rrggbb`), labelId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -4365,7 +4370,7 @@ const spec = {
 								required: ['name'],
 								properties: {
 									name: { type: 'string', maxLength: 200, description: 'Category name' },
-									color: { type: 'string', minLength: 1, maxLength: 32, description: 'Hex colour code (default: #6366f1)' }
+									color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'A colour written #rrggbb, trimmed (default: #6366f1). Anything else is 400 color must be a colour written #rrggbb.' }
 								}
 							},
 							example: { name: 'Bug', color: '#ef4444' }
@@ -4443,7 +4448,7 @@ const spec = {
 								type: 'object',
 								properties: {
 									name: { type: 'string', maxLength: 200 },
-									color: { type: 'string', minLength: 1, maxLength: 32 }
+									color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'A colour written #rrggbb, trimmed. Anything else is 400 color must be a colour written #rrggbb; a colour the row already holds, sent back unchanged, is accepted as it is.' }
 								}
 							},
 							example: { name: 'Feature', color: '#10b981' }
@@ -4458,7 +4463,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'Neither name nor color was sent, either is not text, the name is empty or over 200 characters, the colour over 32, categoryId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'Neither name nor color was sent, the name is not text or is empty or over 200 characters, a colour that is not written #rrggbb (`color must be a colour written #rrggbb`), categoryId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -4618,7 +4623,7 @@ const spec = {
 								type: 'object',
 								properties: {
 									name: { type: 'string', maxLength: 200 },
-									color: { type: 'string', minLength: 1, maxLength: 32 }
+									color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'A colour written #rrggbb, trimmed. Anything else is 400 color must be a colour written #rrggbb; a colour the row already holds, sent back unchanged, is accepted as it is.' }
 								}
 							},
 							example: { name: 'Infrastructure', color: '#f59e0b' }
@@ -4633,7 +4638,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'Neither name nor color was sent, either is not text, the name is empty or over 200 characters, the colour over 32, categoryId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'Neither name nor color was sent, the name is not text or is empty or over 200 characters, a colour that is not written #rrggbb (`color must be a colour written #rrggbb`), categoryId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },

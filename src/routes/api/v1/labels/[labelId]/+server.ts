@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { inTransaction } from '$lib/server/db/transaction';
-import { pathId, readBody, readText } from '$lib/server/request-body';
+import { pathId, readBody, readColour, readText } from '$lib/server/request-body';
 import { requireLabel, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
@@ -47,7 +47,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			says: { empty: 'name cannot be empty', invalid: 'Label name too long (max 200 chars)' }
 		});
 		if (name !== undefined) updates.name = name;
-		const color = readText(body, 'color', { min: 1, max: 32, keep: label.color });
+		const color = readColour(body, 'color', { keep: label.color });
 		if (color !== undefined) updates.color = color;
 
 		if (Object.keys(updates).length === 0) {

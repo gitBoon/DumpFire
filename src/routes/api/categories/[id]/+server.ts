@@ -4,7 +4,7 @@ import { categories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { inTransaction } from '$lib/server/db/transaction';
-import { pathId, readBody, readText } from '$lib/server/request-body';
+import { pathId, readBody, readColour, readText } from '$lib/server/request-body';
 import { requireCategoryEdit, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
@@ -21,7 +21,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		const updates: Partial<typeof categories.$inferInsert> = {};
 		const name = readText(body, 'name', { trim: true, min: 1, max: 200, keep: category.name });
 		if (name !== undefined) updates.name = name;
-		const color = readText(body, 'color', { min: 1, max: 32, keep: category.color });
+		const color = readColour(body, 'color', { keep: category.color });
 		if (color !== undefined) updates.color = color;
 		if (Object.keys(updates).length === 0) throw error(400, 'No valid fields to update');
 

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
+	import { drawnColour } from '$lib/colours';
 
 	let { categories, onClose }: { categories: { id: number; name: string; color: string }[]; onClose: () => void } = $props();
 
@@ -78,7 +79,7 @@
 						<div class="edit-mode">
 							<label class="color-picker-wrap">
 								<input type="color" bind:value={editColor} class="color-native" title="Pick color" />
-								<div class="color-swatch custom" style="background: {editColor}">🎨</div>
+								<div class="color-swatch custom" style="background: {drawnColour(editColor)}">🎨</div>
 							</label>
 							<input type="text" bind:value={editName} class="edit-input" onkeydown={(e) => e.key === 'Enter' && saveEdit()} autofocus />
 							<div class="edit-actions">
@@ -88,7 +89,7 @@
 						</div>
 					{:else}
 						<div class="view-mode">
-							<span class="cat-dot" style="background: {cat.color}"></span>
+							<span class="cat-dot" style="background: {drawnColour(cat.color)}"></span>
 							<span class="cat-name">{cat.name}</span>
 							<div class="row-actions">
 								<button class="action-btn" title="Edit category" onclick={() => startEdit(cat)}>✎</button>
@@ -109,7 +110,7 @@
 			<div class="create-form">
 				<label class="color-picker-wrap">
 					<input type="color" bind:value={newColor} class="color-native" title="Pick color" />
-					<div class="color-swatch custom" style="background: {newColor}">🎨</div>
+					<div class="color-swatch custom" style="background: {drawnColour(newColor)}">🎨</div>
 				</label>
 				<input type="text" placeholder="Category name..." bind:value={newName} class="create-input" onkeydown={(e) => e.key === 'Enter' && createCategory()} />
 				<button class="btn-primary" onclick={createCategory} disabled={loading || !newName.trim()}>Add</button>

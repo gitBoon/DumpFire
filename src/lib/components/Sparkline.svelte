@@ -6,6 +6,8 @@
   cliff. Decorative (aria-hidden) — the row it sits in carries the numbers.
 -->
 <script lang="ts">
+  import { drawnColour } from '$lib/colours';
+
   let {
     values = [],
     width = 96,
@@ -34,8 +36,8 @@
 {#if values.length > 1}
   <svg class="sparkline" {width} {height} viewBox="0 0 {width} {height}" aria-hidden="true">
     <line class="base" x1={PAD} x2={width - PAD} y1={height - PAD} y2={height - PAD} />
-    <path d={path} stroke={color} />
-    {#if end}<circle cx={end[0]} cy={end[1]} r="3" fill={color} />{/if}
+    <path d={path} stroke={drawnColour(color)} />
+    {#if end}<circle cx={end[0]} cy={end[1]} r="3" fill={drawnColour(color)} />{/if}
   </svg>
 {/if}
 

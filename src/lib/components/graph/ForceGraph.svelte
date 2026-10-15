@@ -19,6 +19,7 @@
 		forceCollide
 	} from 'd3-force';
 	import type { GraphNode, GraphEdge, SimNode, SimEdge } from '$lib/types/graph-types';
+	import { drawnColour } from '$lib/colours';
 
 	// ─── Props ────────────────────────────────────────────────────────────────
 
@@ -382,16 +383,16 @@
 			<!-- Glow ring for boards -->
 			{#if node.type === 'board'}
 				<circle r={nodeRadius(node.type) + 4} fill="none"
-					stroke={nodeColor(node.type)} stroke-width="2" opacity="0.3"
+					stroke={drawnColour(nodeColor(node.type))} stroke-width="2" opacity="0.3"
 					filter="url(#glow)" />
 			{/if}
 
 			<!-- Node shape -->
 			<circle
 				r={nodeRadius(node.type)}
-				fill={nodeColor(node.type)}
+				fill={drawnColour(nodeColor(node.type))}
 				opacity="0.15"
-				stroke={nodeColor(node.type)}
+				stroke={drawnColour(nodeColor(node.type))}
 				stroke-width="2"
 			/>
 

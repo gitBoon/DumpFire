@@ -55,3 +55,6 @@ uploads/
 
 # Card planning documents (local only; synced to the shared drive and Merview)
 docs/planning/
+
+# A test reporter's output (vitest --outputFile), never committed
+.vitest/

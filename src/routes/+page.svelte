@@ -28,6 +28,7 @@
 	import CategoryManager from '$lib/components/CategoryManager.svelte';
 	import VelocityModal from '$lib/components/VelocityModal.svelte';
 	import SpendModal from '$lib/components/SpendModal.svelte';
+	import { drawnColour } from '$lib/colours';
 
 	let { data }: { data: PageData } = $props();
 
@@ -842,12 +843,12 @@
 									<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
 								</span>
 								{#if group.color}
-									<span class="category-dot" style="background: {group.color}"></span>
+									<span class="category-dot" style="background: {drawnColour(group.color)}"></span>
 								{/if}
-								<span class="category-group-name" style={group.color ? `color: ${group.color}` : ''}>{group.name}</span>
+								<span class="category-group-name" style={group.color ? `color: ${drawnColour(group.color)}` : ''}>{group.name}</span>
 								<span class="category-group-count">{group.boards.length} board{group.boards.length !== 1 ? 's' : ''}</span>
 								<div class="group-mini-progress">
-									<div class="progress-track"><div class="progress-fill" style="background: {group.color || 'var(--text-tertiary)'}; width: {completionPercent(group.done, group.total)}%"></div></div>
+									<div class="progress-track"><div class="progress-fill" style="background: {drawnColour(group.color || 'var(--text-tertiary)')}; width: {completionPercent(group.done, group.total)}%"></div></div>
 								</div>
 							</button>
 
@@ -856,8 +857,8 @@
 									{#each group.boards as board (board.id)}
 										<div class="board-row-group">
 											<!-- svelte-ignore a11y_no_static_element_interactions -->
-											<div class="board-row" style={group.color ? `border-left-color: ${group.color}` : ''} oncontextmenu={(e) => openBoardContextMenu(e, board.id, board.name)}>
-												<div class="board-color-strip" style={group.color ? `background: ${group.color}` : ''}></div>
+											<div class="board-row" style={group.color ? `border-left-color: ${drawnColour(group.color)}` : ''} oncontextmenu={(e) => openBoardContextMenu(e, board.id, board.name)}>
+												<div class="board-color-strip" style={group.color ? `background: ${drawnColour(group.color)}` : ''}></div>
 												{#if board.subBoards && board.subBoards.length > 0}
 													<button class="expand-toggle" onclick={() => toggleExpand(board.id)} title={expandedBoards.has(board.id) ? 'Collapse' : 'Expand'}>
 														<svg width="12" height="12" viewBox="0 0 12 12" fill="none" class:rotated={expandedBoards.has(board.id)}>
@@ -1114,7 +1115,7 @@
 						<div class="cat-dist-bar">
 							{#each a.categoryDistribution as cat}
 								{#if cat.count > 0}
-									<div class="cat-dist-seg" style="flex: {cat.count}; background: {cat.color}" title="{cat.name}: {cat.count} cards"></div>
+									<div class="cat-dist-seg" style="flex: {cat.count}; background: {drawnColour(cat.color)}" title="{cat.name}: {cat.count} cards"></div>
 								{/if}
 							{/each}
 						</div>
@@ -1122,7 +1123,7 @@
 							{#each a.categoryDistribution as cat}
 								{#if cat.count > 0}
 									<span class="cat-dist-item">
-										<span class="cat-dist-dot" style="background: {cat.color}"></span>
+										<span class="cat-dist-dot" style="background: {drawnColour(cat.color)}"></span>
 										<span class="cat-dist-name">{cat.name}</span>
 										<span class="cat-dist-count">{cat.count}</span>
 									</span>
@@ -1140,9 +1141,9 @@
 						{#each agingItems as item}
 							<div class="aging-cell" class:aging-empty={item.count === 0}>
 								<div class="aging-bar-wrap">
-									<div class="aging-bar" style="height: {agingTotal > 0 ? (item.count / agingTotal) * 100 : 0}%; background: {item.color}"></div>
+									<div class="aging-bar" style="height: {agingTotal > 0 ? (item.count / agingTotal) * 100 : 0}%; background: {drawnColour(item.color)}"></div>
 								</div>
-								<span class="aging-count" style="color: {item.count > 0 ? item.color : 'var(--text-tertiary)'}">{item.count}</span>
+								<span class="aging-count" style="color: {drawnColour(item.count > 0 ? item.color : 'var(--text-tertiary)')}">{item.count}</span>
 								<span class="aging-label">{item.label}</span>
 							</div>
 						{/each}
@@ -1289,7 +1290,7 @@
 					</button>
 					{#each data.allCategories as cat}
 						<button class="ctx-item" onclick={() => setBoardCategory(boardCtx.boardId, cat.id)}>
-							<span class="ctx-dot" style="background: {cat.color}"></span> {cat.name}
+							<span class="ctx-dot" style="background: {drawnColour(cat.color)}"></span> {cat.name}
 						</button>
 					{/each}
 					<div class="ctx-divider"></div>
@@ -1298,11 +1299,11 @@
 							<input type="text" class="ctx-cat-input" placeholder="Category name..." bind:value={newBoardCatName} onkeydown={(e) => e.key === 'Enter' && createBoardCategoryInline()} autofocus />
 							<div class="ctx-cat-colors">
 								{#each COLUMN_COLORS.slice(0, 8) as color}
-									<button class="ctx-color-swatch" class:active={newBoardCatColor === color} style="background: {color}" onclick={() => (newBoardCatColor = color)} type="button"></button>
+									<button class="ctx-color-swatch" class:active={newBoardCatColor === color} style="background: {drawnColour(color)}" onclick={() => (newBoardCatColor = color)} type="button"></button>
 								{/each}
 								<label class="color-custom-wrapper">
 									<input type="color" bind:value={newBoardCatColor} class="color-native-input" />
-									<span class="ctx-color-swatch custom" style="background: {newBoardCatColor}">✎</span>
+									<span class="ctx-color-swatch custom" style="background: {drawnColour(newBoardCatColor)}">✎</span>
 								</label>
 							</div>
 							<div class="ctx-cat-actions">

@@ -8,7 +8,7 @@
  * is `#fff`, whose shade `#fff20` is no colour.
  *
  * It is here and not under `$lib/server` so that a page can ask it too (card
- * 2162's plan, `docs/planning/card-2162-colours-and-csp.md`). The server reads
+ * 2162; docs/authentication-security.md, "Colours From a Request"). The server reads
  * a colour with `readColour` in `$lib/server/request-body.ts`, which asks
  * this, and a card's cover with `readCover`, which asks `isCoverValue` below
  * (card 2010).
@@ -19,6 +19,52 @@ const HEX_COLOUR = /^#[0-9a-fA-F]{6}$/;
 /** Is `value` a colour written `#rrggbb`? Text only: nothing else is a colour. */
 export function isHexColour(value: unknown): value is string {
 	return typeof value === 'string' && HEX_COLOUR.test(value);
+}
+
+// ─── Drawing a stored colour ─────────────────────────────────────────────────
+
+/**
+ * The grey a page draws in place of a stored colour that is no colour: the
+ * one the reports already use for "Uncategorised".
+ */
+export const NEUTRAL_COLOUR = '#94a3b8';
+
+const SAFE_HEX = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+const SAFE_WORD = /^[a-z]{1,30}$/i;
+const SAFE_VAR = /^var\(--[a-z0-9-]+\)$/i;
+
+/**
+ * Can `value` be written into a `style` attribute as a colour and do nothing
+ * else? A `#` and 3, 4, 6 or 8 hex digits; one word of letters, up to 30,
+ * such as `red`; or `var(--name)`. None of them can end the declaration, call
+ * any function but `var()` (so never `url()`), or leave the attribute.
+ *
+ * Wider than `isHexColour` on purpose: a colour stored before the rule, such
+ * as `red` or `#fff`, still draws as it did (card 2162, decision 3). SQL 1 in
+ * docs/deployment.md ("The Update That Brings the Content-Security-Policy")
+ * is this test written in SQL, on the value trimmed as `drawnColour` trims
+ * it, to list on production what will be drawn grey: change the two together.
+ */
+export function isSafeColour(value: unknown): value is string {
+	return typeof value === 'string' && (SAFE_HEX.test(value) || SAFE_WORD.test(value) || SAFE_VAR.test(value));
+}
+
+/**
+ * The colour a page draws for a stored value: nothing (`''`) for no value,
+ * the value itself when it is a colour and nothing more (`isSafeColour`), and
+ * `fallback` for anything else, so a stored `red;background:url(//x.io)` is
+ * drawn grey and fetches nothing. The value is tested, and drawn, with its
+ * leading and trailing spaces, tabs and line breaks trimmed, so an old
+ * `#ef4444 ` still draws; one that is nothing but those is drawn grey.
+ *
+ * Every colour interpolated into a `style`, `fill` or `stroke` attribute of a
+ * `.svelte` file goes through this, constants included, which
+ * `tests/colours.test.ts` checks by reading the source.
+ */
+export function drawnColour(value: unknown, fallback: string = NEUTRAL_COLOUR): string {
+	if (value === null || value === undefined || value === '') return '';
+	const trimmed = typeof value === 'string' ? value.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '') : value;
+	return isSafeColour(trimmed) ? trimmed : fallback;
 }
 
 // ─── Card covers ─────────────────────────────────────────────────────────────

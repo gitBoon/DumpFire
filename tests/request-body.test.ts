@@ -1336,6 +1336,8 @@ describe('the handlers card 2115 moved onto the readers', () => {
 	type Case = [route: string, path: (w: World) => string, body: (w: World) => unknown, message: string];
 	const EVENTS = 'card.created, card.updated, card.moved, card.completed, card.deleted, comment.added';
 	const long = (n: number) => 'x'.repeat(n);
+	// Card 2162: a colour is read with readColour, where card 2115 read it as text of 1 to 32.
+	const COLOUR_RULE = 'color must be a colour written #rrggbb';
 
 	const CASES: Case[] = [
 		// PUT /api/teams/:id
@@ -1370,10 +1372,10 @@ describe('the handlers card 2115 moved onto the readers', () => {
 		// The two category routes of the web application.
 		['PUT /api/categories/:id', (w) => `/api/categories/${w.categoryId}`, () => ({}), 'No valid fields to update'],
 		['PUT /api/categories/:id', (w) => `/api/categories/${w.categoryId}`, () => ({ name: ' ' }), 'name cannot be empty'],
-		['PUT /api/categories/:id', (w) => `/api/categories/${w.categoryId}`, () => ({ color: long(33) }), 'color must be at most 32 characters'],
+		['PUT /api/categories/:id', (w) => `/api/categories/${w.categoryId}`, () => ({ color: long(33) }), COLOUR_RULE],
 		['PUT /api/board-categories/:id', (w) => `/api/board-categories/${w.groupingId}`, () => ({}), 'No valid fields to update'],
 		['PUT /api/board-categories/:id', (w) => `/api/board-categories/${w.groupingId}`, () => ({ name: 7 }), 'name must be text'],
-		['PUT /api/board-categories/:id', (w) => `/api/board-categories/${w.groupingId}`, () => ({ color: null }), 'color must be text'],
+		['PUT /api/board-categories/:id', (w) => `/api/board-categories/${w.groupingId}`, () => ({ color: null }), COLOUR_RULE],
 		// PUT /api/cards/:id/comments/:commentId
 		['PUT /api/cards/:id/comments/:commentId', (w) => `/api/cards/${w.cardId}/comments/${w.commentId}`, () => ({}), 'Comment cannot be empty'],
 		['PUT /api/cards/:id/comments/:commentId', (w) => `/api/cards/${w.cardId}/comments/${w.commentId}`, () => ({ content: '   ' }), 'Comment cannot be empty'],
@@ -1386,11 +1388,11 @@ describe('the handlers card 2115 moved onto the readers', () => {
 		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: 5 }), 'title must be text'],
 		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: long(201) }), 'Column title too long (max 200 chars)'],
 		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: 'Review', position: 'top' }), 'position must be a number'],
-		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: 'Review', color: '' }), 'color cannot be empty'],
+		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: 'Review', color: '' }), COLOUR_RULE],
 		['POST /api/v1/boards/:boardId/columns', () => '/api/v1/boards/1e3/columns', () => ({ title: 'Review' }), 'Invalid board ID'],
 		['POST /api/v1/boards/:boardId/labels', (w) => `/api/v1/boards/${w.boardId}/labels`, () => ({}), 'name is required'],
 		['POST /api/v1/boards/:boardId/labels', (w) => `/api/v1/boards/${w.boardId}/labels`, () => ({ name: long(201) }), 'Label name too long (max 200 chars)'],
-		['POST /api/v1/boards/:boardId/labels', (w) => `/api/v1/boards/${w.boardId}/labels`, () => ({ name: 'Urgent', color: 3 }), 'color must be text'],
+		['POST /api/v1/boards/:boardId/labels', (w) => `/api/v1/boards/${w.boardId}/labels`, () => ({ name: 'Urgent', color: 3 }), COLOUR_RULE],
 		['POST /api/v1/boards/:boardId/categories', (w) => `/api/v1/boards/${w.boardId}/categories`, () => ({ name: '' }), 'name is required'],
 		['POST /api/v1/boards/:boardId/categories', (w) => `/api/v1/boards/${w.boardId}/categories`, () => ({ name: long(201) }), 'Name too long (max 200 chars)'],
 		['POST /api/v1/boards/:boardId/categories', (w) => `/api/v1/boards/${w.boardId}/categories`, () => ({ name: { text: 'Bug' } }), 'name must be text'],
@@ -1412,11 +1414,11 @@ describe('the handlers card 2115 moved onto the readers', () => {
 		['PUT /api/v1/labels/:labelId', (w) => `/api/v1/labels/${w.labelId}`, () => ({}), 'No valid fields to update'],
 		['PUT /api/v1/labels/:labelId', (w) => `/api/v1/labels/${w.labelId}`, () => ({ name: '' }), 'name cannot be empty'],
 		['PUT /api/v1/labels/:labelId', (w) => `/api/v1/labels/${w.labelId}`, () => ({ name: long(201) }), 'Label name too long (max 200 chars)'],
-		['PUT /api/v1/labels/:labelId', (w) => `/api/v1/labels/${w.labelId}`, () => ({ color: null }), 'color must be text'],
+		['PUT /api/v1/labels/:labelId', (w) => `/api/v1/labels/${w.labelId}`, () => ({ color: null }), COLOUR_RULE],
 		['PUT /api/v1/labels/:labelId', () => '/api/v1/labels/1.5', () => ({ name: 'x' }), 'Invalid label ID'],
 		['PUT /api/v1/categories/:categoryId', (w) => `/api/v1/categories/${w.categoryId}`, () => ({ name: '' }), 'name cannot be empty'],
 		['PUT /api/v1/categories/:categoryId', (w) => `/api/v1/categories/${w.categoryId}`, () => ({ name: long(201) }), 'Name too long (max 200 chars)'],
-		['PUT /api/v1/categories/:categoryId', (w) => `/api/v1/categories/${w.categoryId}`, () => ({ color: 9 }), 'color must be text'],
+		['PUT /api/v1/categories/:categoryId', (w) => `/api/v1/categories/${w.categoryId}`, () => ({ color: 9 }), COLOUR_RULE],
 		['PUT /api/v1/board-categories/:categoryId', (w) => `/api/v1/board-categories/${w.groupingId}`, () => ({ name: ' ' }), 'name cannot be empty'],
 		['PUT /api/v1/board-categories/:categoryId', (w) => `/api/v1/board-categories/${w.groupingId}`, () => ({ name: long(201) }), 'Name too long (max 200 chars)'],
 		['PUT /api/v1/board-categories/:categoryId', (w) => `/api/v1/board-categories/${w.groupingId}`, () => ({}), 'No valid fields to update'],

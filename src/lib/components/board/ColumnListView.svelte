@@ -26,6 +26,7 @@
 		type ListOrder
 	} from '$lib/board/board-view';
 	import CardListRow from './CardListRow.svelte';
+	import { drawnColour } from '$lib/colours';
 
 	let {
 		columns,
@@ -91,7 +92,7 @@
 					aria-pressed={col.id === columnId}
 					onclick={() => onChange({ ...choice, columnId: col.id })}
 				>
-					<span class="strip-dot" style="background: {col.color}" aria-hidden="true"></span>
+					<span class="strip-dot" style="background: {drawnColour(col.color)}" aria-hidden="true"></span>
 					<span class="strip-title">{col.title}</span>
 					<span class="strip-count">{shown}{#if filtering}<span class="of-total">/{col.cards.length}</span>{/if}</span>
 				</button>

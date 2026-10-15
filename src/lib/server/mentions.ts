@@ -7,14 +7,17 @@ import { users } from './db/schema';
 import { eq } from 'drizzle-orm';
 import { notifyMention } from './notifications';
 import { createLogger } from './logger';
+import { findMentions } from '$lib/mentions';
 
 const log = createLogger('Mentions');
 
-/** Extract unique @usernames from text. Returns lowercase usernames. */
+/**
+ * Extract unique @usernames from text. Returns lowercase usernames. Where a
+ * mention is is `findMentions`'s rule, the same one the card window draws its
+ * chips by (`$lib/mentions`).
+ */
 export function parseMentions(text: string): string[] {
-	const matches = text.match(/@(\w+)/g);
-	if (!matches) return [];
-	const unique = new Set(matches.map(m => m.slice(1).toLowerCase()));
+	const unique = new Set(findMentions(text).map(m => m.username.toLowerCase()));
 	return Array.from(unique);
 }
 

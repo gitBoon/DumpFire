@@ -23,6 +23,7 @@
 	import { subtaskProgress, getCategoryById, getPriorityLabel } from '$lib/utils/card-utils';
 	import { formatTokens } from '$lib/tokens';
 	import { formatUsd, BLEND_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
+	import { drawnColour } from '$lib/colours';
 
 	let {
 		card,
@@ -83,7 +84,7 @@
 	oncontextmenu={(e) => onContextMenu(e, card)}
 >
 	{#if category?.color}
-		<div class="row-color-strip" style="background: {category.color}" aria-hidden="true"></div>
+		<div class="row-color-strip" style="background: {drawnColour(category.color)}" aria-hidden="true"></div>
 	{/if}
 	<h4 class="row-title">
 		<span class="priority-dot priority-{card.priority}" title="Priority: {card.priority}"></span>
@@ -127,7 +128,7 @@
 		{/if}
 		<span class="priority-badge priority-{card.priority}">{getPriorityLabel(card.priority)}</span>
 		{#if category}
-			<span class="chip" style="background: {category.color}20; color: {category.color}; border: 1px solid {category.color}40"><span class="chip-text">{category.name}</span></span>
+			<span class="chip" style="background: {drawnColour(category.color)}20; color: {drawnColour(category.color)}; border: 1px solid {drawnColour(category.color)}40"><span class="chip-text">{category.name}</span></span>
 		{/if}
 		{#each card.assignees ?? [] as assignee (assignee.id)}
 			<span class="chip chip-assignee"><span class="chip-text">{assignee.emoji} {assignee.username}</span></span>

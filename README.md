@@ -192,6 +192,8 @@ cloudflared tunnel --url http://localhost:3000
 
 `cloudflared` passes a request's body on in chunks, with no length, and DumpFire reads such a body and holds it to the same size limits as any other. For large uploads, setting `disableChunkedEncoding: true` under the tunnel's `originRequest` passes the length on as well, so that an upload that is too large is refused before any of it is read. It is a saving, not a requirement. Cloudflare itself refuses an upload over 100 MB on its Free and Pro plans: see [How Large an Import Can Be](docs/deployment.md#how-large-an-import-can-be).
 
+Every page carries a Content-Security-Policy that allows only DumpFire's own scripts, so add no policy of your own at Cloudflare. A Cloudflare feature that puts scripts into pages (Rocket Loader, the automatic Web Analytics beacon) may be refused by it: if the deployment guide's check counts one, read the browser's console during the report-only trial, and turn the feature off only if a report names it. See [Security Headers From the Proxy](docs/deployment.md#security-headers-from-the-proxy).
+
 #### Caddy (automatic HTTPS)
 
 Caddy obtains and renews Let's Encrypt certificates automatically. A single-line `Caddyfile` is all you need:

@@ -178,6 +178,12 @@ export function notSignedIn(): Response {
  * page, which is what current advice is: the filter itself could be used to
  * make a page leak, and every current browser has dropped it. It was
  * `1; mode=block`.
+ *
+ * A page carries a sixth, `Content-Security-Policy`, which is not here:
+ * SvelteKit sets it on every page it renders, with a nonce of its own for
+ * each, from `kit.csp` in svelte.config.js (card 2162). `secured` never
+ * replaces it, and puts no policy on anything else; it only moves it, in
+ * report-only mode (`cspMode`).
  */
 export const SECURITY_HEADERS: readonly [name: string, value: string][] = [
 	['X-Content-Type-Options', 'nosniff'],
@@ -187,20 +193,45 @@ export const SECURITY_HEADERS: readonly [name: string, value: string][] = [
 	['X-XSS-Protection', '0']
 ];
 
+/** Whether a page's Content-Security-Policy is enforced, or sent to report only. */
+export type CspMode = 'enforce' | 'report-only';
+
+/**
+ * What `CSP_MODE` asks for: `report-only` while the policy is on trial, and
+ * `enforce` for anything else, nothing set included (card 2162, decision 10).
+ *
+ * The first deploy of the policy runs with `CSP_MODE=report-only`, so that a
+ * page the policy would break, or a script the proxy puts into pages, shows as
+ * a report in the browser's console and not as a page that does not work; then
+ * the variable is removed. Nothing is collected. It is enforced by default, so
+ * that an installation nobody told is protected. A value that is neither is
+ * enforced too, and said at start (`reportCspMode` in startup-checks.ts).
+ *
+ * SvelteKit's own report-only policy is not used: it refuses to start without
+ * a `report-uri`, a public route that would write browsers' reports, whose
+ * page addresses can carry an invite's token, to the log.
+ */
+export function cspMode(value: string | undefined = process.env.CSP_MODE): CspMode {
+	return value === 'report-only' ? 'report-only' : 'enforce';
+}
+
 /**
  * The pages another site may show in a frame, by route id, exactly: the
  * public request form and the two pages its mails link to, in case the form
  * is embedded in an intranet page. They carry every header but
  * `X-Frame-Options`. Every other page, the login page included, refuses to be
- * framed. No `Content-Security-Policy: frame-ancestors` is sent: there is no
- * policy for the application to add it to.
+ * framed. The pages' Content-Security-Policy has no `frame-ancestors` (card
+ * 2162, decision 8): SvelteKit's policy is one policy for every page, so it
+ * would refuse these three as well. Without that directive, `X-Frame-Options`
+ * is the frame rule every current browser reads, and it is set here, route by
+ * route.
  */
 export const FRAMEABLE_ROUTES: ReadonlySet<string> = new Set(['/request', '/request/[id]/confirm', '/request/[id]/reply']);
 
 /**
  * `response`, with each of `SECURITY_HEADERS` it does not already carry, but
  * `X-Frame-Options` on a route of `FRAMEABLE_ROUTES`. The one place they are
- * set.
+ * set. `mode` is `cspMode()` unless a test says otherwise.
  *
  * What never passes through `handle` cannot be headed here, and is the
  * reverse proxy's to head (docs/deployment.md): in a built server every
@@ -211,8 +242,20 @@ export const FRAMEABLE_ROUTES: ReadonlySet<string> = new Set(['/request', '/requ
  * trailing slash, the 404 for any other path that begins `/_app` (but a call
  * to a remote function, which the gate answers 404 itself), and the 500 for
  * a fault in the gate itself.
+ *
+ * In report-only mode (`cspMode`), a page's `Content-Security-Policy` is
+ * moved, unchanged, to `Content-Security-Policy-Report-Only`: a page is an
+ * answer SvelteKit rendered, which carries `x-sveltekit-page: true`. Nothing
+ * else is touched, so an attachment keeps its own `sandbox`, enforced.
  */
-export function secured(response: Response, routeId: string | null): Response {
+export function secured(response: Response, routeId: string | null, mode: CspMode = cspMode()): Response {
+	if (mode === 'report-only' && response.headers.get('x-sveltekit-page') === 'true') {
+		const policy = response.headers.get('content-security-policy');
+		if (policy !== null) {
+			response.headers.delete('content-security-policy');
+			response.headers.set('content-security-policy-report-only', policy);
+		}
+	}
 	const frameable = routeId !== null && FRAMEABLE_ROUTES.has(routeId);
 	for (const [name, value] of SECURITY_HEADERS) {
 		if (name === 'X-Frame-Options' && frameable) continue;

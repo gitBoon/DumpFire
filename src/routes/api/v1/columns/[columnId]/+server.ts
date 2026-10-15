@@ -7,7 +7,7 @@ import { completionRoleRefusal } from '$lib/server/card-completion';
 import { emit } from '$lib/server/events';
 import { inTransaction } from '$lib/server/db/transaction';
 import { deleteColumn } from '$lib/server/deletes';
-import { pathId, readBody, readBoolean, readNumber, readText } from '$lib/server/request-body';
+import { pathId, readBody, readColour, readBoolean, readNumber, readText } from '$lib/server/request-body';
 import { requireColumn, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
@@ -79,7 +79,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			says: { empty: 'title cannot be empty', invalid: 'Column title too long (max 200 chars)' }
 		});
 		if (title !== undefined) updates.title = title;
-		const color = readText(body, 'color', { min: 1, max: 32, keep: column.color });
+		const color = readColour(body, 'color', { keep: column.color });
 		if (color !== undefined) updates.color = color;
 		const position = readNumber(body, 'position', { keep: column.position });
 		if (position !== undefined) updates.position = position;

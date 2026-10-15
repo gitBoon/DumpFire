@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { boardCategories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { inTransaction } from '$lib/server/db/transaction';
-import { pathId, readBody, readText } from '$lib/server/request-body';
+import { pathId, readBody, readColour, readText } from '$lib/server/request-body';
 import { requireBoardCategoryEdit, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
@@ -20,7 +20,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		const updates: Partial<typeof boardCategories.$inferInsert> = {};
 		const name = readText(body, 'name', { trim: true, min: 1, max: 200, keep: grouping.name });
 		if (name !== undefined) updates.name = name;
-		const color = readText(body, 'color', { min: 1, max: 32, keep: grouping.color });
+		const color = readColour(body, 'color', { keep: grouping.color });
 		if (color !== undefined) updates.color = color;
 		if (Object.keys(updates).length === 0) throw error(400, 'No valid fields to update');
 

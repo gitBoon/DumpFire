@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { SubtaskType } from '$lib/types';
 	import { deleteFailure, failureMessage } from '$lib/api';
+	import { drawnColour } from '$lib/colours';
 
 	let {
 		subtask = null,
@@ -142,7 +143,7 @@
 	<div class="subtask-modal" onclick={(e) => e.stopPropagation()} role="document">
 		<div class="modal-header">
 			<div class="modal-header-left">
-				<span class="subtask-icon" style="background: {getPriorityColor(priority)}20; color: {getPriorityColor(priority)}">
+				<span class="subtask-icon" style="background: {drawnColour(getPriorityColor(priority))}20; color: {drawnColour(getPriorityColor(priority))}">
 					<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 						<path d="M3 7l3 3 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 					</svg>
