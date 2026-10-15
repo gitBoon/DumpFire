@@ -64,6 +64,7 @@ const TEST_FILES = [
 	'atomic-v1.test.ts',
 	'backups.test.ts',
 	'body-limits.test.ts',
+	'board-list-view.test.ts',
 	'board-tree-loops.test.ts',
 	'bulk-endpoints.test.ts',
 	'burndown.test.ts',
