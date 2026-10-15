@@ -22,7 +22,6 @@
 	let title = $state(subtask?.title || '');
 	let description = $state(subtask?.description || '');
 	let priority = $state(subtask?.priority || 'medium');
-	let colorTag = $state(subtask?.colorTag || '');
 	let dueDate = $state(subtask?.dueDate || '');
 	let showDueDate = $state(!!subtask?.dueDate);
 	let completed = $state(subtask?.completed || false);
@@ -38,19 +37,16 @@
 	 */
 	let saving = $state(false);
 
-	const colorTags = [
-		'', '#ef4444', '#f97316', '#f59e0b', '#22c55e',
-		'#06b6d4', '#6366f1', '#8b5cf6', '#ec4899'
-	];
-
 	async function save() {
 		if (!title.trim() || saving) return;
 
+		// No colour tag: the window has no control for one (card 2185), so a
+		// colour set through the API is kept by a save here, and a new subtask
+		// is stored with none.
 		const payload = {
 			title: title.trim(),
 			description,
 			priority,
-			colorTag,
 			dueDate: dueDate || null,
 			completed,
 			boardId
@@ -205,28 +201,6 @@
 			</div>
 		</div>
 
-		<div class="form-group">
-			<label>Color Tag</label>
-			<div class="color-tag-picker">
-				{#each colorTags as ct}
-					<button
-						class="color-tag-btn" class:active={colorTag === ct}
-						style={ct ? `background: ${ct}` : ''} onclick={() => (colorTag = ct)} title={ct || 'None'}
-					>
-						{#if !ct}
-							<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-								<path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-							</svg>
-						{/if}
-					</button>
-				{/each}
-				<label class="color-custom-wrapper">
-					<input type="color" bind:value={colorTag} class="color-native-input" />
-					<span class="color-tag-btn custom" style="background: {colorTag || 'var(--bg-elevated)'}">✎</span>
-				</label>
-			</div>
-		</div>
-
 		{#if subtask}
 			<div class="form-group">
 				<label class="completed-toggle">
@@ -306,17 +280,6 @@
 	}
 	.form-row { display: flex; gap: var(--space-lg); }
 
-	.color-tag-picker { display: flex; gap: 6px; }
-	.color-tag-btn {
-		width: 26px; height: 26px; border-radius: var(--radius-sm);
-		border: 2px solid transparent; cursor: pointer;
-		display: flex; align-items: center; justify-content: center;
-		transition: all var(--duration-fast) var(--ease-out);
-		background: var(--bg-elevated); color: var(--text-tertiary);
-	}
-	.color-tag-btn:hover { transform: scale(1.1); }
-	.color-tag-btn.active { border-color: var(--text-primary); }
-
 	.completed-toggle {
 		display: flex !important; align-items: center; gap: var(--space-md);
 		cursor: pointer; text-transform: none !important; letter-spacing: 0 !important;
@@ -373,9 +336,4 @@
 	.due-clear:hover { opacity: 1; }
 	.due-add-btn { font-size: 0.8rem !important; display: flex; gap: var(--space-xs); align-items: center; color: var(--text-tertiary) !important; }
 	.due-add-btn:hover { color: var(--text-secondary) !important; }
-
-	/* Custom color picker */
-	.color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
-	.color-native-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
-	.color-tag-btn.custom { font-size: 0.6rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
 </style>

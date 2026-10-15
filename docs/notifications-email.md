@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.12
+version: 1.13
 status: As-Built
 date: 2026-10-15
 tags:
@@ -412,7 +412,8 @@ The four delete payloads say what kind of change it was and nothing more: no boa
 card title or user (card 2108). The board of a sub-board's card can be viewed by people who
 could never open the sub-board, and the page only reads its board again, under its own
 access check. Restoring a card that is not archived, from a page, writes nothing and sends
-nothing.
+nothing. Nor does a card update that changes nothing, on either tree: every field sent at
+the value the card holds is no change, and sends no `update` (card 2183).
 
 ### Connection Lifecycle
 
@@ -532,6 +533,8 @@ The same event is sent whether the action was made in the web UI or through the 
 What is not sent:
 
 - **Archiving a card sends nothing.** It writes `card_archived`, which has no event. Nor does restoring one: `card_restored` has none, and a restore through `PUT /api/v1/cards/{cardId}` with no other field sends no `card.updated` either, since it writes `api:card_restored` and no `api:card_updated` (card 2108).
+- **A card update that changes nothing sends nothing** (card 2183). `PUT /api/cards/{id}` and `PUT /api/v1/cards/{cardId}` compare what is sent with what the card holds, and write no entry, so send no `card.updated`, when every field is as stored; one that changes some fields sends one `card.updated` whose `detail` names those alone. The card window sends a card's whole state back with every save, so every Save on an unchanged card sent a `card.updated` until 2026-10-15.
+- **A move out of an On Hold column sends the move's events alone** (card 2208). The move clears the card's on-hold note itself; the board page's drag out of On Hold sent a second request to clear it, which delivered a `card.updated` beside the `card.moved`, until 2026-10-15.
 - **A `card.deleted` carries the id of the card that went**, although the activity entry it comes from is stored with no card id, the card being gone.
 - **Deleting a column sends nothing**, for the column or for any card in it. Neither does purging archived cards, clearing a board's cards or deleting a board. A board's webhooks are deleted with the board. Open pages are told of each by a live update: see [Event Types](#event-types).
 

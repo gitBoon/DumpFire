@@ -1,9 +1,9 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.3
+version: 1.4
 status: As-Built
-date: 2026-10-14
+date: 2026-10-15
 tags:
   - reporting
   - audit-log
@@ -118,6 +118,20 @@ raised, it was edited, an audit event names it, or someone commented on it. The
 union matters — relying on the audit log alone is what made the hand-built report
 miss 30% of completions.
 
+"Edited" means a field changed. Since 15 October 2026 a save that changes nothing,
+such as Save pressed on an unchanged card in the card window or an API call that
+repeats what the card holds, writes no row and no `card_updated` entry, so it
+leaves `updated_at` as it was and neither puts the card in the window nor makes it
+the work of whoever pressed Save. Until then every such save did both (card 2183).
+
+A card is "on hold" when it is in a hold column (On Hold, Hold, Blocked, Parked or
+Waiting) or carries an on-hold note, wherever it is. A move out of a hold column
+into one that is not clears the note, by every route, so a card that has left the
+pause is not counted as on hold for a note left behind (card 2208). Until 15 October
+2026 only a drag on the board page cleared it. Cards that already carry a note
+outside a hold column keep it until someone empties it in the card window, or the card goes on hold and
+leaves it again.
+
 A dependency added or removed is not work on the card it is recorded on, and is
 not counted: `dependency_added`, `dependency_removed` and `dependencies_bulk_added`,
 in either spelling, neither put a card in the window nor make it the work of
@@ -154,7 +168,10 @@ an obvious blank.
 Two places, both optional:
 
 - **Card modal** — a collapsed *Reporting* section, expanded automatically once
-  anything has been recorded.
+  anything has been recorded. It is the same window on the board page, the plan
+  page and All Tasks, and each shows the values a card holds and saves what is
+  typed there. Until 15 October 2026 All Tasks opened the section empty and
+  dropped what was typed in it (card 2186).
 - **Completion prompt** — after a card is dragged to Complete, a small dialog
   asks for `summary` and `closeReason`. It appears *after* the move, so skipping
   costs nothing. A required field here would be filled in with whatever closes

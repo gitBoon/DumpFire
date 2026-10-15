@@ -67,6 +67,7 @@ const TEST_FILES = [
 	'bulk-endpoints.test.ts',
 	'card-completion.test.ts',
 	'card-covers-and-labels.test.ts',
+	'card-updates.test.ts',
 	'card-window.test.ts',
 	'check-at-the-write.test.ts',
 	'columns.test.ts',

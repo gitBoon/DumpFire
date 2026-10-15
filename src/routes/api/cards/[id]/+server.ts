@@ -15,6 +15,7 @@ import {
 import { archiveCard, deleteCard } from '$lib/server/deletes';
 import { linkBaseUrl } from '$lib/server/email';
 import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
+import { changedFields } from '$lib/server/card-changes';
 import { normaliseReportingFields } from '$lib/server/reporting-fields';
 import { PRIORITIES, requireCardCategory } from '$lib/server/card-fields';
 import {
@@ -50,6 +51,11 @@ import type { RequestHandler } from './$types';
  * `completedAt` and `archivedAt` are not read: they record that something
  * happened, so the server stamps them when it happens. A card is archived
  * with DELETE and restored through the restore route.
+ *
+ * A field sent with the value the card already holds is not a change (card
+ * 2183, `card-changes.ts`): the entry names only the fields that changed, and
+ * a request that changes nothing writes nothing, records no entry, sends no
+ * `card.updated` and no live event, and is answered 200 with the card.
  */
 export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 	const user = requireUser(locals.user);
@@ -156,12 +162,26 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 				delete updateData.position;
 			}
 
+			// A move out of an On Hold column clears the note (card 2208). The note
+			// the card held before the move, sent back with it, is not written over
+			// the clearing: the move decides, as for the category above. A
+			// different note sent with the move is a new reason, and is written.
+			if (move && existingCard.onHoldNote && move.card.onHoldNote === '' && onHoldNote === existingCard.onHoldNote) {
+				delete updateData.onHoldNote;
+			}
+
+			// Only what differs from the card as it now stands is written, named
+			// and announced (card 2183): the card window sends every field back on
+			// every save. After a move that is the moved row, which may have lost
+			// its category or its note. A save that changes nothing writes nothing,
+			// records nothing and tells nobody, and is answered with the card.
 			let row = move?.card ?? existingCard;
-			const changed = Object.keys(updateData);
+			const fields = changedFields(row, updateData);
+			const changed = Object.keys(fields);
 			if (changed.length > 0) {
 				const written = db
 					.update(cards)
-					.set({ ...updateData, updatedAt: new Date().toISOString() })
+					.set({ ...fields, updatedAt: new Date().toISOString() })
 					.where(eq(cards.id, id))
 					.returning()
 					.get();
@@ -181,7 +201,7 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 			if (move) {
 				const unblocked = recordUnblockedByMoves([move], user);
 				announceCardMoves([move], unblocked, user, 'ui', baseUrl);
-			} else {
+			} else if (changed.length > 0) {
 				emit(boardId, 'update', { type: 'card' });
 			}
 

@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.36
+version: 1.37
 status: As-Built
 date: 2026-10-15
 tags:
@@ -623,6 +623,23 @@ new; these answers and fields are:
   so the sub-board shows on its card without a reload, as the web application's own create
   now does too. It sent nothing. A board made at the top level sends nothing, and the
   answer is unchanged.
+- **A card update records only what it changed** (card 2183), on `PUT /cards/:cardId` and
+  on the web application's `PUT /api/cards/{id}`. A field sent with the value the card
+  already holds is not a change, and `null` and `''` are the same value when comparing (`description`, `onHoldNote` and `businessValue` still take text only, and `''` clears them): a request that
+  changes nothing writes nothing, so `updatedAt` stays, records no activity entry, sends no
+  `card.updated` and no live update, and answers `200` with the card as it is. One that
+  changes some fields writes, names and announces those alone. Every field sent was
+  written and named, so a save of an unchanged card from the card window delivered
+  `card.updated` and counted the card as worked on in the activity report. The milestone
+  the card is in, sent back, is not a change, and `{}` is still `400`
+  `No valid fields to update`. See [`PUT /api/v1/cards/:cardId`](#put-apiv1cardscardid).
+- **A move out of an On Hold column clears the card's `onHoldNote`** (card 2208), on
+  `PUT /cards/:cardId/move` and on every move in the web application: a move from a
+  column titled On Hold, Hold, Blocked, Parked or Waiting to one that is not. Every route
+  kept the note, and only a drag on the board page cleared it, with a second request that
+  wrote `card_updated` naming `onHoldNote` and delivered `card.updated`. The move's own
+  entry and events are the record now. On the web application's `PUT /api/cards/{id}`, which takes a `columnId` with other fields, an `onHoldNote` sent back equal to the note the move cleared is not written back; a different note sent with the move is written. See
+  [`PUT /api/v1/cards/:cardId/move`](#put-apiv1cardscardidmove).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -1163,6 +1180,11 @@ API:
   cleared a tag set through the API; such a tag now survives a save there, and the save's
   `card_updated` entry no longer names `colorTag`. Duplicate still copies a card's tag,
   and the field is read on both routes as before.
+- **The subtask window offers no colour tag, and sends none** (card 2185), on
+  `POST /api/subtasks` and `PUT /api/subtasks/{id}`. The colour it offered was stored and
+  drawn nowhere; a colour set through the API now survives a save there, and a subtask it
+  creates is stored with `''`. A subtask's `colorTag` is still accepted and returned by
+  both trees, and Duplicate still copies it; no screen sets or shows it.
 
 ### Changes on 2026-10-13
 
@@ -1712,6 +1734,14 @@ is read (`400`), and then what the body names: the category (`404`
 back unchanged, is accepted as it is, whatever the rules say of it: a card filed under
 another board's category keeps it while it is sent back.
 
+Only what changed is recorded (card 2183). A field sent with the value the card already
+holds is not a change, and `null` and `''` are the same value when comparing (`description`, `onHoldNote` and `businessValue` still take text only, and `''` clears them); a reporting value is
+compared in the spelling it is stored in. A request that changes nothing writes nothing, so
+`updatedAt` stays, records no activity entry, sends no `card.updated` webhook and no live
+update, and answers `200` with the card as it is. One that changes some fields writes,
+names in `api:card_updated` and announces those alone. Until 2026-10-14 every field sent
+was written and named, changed or not.
+
 - **`archivedAt`** may only be `null`, which restores an archived card, as the tracking
   workflow restores one. Any other value is `400`
   `archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}`;
@@ -1719,7 +1749,7 @@ another board's category keeps it while it is sent back.
   `api:card_restored`, with the card's title, and `api:card_updated` is written only for
   the other fields sent, so a restore alone delivers no `card.updated` webhook. An
   `archivedAt` that changes nothing, `null` on a card that is not archived or the stamp the
-  card holds, is named in `api:card_updated` as it was. Until 2026-10-14 a restore was
+  card holds, is not a change and is not named. Until 2026-10-14 a restore was
   recorded as `api:card_updated` naming `archivedAt`.
 - **`milestoneId`** puts the card in that milestone, with edit access to it, and only a
   board's own card in a milestone of one board; an archived card is `400`
@@ -1803,6 +1833,11 @@ is needed on both). Goes through the same service as a drag in the web UI:
   if it was not already, XP is awarded the first time only, and `card_completed` is
   logged. Refused with 409 while subtasks or sub-boards are still open.
 - out of a Complete/Done column: `completedAt` is cleared and `card_reopened` is logged.
+- out of an On Hold column: a move from a column titled On Hold, Hold, Blocked, Parked or
+  Waiting to one that is not clears the card's `onHoldNote` to `''`, in the same write as
+  the move, with no entry of its own. The note stays on a move into such a column, between
+  two of them, and between two working columns. Until 2026-10-14 only a drag on the board
+  page cleared it (card 2208).
 - to another board: the source board's labels are removed from the card, and so is
   a category that belongs to another board (a category with no board stays);
   `card_moved_away` and `card_moved_in` are logged, one on each board.

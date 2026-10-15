@@ -448,6 +448,49 @@ describe('the card window’s save and its template’s labels, src/lib/componen
 	});
 });
 
+// Card 2200. The window sent `onHoldNote: onHoldNote || undefined` and the
+// same for the business value, so an emptied box was left out of the body
+// and the route kept the old text. Both routes refuse `null` for these two
+// fields and store `''`, which is what an emptied box is sent as now.
+describe('the card window clears what it shows (card 2200)', () => {
+	const modal = scriptOf('src/lib/components/CardModal.svelte');
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("sends an emptied on-hold note or business value as '', and only when the card held one", () => {
+		const handed = callsOf(functionNamed(modal, 'save'), 'onSave');
+		expect(handed).toHaveLength(1);
+		const properties = (handed[0].arguments[0] as ts.ObjectLiteralExpression).properties;
+		const initial = (name: string) => {
+			const property = properties.find((p) => p.name?.getText() === name);
+			expect(property && ts.isPropertyAssignment(property), name).toBe(true);
+			return (property as ts.PropertyAssignment).initializer.getText().replace(/\s/g, '');
+		};
+		expect(initial('onHoldNote')).toBe("onHoldNote||(card?.onHoldNote?'':undefined)");
+		expect(initial('businessValue')).toBe("businessValue||(card?.businessValue?'':undefined)");
+	});
+
+	it("reaches the card update with the empty text, through the board page's saveCard", async () => {
+		const sent: { url: string; method?: string; body: Record<string, unknown> }[] = [];
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			sent.push({ url, method: init.method, body: JSON.parse(String(init.body)) });
+			return new Response(JSON.stringify({ id: 5 }), { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+		const card = { id: 5, title: 'Held', onHoldNote: 'waiting on X', businessValue: 'saves an hour' } as unknown as CardType;
+
+		await cardActions.saveCard(card, null, 1, [], {
+			title: 'Held', description: '', priority: 'medium', categoryId: null, dueDate: null,
+			onHoldNote: '', businessValue: ''
+		});
+
+		expect(sent).toHaveLength(1);
+		expect(`${sent[0].method} ${sent[0].url}`).toBe('PUT /api/cards/5');
+		expect(sent[0].body).toMatchObject({ onHoldNote: '', businessValue: '' });
+	});
+});
+
 // Card 2164. `?card=` was read in `onMount` alone, and SvelteKit keeps the
 // page for every address of the route, so a dependency link to a card on
 // this board, or on another, opened no card. The parameter was taken off the
@@ -1901,7 +1944,6 @@ describe('no page throws away the answer to a write', () => {
 		'src/lib/board/card-actions.ts › saveCard › api.updateCard': 2012,
 		'src/lib/board/card-actions.ts › saveCard › api.createSubtask': 2012,
 		'src/lib/board/card-actions.ts › togglePin › api.updateCard': 2012,
-		'src/lib/board/dnd-handlers.ts › handleCardDndFinalize › api.updateCard': 2012,
 		'src/lib/board/dnd-handlers.ts › confirmOnHold › api.updateCard': 2012,
 		'src/lib/board/dnd-handlers.ts › confirmOnHold › api.reorderCards': 2012,
 		'src/lib/board/dnd-handlers.ts › handleColumnDndFinalize › api.reorderColumns': 2012
@@ -1909,7 +1951,9 @@ describe('no page throws away the answer to a write', () => {
 		// from its window, the dashboard's favourite and category, and the
 		// account page's emoji and mail settings. Each reads its answer now (the
 		// table of writes above). The share window's `updateRole` had come off
-		// with card 2115's review.
+		// with card 2115's review. The drop's request to clear the on-hold note
+		// came off with card 2208: the server clears it in the move, and the drop
+		// sends no second request.
 	};
 
 	it('finds none but the ones left for a card of their own, and each of those', () => {
@@ -2181,6 +2225,39 @@ describe('archiving a card from All Tasks, src/routes/all/+page.svelte', () => {
 	});
 });
 
+// Card 2186. All Tasks built the card window's card field by field and left
+// out the five reporting fields and `requestOrigin`, so the window opened its
+// Reporting section empty on a card with values, and showed no "Created from
+// request by ..."; and its save sent none of the five, so what was typed
+// there was dropped. The route itself is run in `tests/card-updates.test.ts`.
+describe('the card window on All Tasks, src/routes/all/+page.svelte (card 2186)', () => {
+	const page = scriptOf('src/routes/all/+page.svelte');
+	const REPORTING = ['summary', 'theme', 'customerImpact', 'closeReason', 'releaseState'];
+
+	it('hands the window the row as loaded, with its fall-backs, so the reporting fields and requestOrigin come with it', () => {
+		const given = assignmentsTo(functionNamed(page, 'openCard'), 'editingCard');
+		expect(given).toHaveLength(1);
+		const object = given[0].right;
+		expect(ts.isObjectLiteralExpression(object)).toBe(true);
+		const properties = (object as ts.ObjectLiteralExpression).properties;
+		expect(properties[0].getText()).toBe('...card');
+		const own = properties.slice(1).map((property) => property.name?.getText() ?? property.getText());
+		for (const name of [...REPORTING, 'requestOrigin']) expect(own, name).not.toContain(name);
+		expect(own.sort()).toEqual(
+			['position', 'subtasks', 'labelIds', 'pinned', 'onHoldNote', 'businessValue', 'subBoards', 'assignees', 'archivedAt', 'coverUrl', 'milestoneId', 'updatedAt'].sort()
+		);
+	});
+
+	it('sends the five reporting fields with the rest of a save', () => {
+		expect(bodiesSent(functionNamed(page, 'saveCard'))).toEqual([
+			['title', 'description', 'priority', 'categoryId', 'dueDate', 'onHoldNote', 'businessValue', 'boardId', ...REPORTING]
+		]);
+		// As the window gives them: text, or null for a cleared field, which clears it.
+		const said = functionNamed(page, 'saveCard').getText().replace(/\s+/g, ' ');
+		for (const name of REPORTING) expect(said).toContain(`${name}: cardData.${name}`);
+	});
+});
+
 describe('Purge on the archived page, src/routes/archived/+page.svelte', () => {
 	it('is offered inside a block for an administrator alone, as it already was', () => {
 		const file = 'src/routes/archived/+page.svelte';
@@ -2432,6 +2509,36 @@ describe('a drop onto Complete, src/lib/board/dnd-handlers.ts and the board page
 	});
 });
 
+describe('a drop out of On Hold, src/lib/board/dnd-handlers.ts (card 2208)', () => {
+	// The server clears the note in the move now, by every route. The drop
+	// sent a second request first to clear it, without reading its answer,
+	// which wrote "Updated fields: onHoldNote" and sent `card.updated` beside
+	// the move's own entry.
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('sends the move alone, and clears its own copy of the note', async () => {
+		const held = { id: 7, columnId: 1, title: 'Paused', subtasks: [], subBoards: [], onHoldNote: 'waiting on X' } as unknown as CardType;
+		const columns = [
+			{ id: 1, title: 'On Hold', cards: [held] },
+			{ id: 2, title: 'In Progress', cards: [] }
+		] as unknown as ColumnType[];
+		const sent: string[] = [];
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			sent.push(`${init.method} ${url}`);
+			return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+
+		const result = await dndHandlers.handleCardDndFinalize(2, [held], columns, 9, 'editor', '🦊');
+
+		expect(sent).toEqual(['PUT /api/cards/reorder']);
+		expect(result.action).toBe('committed');
+		const moved = result.action === 'committed' ? result.updatedColumns.find((c) => c.id === 2)!.cards[0] : null;
+		expect(moved?.onHoldNote).toBe('');
+	});
+});
+
 describe('the share window’s role select, src/lib/components/ShareModal.svelte (card 2115’s review)', () => {
 	// The share route makes nobody an owner now (card 2117's readers, card
 	// 2115's guard): `owner` is refused to anyone not already stored as one.
@@ -2528,6 +2635,34 @@ function svelteFile(file: string) {
 		}
 	};
 }
+
+// Card 2185. The subtask window offered a colour tag that was stored and drawn
+// nowhere but in the picker itself, which put the stored value into a
+// `style` attribute unchecked. The picker is gone, and the window sends no
+// `colorTag`, so a colour set through the API is kept by a save there. That
+// the route keeps it is run in `tests/card-updates.test.ts`.
+describe('the subtask window offers no colour, src/lib/components/SubtaskModal.svelte (card 2185)', () => {
+	it('has no colour tag in its script or its markup, and sends none', () => {
+		const subtask = svelteFile('src/lib/components/SubtaskModal.svelte');
+
+		expect(subtask.tree.getText()).not.toMatch(/colorTag/);
+		expect(subtask.markup).not.toContain('type="color"');
+		expect(subtask.markup).not.toContain('Color Tag');
+		expect(subtask.markup).not.toMatch(/color-tag|color-custom|color-native/);
+
+		const declared = subtask.tree.statements
+			.filter(ts.isVariableStatement)
+			.flatMap((statement) => statement.declarationList.declarations);
+		const payload = ts.forEachChild(functionNamed(subtask.tree, 'save'), function find(node): ts.VariableDeclaration | undefined {
+			if (ts.isVariableDeclaration(node) && node.name.getText() === 'payload') return node;
+			return ts.forEachChild(node, find);
+		});
+		expect(declared.map((declaration) => declaration.name.getText())).not.toContain('colorTags');
+		expect(payload?.initializer && ts.isObjectLiteralExpression(payload.initializer)).toBe(true);
+		const keys = (payload!.initializer as ts.ObjectLiteralExpression).properties.map((property) => property.name?.getText());
+		expect(keys).toEqual(['title', 'description', 'priority', 'dueDate', 'completed', 'boardId']);
+	});
+});
 
 describe('the share and subtask windows, the dashboard and the account page say a refusal where it is read (card 2148)', () => {
 	it('the share window says a failed load or write on its own line, above Close, and clears it as each write starts', () => {

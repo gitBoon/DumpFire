@@ -440,8 +440,9 @@
 		// sent cleared a tag set through the API at every save (card 2147).
 		onSave({
 			title: title.trim(), description, priority, categoryId,
-			dueDate: dueDate || null, onHoldNote: onHoldNote || undefined,
-			businessValue: businessValue || undefined,
+			// An emptied box is sent as '' when the card held a value, which clears it; otherwise left out (card 2200).
+			dueDate: dueDate || null, onHoldNote: onHoldNote || (card?.onHoldNote ? '' : undefined),
+			businessValue: businessValue || (card?.businessValue ? '' : undefined),
 			// Sent as null rather than omitted when cleared, so emptying a field
 			// actually clears it instead of leaving the stored value in place.
 			summary: summary.trim() || null,

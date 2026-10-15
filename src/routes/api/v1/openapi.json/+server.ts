@@ -90,7 +90,9 @@ const spec = {
 			'or onto a board beneath one at any depth, and moves nothing, where it was answered 200 and the sub-board then hung beneath itself, on no dashboard; it is asked only of a move to another board, and a move of the card such a loop already hangs from onto a board outside the loop is not refused for it; ' +
 			'(43) assigning a user to a card, removing one, editing a comment, creating a board, updating one and creating a milestone on a board in the web application write the entry the operation here writes, stored without api: and with source ui, ' +
 			'and accepting a task request with an assignee writes assignee_added, so GET /api/v1/audit-log, GET /api/v1/reports/activity and recentActivity on GET /api/v1/me/stats hold them, where the web application wrote none; ' +
-			'and POST /api/v1/boards with a parentCardId sends the board that card is on a live update, so that the sub-board shows on its card on the pages open there, where it sent none; its answer is unchanged. ' +
+			'and POST /api/v1/boards with a parentCardId sends the board that card is on a live update, so that the sub-board shows on its card on the pages open there, where it sent none; its answer is unchanged; ' +
+			'(44) PUT /api/v1/cards/{cardId} records only what it changes: a field sent with the value the card already holds is not a change, null and empty text being the same value when comparing (description, onHoldNote and businessValue still take text only, and empty text clears them), so a request that changes nothing writes nothing, records no activity entry, sends no card.updated and answers 200 with the card as it is, and api:card_updated names only the fields that changed, where every field sent was written and named; ' +
+			'(45) a move out of an On Hold column (one titled On Hold, Hold, Blocked, Parked or Waiting) to one that is not clears the card\'s onHoldNote, by PUT /api/v1/cards/{cardId}/move and by every move in the web application, with no entry beside the move\'s own, where only a drag on the board page cleared it. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2657,7 +2659,8 @@ const spec = {
 				description:
 					'Updates the fields sent. The body is validated before anything is written, and the update is one transaction: ' +
 					'a request that is refused leaves every field as it was, the milestone included. The card is looked for and access checked first, then every field is read. ' +
-					'A value the card already holds, sent back unchanged, is accepted as it is, even one these rules would refuse.',
+					'A value the card already holds, sent back unchanged, is accepted as it is, even one these rules would refuse. ' +
+					'A field sent with the value the card already holds is not a change: a request that changes nothing writes nothing, records no activity entry, sends no `card.updated` and answers 200 with the card as it is.',
 				operationId: 'updateCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -2697,7 +2700,7 @@ const spec = {
 											'Archive a card with DELETE /cards/{cardId}. Until 2026-10-14 any value was stored. ' +
 											'A restore is recorded as an api:card_restored activity entry, with the card\'s title, as a restore in the web application is. The api:card_updated entry, and so the card.updated webhook, ' +
 											'is written only for the other fields sent, so a restore alone delivers no card.updated: until 2026-10-14 it was recorded as api:card_updated naming archivedAt. ' +
-											'An archivedAt that changes nothing, null on a card that is not archived or the stamp the card holds, is named in the api:card_updated entry as before.'
+											'An archivedAt that changes nothing, null on a card that is not archived or the stamp the card holds, is not a change and is not named.'
 									},
 									milestoneId: {
 										type: ['integer', 'null'],
@@ -2814,7 +2817,8 @@ const spec = {
 				description:
 					'Moves a card between columns, including across different boards. The target column can belong to any board the user has edit access to. For cross-board moves, board-scoped data (categoryId, labels) is automatically cleaned up. Moving to "Complete" or "Done" awards XP and fires a celebration event. The move will be rejected with 409 if the card has incomplete subtasks or sub-boards, or if the target column is on a board beneath the card, one of its own sub-boards at any depth: a card\'s sub-boards go with it, so they would hang beneath themselves. ' +
 					'A move that completes the card mails its assignees who can open the board it is now on "Card moved: <title> → <column>", each as their own card-moved setting says, as a move made in the web application does; a move through the API that does not complete the card mails nobody. ' +
-					'Whoever made the move is never mailed about it. Until 2026-10-14 no move through the API mailed an assignee.',
+					'Whoever made the move is never mailed about it. Until 2026-10-14 no move through the API mailed an assignee. ' +
+					'Moving a card out of an On Hold column (any column titled On Hold, Hold, Blocked, Parked or Waiting) to one that is not clears its onHoldNote.',
 				operationId: 'moveCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {

@@ -10,6 +10,7 @@ import { restoreCard } from '$lib/server/card-restore';
 import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
 import { normaliseReportingFields } from '$lib/server/reporting-fields';
+import { changedFields } from '$lib/server/card-changes';
 import { setCardMilestone, takeCardOutOfMilestone, MilestoneError } from '$lib/server/milestones';
 import { PRIORITIES, requireCardCategory } from '$lib/server/card-fields';
 import {
@@ -121,8 +122,14 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * A restore is recorded as one: `api:card_restored`, as the page's restore
  * writes `card_restored` (card 2108, R2). It was `api:card_updated` naming
  * `archivedAt`. The `api:card_updated` entry is written for the other fields,
- * when there are any. An `archivedAt` that changes nothing, `null` on a card
- * that is not archived or the stamp the card holds, is named in it as before.
+ * when there are any.
+ *
+ * A field sent with the value the card already holds is not a change (card
+ * 2183, `card-changes.ts`): the entry names only the fields that changed. An
+ * `archivedAt` that changes nothing, `null` on a card that is not archived or
+ * the stamp the card holds, is not named; it was. A request that changes
+ * nothing writes nothing, records no entry, sends no `card.updated` and no
+ * live event, and is answered 200 with the card. `{}` is still a 400.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	const user = requireUser(locals.user);
@@ -189,10 +196,16 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		}
 
 		const milestoneId = readId(body, 'milestoneId', { nullable: true, keep: card.milestoneId });
-		const settingMilestone = milestoneId !== undefined;
-		if (Object.keys(updateData).length === 0 && !settingMilestone && !('archivedAt' in body)) {
+		if (Object.keys(updateData).length === 0 && milestoneId === undefined && !('archivedAt' in body)) {
 			throw error(400, 'No valid fields to update');
 		}
+
+		// Decided on what was sent, above; from here on only what differs from
+		// the card is written, named and announced (card 2183). The milestone
+		// the card is in, sent back, is not a change either, and an
+		// `archivedAt` that restores nothing is not named.
+		const fields = changedFields(card, updateData);
+		const settingMilestone = milestoneId !== undefined && milestoneId !== card.milestoneId;
 
 		// What the body names, once every field is known to be sound: a
 		// category of the card's board or a shared one, and the milestone.
@@ -212,7 +225,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		// same on every route that takes a card out, and on a move from one
 		// milestone to another. The milestone the card is already in, sent back,
 		// changes nothing.
-		if (settingMilestone && milestoneId !== card.milestoneId) {
+		if (settingMilestone) {
 			try {
 				if (milestoneId === null) takeCardOutOfMilestone(user, cardId);
 				else setCardMilestone(user, cardId, milestoneId);
@@ -222,10 +235,12 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			}
 		}
 
-		updateData.updatedAt = new Date().toISOString();
+		// Nothing changed: nothing is written, recorded or announced, and the
+		// card is answered as it is.
+		if (Object.keys(fields).length === 0 && !settingMilestone && !restored) return card;
 
 		const updated = db.update(cards)
-			.set(updateData)
+			.set({ ...fields, updatedAt: new Date().toISOString() })
 			.where(eq(cards.id, cardId))
 			.returning()
 			.get();
@@ -236,18 +251,17 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 		// A restore has its own entry, written by `restoreCard`, and is not
 		// named here as well.
-		const changedFields = [
-			...Object.keys(updateData).filter(k => k !== 'updatedAt'),
-			...('archivedAt' in body && !restored ? ['archivedAt'] : []),
+		const named = [
+			...Object.keys(fields),
 			...(settingMilestone ? ['milestoneId'] : [])
 		].join(', ');
-		if (changedFields) {
+		if (named) {
 			logActivity({
 				boardId,
 				cardId,
 				userId: user.id,
 				action: 'api:card_updated',
-				detail: `Updated fields: ${changedFields} on "${updated.title}"`,
+				detail: `Updated fields: ${named} on "${updated.title}"`,
 				userName: user.username,
 				userEmoji: user.emoji || '👤'
 			});
