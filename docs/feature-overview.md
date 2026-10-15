@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.18
+version: 1.19
 status: As-Built
 date: 2026-10-15
 tags:
@@ -64,13 +64,13 @@ Cards are your tasks. Each card sits in a column and can be enriched with detail
 | **Duplicate** | Right-click a card and choose Duplicate: a copy, its subtasks open, is added at the end of the same column. The copy of a finished card is new work, so it goes to the end of To Do (the board's first column that is not Complete or Done) instead, and the message says where: `Duplicated "Fix bug (Copy)" into To Do` |
 | **Templates** | **Save as Template**, on a saved card, keeps its title, description, priority, subtasks and labels under a name. **From template**, in the New Task window, fills the window from one; its labels are put on the card once it is created |
 | **Pin to top** | Keep important cards at the top of a column |
-| **On-hold notes** | Add a reason when putting a task on hold |
+| **On-hold notes** | Add a reason when putting a task on hold. The note is cleared when the card leaves On Hold for a column that is not a hold column, however it is moved; it stays on a move to another hold column (Hold, Blocked, Parked or Waiting). Empty the note in the card window to clear it by hand |
 
 ### Subtasks
 
 Break large tasks into smaller steps:
 - Checkbox-style completion tracking
-- Individual priority and due dates per subtask
+- A title, description, priority, due date and completion per subtask. The subtask window offers no colour: the one it offered was stored and shown nowhere, so it was taken out (card 2185). A colour set through the API is kept and returned, and shown nowhere
 - Progress bar shows completion percentage on the card
 - **Completion guard** — prevents moving a card to "Complete" if subtasks remain open
 

@@ -265,11 +265,14 @@
 	let moveColumnId = $state<number | null>(null);
 
 	function openCard(card: any) {
+		// The row as the page loaded it, as the board page hands the window its
+		// own, so the window has every field it reads: the five reporting
+		// fields and requestOrigin were left out when this named its fields one
+		// by one (card 2186). Only the fall-backs are its own.
 		editingCard = {
-			id: card.id, columnId: card.columnId, categoryId: card.categoryId,
-			title: card.title, description: card.description, position: card.position ?? 0,
-			priority: card.priority, colorTag: card.colorTag, dueDate: card.dueDate,
-			createdAt: card.createdAt, updatedAt: card.updatedAt || card.createdAt,
+			...card,
+			position: card.position ?? 0,
+			updatedAt: card.updatedAt || card.createdAt,
 			subtasks: card.subtasks || [], labelIds: card.labelIds || [],
 			pinned: card.pinned || false, onHoldNote: card.onHoldNote || '',
 			businessValue: card.businessValue || '',
@@ -342,7 +345,12 @@
 					title: cardData.title, description: cardData.description,
 					priority: cardData.priority, categoryId: cardData.categoryId,
 					dueDate: cardData.dueDate, onHoldNote: cardData.onHoldNote || '',
-					businessValue: cardData.businessValue || '', boardId: editingBoardId
+					businessValue: cardData.businessValue || '', boardId: editingBoardId,
+					// The Reporting section, as the window gives it: text, or null
+					// for a cleared field, which clears it (card 2186).
+					summary: cardData.summary, theme: cardData.theme,
+					customerImpact: cardData.customerImpact, closeReason: cardData.closeReason,
+					releaseState: cardData.releaseState
 				})
 			});
 		} catch {

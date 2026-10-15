@@ -340,7 +340,10 @@ describe('PUT /api/v1/cards/:cardId', () => {
 			expect(run.effects.map(name)).toEqual(['event update (card) on board 1', 'webhook card.updated']);
 		});
 
-		it('names an archivedAt that changes nothing in the update, as before, and writes no restore', async () => {
+		// An archivedAt that changes nothing is no change, and is not named
+		// (card 2183, decision 4): it was named in the entry, and on its own
+		// wrote an entry and moved `updated_at`.
+		it('does not name an archivedAt that changes nothing, writes nothing for it alone, and writes no restore', async () => {
 			const s = withArchived();
 			const sent = effects();
 
@@ -348,14 +351,15 @@ describe('PUT /api/v1/cards/:cardId', () => {
 				// The stamp the card holds, sent back, with a title.
 				const kept = await put(s.owner, s.first.id, { archivedAt: ARCHIVED_AT, title: 'Renamed' })();
 				// `null` on a card that is not archived.
+				const secondBefore = cardRow(s.second.id);
 				const open = await put(s.owner, s.second.id, { archivedAt: null })();
 				await sent.settle();
 
 				expect([kept.status, open.status]).toEqual([200, 200]);
 				expect(cardRow(s.first.id).archivedAt).toBe(ARCHIVED_AT);
+				expect(cardRow(s.second.id)).toEqual(secondBefore);
 				expect(entries().map((e) => `${e.cardId} ${e.action}: ${e.detail}`)).toEqual([
-					`${s.first.id} api:card_updated: Updated fields: title, archivedAt on "Renamed"`,
-					`${s.second.id} api:card_updated: Updated fields: archivedAt on "Second"`
+					`${s.first.id} api:card_updated: Updated fields: title on "Renamed"`
 				]);
 			} finally {
 				sent.restore();

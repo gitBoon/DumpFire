@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.17
+version: 1.18
 status: As-Built
 date: 2026-10-15
 tags:
@@ -681,6 +681,16 @@ the reports did not, so the same card could be complete on one screen and in
 progress on another. Nothing may compare a column title to a word list now; ask
 `columnRole()`, `isCompleteColumnTitle()`, `isHoldColumnTitle()`,
 `completeColumnIds()` or `holdColumnIds()`.
+
+The `hold` role also decides what a move does to the card's `on_hold_note`. A move
+from a `hold` column to one that is not clears it to `''`, in the same `UPDATE` as the
+change of column, inside `moveCard` in `src/lib/server/card-moves.ts`, so every route
+that moves a card does it, and a move that is refused leaves the note as it was. A
+move into a `hold` column, between two of them, or between two working columns keeps
+the note. The move's own activity entry is the record; nothing else is written for it
+(card 2208). Until 15 October 2026 only a drag on the board page cleared the note,
+with a second request. A column renamed out of the `hold` role leaves its cards' notes
+as they are, since nothing moves.
 
 #### A rename that would change what its cards mean
 

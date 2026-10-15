@@ -13,7 +13,10 @@
  *   - `completedAt` was never cleared by any of them, so a card dragged back
  *     out of Complete went on counting as completed in every report;
  *   - a card moved to another board kept its old board's labels on one route
- *     and lost them on another.
+ *     and lost them on another;
+ *   - a card moved out of an On Hold column lost its on-hold note only when
+ *     the board page's drop sent a second request to clear it; every route
+ *     kept it, and here it is cleared in the move itself (card 2208).
  *
  * Now every route does the same three things, the first two inside one
  * `inTransaction` and in this order:
@@ -111,7 +114,9 @@ export interface MoveRequest {
  *
  * In one transaction, so a failure part way leaves the card exactly where it
  * was: the card's column and position, `completedAt` (set on completion,
- * cleared on reopening), `firstCompletedAt`, labels and a board-owned category
+ * cleared on reopening), `firstCompletedAt`, the on-hold note (cleared when
+ * the card leaves a hold column for one that is not, card 2208, with no entry
+ * of its own: the move's entry is the record), labels and a board-owned category
  * that cannot follow it to another board, the actor's XP, and the activity
  * entry — one per move, carrying the actor's id and the source. The card and
  * both columns are read inside that transaction too, so the move is decided on
@@ -200,6 +205,15 @@ function moveCard(request: MoveRequest): CardMove {
 	// A reopened card is not complete. Leaving the date in place kept it in
 	// every completion count and average for as long as it lived.
 	if (reopened) update.completedAt = null;
+	// An on-hold note is the reason a card is paused, and a card that leaves
+	// the pause has none (card 2208). Only the board page's drop cleared it,
+	// with a second request; every other route kept it, and the activity
+	// report went on counting the card as on hold wherever it was. A move
+	// between two hold columns, or into one, keeps it: the work is still
+	// paused, and the page writes a new note before a move into hold.
+	if (columnRole(fromColumn.title) === 'hold' && columnRole(toColumn.title) !== 'hold' && before.onHoldNote) {
+		update.onHoldNote = '';
+	}
 
 	if (crossBoard) {
 		// Labels belong to a board and cannot follow the card off it.

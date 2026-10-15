@@ -29,7 +29,7 @@ import {
 import type { SessionUser } from '$lib/server/auth';
 import { createDependencyBatch, recordUnblocked } from '$lib/server/planning';
 import { recordTokenUsageBatch } from '$lib/server/tokens';
-import { api } from './helpers/api';
+import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects, type RecordedEffect } from './helpers/effects';
 import {
@@ -437,6 +437,127 @@ describe('PUT /api/v1/cards/:id/move', () => {
 		} finally {
 			sent.restore();
 		}
+	});
+});
+
+/**
+ * Card 2208. An on-hold note is the reason a card is paused. Only the board
+ * page's drop cleared it, with a second request of its own; every route
+ * kept it, and the activity report went on counting the card as on hold in
+ * whatever column it was. `applyCardMove` clears it now, in the move's own
+ * write, so every route does, and nothing else is recorded for it.
+ */
+describe('a move out of an On Hold column clears the on-hold note (card 2208)', () => {
+	const NOTE = 'waiting on X';
+
+	/** Board A (the four standard columns) with a card held in On Hold, and board B. */
+	const held = () => {
+		const owner = makeUser({ username: 'owner' });
+		const A = makeBoard({ owner, name: 'A' });
+		const B = makeBoard({ owner, name: 'B' });
+		const card = makeCard(A.cols['On Hold'], { title: 'Paused', onHoldNote: NOTE });
+		return { owner, A, B, card };
+	};
+	type Held = ReturnType<typeof held>;
+
+	/** Each route that moves a card, to a column of `to`. */
+	const routes: [string, (s: Held, columnId: number) => Promise<ApiResult>][] = [
+		[
+			'PUT /api/cards/reorder',
+			({ owner, card }, columnId) =>
+				api('PUT', '/api/cards/reorder', { user: owner, body: { updates: [{ id: card.id, columnId, position: 0 }] } })
+		],
+		['PUT /api/cards/:id with columnId', ({ owner, card }, columnId) => api('PUT', `/api/cards/${card.id}`, { user: owner, body: { columnId } })],
+		['PUT /api/v1/cards/:id/move', ({ owner, card }, columnId) => api('PUT', `/api/v1/cards/${card.id}/move`, { user: owner, body: { columnId } })]
+	];
+
+	it.each([
+		...routes.map(([route, move]) => [`${route}, to In Progress`, move, (s: Held) => s.A.cols['In Progress'].id] as const),
+		...routes.slice(1).map(([route, move]) => [`${route}, to another board's To Do`, move, (s: Held) => s.B.cols['To Do'].id] as const)
+	])('%s: the note is cleared in the row and in the answer', async (_, move, to) => {
+		const s = held();
+
+		const res = await move(s, to(s));
+
+		expect(res.status).toBe(200);
+		expect(cardRow(s.card.id)).toMatchObject({ columnId: to(s), onHoldNote: '' });
+		if ('id' in res.body) expect(res.body).toMatchObject({ id: s.card.id, onHoldNote: '' });
+	});
+
+	it('keeps the note on a move between two hold columns, into one, within one, and between two that are not', async () => {
+		const owner = makeUser({ username: 'owner' });
+		const { cols } = makeBoard({ owner, columns: ['To Do', 'On Hold', 'Waiting', 'In Progress', 'Complete'] });
+		const holdToHold = makeCard(cols['On Hold'], { title: 'On Hold to Waiting', onHoldNote: NOTE });
+		const intoHold = makeCard(cols['To Do'], { title: 'To Do to On Hold', onHoldNote: NOTE });
+		const withinHold = makeCard(cols['On Hold'], { title: 'Within On Hold', onHoldNote: NOTE, position: 3 });
+		const working = makeCard(cols['In Progress'], { title: 'In Progress to Complete', onHoldNote: NOTE });
+		const drop = (id: number, columnId: number, position: number) =>
+			api('PUT', '/api/cards/reorder', { user: owner, body: { updates: [{ id, columnId, position }] } });
+
+		expect((await drop(holdToHold.id, cols['Waiting'].id, 0)).status).toBe(200);
+		expect((await drop(intoHold.id, cols['On Hold'].id, 0)).status).toBe(200);
+		expect((await drop(withinHold.id, cols['On Hold'].id, 1)).status).toBe(200);
+		expect((await drop(working.id, cols['Complete'].id, 0)).status).toBe(200);
+
+		expect(cardRow(holdToHold.id)).toMatchObject({ columnId: cols['Waiting'].id, onHoldNote: NOTE });
+		expect(cardRow(intoHold.id)).toMatchObject({ columnId: cols['On Hold'].id, onHoldNote: NOTE });
+		expect(cardRow(withinHold.id)).toMatchObject({ position: 1, onHoldNote: NOTE });
+		expect(cardRow(working.id)).toMatchObject({ columnId: cols['Complete'].id, onHoldNote: NOTE });
+	});
+
+	it.each(routes)('%s, refused as a completion with an open subtask, keeps the note with everything else', async (_, move) => {
+		const s = held();
+		makeSubtask(s.card, { completed: false });
+		const before = snapshotDb();
+
+		const res = await move(s, s.A.cols['Complete'].id);
+
+		expect(res.status).toBe(409);
+		expectUnchanged(before);
+	});
+
+	it('records the move and nothing else: no card_updated, no card.updated, one update event', async () => {
+		const s = held();
+		makeWebhook(s.A.board);
+		const sent = effects();
+
+		try {
+			const res = await routes[0][1](s, s.A.cols['In Progress'].id);
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(actions()).toEqual(['card_moved']);
+			expect(sent.webhooks.map((w) => w.event)).toEqual(['card.moved']);
+			expect(sent.events.map((e) => e.event)).toEqual(['update']);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('on PUT /api/cards/:id, does not write back the note the card held, sent with the move, and writes a new one', async () => {
+		const s = held();
+		const other = makeCard(s.A.cols['On Hold'], { title: 'Paused too', onHoldNote: NOTE });
+		const inProgress = s.A.cols['In Progress'].id;
+
+		const echoed = await api('PUT', `/api/cards/${s.card.id}`, { user: s.owner, body: { columnId: inProgress, onHoldNote: NOTE } });
+		const renewed = await api('PUT', `/api/cards/${other.id}`, { user: s.owner, body: { columnId: inProgress, onHoldNote: 'new reason' } });
+
+		expect([echoed.status, renewed.status]).toEqual([200, 200]);
+		expect(cardRow(s.card.id).onHoldNote).toBe('');
+		expect(echoed.body.onHoldNote).toBe('');
+		expect(cardRow(other.id)).toMatchObject({ columnId: inProgress, onHoldNote: 'new reason' });
+	});
+
+	it('leaves the card out of the activity report’s on hold bucket once it has moved on', async () => {
+		const s = held();
+
+		expect((await routes[2][1](s, s.A.cols['In Progress'].id)).status).toBe(200);
+		const res = await api('GET', `/api/v1/reports/activity?boardIds=${s.A.board.id}`, { user: s.owner });
+
+		expect(res.status).toBe(200);
+		const reported = res.body.boards.flatMap((b: { cards: { id: number; bucket: string }[] }) => b.cards);
+		expect(reported.map((c: { id: number }) => c.id)).toContain(s.card.id);
+		expect(reported.find((c: { id: number }) => c.id === s.card.id).bucket).not.toBe('on hold');
 	});
 });
 

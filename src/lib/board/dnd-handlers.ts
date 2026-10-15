@@ -4,7 +4,8 @@
  * Contains the complex DnD finalize logic including:
  * - Subtask/sub-board validation when moving to the Complete column
  * - On Hold note prompting when moving to the On Hold column
- * - On Hold note clearing when moving out of On Hold
+ * - On Hold note clearing when moving out of On Hold, on the page only: the
+ *   server clears the stored note in the move itself (card 2208)
  * - Activity logging for card movements
  * - Position persistence via the API
  *
@@ -75,14 +76,18 @@ export async function handleCardDndFinalize(
 		}
 	}
 
-	// ── Check: cards moving OUT of On Hold → clear the note ──
+	// ── Check: cards moving OUT of On Hold → clear the page's copy of the note ──
+	// The server clears the note itself, in the move (card 2208). The page used
+	// to send a second request to clear it, before the move and without reading
+	// the answer, which wrote an entry and a `card.updated` of its own. Its own
+	// copy is cleared so the card's face shows no note before the board is read
+	// again.
 	if (!isOnHoldColumn(targetCol.title)) {
 		for (const card of newItems) {
 			if (card.columnId !== columnId) {
 				const oldCol = columns.find((c) => c.id === card.columnId);
 				if (oldCol && isOnHoldColumn(oldCol.title) && card.onHoldNote) {
 					card.onHoldNote = '';
-					api.updateCard(card.id, { onHoldNote: '', boardId });
 				}
 			}
 		}
