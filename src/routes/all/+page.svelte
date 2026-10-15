@@ -24,6 +24,7 @@
 	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC, isNew } from '$lib/utils/date-utils';
 	import { subtaskProgress, sortCards, getSortLabel } from '$lib/utils/card-utils';
 	import { activityLabel } from '$lib/utils/activity-labels';
+	import { boardOptionLabel, boardOptions, boardPathText, boardPlaces as placesOf, chosenBoardId, inBoardFilter } from '$lib/board-tree';
 	import { isCompleteColumnTitle } from '$lib/column-role';
 	import { cardArchiveWarning, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
 	import { keepStreamOpen } from '$lib/live-stream';
@@ -180,6 +181,34 @@
 	let hideBlocked = $state(false);
 
 	/**
+	 * Where each board sits in the tree (card 1990): the boards above it that
+	 * the caller can open, built from the nearest parent the load sends, and
+	 * the category the filter counts it in. Choosing a board takes in its
+	 * sub-boards at every depth, and choosing a category takes in the
+	 * sub-boards under its boards.
+	 */
+	const boardPlaces = $derived(placesOf(data.boards));
+
+	/**
+	 * The board chosen in the filter, or 0: Planning, Export to CSV and
+	 * Statistics cover that board alone, not its sub-boards (decision 8).
+	 * Read through `chosenBoardId`, which takes the filter's value as a string
+	 * or a number: a number in it once made `startsWith` throw.
+	 */
+	const chosenBoard = $derived(chosenBoardId(boardFilter));
+	const ownBoardOnly = ' (the chosen board alone, not its sub-boards)';
+
+	/** A card's board tag: the boards its board hangs beneath, then its board. */
+	function boardTag(card: any): string {
+		return boardPathText(boardPlaces.get(card.boardId)?.path ?? [], { emoji: card.boardEmoji, name: card.boardName });
+	}
+
+	/** One group of the board filter, each sub-board indented under its parent. */
+	function filterOptions(group: typeof data.boards) {
+		return boardOptions(group).map(({ board, depth }) => ({ id: board.id, label: boardOptionLabel(board, depth) }));
+	}
+
+	/**
 	 * Open dependency blockers per card, computed server-side in one pass over
 	 * every board this user can see. Absent means nothing is blocking the card.
 	 */
@@ -214,15 +243,7 @@
 		// Folded in here rather than at the render site so getFilteredCount picks
 		// it up for free and a filtered bucket cannot misreport its count.
 		if (hideBlocked && blockersFor(card.id).length > 0) return false;
-		if (boardFilter !== 'all') {
-			if (boardFilter.startsWith('cat:')) {
-				const catId = Number(boardFilter.slice(4));
-				const board = data.boards.find((b: any) => b.id === card.boardId);
-				if (!board || board.categoryId !== catId) return false;
-			} else {
-				if (card.boardId !== Number(boardFilter)) return false;
-			}
-		}
+		if (!inBoardFilter(card.boardId, boardFilter, boardPlaces)) return false;
 		if (!searchQuery.trim()) return true;
 		const q = searchQuery.trim().toLowerCase();
 
@@ -600,21 +621,21 @@
 			<select class="hdr-control board-filter" bind:value={boardFilter}>
 				<option value="all">All Boards</option>
 				{#each (data.boardCategories || []) as cat}
-					{@const catBoards = data.boards.filter((b: any) => b.categoryId === cat.id)}
+					{@const catBoards = data.boards.filter((b) => b.filterCategoryId === cat.id)}
 					{#if catBoards.length > 0}
 						<optgroup label="{cat.name}">
 							<option value="cat:{cat.id}">⬛ All {cat.name}</option>
-							{#each catBoards as board}
-								<option value={board.id}>{board.emoji} {board.name}</option>
+							{#each filterOptions(catBoards) as option}
+								<option value={String(option.id)}>{option.label}</option>
 							{/each}
 						</optgroup>
 					{/if}
 				{/each}
-				{#each [data.boards.filter((b: any) => !b.categoryId)] as uncategorizedBoards}
+				{#each [data.boards.filter((b) => !b.filterCategoryId)] as uncategorizedBoards}
 					{#if uncategorizedBoards.length > 0}
 						<optgroup label="Uncategorized">
-							{#each uncategorizedBoards as board}
-								<option value={board.id}>{board.emoji} {board.name}</option>
+							{#each filterOptions(uncategorizedBoards) as option}
+								<option value={String(option.id)}>{option.label}</option>
 							{/each}
 						</optgroup>
 					{/if}
@@ -640,9 +661,9 @@
 				Hide blocked
 			</button>
 			<a
-				href={boardFilter !== 'all' && !boardFilter.startsWith('cat:') ? `/plan?board=${boardFilter}` : '/plan'}
+				href={chosenBoard ? `/plan?board=${chosenBoard}` : '/plan'}
 				class="hdr-control hdr-action"
-				title="Planning — critical path and what is startable"
+				title="Planning — critical path and what is startable{chosenBoard ? ownBoardOnly : ''}"
 			>
 				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
 					<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
@@ -668,7 +689,7 @@
 								<span class="more-item-icon">📋</span> Activity Log
 								{#if activityOpen}<span class="more-check">✓</span>{/if}
 							</button>
-							<button class="more-dropdown-item" class:more-active={showStatsPanel} onclick={() => { toggleStatsPanel(); showMoreMenu = false; }}>
+							<button class="more-dropdown-item" class:more-active={showStatsPanel} onclick={() => { toggleStatsPanel(); showMoreMenu = false; }} title="Statistics{chosenBoard ? ownBoardOnly : ''}">
 								<span class="more-item-icon">📊</span> Statistics
 								{#if showStatsPanel}<span class="more-check">✓</span>{/if}
 							</button>
@@ -680,7 +701,7 @@
 					</div>
 				{/if}
 			</div>
-			<a class="hdr-control hdr-action export-csv-btn" href={boardFilter !== 'all' && !boardFilter.startsWith('cat:') ? `/api/cards/export/csv?boardId=${boardFilter}` : '/api/cards/export/csv'} download title="Export to CSV">
+			<a class="hdr-control hdr-action export-csv-btn" href={chosenBoard ? `/api/cards/export/csv?boardId=${chosenBoard}` : '/api/cards/export/csv'} download title="Export to CSV{chosenBoard ? ownBoardOnly : ''}">
 				<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 			</a>
 			<ThemePicker />
@@ -751,7 +772,7 @@
 									</button>
 								</div>
 								<div class="card-board-tag">
-									<span class="board-tag">{card.boardEmoji} {card.boardName}</span>
+									<span class="board-tag" title={boardTag(card)}>{boardTag(card)}</span>
 									{#if card.boardCategoryName}
 										<span class="board-cat-badge" style="background: {card.boardCategoryColor}20; color: {card.boardCategoryColor}; border: 1px solid {card.boardCategoryColor}40">{card.boardCategoryName}</span>
 									{/if}
@@ -922,7 +943,7 @@
 	<StatsPanel
 		boardColumns={syntheticColumns}
 		boardCategories={data.categories as unknown as CategoryType[]}
-		boardId={boardFilter !== 'all' && !boardFilter.startsWith('cat:') ? Number(boardFilter) : 0}
+		boardId={chosenBoard}
 		onClose={() => (showStatsPanel = false)}
 	/>
 {/if}
@@ -1359,6 +1380,12 @@
 		background: var(--accent-purple-glow, rgba(139, 92, 246, 0.12));
 		padding: 1px 6px;
 		border-radius: var(--radius-sm);
+		/* A sub-board's tag names the boards above it: one line, cut short with an ellipsis, the whole path in its title. */
+		max-width: 100%;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.column-tag {

@@ -52,6 +52,7 @@ describe('database fixture', () => {
 const TEST_FILES = [
 	'access-control.test.ts',
 	'activity-twins.test.ts',
+	'all-tasks.test.ts',
 	'access-every-route.test.ts',
 	'admin-reset.test.ts',
 	'archive-answers.test.ts',
