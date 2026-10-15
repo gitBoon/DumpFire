@@ -74,6 +74,7 @@
  */
 import { error } from '@sveltejs/kit';
 import { isCoverValue, isHexColour } from '$lib/colours';
+import { reportRecipients } from '$lib/report-recipients';
 
 /** A request body: a JSON object, none of whose fields has been looked at. */
 export type RequestBody = Record<string, unknown>;
@@ -553,6 +554,41 @@ export function readEmailText<R extends Rule & { max?: number }>(body: RequestBo
 		for (const part of parts) {
 			if (!EMAIL_ADDRESS.test(part)) refuse(rule, 'invalid', `${name} holds "${part}", which is not an email address`);
 		}
+		return text;
+	}) as Read<string, R>;
+}
+
+/**
+ * A report schedule's recipients, written as one text (card 2182): read as
+ * `reportRecipients` in `$lib/report-recipients` reads them, which is how the
+ * scheduler sends them. They may be separated by commas, semicolons or white
+ * space, and an address may be written `<address>`. They are handed back each
+ * once, lower-cased, separated by a comma and a space: exactly the addresses
+ * the schedule will be sent to. Empty text is no addresses, `''`. How many
+ * there may be is the route's to say.
+ *
+ *     type     not text: `<name> must be email addresses separated by commas`
+ *     invalid  `<name> must be at most <max> characters` (2,000 if not said), of
+ *              the text handed back;
+ *              a part that is not an address: `<name> holds "<part>", which is
+ *              not an email address`, or up to five of them named, `<name> holds
+ *              "<part>", "<part>" and 3 more, which are not email addresses`,
+ *              each in at most 100 characters
+ */
+export function readReportRecipients<R extends Rule & { max?: number }>(body: RequestBody, name: string, rule: R): Read<string, R> {
+	const max = rule.max ?? 2000;
+	return field(body, name, rule, `${name} must be email addresses separated by commas`, (sent) => {
+		if (typeof sent !== 'string') refuse(rule, 'type', `${name} must be email addresses separated by commas`);
+		const { addresses, notAddresses } = reportRecipients(sent);
+		// A part is named in at most 100 characters: the text may be as long as a body.
+		const named = notAddresses.slice(0, 5).map((part) => `"${part.length > 100 ? `${part.slice(0, 100)}…` : part}"`);
+		if (notAddresses.length === 1) refuse(rule, 'invalid', `${name} holds ${named[0]}, which is not an email address`);
+		if (notAddresses.length > 1) {
+			const more = notAddresses.length > 5 ? ` and ${notAddresses.length - 5} more` : '';
+			refuse(rule, 'invalid', `${name} holds ${named.join(', ')}${more}, which are not email addresses`);
+		}
+		const text = addresses.join(', ');
+		if (text.length > max) refuse(rule, 'invalid', `${name} must be at most ${max} characters`);
 		return text;
 	}) as Read<string, R>;
 }

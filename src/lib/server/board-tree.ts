@@ -28,7 +28,10 @@ import { sqlite } from './db';
  * breadcrumbs show it: a board under one of its own cards has itself above
  * it. Each board is walked to its top, so the steps are the boards times
  * their depth, as `deepestFirst()`'s in `deletes.ts` are; card 2172's limit
- * on how deep boards nest is what bounds both.
+ * on how deep boards nest is what bounds both. Not capped here: a tree made
+ * deeper before the limit, or brought back by a backup, is kept and still
+ * walked whole, so that All Tasks' paths and its board filter stay right for
+ * it, and nothing can now be made deeper.
  */
 export function boardAncestry(boardIds: readonly number[]): Map<number, number[]> {
 	const ancestry = new Map<number, number[]>();

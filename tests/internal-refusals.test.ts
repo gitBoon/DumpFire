@@ -17,6 +17,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '$lib/server/db';
 import { reportSchedules } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
+import { resetAllRateLimits } from '$lib/server/rate-limit';
+import { takeReportMail } from '$lib/server/reports';
 import { api, type ApiResult } from './helpers/api';
 import { effects } from './helpers/effects';
 import { makeBoard, makeSmtp, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
@@ -31,6 +33,9 @@ let theirs: BoardFixture;
 
 beforeEach(() => {
 	resetDb();
+	// The day's report mail is counted in memory by account id, and ids start
+	// again with each test's database.
+	resetAllRateLimits();
 	user = makeUser();
 	admin = makeUser({ role: 'admin' });
 	mine = makeBoard({ owner: user });
@@ -98,6 +103,33 @@ describe('/api/report-schedules', () => {
 		await refused(post(user, { ...weekly, scope: 'category', scopeId: 99999 }), 404, 'Category not found');
 	});
 
+	// Card 2182: who a schedule may reach, and how many an account may have.
+	it('answers 400 for more than 10 addresses, 409 for a 21st schedule, and 429 past the day’s report mail', async () => {
+		const eleven = Array.from({ length: 11 }, (_, i) => `a${i}@example.test`).join(', ');
+		await refused(
+			post(user, { ...weekly, scopeId: mine.board.id, recipients: eleven }),
+			400,
+			'A schedule can be sent to at most 10 addresses, and this names 11. The schedule was not saved.'
+		);
+
+		takeReportMail(user, 100, 'email');
+		await refused(
+			post(user, { ...weekly, scopeId: mine.board.id, recipients: 'a@example.test' }),
+			429,
+			"Report mail can reach at most 100 addresses a day from one account, and this schedule's 1 would make 101. " +
+				'The schedule was not saved. Try again in 24 hour(s).'
+		);
+
+		for (let n = 0; n < 20; n++) {
+			db.insert(reportSchedules).values({ userId: user.id, name: `S${n}`, scope: 'board', scopeId: mine.board.id }).run();
+		}
+		await refused(
+			post(user, { ...weekly, scopeId: mine.board.id }),
+			409,
+			'You have 20 report schedules, the most one account may have. Delete one first.'
+		);
+	});
+
 	it('still creates a schedule that is in order', async () => {
 		const id = await makeSchedule(user, mine);
 
@@ -150,6 +182,30 @@ describe('/api/report-schedules/:id', () => {
 		await refused(put({ recipients: 'a@example.test, nobody' }), 400, 'recipients holds "nobody", which is not an email address');
 		await refused(put({ statusFilter: 'done' }), 400, 'statusFilter must be one of: all, completed, in_progress, todo');
 		await refused(() => api('PUT', '/api/report-schedules/1.5', { user, body: { enabled: false } }), 400, 'Invalid schedule ID');
+	});
+
+	// Card 2182.
+	it('answers 400 for more than 10 addresses, or turning on a schedule kept with more, and 429 past the day’s report mail', async () => {
+		const id = await makeSchedule(user, mine);
+		const put = (body: unknown) => () => api('PUT', `/api/report-schedules/${id}`, { user, body });
+		const list = (n: number) => Array.from({ length: n }, (_, i) => `a${i}@example.test`).join(', ');
+
+		await refused(put({ recipients: list(11) }), 400, 'A schedule can be sent to at most 10 addresses, and this names 11. The schedule was not changed.');
+
+		db.update(reportSchedules).set({ recipients: list(12), enabled: false }).run();
+		await refused(
+			put({ enabled: true }),
+			400,
+			'This schedule cannot be turned on: it is sent to 12 addresses, and the most is 10. Delete it and make it again with at most 10.'
+		);
+
+		takeReportMail(user, 100, 'email');
+		await refused(
+			put({ recipients: list(2), enabled: true }),
+			429,
+			"Report mail can reach at most 100 addresses a day from one account, and this schedule's 2 would make 102. " +
+				'The schedule was not changed. Try again in 24 hour(s).'
+		);
 	});
 
 	it('reads an empty time as 09:00, and keeps a value stored before it was checked when it is sent back', async () => {
@@ -240,6 +296,23 @@ describe('POST /api/reports/email', () => {
 		);
 		await refused(post(user, { scope: 'board', recipients: ['a@example.test'], ...period }), 400, 'scopeId required');
 		await refused(post(user, { scope: 'category', recipients: ['a@example.test'], ...period }), 400, 'scopeId required');
+	});
+
+	// Card 2182: the 400 comes before anything else is looked at, the board included.
+	it('answers 400 for more than 10 addresses at a time, and 429 past the day’s report mail', async () => {
+		const eleven = Array.from({ length: 11 }, (_, i) => `a${i}@example.test`);
+		await refused(
+			post(user, { scope: 'board', scopeId: theirs.board.id, recipients: eleven, ...period }),
+			400,
+			'A report can be emailed to at most 10 addresses at a time, and this names 11. Nothing was sent.'
+		);
+
+		takeReportMail(user, 95, 'email');
+		await refused(
+			post(user, { scope: 'board', scopeId: mine.board.id, recipients: eleven.slice(0, 6), ...period }),
+			429,
+			'Reports can be emailed to at most 100 addresses a day from one account, and this would make 101. Try again in 24 hour(s).'
+		);
 	});
 
 	it('answers 403 for a board the caller cannot see, and for every board when the caller is not an administrator', async () => {

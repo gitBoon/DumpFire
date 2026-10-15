@@ -9,23 +9,40 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { reportSchedules } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { REPORT_STATUS_FILTERS } from '$lib/server/reports';
+import { overCapScheduleWords, REPORT_STATUS_FILTERS, takeReportMail } from '$lib/server/reports';
 import { inTransaction } from '$lib/server/db/transaction';
 import {
 	pathId,
 	readBody,
 	readBoolean,
 	readChoice,
-	readEmailText,
 	readNumber,
+	readReportRecipients,
 	readText,
 	readTime
 } from '$lib/server/request-body';
+import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import type { RequestHandler } from './$types';
 
 /** How often a schedule may run: the two the scheduler works out a next run for. */
 const FREQUENCIES = ['weekly', 'monthly'] as const;
 
+/**
+ * PUT — change a schedule of the caller's own.
+ *
+ * Who it may reach (card 2182): `recipients`, when sent changed, is read as
+ * the scheduler sends it and held to 10 addresses (400). A schedule whose list
+ * is over 10, kept from before there was a cap, cannot be turned on unless the
+ * same request sends a list of 10 or fewer (400); one still on can be sent
+ * back with a change, as a page sends it. A change that can bring a send
+ * forward (turning it on, or a new frequency, day or time) takes the
+ * schedule's addresses from the account's report mail for the day (429), last,
+ * immediately before the write. A changed list takes the addresses it adds,
+ * those not in the stored list: otherwise a schedule made with none, given ten,
+ * sent and deleted would mail without bound (the review's B1). A list sent back
+ * in another order or case, or cut down, a change of name or filter, and
+ * turning it off take nothing.
+ */
 export const PUT: RequestHandler = async ({ locals, params, request }) => {
 	const user = locals.user;
 	if (!user) throw error(401, 'Unauthorized');
@@ -64,10 +81,39 @@ export const PUT: RequestHandler = async ({ locals, params, request }) => {
 		// Empty is 09:00, as the scheduler reads it.
 		const timeOfDay = readTime(body, 'timeOfDay', { empty: '09:00', keep: schedule.timeOfDay });
 		if (timeOfDay !== undefined) updates.timeOfDay = timeOfDay;
-		const recipients = readEmailText(body, 'recipients', { keep: schedule.recipients });
+		// A list sent back as it is stored is kept as it is, unchecked: a page
+		// that sends the row back can still switch an over-cap schedule off.
+		const recipients = readReportRecipients(body, 'recipients', { keep: schedule.recipients });
 		if (recipients !== undefined) updates.recipients = recipients;
 		const statusFilter = readChoice(body, 'statusFilter', { from: REPORT_STATUS_FILTERS, keep: schedule.statusFilter });
 		if (statusFilter !== undefined) updates.statusFilter = statusFilter;
+
+		const addressCount = reportRecipients(updates.recipients ?? schedule.recipients).addresses.length;
+		if (recipients !== undefined && recipients !== schedule.recipients && addressCount > MAX_REPORT_RECIPIENTS) {
+			throw error(400, `A schedule can be sent to at most ${MAX_REPORT_RECIPIENTS} addresses, and this names ${addressCount}. The schedule was not changed.`);
+		}
+		// Only turning one on: `enabled: true` sent back for a schedule that is
+		// on already is the row as a page sends it (the review's O4).
+		const turnedOn = enabled === true && !schedule.enabled;
+		if (turnedOn && addressCount > MAX_REPORT_RECIPIENTS) {
+			throw error(400, `This schedule cannot be turned on: ${overCapScheduleWords(addressCount)}. Delete it and make it again with at most ${MAX_REPORT_RECIPIENTS}.`);
+		}
+
+		// Turned on, or re-timed: either can bring a send forward, and takes
+		// every address. Otherwise a changed list takes the ones it adds. Last,
+		// with nothing awaited before the write.
+		const retimed =
+			(frequency !== undefined && frequency !== schedule.frequency) ||
+			(dayOfWeek !== undefined && dayOfWeek !== schedule.dayOfWeek) ||
+			(dayOfMonth !== undefined && dayOfMonth !== schedule.dayOfMonth) ||
+			(timeOfDay !== undefined && timeOfDay !== schedule.timeOfDay);
+		if (turnedOn || retimed) {
+			takeReportMail(user, addressCount, 'changed schedule');
+		} else if (recipients !== undefined && recipients !== schedule.recipients) {
+			const had = new Set(reportRecipients(schedule.recipients).addresses);
+			const added = reportRecipients(recipients).addresses.filter((address) => !had.has(address)).length;
+			takeReportMail(user, added, 'new recipients');
+		}
 
 		return db.update(reportSchedules)
 			.set(updates)

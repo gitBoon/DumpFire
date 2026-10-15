@@ -8,6 +8,7 @@ import { emit } from '$lib/server/events';
 import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { readBody, readId, readText } from '$lib/server/request-body';
 import { requireBoardCategory, requireParentCard, requireUser } from '$lib/server/route-guards';
+import { tooDeepToMake, tooDeepUnder } from '$lib/server/sub-boards';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -66,6 +67,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// can open that card's board. The id used to be written as it was sent,
 		// so anyone could hang a board under a card of a board they cannot open.
 		const parent = parentCardId != null ? requireParentCard(user, parentCardId) : null;
+		// And no deeper than sub-boards may nest (card 2172).
+		if (parent && tooDeepUnder(parent)) error(409, tooDeepToMake());
 
 		// A grouping the caller is listed (card 2128, R2): 404 for none, and 403
 		// for one all of whose boards they cannot open, which filing a board

@@ -291,19 +291,27 @@ export async function togglePin(card: CardType, boardId: number): Promise<boolea
  *
  * The name is held to a board's 200 characters: it is the card's title, of up
  * to 500, from the board's menu, and the server refuses a longer one.
- * @returns The new board's ID for navigation, or null on failure.
+ * @returns The new board's ID for navigation, or what to tell the reader when
+ * it was not made: the server's words (a card on a board nested as deep as
+ * sub-boards may be is refused, card 2172), or that there was no answer. It
+ * returned null for either, and the page then did nothing.
  */
-export async function createSubBoard(cardId: number, name: string): Promise<number | null> {
-	const res = await api.createBoard({
-		name: name.slice(0, 200),
-		emoji: '🗂️',
-		parentCardId: cardId
-	});
+export async function createSubBoard(cardId: number, name: string): Promise<{ id: number } | { message: string }> {
+	let res: Response;
+	try {
+		res = await api.createBoard({
+			name: name.slice(0, 200),
+			emoji: '🗂️',
+			parentCardId: cardId
+		});
+	} catch {
+		return { message: 'No answer from the server. The sub-board may not have been made.' };
+	}
 	if (res.ok) {
 		const board = await res.json();
-		return board.id;
+		return { id: board.id };
 	}
-	return null;
+	return { message: await api.failureMessage(res, 'The sub-board was not made.') };
 }
 
 /**

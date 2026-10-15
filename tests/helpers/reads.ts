@@ -158,7 +158,7 @@ export type ReadBudget = {
  *     for each board. `deepestFirst` starts its marks afresh for every board
  *     it is given and walks each to the top, so it takes rows × depth steps:
  *     2,000 boards deep took 400 ms. Card 2172's limit on how deep boards
- *     nest, once built, is what bounds it.
+ *     nest (20 levels) is what bounds it, for every tree made since.
  *
  * It wraps `prepare` as `watchReads` and `failingWrite` do, and refuses to be
  * installed with either.

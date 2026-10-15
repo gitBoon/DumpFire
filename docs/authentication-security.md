@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.26
+version: 1.28
 status: As-Built
 date: 2026-10-15
 tags:
@@ -27,7 +27,9 @@ tags:
   - live-streams
   - list-access
   - sub-boards
-description: "Deep-dive into DumpFire's authentication system, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how many current passwords a signed-in browser may guess, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, and how attachments are served"
+  - sign-in
+  - report-mail
+description: "Deep-dive into DumpFire's authentication system, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -393,6 +395,128 @@ flowchart TD
 - **In memory**, as sign-in's count is: a restart clears it.
 
 Covered by `tests/atomic-accounts.test.ts`.
+
+### Guessing a Password at Sign-in
+
+The sign-in form (`/login`, its action in `src/routes/login/+page.server.ts`) is the one part
+of DumpFire anybody can reach that checks a password. It counts two things.
+
+**Per address, as before.** Ten attempts from one address in 15 minutes, in a fixed window
+from the first; the eleventh is answered at once, `429` "Too many login attempts. Please try
+again in N minute(s).", and a sign-in that succeeds from the address clears its count. It is
+checked first: an attempt it refuses never waits and is not counted at the account, since
+no password was checked. On its own it let a guesser with N addresses try 10 × N passwords
+at one account every 15 minutes (card 2177). Because a success clears it, it holds only a
+guesser with no account: someone with an account of their own can sign in to it after every
+nine guesses and go on from the same address. That is its own card.
+
+**Per account, from any number of addresses (card 2177).** After five wrong passwords at one
+account within 15 minutes of each other, every sign-in at it waits before its password is
+checked, the right password included, and is then answered as it would have been:
+
+| Wrong passwords at the account when the attempt arrives | Wait before the password is checked |
+|---|---|
+| 0 to 4 | none |
+| 5 | 1 s |
+| 6 | 2 s |
+| 7 or more | 4 s |
+
+- **Never a refusal.** The answer's status and words do not change: a wrong password is
+  `400` "Invalid username/email or password", as before. No path answers `429` for the
+  account, and the right password signs in after at most four seconds, clearing the
+  account's count and the address's. Refusing the account for a while would hand anyone who
+  knows a username a way to keep its owner out.
+- **The key is the account, once the name is found.** The lookup is the one sign-in makes:
+  a name with `@` is lower-cased and matched to an email, anything else matched exactly to
+  a username. Found, the count is kept under `user:<id>`, so a username and its email share
+  one count. Not found, it is kept under `name:` and the SHA-256 of the name exactly as the
+  lookup read it: trimmed, a name with `@` lower-cased, a username in the case typed. So a
+  name that is no account waits exactly as a real one would, and the count holds 64
+  characters whatever was typed. It was lower-cased either way at first, while a username
+  is matched exactly: five wrong at `ALICE` and then one at `alice` waited 1 s when `alice`
+  was no account and none when it was one, which told the two apart.
+- **An idle window.** The count is forgotten 15 minutes after the last wrong password, so
+  the waits last as long as the guessing does. A fixed window would give five free guesses
+  every 15 minutes.
+- **Read when the attempt arrives, counted after the check.** Attempts sent together read
+  the same count and wait alike; they are not put in a line.
+- **A wait holds nothing up.** It is an awaited timer, holding no transaction and no
+  database handle, so every other request is answered meanwhile. Everything before it (the
+  form read, the per-address count, the lookup) is one synchronous stretch, after which the
+  sign-in holds only the account's id (or nothing, for a name that is no account), the
+  password cut to its first 256 characters and the name cut to 320 for the answer and the
+  log, each copied so that nothing of the form is kept alive: well under 2 KB besides its
+  connection, where the form can be the gate's 512 KB. bcrypt reads only the first 72 bytes
+  of a password, which 256 characters always hold, so no password that signed in before
+  stops signing in. The account is read again by its id after the wait, so the password is
+  checked as it is then.
+- **One `WARN` line when an account's waits begin**, at its fifth wrong password in the
+  window, under `AUTH`: `Sign-ins at "pat" (user 12) are being slowed: 5 wrong passwords
+  within 15 minutes of each other`, with the account as the line's user, so the Audit page
+  finds it by user; or `Sign-ins at a name that is no account are being slowed: …`, with
+  none. Not one line per wait, so a guesser does not fill the log. The "Failed login
+  attempt" lines beside it name what was typed, now cut to 320 characters.
+- **The page shows the wait.** The Sign In button is disabled, and reads "Signing in…",
+  from the press until the answer, so that four seconds with nothing to see are not met by
+  pressing again.
+- **Apart from the current-password count** above. A wrong current password on My Account
+  counts against its session, and a wrong sign-in against the account; neither counts toward
+  the other, and neither a correct current password nor a password change clears the
+  sign-in count.
+- **In memory**, in its own map in `src/lib/server/rate-limit.ts` (`signInWait`,
+  `countWrongSignIn`, `forgetWrongSignIns`), swept with the other counts every five minutes
+  and emptied by a restart, as every count there is. The map holds at most
+  `WRONG_SIGN_IN_KEYS = 10_000` counts, since every name that is no account is one of its
+  own: full, the one counted longest ago is forgotten to make room. Pushing an account's
+  count out so takes 10,000 names, a thousand addresses' worth of attempts at ten each in
+  15 minutes, or one address for a guesser with an account of their own, who can clear
+  that address's count by signing in (see the per-address paragraph and its own card), and
+  only while the account's own guessing has paused.
+
+```mermaid
+flowchart TD
+    Post["POST /login<br/>identity, password"] --> Addr{"Per address:<br/>more than 10 in 15 minutes?"}
+    Addr -->|"yes"| Refuse["429 Too many login attempts<br/>at once, not counted at the account"]
+    Addr -->|"no"| Look["Look the name up<br/>key user:id, or name:sha256 of it as looked up"]
+    Look --> Wait["Wait signInWait(key):<br/>none under 5 wrong, then 1 s, 2 s, 4 s<br/>an awaited timer"]
+    Wait --> Known{"An account?<br/>read again by id"}
+    Known -->|"no"| Wrong["countWrongSignIn(key), WARN at the fifth<br/>400 Invalid username/email or password"]
+    Known -->|"yes"| Check{"The right password?"}
+    Check -->|"no"| Wrong
+    Check -->|"yes"| Ok["forgetWrongSignIns(key),<br/>the address's count cleared,<br/>a session, 303 to /"]
+```
+
+What it does, and what it does not, said plainly, because "slowed however many addresses
+are used" is true of each guess but not of every guesser's rate:
+
+- **It slows a guesser who waits for each answer**, one request at a time through as many
+  addresses as they like, to about one guess every 4 seconds at one account after the first
+  five: about 220 in 15 minutes, where it was 10 for each address.
+- **It does not slow a guesser who sends many at once.** Each request waits its own few
+  seconds, side by side, and the rate is what the per-address limit lets through, ten an
+  address every 15 minutes, as before, and more for a guesser with an account of their own,
+  whose own sign-in clears the address's count. No wait that the right password always gets past can
+  do better: the guesser learns within those seconds whether each guess was right. Only
+  refusing some guesses bounds that rate, and refusing is what lets an attacker keep the
+  owner out. The next step, its own card, would let a browser that has signed in to the
+  account before skip the waits and hold every other browser to one sign-in at a time while
+  they last. How many addresses a guesser has depends on how the server reads them behind a
+  proxy: see [Deployment](deployment.md#the-callers-address-behind-a-proxy).
+- **It does not slow one password tried across many accounts**, where each account's count
+  stays low. The per-address limit bounds that.
+- **The wait can be seen.** One wrong attempt shows whether the account has had five wrong in
+  the last 15 minutes, and its going back to none that the owner has just signed in. And
+  since one account's username and email share one count, wrong attempts at one show at the
+  other: five wrong at a username and a sixth at an email, which waits only if both are one
+  account's, tell whether they are, for 6 of an address's 10 attempts. That is accepted (the
+  plan's decision 10, one count for the account, is deliberate): whether a name is an
+  account at all can already be told from how long a wrong password takes to be answered.
+
+**What the owner of an account notices:** after five wrong passwords at it within 15 minutes
+of each other, every sign-in at it, their own included, waits 1 to 4 seconds before it is
+answered, until 15 minutes pass with no wrong password or the right one is given.
+
+Covered by `tests/gate.test.ts`, on a fake clock.
 
 ## Passwords, Sessions and Invites Change Together
 
@@ -808,9 +932,12 @@ server accepted the mail for that address (card 2113), so the answer tells the s
 of the addresses they typed the mail server accepted: one that refuses an unknown mailbox as
 the mail is sent tells them which mailboxes exist on its own domain. This is accepted as
 designed (the review of 2026-10-15): the sender needs it to send to the rest again, and the
-mail server's own reason stays in the system log. Card 2182 is to cap how many recipients one
-report may be sent to. See
-[A Report Emailed on Demand](notifications-email.md#a-report-emailed-on-demand).
+mail server's own reason stays in the system log. Since card 2182 a call names at most 10
+addresses and one account's report mail reaches at most 100 in a 24-hour window counted
+from its first take (so up to 200 across one window's end and the next's start), which
+bounds what one account can learn so. See
+[A Report Emailed on Demand](notifications-email.md#a-report-emailed-on-demand) and
+[Who a Report Can Be Mailed To](notifications-email.md#who-a-report-can-be-mailed-to).
 
 ### One Use Means One Use
 
@@ -1111,7 +1238,20 @@ Rules that are not a plain board lookup:
 
 - **Moving a card** (`PUT /api/cards/:id` with `columnId`, or `PUT /api/cards/reorder`)
   needs edit access at both ends: the board the card is on and the board the target
-  column is on. A reorder must stay within one board.
+  column is on. A reorder must stay within one board, names each card once (`400`
+  `updates names card 12 more than once`, before any card is read: a card named over and
+  over, to and fro between two columns, was a real move for every entry, past the second
+  cap), and is held to two caps (card 2209):
+  at most 5,000 cards named, checked before any card is read, and at most 100 of them moved
+  to another column, checked once every card and column has been read and the caller found
+  able to edit them, so a caller who may not edit the board is refused `403` first. Either
+  is `400` and moves nothing: `A reorder can name at most 5,000 cards, and this names
+  5,001. Nothing was moved.`, or `At most 100 cards can be moved to another column at once,
+  and this moves 101. Nothing was moved: move them in groups of 100 or fewer.` Each card
+  moved is an activity entry, a delivery to each of the board's webhooks and mail to its
+  assignees, which the second cap bounds; the board page's drop sends every card of the
+  board, which the first sits above. The session routes have no rate limit, so the caps
+  bound one request and not how many a script sends.
 - **Writable fields are whitelisted.** `PUT /api/cards/:id` never accepts `completedAt`
   or `archivedAt` — the server stamps them when the thing they record happens — and
   `PUT /api/subtasks/:id` accepts the same seven fields as the v1 route, so a subtask
@@ -1455,11 +1595,19 @@ window is one `WARN` line under `REQUESTS` naming the request and not the messag
 abused link shows on the Audit page; the gate also writes its own `WARN` line for every
 refused request (`POST /api/requests/N/messages → 429`). Escaping keeps markup out of mail,
 but not text: a report's subject and body still carry a board's name as typed, and a plain
-address in it may be shown as a link by the reader's mail client.
+address in it may be shown as a link by the reader's mail client. What bounds a report is
+who it may reach (card 2182): any address may be a recipient, but at most 10 a call and 10
+a schedule, at most 20 schedules an account, and at most 100 addresses a day from one
+account, by hand, by the schedules it makes, turns on or re-times, and by the addresses a
+change of a schedule's list adds, together (a day being 24 hours from the first, so up to
+200 across one day's end and the next's start); and every
+report mail names the account behind it, "Sent by" or "Set up by". See
+[Who a Report Can Be Mailed To](notifications-email.md#who-a-report-can-be-mailed-to).
 
 The caller's address is asked so that it cannot throw (`addressToCount()` in
 `src/lib/server/client-address.ts`), as is the sign-in form's, which allows ten attempts in
-15 minutes from one address. Where it cannot be read, which a server started with
+15 minutes from one address, a count that a sign-in succeeding from the address clears; its waits at one account are counted by account, whatever the
+address (see [Guessing a Password at Sign-in](#guessing-a-password-at-sign-in)). Where it cannot be read, which a server started with
 `ADDRESS_HEADER` meets in a request that arrives without that header, the request is counted
 as `unknown`, with every other such request, and is never let past a limit uncounted. Asked
 unguarded, as it was, that lookup threw, and every sign-in made that way was answered `500`.
@@ -1627,6 +1775,6 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/db/restore.ts` | What a restore brings in and what it never does; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
 | `src/lib/server/startup-checks.ts` | The six lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it; and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens at start |
-| `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt |
+| `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, and the headers an attachment is served with |
 | `src/lib/server/db/transaction.ts` | `inTransaction()`: the check and the write it guards are one transaction |

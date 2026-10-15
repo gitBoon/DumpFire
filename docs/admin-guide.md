@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.28
+version: 1.30
 status: As-Built
 date: 2026-10-15
 tags:
@@ -121,6 +121,8 @@ flowchart TD
 **An invite ends when the account changes.** An invite not yet used stops working when the account's email address or role is changed, by you on this page or by a direct call, or by the user on their Account page: the mail may be in a mailbox the account no longer has, or was sent before the account was made an administrator. Changing a username or an emoji, or sending the role the account already has, ends nothing, and no such change signs anyone out. Whoever opens the old link is told it no longer works, and why it might not. Send a new invite with 📧. An invite already waiting before this rule was deployed works until it expires, within seven days. See [When an Account's Email or Role Changes](authentication-security.md#when-an-accounts-email-or-role-changes).
 
 **Ten wrong passwords on the Account page.** The email form, the password form and Generate Key each ask for the current password, and so does the 🔑 dialog on your own row. After ten wrong ones in 15 minutes from one signed-in browser, that browser is refused at all three, the right password included, for up to 15 minutes: "Too many wrong passwords. Try again in N minute(s)." Signing in again, or another browser already signed in, is not held up, so a user who is refused can still change their password elsewhere, and an administrator can still reset it. See [Guessing a Current Password](authentication-security.md#guessing-a-current-password).
+
+**Five wrong passwords at sign-in.** After five wrong passwords at one account within 15 minutes of each other, from any number of addresses, every sign-in at that account waits 1, 2, then 4 seconds before it is answered, the right password included, with the Sign In button reading "Signing in…" meanwhile (card 2177). Nobody is refused for it, the words of the answer do not change, and the right password signs in after the wait and clears it; otherwise it lasts until 15 minutes pass with no wrong password. A user who says sign-in has become slow may be the target of someone guessing. The waits beginning is one `WARN` line under `AUTH` on the Audit page's Live Console, `Sign-ins at "pat" (user 12) are being slowed: 5 wrong passwords within 15 minutes of each other`, with the account as the line's user, beside the "Failed login attempt" lines that name what was typed and the address. See [Guessing a Password at Sign-in](authentication-security.md#guessing-a-password-at-sign-in).
 
 **A reset or an invite costs the account its API keys.** Both are how you take an account back from whoever may hold its password or a session, so both end every key, and anything that uses one (a script, an integration, a scheduled job) is answered `401` until it is given a new key. That holds when a user has simply forgotten their password: the server cannot tell a recovery from a takeover. Before resetting the password of an account that a script or an integration runs on, look at the dialog's count. The dialog reads it again when it opens, and gives one only on the rows whose password you may reset. A user who changes their own password on the Account page keeps their keys unless they tick "End my API keys too"; see [What Setting a Password Ends](authentication-security.md#what-setting-a-password-ends).
 
@@ -251,6 +253,8 @@ A save that holds a field the server cannot use is refused with the field named,
 | IPv6 timeout | DumpFire forces IPv4 — this is handled automatically |
 | An emailed report says "Mail is not set up on this server" | Fill in the settings above. Until a host is saved, a report emailed from the Reports page is refused `503` and nothing is sent, and each scheduled report logs an `ERROR` line saying so |
 | An emailed report says "The mail server did not accept it" | The reason is in the system log, an `ERROR` line under `EMAIL` for each address, on the **Audit** page's **Live Console**. A scheduled report's `ERROR` line under `REPORTS` names each address it did not reach. Neither is sent again by itself: see [Schedule Execution](backup-reporting.md#schedule-execution) |
+| A report or a schedule is refused with "at most 10 addresses", "20 report schedules" or "at most 100 addresses a day" | The limits of card 2182, the same for administrators: 10 addresses a report emailed by hand and a schedule, 20 schedules an account, and 100 addresses a day from one account, by hand, by the schedules it makes, turns on or re-times, and by the addresses a change of a schedule's list adds. The day is 24 hours from the account's first send, not a calendar day, so up to 200 can go across one day's end and the next's start; it is held in memory, so a restart starts it again. The first refusal of each day is a `WARN` line under `REPORTS` naming the account, as the line's user. See [Who a Report Can Be Mailed To](notifications-email.md#who-a-report-can-be-mailed-to) |
+| A schedule is switched off and reads "the most is 10, so it is not sent" | It was kept from before the cap with more than 10 addresses, and was switched off at its next run with nothing sent, written as one `ERROR` line under `REPORTS` naming it and its owner, who is the line's user. Its owner copies the addresses to keep from the Reports page into a new schedule of at most 10, then deletes it |
 
 ---
 
@@ -649,6 +653,15 @@ What a loop does:
   loop, at any depth, is not in the loop and is named by no line. But every delete that
   reaches the loop takes it too, so before deleting anything, list them with the second
   query below.
+- **Nothing more nests beneath it** (card 2172). Sub-boards may be at most 20 levels below
+  a top-level board, and a board in a loop, or below one, has no top to count from, so it
+  counts as past the limit: no sub-board can be made under a card on it, no board is offered
+  in its Link existing board list or linked under a card on it, and a card that carries
+  sub-boards cannot be moved onto it from a board that is within the limit. Each is refused `409` with the limit's words, for
+  example `Sub-boards can be nested at most 20 levels deep, and a board under this card
+  would be deeper.` Putting the loop right, below, puts that right too. The move that puts
+  a loop right is allowed: it takes the card's sub-boards out of the loop, no deeper than
+  they are.
 
 **The line in the system log.** While a loop is there, every start of the server writes
 one `WARN` line, under **Audit → Live Console** and on the console (stderr, so

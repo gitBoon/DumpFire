@@ -7,6 +7,7 @@ import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
 import { requireParentCard, requireUser } from '$lib/server/route-guards';
+import { tooDeepToMake, tooDeepUnder } from '$lib/server/sub-boards';
 import { readBody, readId, readText } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
@@ -70,6 +71,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// If linking to a parent card, verify access to that card's board. The
 		// check is the one POST /api/boards makes, so that the two cannot differ.
 		const parent = parentCardId != null ? requireParentCard(user, parentCardId) : null;
+		// And no deeper than sub-boards may nest (card 2172): 409, nothing made.
+		if (parent && tooDeepUnder(parent)) error(409, tooDeepToMake());
 
 		const board = db
 			.insert(boards)

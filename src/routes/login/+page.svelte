@@ -85,9 +85,12 @@
 				</div>
 			</div>
 
-			<button type="submit" class="btn-primary submit-btn">
+			<!-- Disabled from the press until the answer: a sign-in at an account
+			     with several wrong passwords waits up to four seconds (card 2177),
+			     and a button that stays live then is pressed again. -->
+			<button type="submit" class="btn-primary submit-btn" disabled={submitting}>
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M6 2l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-				Sign In
+				{submitting ? 'Signing in…' : 'Sign In'}
 			</button>
 		</form>
 	</div>

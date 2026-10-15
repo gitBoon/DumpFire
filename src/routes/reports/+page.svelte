@@ -13,6 +13,7 @@
 	import { deleteFailure, failureMessage } from '$lib/api';
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
+	import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 
 	let { data }: { data: PageData } = $props();
 	let currentTheme = $state('light');
@@ -200,7 +201,19 @@
 		emailSending = true;
 		emailResult = null;
 
-		const recipients = emailRecipients.split(/[,;\n]/).map(e => e.trim()).filter(e => e.length > 0);
+		// Read as the server reads it (card 2182): commas, semicolons, spaces or
+		// lines between addresses, each sent once. A part that is not an
+		// address is said here, and not left out without a word.
+		const { addresses: recipients, notAddresses } = reportRecipients(emailRecipients);
+		if (notAddresses.length > 0) {
+			const named = notAddresses.map((part) => `"${part}"`).join(', ');
+			emailResult = {
+				message: `${named} ${notAddresses.length === 1 ? 'is not an email address' : 'are not email addresses'}. Nothing was sent.`,
+				type: 'error'
+			};
+			emailSending = false;
+			return;
+		}
 		if (recipients.length === 0) {
 			emailResult = { message: 'Please enter at least one email address', type: 'error' };
 			emailSending = false;
@@ -290,8 +303,8 @@
 					headers: { 'Content-Type': 'application/json' },
 					// The name trimmed, as the server trims it: one of spaces alone is
 					// refused. The recipients in the one form a schedule holds, addresses
-					// separated by commas: a line or a `;` between two, which this box
-					// takes as the email dialog does, is refused (card 2117).
+					// separated by commas (card 2117); the server reads them as
+					// `reportRecipients` does, and holds them to 10 (card 2182).
 					body: JSON.stringify({
 						name: schedName.trim() || 'Scheduled Report',
 						scope: schedScope,
@@ -427,7 +440,7 @@
 			<div class="email-modal-body">
 				<label class="email-label" for="email-recipients">
 					Recipients
-					<span class="email-hint">Separate multiple emails with commas</span>
+					<span class="email-hint">Up to {MAX_REPORT_RECIPIENTS} addresses, separated by commas</span>
 				</label>
 				<textarea
 					id="email-recipients"
@@ -685,7 +698,7 @@
 									placeholder="Enter email addresses, separated by commas&#10;e.g. alice@example.com, bob@example.com"
 									rows="2"
 								></textarea>
-								<span class="form-hint">Comma-separated email addresses. The PDF report will be emailed to all recipients.</span>
+								<span class="form-hint">Up to {MAX_REPORT_RECIPIENTS} addresses, separated by commas. The report is emailed to each.</span>
 							</div>
 						</div>
 						<div class="form-row">
@@ -715,6 +728,7 @@
 				{#if data.schedules.length > 0}
 					<div class="schedules-list">
 						{#each data.schedules as schedule}
+							{@const sentTo = reportRecipients(schedule.recipients).addresses}
 							<div class="schedule-card" class:disabled={!schedule.enabled}>
 								<div class="schedule-info">
 									<div class="schedule-name">{schedule.name}</div>
@@ -727,10 +741,19 @@
 											<span class="freq-badge">{statusFilterShort(schedule.statusFilter)}</span>
 										{/if}
 									</div>
-									{#if schedule.recipients}
+									{#if sentTo.length > MAX_REPORT_RECIPIENTS}
+										<!-- Kept from before there was a cap (card 2182): the scheduler switches it
+										     off and sends nothing. Its addresses are shown, to be copied into a new
+										     schedule, since this page cannot edit one. -->
+										<div class="schedule-recipients over-cap">
+											{sentTo.length} recipients: the most is {MAX_REPORT_RECIPIENTS}, so it is not sent
+										</div>
+										<div class="over-cap-addresses">{sentTo.join(', ')}</div>
+										<span class="over-cap-hint">Copy the ones to keep into a new schedule of at most {MAX_REPORT_RECIPIENTS}, then delete this one.</span>
+									{:else if sentTo.length > 0}
 										<div class="schedule-recipients">
 											<svg width="10" height="10" viewBox="0 0 14 14" fill="none"><path d="M2 4l5 4 5-4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><rect x="1" y="3" width="12" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/></svg>
-											{schedule.recipients.split(',').length} recipient{schedule.recipients.split(',').length !== 1 ? 's' : ''}
+											{sentTo.length} recipient{sentTo.length !== 1 ? 's' : ''}
 										</div>
 									{:else}
 										<span class="no-recipients-warn">⚠️ No recipients configured</span>
@@ -1092,6 +1115,15 @@
 		font-size: 0.68rem;
 		color: var(--priority-high);
 	}
+
+	.schedule-recipients.over-cap { color: var(--priority-high); font-weight: 600; }
+	.over-cap-addresses {
+		font-size: 0.7rem;
+		color: var(--text-secondary);
+		user-select: text;
+		overflow-wrap: anywhere;
+	}
+	.over-cap-hint { font-size: 0.68rem; color: var(--text-tertiary); }
 
 	.scope-badge {
 		font-size: 0.65rem;

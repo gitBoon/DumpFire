@@ -36,13 +36,14 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { isHttpError, isRedirect, type RequestEvent } from '@sveltejs/kit';
+import { hashSync } from 'bcryptjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { failureAsJson, guardBody, isJsonAnswer, jsonInPlaceOf } from '$lib/server/api-errors';
 import { FRAMEABLE_ROUTES, SECURITY_HEADERS, preferredType, secured } from '$lib/server/gate-answers';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
-import { resetAllRateLimits } from '$lib/server/rate-limit';
+import { countWrongSignIn, resetAllRateLimits, signInWait, WRONG_SIGN_IN_KEYS } from '$lib/server/rate-limit';
 import { handleError } from '../src/hooks.server';
 import { routeMethods, routePatterns } from './helpers/api';
 import { failingWrite, type FailingWrite } from './helpers/failing-write';
@@ -321,6 +322,260 @@ describe('requests to /api/v1/ with no key the gate accepts, from one address', 
 	});
 });
 
+/** A sign-in as a browser posts the form. */
+const LOGIN_FORM = { 'content-type': 'application/x-www-form-urlencoded', origin: 'http://localhost', accept: 'text/html' };
+
+/** POST /login with `identity` and `password`, from `ip` (null: an address that cannot be read). */
+function signIn(identity: string, password: string, ip: string | null = '203.0.113.30'): Promise<Answer> {
+	return send('POST', '/login', {
+		headers: LOGIN_FORM,
+		body: `identity=${encodeURIComponent(identity)}&password=${encodeURIComponent(password)}`,
+		ip
+	});
+}
+
+/**
+ * Put `setTimeout` and `Date` on a fake clock, after one sign-in that loads
+ * the login page's modules on the real one, and spends nothing: an empty name
+ * is answered before any count. `setImmediate` stays real, so `heldFor` can
+ * let a request run. The caller puts the real clock back.
+ */
+async function onTheFakeClock(): Promise<void> {
+	await signIn('', '');
+	vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+}
+
+/** Let the requests in flight run, on the real `setImmediate`, until each is answered or waits on a timer. */
+async function letRun(): Promise<void> {
+	for (let turn = 0; turn < 50; turn++) await new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * How long each of `requests` was held on the fake clock, and its answer.
+ * The requests are let run; while any is unanswered and a timer is set, the
+ * clock is moved 250 ms and they are let run again. A request answered with
+ * no timer set was held 0 ms.
+ */
+async function heldFor(...requests: Promise<Answer>[]): Promise<{ ms: number; res: Answer }[]> {
+	const held: ({ ms: number; res: Answer } | undefined)[] = requests.map(() => undefined);
+	let failed: { reason: unknown } | undefined;
+	let moved = 0;
+	requests.forEach((request, index) =>
+		request.then(
+			(res) => (held[index] = { ms: moved, res }),
+			(reason) => (failed = { reason })
+		)
+	);
+	for (let rounds = 0; ; rounds++) {
+		await letRun();
+		if (failed) throw failed.reason;
+		if (held.every((answer) => answer !== undefined)) return held as { ms: number; res: Answer }[];
+		if (vi.getTimerCount() === 0) {
+			if (rounds > 200) throw new Error('a sign-in was neither answered nor waiting on a timer');
+			continue;
+		}
+		moved += 250;
+		await vi.advanceTimersByTimeAsync(250);
+	}
+}
+
+/** The milliseconds each sign-in in turn was held, each answered `status`. */
+async function heldInTurn(attempts: (() => Promise<Answer>)[], status = 400): Promise<number[]> {
+	const waited: number[] = [];
+	for (const [index, attempt] of attempts.entries()) {
+		const [{ ms, res }] = await heldFor(attempt());
+		expect(res.status, `attempt ${index + 1}`).toBe(status);
+		waited.push(ms);
+	}
+	return waited;
+}
+
+const WRONG = 'Invalid username/email or password';
+
+/**
+ * Wrong passwords at one account (card 2177). Sign-in counted attempts per
+ * address only, so a guesser with N addresses had 10 × N tries at an account
+ * every 15 minutes. Now, after five wrong passwords at one account within 15
+ * minutes of each other, every sign-in at it waits 1, 2, then 4 seconds
+ * before its password is checked, from whatever address, the right password
+ * included, and is then answered as it would have been. Nothing is refused
+ * for the account. Each runs on the fake clock, and says how long a sign-in
+ * was held by how far the clock had to be moved before it was answered.
+ */
+describe('wrong passwords at one account, from any number of addresses', () => {
+	const A = '203.0.113.31';
+	const B = '203.0.113.32';
+	const C = '203.0.113.33';
+	const D = '203.0.113.34';
+	const wrongAt = (identity: string, ip: string) => () => signIn(identity, 'wrong', ip);
+
+	beforeEach(async () => {
+		sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync('right', 4), user.id);
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		await onTheFakeClock();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('slows every sign-in at the account after five wrong, whichever address they come from, and keeps the words', async () => {
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		try {
+			expect(await heldInTurn([A, A, B, B, C].map((ip) => wrongAt(user.username, ip)))).toEqual([0, 0, 0, 0, 0]);
+			const [sixth] = await heldFor(signIn(user.username, 'wrong', D));
+			expect(sixth.ms).toBe(1000);
+			expect(sixth.res.status).toBe(400);
+			expect(sixth.res.text).toContain(WRONG);
+			expect(await heldInTurn([D, D, D].map((ip) => wrongAt(user.username, ip)))).toEqual([2000, 4000, 4000]);
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+		// One line when the waits begin, and not one for each wait.
+		const lines = sqlite.prepare("SELECT level, message, user_id AS userId FROM system_logs WHERE message LIKE 'Sign-ins at %'").all();
+		// Naming the account, and with it as the line's user (review O2).
+		expect(lines).toEqual([
+			{
+				level: 'WARN',
+				message: `Sign-ins at "${user.username}" (user ${user.id}) are being slowed: 5 wrong passwords within 15 minutes of each other`,
+				userId: user.id
+			}
+		]);
+	});
+
+	it('still lets the right password in, after the wait, and forgets the count', async () => {
+		const ips = [...Array(7).fill(A), ...Array(7).fill(B), ...Array(6).fill(C)];
+		await heldInTurn(ips.map((ip) => wrongAt(user.username, ip)));
+
+		const [right] = await heldFor(signIn(user.username, 'right', C));
+		expect(right.ms).toBe(4000);
+		expect(right.res.status).toBe(303);
+		expect(right.res.headers.get('location')).toBe('/');
+		expect(right.res.headers.get('set-cookie')).toContain(`${SESSION_COOKIE_NAME}=`);
+
+		expect(await heldInTurn([wrongAt(user.username, D)])).toEqual([0]);
+	});
+
+	it('counts a username and its email as one account', async () => {
+		const tries = [A, A, A].map((ip) => wrongAt(user.username, ip)).concat([B, B].map((ip) => wrongAt(user.email, ip)));
+		expect(await heldInTurn(tries)).toEqual([0, 0, 0, 0, 0]);
+		expect(await heldInTurn([wrongAt(user.email.toUpperCase(), C)])).toEqual([1000]);
+	});
+
+	it('makes a name that is no account wait exactly as a real one would', async () => {
+		const [real] = await (async () => {
+			await heldInTurn([A, A, B, B, C].map((ip) => wrongAt(user.username, ip)));
+			return heldFor(signIn(user.username, 'wrong', C));
+		})();
+		await heldInTurn([A, A, B, B, D].map((ip) => wrongAt('nobody-here', ip)));
+		const [none] = await heldFor(signIn('nobody-here', 'wrong', D));
+
+		expect(none.ms).toBe(1000);
+		expect(none.ms).toBe(real.ms);
+		expect(none.res.status).toBe(real.res.status);
+		expect(none.res.text).toContain(WRONG);
+	});
+
+	// A name that is no account was counted lower-cased, while the lookup reads
+	// a username exactly: five at `USER1` then one at `user1` waited 1 s only
+	// when `user1` was no account (review M1, 11 ms against 1,004 ms).
+	it('counts a name that is no account as the lookup reads it, so another case waits alike for a real account and none', async () => {
+		const ghost = 'ghost-name';
+		expect(await heldInTurn([A, A, A, A, A].map((ip) => wrongAt(user.username.toUpperCase(), ip)))).toEqual([0, 0, 0, 0, 0]);
+		const [real] = await heldFor(signIn(user.username, 'wrong', B));
+		expect(await heldInTurn([C, C, C, C, C].map((ip) => wrongAt(ghost.toUpperCase(), ip)))).toEqual([0, 0, 0, 0, 0]);
+		const [none] = await heldFor(signIn(ghost, 'wrong', D));
+
+		expect(real.ms).toBe(0);
+		expect(none.ms).toBe(real.ms);
+		expect(none.res.status).toBe(real.res.status);
+	});
+
+	// Each name that is no account is a count, so the map is held to
+	// WRONG_SIGN_IN_KEYS, the one counted longest ago forgotten first (review N7).
+	it('keeps at most 10,000 counts, forgetting the one counted longest ago', () => {
+		for (let i = 0; i < 5; i++) countWrongSignIn('name:first');
+		for (let i = 0; i < 5; i++) countWrongSignIn('name:kept');
+		for (let n = 0; n < WRONG_SIGN_IN_KEYS - 2; n++) countWrongSignIn(`name:${n}`);
+		// Counted again, so now the newest.
+		countWrongSignIn('name:kept');
+		expect(signInWait('name:first')).toBe(1000);
+
+		countWrongSignIn('name:one-more');
+		expect(signInWait('name:first')).toBe(0);
+		expect(signInWait('name:kept')).toBe(2000);
+		countWrongSignIn('name:and-another');
+		expect(signInWait('name:kept')).toBe(2000);
+		expect(WRONG_SIGN_IN_KEYS).toBe(10_000);
+	});
+
+	it('does not slow another account', async () => {
+		const other = makeUser();
+		await heldInTurn([A, A, A, B, B, B, C].map((ip) => wrongAt(user.username, ip)));
+		expect(await heldInTurn([wrongAt(user.username, C)])).toEqual([4000]);
+
+		expect(await heldInTurn([wrongAt(other.username, D)])).toEqual([0]);
+	});
+
+	it('answers the address’s own limit first and at once, and does not count that attempt at the account', async () => {
+		// Ten from A: five at the account, five at a name that is no account.
+		await heldInTurn([...Array(5).fill(user.username), ...Array(5).fill('nobody-else')].map((name) => wrongAt(name, A)));
+
+		const [limited] = await heldFor(signIn(user.username, 'wrong', A));
+		expect(limited.ms).toBe(0);
+		expect(limited.res.status).toBe(429);
+		expect(limited.res.text).toContain('Too many login attempts');
+		// The account's five set a wait of 1 s; counted, the refusal would have made it 2 s.
+		expect(await heldInTurn([wrongAt(user.username, B)])).toEqual([1000]);
+	});
+
+	it('holds nothing else up while a sign-in waits', async () => {
+		await heldInTurn([A, A, A, B, B, B, C].map((ip) => wrongAt(user.username, ip)));
+
+		const waiting = signIn(user.username, 'wrong', D);
+		await letRun();
+		expect(vi.getTimerCount()).toBe(1);
+		// Answered with the clock where it is: neither waits on the sign-in.
+		expect((await send('GET', '/login', { headers: { accept: 'text/html' } })).status).toBe(200);
+		expect((await send('GET', '/api/v1/me', { headers: withKey })).status).toBe(200);
+
+		const [held] = await heldFor(waiting);
+		expect(held.ms).toBe(4000);
+		expect(held.res.status).toBe(400);
+	});
+
+	it('does not put sign-ins sent together in a line: each waits what the count said when it came', async () => {
+		await heldInTurn([A, A, B, B, C].map((ip) => wrongAt(user.username, ip)));
+
+		const together = await heldFor(signIn(user.username, 'wrong', B), signIn(user.username, 'wrong', C), signIn(user.username, 'wrong', D));
+		expect(together.map(({ ms, res }) => [ms, res.status])).toEqual([
+			[1000, 400],
+			[1000, 400],
+			[1000, 400]
+		]);
+	});
+
+	it('forgets the count 15 minutes after the last wrong password', async () => {
+		await heldInTurn([A, A, A, B, B, B, C].map((ip) => wrongAt(user.username, ip)));
+
+		vi.advanceTimersByTime(15 * 60 * 1000 + 1);
+
+		expect(await heldInTurn([wrongAt(user.username, D)])).toEqual([0]);
+	});
+
+	it('checks a long password whole after a wait: what is kept through it holds every character bcrypt reads', async () => {
+		const long = Array.from({ length: 100 }, (_, i) => String.fromCharCode(65 + (i % 26))).join('');
+		sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync(long, 4), user.id);
+		await heldInTurn([A, A, B, B, C].map((ip) => wrongAt(user.username, ip)));
+
+		const [right] = await heldFor(signIn(user.username, long, D));
+		expect(right.ms).toBe(1000);
+		expect(right.res.status).toBe(303);
+	});
+});
+
 /**
  * The handlers that count a request against its address asked for it
  * unguarded: with `ADDRESS_HEADER` set and the header absent, the lookup
@@ -332,18 +587,32 @@ describe('requests to /api/v1/ with no key the gate accepts, from one address', 
 describe('a request whose address cannot be read, to a handler that counts by address', () => {
 	const FORM = { 'content-type': 'application/x-www-form-urlencoded', origin: 'http://localhost', accept: 'text/html' };
 
+	// Ten wrong passwords at one account: from the sixth, each waits before it
+	// is answered (card 2177), so this runs on the fake clock.
 	it('is answered, and not 500, on the login form, and counted: ten wrong passwords, and the eleventh is 429', async () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
-		for (let i = 0; i < 10; i++) {
-			const res = await send('POST', '/login', { headers: FORM, body: `identity=${user.username}&password=wrong`, ip: null });
-			expect(res.status, `attempt ${i + 1}`).toBe(400);
-		}
+		await onTheFakeClock();
+		try {
+			const waited: number[] = [];
+			for (let i = 0; i < 10; i++) {
+				const [{ ms, res }] = await heldFor(signIn(user.username, 'wrong', null));
+				expect(res.status, `attempt ${i + 1}`).toBe(400);
+				waited.push(ms);
+			}
+			expect(waited).toEqual([0, 0, 0, 0, 0, 1000, 2000, 4000, 4000, 4000]);
 
-		const limited = await send('POST', '/login', { headers: FORM, body: `identity=${user.username}&password=wrong`, ip: null });
-		expect(limited.status).toBe(429);
-		expect(limited.text).toContain('Too many login attempts');
-		// A caller whose address is known is counted apart.
-		expect((await send('POST', '/login', { headers: FORM, body: `identity=${user.username}&password=wrong`, ip: '203.0.113.20' })).status).toBe(400);
+			// Refused at once, by the address's limit, before any wait.
+			const [limited] = await heldFor(signIn(user.username, 'wrong', null));
+			expect(limited.ms).toBe(0);
+			expect(limited.res.status).toBe(429);
+			expect(limited.res.text).toContain('Too many login attempts');
+			// A caller whose address is known is counted apart: answered, after the account's wait.
+			const [known] = await heldFor(signIn(user.username, 'wrong', '203.0.113.20'));
+			expect(known.res.status).toBe(400);
+			expect(known.ms).toBe(4000);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('is answered, and not 500, by the public request form’s routes', async () => {

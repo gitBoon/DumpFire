@@ -362,7 +362,7 @@
 										<tr><td><span class="status-badge s4xx">403</span></td><td>Forbidden (no access to the requested resource)</td></tr>
 										<tr><td><span class="status-badge s4xx">404</span></td><td>Resource not found, whoever asks; an id in the body that names nothing; something to be removed that is not there; or no such route</td></tr>
 										<tr><td><span class="status-badge s4xx">405</span></td><td>Method not allowed on this route (the <code>Allow</code> header names the methods it has)</td></tr>
-										<tr><td><span class="status-badge s4xx">409</span></td><td>Conflict (open subtasks or sub-boards on a card moved to Complete, a card moved onto a board beneath it, at any depth, a dependency that already exists or would close a loop, a rejected batch)</td></tr>
+										<tr><td><span class="status-badge s4xx">409</span></td><td>Conflict (open subtasks or sub-boards on a card moved to Complete, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep, made or carried by a move, a dependency that already exists or would close a loop, a rejected batch)</td></tr>
 										<tr><td><span class="status-badge s4xx">413</span></td><td>Request body over the size limit, 512 KB: the <code>message</code> says the limit and <code>limitBytes</code> is the limit in bytes</td></tr>
 										<tr><td><span class="status-badge s4xx">429</span></td><td>Rate limit exceeded: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts</td></tr>
 										<tr><td><span class="status-badge s5xx">500</span></td><td>Internal server error</td></tr>

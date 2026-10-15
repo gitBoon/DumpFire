@@ -8,17 +8,26 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { reportSchedules, boards, boardCategories } from '$lib/server/db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { count, eq, desc } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { inTransaction } from '$lib/server/db/transaction';
-import { REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS } from '$lib/server/reports';
-import { readBody, readChoice, readEmailText, readId, readNumber, readText, readTime } from '$lib/server/request-body';
+import { REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS, takeReportMail } from '$lib/server/reports';
+import { readBody, readChoice, readId, readNumber, readReportRecipients, readText, readTime } from '$lib/server/request-body';
 import { requireBoard } from '$lib/server/route-guards';
+import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import type { RequestHandler } from './$types';
 
 /** How often a schedule may run: the two the scheduler works out a next run for. */
 const FREQUENCIES = ['weekly', 'monthly'] as const;
 const MISSING = 'Missing required fields: name, scope, frequency';
+/**
+ * The most schedules one account may have (card 2182). A scheduled run takes
+ * nothing from the account's 100 addresses a day (`takeReportMail`); making a
+ * schedule, turning it on, re-timing it or adding addresses to it does, as
+ * each can bring a send forward. So 20 weekly schedules of 10 send 200 a week
+ * on their own timetables, and what is brought forward is within the day's 100.
+ */
+const SCHEDULES_PER_ACCOUNT = 20;
 
 export const GET: RequestHandler = async ({ locals }) => {
 	const user = locals.user;
@@ -42,6 +51,12 @@ export const GET: RequestHandler = async ({ locals }) => {
  * it was sent: a time of "9", from which the scheduler cannot work out a next
  * run, sent the report every minute, and an unknown detail level or status
  * filter was stored as another.
+ *
+ * Who it may reach (card 2182): `recipients` is read as the scheduler sends
+ * it (`readReportRecipients`), at most 10 addresses (400); an account has at
+ * most 20 schedules (409); and the new schedule's addresses are taken from
+ * the account's report mail for the day (429), last, immediately before the
+ * write: a schedule made for the next minute brings a send forward.
  */
 export const POST: RequestHandler = async ({ locals, request }) => {
 	const user = locals.user;
@@ -90,7 +105,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		const dayOfMonth = readNumber(body, 'dayOfMonth', { whole: true, min: 1, max: 28 }) ?? 1;
 		// Empty is 09:00, as the scheduler reads it.
 		const timeOfDay = readTime(body, 'timeOfDay', { empty: '09:00' }) ?? '09:00';
-		const recipients = readEmailText(body, 'recipients', {}) ?? '';
+		const recipients = readReportRecipients(body, 'recipients', {}) ?? '';
+		const addressCount = reportRecipients(recipients).addresses.length;
+		if (addressCount > MAX_REPORT_RECIPIENTS) {
+			throw error(400, `A schedule can be sent to at most ${MAX_REPORT_RECIPIENTS} addresses, and this names ${addressCount}. The schedule was not saved.`);
+		}
 		const periodDays = readNumber(body, 'periodDays', { whole: true, min: 1, max: 366 }) ?? 7;
 		const detailLevel = readChoice(body, 'detailLevel', { from: REPORT_DETAIL_LEVELS }) ?? 'detailed';
 		const statusFilter = readChoice(body, 'statusFilter', { from: REPORT_STATUS_FILTERS }) ?? 'all';
@@ -111,6 +130,20 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			nextRunAt.setDate(dayOfMonth);
 			if (nextRunAt <= now) nextRunAt.setMonth(nextRunAt.getMonth() + 1);
 		}
+
+		// An account that already has more keeps them all, and makes no more.
+		const held = db.select({ n: count() }).from(reportSchedules).where(eq(reportSchedules.userId, user.id)).get()?.n ?? 0;
+		if (held >= SCHEDULES_PER_ACCOUNT) {
+			throw error(
+				409,
+				held === SCHEDULES_PER_ACCOUNT
+					? `You have ${held} report schedules, the most one account may have. Delete one first.`
+					: `You have ${held} report schedules, and the most one account may have is ${SCHEDULES_PER_ACCOUNT}. Delete ${held - SCHEDULES_PER_ACCOUNT + 1} first.`
+			);
+		}
+
+		// Last, with nothing awaited before the write.
+		takeReportMail(user, addressCount, 'new schedule');
 
 		return db.insert(reportSchedules).values({
 			userId: user.id,

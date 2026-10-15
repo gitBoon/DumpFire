@@ -78,6 +78,7 @@ import {
 	uploadNotRead
 } from '$lib/api';
 import { mayManageAccount } from '$lib/account-rule';
+import * as bulkActions from '$lib/board/bulk-actions';
 import * as cardActions from '$lib/board/card-actions';
 import * as dndHandlers from '$lib/board/dnd-handlers';
 import { connectSSE } from '$lib/board/sse';
@@ -179,6 +180,18 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 
 	it('imports failureMessage from $lib/api', () => {
 		expect(page.getText()).toMatch(/import \{[^}]*\bfailureMessage\b[^}]*\} from '\$lib\/api';/);
+	});
+
+	// Card 2182: the page reads a list as the server does, and a schedule kept
+	// with more than 10 addresses, which the scheduler switches off, shows them,
+	// since the page cannot edit one and its owner is told to remake it (R2).
+	it('reads recipients through reportRecipients, and lists the addresses of a schedule over the cap', () => {
+		const markup = readFileSync(join(ROOT, 'src/routes/reports/+page.svelte'), 'utf8');
+		expect(functionNamed(page, 'sendReportEmail').getText()).toContain('reportRecipients(emailRecipients)');
+		expect(markup).toContain('{@const sentTo = reportRecipients(schedule.recipients).addresses}');
+		expect(markup).not.toContain("schedule.recipients.split(',')");
+		expect(markup).toContain('{sentTo.length} recipients: the most is {MAX_REPORT_RECIPIENTS}, so it is not sent');
+		expect(markup).toContain(`<div class="over-cap-addresses">{sentTo.join(', ')}</div>`);
 	});
 });
 
@@ -1942,7 +1955,6 @@ describe('no page throws away the answer to a write', () => {
 		'src/lib/board/board-actions.ts › addColumn › api.createColumn': 2012,
 		'src/lib/board/board-actions.ts › addCategory › api.createCategory': 2012,
 		'src/lib/board/board-actions.ts › deleteCategory › api.deleteCategoryApi': 2012,
-		'src/lib/board/bulk-actions.ts › bulkMove › api.reorderCards': 2012,
 		'src/lib/board/bulk-actions.ts › bulkPriority › api.updateCard': 2012,
 		'src/lib/board/card-actions.ts › saveCard › api.updateCard': 2012,
 		'src/lib/board/card-actions.ts › saveCard › api.createSubtask': 2012,
@@ -1956,7 +1968,9 @@ describe('no page throws away the answer to a write', () => {
 		// table of writes above). The share window's `updateRole` had come off
 		// with card 2115's review. The drop's request to clear the on-hold note
 		// came off with card 2208: the server clears it in the move, and the drop
-		// sends no second request.
+		// sends no second request. The bulk move's came off with card 2209: a
+		// move of more than 100 cards to another column is refused, and the page
+		// says so (the test of the bulk move below).
 	};
 
 	it('finds none but the ones left for a card of their own, and each of those', () => {
@@ -2397,6 +2411,101 @@ describe('linking an existing board under a card, src/lib/board/card-actions.ts 
 				"This board's editors can move this card, taking \"Website\" with it. " +
 				'This card cannot be completed while "Website" has cards that are not complete, and "Website" is deleted for good, with everything on it, if this card, its column or this board is ever deleted for good.'
 		);
+	});
+});
+
+describe('making a sub-board from the board page, src/lib/board/card-actions.ts and the board page (card 2172)', () => {
+	// Sub-boards nest at most 20 levels deep, and the server refuses one deeper,
+	// 409. The card menu's Create Sub-board then did nothing at all, and the
+	// new-card window said "Created" for the card and nothing of the sub-board.
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const board = scriptOf('src/routes/board/[id]/+page.svelte');
+	const refusal = 'Sub-boards can be nested at most 20 levels deep, and a board under this card would be deeper.';
+
+	it('gives back the new board, the server’s words for a refusal, or that there was no answer', async () => {
+		const sent: { url: string; method?: string; body: unknown }[] = [];
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			sent.push({ url, method: init.method, body: JSON.parse(String(init.body)) });
+			return Response.json({ message: refusal }, { status: 409 });
+		});
+		expect(await cardActions.createSubBoard(3, 'Plans')).toEqual({ message: refusal });
+		expect(sent).toEqual([{ url: '/api/boards', method: 'POST', body: { name: 'Plans', emoji: '🗂️', parentCardId: 3 } }]);
+
+		vi.stubGlobal('fetch', async () => Response.json({ id: 12 }, { status: 201 }));
+		expect(await cardActions.createSubBoard(3, 'Plans')).toEqual({ id: 12 });
+
+		vi.stubGlobal('fetch', async () => {
+			throw new TypeError('fetch failed');
+		});
+		expect(await cardActions.createSubBoard(3, 'Plans')).toEqual({ message: 'No answer from the server. The sub-board may not have been made.' });
+	});
+
+	it('is said by the card menu’s Create Sub-board as an error, and the page goes to the new board only when it was made', () => {
+		const said = functionNamed(board, 'createSubBoard').getText().replace(/\s+/g, ' ');
+
+		expect(said).toContain("const made = await cardActions.createSubBoard(card.id, name || card.title); if ('message' in made) { toasts.add(made.message, 'error', started); return; } window.location.href = `/board/${made.id}`;");
+	});
+
+	it('is said by the new-card window for each sub-board refused, in the server’s words, and the card is kept', () => {
+		const save = functionNamed(board, 'saveCard');
+		const asked = callsOf(save, 'api.failureMessage');
+
+		expect(asked).toHaveLength(1);
+		expect(sideOf(asked[0])).toBe('failed');
+		const said = save.getText().replace(/\s+/g, ' ');
+		expect(said).toContain(
+			"if (res.ok) { toasts.add(`Sub-board \"${sbName}\" created`); } else { toasts.add(`Sub-board \"${sbName}\" was not made. ${await api.failureMessage(res, 'The server refused it.')}`, 'error', started); }"
+		);
+		// A request with no answer is said too, and the next name is still sent.
+		expect(said).toContain("} catch { toasts.add(`No answer from the server. Sub-board \"${sbName}\" may not have been made.`, 'error', started); continue; }");
+	});
+});
+
+describe('the bulk move, src/lib/board/bulk-actions.ts and the board page (card 2209)', () => {
+	// One request may move at most 100 cards to another column, and the server
+	// refuses more, 400, moving none. The bulk move threw the answer away, so
+	// the page cleared the selection as if they had moved.
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const refusal = 'At most 100 cards can be moved to another column at once, and this moves 120. Nothing was moved: move them in groups of 100 or fewer.';
+
+	it('gives back the server’s words for a refusal, null when they moved, and says when there was no answer', async () => {
+		const sent: { url: string; method?: string; body: { updates: unknown[] } }[] = [];
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			sent.push({ url, method: init.method, body: JSON.parse(String(init.body)) });
+			return Response.json({ message: refusal }, { status: 400 });
+		});
+		expect(await bulkActions.bulkMove(new Set([4, 5]), 9, 2, 1, 'owner', '👤')).toBe(refusal);
+		expect(sent.map(({ url, method, body }) => [url, method, body.updates])).toEqual([
+			['/api/cards/reorder', 'PUT', [{ id: 4, columnId: 9, position: 2 }, { id: 5, columnId: 9, position: 3 }]]
+		]);
+
+		vi.stubGlobal('fetch', async () => Response.json({ success: true }));
+		expect(await bulkActions.bulkMove(new Set([4]), 9, 0, 1, 'owner', '👤')).toBeNull();
+
+		vi.stubGlobal('fetch', async () => {
+			throw new TypeError('fetch failed');
+		});
+		expect(await bulkActions.bulkMove(new Set([4]), 9, 0, 1, 'owner', '👤')).toBe('No answer from the server. The cards may not have been moved.');
+	});
+
+	it('is said by the board page as an error, which keeps the selection, and the board is read again either way', () => {
+		const handle = functionNamed(scriptOf('src/routes/board/[id]/+page.svelte'), 'handleBulkMove');
+		const said = handle.getText().replace(/\s+/g, ' ');
+
+		expect(said).toContain('const failure = await bulkOps.bulkMove(');
+		expect(said).toContain("if (failure) { toasts.add(failure, 'error', started); } else { clearSelection(); } await invalidateAll();");
+		// The only clearSelection is the one for a move that was made.
+		const cleared = callsOf(handle, 'clearSelection');
+		expect(cleared).toHaveLength(1);
+		const ifFailure = ts.findAncestor(cleared[0], ts.isIfStatement)!;
+		expect(ifFailure.expression.getText()).toBe('failure');
+		expect(isWithin(cleared[0], ifFailure.elseStatement!)).toBe(true);
 	});
 });
 

@@ -19,12 +19,167 @@
  *     boardsInLoops()                     every board that hangs beneath one of
  *                                         its own cards, for the start-up line
  *
+ * And how deep the tree may go (card 2172): a sub-board at most
+ * `MAX_SUB_BOARD_DEPTH` levels below a board that hangs under no card.
+ *
+ *     depthOf(boardId)                    how many levels down a board is
+ *     heightOfBoard(boardId, most)        how many levels of sub-boards are
+ *     heightUnderCard(cardId, most)       below a board, or a card
+ *     tooDeepUnder(card)                  would a new sub-board of this card,
+ *     linkTooDeep(boardId, parentBoardId)   this board put under a card there,
+ *     moveTooDeep(cardId, from, to)         or this card's sub-boards moved
+ *                                           with it, be deeper than the limit?
+ *
+ * Each of these is one recursive statement that stops one level past the
+ * limit, so it ends on a loop and on a tree already deeper, and reads at most
+ * that many levels. Made, linked or moved, a board deeper than the limit is
+ * refused, 409, in the words of `tooDeepToMake`, `tooDeepToLink` and
+ * `tooDeepToMove`; nothing else changes the tree. A tree already deeper is
+ * left as it is (a restored backup can hold one): nothing new goes below its
+ * deep boards, and a move or a link that leaves it no deeper is allowed, so
+ * it can be put right.
+ *
  * Who may link a board is `requireSubBoardLink`'s, in route-guards.ts.
  */
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { boardMembers, boards } from './db/schema';
 import { canEditBoard, isAdmin, type Actor } from './board-access';
+
+/**
+ * How many levels below a board that hangs under no card a sub-board may be
+ * (card 2172). Real trees are a few levels deep. Every load of a board walks
+ * up its breadcrumbs, three reads a level, and nothing bounded how deep a
+ * signed-in user could nest boards by script; 20 is far past any use and
+ * keeps that walk to a few milliseconds.
+ */
+export const MAX_SUB_BOARD_DEPTH = 20;
+
+/**
+ * How deep board `boardId` is: 0 for a board that hangs under no card, or
+ * under a card (or a card's column) that is gone, as the breadcrumbs treat it;
+ * 1 for a sub-board of a card on such a board; and so on.
+ *
+ * One past the limit, `MAX_SUB_BOARD_DEPTH + 1`, for anything deeper: the
+ * walk up stops there. A board in a loop, or below one, reads that too, so
+ * nothing new can be made beneath it. Archived cards count: the tree is the
+ * `parent_card_id` links, archived or not.
+ */
+export function depthOf(boardId: number): number {
+	const row = sqlite
+		.prepare(
+			`WITH RECURSIVE up(id, depth) AS (
+				SELECT ?, 0
+				UNION
+				SELECT col.board_id, up.depth + 1 FROM up
+					JOIN boards b ON b.id = up.id
+					JOIN cards c ON c.id = b.parent_card_id
+					JOIN columns col ON col.id = c.column_id
+				WHERE up.depth <= ?
+			)
+			SELECT MAX(depth) AS depth FROM up`
+		)
+		.get(boardId, MAX_SUB_BOARD_DEPTH) as { depth: number };
+	return row.depth;
+}
+
+/**
+ * How many levels of sub-boards hang below board `boardId`: 0 for a board
+ * whose cards have none, 1 for one whose sub-boards have none, and so on.
+ * The walk down stops at `most` levels, which it then answers: a caller asks
+ * only whether there is room, and a wide tree or a loop costs no more than
+ * that many levels.
+ */
+export function heightOfBoard(boardId: number, most = MAX_SUB_BOARD_DEPTH + 1): number {
+	return levelsBelow(`SELECT ?, 0`, boardId, most);
+}
+
+/**
+ * How many levels of sub-boards hang below card `cardId`: 0 for a card with
+ * none, 1 for one whose sub-boards have none, and so on, stopping at `most`
+ * as `heightOfBoard` does.
+ */
+export function heightUnderCard(cardId: number, most = MAX_SUB_BOARD_DEPTH + 1): number {
+	return levelsBelow(`SELECT id, 1 FROM boards WHERE parent_card_id = ?`, cardId, most);
+}
+
+/** The deepest level below `seed`'s boards, each seed at the height it gives, counted down to `most` and no further. */
+function levelsBelow(seed: string, id: number, most: number): number {
+	const row = sqlite
+		.prepare(
+			`WITH RECURSIVE down(id, height) AS (
+				${seed}
+				UNION
+				SELECT b.id, down.height + 1 FROM down
+					JOIN columns col ON col.board_id = down.id
+					JOIN cards c ON c.column_id = col.id
+					JOIN boards b ON b.parent_card_id = c.id
+				WHERE down.height < ?
+			)
+			SELECT COALESCE(MAX(height), 0) AS height FROM down`
+		)
+		.get(id, most) as { height: number };
+	return row.height;
+}
+
+/**
+ * True if a new sub-board of `card` would be deeper than the limit: the card's
+ * board is already at it, past it, or in or below a loop. For the two routes
+ * that make a board, after `requireParentCard`, in their transaction.
+ */
+export function tooDeepUnder(card: { columnId: number }): boolean {
+	const column = sqlite.prepare(`SELECT board_id AS boardId FROM columns WHERE id = ?`).get(card.columnId) as
+		| { boardId: number }
+		| undefined;
+	// A card whose column is gone was refused by `requireParentCard`.
+	return column !== undefined && depthOf(column.boardId) + 1 > MAX_SUB_BOARD_DEPTH;
+}
+
+/**
+ * True if putting board `boardId` under a card on board `parentBoardId` would
+ * nest it, or a board beneath it, deeper than the limit, and deeper than it is
+ * now. A link that leaves a tree already too deep no deeper, or lifts it, is
+ * allowed: it is how such a tree is put right. Asked after `wouldLoop`.
+ */
+export function linkTooDeep(boardId: number, parentBoardId: number): boolean {
+	const depth = depthOf(parentBoardId) + 1;
+	if (depth <= depthOf(boardId)) return false;
+	// Levels of sub-boards it may carry there; below none, the board itself is too deep.
+	const room = MAX_SUB_BOARD_DEPTH - depth;
+	return room < 0 || heightOfBoard(boardId, room + 1) > room;
+}
+
+/**
+ * True if moving card `cardId` from board `fromBoardId` to board `toBoardId`
+ * would nest its sub-boards deeper than the limit, and deeper than they are
+ * now. Only the depth of the board it lands on changes theirs, so the test is
+ * on the two boards and the levels the card carries: a card with no sub-board
+ * is never refused, and the levels are counted only when the target is the
+ * deeper board, down to the room it leaves. Asked after the loop check.
+ */
+export function moveTooDeep(cardId: number, fromBoardId: number, toBoardId: number): boolean {
+	const depth = depthOf(toBoardId);
+	if (depth <= depthOf(fromBoardId)) return false;
+	// Levels of sub-boards the card may carry there. None on a board at the
+	// limit or past it, where any sub-board at all is too deep.
+	const room = Math.max(MAX_SUB_BOARD_DEPTH - depth, 0);
+	return heightUnderCard(cardId, room + 1) > room;
+}
+
+/** The refusal of a new sub-board too deep. It names nothing. */
+export function tooDeepToMake(): string {
+	return `Sub-boards can be nested at most ${MAX_SUB_BOARD_DEPTH} levels deep, and a board under this card would be deeper.`;
+}
+
+/** The refusal of a link too deep: the board's name, which its owner or an administrator has just been found to hold. */
+export function tooDeepToLink(boardName: string): string {
+	return `Board "${boardName}" cannot go under this card: it and its sub-boards would then be nested more than ${MAX_SUB_BOARD_DEPTH} levels deep.`;
+}
+
+/** The refusal of a move too deep: the card and the board, both of which the caller has just been found able to edit. */
+export function tooDeepToMove(cardTitle: string, boardName: string): string {
+	return `Card "${cardTitle}" cannot go onto "${boardName}": its sub-boards would then be nested more than ${MAX_SUB_BOARD_DEPTH} levels deep.`;
+}
 
 /**
  * The board and every board above it: the board its parent card is on, that
@@ -109,6 +264,10 @@ type Linkable = { id: number; name: string; emoji: string | null };
  */
 export function linkableBoards(user: Actor, boardId: number): Linkable[] {
 	if (!canEditBoard(user, boardId)) return [];
+	// A board put under a card on a board at the limit would be past it
+	// (card 2172), and so would one under a board in or below a loop. None is
+	// offered, and the walk up below reads at most the limit's levels.
+	if (depthOf(boardId) >= MAX_SUB_BOARD_DEPTH) return [];
 
 	const shown = { id: boards.id, name: boards.name, emoji: boards.emoji };
 	let owned: Linkable[];
