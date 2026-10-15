@@ -51,7 +51,7 @@
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { formatTokens } from '$lib/tokens';
-	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
+	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
 	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
 	import BulkActionBar from '$lib/components/board/BulkActionBar.svelte';
 	import ContextMenu from '$lib/components/board/ContextMenu.svelte';
@@ -1442,7 +1442,7 @@
 									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt, tick)}</span>
 									{#if cardTokens[card.id]}
 										{@const tc = cardTokens[card.id]}
-										<span class="cost-badge" title="{formatTokens(tc.tokens)} tokens{tc.costUsd !== null ? ` · ${formatUsd(tc.costUsd)} at API rates — ${NOT_BILLED_NOTE}. ${BLEND_NOTE}` : ' · no model recorded, so it cannot be priced'}">
+										<span class="cost-badge" title="{formatTokens(tc.tokens)} tokens{tc.costUsd !== null ? ` · ${formatUsd(tc.costUsd)} at API rates — ${NOT_BILLED_NOTE}. ${BLEND_NOTE}` : ` · ${UNPRICED_SUM_NOTE}, so it cannot be priced`}">
 											{formatTokens(tc.tokens)}{#if tc.costUsd !== null} · {formatUsd(tc.costUsd)}{/if}
 										</span>
 									{/if}

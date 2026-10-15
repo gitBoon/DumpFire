@@ -15,7 +15,7 @@
 	import { priorityToCopy } from '$lib/utils/card-utils';
 	import { completionPercent } from '$lib/progress';
 	import { formatTokens } from '$lib/tokens';
-	import { costOf, formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
+	import { costOf, costInputOf, formatUsd, unpricedReason, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
 	import { highlightMentions } from '$lib/utils/mentions';
 	import { templateLabelIds } from '$lib/templates';
 	import { answerBody, deleteFailure, dependencyEndBody, dependencyRow, failureMessage, uploadFailure, uploadNoAnswer, uploadNotRead } from '$lib/api';
@@ -610,6 +610,9 @@
 			model: string | null;
 			inputTokens: number | null;
 			outputTokens: number | null;
+			cacheReadTokens: number | null;
+			cacheWrite5mTokens: number | null;
+			cacheWrite1hTokens: number | null;
 			note: string | null;
 			createdAt: string;
 		}[];
@@ -632,14 +635,8 @@
 		}
 		for (const [id] of m) {
 			const mine = (tokenLedger?.entryList ?? []).filter((e) => e.subtaskId === id);
-			const c = costOf(
-				mine.map((e) => ({
-					tokens: e.tokens,
-					model: e.model,
-					inputTokens: e.inputTokens,
-					outputTokens: e.outputTokens
-				}))
-			);
+			// Priced as the card's total is, measured breakdown and all.
+			const c = costOf(mine.map(costInputOf));
 			m.get(id)!.costUsd = c.usd;
 		}
 		return m;
@@ -1419,7 +1416,7 @@
 									</span>
 								{/if}
 								<span class="token-sub">
-									tokens{#if tokenLedger.fromSubtasks !== 0} · incl. {formatTokens(tokenLedger.fromSubtasks)} from subtasks{/if}{#if tokenLedger.unpricedTokens > 0} · <span class="token-unpriced" title="Recorded without a model, so they cannot be priced.">{formatTokens(tokenLedger.unpricedTokens)} unpriced</span>{/if}
+									tokens{#if tokenLedger.fromSubtasks !== 0} · incl. {formatTokens(tokenLedger.fromSubtasks)} from subtasks{/if}{#if tokenLedger.unpricedTokens > 0} · <span class="token-unpriced" title="Tokens {UNPRICED_SUM_NOTE}, so they cannot be priced.">{formatTokens(tokenLedger.unpricedTokens)} unpriced</span>{/if}
 								</span>
 								<span class="token-chevron" class:open={tokensExpanded}>▾</span>
 							</button>
@@ -1433,6 +1430,8 @@
 								{/if}
 								<ul class="token-entries">
 									{#each tokenLedger.entryList as e}
+										{@const eCost = costOf([costInputOf(e)]).usd}
+										<!-- Priced as the card's total is, so the rows add up to it. -->
 										<li class="token-entry" class:negative={e.tokens < 0}>
 											<span class="te-amount">{e.tokens > 0 ? '+' : ''}{formatTokens(e.tokens)}</span>
 											<span class="te-what">
@@ -1441,7 +1440,7 @@
 												{#if !e.subtaskTitle && !e.note}<span class="te-note te-plain">card</span>{/if}
 											</span>
 											{#if e.model}<span class="te-model">{e.model}</span>{/if}
-											<span class="te-cost">{formatUsd(costOf([{ tokens: e.tokens, model: e.model, inputTokens: e.inputTokens, outputTokens: e.outputTokens }]).usd)}</span>
+											<span class="te-cost" title={eCost === null ? unpricedReason(e.model) : undefined}>{formatUsd(eCost)}</span>
 										</li>
 									{/each}
 								</ul>

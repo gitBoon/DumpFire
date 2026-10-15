@@ -86,6 +86,7 @@ const TEST_FILES = [
 	'migrations.test.ts',
 	'openapi-document.test.ts',
 	'page-failures.test.ts',
+	'pricing.test.ts',
 	'public-requests.test.ts',
 	'report-mail.test.ts',
 	'request-body.test.ts',
