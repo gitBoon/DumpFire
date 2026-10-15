@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.11
+version: 1.13
 status: As-Built
 date: 2026-10-15
 tags:
@@ -326,11 +326,50 @@ Configured per-user via the Reports page:
 | `dayOfWeek` | 0-6 | Day for weekly reports |
 | `dayOfMonth` | 1-28 | Day for monthly reports |
 | `timeOfDay` | HH:MM, 00:00 to 23:59; empty is 09:00 | When to generate |
-| `recipients` | emails, each an address, sent separated by commas, semicolons or lines and stored separated by commas | Where to send |
+| `recipients` | Up to 10 addresses, separated by commas, semicolons or spaces (tabs and new lines too), an address written `<address>` read as the one inside; each part must be an address. Stored as the addresses it is sent to, lower-cased, each once, separated by `, ` | Where to send |
 | `periodDays` | 1-366 | Lookback period in days |
 | `detailLevel` | summary/detailed | Metrics and listings only, or full descriptions, business value and subtasks |
 | `statusFilter` | all/completed/in_progress/todo | Which slice to list (see Status Filter); stored in `report_schedules.status_filter`, migration `0041` |
 | `enabled` | boolean | Active toggle |
+
+Who a report may reach (card 2182), told in full in
+[Who a Report Can Be Mailed To](notifications-email.md#who-a-report-can-be-mailed-to):
+
+- **A schedule holds at most 10 addresses.** More is `400` `A schedule can be sent to at
+  most 10 addresses, and this names 12. The schedule was not saved.` (`… was not changed.`
+  on `PUT /api/report-schedules/{id}`), and a part that is not an address is `400`
+  `recipients holds "smith", which is not an email address`, with nothing saved. Any address
+  may be one, an account's or not.
+- **An account has at most 20 schedules.** The 21st is `409` `You have 20 report schedules,
+  the most one account may have. Delete one first.` An account that already has more keeps
+  them all and makes no more until it has fewer than 20.
+- **The day's 100 addresses.** One account's report mail reaches at most 100 addresses in a
+  24-hour window counted from its first take (so up to 200 across one window's end and the
+  next's start): the reports it emails by hand, and the schedules it makes, turns on or
+  re-times, each of which takes the schedule's addresses, because each can bring a send
+  forward; and a change of a schedule's list, which takes the addresses it adds, those not
+  in the stored list (one address changed to ten takes nine). The stored list sent back in
+  another order or case, or cut down, a change of name or filter, and turning a schedule
+  off take nothing, and nothing is given back when a schedule is deleted. Past it, `429`
+  `Report mail can reach at most 100 addresses a day from one account, and this schedule's
+  10 would make 104. The schedule was not saved. Try again in 5 hour(s).` (`this schedule's
+  4 new addresses would make 104` and `was not changed` for a changed list), nothing saved.
+  A scheduled run takes nothing.
+- **A schedule kept from before with more than 10** cannot be turned on as it is: `PUT` with
+  `enabled: true` on such a schedule that is off is `400` `This schedule cannot be turned
+  on: it is sent to 15 addresses, and the most is 10. Delete it and make it again with at
+  most 10.` One still on can be sent back with `enabled: true` and a new name, as a page
+  sends the row. A caller of the route can also send a list of 10 or fewer with `enabled:
+  true` in the same `PUT`, which is accepted. The Reports page cannot edit a list, so it
+  shows such a schedule's addresses as text to copy, with "Copy the ones to keep into a new
+  schedule of at most 10, then delete this one."
+
+A report emailed by hand from the Reports page is held to the same reading: at most 10
+distinct addresses a call (`400` `A report can be emailed to at most 10 addresses at a time,
+and this names 12. Nothing was sent.`, before the board is looked at), and the account's
+100 a day, counted in a 24-hour window from its first (`429` `Reports can be emailed to at most 100 addresses a day from one account,
+and this would make 104. Try again in 5 hour(s).`, taken before the PDF is built). See
+[A Report Emailed on Demand](notifications-email.md#a-report-emailed-on-demand).
 
 ### Schedule Execution
 
@@ -368,6 +407,12 @@ sequenceDiagram
         DB-->>Run: Matching schedules
 
         loop Each schedule
+            Run->>Run: reportRecipients(recipients)
+            opt more than 10 addresses (card 2182)
+                Run->>DB: enabled = 0, where it is still 1
+                Run->>Log: ERROR switched off, if this run changed the row
+                Note over Run: nothing built or sent, next schedule
+            end
             Run->>Engine: generateReport by scope + statusFilter, as the owner
             alt no report: none named, gone, or none the owner can read
                 Run->>Log: WARN produced no report, so nothing was sent: why
@@ -375,8 +420,8 @@ sequenceDiagram
                 Engine->>DB: Query boards, cards, assignees
                 Engine->>Engine: Build ReportData, render the PDF via PDFKit
                 Engine-->>Run: PDF Buffer
-                loop Each recipient
-                    Run->>SMTP: sendEmailWithAttachment()
+                loop Each address, never a part that is not one
+                    Run->>SMTP: sendEmailWithAttachment(), Set up by the owner
                     SMTP-->>Run: true (sent) or false (not sent)
                 end
                 alt every recipient sent it
@@ -406,6 +451,8 @@ nothing at all for a schedule that produced no report.
 | No report: a board or grouping schedule that names none (`scopeId` empty) | `WARN` | `... produced no report, so nothing was sent: the schedule has no board` (`the schedule has no grouping` for a grouping) |
 | No report: a report on every board, and its owner is not an administrator | `WARN` | `... produced no report, so nothing was sent: a report on every board is for an administrator, and the schedule's owner is not one` |
 | No recipients | `WARN` | `Scheduled report generated but no recipients configured: "<name>"` |
+| More than 10 addresses, kept from before the cap (card 2182) | `ERROR` | `Report schedule 12 "Weekly sales", owner "pat" (user 7), was switched off: it is sent to 15 addresses, and the most is 10. Nothing was sent. Its owner can delete it and make it again with at most 10.`, with the owner as the line's user. Once: the switch-off is written only where the schedule is still on, and only the run that changed the row writes the line |
+| A list that also holds parts that are not addresses, kept from before (card 2182) | As the line | The emailed, not-emailed or no-recipients line above ends `Left out, as not email addresses: "alice", "smith".` Those parts are never sent to; the addresses are, and the schedule is not switched off for them |
 
 - **A schedule moves on to its next run whatever was sent.** `lastRunAt` and `nextRunAt` are
   written after each of the cases above, and nothing is sent again before the next run: a
@@ -416,6 +463,14 @@ nothing at all for a schedule that produced no report.
   report or its PDF is made is logged at `ERROR`, `Failed to run scheduled report "<name>"`,
   and the schedule is left as it was, so it is still due a minute later, and fails again.
   Card 2144 is to settle it.
+- **A schedule switched off for more than 10 addresses is not run again** until it is
+  remade with 10 or fewer, or a `PUT` sends a list of 10 or fewer with `enabled: true`. Its
+  last and next run are left as they were, so a schedule turned back on that way is due at
+  the scheduler's next tick, and the `PUT` takes its addresses from the day's 100. Its owner sees why on the Reports page, with its
+  addresses to copy; the administrators see the `ERROR` line on the Audit page.
+- **Every scheduled mail names the account that set it up**: "Set up by `<username>`" above
+  "— DumpFire Automated Reports", the username escaped (card 2182), as the report emailed by
+  hand says "Sent by `<username>` via DumpFire".
 - **The `WARN` lines are kept at the default level, `INFO`.** A server started with
   `LOG_LEVEL=ERROR` keeps the `ERROR` lines only.
 
@@ -434,6 +489,7 @@ Individual card reports can be generated for completion notifications. These inc
 |------|-------|---------|
 | `src/lib/server/backup.ts` | 374 | Backup scheduling, data generation, upload orchestration |
 | `src/lib/server/backup-destinations.ts` | ~400 | SFTP, S3, Google Drive, OneDrive destination implementations |
-| `src/lib/server/reports.ts` | ~1,600 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()` and the timer's `runDueReportSchedulesOnce()` |
-| `src/routes/api/reports/email/+server.ts` | ~140 | A report emailed on demand, and its answer |
+| `src/lib/server/reports.ts` | ~1,700 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()` and the timer's `runDueReportSchedulesOnce()`; `takeReportMail()`, the day's 100 addresses (card 2182) |
+| `src/routes/api/reports/email/+server.ts` | ~170 | A report emailed on demand, and its answer |
+| `src/lib/report-recipients.ts` | ~70 | `reportRecipients()` and `MAX_REPORT_RECIPIENTS`: the one reading of a list of recipients, for the routes, the scheduler and the page (card 2182) |
 | `src/lib/server/snapshots.ts` | ~85 | Daily card count snapshots for the CFD (burndowns use card timestamps) |

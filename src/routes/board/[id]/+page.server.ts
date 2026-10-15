@@ -6,7 +6,7 @@ import { canViewBoard, getBoardRole } from '$lib/server/board-access';
 import { getBoardBlockedState, WITHHELD_BOARD_NAME } from '$lib/server/planning';
 import { getCardTokenTotals, getBoardTokenTotals } from '$lib/server/tokens';
 import { milestonesForBoard } from '$lib/server/milestones';
-import { linkableBoards } from '$lib/server/sub-boards';
+import { linkableBoards, MAX_SUB_BOARD_DEPTH } from '$lib/server/sub-boards';
 import { cardCategoriesFor, hiddenOpenCountsFor, subBoardsFor } from '$lib/server/list-access';
 import { subBoardProgress } from '$lib/server/card-completion';
 import type { PageServerLoad } from './$types';
@@ -39,8 +39,18 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	// holding the one Node thread, and the server stopped for every user. Now a
 	// loop is shown once round, closing on the board it came back to, so a
 	// board in one still reads as the sub-board it is.
-	type BreadcrumbItem = { label: string; emoji: string; href: string | null };
+	//
+	// And at most MAX_SUB_BOARD_DEPTH boards (card 2172). Sub-boards cannot be
+	// made, linked or moved deeper than that, but a tree already deeper keeps
+	// working: its nearest 20 boards are shown, and above them one crumb "…"
+	// with no link says there are more. The walk reads at most 61 rows however
+	// deep the tree, where it read three for every level. That is an
+	// administrator's figure: for anyone else `canViewBoard` reads each crumb's
+	// board again, then the membership, team and team-access rows it needs, up
+	// to four more a crumb, so at most 141.
+	type BreadcrumbItem = { label: string; emoji: string; href: string | null; title?: string };
 	const breadcrumbs: BreadcrumbItem[] = [];
+	const MORE_ABOVE: BreadcrumbItem = { label: '…', emoji: '', href: null, title: 'More boards above' };
 
 	const walked = new Set<number>([board.id]);
 	let currentBoard = board;
@@ -48,6 +58,12 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		// Find the parent card
 		const parentCard = db.select().from(cards).where(eq(cards.id, currentBoard.parentCardId)).get();
 		if (!parentCard) break;
+
+		// Twenty shown, and there is a board above the last of them.
+		if (breadcrumbs.length === MAX_SUB_BOARD_DEPTH) {
+			breadcrumbs.unshift(MORE_ABOVE);
+			break;
+		}
 
 		// Find the column to get the board
 		const parentCol = db.select().from(columns).where(eq(columns.id, parentCard.columnId)).get();

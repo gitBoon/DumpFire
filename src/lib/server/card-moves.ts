@@ -37,7 +37,9 @@
  * 2142). The two routes that move a card to another board, the v1 move and
  * the card update with a `columnId`, saved such a move; the reorder refuses
  * any move across boards. `applyCardMove` refuses it, 409, before anything is
- * written, for every route at once.
+ * written, for every route at once. And, for the same two routes, a move that
+ * would nest the card's sub-boards deeper than sub-boards may be, and deeper
+ * than they are now (card 2172).
  *
  * Access is not checked here. The caller establishes, in the same transaction,
  * that the actor may edit both the card's board and the target column's board.
@@ -62,8 +64,36 @@ import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
 import { notifyCardMoved, notifyRequesterProgress } from './notifications';
 import { announceUnblocked, recordUnblocked, type UnblockedWork } from './planning';
-import { wouldLoopAny } from './sub-boards';
+import { moveTooDeep, tooDeepToMove, wouldLoopAny } from './sub-boards';
 import type { SessionUser } from './auth';
+
+/**
+ * What one drag and drop (`PUT /api/cards/reorder`) may ask for (card 2209).
+ *
+ * Two numbers, not one, because entries cost two different things. An entry
+ * that only changes a card's position is one write and nothing more, but the
+ * board page sends every card of the board with every drop, so the cap on
+ * entries must sit above the largest board. A card moved to another column
+ * writes an activity entry, goes to every webhook of the board and mails its
+ * assignees, which is the burst worth bounding, and only a bulk move of
+ * selected cards moves more than one. Nothing but the body's size bounded
+ * either: about 11,000 entries, and as many cards moved.
+ */
+export const MAX_REORDER_ENTRIES = 5000;
+export const MAX_CARDS_MOVED_AT_ONCE = 100;
+
+/** A number as the refusals write it: 5,000. */
+const counted = (n: number) => n.toLocaleString('en-GB');
+
+/** The refusal of a reorder that names more than `MAX_REORDER_ENTRIES` cards. It names no card. */
+export function reorderTooLarge(n: number): string {
+	return `A reorder can name at most ${counted(MAX_REORDER_ENTRIES)} cards, and this names ${counted(n)}. Nothing was moved.`;
+}
+
+/** The refusal of a reorder that moves more than `MAX_CARDS_MOVED_AT_ONCE` cards to another column. */
+export function tooManyMoved(n: number): string {
+	return `At most ${counted(MAX_CARDS_MOVED_AT_ONCE)} cards can be moved to another column at once, and this moves ${counted(n)}. Nothing was moved: move them in groups of ${counted(MAX_CARDS_MOVED_AT_ONCE)} or fewer.`;
+}
 
 /** XP for completing a card for the first time, by priority. */
 const XP_BY_PRIORITY: Record<string, number> = { low: 50, medium: 100, high: 150, critical: 200 };
@@ -126,9 +156,9 @@ export interface MoveRequest {
  * and is committed or rolled back with the rest of the request.
  *
  * Throws `CardMoveError` (404) if the card or the column is missing, (409) if
- * the target column is on one of the card's own sub-boards, at any depth, and
- * (409) if the card is being completed while subtasks or sub-boards are still
- * open.
+ * the target column is on one of the card's own sub-boards, at any depth, or
+ * would put them deeper than `MAX_SUB_BOARD_DEPTH`, and (409) if the card is
+ * being completed while subtasks or sub-boards are still open.
  */
 export function applyCardMove(request: MoveRequest): CardMove {
 	return inTransaction(() => moveCard(request));
@@ -150,10 +180,15 @@ function moveCard(request: MoveRequest): CardMove {
 	const crossBoard = fromColumn.boardId !== toColumn.boardId;
 	const position = request.position ?? before.position;
 
-	// First, for a move to another board: onto a board beneath the card, it is
-	// refused whatever else it would do. A move within one board cannot change
-	// the tree, so it is not looked at.
-	if (crossBoard) refuseLoop(before, toColumn.boardId);
+	// First, for a move to another board: onto a board beneath the card, or
+	// where its sub-boards would be nested too deep, it is refused whatever else
+	// it would do. A move within one board cannot change the tree, so it is not
+	// looked at.
+	if (crossBoard) {
+		const hanging = db.select({ id: boards.id }).from(boards).where(eq(boards.parentCardId, before.id)).all();
+		refuseLoop(before, hanging, toColumn.boardId);
+		refuseTooDeep(before, hanging, fromColumn.boardId, toColumn.boardId);
+	}
 
 	// A change of position within a column is not an edit to the card — nothing
 	// about it changed, only its neighbours — so nothing else is touched.
@@ -307,8 +342,9 @@ function moveCard(request: MoveRequest): CardMove {
  *
  * The card's sub-boards go wherever it goes, so they are asked together
  * whether hanging them under a card on the target board would make a loop
- * (`wouldLoopAny`). A card with no sub-board costs one read; one with any,
- * two, however many it has: one walk up from the target, a query that ends
+ * (`wouldLoopAny`). A card with no sub-board costs one read, of its
+ * sub-boards, made once for this and `refuseTooDeep`; one with any, two,
+ * however many it has: one walk up from the target, a query that ends
  * on a loop already elsewhere in the data. A move out of a loop, onto a board
  * outside it, is allowed, and is how one is repaired.
  *
@@ -316,10 +352,25 @@ function moveCard(request: MoveRequest): CardMove {
  * has just been found able to edit. "Hangs beneath it" is true at any depth,
  * where "one of its own sub-boards" was not two levels down.
  */
-function refuseLoop(card: Card, toBoardId: number): void {
-	const hanging = db.select({ id: boards.id }).from(boards).where(eq(boards.parentCardId, card.id)).all();
+function refuseLoop(card: Card, hanging: { id: number }[], toBoardId: number): void {
 	if (wouldLoopAny(hanging.map((board) => board.id), toBoardId)) {
 		throw new CardMoveError(409, `Card "${card.title}" cannot go onto "${boardName(toBoardId)}", which hangs beneath it`);
+	}
+}
+
+/**
+ * Refuse, 409, a move of `card`, which carries the sub-boards `hanging`, from
+ * board `fromBoardId` onto board `toBoardId` when they would then be nested
+ * deeper than sub-boards may be, and deeper than they are now (card 2172). A
+ * card with no sub-board costs nothing more; one with any, two reads, and the
+ * levels it carries are counted only when the target is the deeper board. A
+ * move that lifts a tree already too deep is allowed, and is how it is put
+ * right. The message names the card and the target board, as `refuseLoop`'s.
+ */
+function refuseTooDeep(card: Card, hanging: { id: number }[], fromBoardId: number, toBoardId: number): void {
+	if (hanging.length === 0) return;
+	if (moveTooDeep(card.id, fromBoardId, toBoardId)) {
+		throw new CardMoveError(409, tooDeepToMove(card.title, boardName(toBoardId)));
 	}
 }
 

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.19
+version: 1.21
 status: As-Built
 date: 2026-10-15
 tags:
@@ -766,6 +766,33 @@ the API (`PUT /api/v1/cards/:id/move`). All three call the same three functions 
 `src/lib/server/card-moves.ts`, in the same order and inside one transaction, so a move
 means the same thing however it is made.
 
+The drag is the one that names many cards. The board page's drop sends every card of the
+board that is not archived, in every column, with its column and position, not only the
+cards it moved; a bulk move of selected cards sends those cards. So the reorder is held to
+two caps (card 2209), `MAX_REORDER_ENTRIES = 5000` and `MAX_CARDS_MOVED_AT_ONCE = 100` in
+`card-moves.ts`:
+
+- **At most 5,000 entries**, checked as soon as `updates` is read, before any card is read.
+  It sits above the largest board, because a drop names every card on it.
+  `400` `A reorder can name at most 5,000 cards, and this names 5,001. Nothing was moved.`
+- **Each card once**, checked next, from the entries' ids alone, before any card is read
+  (the review of card 2209). `400` `updates names card 12 more than once`. A card named
+  over and over, to and fro between two columns, was counted against the next cap only for
+  the entries to a column other than the one it was in before the request, and each entry
+  was a real move: 200 entries made 200 moves. The page never names a card twice.
+- **At most 100 of them moving a card to another column**, counted from the column each
+  card is in when the request reads it, and checked once every entry's card and column has
+  been read and the caller found able to edit them, after "A reorder must stay within one
+  board" and the positions, immediately before the first move. Each card moved is an
+  activity entry, a delivery to each of the board's webhooks and mail, where a changed
+  position is one write. `400` `At most 100 cards can be moved to another column at once,
+  and this moves 101. Nothing was moved: move them in groups of 100 or fewer.`
+
+Each refuses the whole request, with nothing written or sent. On the board page only a
+bulk move of more than 100 selected cards meets the second, and the page says so in an
+error toast and keeps the selection; a drop, Move to and the On Hold confirmation each move
+one card.
+
 | Function | What it does | When |
 |----------|--------------|------|
 | `applyCardMove()` | Changes the database and nothing else: the card, the XP, the activity entry | Once for each card moved |
@@ -785,11 +812,19 @@ sequenceDiagram
     R->>R: await the body
     R->>DB: BEGIN IMMEDIATE (inTransaction)
     R->>G: edit access to the card's board AND the target column's board
+    opt a drag, PUT /api/cards/reorder (card 2209)
+        R->>R: at most 5,000 entries and each card once, checked before BEGIN,<br/>and at most 100 cards to another column, else 400
+    end
     loop each card in the request
         R->>M: { cardId, toColumnId, position, actor, source }
         M->>DB: read the card and both columns
         opt to another board, onto one of the card's own sub-boards at any depth
             M->>DB: the card's sub-boards, then one wouldLoopAny() walk up from the target
+            M-->>R: CardMoveError 409
+            R->>DB: ROLLBACK, every move of the request undone
+        end
+        opt to another board, its sub-boards past 20 levels and deeper than now
+            M->>DB: depthOf() both boards, then heightUnderCard() down to the room left
             M-->>R: CardMoveError 409
             R->>DB: ROLLBACK, every move of the request undone
         end
@@ -854,6 +889,15 @@ same board once for each, and a card with thousands of sub-boards moved onto a b
 thousands deep held the server for seconds (card 2141's review). It comes before the
 completion check, so a move that would make a loop is refused whatever else it would do. A
 move within one board cannot change the tree and is not asked.
+
+Then, for the same move to another board, `refuseTooDeep()` asks whether the card's
+sub-boards would be nested deeper than the limit of 20, and deeper than they are now (card
+2172): `409` `Card "<title>" cannot go onto "<board>": its sub-boards would then be nested
+more than 20 levels deep.` It reuses the read of the card's sub-boards, so a card with none
+costs nothing more and is never refused. Otherwise `moveTooDeep()` compares `depthOf()` of
+the two boards, and only when the target is the deeper one counts the levels the card
+carries, with `heightUnderCard()` stopped at the room the target leaves. A move that lifts a
+tree, or leaves it no deeper, is allowed, which is how a tree already too deep is put right.
 
 `PUT /api/cards/:id` can carry other fields beside the move. The move, the update of those
 fields and the `card_updated` entry are one transaction.
@@ -984,6 +1028,34 @@ of about zero.
   one of its own sub-boards (card 2141) and a link of a board under a card on itself or
   beneath it (card 2139) are refused, `409`, by `wouldLoopAny()` and `wouldLoop()` in
   `src/lib/server/sub-boards.ts`.
+  **At most 20 levels deep** (card 2172, `MAX_SUB_BOARD_DEPTH` in the same file). A board
+  under no card is at depth 0, a sub-board of a card on it at 1, and so on; a board whose
+  parent card, or that card's column, is gone is a top, as the breadcrumbs treat it.
+  Archived cards count: the tree is the `parent_card_id` links, archived or not.
+  `depthOf()` walks up and `heightOfBoard()` and `heightUnderCard()` walk down, each one
+  recursive statement that stops one level past the limit (answering 21), so each ends on a
+  loop and on a tree already deeper. A board in a loop, or below one, reads as past the
+  limit. Each way a board gets deeper is held, `409`, with nothing written: a sub-board
+  made under a card on a board already 20 deep (`POST /api/boards`, `POST /api/v1/boards`,
+  after `requireParentCard`): `Sub-boards can be nested at most 20 levels deep, and a board
+  under this card would be deeper.`; a board linked under a card
+  (`PUT /api/boards/{id}` with `parentCardId`, after the loop check) where it or a board
+  beneath it would be deeper than 20 and deeper than now: `Board "<name>" cannot go under
+  this card: it and its sub-boards would then be nested more than 20 levels deep.`; and a
+  card moved to another board, above. Nothing else changes the tree, and a restored backup
+  is not checked. A tree already deeper keeps every board and works as before: nothing new
+  goes below its deep boards, and a move or link that lifts it, or leaves it no deeper, is
+  allowed. A board in or below a loop can have nothing made under it, nor anything linked or
+  moved there with sub-boards, until it is taken out of the loop. The board page's
+  breadcrumbs show at most the nearest 20 boards above, and above them one crumb "…", with
+  no link and the title "More boards above", when there are more: the walk reads at most 61
+  rows however deep the tree for an administrator. For anyone else `canViewBoard()` reads
+  each crumb's board again, then the membership, team and team-access rows it needs, up to
+  four more reads a crumb, so at most 141. Its Link existing board list is empty on a board 20 or more
+  levels deep, where every link would be refused; a board offered that is too tall to fit
+  is refused in the link's own toast. `boardAncestry()`, which All Tasks reads, is not
+  capped: an older or restored deeper tree is walked whole, so its paths and board filter
+  stay right.
   A loop from before them, from the legacy JSON import or from a restored backup is a board
   beneath one of its own cards: it has no top, so it is on no dashboard, and the card it
   hangs from can never be completed. Every walk of the tree ends on one (card 2142): the

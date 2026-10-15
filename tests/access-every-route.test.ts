@@ -105,7 +105,7 @@ import { emit } from '$lib/server/events';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { generateCategoryReport } from '$lib/server/reports';
 import { issueFormToken } from '$lib/server/request-tokens';
-import { linkableBoards } from '$lib/server/sub-boards';
+import { linkableBoards, tooDeepToLink } from '$lib/server/sub-boards';
 import { recentActivityFor } from '$lib/server/list-access';
 import { WITHHELD_BOARD_NAME, WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE } from '$lib/server/planning';
 import { api, routeMethods, routePatterns, serverFilesNotServed, type ApiResult } from './helpers/api';
@@ -2780,7 +2780,7 @@ describe('linking a board under a card, PUT /api/boards/[id] with parentCardId',
 		}
 	});
 
-	it('ends on a loop already in the data: one above the card’s board does not stop a link, and a board in one can be taken out of it', async () => {
+	it('ends on a loop already in the data: one above the card’s board is no loop of the link, and a board in one can be taken out of it', async () => {
 		// L1 hangs under a card on L2, and L2 under a card on L1. P hangs under a card on L1.
 		const L1 = makeBoard({ owner: w.owner, name: 'L1' });
 		const onL1 = makeCard(L1.cols['To Do']);
@@ -2790,10 +2790,15 @@ describe('linking a board under a card, PUT /api/boards/[id] with parentCardId',
 		const P = makeBoard({ owner: w.owner, name: 'P', parentCardId: onL1.id });
 		const onP = makeCard(P.cols['To Do']);
 
-		// The page's list for P is made, walking up through the loop.
-		expect(offered(w.owner, P.board.id)).toEqual(sorted([w.A.board.id, w.alone.id, w.publicBoard.board.id]));
+		// The page's list for P is made, and ends. It offers nothing, and the
+		// link is refused after the loop check has walked up through the loop
+		// and found none of its own: a board below a loop reads as deeper than
+		// sub-boards may nest, so nothing goes under a card on it (card 2172).
+		// Until card 2172 the link was made.
+		expect(offered(w.owner, P.board.id)).toEqual([]);
 		const linked = await put(w.owner, w.A.board.id, { parentCardId: onP.id });
-		expect(linked.status, JSON.stringify(linked.body)).toBe(200);
+		expect(linked.status, JSON.stringify(linked.body)).toBe(409);
+		expect(linked.body).toEqual({ message: tooDeepToLink(w.A.board.name) });
 
 		// L2 is in the loop, and goes under a card on a board outside it.
 		const outside = makeCard(makeBoard({ owner: w.owner, name: 'Outside the loop' }).cols['To Do']);

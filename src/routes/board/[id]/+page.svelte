@@ -149,11 +149,20 @@
 		selectedCards = new Set();
 	}
 
+	/**
+	 * A refusal is said, and the selection kept: a move of more than 100 cards
+	 * to another column at once is refused whole, and nothing moves (card 2209).
+	 */
 	async function handleBulkMove(targetColumnId: number) {
 		const targetCol = boardColumns.find(c => c.id === targetColumnId);
 		if (!targetCol) return;
-		await bulkOps.bulkMove(selectedCards, targetColumnId, targetCol.cards.length, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
-		clearSelection();
+		const started = toasts.navigation();
+		const failure = await bulkOps.bulkMove(selectedCards, targetColumnId, targetCol.cards.length, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
+		if (failure) {
+			toasts.add(failure, 'error', started);
+		} else {
+			clearSelection();
+		}
 		await invalidateAll();
 	}
 
@@ -316,16 +325,26 @@
 				));
 			}
 
-			// Create pending sub-boards for the newly created card
+			// Create pending sub-boards for the newly created card. One refused is
+			// said in the server's words, and the card is kept: on a board nested
+			// as deep as sub-boards may be, every one is refused (card 2172).
 			if (result.cardId && cardData.pendingSubBoards?.length) {
 				for (const sbName of cardData.pendingSubBoards) {
-					const res = await fetch('/api/boards', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ name: sbName, parentCardId: result.cardId })
-					});
+					let res: Response;
+					try {
+						res = await fetch('/api/boards', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ name: sbName, parentCardId: result.cardId })
+						});
+					} catch {
+						toasts.add(`No answer from the server. Sub-board "${sbName}" may not have been made.`, 'error', started);
+						continue;
+					}
 					if (res.ok) {
 						toasts.add(`Sub-board "${sbName}" created`);
+					} else {
+						toasts.add(`Sub-board "${sbName}" was not made. ${await api.failureMessage(res, 'The server refused it.')}`, 'error', started);
 					}
 				}
 			}
@@ -505,10 +524,16 @@
 		contextMenu = { ...contextMenu, show: false };
 	}
 
+	/** A refusal is said in the server's words: on a board nested as deep as sub-boards may be, every one is refused (card 2172). */
 	async function createSubBoard(card: CardType, name?: string) {
 		contextMenu = { ...contextMenu, show: false };
-		const boardId = await cardActions.createSubBoard(card.id, name || card.title);
-		if (boardId) window.location.href = `/board/${boardId}`;
+		const started = toasts.navigation();
+		const made = await cardActions.createSubBoard(card.id, name || card.title);
+		if ('message' in made) {
+			toasts.add(made.message, 'error', started);
+			return;
+		}
+		window.location.href = `/board/${made.id}`;
 	}
 
 	/** Asks first: linking hands the board's deletion to this board's editors. A refusal is said in the server's words. */
@@ -995,11 +1020,11 @@
 					<a href="/" class="breadcrumb-link breadcrumb-home" title="Dashboard">🔥</a>
 					<span class="breadcrumb-sep">›</span>
 					{#each data.breadcrumbs as crumb}
-						<!-- A board above this one that the caller cannot open has no name and no link (card 2130). -->
+						<!-- A board above this one that the caller cannot open has no name and no link (card 2130), nor has the "…" above the nearest 20 (card 2172). -->
 						{#if crumb.href}
 							<a href={crumb.href} class="breadcrumb-link">{crumb.emoji} {crumb.label}</a>
 						{:else}
-							<span class="breadcrumb-link breadcrumb-withheld">{crumb.emoji} {crumb.label}</span>
+							<span class="breadcrumb-link breadcrumb-withheld" title={crumb.title}>{#if crumb.emoji}{crumb.emoji} {/if}{crumb.label}</span>
 						{/if}
 						<span class="breadcrumb-sep">›</span>
 					{/each}

@@ -10,6 +10,11 @@ import * as api from '$lib/api';
 /**
  * Moves all selected cards into a target column.
  * Positions them at the end of the target column.
+ *
+ * @returns Null when they moved; otherwise what to tell the reader: the
+ * server's words, or that there was no answer. The move is all or nothing,
+ * and one of more than 100 cards to another column is refused whole (card
+ * 2209). The answer used to be thrown away, so a refusal went unseen.
  */
 export async function bulkMove(
 	selectedCardIds: Set<number>,
@@ -18,13 +23,19 @@ export async function bulkMove(
 	boardId: number,
 	userName: string,
 	userEmoji: string
-): Promise<void> {
+): Promise<string | null> {
 	const updates: { id: number; columnId: number; position: number }[] = [];
 	let pos = targetColumnCardCount;
 	for (const cardId of selectedCardIds) {
 		updates.push({ id: cardId, columnId: targetColumnId, position: pos++ });
 	}
-	await api.reorderCards(updates, boardId, userName, userEmoji);
+	let res: Response;
+	try {
+		res = await api.reorderCards(updates, boardId, userName, userEmoji);
+	} catch {
+		return 'No answer from the server. The cards may not have been moved.';
+	}
+	return res.ok ? null : await api.failureMessage(res, 'The cards were not moved.');
 }
 
 /**

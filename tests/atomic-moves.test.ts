@@ -362,6 +362,134 @@ describe('PUT /api/cards/reorder', () => {
 			sent.restore();
 		}
 	});
+
+	describe('holds one request to 5,000 cards named and 100 moved to another column (card 2209)', () => {
+		// A drop sends every card of the board, so the first cap sits above the
+		// largest board. A card moved to another column is an entry, a delivery
+		// to every webhook and mail, so the second bounds that burst. Nothing but
+		// the body's size bounded either.
+		let sent: Effects;
+		beforeEach(() => {
+			sent = effects();
+		});
+		afterEach(() => {
+			sent.restore();
+		});
+
+		/** A board with `count` cards in To Do, and ten webhooks. */
+		function crowded(count: number) {
+			const owner = makeUser({ username: 'owner' });
+			const B = makeBoard({ owner, name: 'Crowded' });
+			for (let i = 0; i < 10; i++) makeWebhook(B.board);
+			const all = Array.from({ length: count }, (_, i) => makeCard(B.cols['To Do'], { title: `Card ${i}`, position: i }));
+			return { owner, B, all };
+		}
+		const reorder = (user: SessionUser, updates: object[]) => api('PUT', '/api/cards/reorder', { user, body: { updates } });
+		const moves = (all: Card[], columnId: number) => all.map((card, i) => ({ id: card.id, columnId, position: i }));
+
+		it('refuses more than 5,000 entries before any card is read: 400, nothing moved, nothing sent', async () => {
+			const { owner } = crowded(1);
+			const before = snapshotDb();
+
+			const res = await reorder(owner, Array.from({ length: 5001 }, (_, i) => ({ id: 900000 + i, columnId: 1, position: i })));
+			await sent.settle();
+
+			// It was 404 for its first card, which nothing counted.
+			expect(res.status).toBe(400);
+			expect(res.body).toEqual({ message: 'A reorder can name at most 5,000 cards, and this names 5,001. Nothing was moved.' });
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+
+			// 5,000 pass the cap: the first card is then looked for.
+			const five = await reorder(owner, Array.from({ length: 5000 }, (_, i) => ({ id: 900000 + i, columnId: 1, position: i })));
+			expect(five.status).toBe(404);
+			expect(five.body).toEqual({ message: 'Card 900000 not found' });
+		});
+
+		it('refuses more than 100 cards moved to another column: 400, nothing moved, nothing sent; 100 move, with 1,000 deliveries', async () => {
+			const { owner, B, all } = crowded(101);
+			const before = snapshotDb();
+
+			const res = await reorder(owner, moves(all, B.cols['In Progress'].id));
+			await sent.settle();
+
+			expect(res.status).toBe(400);
+			expect(res.body).toEqual({
+				message: 'At most 100 cards can be moved to another column at once, and this moves 101. Nothing was moved: move them in groups of 100 or fewer.'
+			});
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+
+			const hundred = await reorder(owner, moves(all.slice(0, 100), B.cols['In Progress'].id));
+			await sent.settle();
+
+			expect(hundred.status, JSON.stringify(hundred.body)).toBe(200);
+			expect(actions().filter((action) => action === 'card_moved')).toHaveLength(100);
+			// Each card moved goes to each of the board's ten webhooks.
+			expect(sent.webhooks).toHaveLength(1000);
+		});
+
+		it('lets a drop on a board of 300 cards through: every card named, one moved, one entry', async () => {
+			const { owner, B, all } = crowded(300);
+			// As the board page sends a drop: every card of the board, the dragged
+			// one in its new column and the rest where they are, renumbered.
+			const updates = all.map((card, i) => ({ id: card.id, columnId: i === 0 ? B.cols['In Progress'].id : B.cols['To Do'].id, position: i === 0 ? 0 : i - 1 }));
+
+			const res = await reorder(owner, updates);
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(actions()).toEqual(['card_moved']);
+			expect(cardRow(all[0].id).columnId).toBe(B.cols['In Progress'].id);
+		});
+
+		// One card named over and over, to and fro between two columns, was
+		// counted once for each entry to another column than the one it was in
+		// before the drop, so 200 entries were 100 counted and 200 real moves
+		// (review S5).
+		it('refuses a card named twice, before any card is read: 400, nothing moved, nothing sent', async () => {
+			const { owner, B, all } = crowded(1);
+			const [card] = all;
+			const before = snapshotDb();
+
+			const toAndFro = Array.from({ length: 200 }, (_, i) => ({
+				id: card.id,
+				columnId: i % 2 === 0 ? B.cols['In Progress'].id : B.cols['To Do'].id,
+				position: 0
+			}));
+			const res = await reorder(owner, toAndFro);
+			await sent.settle();
+
+			expect(res.status).toBe(400);
+			expect(res.body).toEqual({ message: `updates names card ${card.id} more than once` });
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+
+			// A card that is not there, named twice, is not looked for: 400, not 404.
+			const missing = await reorder(owner, [
+				{ id: 900000, columnId: B.cols['To Do'].id, position: 0 },
+				{ id: '900000', columnId: B.cols['To Do'].id, position: 1 }
+			]);
+			expect(missing.status).toBe(400);
+			expect(missing.body).toEqual({ message: 'updates names card 900000 more than once' });
+		});
+
+		it('asks who may edit the board first, and reads every entry, before it counts the cards moved', async () => {
+			const { owner, B, all } = crowded(101);
+			const viewer = makeUser({ username: 'viewer' });
+			addBoardMember(B.board, viewer, 'viewer');
+			const before = snapshotDb();
+
+			const looked = await reorder(viewer, moves(all, B.cols['In Progress'].id));
+			expect(looked.status).toBe(403);
+
+			const bad = moves(all, B.cols['In Progress'].id);
+			bad[50] = { ...bad[50], id: 'a card' } as unknown as (typeof bad)[number];
+			const refused = await reorder(owner, bad);
+			expect(refused.status).toBe(400);
+			expect(refused.body).toEqual({ message: 'updates[50].id must be an id' });
+			expectUnchanged(before);
+		});
+	});
 });
 
 describe('PUT /api/v1/cards/:id/move', () => {

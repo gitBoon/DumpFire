@@ -101,6 +101,8 @@ const spec = {
 			'(48) GET /api/v1/burndown answers forecast.spansBoards, true when the cards that pass the filters sit on more than one board, and each breakdown row\'s forecast carries its own; ' +
 			'the forecast\'s dates are then pooled across boards and are not when the work finishes, which delivery dates board by board; every other field and value is as before. ' +
 			'(49) GET /api/v1/milestones/{id}/summary answers progress.totalSubtasks, every subtask of the cards progress.openSubtasks counts, ticked or not, so the open figure has a total to be read against; every other field is as before. ' +
+			'(50) sub-boards nest at most 20 levels below a board that is not a sub-board: POST /api/v1/boards with a parentCardId on a board already 20 levels deep, or in or below a loop, answers 409 "Sub-boards can be nested at most 20 levels deep, and a board under this card would be deeper." and creates nothing, ' +
+			'and PUT /api/v1/cards/{cardId}/move to another board answers 409 `Card "<title>" cannot go onto "<board>": its sub-boards would then be nested more than 20 levels deep.` and moves nothing when the card\'s sub-boards would end up deeper than that and deeper than they are now, where both were accepted at any depth; a tree already deeper keeps working, and a move that leaves it no deeper is allowed. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2164,6 +2166,15 @@ const spec = {
 						description: 'Sub-board only: there is no card with the id given as parentCardId',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Parent card not found' } } }
 					},
+					'409': {
+						description: 'Sub-board only: a board under that card would be more than 20 levels deep. Nothing was created.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { message: 'Sub-boards can be nested at most 20 levels deep, and a board under this card would be deeper.' }
+							}
+						}
+					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
@@ -2913,7 +2924,7 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
 					},
 					'409': {
-						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete, as `Card has 3 incomplete subtasks that must be completed first` (an archived card on a sub-board is not counted), or the target column is on a board beneath the card, one of its own sub-boards at any depth: `Card "<title>" cannot go onto "<board>", which hangs beneath it`. Nothing was moved.',
+						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete, as `Card has 3 incomplete subtasks that must be completed first` (an archived card on a sub-board is not counted), or the target column is on a board beneath the card, one of its own sub-boards at any depth: `Card "<title>" cannot go onto "<board>", which hangs beneath it`, or onto a board where its sub-boards would be more than 20 levels deep: `Card "<title>" cannot go onto "<board>": its sub-boards would then be nested more than 20 levels deep.` Nothing was moved.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },

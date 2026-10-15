@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.13
+version: 1.15
 status: As-Built
 date: 2026-10-15
 tags:
@@ -239,6 +239,14 @@ flowchart LR
 App URL with a quote in it, and fails if any recorded mail holds either as it was written.
 It also fails if `notifications.ts` exports a mail it has no case for.
 
+**Escaping keeps markup out, and not text.** A board named "Your account is locked: call
+0800 123 456" is mailed as exactly those words, in the report's subject and in its body, and
+a plain address or web address in a name may still be shown as a link by the reader's mail
+client. Nothing in a mail can tell a reader that the words of a name are not DumpFire's own.
+What bounds that is who a report can be mailed to, how many at once and in a day, and that
+every report mail names the account behind it (card 2182): see
+[Who a Report Can Be Mailed To](#who-a-report-can-be-mailed-to).
+
 ### User Notification Preferences
 
 Stored as JSON in `users.notification_prefs`. Each user can toggle individual notification types, on My Account under **Email Notifications**.
@@ -325,15 +333,22 @@ sent (card 2113). It used to answer `200` "Report sent to N recipient(s)", with 
 recipient's `success` true, whatever the mail server answered and with no mail set up at
 all, and the dialog closed. The recipients are each an address, read with the other fields
 before the report is made: one that is not is `400` `recipients[<n>] must be an email
-address`, naming its place in the list, and nothing is sent (card 2117).
+address`, naming its place in the list, and nothing is sent (card 2117). Since card 2182
+they are also read as the mailer reads them, at most 10 distinct addresses a call and 100 a
+day from one account, each address sent one mail once: see
+[Who a Report Can Be Mailed To](#who-a-report-can-be-mailed-to).
 
 ```mermaid
 flowchart TD
     Post["POST /api/reports/email"] --> Fields["Fields and recipients read.<br/>A recipient that is no address: 400"]
-    Fields --> Data["Report data, the caller checked:<br/>403 if they cannot read it"]
+    Fields --> Cap{"More than 10 distinct<br/>addresses? (card 2182)"}
+    Cap -->|"yes"| R400["400: at most 10 at a time.<br/>Nothing looked at, nothing counted"]
+    Cap -->|"no"| Data["Report data, the caller checked:<br/>403 if they cannot read it"]
     Data --> Smtp{"Mail set up?<br/>isSmtpConfigured()"}
     Smtp -->|"no"| R503["503: Mail is not set up on this server,<br/>so the report was not sent.<br/>No PDF built, nothing sent"]
-    Smtp -->|"yes"| Pdf["The PDF built once"]
+    Smtp -->|"yes"| Allow{"The day's 100 addresses:<br/>do these fit? (card 2182)"}
+    Allow -->|"no"| R429["429: nothing taken,<br/>no PDF built, nothing sent"]
+    Allow -->|"yes, taken"| Pdf["The PDF built once"]
     Pdf --> Each["sendEmailWithAttachment() to each recipient:<br/>its true or false is that recipient's success"]
     Each --> Count{"How many sent?"}
     Count -->|"all"| R200["200: Report sent to N recipient(s)"]
@@ -356,7 +371,9 @@ flowchart TD
   is whether the mail server took the mail for that address, so a mail server that refuses
   an unknown mailbox as the mail is sent tells the sender which of the addresses they typed
   exist there. That is accepted as designed: the sender needs it to send to the rest again.
-  Card 2182 is to cap how many recipients one report may be sent to. See
+  Since card 2182 a call names at most 10 addresses, and one account at most 100 in a
+  24-hour window counted from its first (so up to 200 across one window's end and the next's
+  start), and that is all one account can learn so in a day. See
   [Authentication & Security](authentication-security.md#what-an-emailed-reports-answer-tells).
 - **A report that reached some recipients is `200`, not a failure status**, so that nothing
   in between offers to send it again: the ones who had it would get it twice. The Reports
@@ -365,6 +382,195 @@ flowchart TD
   a `502` is shown in the dialog with the box as it was.
 - **Each answer is written with its own status**, as `tests/error-shape.test.ts` requires
   of a failure answered with `json()`.
+
+### Who a Report Can Be Mailed To
+
+A report goes from the company's own sender, which mail providers trust, and its subject
+and body carry names as somebody typed them. Until card 2182 a report emailed by hand went
+to as many addresses as one request named (300 outside addresses, twice over, were sent in
+the plan's probe), a schedule held as many as it was given (2,000), and an account could
+make any number of schedules. A mass send also spends the sender's daily quota at the mail
+provider, which once spent stops every other DumpFire mail until it resets.
+
+**Any address may still be a recipient**, an account's or not, and every report mail names
+the account behind it: the one emailed by hand says "Sent by `<username>` via DumpFire",
+and a scheduled one now says "Set up by `<username>`" above "— DumpFire Automated Reports",
+the username escaped as every text in a mail is. The gate's line for each request names the
+account on the Audit page too. What is bounded is how many.
+
+| Limit | Where | Refused |
+|-------|-------|---------|
+| 10 distinct addresses a call | `POST /api/reports/email`, before the board or the caller's access is looked at, administrators included | `400` `A report can be emailed to at most 10 addresses at a time, and this names 12. Nothing was sent.` |
+| 10 addresses a schedule | `POST /api/report-schedules`; `PUT /api/report-schedules/{id}` when it sends a changed list | `400` `A schedule can be sent to at most 10 addresses, and this names 12. The schedule was not saved.` (`The schedule was not changed.` for the `PUT`) |
+| 20 schedules an account | `POST /api/report-schedules`, counting the caller's own | `409` `You have 20 report schedules, the most one account may have. Delete one first.` An account that already has more keeps them all, and is told `You have 25 report schedules, and the most one account may have is 20. Delete 6 first.` |
+| 100 addresses a day an account | The report emailed by hand; every schedule made, turned on or re-timed; and the addresses a changed list adds | `429` `Reports can be emailed to at most 100 addresses a day from one account, and this would make 104. Try again in 5 hour(s).`; for a schedule, `Report mail can reach at most 100 addresses a day from one account, and this schedule's 10 would make 104. The schedule was not saved. Try again in 5 hour(s).` (`was not changed.` for the `PUT`, and `this schedule's 4 new addresses would make 104` when a changed list is what does not fit) |
+
+Each refusal is whole: nothing is sent, saved or counted. The wait is in hours, rounded up,
+for an hour or more, and in minutes under an hour.
+
+#### One reading of a list
+
+`reportRecipients(input)` in `src/lib/report-recipients.ts` reads a list of recipients, as
+the email route takes one (a list of texts) or as a schedule keeps one (one text). It
+imports nothing from the server, so the Reports page uses it too. The email route, both
+schedule routes, the scheduler and the page all read a list through it, so the number the
+server holds a list to is the number the page shows and the number of mails sent.
+
+- **Each text is split on commas, semicolons and white space** (spaces, tabs, new lines);
+  each part is trimmed and lower-cased, and empty parts and repeats are dropped.
+- **A part written `<address>` is the address inside.** So `Alice Smith <alice@x.test>` is
+  the address `alice@x.test` and two parts that are not addresses, `alice` and `smith`.
+- **An address** has one `@` with a dot after it, at most 254 characters, no white space,
+  none of `< > ( ) [ ] \ , ; : "`, and no control or format character (Unicode's `\p{C}`:
+  a right-to-left override, U+202E, turns the text after it round on the page, so the
+  address shown would not be the one mailed). It answers `{ addresses, notAddresses }`, each in
+  the order first written. `MAX_REPORT_RECIPIENTS = 10` is beside it.
+
+Why those separators and that rule: the mailer (nodemailer's address parser) reads
+`a@x.test;b@x.test` as two addresses in one mail, each in view of the other; an address on
+one line with another on the next as one address, the second being its display name, which
+is never mailed; and parts the old pattern took, such as `a@b.c<x>` and `abc<def>@x.com`, as
+mail to `x` and to `def`. Each address is now handed to the mailer on its own, and is
+exactly one recipient, the one the page shows. So a schedule typed with semicolons sends one
+mail to each address where it sent one mail to all of them; one typed an address to a line
+reaches every address where it reached only the first; and an address written twice, in
+any case, is mailed once.
+
+What each reader does with a part that is not an address:
+
+- **The email route** refuses it in card 2117's words, `recipients[<n>] must be an email
+  address`, naming its place in the list. An entry the mailer would send to someone else, or
+  with no dot after its `@`, is refused so too, where card 2117's own rule took it. The
+  answer's `results` carry each address lower-cased.
+- **The schedule routes** refuse it, `400`, with nothing saved:
+  `recipients holds "smith", which is not an email address`, or several,
+  `recipients holds "alice", "smith", which are not email addresses`, up to five named, each
+  cut to 100 characters, then `and 3 more`. A list is stored as the addresses it will be
+  sent to, lower-cased, each once, separated by `, ` (`readReportRecipients` in
+  `src/lib/server/request-body.ts`), at most 2,000 characters. A `PUT` that sends the stored
+  list back as it is keeps it unchecked, so a page that sends the whole row back can still
+  rename or switch off a schedule kept with more than 10, whether it is on or off: `enabled:
+  true` is refused only when it would turn such a schedule on.
+- **The scheduler** sends to the addresses and never to the other parts, and names the
+  parts it left out at the end of the run's line: `Left out, as not email addresses:
+  "alice", "smith".` A schedule stored as `Alice Smith <alice@x.test>` before the rule still
+  reaches Alice, and is not switched off for the rest.
+- **The Reports page's email dialog** says it, and sends nothing:
+  `"x" is not an email address. Nothing was sent.` (`"x", "y" are not email addresses.` for
+  several). Its hint reads "Up to 10 addresses, separated by commas", and the schedule
+  form's "Up to 10 addresses, separated by commas. The report is emailed to each." The
+  schedule list counts each schedule's addresses through `reportRecipients`, where it
+  counted commas and showed one recipient for a list typed with semicolons.
+
+#### The day's 100
+
+`takeReportMail(user, n, spend)` in `src/lib/server/reports.ts` takes `n` addresses from the
+account's allowance, `REPORT_MAILS_PER_DAY = 100`, through `takeAllowance` in
+`src/lib/server/rate-limit.ts`, keyed `report-mail:<userId>`. It counts addresses, not
+calls: one call of ten addresses is ten. The day is a fixed 24 hours from the account's first
+take, and a take that would pass 100 is refused whole and takes nothing. So "100 a day" is
+100 in a window counted from the first take, not a calendar day: an account that spends its
+100 at the end of one window and another 100 at the start of the next has reached 200
+addresses within minutes.
+
+- **The report emailed by hand** takes its addresses after the body, the cap, the caller's
+  access and the `503` for a server with no mail set up, and before the PDF is built. A call
+  refused for any of those spends nothing. What it takes is not given back when the mail
+  server refuses a send: the attempt was made.
+- **A schedule pays when it is made, turned on or re-timed**, because each of those can bring
+  a send forward. A schedule made for the next minute is sent at the scheduler's next tick,
+  and deleting it makes room for another: by the plan's probe, one account mailed 10, 20,
+  then 30 outside addresses in six minutes of clock that way, and with 20 schedules it would
+  have been 200 a minute. So `POST /api/report-schedules` takes the new schedule's
+  addresses, and `PUT /api/report-schedules/{id}` takes the schedule's addresses as they will
+  be after the change when it turns the schedule on (`enabled: true` on one that is off) or
+  sends a `frequency`, `dayOfWeek`, `dayOfMonth` or `timeOfDay` other than the one stored.
+- **A changed list pays for the addresses it adds.** When a `PUT` does neither of those and
+  sends a list that reads differently from the stored one, it takes the addresses of the
+  new list that are not in the stored list: a schedule of one address given ten takes nine.
+  A schedule made with no addresses costs nothing, so until the review of card 2182 one made
+  empty, given ten by a change, sent and deleted, over and over, mailed 120 to 150 addresses
+  a day with no `429`. The stored list sent back in another order or case, or cut down,
+  takes nothing, nor does a change of name or filter, or turning it off. The take is the
+  last check, immediately before the write in the same transaction, with nothing awaited
+  between them, so two requests cannot both fit in the last of the allowance. Nothing is
+  given back when a schedule is deleted, or when a list is cut down.
+- **A scheduled run takes nothing.** It would otherwise be dropped, with nobody told, on a
+  day its owner had also mailed by hand.
+- **The first refusal in each window is one `WARN` line** under `REPORTS`:
+  `Account "<username>" (user N) reached its limit of 100 report mail addresses a day:
+  report mail, and schedules made, turned on, re-timed or given new addresses, are refused
+  until the day is up`, with the account as the line's user, so the Audit page finds it by
+  user, and `{ used, asked, retryAfterSecs }` as its detail. The refusals after it in the
+  same window are not logged; the gate writes its own line for every `429`.
+- **In memory**, as every count in `rate-limit.ts` is: a restart starts the day again.
+
+So an account's scheduled mail is at most its 20 schedules of 10 addresses each, on their
+own timetables; and the mail it sends by hand, together with the schedules it makes, turns
+on, re-times or gives new addresses, reaches at most 100 addresses in a window. Someone who makes five schedules of ten
+and then emails reports by hand has 50 left that day.
+
+#### A schedule kept from before with more than 10
+
+A schedule made before the cap can hold more than 10 addresses. At its next due run the
+scheduler reads its list, and over 10 it switches the schedule off and sends nothing, before
+the report is built. The write is conditional (`enabled = 0 … WHERE id = ? AND enabled = 1`),
+and only the run that changed the row writes the one `ERROR` line under `REPORTS`, naming
+the schedule's owner, who is also the line's user, so the Audit page finds it by user:
+
+```
+Report schedule 12 "Weekly sales", owner "pat" (user 7), was switched off: it is sent to 15 addresses, and the most is 10. Nothing was sent. Its owner can delete it and make it again with at most 10.
+```
+
+- **The Reports page says why.** In place of the count, the schedule reads
+  "15 recipients: the most is 10, so it is not sent", with its addresses beneath as text
+  that can be selected and copied, and "Copy the ones to keep into a new schedule of at most
+  10, then delete this one." The page has no way to edit a schedule's list, so this is where
+  its owner finds the addresses before deleting it.
+- **It cannot be turned on as it is.** A `PUT` with `enabled: true` on such a schedule
+  that is off is `400`
+  `This schedule cannot be turned on: it is sent to 15 addresses, and the most is 10. Delete it and make it again with at most 10.`,
+  and nothing changes. `enabled: true` on one still on, as a page sends the row back with
+  a new name, is not a turning on and is accepted. A `PUT` that sends a list of 10 or fewer
+  and `enabled: true` together is accepted, and when that turns the schedule on it takes the
+  new list's addresses from the day's 100. Turned back on, it keeps the run time it had,
+  which is past, so it is sent at the scheduler's next tick.
+- **Before the deploy**, the query in
+  [The Update That Brings the Limits on Report Mail](deployment.md#the-update-that-brings-the-limits-on-report-mail)
+  lists each schedule's addresses as this rule counts them: any above 10 is switched off at
+  its next run unless it is remade first. Remade after the deploy, each new schedule takes
+  its addresses from the day's 100.
+
+```mermaid
+flowchart TD
+    Due["A due, enabled schedule"] --> Read["reportRecipients(recipients)"]
+    Read --> Over{"More than 10 addresses?"}
+    Over -->|"yes"| Off["enabled = 0 where it is still 1.<br/>Changed the row: one ERROR line.<br/>Nothing built, nothing sent"]
+    Over -->|"no"| Build["Build the report as its owner"]
+    Build --> Send["One mail to each address,<br/>Set up by the owner's username"]
+    Send --> Line["The run's line, naming any<br/>parts left out as not addresses"]
+```
+
+```mermaid
+flowchart TD
+    Write["POST or PUT /api/report-schedules"] --> Fields["Fields read: recipients by<br/>readReportRecipients"]
+    Fields -->|"a part that is not an address"| NotAddr["400, naming up to five"]
+    Fields --> Cap{"More than 10 addresses<br/>in a new or changed list?"}
+    Cap -->|"yes"| Cap400["400, nothing saved"]
+    Cap -->|"no"| On{"PUT turning on a schedule<br/>that is off, with a list over 10?"}
+    On -->|"yes"| On400["400 cannot be turned on"]
+    On -->|"no"| Count{"POST: 20 schedules already?"}
+    Count -->|"yes"| Full["409, nothing saved"]
+    Count -->|"no"| Pays{"Made, turned on,<br/>or re-timed?"}
+    Pays -->|"yes"| Take{"takeReportMail:<br/>do all its addresses fit in the day's 100?"}
+    Pays -->|"no"| Added{"PUT: a changed list with<br/>addresses not in the stored one?"}
+    Added -->|"no"| Save["Saved"]
+    Added -->|"yes"| TakeNew{"takeReportMail:<br/>do the added addresses fit?"}
+    Take -->|"no"| R429["429, nothing saved"]
+    TakeNew -->|"no"| R429
+    Take -->|"yes, taken"| Save
+    TakeNew -->|"yes, taken"| Save
+```
 
 ## Real-Time Updates via SSE
 
@@ -500,7 +706,7 @@ sequenceDiagram
     W-->>S: 200 OK
 ```
 
-A webhook is dispatched by the activity entry for the action, once that entry is committed. The delivery is not awaited and not retried. One that cannot be made, or gets no answer within 10 seconds, is logged at `ERROR`. The receiver's status code is not read, so an answer of 500 from a receiver is not logged as a failure.
+A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column is one entry, so at most one delivery to each of the board's webhooks: a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no answer within 10 seconds, is logged at `ERROR`. The receiver's status code is not read, so an answer of 500 from a receiver is not logged as a failure.
 
 ### Events and Payload
 
@@ -546,6 +752,8 @@ What is not sent:
 | `src/lib/server/notifications.ts` | All email notification functions with preference filtering |
 | `src/lib/notification-prefs.ts` | The one list of mail preferences: `MASTER_PREF`, `NOTIFICATION_PREFS`, `defaultPrefs()`. Read by the account page, the preferences route and the mail alike (card 2146) |
 | `src/lib/escape-html.ts` | `escapeHtml()`: the one function every mail puts its texts and links through |
+| `src/lib/report-recipients.ts` | `reportRecipients()` and `MAX_REPORT_RECIPIENTS`: the one reading of who a mailed report goes to, used by the email route, the schedule routes, the scheduler and the Reports page (card 2182) |
+| `src/lib/server/reports.ts` | `takeReportMail()` and `REPORT_MAILS_PER_DAY`: the day's 100 addresses an account's report mail may reach; the scheduler, which switches off a schedule kept with more than 10 |
 | `src/lib/server/events.ts` | SSE event emitter with board and global subscriptions |
 | `src/lib/board/sse.ts`, `src/routes/board/[id]/+layout.svelte` | The board page's stream, opened as the page mounts and closed as it goes; the layout makes the page afresh for each board, so the stream follows the board shown (card 2184) |
 | `src/lib/server/webhooks.ts` | Webhook dispatch on board events |

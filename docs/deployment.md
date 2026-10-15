@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.19
+version: 1.21
 status: As-Built
 date: 2026-10-15
 tags:
@@ -953,6 +953,88 @@ For as long as the previous image runs, it behaves as it did before:
 
 What changes for the people who use the installation is in the [Admin Guide](admin-guide.md#danger-zone) and, for API callers, in the [API Reference](api-reference.md#writes-and-failures).
 
+### The Update That Brings the Limits on Report Mail
+
+The release that limits who a mailed report reaches, slows sign-ins after wrong passwords and bounds how deep sub-boards nest and how many cards one drag and drop moves (cards 2182, 2177, 2172 and 2209) brings no migration file and no change to the schema. One thing in it acts on what is already stored: a report schedule that holds more than 10 addresses is switched off at its next due run, sends nothing, and writes one `ERROR` line under `REPORTS` naming it and its owner (see [Who a Report Can Be Mailed To](notifications-email.md#a-schedule-kept-from-before-with-more-than-10)). So, before the update, find any such schedule.
+
+**Before the update**, list each schedule's addresses, read as the scheduler will read them. The image has no `sqlite3` command, so copy the database out into a folder only you can read and run the query read-only on the host. A missing `-wal` file is expected. Copied while the server runs, the copy can be a moment behind; that is enough for this list.
+
+```bash
+mkdir -m 700 "$HOME/dumpfire-schedules"
+docker cp "<container>:/app/data/dumpfire.db" "$HOME/dumpfire-schedules/"
+docker cp "<container>:/app/data/dumpfire.db-wal" "$HOME/dumpfire-schedules/" || echo "No -wal file: expected"
+sqlite3 -readonly -header -column "$HOME/dumpfire-schedules/dumpfire.db" < schedules.sql
+```
+
+with `schedules.sql` holding:
+
+```sql
+WITH RECURSIVE parts(id, rest, part) AS (
+  SELECT id, replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(recipients, ';', ','), char(9), ','), char(10), ','), char(11), ','), char(12), ','), char(13), ','), char(32), ','), char(160), ','), char(5760), ','), char(8192), ','), char(8193), ','), char(8194), ','), char(8195), ','), char(8196), ','), char(8197), ','), char(8198), ','), char(8199), ','), char(8200), ','), char(8201), ','), char(8202), ','), char(8232), ','), char(8233), ','), char(8239), ','), char(8287), ','), char(12288), ','), char(65279), ',') || ',', NULL
+    FROM report_schedules
+  UNION ALL
+  SELECT id, substr(rest, instr(rest, ',') + 1), lower(trim(trim(substr(rest, 1, instr(rest, ',') - 1)), '<>'))
+    FROM parts WHERE rest <> ''
+),
+addresses(id, part) AS (
+  SELECT id, part FROM parts
+   WHERE part LIKE '_%@_%._%' AND part NOT LIKE '%@%@%'
+     AND part NOT GLOB '*[<>()",:\[]*' AND part NOT GLOB '*]*'
+)
+SELECT s.id, s.user_id, s.name, s.enabled,
+       COUNT(DISTINCT a.part) AS addresses,
+       COUNT(DISTINCT CASE WHEN a.part NOT IN (SELECT lower(email) FROM users) THEN a.part END) AS not_an_account,
+       s.recipients
+  FROM report_schedules s LEFT JOIN addresses a ON a.id = s.id
+ GROUP BY s.id ORDER BY addresses DESC;
+```
+
+The rows come largest first. `addresses` is how many the scheduler will send to, `not_an_account` how many of those are no account's email, and `recipients` the schedule's text as stored, so the addresses can be read off it. A word of a display name (`Alice Smith <alice@x.test>`) is not counted, as the scheduler does not send to it. Every character the scheduler reads as a separator is a separator here too (semicolons, commas and every kind of white space, the non-breaking space pasted from a mail program included). The query may count a part holding an invisible control or format character as an address where the scheduler does not, so it can list a schedule as larger than it is, never smaller.
+
+What to do with each row whose `addresses` is above 10:
+
+- **To keep it sending**, its owner deletes it and makes it again as schedules of 10 or fewer, **before the update**. Before it nothing counts what they cost.
+- **After the update the same costs addresses.** One account may reach at most 100 addresses with report mail in a 24-hour window counted from its first, and making a schedule takes its addresses from that, so an owner who splits a schedule of 30 into three of 10 afterwards spends 30 of the day's 100 on it, and one of 150 cannot be split in a day.
+- **Left as it is**, it is switched off at its next run and its owner finds its addresses on the Reports page, with "Copy the ones to keep into a new schedule of at most 10, then delete this one."
+- **Turning a schedule on costs its addresses too**, from the day's 100, and one turned back on keeps the run time it had: if that time passed while it was off (as it has for a schedule this release switched off), it is sent at the scheduler's next tick, within the minute.
+
+```mermaid
+flowchart TD
+    Query["Query, read-only, on a copy"] --> Row{"Any schedule with<br/>more than 10 addresses?"}
+    Row -->|"no"| Deploy["Deploy: nothing is switched off"]
+    Row -->|"yes"| Keep{"Is it to keep sending?"}
+    Keep -->|"yes"| Remake["Owner remakes it as schedules<br/>of 10 or fewer, before the deploy:<br/>no addresses taken"]
+    Keep -->|"no"| Leave["Left: switched off at its next run,<br/>one ERROR line naming its owner,<br/>its addresses on the Reports page"]
+    Remake --> Deploy
+    Leave --> Deploy
+```
+
+**Also before the update**, on the same copy, check that the two limits on a drag and drop are out of reach of real use. A drop on the board page sends the position of every open card on the board, and a request naming more than 5,000 is refused; a request that moves more than 100 cards to another column is refused (`MAX_REORDER_ENTRIES` and `MAX_CARDS_MOVED_AT_ONCE` in `src/lib/server/card-moves.ts`). Run each query as the one above:
+
+```sql
+-- The ten boards with the most open cards, and each one's largest column.
+SELECT b.id, b.name, COUNT(c.id) AS open_cards, MAX(per_col.n) AS largest_column
+  FROM boards b
+  JOIN columns col ON col.board_id = b.id
+  LEFT JOIN cards c ON c.column_id = col.id AND c.archived_at IS NULL
+  LEFT JOIN (SELECT column_id, COUNT(*) AS n FROM cards WHERE archived_at IS NULL GROUP BY column_id) per_col
+    ON per_col.column_id = col.id
+ GROUP BY b.id ORDER BY open_cards DESC LIMIT 10;
+
+-- The most cards one person moved to another column on one board within one second
+-- (a bulk move writes its entries in the same second).
+SELECT user_id, board_id, substr(created_at, 1, 19) AS second, COUNT(*) AS moved
+  FROM activity_log WHERE action IN ('card_moved', 'card_completed', 'card_reopened')
+ GROUP BY user_id, board_id, second ORDER BY moved DESC LIMIT 5;
+
+-- The newest card's id and how many cards there are: no board can hold more.
+SELECT MAX(id) AS newest_card_id, COUNT(*) AS cards, SUM(archived_at IS NULL) AS not_archived FROM cards;
+```
+
+If the first query's largest `open_cards` is above 2,500, raise `MAX_REORDER_ENTRIES` before building the image; if the second query's top `moved` is above 50, raise `MAX_CARDS_MOVED_AT_ONCE`. Otherwise both limits are far above what the installation does.
+
+**After the update**, nothing needs doing to the database. Going back to the previous image needs nothing either: no table changed, and the previous image sends a schedule this release switched off only once someone turns it on.
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -1037,7 +1119,7 @@ Leave `proxy_request_buffering` as it is, which is on. nginx then reads the whol
 
 Behind the proxy, every request reaches DumpFire from the proxy, so unless it is told otherwise the server takes the proxy's address for every caller's. Two things are counted by address, and each then has one count for the whole installation:
 
-- **Sign-in.** After ten attempts to sign in from one address without one that succeeds, further attempts from it are refused for the rest of 15 minutes. Behind an untold proxy, ten failed attempts by anyone refuse everybody's.
+- **Sign-in.** After ten attempts to sign in from one address without one that succeeds, further attempts from it are refused for the rest of 15 minutes. Behind an untold proxy, ten failed attempts by anyone refuse everybody's. The waits after five wrong passwords at one account (card 2177) are counted by account, not by address, so they work whatever address the server reads: behind an untold proxy they still slow a guesser at one account, and they never refuse anybody. What the proxy changes is the per-address count, which is then one count for everyone. See [Guessing a Password at Sign-in](authentication-security.md#guessing-a-password-at-sign-in).
 - **The documented API without a key.** A request to `/api/v1/` with no key DumpFire accepts, a missing header included, is counted against its address, 60 a minute (see [API Rate Limiting](#api-rate-limiting)). Behind an untold proxy, a key that is mistyped may be answered `429` while somebody else is guessing. A valid key is never held up by it: its requests are counted against the key.
 
 The system log's `ip` column is the proxy's as well. Tell the server where the proxy writes the caller's address, with the header the nginx block above sets:

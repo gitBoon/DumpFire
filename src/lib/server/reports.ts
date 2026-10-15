@@ -20,7 +20,9 @@ import { escapeHtml } from '$lib/escape-html';
 import { isSmtpConfigured, sendEmailWithAttachment } from './email';
 import type { SessionUser } from './auth';
 import { createLogger } from './logger';
+import { takeAllowance } from './rate-limit';
 import { readId, readQueryDate, readText, type RequestBody } from './request-body';
+import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 
 const log = createLogger('REPORTS');
 
@@ -1421,6 +1423,68 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 	});
 }
 
+// ─── Who Report Mail May Reach (card 2182) ──────────────────────────────────
+
+/**
+ * The most addresses one account's report mail may reach in a day: the
+ * reports it emails by hand, and the schedules it makes, turns on or re-times.
+ */
+export const REPORT_MAILS_PER_DAY = 100;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** What a request that would spend report mail is: the refusal's words follow it. */
+export type ReportMailSpend = 'email' | 'new schedule' | 'changed schedule' | 'new recipients';
+
+/**
+ * Take `n` addresses from `user`'s report mail for the day, or refuse the
+ * request whole with a 429 that takes nothing. A day is a fixed window from
+ * the account's first take, in memory: a restart starts it again.
+ *
+ * A scheduled run takes nothing: it would be dropped with nobody told on a
+ * day its owner had also mailed by hand. A schedule pays when it is made,
+ * turned on or re-timed instead (the plan's R1), since each of those can
+ * bring a send forward: a schedule made for the next minute, run, deleted and
+ * made again would otherwise mail without bound. A change of its list pays
+ * for the addresses it adds (`'new recipients'`, the review's B1), or a
+ * schedule made with none and given ten would do the same. Called after every other
+ * check of the request and, for a schedule, immediately before the write in
+ * the same transaction, with nothing awaited between, so two requests cannot
+ * both fit in the last of the allowance. Nothing is given back when a mail
+ * server refuses a send, or a schedule is deleted.
+ *
+ * The first refusal in each window is one WARN line naming the account.
+ */
+export function takeReportMail(user: Pick<SessionUser, 'id' | 'username'>, n: number, spend: ReportMailSpend): void {
+	const took = takeAllowance(`report-mail:${user.id}`, n, REPORT_MAILS_PER_DAY, DAY_MS);
+	if (took.taken) return;
+	if (took.firstRefusal) {
+		// The account as the line's user, so the Audit page finds it by user.
+		log.warn(
+			`Account "${user.username}" (user ${user.id}) reached its limit of ${REPORT_MAILS_PER_DAY} report mail addresses a day: ` +
+				'report mail, and schedules made, turned on, re-timed or given new addresses, are refused until the day is up',
+			{ used: took.used, asked: n, retryAfterSecs: took.retryAfterSecs },
+			{ userId: user.id }
+		);
+	}
+	const wouldMake = (took.used + n).toLocaleString('en-GB');
+	const retry = took.retryAfterSecs >= 3600
+		? `${Math.ceil(took.retryAfterSecs / 3600)} hour(s)`
+		: `${Math.max(1, Math.ceil(took.retryAfterSecs / 60))} minute(s)`;
+	if (spend === 'email') {
+		throw error(429, `Reports can be emailed to at most ${REPORT_MAILS_PER_DAY} addresses a day from one account, and this would make ${wouldMake}. Try again in ${retry}.`);
+	}
+	throw error(
+		429,
+		`Report mail can reach at most ${REPORT_MAILS_PER_DAY} addresses a day from one account, and this schedule's ${n}${spend === 'new recipients' ? ' new addresses' : ''} would make ${wouldMake}. ` +
+			`The schedule was not ${spend === 'new schedule' ? 'saved' : 'changed'}. Try again in ${retry}.`
+	);
+}
+
+/** Why a schedule whose list is over the cap cannot be turned on, or was switched off (decision 6). */
+export function overCapScheduleWords(count: number): string {
+	return `it is sent to ${count} addresses, and the most is ${MAX_REPORT_RECIPIENTS}`;
+}
+
 // ─── Report Scheduler ────────────────────────────────────────────────────────
 
 let reportTimer: ReturnType<typeof setInterval> | null = null;
@@ -1480,6 +1544,37 @@ export async function runDueReportSchedules(now: Date): Promise<void> {
 		if (schedule.nextRunAt && schedule.nextRunAt > nowStr) continue;
 
 		try {
+			// Read as every route and the page read it (card 2182). A schedule
+			// over the cap, made before there was one, is switched off before
+			// its report is built, and sends nothing. The write is conditional,
+			// so that of two runs that meet it only the one that switched it
+			// off says so.
+			const { addresses: recipients, notAddresses } = reportRecipients(schedule.recipients);
+			if (recipients.length > MAX_REPORT_RECIPIENTS) {
+				const switched = db.update(reportSchedules)
+					.set({ enabled: false, updatedAt: nowStr })
+					.where(and(eq(reportSchedules.id, schedule.id), eq(reportSchedules.enabled, true)))
+					.run();
+				if (switched.changes === 1) {
+					// Naming its owner, who is the line's user, so the Audit page
+					// finds it by user and an administrator knows whom to tell.
+					const ownedBy = db.select({ username: users.username }).from(users).where(eq(users.id, schedule.userId)).get();
+					const owner = ownedBy ? `owner "${ownedBy.username}" (user ${schedule.userId})` : `owner user ${schedule.userId}`;
+					log.error(
+						`Report schedule ${schedule.id} "${schedule.name}", ${owner}, was switched off: ${overCapScheduleWords(recipients.length)}. ` +
+							`Nothing was sent. Its owner can delete it and make it again with at most ${MAX_REPORT_RECIPIENTS}.`,
+						undefined,
+						{ userId: schedule.userId }
+					);
+				}
+				continue;
+			}
+			// A part that is not an address is never sent to, and is named in
+			// the run's line; the schedule still reaches the addresses it holds.
+			const leftOut = notAddresses.length === 0
+				? ''
+				: ` Left out, as not email addresses: ${notAddresses.map((part) => `"${part}"`).join(', ')}.`;
+
 			const owner = db.select().from(users).where(eq(users.id, schedule.userId)).get();
 			if (!owner) continue;
 
@@ -1510,19 +1605,17 @@ export async function runDueReportSchedules(now: Date): Promise<void> {
 				const reportName = `${schedule.name} - ${schedule.frequency === 'weekly' ? 'Weekly' : 'Monthly'} Report`;
 				const periodLabel = `${formatDate(start)} - ${formatDate(end)}`;
 
-				const recipients = (schedule.recipients || '')
-					.split(',')
-					.map(e => e.trim())
-					.filter(e => e.length > 0);
-
 				if (recipients.length > 0) {
 					const notReached: string[] = [];
 					for (const email of recipients) {
 						let sent = false;
 						try {
-							// The schedule's name is its owner's typing, mailed to the
-							// addresses they listed: escaped where it is put (card
-							// 2149). The subject is plain text and keeps it as typed.
+							// The schedule's name and its owner's username are typing,
+							// mailed to the addresses they listed: escaped where they
+							// are put (card 2149). The subject is plain text and keeps
+							// the name as typed. The mail names the account behind
+							// it, as the one sent by hand does (card 2182): any
+							// address may be a recipient.
 							sent = await sendEmailWithAttachment(
 								email,
 								`DumpFire Report: ${reportName}`,
@@ -1530,7 +1623,7 @@ export async function runDueReportSchedules(now: Date): Promise<void> {
 								<p><strong>${escapeHtml(reportName)}</strong></p>
 								<p>Period: ${escapeHtml(periodLabel)}</p>
 								<p>Please find the attached PDF report.</p>
-								<p style="color: #8b8fa3; font-size: 12px;">— DumpFire Automated Reports</p>`,
+								<p style="color: #8b8fa3; font-size: 12px;">Set up by ${escapeHtml(owner.username)}<br>— DumpFire Automated Reports</p>`,
 								{
 									filename: `dumpfire-report-${reportData.scopeName.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().split('T')[0]}.pdf`,
 									content: pdfBuffer,
@@ -1544,18 +1637,18 @@ export async function runDueReportSchedules(now: Date): Promise<void> {
 					}
 					const reached = recipients.length - notReached.length;
 					if (notReached.length === 0) {
-						log.warn(`Scheduled report emailed: "${schedule.name}" to ${reached} of ${recipients.length} recipient(s)`);
+						log.warn(`Scheduled report emailed: "${schedule.name}" to ${reached} of ${recipients.length} recipient(s)${leftOut ? `.${leftOut}` : ''}`);
 					} else {
 						// With no mail set up, `email.ts` returns false and logs nothing.
 						const why = isSmtpConfigured()
 							? 'The mail server did not accept it: its reason is in the EMAIL line logged for each address'
 							: 'Mail is not set up on this server';
 						log.error(
-							`Scheduled report "${schedule.name}" was not emailed to ${notReached.join(', ')} (${reached} of ${recipients.length} recipient(s) reached). ${why}. It is not sent again before its next run.`
+							`Scheduled report "${schedule.name}" was not emailed to ${notReached.join(', ')} (${reached} of ${recipients.length} recipient(s) reached). ${why}. It is not sent again before its next run.${leftOut}`
 						);
 					}
 				} else {
-					log.warn(`Scheduled report generated but no recipients configured: "${schedule.name}"`);
+					log.warn(`Scheduled report generated but no recipients configured: "${schedule.name}"${leftOut ? `.${leftOut}` : ''}`);
 				}
 			} else {
 				// This used to pass without a word, and the schedule moved on.

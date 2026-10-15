@@ -55,7 +55,7 @@ import {
 } from './db/schema';
 import { canEditBoard, canViewBoard, getBoardRole, isAdmin } from './board-access';
 import { boardCategoryRule, categoryRule } from './list-access';
-import { wouldLoop } from './sub-boards';
+import { linkTooDeep, tooDeepToLink, wouldLoop } from './sub-boards';
 import type { SessionUser } from './auth';
 import { mayManageAccount } from '$lib/account-rule';
 
@@ -238,7 +238,9 @@ export const SUB_BOARD_LINK_REFUSAL =
  *
  * Then, as for creating a sub-board, edit access to the parent card's board
  * (`requireParentCard`). And the card may not be on the board itself, or on a
- * board beneath it: that would make a loop, 409.
+ * board beneath it: that would make a loop, 409. Nor may it, or a board
+ * beneath it, end up nested deeper than sub-boards may be, and deeper than it
+ * is now (card 2172): 409 too.
  */
 export function requireSubBoardLink(
 	user: SessionUser | null | undefined,
@@ -257,6 +259,7 @@ export function requireSubBoardLink(
 	if (wouldLoop(boardId, parentBoardId)) {
 		error(409, `Board "${board.name}" cannot go under a card on itself or on one of its own sub-boards`);
 	}
+	if (linkTooDeep(boardId, parentBoardId)) error(409, tooDeepToLink(board.name));
 	return { card, boardId: parentBoardId };
 }
 

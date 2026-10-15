@@ -34,7 +34,7 @@ import type { SessionUser } from '$lib/server/auth';
 import { getCompletionBlocker } from '$lib/server/card-completion';
 import { generateAllBoardsReport, generateBoardReport } from '$lib/server/reports';
 import { reportBoardLoops, reportInstallation } from '$lib/server/startup-checks';
-import { boardsInLoops } from '$lib/server/sub-boards';
+import { boardsInLoops, tooDeepToMove } from '$lib/server/sub-boards';
 import { boardPlaces, type LinkedBoard } from '$lib/board-tree';
 import { pageLoad } from './helpers/actions';
 import { api, type ApiResult } from './helpers/api';
@@ -219,7 +219,7 @@ describe('a card moved onto a board beneath it, at any depth, is refused (card 2
 				await expectRefused(() => move(f.owner, f.card, below.cols['To Do']), 'Parent card', 'Under X2');
 			});
 
-			it('onto a board not beneath it, with a loop elsewhere and above the target: moved, and the check ends', async () => {
+			it('onto a board not beneath it, with a loop elsewhere and above the target: no loop of its own, and the check ends', async () => {
 				const f = family();
 				// A loop on Q's side: S2 under a card on S2 itself, and T under a card on S2.
 				const holder = makeCard(f.Q.cols['To Do'], { title: 'Holds S2' });
@@ -227,10 +227,21 @@ describe('a card moved onto a board beneath it, at any depth, is refused (card 2
 				putOn(holder, S2.cols['To Do']);
 				const T = makeSubBoard(S2.cards[0], { owner: f.owner, name: 'T' });
 
+				// The loop check walks up from T through the loop, ends, and finds
+				// none of its own. A board below a loop reads as deeper than
+				// sub-boards may nest, so the card's sub-boards may not go there
+				// (card 2172): the refusal is the depth's, not the loop's. Until
+				// card 2172 it was moved.
 				const res = await withinBudget(() => move(f.owner, f.card, T.cols['To Do']));
+				expect(res.status).toBe(409);
+				expect(res.body).toEqual({ message: tooDeepToMove('Parent card', 'T') });
+				expect(columnOf(f.card)).toBe(f.P.cols['To Do'].id);
 
-				expect(res.status).toBe(200);
-				expect(columnOf(f.card)).toBe(T.cols['To Do'].id);
+				// A card with no sub-board is moved there, as before.
+				const plain = makeCard(f.P.cols['To Do'], { title: 'No sub-board' });
+				const moved = await withinBudget(() => move(f.owner, plain, T.cols['To Do']));
+				expect(moved.status).toBe(200);
+				expect(columnOf(plain)).toBe(T.cols['To Do'].id);
 			});
 
 			it('the card a loop hangs from, onto a board outside the loop: moved, and the loop is gone', async () => {

@@ -11,6 +11,13 @@
  *   - sent to none: 502.
  * The last two carry `results`, each recipient's `success` being what the
  * send returned. `email.ts` logs the mail server's reason.
+ *
+ * Who it may reach (card 2182): any address, at most 10 distinct addresses a
+ * call (400, before anything else is looked at), and at most 100 a day from
+ * one account (429, `takeReportMail`, taken once access is checked and mail
+ * is known to be set up, before the PDF is built). The list is read by
+ * `reportRecipients`, as the schedules and the page read one, and each
+ * address is sent one mail, once.
  */
 
 import { error, json } from '@sveltejs/kit';
@@ -19,9 +26,10 @@ import { boards, boardCategories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import {
 	generateBoardReport, generateCategoryReport, generateAllBoardsReport,
-	generateReportPdf, readReportAssignee, readReportWindow,
+	generateReportPdf, readReportAssignee, readReportWindow, takeReportMail,
 	REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS
 } from '$lib/server/reports';
+import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import { readBody, readChoice, readEmailList, readId } from '$lib/server/request-body';
 import { isSmtpConfigured, sendEmailWithAttachment } from '$lib/server/email';
 import { escapeHtml } from '$lib/escape-html';
@@ -48,7 +56,23 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	// A list of addresses, each one (R10). One that was not was dropped, and
 	// the report sent to the rest; and an entry that was not text was a 500.
 	const NONE = 'At least one recipient email is required';
-	const recipients = readEmailList(body, 'recipients', { required: true, min: 1, says: { missing: NONE, type: NONE, empty: NONE } });
+	const listed = readEmailList(body, 'recipients', { required: true, min: 1, says: { missing: NONE, type: NONE, empty: NONE } });
+	// Each entry read as the mailer reads it (card 2182): one that the mailer
+	// would send to someone other than it shows (`a@b.c<x>` goes to `x`), or
+	// that has no dot after its `@`, is refused in the same words.
+	listed.forEach((entry, index) => {
+		const { addresses, notAddresses } = reportRecipients(entry);
+		if (addresses.length !== 1 || notAddresses.length > 0) throw error(400, `recipients[${index}] must be an email address`);
+	});
+	// Each address once, in any case it was written in: one mail each.
+	const recipients = reportRecipients(listed).addresses;
+	// Before anything else is looked at, so the refusal says nothing of the board.
+	if (recipients.length > MAX_REPORT_RECIPIENTS) {
+		throw error(
+			400,
+			`A report can be emailed to at most ${MAX_REPORT_RECIPIENTS} addresses at a time, and this names ${recipients.length}. Nothing was sent.`
+		);
+	}
 
 	if (scope === 'all' && user.role !== 'admin' && user.role !== 'superadmin') {
 		throw error(403, 'Only admins can generate all-boards reports');
@@ -82,6 +106,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		throw error(503, 'Mail is not set up on this server, so the report was not sent. The superadmin sets it up on the admin page.');
 	}
 
+	// The day's allowance: a call refused above spent nothing, and nothing is
+	// built or sent when this refuses. What it takes is not given back when the
+	// mail server refuses a send: the attempt was made.
+	takeReportMail(user, recipients.length, 'email');
+
 	const pdfBuffer = await generateReportPdf(reportData, detailLevel);
 	const dateStr = new Date().toISOString().split('T')[0];
 	const filename = `dumpfire-report-${scopeName.toLowerCase().replace(/\s+/g, '-')}-${dateStr}.pdf`;
@@ -102,7 +131,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			// gives: each is escaped where it is put (card 2149). The subject
 			// is plain text and keeps the name as it was typed.
 			sent = await sendEmailWithAttachment(
-				email.trim(),
+				email,
 				`DumpFire Report: ${scopeName}`,
 				`<div style="font-family: sans-serif; max-width: 600px;">
 					<h2 style="color: #1e293b;">DumpFire Report</h2>
@@ -118,7 +147,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			// would be something else again, and is not a send either.
 			sent = false;
 		}
-		results.push(sent ? { email: email.trim(), success: true } : { email: email.trim(), success: false, message: REFUSED });
+		results.push(sent ? { email, success: true } : { email, success: false, message: REFUSED });
 	}
 
 	const notSent = results.filter((r) => !r.success).map((r) => r.email);
