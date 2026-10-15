@@ -23,6 +23,7 @@
 	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
 	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC, isNew } from '$lib/utils/date-utils';
 	import { subtaskProgress, sortCards, getSortLabel } from '$lib/utils/card-utils';
+	import { activityLabel } from '$lib/utils/activity-labels';
 	import { isCompleteColumnTitle } from '$lib/column-role';
 	import { cardArchiveWarning, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
 	import { keepStreamOpen } from '$lib/live-stream';
@@ -548,37 +549,8 @@
 		return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 	}
 
-	function getActionLabel(action: string): string {
-		const labels: Record<string, string> = {
-			'api:card_updated': 'Updated card',
-			'api:card_archived': 'Archived card',
-			'api:card_restored': 'Restored card',
-			'api:card_deleted': 'Deleted card',
-			'api:column_deleted': 'Deleted column',
-			'api:card_moved': 'Moved card',
-			'api:assignee_added': 'Assigned user',
-			'api:assignee_removed': 'Unassigned user',
-			'api:comment_added': 'Added comment',
-			'api:subtask_created': 'Created subtask',
-			'api:subtask_completed': 'Completed subtask',
-			'api:subtask_deleted': 'Deleted subtask',
-			'api:board_created': 'Created board',
-			'card_created': 'Created card',
-			'card_moved': 'Moved card',
-			'card_completed': 'Completed card',
-			'card_archived': 'Archived card',
-			'card_restored': 'Restored card',
-			'card_deleted': 'Deleted card',
-			'column_deleted': 'Deleted column',
-			'cards_purged': 'Purged archived cards',
-			'cards_cleared': 'Cleared cards',
-			'subtask_toggled': 'Updated subtask',
-			'subtask_deleted': 'Deleted subtask',
-			'comment_added': 'Added comment'
-		};
-		return labels[action] || action.replace(/_/g, ' ');
-	}
-
+	// An action's words are `activityLabel`'s, the board page's too (card 2212).
+	// Whether it was done through the API is this panel's own badge.
 	function isApiAction(action: string): boolean {
 		return action.startsWith('api:');
 	}
@@ -907,7 +879,7 @@
 					<div class="activity-body">
 						<div class="activity-action-line">
 							<span class="activity-action-label">{item.userName || 'System'}</span>
-							{getActionLabel(item.action)}
+							{activityLabel(item.action)}
 							{#if isApiAction(item.action)}
 								<span class="activity-api-badge">API</span>
 							{/if}

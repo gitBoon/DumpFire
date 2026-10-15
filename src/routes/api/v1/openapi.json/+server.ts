@@ -87,7 +87,10 @@ const spec = {
 			'"coverUrl must be a colour written #rrggbb, one of the preset gradients, or null", where any value was stored, an address or a style included; a cover is drawn on every viewer\'s page, as a strip across the top of the card on the board; ' +
 			'a cover the card already holds, sent back unchanged, is accepted as it is; and recurrenceRule and nextRecurrence, which every card answer still carries, are described as not used: nothing sets or acts on them; ' +
 			'(42) PUT /api/v1/cards/{cardId}/move answers 409 `Card "<title>" cannot go onto "<board>", which hangs beneath it` for a move onto one of the card\'s own sub-boards, ' +
-			'or onto a board beneath one at any depth, and moves nothing, where it was answered 200 and the sub-board then hung beneath itself, on no dashboard; it is asked only of a move to another board, and a move of the card such a loop already hangs from onto a board outside the loop is not refused for it. ' +
+			'or onto a board beneath one at any depth, and moves nothing, where it was answered 200 and the sub-board then hung beneath itself, on no dashboard; it is asked only of a move to another board, and a move of the card such a loop already hangs from onto a board outside the loop is not refused for it; ' +
+			'(43) assigning a user to a card, removing one, editing a comment, creating a board, updating one and creating a milestone on a board in the web application write the entry the operation here writes, stored without api: and with source ui, ' +
+			'and accepting a task request with an assignee writes assignee_added, so GET /api/v1/audit-log, GET /api/v1/reports/activity and recentActivity on GET /api/v1/me/stats hold them, where the web application wrote none; ' +
+			'and POST /api/v1/boards with a parentCardId sends the board that card is on a live update, so that the sub-board shows on its card on the pages open there, where it sent none; its answer is unchanged. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +

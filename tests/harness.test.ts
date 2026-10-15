@@ -51,6 +51,7 @@ describe('database fixture', () => {
  */
 const TEST_FILES = [
 	'access-control.test.ts',
+	'activity-twins.test.ts',
 	'access-every-route.test.ts',
 	'admin-reset.test.ts',
 	'archive-answers.test.ts',
@@ -66,6 +67,7 @@ const TEST_FILES = [
 	'bulk-endpoints.test.ts',
 	'card-completion.test.ts',
 	'card-covers-and-labels.test.ts',
+	'card-window.test.ts',
 	'check-at-the-write.test.ts',
 	'columns.test.ts',
 	'deletes-no-parent-key.test.ts',

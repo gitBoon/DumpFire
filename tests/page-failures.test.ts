@@ -80,7 +80,9 @@ import {
 import { mayManageAccount } from '$lib/account-rule';
 import * as cardActions from '$lib/board/card-actions';
 import * as dndHandlers from '$lib/board/dnd-handlers';
+import { connectSSE } from '$lib/board/sse';
 import { keepStreamOpen, reconnectDelay, streamVerdict, type StreamEnvironment } from '$lib/live-stream';
+import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import { requireManagedAccount } from '$lib/server/route-guards';
 import { endsTheSession, watchForSignOut, type Fetch } from '$lib/signed-out';
 import { MOST_FAILURES, TOAST_MS, toasts } from '$lib/stores/toast';
@@ -395,6 +397,133 @@ describe('the card window’s own messages and Escape, src/lib/components/CardMo
 			expect(page, file).toContain('<CardModal');
 			expect(page, file).toContain('<ConfirmModal');
 		}
+	});
+});
+
+// Cards 2147 and 2163. The window sent `colorTag: ""` with every save, which
+// cleared a tag set through the API; and a template's labels were stored and
+// never applied. What a save sends and what a template's labels become are
+// run in `tests/card-window.test.ts`; this reads where the window keeps them.
+describe('the card window’s save and its template’s labels, src/lib/components/CardModal.svelte (cards 2147 and 2163)', () => {
+	const source = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
+	const modal = scriptOf('src/lib/components/CardModal.svelte');
+	const from = source.indexOf('</script>');
+	const markup = source.slice(from);
+
+	it('hands the page no colour tag, and a new card’s template labels as pendingLabelIds', () => {
+		const handed = callsOf(functionNamed(modal, 'save'), 'onSave');
+		expect(handed).toHaveLength(1);
+		const object = handed[0].arguments[0];
+		expect(ts.isObjectLiteralExpression(object)).toBe(true);
+		const properties = (object as ts.ObjectLiteralExpression).properties;
+		expect(properties.map((property) => property.name?.getText() ?? property.getText())).not.toContain('colorTag');
+		const labelled = properties.find((property) => property.name?.getText() === 'pendingLabelIds');
+		expect(labelled?.getText().replace(/\s+/g, ' ')).toBe('pendingLabelIds: !card && templateLabels.length > 0 ? templateLabels : undefined');
+
+		// Nor does the type of what it hands the page name one.
+		const typed = /onSave: \(data: \{([^}]*)\}\) => void;/.exec(modal.getText())![1];
+		expect(typed).not.toContain('colorTag');
+		expect(typed).toContain('pendingLabelIds?: number[]');
+	});
+
+	it('keeps the labels of the template applied that are labels of this board, through templateLabelIds', () => {
+		expect(modal.getText()).toContain("import { templateLabelIds } from '$lib/templates';");
+		const applying = functionNamed(modal, 'applyTemplate');
+		expect(assignmentsTo(applying, 'templateLabels').map((assignment) => assignment.right.getText())).toEqual(['templateLabelIds(tmpl.labelsJson, labels)']);
+	});
+
+	it('lists them above the footer of the New Task window, and nowhere else', () => {
+		const line = 'Labels from the template:';
+		expect(markup.split(line)).toHaveLength(2);
+		const at = from + markup.indexOf(line);
+		expect(blocksAround(source, at)).toContainEqual({ condition: '!card && templateLabels.length > 0', inElse: false });
+		expect(at).toBeLessThan(source.indexOf('<div class="modal-footer">'));
+		// Read-only: a chip that does nothing, and no picker of its own.
+		const shown = source.slice(at, source.indexOf('<div class="modal-footer">'));
+		expect(shown).not.toMatch(/\bon\w+=\{/);
+	});
+
+	it('says that a template holds the labels too', () => {
+		expect(markup).toContain('<p class="template-desc">Saves this card\'s title, description, priority, subtasks and labels as a reusable template.</p>');
+	});
+});
+
+// Card 2164. `?card=` was read in `onMount` alone, and SvelteKit keeps the
+// page for every address of the route, so a dependency link to a card on
+// this board, or on another, opened no card. The parameter was taken off the
+// address with `window.history.replaceState({}, ...)`, which threw away
+// SvelteKit's own state in the history entry.
+describe('the card an address names, src/routes/board/[id]/+page.svelte (card 2164)', () => {
+	const board = scriptOf('src/routes/board/[id]/+page.svelte');
+	/** Asked in each test, so that a page without it fails each and not the file. */
+	const opening = () => functionNamed(board, 'openCardFromAddress');
+
+	it('is opened after every navigation that keeps the page, and not in onMount', () => {
+		const navigated = callsOf(board, 'afterNavigate');
+		expect(navigated).toHaveLength(1);
+		const callback = navigated[0].arguments[0] as ts.ArrowFunction;
+		expect(callback.parameters.map((parameter) => parameter.getText())).toEqual(['{ from, to }']);
+		const steps = (callback.body as ts.Block).statements.map((statement) => statement.getText().replace(/\s+/g, ' '));
+		// The window is closed first where the navigation calls for it (Q-F's review), then the card named opened.
+		expect(steps).toEqual([
+			'if (cardActions.navigationClosesWindow(from, to, editingCard !== null)) { showCardModal = false; editingCard = null; }',
+			'openCardFromAddress(to?.url);'
+		]);
+		expect(opening().getText()).toContain("searchParams.get('card')");
+		const mounted = board.statements.filter((statement) => ts.isExpressionStatement(statement) && statement.getText().startsWith('onMount('));
+		expect(mounted.length).toBeGreaterThan(0);
+		for (const statement of mounted) expect(statement.getText()).not.toContain("'card'");
+	});
+
+	it('looks the card up in the board the navigation brought, data.columns, and not the page’s own copy', () => {
+		expect(opening().getText()).toContain('(data.columns as unknown as ColumnType[]).flatMap((c) => c.cards).find((c) => c.id === cardId)');
+		expect(opening().getText()).not.toContain('boardColumns');
+	});
+
+	it('closes a window already open, and opens the card and puts the address right only after the next tick', () => {
+		expect(board.getText()).toMatch(/import \{[^}]*\breplaceState\b[^}]*\} from '\$app\/navigation';/);
+		expect(board.getText()).toMatch(/import \{[^}]*\btick as nextTick\b[^}]*\} from 'svelte';/);
+		// SvelteKit's, and nowhere else: the browser's lost SvelteKit's state.
+		expect([...callsOf(board, 'window.history.replaceState'), ...callsOf(board, 'history.replaceState')]).toEqual([]);
+		expect(callsOf(board, 'replaceState').map((call) => ts.findAncestor(call, ts.isFunctionDeclaration)?.name?.text)).toEqual(['openCardFromAddress']);
+
+		const steps = opening().body!.statements.map((statement) => statement.getText());
+		const waited = steps.indexOf('await nextTick();');
+		expect(waited).toBeGreaterThan(-1);
+		expect(steps.indexOf('showCardModal = false;')).toBeLessThan(waited);
+		expect(steps.indexOf('editingCard = null;')).toBeLessThan(waited);
+		expect(steps.findIndex((step) => step.startsWith('replaceState('))).toBeGreaterThan(waited);
+		expect(steps.indexOf('if (card) openCardModal(card);')).toBeGreaterThan(waited);
+	});
+
+	it('says each label of a new card’s template that was not put on it, as an error in the shared toast', () => {
+		const saving = functionNamed(board, 'saveCard');
+		const said = saving.getText().replace(/\s+/g, ' ');
+		expect(said).toContain('for (const { labelId, message } of result.labelFailures ?? []) {');
+		const told = callsOf(saving, 'toasts.add').filter((call) => call.getText().includes('message'));
+		expect(told.map((call) => [call.arguments[1]?.getText(), call.arguments[2]?.getText()])).toEqual([["'error'", 'started']]);
+		// The type of what the window hands it, as the window's.
+		expect(saving.parameters[0].type!.getText()).not.toContain('colorTag');
+		expect(saving.parameters[0].type!.getText()).toContain('pendingLabelIds?: number[]');
+	});
+
+	it('names a label deleted while the window was open as one that no longer exists, not by its number (the review)', () => {
+		const said = functionNamed(board, 'saveCard').getText();
+		expect(said).toContain("const named = label ? `The template's label \"${label.name}\"` : 'A label of the template that no longer exists';");
+		expect(said).toContain('toasts.add(`${named} was not put on "${cardData.title}". ${message}`, \'error\', started);');
+		expect(said).not.toContain('#${labelId}');
+	});
+
+	it('says a create that made no card, keeps the window open, and says nothing was created (the review)', () => {
+		const saving = functionNamed(board, 'saveCard');
+		const steps = saving.body!.statements.map((statement) => statement.getText());
+		const failed = steps.findIndex((step) => step.startsWith('if (result.failure) {'));
+		expect(failed).toBeGreaterThan(steps.findIndex((step) => step.includes('await cardActions.saveCard(')));
+		// Before the window is closed and anything is said to be created.
+		expect(failed).toBeLessThan(steps.indexOf('showCardModal = false;'));
+		expect(failed).toBeLessThan(steps.findIndex((step) => step.includes('Created "')));
+		const branch = (saving.body!.statements[failed] as ts.IfStatement).thenStatement as ts.Block;
+		expect(branch.statements.map((statement) => statement.getText())).toEqual(["toasts.add(result.failure, 'error', started);", 'return;']);
 	});
 });
 
@@ -1113,6 +1242,85 @@ describe('where the watch and the streams are used, read from the source', () =>
 	});
 });
 
+// Card 2184. SvelteKit keeps a page's component when only its params change,
+// so after a link to another board, or Back to one, the board page went on
+// listening to the first board's stream, with the first board's selection,
+// panels, search and card window. A layout keyed on the board makes the page
+// afresh for each: its `onDestroy` closes the first stream and the new page's
+// `onMount` opens the second.
+describe('the board page’s live stream follows the board it shows, src/routes/board/[id]/+layout.svelte (card 2184)', () => {
+	const LAYOUT = 'src/routes/board/[id]/+layout.svelte';
+	const board = scriptOf('src/routes/board/[id]/+page.svelte');
+
+	/** The function given to each call of `name` made as the script runs. */
+	const handedTo = (name: string) =>
+		board.statements
+			.filter((statement): statement is ts.ExpressionStatement => ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression) && statement.expression.expression.getText() === name)
+			.map((statement) => (statement.expression as ts.CallExpression).arguments[0]);
+
+	it('makes the page afresh for each board, keyed on the board and nothing else', () => {
+		const source = readFileSync(join(ROOT, LAYOUT), 'utf8');
+		const script = scriptOf(LAYOUT).getText();
+		const markup = source.slice(source.indexOf('</script>') + '</script>'.length);
+
+		expect(script).toContain("import { page } from '$app/state';");
+		expect(markup.replace(/\s+/g, '')).toBe('{#keypage.params.id}{@renderchildren()}{/key}');
+	});
+
+	it('opens the stream once, as the page mounts, for the board it shows, and closes it as the page is destroyed', () => {
+		const opened = callsOf(board, 'connectSSE');
+		expect(opened).toHaveLength(1);
+		expect(opened[0].arguments[0].getText()).toBe('data.board.id');
+		const mounted = handedTo('onMount');
+		expect(mounted.filter((fn) => fn.getStart() <= opened[0].getStart() && opened[0].getEnd() <= fn.getEnd())).toHaveLength(1);
+
+		const destroyed = handedTo('onDestroy');
+		expect(destroyed).toHaveLength(1);
+		expect(callsOf(destroyed[0], 'cleanupSSE')).toHaveLength(1);
+		// Not followed by an effect, which would keep the rest of the first board's page.
+		for (const fn of handedTo('$effect')) expect(callsOf(fn, 'connectSSE')).toEqual([]);
+	});
+
+	it('closes the first board’s stream and opens the second’s, as the page of each is made and destroyed', () => {
+		const sources: { url: string; closed: boolean }[] = [];
+		const listeners = { added: 0, removed: 0 };
+		vi.stubGlobal(
+			'EventSource',
+			class {
+				closed = false;
+				onopen: (() => void) | null = null;
+				onerror: (() => void) | null = null;
+				constructor(readonly url: string) {
+					sources.push(this);
+				}
+				addEventListener() {}
+				close() {
+					this.closed = true;
+				}
+			}
+		);
+		vi.stubGlobal('document', {
+			visibilityState: 'visible',
+			addEventListener: (type: string) => type === 'visibilitychange' && listeners.added++,
+			removeEventListener: (type: string) => type === 'visibilitychange' && listeners.removed++
+		});
+		try {
+			const callbacks = { onUpdate: () => {}, onCelebrate: () => {}, onXpUpdate: () => {} };
+			const first = connectSSE(1, callbacks);
+			first();
+			connectSSE(2, callbacks);
+
+			expect(sources.map((source) => [source.url, source.closed])).toEqual([
+				['/api/boards/1/events', true],
+				['/api/boards/2/events', false]
+			]);
+			expect(listeners).toEqual({ added: 2, removed: 1 });
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});
+
 describe('the audit console’s live log, src/routes/audit/+page.svelte', () => {
 	const file = 'src/routes/audit/+page.svelte';
 	const source = readFileSync(join(ROOT, file), 'utf8');
@@ -1422,8 +1630,9 @@ type Write = {
 };
 
 /**
- * Every write in the seven files of card 2109, and in the label picker of card
- * 2010; for the board page, the three it names and card 2134's column rename.
+ * Every write in the seven files of card 2109, in the label picker of card
+ * 2010, and in the four files of card 2148; for the board page, the three it
+ * names and card 2134's column rename.
  */
 const WRITES: Record<string, Write[]> = {
 	'src/routes/board/[id]/+page.svelte': [
@@ -1524,6 +1733,44 @@ const WRITES: Record<string, Write[]> = {
 			reads: 'deleteFailure',
 			done: ['list = list.filter((label) => label.id !== id)', 'selected = selected.filter((labelId) => labelId !== id)', 'editingId = null']
 		}
+	],
+	// Card 2148: the share window, the subtask window, the dashboard and the
+	// account page. A write that was refused looked saved, or said nothing, and
+	// what it had changed on the page stayed changed. Each now says why where
+	// the reader is looking (its decision 11, held below), and puts back what
+	// it changed first (decision 12).
+	'src/lib/components/ShareModal.svelte': [
+		{ name: 'togglePublic', reads: 'failureMessage', done: ['isPublic = !isPublic'] },
+		{ name: 'shareWithUser', reads: 'failureMessage', done: ['selectedUserId = null', 'await loadData()'] },
+		{ name: 'shareWithTeam', reads: 'failureMessage', done: ['selectedTeamId = null', 'await loadData()'] },
+		{ name: 'updateRole', reads: 'failureMessage', putsBack: ['putBack()'], done: ['await loadData()'] },
+		{ name: 'removeAccess', reads: 'deleteFailure', done: ['await loadData()'] }
+	],
+	'src/lib/components/SubtaskModal.svelte': [
+		{ name: 'save', reads: 'failureMessage', done: ['onSave(updated)', 'onSave(created)'] },
+		// Its `onDelete()` is held below: a subtask of a card not yet made goes with no request.
+		{ name: 'handleDelete', reads: 'deleteFailure' }
+	],
+	'src/routes/+page.svelte': [
+		{ name: 'createBoard', reads: 'failureMessage', done: ['showCreate = false', 'goto(`/board/${board.id}`)'] },
+		{ name: 'deleteBoard', reads: 'deleteFailure', done: ['await invalidateAll()'] },
+		{
+			name: 'toggleFavourite',
+			reads: 'failureMessage',
+			putsBack: ['showStar(boardId, was)'],
+			done: ['showStar(boardId, (await res.json()).favourited === true)']
+		},
+		{ name: 'createSubBoardInline', reads: 'failureMessage', done: ['closeBoardContextMenu()', 'await invalidateAll()'] },
+		{ name: 'setBoardCategory', reads: 'failureMessage', done: ['await invalidateAll()'] },
+		{ name: 'createBoardCategoryInline', reads: 'failureMessage', done: ['await setBoardCategory(boardCtx.boardId, created.id)', 'showNewBoardCat = false'] }
+	],
+	'src/routes/account/+page.svelte': [
+		{ name: 'changeEmoji', reads: 'failureMessage', putsBack: ['currentEmoji = was'], done: ['await invalidateAll()'] },
+		{ name: 'changeEmail', reads: 'failureMessage', done: ["emailMessage = 'Email updated successfully!'", 'displayedEmail = result.email'] },
+		{ name: 'changePassword', reads: 'failureMessage', done: ['await loadApiKeys()'] },
+		{ name: 'generateApiKey', reads: 'failureMessage', done: ['newlyCreatedKey = result.key', 'await loadApiKeys()'] },
+		{ name: 'revokeKey', reads: 'failureMessage', done: ['apiKeys = apiKeys.filter(k => k.id !== id)'] },
+		{ name: 'toggleNotif', reads: 'failureMessage', putsBack: ['notifPrefs = was'], done: ['notifPrefs = await res.json()'] }
 	]
 };
 
@@ -1533,7 +1780,7 @@ const TESTED_ABOVE: Record<string, string[]> = {
 	'src/lib/components/CardModal.svelte': ['uploadFile']
 };
 
-describe('every write of the seven pages of card 2109, and of the label picker, says when it was refused', () => {
+describe('every write of the seven pages of card 2109, of the label picker, and of the four screens of card 2148, says when it was refused', () => {
 	const writes = apiWrites();
 
 	it.each(Object.keys(WRITES).filter((file) => !file.startsWith('src/routes/board/')))(
@@ -1632,7 +1879,7 @@ describe('no page throws away the answer to a write', () => {
 	 * The list can only shrink: an entry that is no longer found fails the
 	 * test, so take it off when the write is put right.
 	 */
-	const LEFT: Record<string, 2012 | 2148> = {
+	const LEFT: Record<string, 2012> = {
 		// Card 2012, which rewrites the board page's writes and the modules in
 		// src/lib/board it sends them through. Until then they are as they were.
 		'src/routes/board/[id]/+page.svelte › saveInlineEdit › api.updateCard': 2012,
@@ -1657,18 +1904,12 @@ describe('no page throws away the answer to a write', () => {
 		'src/lib/board/dnd-handlers.ts › handleCardDndFinalize › api.updateCard': 2012,
 		'src/lib/board/dnd-handlers.ts › confirmOnHold › api.updateCard': 2012,
 		'src/lib/board/dnd-handlers.ts › confirmOnHold › api.reorderCards': 2012,
-		'src/lib/board/dnd-handlers.ts › handleColumnDndFinalize › api.reorderColumns': 2012,
-		// Card 2148, found beside card 2109 (its plan's section 4, item 10):
-		// sharing a board, deleting a subtask from its window, the dashboard's
-		// favourite and grouping, and the account page's emoji and mail settings.
-		// The share window's `updateRole` came off with card 2115's review: see
-		// "the share window's role select" below.
-		'src/lib/components/ShareModal.svelte › removeAccess › fetch DELETE': 2148,
-		'src/lib/components/SubtaskModal.svelte › handleDelete › fetch DELETE': 2148,
-		'src/routes/+page.svelte › toggleFavourite › fetch POST': 2148,
-		'src/routes/+page.svelte › setBoardCategory › fetch PUT': 2148,
-		'src/routes/account/+page.svelte › changeEmoji › fetch PUT': 2148,
-		'src/routes/account/+page.svelte › toggleNotif › fetch PUT': 2148
+		'src/lib/board/dnd-handlers.ts › handleColumnDndFinalize › api.reorderColumns': 2012
+		// Card 2148's six came off with it: sharing a board, deleting a subtask
+		// from its window, the dashboard's favourite and category, and the
+		// account page's emoji and mail settings. Each reads its answer now (the
+		// table of writes above). The share window's `updateRole` had come off
+		// with card 2115's review.
 	};
 
 	it('finds none but the ones left for a card of their own, and each of those', () => {
@@ -1679,10 +1920,10 @@ describe('no page throws away the answer to a write', () => {
 		expect(found.sort()).toEqual(Object.keys(LEFT).sort());
 	});
 
-	it('leaves each to the card that owns its file: 2012 the board page and src/lib/board, 2148 the rest', () => {
+	it('leaves each to card 2012, which owns the board page and src/lib/board; card 2148 left none', () => {
 		for (const [write, card] of Object.entries(LEFT)) {
 			const boards = write.startsWith('src/routes/board/[id]/+page.svelte ›') || write.startsWith('src/lib/board/');
-			expect({ write, card }).toEqual({ write, card: boards ? 2012 : 2148 });
+			expect({ write, card, boards }).toEqual({ write, card: 2012, boards: true });
 		}
 	});
 
@@ -1798,7 +2039,10 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 		};
 		const checked: string[] = [];
 		for (const { tree } of codeOf(file, source)) {
-			const failures = [...callsOf(tree, 'toasts.add'), ...callsOf(tree, 'showToast')].filter((call) => call.arguments[1]?.getText().includes("'error'"));
+			// The dashboard calls the store `failureToasts`: it has `toasts` of its own, the new-request notices.
+			const failures = [...callsOf(tree, 'toasts.add'), ...callsOf(tree, 'failureToasts.add'), ...callsOf(tree, 'showToast')].filter((call) =>
+				call.arguments[1]?.getText().includes("'error'")
+			);
 			for (const call of failures) {
 				const fn = ts.findAncestor(call.parent, ts.isFunctionLike);
 				// A check made before any request, such as a name left empty, has no request to wait for.
@@ -1815,13 +2059,23 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 					};
 					visit(outer);
 				}
-				expect(declared?.initializer?.getText(), call.getText()).toBe('toasts.navigation()');
+				const store = call.expression.getText() === 'failureToasts.add' ? 'failureToasts' : 'toasts';
+				expect(declared?.initializer?.getText(), call.getText()).toBe(`${store}.navigation()`);
 				const reader = ts.findAncestor(declared!.parent, ts.isFunctionLike)!;
 				expect(awaitsIn(reader).every((waited) => waited.getStart() > declared!.getStart()), call.getText()).toBe(true);
 			}
 		}
-		// The card window and its label picker say a refusal on a line of their own, not in a toast.
-		if (!['src/lib/components/CardModal.svelte', 'src/lib/components/LabelPicker.svelte'].includes(file)) expect(checked.length).toBeGreaterThan(0);
+		// The card window, its label picker, the share and subtask windows and the
+		// account page say a refusal on a line of their own, not in a toast.
+		const ownLine = [
+			'src/lib/components/CardModal.svelte',
+			'src/lib/components/LabelPicker.svelte',
+			'src/lib/components/ShareModal.svelte',
+			'src/lib/components/SubtaskModal.svelte',
+			'src/routes/account/+page.svelte'
+		];
+		if (ownLine.includes(file)) expect(checked).toEqual([]);
+		else expect(checked.length).toBeGreaterThan(0);
 	});
 
 	it('is shown above every dialog, which a refusal is shown beside', () => {
@@ -2183,7 +2437,9 @@ describe('the share window’s role select, src/lib/components/ShareModal.svelte
 	// 2115's guard): `owner` is refused to anyone not already stored as one.
 	// The window offered Owner on every person's row and threw the answer
 	// away, so the choice snapped back on the next read and nothing was said.
-	// The minimal part of card 2148's decision 13.
+	// The minimal part of card 2148's decision 13. Card 2148 then moved what a
+	// refusal says from the toast to the window's own line, as the window's
+	// other writes say theirs (its decision 11).
 	const file = 'src/lib/components/ShareModal.svelte';
 	const source = readFileSync(join(ROOT, file), 'utf8');
 	const markup = source.slice(source.indexOf('</script>'));
@@ -2214,23 +2470,317 @@ describe('the share window’s role select, src/lib/components/ShareModal.svelte
 		expect(callsOf(updateRole, 'res.json')).toEqual([]);
 	});
 
-	it('shows each failure in the shared toast, with the navigation the request was started in', () => {
-		const failures = callsOf(updateRole, 'toasts.add');
-		expect(failures).toHaveLength(2);
-		for (const call of failures) {
-			expect(call.arguments[1]?.getText()).toBe("'error'");
-			expect(call.arguments[2]?.getText()).toBe('started');
-		}
-		const declared = updateRole.body!.statements.find(
-			(statement) => ts.isVariableStatement(statement) && statement.declarationList.declarations[0].name.getText() === 'started'
-		) as ts.VariableStatement | undefined;
-		expect(declared?.declarationList.declarations[0].initializer?.getText()).toBe('toasts.navigation()');
+	it('says each failure on the window’s own line, which it clears as it starts (card 2148)', () => {
+		const said = assignmentsTo(updateRole, 'error');
+		expect(said.map((set) => set.right.getText())).toEqual([
+			"''",
+			"'No answer from the server. The role may not have been changed.'",
+			"await failureMessage(res, 'The role was not changed.')"
+		]);
+		expect(said.map(sideOf)).toEqual([null, 'failed', 'failed']);
+		expect(callsOf(updateRole, 'toasts.add')).toEqual([]);
 
-		// The request is asked in a try whose catch says so.
+		// The request is asked in a try whose catch says so, after the line is cleared.
 		const [request] = callsOf(updateRole, 'fetch');
 		const tried = ts.findAncestor(request, ts.isTryStatement);
 		expect(tried?.catchClause).toBeDefined();
-		expect(declared!.getStart()).toBeLessThan(tried!.getStart());
+		expect(said[0].getStart()).toBeLessThan(tried!.getStart());
+	});
+});
+
+// ─── A refusal said where it is read (card 2148) ────────────────────────────
+//
+// The share window, the subtask window, the dashboard and the account page
+// threw some answers away and read others without saying anything. The table
+// of writes above holds that each reads its answer and puts back what it
+// changed. These hold where what it read is shown (the plan's decision 11):
+// on a line in the share and subtask windows, above their buttons, as the
+// card window shows its failures; in the dashboard's shared toast, which it
+// already used for a failed delete; and on the account page on a line under
+// the control, as its email, password and key forms have.
+
+/**
+ * What the message a call reads is given to: `error` for
+ * `error = await failureMessage(...)`, and `failureToasts.add(…, 'error',
+ * started)` for a toast, `…` standing for the message.
+ */
+function givenTo(asked: ts.CallExpression): string {
+	let at: ts.Node = asked;
+	while (ts.isAwaitExpression(at.parent) || ts.isParenthesizedExpression(at.parent)) at = at.parent;
+	const user = at.parent;
+	if (ts.isBinaryExpression(user) && user.right === at) return user.left.getText();
+	if (ts.isCallExpression(user)) return `${user.expression.getText()}(${user.arguments.map((argument) => (argument === at ? '…' : argument.getText())).join(', ')})`;
+	return `(${user.getText()})`;
+}
+
+/** A Svelte file's script, parsed, its source, and where in its markup a text is, by the `{#if}` blocks around it. */
+function svelteFile(file: string) {
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const from = source.indexOf('</script>');
+	const markup = source.slice(from);
+	return {
+		tree: scriptOf(file),
+		source,
+		markup,
+		around: (text: string) => {
+			expect(markup.split(text), text).toHaveLength(2);
+			return blocksAround(source, from + markup.indexOf(text));
+		}
+	};
+}
+
+describe('the share and subtask windows, the dashboard and the account page say a refusal where it is read (card 2148)', () => {
+	it('the share window says a failed load or write on its own line, above Close, and clears it as each write starts', () => {
+		const share = svelteFile('src/lib/components/ShareModal.svelte');
+		const WRITING = ['togglePublic', 'shareWithUser', 'shareWithTeam', 'updateRole', 'removeAccess'];
+
+		for (const name of ['loadData', ...WRITING.filter((write) => write !== 'removeAccess')]) {
+			const asked = callsOf(functionNamed(share.tree, name), 'failureMessage');
+			expect(asked.length, name).toBeGreaterThan(0);
+			expect(asked.map(givenTo), name).toEqual(asked.map(() => 'error'));
+		}
+		// A removal's words are deleteFailure's.
+		expect(statementsOf(functionNamed(share.tree, 'removeAccess'), 'error = failure')).toHaveLength(1);
+		// Cleared before each write asks, so a success leaves no failure behind it.
+		for (const name of WRITING) {
+			const fn = functionNamed(share.tree, name);
+			const cleared = statementsOf(fn, "error = ''");
+			expect(cleared, name).toHaveLength(1);
+			const asking = [...callsOf(fn, 'fetch'), ...callsOf(fn, 'deleteFailure')].map((call) => call.getStart());
+			expect(cleared[0].getStart(), name).toBeLessThan(Math.min(...asking));
+		}
+		// Drawn once, in `{#if error}` alone, so that a load that failed is said too, before the footer.
+		expect(share.around('{error}')).toEqual([{ condition: 'error', inElse: false }]);
+		expect(share.markup).toMatch(/\{#if error\}\s*<div class="share-error" role="alert">\s*<span>\{error\}<\/span>/);
+		expect(share.markup.indexOf('{error}')).toBeLessThan(share.markup.indexOf('<div class="share-footer">'));
+		expect(share.tree.getText()).not.toMatch(/\btoasts\./);
+	});
+
+	it('the subtask window says a refused save or delete above its buttons, and does not close for one', () => {
+		const subtask = svelteFile('src/lib/components/SubtaskModal.svelte');
+
+		expect(callsOf(functionNamed(subtask.tree, 'save'), 'failureMessage').map(givenTo)).toEqual(['error', 'error']);
+		expect(statementsOf(functionNamed(subtask.tree, 'handleDelete'), 'error = failure')).toHaveLength(1);
+		// The window is closed by the card window's onSave and onDelete, which are called for a success alone.
+		for (const name of ['save', 'handleDelete']) expect(callsOf(functionNamed(subtask.tree, name), 'onClose'), name).toEqual([]);
+		expect(subtask.around('{error}')).toEqual([{ condition: 'error', inElse: false }]);
+		expect(subtask.markup).toMatch(/\{#if error\}\s*<div class="subtask-error" role="alert">\s*<span>\{error\}<\/span>/);
+		expect(subtask.markup.indexOf('{error}')).toBeLessThan(subtask.markup.indexOf('<div class="modal-actions">'));
+	});
+
+	it('the subtask window takes a subtask off the card once the server has deleted it, or at once for a card not yet made', () => {
+		const deleting = functionNamed(svelteFile('src/lib/components/SubtaskModal.svelte').tree, 'handleDelete');
+		const asked = callsOf(deleting, 'deleteFailure');
+		const removed = statementsOf(deleting, 'onDelete()');
+
+		expect(asked).toHaveLength(1);
+		expect(removed).toHaveLength(2);
+		// A card not yet made: its subtasks are on the page alone, with ids below
+		// zero, and nothing is sent, as `save` sends nothing for one.
+		expect(ts.findAncestor(removed[0], ts.isIfStatement)?.expression.getText()).toBe('cardId === 0');
+		expect(removed[0].getStart()).toBeLessThan(asked[0].getStart());
+		// Any other: after the request, and only when deleteFailure said there was no failure.
+		expect(removed[1].getStart()).toBeGreaterThan(asked[0].getStart());
+		expect(sideOf(removed[1])).toBe('ok');
+	});
+
+	it('the dashboard says each refusal in the shared toast, and a sub-board’s on its form’s line, in the server’s words', () => {
+		const dashboard = svelteFile('src/routes/+page.svelte');
+
+		for (const name of ['createBoard', 'toggleFavourite', 'setBoardCategory', 'createBoardCategoryInline']) {
+			const asked = callsOf(functionNamed(dashboard.tree, name), 'failureMessage');
+			expect(asked.length, name).toBeGreaterThan(0);
+			expect(asked.map(givenTo), name).toEqual(asked.map(() => "failureToasts.add(…, 'error', started)"));
+		}
+		const subBoard = callsOf(functionNamed(dashboard.tree, 'createSubBoardInline'), 'failureMessage');
+		expect(subBoard.map(givenTo)).toEqual(['subBoardError', 'subBoardError']);
+		// Its two texts as they were, for an answer that gives no reason.
+		expect(subBoard.map((asked) => asked.arguments[1].getText())).toEqual(["'Could not create the parent card'", "'Could not create the sub-board'"]);
+		expect(dashboard.around('{subBoardError}').at(-1)).toEqual({ condition: 'subBoardError', inElse: false });
+	});
+
+	it('the account page says each refusal on a line under its control', () => {
+		const account = svelteFile('src/routes/account/+page.svelte');
+		const said = (name: string) => callsOf(functionNamed(account.tree, name), 'failureMessage').map(givenTo);
+
+		expect(said('changeEmoji')).toEqual(['emojiError']);
+		expect(said('toggleNotif')).toEqual(['notifError']);
+		expect(said('revokeKey')).toEqual(['apiKeyError']);
+		expect(said('changeEmail')).toEqual(['emailMessage']);
+		// A failure's body is no longer read as JSON with a catch of its own.
+		expect(callsOf(functionNamed(account.tree, 'changeEmail'), 'res.json').map(sideOf)).toEqual(['ok']);
+
+		// The avatar's line under the avatar, the switches' under the switches.
+		expect(account.around('{emojiError}')).toEqual([{ condition: 'emojiError', inElse: false }]);
+		expect(account.markup).toMatch(/\{#if emojiError\}\s*<div class="password-msg error avatar-error" role="alert">\{emojiError\}<\/div>/);
+		const avatar = account.markup.indexOf('{emojiError}');
+		expect(avatar).toBeGreaterThan(account.markup.indexOf('<EmojiPicker'));
+		expect(avatar).toBeLessThan(account.markup.indexOf('<div class="profile-details">'));
+		expect(account.around('{notifError}')).toEqual([
+			{ condition: 'notifLoading', inElse: true },
+			{ condition: 'notifError', inElse: false }
+		]);
+		expect(account.markup).toMatch(/\{#if notifError\}\s*<div class="password-msg error notif-error" role="alert">\{notifError\}<\/div>/);
+		expect(account.markup.indexOf('{notifError}')).toBeGreaterThan(account.markup.indexOf('{#each NOTIFICATION_PREFS as type}'));
+		// No second save while one is on its way, which a refusal of the first would put back over.
+		expect(account.markup.match(/disabled=\{notifSaving\b/g)).toHaveLength(2);
+	});
+
+	it('the account page draws its mail switches from the one list in $lib/notification-prefs, Mentions among them (card 2146)', () => {
+		const account = svelteFile('src/routes/account/+page.svelte');
+		const toggling = functionNamed(account.tree, 'toggleNotif').getText();
+
+		expect(account.tree.getText()).toContain("import { MASTER_PREF, NOTIFICATION_PREFS, type NotificationPrefKey } from '$lib/notification-prefs';");
+		// No list of its own, and no key of its own.
+		expect(account.source).not.toContain('NOTIF_TYPES');
+		expect(account.source).not.toMatch(/['"]email_\w+['"]/);
+		expect(account.markup.match(/\{#each NOTIFICATION_PREFS as type\}/g)).toHaveLength(1);
+		// The list says `description`, where the page's own said `desc`.
+		expect(account.markup).toContain('<span class="notif-hint">{type.description}</span>');
+		expect(account.markup).toContain('onclick={() => toggleNotif(type.key)}');
+		expect(account.markup).toContain('onclick={() => toggleNotif(MASTER_PREF)}');
+		// The master switch sets every kind of the list, Mentions and Request Progress with the rest.
+		expect(toggling.match(/for \(const t of NOTIFICATION_PREFS\)/g)).toHaveLength(2);
+		expect(NOTIFICATION_PREFS.map((kind) => kind.label)).toEqual(expect.arrayContaining(['Mentions', 'Request Progress']));
+		// A switch is on unless it is stored as false, as it is drawn, so its first click turns it off.
+		expect(toggling).toContain('const newVal = notifPrefs[key] === false;');
+	});
+});
+
+// ─── A page left open across a deploy (card 2167) ───────────────────────────
+//
+// An open tab ran the old scripts until it was reloaded by hand: SvelteKit
+// never asked whether there was a new version. It asks once a minute now, and
+// the root layout says so when there is one, and makes the next move to
+// another page a full page load. Nothing reloads by itself.
+
+/** Where the root layout's `<div class="app-layout">` ends, in its markup: past its own `</div>`. */
+function appLayoutEnd(markup: string): number {
+	const start = markup.indexOf('<div class="app-layout">');
+	expect(start).toBeGreaterThan(-1);
+	let depth = 0;
+	for (const tag of markup.slice(start).matchAll(/<div[\s>]|<\/div>/g)) {
+		depth += tag[0] === '</div>' ? -1 : 1;
+		if (depth === 0) return start + tag.index! + tag[0].length;
+	}
+	throw new Error('.app-layout is not closed');
+}
+
+describe('a page left open across a deploy, svelte.config.js and src/routes/+layout.svelte (card 2167)', () => {
+	const layout = svelteFile('src/routes/+layout.svelte');
+	const BAR = '<div class="update-bar" role="status" bind:offsetHeight={barHeight}>';
+
+	it('asks for a new version once a minute, the version being the time of the build', async () => {
+		const { default: config } = await import('../svelte.config.js');
+
+		expect(config.kit?.version?.pollInterval).toBe(60_000);
+		expect(config.kit?.version?.name).toBeUndefined();
+	});
+
+	it('imports updated from $app/state and beforeNavigate from $app/navigation', () => {
+		expect(layout.tree.getText()).toContain("import { beforeNavigate } from '$app/navigation';");
+		expect(layout.tree.getText()).toContain("import { updated } from '$app/state';");
+	});
+
+	it('shows the bar while there is a new version, with a Reload button, and reloads nowhere else', () => {
+		expect(layout.around(BAR)).toEqual([{ condition: 'updated.current', inElse: false }]);
+		expect(layout.markup).toContain('<span>DumpFire has been updated. Save anything you are editing, then reload to use the new version.</span>');
+		expect(layout.markup).toContain('<button type="button" class="update-bar-reload" onclick={() => location.reload()}>Reload</button>');
+		expect(layout.source.match(/location\.reload\(/g)).toHaveLength(1);
+	});
+
+	it('makes a move to another page a full page load once there is one, by SvelteKit’s documented pattern', () => {
+		const calls = callsOf(layout.tree, 'beforeNavigate');
+
+		expect(calls).toHaveLength(1);
+		// Called as the script runs, not in onMount or an effect.
+		expect(layout.tree.statements.some((statement) => ts.isExpressionStatement(statement) && statement.expression === calls[0])).toBe(true);
+		expect(calls[0].arguments[0].getText().replace(/\s+/g, ' ')).toBe(
+			'({ willUnload, to }) => { if (updated.current && !willUnload && to?.url) { location.href = to.url.href; } }'
+		);
+	});
+
+	it('draws the bar above every other layer, every page’s windows and the toast among them', () => {
+		const layers = [...filesUnder('src', '.svelte'), ...filesUnder('src', '.css')].flatMap((file) =>
+			[...readFileSync(join(ROOT, file), 'utf8').matchAll(/z-index:\s*(\d+)/g)].map((found) => Number(found[1]))
+		);
+		const bar = Number(/\.update-bar \{[^}]*z-index:\s*(\d+)/.exec(layout.source)?.[1]);
+
+		expect(layers.length).toBeGreaterThan(20);
+		expect(layers.filter((z) => z >= bar)).toEqual([bar]);
+		// And outside .app-layout, whose own z-index keeps everything a page draws beneath anything outside it.
+		expect(layout.markup.indexOf('{#if updated.current}')).toBeGreaterThan(appLayoutEnd(layout.markup));
+	});
+});
+
+// ─── The review of group Q-F (cards 2143 to 2167), its fixes ────────────────
+
+describe('the user badge, the update bar, the avatar and the subtask window’s Save (the review of group Q-F)', () => {
+	const layout = svelteFile('src/routes/+layout.svelte');
+
+	it('draws the user badge inside .app-layout, with the pages’ windows and beneath them, where it was drawn above every one', () => {
+		const badge = layout.markup.indexOf('<div class="user-badge glass">');
+		const page = layout.markup.indexOf('<div class="app-layout">');
+		expect(badge).toBeGreaterThan(page);
+		expect(badge).toBeLessThan(appLayoutEnd(layout.markup));
+		expect(layout.markup.match(/class="user-badge glass"/g)).toHaveLength(1);
+		// Beneath every window: each `.modal-overlay` is at 1000 or more.
+		const z = Number(/\.user-badge \{[^}]*z-index:\s*(\d+)/.exec(layout.source)?.[1]);
+		expect(z).toBeLessThan(1000);
+		expect(Number(/\.modal-overlay \{[^}]*z-index:\s*(\d+)/.exec(readFileSync(join(ROOT, 'src/app.css'), 'utf8'))?.[1])).toBe(1000);
+	});
+
+	it('puts the update bar at the foot of the screen, and keeps the windows, the toast and the badge clear of it while it shows', () => {
+		const bar = /\.update-bar \{([^}]*)\}/.exec(layout.source)![1];
+		expect(bar).toMatch(/\bbottom: 0;/);
+		expect(bar).not.toMatch(/\btop:/);
+		// Its height, measured, is set on the page's root while it shows, and nothing otherwise.
+		expect(layout.markup).toContain('<div class="update-bar" role="status" bind:offsetHeight={barHeight}>');
+		expect(layout.tree.getText()).toContain("document.documentElement.style.setProperty('--update-bar-space', updated.current ? `${barHeight}px` : '0px');");
+		// And each of them keeps clear of it by that much.
+		expect(/\.modal-overlay \{([^}]*)\}/.exec(readFileSync(join(ROOT, 'src/app.css'), 'utf8'))![1]).toContain('padding-bottom: var(--update-bar-space, 0px);');
+		expect(readFileSync(join(ROOT, 'src/lib/components/Toast.svelte'), 'utf8')).toContain('bottom: calc(24px + var(--update-bar-space, 0px));');
+		expect(/\.user-badge \{([^}]*)\}/.exec(layout.source)![1]).toContain('bottom: calc(var(--space-lg) + var(--update-bar-space, 0px));');
+	});
+
+	it('reads the page’s data again once a new avatar is kept, so that the badge shows it without a reload, and only then', () => {
+		const account = svelteFile('src/routes/account/+page.svelte');
+		const changing = functionNamed(account.tree, 'changeEmoji');
+
+		expect(account.tree.getText()).toContain("import { invalidateAll } from '$app/navigation';");
+		const read = statementsOf(changing, 'await invalidateAll()');
+		expect(read).toHaveLength(1);
+		expect(sideOf(read[0])).toBe('ok');
+		// The badge draws the layout's user, which `invalidateAll` loads again.
+		expect(layout.tree.getText()).toContain('let user = $derived($page.data.user);');
+		expect(layout.markup).toContain('<span class="user-badge-emoji">{user.emoji}</span>');
+	});
+
+	it('disables the avatar picker while a change is on its way, as the mail switches are', () => {
+		const account = svelteFile('src/routes/account/+page.svelte');
+		const changing = functionNamed(account.tree, 'changeEmoji');
+		const steps = changing.body!.statements.map((statement) => statement.getText());
+
+		expect(steps[0]).toBe('if (savingEmoji) return;');
+		expect(account.markup).toContain('<EmojiPicker value={currentEmoji} onSelect={(e) => changeEmoji(e)} disabled={savingEmoji} />');
+		const picker = readFileSync(join(ROOT, 'src/lib/components/EmojiPicker.svelte'), 'utf8');
+		expect(picker).toContain('disabled = false }: { value?: string; onSelect: (emoji: string) => void; disabled?: boolean } = $props();');
+		expect(picker).toMatch(/<button class="emoji-trigger" bind:this=\{triggerEl\} onclick=\{togglePicker\} type="button" \{disabled\}>/);
+	});
+
+	it('disables the subtask window’s Save while a save is on its way, so a double click makes one subtask', () => {
+		const subtask = svelteFile('src/lib/components/SubtaskModal.svelte');
+		const saving = functionNamed(subtask.tree, 'save');
+		const steps = saving.body!.statements;
+
+		expect(steps[0].getText()).toBe('if (!title.trim() || saving) return;');
+		// Set before the request, and cleared in a `finally`, whatever the answer.
+		const set = statementsOf(saving, 'saving = true');
+		expect(set).toHaveLength(1);
+		expect(set[0].getStart()).toBeLessThan(Math.min(...callsOf(saving, 'fetch').map((call) => call.getStart())));
+		const tried = steps.find((step): step is ts.TryStatement => ts.isTryStatement(step))!;
+		expect(tried.finallyBlock?.statements.map((statement) => statement.getText())).toEqual(['saving = false;']);
+		expect(subtask.markup).toContain('onclick={save} disabled={!title.trim() || saving}>');
 	});
 });
 

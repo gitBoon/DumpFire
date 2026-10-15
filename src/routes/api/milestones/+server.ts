@@ -12,6 +12,7 @@ import {
 	requireMilestoneBoard,
 	MilestoneError
 } from '$lib/server/milestones';
+import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { pathId, readBody, readDate, readId, readQueryId, readText } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
@@ -66,7 +67,21 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const description = readText(body, 'description', { max: 50000 });
 			const targetDate = readDate(body, 'targetDate', { nullable: true });
 
-			return createMilestone(user, { name, boardId, description, targetDate });
+			const created = createMilestone(user, { name, boardId, description, targetDate });
+
+			// The entry `POST /api/v1/milestones` writes (card 2143), on the
+			// milestone's board; one that belongs to no board has no board's log
+			// to go in, there as here.
+			if (created.boardId !== null) {
+				logUiActivity({
+					boardId: created.boardId,
+					action: ACTIONS.milestoneCreated,
+					detail: `Created milestone "${created.name}"`,
+					...actorOf(user)
+				});
+			}
+
+			return created;
 		});
 		return json(created, { status: 201 });
 	} catch (e) {

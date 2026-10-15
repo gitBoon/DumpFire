@@ -228,7 +228,12 @@ export async function createCard(data: {
 	description: string;
 	/** Left out, a card's priority is medium, and its due date and category none. */
 	priority?: string;
-	colorTag: string;
+	/**
+	 * Left out, a card has no colour tag. The card window sends none: no screen
+	 * has a control for it, and it is set through the API (card 2147). A
+	 * duplicate copies the original's.
+	 */
+	colorTag?: string;
 	categoryId?: number | null;
 	dueDate?: string | null;
 }): Promise<Response> {

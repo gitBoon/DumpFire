@@ -5,9 +5,12 @@
 	 * Allows board owners/admins to share boards with individual users
 	 * or teams, set permission levels, manage existing access,
 	 * and toggle public visibility.
+	 *
+	 * A write that is refused, or gets no answer, is said on one line in the
+	 * window, above its Close button, in the server's words (card 2148): each
+	 * used to look saved whatever the answer was.
 	 */
-	import { failureMessage } from '$lib/api';
-	import { toasts } from '$lib/stores/toast';
+	import { deleteFailure, failureMessage } from '$lib/api';
 
 	// An address and a role come to the board's owner and an administrator only
 	// (card 2128): the lists name everyone else without them.
@@ -34,6 +37,7 @@
 	let allTeams = $state<AvailableTeam[]>([]);
 	let isPublic = $state(false);
 	let loading = $state(true);
+	/** Why the last load or write failed, shown above the Close button; '' when nothing failed. */
 	let error = $state('');
 	let togglingPublic = $state(false);
 
@@ -62,6 +66,9 @@
 				members = data.members;
 				teamAccess = data.teams;
 				isPublic = data.isPublic ?? false;
+			} else {
+				// A board deleted in another tab is 404 here, and the lists would be empty with no word why.
+				error = await failureMessage(shareRes, 'The sharing settings could not be loaded.');
 			}
 
 			if (usersRes.ok) {
@@ -72,7 +79,7 @@
 				allTeams = await teamsRes.json();
 			}
 		} catch {
-			error = 'Failed to load sharing data';
+			error = 'No answer from the server. The sharing settings could not be loaded.';
 		}
 		loading = false;
 	}
@@ -89,47 +96,69 @@
 
 	async function togglePublic() {
 		togglingPublic = true;
-		const res = await fetch(`/api/boards/${boardId}/share`, {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ isPublic: !isPublic })
-		});
-		if (res.ok) {
-			isPublic = !isPublic;
+		error = '';
+		try {
+			const res = await fetch(`/api/boards/${boardId}/share`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ isPublic: !isPublic })
+			});
+			if (res.ok) {
+				isPublic = !isPublic;
+			} else {
+				error = await failureMessage(res, 'The board’s visibility was not changed.');
+			}
+		} catch {
+			error = 'No answer from the server. The board’s visibility may not have been changed.';
+		} finally {
+			togglingPublic = false;
 		}
-		togglingPublic = false;
 	}
 
 	async function shareWithUser() {
 		if (!selectedUserId) return;
-		const res = await fetch(`/api/boards/${boardId}/share`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ type: 'user', targetId: selectedUserId, role: selectedRole })
-		});
-		if (res.ok) {
-			selectedUserId = null;
-			await loadData();
+		error = '';
+		try {
+			const res = await fetch(`/api/boards/${boardId}/share`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ type: 'user', targetId: selectedUserId, role: selectedRole })
+			});
+			if (res.ok) {
+				selectedUserId = null;
+				await loadData();
+			} else {
+				error = await failureMessage(res, 'The board was not shared.');
+			}
+		} catch {
+			error = 'No answer from the server. The board may not have been shared.';
 		}
 	}
 
 	async function shareWithTeam() {
 		if (!selectedTeamId) return;
-		const res = await fetch(`/api/boards/${boardId}/share`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ type: 'team', targetId: selectedTeamId, role: selectedRole })
-		});
-		if (res.ok) {
-			selectedTeamId = null;
-			await loadData();
+		error = '';
+		try {
+			const res = await fetch(`/api/boards/${boardId}/share`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ type: 'team', targetId: selectedTeamId, role: selectedRole })
+			});
+			if (res.ok) {
+				selectedTeamId = null;
+				await loadData();
+			} else {
+				error = await failureMessage(res, 'The board was not shared.');
+			}
+		} catch {
+			error = 'No answer from the server. The board may not have been shared.';
 		}
 	}
 
 	/**
 	 * Change the role of a person or a team the board is shared with, to what
-	 * `select` now shows. A refusal is said in the server's words, in the
-	 * shared toast, and the select is put back to the role that is stored:
+	 * `select` now shows. A refusal is said in the server's words, on the
+	 * window's line, and the select is put back to the role that is stored:
 	 * reading the list again would not redraw a select whose value has not
 	 * changed, so it would go on showing the role that was refused.
 	 */
@@ -141,7 +170,7 @@
 		const putBack = () => {
 			if (stored !== undefined) select.value = stored;
 		};
-		const started = toasts.navigation();
+		error = '';
 		let res: Response;
 		try {
 			res = await fetch(`/api/boards/${boardId}/share`, {
@@ -151,23 +180,33 @@
 			});
 		} catch {
 			putBack();
-			toasts.add('No answer from the server. The role may not have been changed.', 'error', started);
+			error = 'No answer from the server. The role may not have been changed.';
 			return;
 		}
 		if (res.ok) {
 			await loadData();
 		} else {
 			putBack();
-			toasts.add(await failureMessage(res, 'The role was not changed.'), 'error', started);
+			error = await failureMessage(res, 'The role was not changed.');
 		}
 	}
 
 	async function removeAccess(type: 'user' | 'team', targetId: number) {
-		await fetch(`/api/boards/${boardId}/share`, {
-			method: 'DELETE',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ type, targetId })
-		});
+		error = '';
+		const failure = await deleteFailure(
+			() =>
+				fetch(`/api/boards/${boardId}/share`, {
+					method: 'DELETE',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ type, targetId })
+				}),
+			type === 'user' ? 'person' : 'team',
+			'removed'
+		);
+		if (failure) {
+			error = failure;
+			return;
+		}
 		await loadData();
 	}
 </script>
@@ -334,6 +373,14 @@
 					<p>Only you and admins have access to this board.</p>
 				</div>
 			{/if}
+		{/if}
+
+		<!-- A load or a write that failed, in the server's words, until it is closed or the next write. -->
+		{#if error}
+			<div class="share-error" role="alert">
+				<span>{error}</span>
+				<button class="share-error-close" onclick={() => (error = '')} aria-label="Close this message" type="button">✕</button>
+			</div>
 		{/if}
 
 		<div class="share-footer">
@@ -665,6 +712,35 @@
 		font-size: 2rem;
 		margin-bottom: var(--space-sm);
 	}
+
+	/* A failure, as the card window shows one */
+	.share-error {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-sm);
+		margin-top: var(--space-lg);
+		padding: 7px 10px;
+		font-size: 0.78rem;
+		line-height: 1.4;
+		background: rgba(244, 63, 94, 0.1);
+		color: var(--accent-rose);
+		border: 1px solid rgba(244, 63, 94, 0.25);
+		border-radius: var(--radius-sm);
+	}
+
+	.share-error span { flex: 1; }
+
+	.share-error-close {
+		background: none;
+		border: none;
+		cursor: pointer;
+		padding: 0 2px;
+		color: inherit;
+		font-size: 0.7rem;
+		opacity: 0.7;
+	}
+
+	.share-error-close:hover { opacity: 1; }
 
 	.share-footer {
 		margin-top: var(--space-xl);

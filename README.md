@@ -44,7 +44,7 @@ Built with SvelteKit 5 (Runes), Drizzle ORM, and better-sqlite3.
 
 ### Email Notifications (Optional)
 - SMTP configuration managed entirely through the admin panel — no environment variables required
-- Notifications for card creation, card moves, user assignment, comments, and board sharing
+- Notifications for card moves, user assignment, comments, @mentions, board sharing, task requests and their progress, and new plans, each of which every user can switch off on My Account
 - Fully styled HTML email templates
 - Silently disabled when SMTP is not configured — zero impact on operation
 
@@ -353,6 +353,9 @@ docker run -d \
 
 > **What about migrations?**
 > Migrations are tracked in a `__drizzle_migrations` table inside your database. On startup, the app reads every `.sql` file in the `drizzle/` directory, checks which ones have already been applied, and runs only the new ones. Each new file runs in its own transaction and is recorded by its file name, so it is applied in full or not at all and is never run twice. If a file fails, nothing after it runs and the server stops before it starts listening (exit code 1); the log line marked `[CRITICAL] [DB]` names the file and the reason. See [docs/deployment.md](docs/deployment.md#updating-a-running-installation) for updating and going back, and [docs/data-model.md](docs/data-model.md#migrations-and-schema-reconciliation) for how the runner works.
+
+> **What about pages left open?**
+> Within about a minute of an update, every DumpFire page left open shows a bar saying DumpFire has been updated, with a **Reload** button; it never reloads by itself, so save what you are typing first. A page loaded before the release that brought the bar does not ask, so reload those by hand once: see [step 7](docs/deployment.md#updating-a-running-installation).
 
 ---
 

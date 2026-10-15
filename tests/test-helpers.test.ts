@@ -421,7 +421,9 @@ describe('pageLoad(), the caller for page loads', () => {
 		expect(await pageLoad('/', { user: owner, layout: true })).toEqual({ type: 'data', data: { user: owner } });
 	});
 
-	it('returns a redirect, and an error', async () => {
+	// It imports two pages' loads, and on a cold cache that once took longer
+	// than the 5 seconds a test is given.
+	it('returns a redirect, and an error', { timeout: 30_000 }, async () => {
 		const user = makeUser();
 
 		expect(await pageLoad('/admin', { user })).toEqual({ type: 'redirect', status: 303, location: '/' });

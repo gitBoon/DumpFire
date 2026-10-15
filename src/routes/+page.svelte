@@ -17,11 +17,12 @@
 	import { formatTokens } from '$lib/tokens';
 	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	// The shared toast, for a delete that failed. Renamed here: this page has
-	// `toasts` of its own, which are the new-request notices.
+	// The shared toast, for a write that failed (card 2148: each in the server's
+	// words). Renamed here: this page has `toasts` of its own, which are the
+	// new-request notices.
 	import FailureToast from '$lib/components/Toast.svelte';
 	import { toasts as failureToasts } from '$lib/stores/toast';
-	import { boardDeleteWarning, deleteFailure } from '$lib/api';
+	import { boardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import CategoryManager from '$lib/components/CategoryManager.svelte';
@@ -229,17 +230,24 @@
 
 	async function createBoard() {
 		if (!newBoardName.trim()) return;
-		const res = await fetch('/api/boards', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: newBoardName.trim(), emoji: newBoardEmoji, categoryId: newBoardCategory })
-		});
-		if (res.ok) {
-			const board = await res.json();
-			newBoardName = '';
-			newBoardCategory = null;
-			showCreate = false;
-			goto(`/board/${board.id}`);
+		const started = failureToasts.navigation();
+		try {
+			const res = await fetch('/api/boards', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: newBoardName.trim(), emoji: newBoardEmoji, categoryId: newBoardCategory })
+			});
+			if (res.ok) {
+				const board = await res.json();
+				newBoardName = '';
+				newBoardCategory = null;
+				showCreate = false;
+				goto(`/board/${board.id}`);
+			} else {
+				failureToasts.add(await failureMessage(res, 'The board was not created.'), 'error', started);
+			}
+		} catch {
+			failureToasts.add('No answer from the server. The board may not have been created.', 'error', started);
 		}
 	}
 
@@ -250,10 +258,11 @@
 	async function deleteBoard(id: number) {
 		deleting = id;
 		confirmState.show = false;
+		const started = failureToasts.navigation();
 		try {
 			const failure = await deleteFailure(() => fetch(`/api/boards/${id}`, { method: 'DELETE' }), 'board');
 			if (failure) {
-				failureToasts.add(failure, 'error');
+				failureToasts.add(failure, 'error', started);
 				return;
 			}
 			await invalidateAll();
@@ -283,14 +292,37 @@
 		favouriteBoardIds = new Set(data.favouriteBoardIds || []);
 	});
 
+	/** Draw `boardId`'s star on or off, and every other board's as it is. */
+	function showStar(boardId: number, on: boolean) {
+		const next = new Set(favouriteBoardIds);
+		if (on) next.add(boardId);
+		else next.delete(boardId);
+		favouriteBoardIds = next;
+	}
+
+	/**
+	 * The star turns over at once. A refusal puts it back and says why; a
+	 * success draws it as the server says it now is (`favourited`), since the
+	 * route turns over whatever it holds, which another tab may have changed.
+	 */
 	async function toggleFavourite(boardId: number, e: MouseEvent) {
 		e.stopPropagation();
 		e.preventDefault();
-		const next = new Set(favouriteBoardIds);
-		if (next.has(boardId)) next.delete(boardId);
-		else next.add(boardId);
-		favouriteBoardIds = next;
-		await fetch(`/api/boards/${boardId}/favourite`, { method: 'POST' });
+		const was = favouriteBoardIds.has(boardId);
+		showStar(boardId, !was);
+		const started = failureToasts.navigation();
+		try {
+			const res = await fetch(`/api/boards/${boardId}/favourite`, { method: 'POST' });
+			if (res.ok) {
+				showStar(boardId, (await res.json()).favourited === true);
+			} else {
+				showStar(boardId, was);
+				failureToasts.add(await failureMessage(res, 'The board’s star was not changed.'), 'error', started);
+			}
+		} catch {
+			showStar(boardId, was);
+			failureToasts.add('No answer from the server. The board’s star may not have been changed.', 'error', started);
+		}
 	}
 
 	let favouriteBoards = $derived(data.boards.filter(b => favouriteBoardIds.has(b.id)));
@@ -443,16 +475,17 @@
 					subBoardError = 'This board has no columns to hold a parent card';
 					return;
 				}
-				const cardRes = await fetch('/api/cards', {
+				const res = await fetch('/api/cards', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
 					body: JSON.stringify({ columnId: firstCol.id, boardId: boardCtx.boardId, title: name })
 				});
-				if (!cardRes.ok) {
-					subBoardError = 'Could not create the parent card';
+				if (!res.ok) {
+					// The server's reason (card 2148), and these words where it gives none.
+					subBoardError = await failureMessage(res, 'Could not create the parent card');
 					return;
 				}
-				parentCardId = (await cardRes.json()).id;
+				parentCardId = (await res.json()).id;
 			}
 
 			const res = await fetch('/api/boards', {
@@ -461,7 +494,7 @@
 				body: JSON.stringify({ name, emoji: '🗂️', parentCardId })
 			});
 			if (!res.ok) {
-				subBoardError = 'Could not create the sub-board';
+				subBoardError = await failureMessage(res, 'Could not create the sub-board');
 				return;
 			}
 
@@ -472,38 +505,60 @@
 
 			closeBoardContextMenu();
 			await invalidateAll();
+		} catch {
+			subBoardError = 'No answer from the server. Reload the page to see whether the sub-board was made.';
 		} finally {
 			subBoardCreating = false;
 		}
 	}
 
+	/** File a board under a category, or under none. A refusal is said in the toast; the menu closes either way. */
 	async function setBoardCategory(boardId: number, categoryId: number | null) {
-		await fetch(`/api/boards/${boardId}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ categoryId })
-		});
+		const started = failureToasts.navigation();
+		let res: Response;
+		try {
+			res = await fetch(`/api/boards/${boardId}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ categoryId })
+			});
+		} catch {
+			closeBoardContextMenu();
+			failureToasts.add('No answer from the server. The board’s category may not have been changed.', 'error', started);
+			return;
+		}
 		closeBoardContextMenu();
+		if (!res.ok) {
+			failureToasts.add(await failureMessage(res, 'The board’s category was not changed.'), 'error', started);
+			return;
+		}
 		await invalidateAll();
 	}
 
 	async function createBoardCategoryInline() {
 		if (!newBoardCatName.trim()) return;
-		const res = await fetch('/api/board-categories', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: newBoardCatName.trim(), color: newBoardCatColor })
-		});
-		if (res.ok) {
-			const created = await res.json();
-			// Auto-expand the new category group
-			const next = new Set(collapsedCategories);
-			next.delete(created.name);
-			collapsedCategories = next;
-			await setBoardCategory(boardCtx.boardId, created.id);
-			newBoardCatName = '';
-			newBoardCatColor = '#6366f1';
-			showNewBoardCat = false;
+		const started = failureToasts.navigation();
+		try {
+			const res = await fetch('/api/board-categories', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: newBoardCatName.trim(), color: newBoardCatColor })
+			});
+			if (res.ok) {
+				const created = await res.json();
+				// Auto-expand the new category group
+				const next = new Set(collapsedCategories);
+				next.delete(created.name);
+				collapsedCategories = next;
+				await setBoardCategory(boardCtx.boardId, created.id);
+				newBoardCatName = '';
+				newBoardCatColor = '#6366f1';
+				showNewBoardCat = false;
+			} else {
+				failureToasts.add(await failureMessage(res, 'The category was not created.'), 'error', started);
+			}
+		} catch {
+			failureToasts.add('No answer from the server. The category may not have been created.', 'error', started);
 		}
 	}
 

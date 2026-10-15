@@ -465,7 +465,10 @@ describe('POST /api/v1/boards', () => {
 			'insert into board_members',
 			'insert into activity_log'
 		]);
-		expect(run.effects).toEqual([]);
+		// A sub-board: the pages open on its card's board are told, once it is
+		// committed, as `POST /api/boards` tells them (card 2143). Nothing was.
+		expect(run.effects.map(name)).toEqual(['event update (board) on board 1']);
+		expect(run.effects[0]).toMatchObject({ data: { type: 'board', action: 'created' } });
 	});
 
 	it('refuses a board with no name, and a parent card the caller may not edit, from inside the transaction', async () => {

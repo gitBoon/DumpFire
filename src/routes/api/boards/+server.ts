@@ -2,8 +2,10 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { boards, columns, boardMembers } from '$lib/server/db/schema';
-import { desc, inArray } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { emit } from '$lib/server/events';
+import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { readBody, readId, readText } from '$lib/server/request-body';
 import { requireBoardCategory, requireParentCard, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
@@ -57,6 +59,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// One transaction: the board, its columns and its owner are made together.
 	// A failure after the first used to leave a board with no columns, or one
 	// that nobody owned. The parent card is read and the caller checked in it.
+	// With them the `board_created` entry `POST /api/v1/boards` writes, and for
+	// a sub-board the live update that shows it on its card (card 2143).
 	const board = inTransaction(() => {
 		// A sub-board hangs under a card, and is shown on it to everybody who
 		// can open that card's board. The id used to be written as it was sent,
@@ -94,6 +98,26 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		db.insert(boardMembers)
 			.values({ boardId: board.id, userId, role: 'owner' })
 			.run();
+
+		logUiActivity({
+			boardId: board.id,
+			action: ACTIONS.boardCreated,
+			detail: `Created board "${board.name}"`,
+			...actorOf(user)
+		});
+
+		// A sub-board is drawn on its card, so the pages open on that card's
+		// board are told. A top-level board is shown to nobody else who has a
+		// page open: its maker and the administrators, and the maker's page
+		// moves to it.
+		if (parent) {
+			const parentBoardId = db
+				.select({ boardId: columns.boardId })
+				.from(columns)
+				.where(eq(columns.id, parent.columnId))
+				.get()!.boardId;
+			emit(parentBoardId, 'update', { type: 'board', action: 'created' });
+		}
 
 		return board;
 	});

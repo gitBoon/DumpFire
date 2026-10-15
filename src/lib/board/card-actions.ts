@@ -13,10 +13,37 @@ import { categoryToCopy, colourToCopy, dueDateToCopy, priorityToCopy } from '$li
 // ─── Card CRUD ───────────────────────────────────────────────────────────────
 
 /**
+ * A label from a new card's template that was not put on it: see `saveCard`.
+ * The page names the label, which it holds and this does not.
+ */
+export type LabelFailure = {
+	labelId: number;
+	/** The server's words for the refusal, or what is said when there was no answer. */
+	message: string;
+};
+
+/**
  * Saves a card — either creates a new one or updates an existing one.
- * Also handles creating pending subtasks for newly created cards.
+ * Also handles creating pending subtasks for newly created cards, and putting
+ * on a new card the labels of the template it was made from (card 2163).
  *
- * @returns `{ isNew, title }` for activity logging by the caller.
+ * No colour tag is sent: the card window has no control for one, and it sent
+ * an empty one with every save, which cleared a tag set through the API
+ * (card 2147).
+ *
+ * Each of `pendingLabelIds` is put on the new card with `PUT /api/labels`,
+ * which adds a label a card does not have, as a new card has none. Each answer
+ * is read, and a label that was not put on comes back in `labelFailures`, for
+ * the page to say. The card is kept whatever becomes of a label, as it is
+ * whatever becomes of a pending subtask.
+ *
+ * A create the server refuses, or that gets no answer, makes no card: it is
+ * given back as `failure`, the server's words where it gave them, with
+ * `isNew` false, and nothing else is sent. It used to come back as created.
+ *
+ * @returns `{ isNew, title }` for activity logging by the caller, with the new
+ * card's id and `labelFailures` when a card was created, and `failure` when
+ * one was not.
  */
 export async function saveCard(
 	editingCard: CardType | null,
@@ -27,7 +54,6 @@ export async function saveCard(
 		title: string;
 		description: string;
 		priority: string;
-		colorTag: string;
 		categoryId: number | null;
 		dueDate: string | null;
 		onHoldNote?: string;
@@ -40,9 +66,11 @@ export async function saveCard(
 		closeReason?: string | null;
 		releaseState?: string | null;
 		pendingSubtasks?: string[];
+		/** A new card's labels, from the template it was made from: put on once it is made. */
+		pendingLabelIds?: number[];
 	}
-): Promise<{ isNew: boolean; title: string; cardId?: number }> {
-	const { pendingSubtasks, ...rest } = cardData;
+): Promise<{ isNew: boolean; title: string; cardId?: number; labelFailures?: LabelFailure[]; failure?: string }> {
+	const { pendingSubtasks, pendingLabelIds, ...rest } = cardData;
 	if (editingCard) {
 		// Update existing card
 		await api.updateCard(editingCard.id, { ...rest, boardId });
@@ -51,36 +79,74 @@ export async function saveCard(
 		// Create new card
 		const col = columns.find((c) => c.id === cardModalColumnId);
 		const maxPos = col && col.cards.length > 0 ? Math.max(...col.cards.map((c) => c.position)) + 1 : 0;
-		const res = await api.createCard({
-			columnId: cardModalColumnId,
-			position: maxPos,
-			boardId,
-			...rest
-		});
-		let newCardId: number | undefined;
+		let res: Response;
+		try {
+			res = await api.createCard({
+				columnId: cardModalColumnId,
+				position: maxPos,
+				boardId,
+				...rest
+			});
+		} catch {
+			return { isNew: false, title: cardData.title, failure: 'No answer from the server. The card may not have been created.' };
+		}
+		if (!res.ok) {
+			return { isNew: false, title: cardData.title, failure: await api.failureMessage(res, 'The card was not created.') };
+		}
+		const labelFailures: LabelFailure[] = [];
+		const newCard = await res.json();
 		// Create pending subtasks for the new card
-		if (res.ok) {
-			const newCard = await res.json();
-			newCardId = newCard.id;
-			if (pendingSubtasks && pendingSubtasks.length > 0) {
-				for (let i = 0; i < pendingSubtasks.length; i++) {
-					const stData = JSON.parse(pendingSubtasks[i]);
-					await api.createSubtask({
-						cardId: newCard.id,
-						title: stData.title,
-						description: stData.description || '',
-						priority: stData.priority || 'medium',
-						colorTag: stData.colorTag || '',
-						dueDate: stData.dueDate || null,
-						completed: false,
-						boardId
-					});
-				}
+		if (pendingSubtasks && pendingSubtasks.length > 0) {
+			for (let i = 0; i < pendingSubtasks.length; i++) {
+				const stData = JSON.parse(pendingSubtasks[i]);
+				await api.createSubtask({
+					cardId: newCard.id,
+					title: stData.title,
+					description: stData.description || '',
+					priority: stData.priority || 'medium',
+					colorTag: stData.colorTag || '',
+					dueDate: stData.dueDate || null,
+					completed: false,
+					boardId
+				});
 			}
 		}
-		return { isNew: true, title: cardData.title, cardId: newCardId };
+		// The template's labels, each once: a second toggle of one would take it off.
+		for (const labelId of new Set(pendingLabelIds ?? [])) {
+			let put: Response;
+			try {
+				put = await api.toggleLabel(newCard.id, labelId, boardId);
+			} catch {
+				labelFailures.push({ labelId, message: 'No answer from the server, so it may be on the card after all.' });
+				continue;
+			}
+			if (!put.ok) labelFailures.push({ labelId, message: await api.failureMessage(put, 'It was refused.') });
+		}
+		return { isNew: true, title: cardData.title, cardId: newCard.id, labelFailures };
 	}
 	return { isNew: false, title: '' };
+}
+
+/** Where a navigation came from or went to, as SvelteKit's `afterNavigate` gives it: the parts read here. */
+type NavigatedTo = { params: Record<string, string> | null; url: URL } | null;
+
+/**
+ * Whether a navigation closes the board page's card window before the card
+ * the new address names, if any, is opened (Q-F's review).
+ *
+ * - A navigation to another board closes it, a card named or not. A link
+ *   back to another board left the first board's card open over it, with the
+ *   wrong board's labels, and its pickers were refused. (Card 2184's layout
+ *   now makes the page afresh for each board, which closes it too.)
+ * - On the same board, a saved card's window is closed when the new address
+ *   names no card: Back after a link that opened it left it open.
+ *
+ * A New Task window is kept on the same board: no address names it. A first
+ * load, with no `from`, has no window to close.
+ */
+export function navigationClosesWindow(from: NavigatedTo, to: NavigatedTo, openOnACard: boolean): boolean {
+	if (from?.params?.id !== to?.params?.id) return true;
+	return openOnACard && !to?.url.searchParams.has('card');
 }
 
 /** Archives a card (`api.deleteCard`). Returns the answer, for the caller to check. */

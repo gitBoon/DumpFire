@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.24
+version: 1.26
 status: As-Built
 date: 2026-10-15
 tags:
@@ -19,7 +19,7 @@ tags:
   - superadmin
   - audit
   - sub-boards
-description: "Administration guide covering who may do what on the admin page, user management, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, the Audit page's filters, a board beneath one of its own cards and how to put it right, and system settings"
+description: "Administration guide covering who may do what on the admin page, user management, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, and system settings"
 ---
 
 # Admin Operations Guide
@@ -70,16 +70,14 @@ If nobody can sign in as the superadmin, no page puts it right: see [If Nobody C
 
 ## When Something Is Not Done
 
-This page, the Teams page, the Reports page's schedules, All Tasks, the Archived page, a board's Archived Cards panel, a card's window and its **Link existing board** each say when a change was not made, in the server's own words where it gave any: "No edit access to this board", "Card not found", "You can only delete your own templates". Several of them used to say a change had worked whatever the answer was, or to say nothing.
+This page, the Teams page, the Reports page's schedules, All Tasks, the Archived page, a board's Archived Cards panel, a card's window and its **Link existing board**, the share window, a subtask's window, the dashboard and My Account each say when a change was not made, in the server's own words where it gave any: "No edit access to this board", "Card not found", "You can only delete your own templates". Several of them used to say a change had worked whatever the answer was, or to say nothing.
 
-- **A message that something was not done stays** until it is closed with ✕ or the page is left. Most are in the corner of the page. A card's window says it at its top, where it stays in view however far the window is scrolled. An import says it in the report under the **Import Backup** button, and not in the corner as well. The mail settings say it under their buttons, and the Reports page's emailing of a report in its dialog, each until it is tried again.
+- **A message that something was not done stays** until it is closed with ✕ or the page is left. Most are in the corner of the page. A card's window says it at its top, where it stays in view however far the window is scrolled. An import says it in the report under the **Import Backup** button, and not in the corner as well. The mail settings say it under their buttons, and the Reports page's emailing of a report in its dialog, each until it is tried again. The share window and a subtask's window say it on a line of their own above their buttons, with a ✕ to close it; My Account says it under what was refused, the avatar, the mail switches or the API key panel; and the **New Sub-board** form of a board's menu on the dashboard on its own line. Each of these goes when that change is tried again.
 - **The corner shows each such message once, and three at most.** The same message again takes the place of the one shown, and a fourth puts the oldest away. A message about a change made on a page you have since left is not shown on the next page.
 - **A message that something was done goes after three seconds**, as does any note or warning. Not every change has one: most of what is done in a card's window (a label, the cover, an assignee), and turning a report schedule on or off or deleting it, show the change itself and say nothing more.
-- **What the page changed before the answer came is put back**: a role in a user's row, a backup destination added or removed, a card's cover, a card's milestone. A card's window in All Tasks that could not save stays open with what was typed in it, and so do the forms for a new team, a new user and a new schedule.
+- **What the page changed before the answer came is put back**: a role in a user's row, a backup destination added or removed, a card's cover, a card's milestone, a person's role in the share window, a board's star on the dashboard, and your avatar and mail switches on My Account. A card's window in All Tasks that could not save stays open with what was typed in it, and so do a board's **New Task** window whose card was not made (it said "Created" until 2026-10-15), a subtask's window and the forms for a new team, a new user and a new schedule. A subtask whose delete was refused stays on the card. A subtask's **Save** and the avatar on My Account cannot be pressed again while a change is on its way, so a double click makes one subtask. Removing someone, or a team, from the share window who no longer has the board (removed in another tab) says "This board is not shared with that user" (or team), where it said nothing.
 - **A column's rename that is refused is said**, in the server's words, and the column keeps its old title (card 2134). A Complete or Done column that holds any card, archived ones included, can be renamed only to Complete or Done, and a column that holds any card cannot be renamed Complete or Done: the cards in it would become open work, or finished work nobody finished. An empty column is renamed freely. Keep a Complete or Done column that holds cards called Complete or Done: moving its cards out so as to rename it would reopen every one of them. To rename a column that holds cards into Complete or Done, move the cards first, each finished one to a Complete column and the rest to another column. It used to show the new title until the page was reloaded.
-- **Not yet everywhere.** Still said by nothing when refused:
-  - on a board: the card window's **Save**, a title edited on the board itself, pinning a card, a priority changed from a card's menu or the bulk bar, the completion prompt, adding and deleting categories, dragging cards and columns, the board's name and emoji, and the column's other settings. They are reworked with the board page, by card 2012;
-  - elsewhere: sharing a board, deleting a subtask from its window, the dashboard's favourite and its grouping of boards, and the account page's emoji and mail settings, by card 2148.
+- **Not yet everywhere.** Still said by nothing when refused, all on a board: the card window's **Save** of a saved card (a new card that is not made is said), a title edited on the board itself, pinning a card, a priority changed from a card's menu or the bulk bar, the completion prompt, adding and deleting categories, dragging cards and columns, the board's name and emoji, and the column's other settings. They are reworked with the board page, by card 2012. Sharing a board, a subtask's window, the dashboard's star, grouping and new boards, and the account page's avatar, mail settings and key revoke said nothing either until 2026-10-15 (card 2148).
 - **A request that got no answer** is not known to have failed, and the message says so: "No answer from the server. It is not known whether this was done." Reload the page to see what was saved.
 - **If your session has ended**, the message is shown and the page then goes to the login page. No dialog box stops it on the way.
 
@@ -422,6 +420,8 @@ Every permanent delete asks for confirmation, and the dialog says what will go. 
 | Every card on a board | **Admin → Board Management → Clear Cards** | Every card, archived ones included, each as the table above. The board, its columns and its categories are kept, except on a board in a loop, which goes too: see [A board beneath one of its own cards](#a-board-beneath-one-of-its-own-cards) |
 | Every archived card | **Admin → Danger Zone → Purge Archived Cards**, or the Archived page | Every archived card on every board, each as the table above |
 
+**A board that is no longer there**, deleted in another tab say, is answered "Board not found" by **Clear Cards** and **Clear Categories**, and by a delete of the board from Board Management or the dashboard, and nothing is changed or recorded (card 2211). Each used to say it was done: Clear Cards said "All cards cleared from board", and an administrator's delete "Board deleted", for a board that was gone. Anyone but an administrator is still refused Clear Cards and Clear Categories first, whether the board is there or not.
+
 A column delete, a purge and a clear each leave one entry in the activity log of the board they happened on, saying how many cards went. A board delete leaves none there, because the board's log goes with the board; the system log has an `INFO` line naming the board, who deleted it and what went with it. A card, a column, a purge or a clear whose board went with it, as a board in a loop does, leaves the same kind of line instead of the entry: see [A board beneath one of its own cards](#a-board-beneath-one-of-its-own-cards). Recent system log lines are on the **Audit** page under **Live Console**, and the stored history is at `GET /api/logs`.
 
 Pages open on what a delete takes are told once it is done, and read their board again (card 2108). A page open on a deleted board, or on a sub-board deleted with a board, a card or a column, shows "Board not found". A page open on a board that Clear Cards emptied, or that Purge Archived Cards took cards from, shows the board as it now is, or "Board not found" if the board went with its cards, as a board in a loop does. The page of the board a deleted sub-board hung from is told as well, so its card's sub-board link goes. Until 2026-10-14 each stayed as it was until it was reloaded. What is sent names nothing: no board, card or person. A member's dashboard is not told when a board they can see is deleted, because nobody but an administrator can be told anything of a board that is gone; it catches up the next time it is brought to the front.
@@ -520,18 +520,21 @@ Categories appear as collapsible groups in the dashboard sidebar.
 
 ## Notification Preferences
 
-Each user controls their own notification preferences from **My Account**:
+Each user controls their own notification preferences from **My Account**, under **Email Notifications**. The switches, in the order the page shows them:
 
-| Toggle | Controls |
+| Switch | Controls |
 |--------|----------|
-| **All emails** | Master switch for all notifications |
-| **Assignment** | Notified when assigned to a card |
-| **Card moved** | Notified when someone else moves your card to another column on a page, or completes it by any route, through the API included. Never for a move you made yourself, nor for a card on a board you cannot open (card 2180). Also decides the "Unblocked" mail |
-| **Comments** | Notified when someone comments on a board card |
-| **Mentions** | Notified when @mentioned in a comment |
-| **Board shared** | Notified when a board is shared with you |
-| **Requests** | Notified of new task requests |
-| **Request progress** | Requesters receive progress updates |
+| **All Email Notifications** | The master switch. Off, no mail of any kind below is sent, whatever its own switch says. Turning it off turns every switch below off, and turning it on turns them all on |
+| **Task Assignments** | Mailed when you are assigned to a card |
+| **Comments** | Mailed when someone else comments on a card of a board you are a member of, yourself or through a team |
+| **Mentions** | Mailed when someone @mentions you in a comment |
+| **Card Moves** | Mailed when someone else moves a card you are assigned to to another column on a page, or completes it by any route, through the API included. Never for a move you made yourself, nor for a card on a board you cannot open (card 2180). Also decides the "Unblocked" mail |
+| **Task Requests** | Mailed when someone sends you or your team a task request, or replies to one |
+| **Request Progress** | For a request you raised while signed in: mailed as work goes on on the card made from it (a move, a subtask ticked, a comment), and when it is complete. Someone who raised a request without an account is always mailed |
+| **Board Sharing** | Mailed when a board is shared with you |
+| **Planning** | Mailed when someone else makes a plan from cards that depend on each other, and you are assigned to one of its cards or are an administrator |
+
+The page, the route that saves the switches (`/api/account/notifications`) and the mail that reads them share one list, `src/lib/notification-prefs.ts` (card 2146). Until 2026-10-15 they kept three: **Request Progress** was offered and never saved, so it went back on at every reload and the progress mail was always sent, and **Mentions** was neither offered nor saved, so mention mail could be stopped only by switching all mail off. Nobody had either stored, so anyone who switched Request Progress off before then gets the mail until they switch it off again. A switch that is refused, or gets no answer, goes back to what it was, with the reason under the switches; the switches cannot be pressed while a change is being saved.
 
 ---
 
@@ -563,16 +566,28 @@ Every board change is recorded in the activity log (visible per-board in the sta
 - Subtask completed or deleted, on the page or through the API
 - Column deleted, with how many cards went with it
 - Archived cards purged, or a board's cards cleared, with the count
-- Comment added
-- User assigned / unassigned
+- Comment added or edited
+- User assigned or unassigned, in a card's window, through the API, or by accepting a task request with an assignee (`assignee_added`, by whoever accepted it, after `card_created`)
+- Board created, and a board updated, naming its fields: the name, emoji, dashboard grouping (`categoryId`) and whether it is public (`isPublic`) whenever they are sent, changed or not; the card it hangs under (`parentCardId`, which only a page can set) only when it changes
+- Milestone created on a board. One that belongs to no board has no board's log to go in, and writes no entry
 - API actions (prefixed with `api:`)
 
-The board's activity panel shows each action by its stored name with any `api:` taken off and
-underscores read as spaces, so a restore reads "card restored" and a deleted subtask "subtask
-deleted" whichever way it was done. The All Tasks page names an action with a label of its own,
-and since 2026-10-15 it names these too: `card_restored` and `api:card_restored` read "Restored
-card", `subtask_deleted` and `api:subtask_deleted` "Deleted subtask", and `api:subtask_completed`
-"Completed subtask".
+Each of these is recorded alike whether it was done on a page or through the API, in the same words, the stored name bare for a page and with `api:` in front for the API (card 2143). Until 2026-10-15 an assignment, a comment edited, a board created or updated and a milestone created were recorded only when done through the API, so the Audit page, a board's Activity Log, `GET /api/v1/audit-log` and the activity report did not show them when they were done on a page. The pages open on the board are now told of an assignment or an unassignment, a comment edited and a board updated, and the board a new sub-board's card is on is told of the sub-board, so they refresh as they do for the API's.
+
+The board's activity panel and the All Tasks activity panel name each action in the same words, from one table (`src/lib/utils/activity-labels.ts`, card 2212), whichever way it was done:
+
+| Stored name, bare or with `api:` | Shown as |
+|----------------------------------|----------|
+| `card_created`, `card_updated`, `card_moved`, `card_completed`, `card_reopened`, `card_archived`, `card_restored`, `card_deleted` | Created card, Updated card, Moved card, Completed card, Reopened card, Archived card, Restored card, Deleted card |
+| `card_moved_away`, `card_moved_in` | Moved card to another board, Moved card from another board |
+| `cards_purged`, `cards_cleared`, `column_deleted` | Purged archived cards, Cleared cards, Deleted column |
+| `subtask_created`, `subtask_updated`, `subtask_completed`, `subtask_deleted`, and `subtask_toggled`, written by older versions | Created subtask, Updated subtask, Completed subtask, Deleted subtask, Updated subtask |
+| `comment_added`, `comment_edited` | Added comment, Edited comment |
+| `assignee_added`, `assignee_removed` | Assigned user, Unassigned user |
+| `dependency_added`, `dependency_removed`, `dependencies_bulk_added` | Added dependency, Removed dependency, Added dependencies |
+| `board_created`, `board_updated`, `milestone_created` | Created board, Updated board, Created milestone |
+
+All Tasks marks an action done through the API with its **API** badge; the board's panel does not, and the Audit page's **Source** filter tells them apart. A name with no label, which only an entry older than these names can have, reads as the name in words with a capital first letter, never with `api:`: `time_logged` reads "Time logged". Until 2026-10-15 the board's panel showed the stored name with each word capitalised ("Card Moved In"), and All Tasks had a table of its own that knew 25 names and showed the rest with spaces for underscores and any `api:` left on, so a completion through the API read "api:card completed".
 
 ### The Audit Page
 

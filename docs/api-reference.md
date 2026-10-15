@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.34
+version: 1.36
 status: As-Built
 date: 2026-10-15
 tags:
@@ -607,6 +607,22 @@ new; these answers and fields are:
   and its card could never be completed. A move within one board is not asked, and the card
   such a loop already hangs from can still be moved onto a board outside it. See
   [`PUT /api/v1/cards/:cardId/move`](#put-apiv1cardscardidmove).
+- **What is done in the web application is recorded as it is through the API** (card
+  2143). Assigning someone to a card, taking them off, editing a comment, creating a
+  board, updating one and creating a milestone on a board write the entry their operation
+  here writes, in the same words, stored without `api:` and with `source` `ui`:
+  `assignee_added`, `assignee_removed`, `comment_edited`, `board_created`,
+  `board_updated` (naming the fields sent, in this API's order) and `milestone_created`.
+  Accepting a task request with an assignee writes `assignee_added`, by whoever accepted
+  it. So `GET /audit-log`, `GET /reports/activity` and `recentActivity` on `GET /me/stats`
+  hold them, and the activity report counts a card as touched by, and attributes it to,
+  whoever assigned someone to it or edited a comment on it on a page, as it did for the
+  same actions through the API. They wrote nothing. None of them starts a webhook.
+- **`POST /boards` with a `parentCardId` tells the board that card is on** (card 2143):
+  the pages open on it are sent a live update, `{ "type": "board", "action": "created" }`,
+  so the sub-board shows on its card without a reload, as the web application's own create
+  now does too. It sent nothing. A board made at the top level sends nothing, and the
+  answer is unchanged.
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -645,7 +661,9 @@ API:
   `403`, and an administrator `404`, `200` doing nothing, or `500`. `PUT /api/boards/{id}`:
   `403` to all but an administrator. `POST`, `PATCH` and `DELETE /api/boards/{id}/share`:
   `403`, and an administrator `500` or `200` doing nothing. A share that is not there is
-  still `200` on `DELETE`.
+  `404` on `DELETE`, after the owner's check: `This board is not shared with that user`, or
+  `This board is not shared with that team`, where it was `200` doing nothing (the review of
+  group Q-F, 2026-10-15).
 - **Fields are read by their type and range**, `400` naming the field, where each was stored
   as sent or was a `500`. A value the row already holds, sent back unchanged, is kept.
   - `PUT /api/teams/{id}`: a body with no name or emoji is `No valid fields to update`,
@@ -1016,8 +1034,11 @@ API:
   2128's review). The board page and All Tasks gave `requestOrigin.requesterEmail`, the
   address of someone who often has no account, to every viewer of the board; no screen
   read it.
-- **`GET /api/burndown?milestoneId=` and `DELETE /api/boards/{id}`** answer as
-  `GET /burndown?milestoneId=` and `DELETE /boards/:boardId` do above.
+- **`GET /api/burndown?milestoneId=`** answers as `GET /burndown?milestoneId=` does above,
+  and **`DELETE /api/boards/{id}`** as `DELETE /boards/:boardId` does: it deletes the
+  board's card categories with it (card 2128's review), and a board that is not there is
+  `404` `Board not found` to everyone, before who is asking is looked at (card 2211,
+  below).
 - **A card created in a Complete or Done column is completed** (card 2134), by
   `POST /api/cards`, which the card window and Duplicate use, and by accepting a task
   request into such a column (`PATCH /api/requests/{id}`), as `POST /boards/:boardId/cards`
@@ -1107,6 +1128,41 @@ API:
   board that was already beneath one of its own cards no longer stops the server when it is
   opened, and the server names such boards in the system log, the first 20 and then how
   many more, at each start and as soon as an imported backup brings one (card 2142): see [Admin Operations Guide](admin-guide.md#a-board-beneath-one-of-its-own-cards).
+- **The web application's routes record and tell what their API twins do** (card 2143).
+  `POST` and `DELETE /api/cards/{id}/assignees`, `PUT /api/cards/{id}/comments/{commentId}`,
+  `POST /api/boards`, `PUT /api/boards/{id}` and `POST /api/milestones` write the entry
+  their operation above writes, with `source` `ui`, in the transaction of the write, and
+  send the live update it sends, once that is committed: `{ "type": "card" }` to the
+  card's board for an assignment (of someone already assigned too, with no entry and no
+  mail), a removal and a comment edited; `{ "type": "board" }` to the board, once, for an
+  update that sent a field, beside the updates to the boards a `parentCardId` left and
+  joined; and `{ "type": "board", "action": "created" }` to the board a new sub-board's
+  card is on. An update that sends no field writes nothing and sends nothing, and is
+  still `200`. A milestone of no board writes no entry, and a new milestone sends no
+  update. Accepting a task request with an assignee, `PATCH /api/requests/{id}`, writes
+  `assignee_added` by the accepter after `card_created`. The answers are unchanged. So the
+  Audit page and a board's Activity Log show these actions done on a page, and other open
+  pages refresh after them.
+- **Clearing or deleting a board that is not there is `404` `Board not found`** (card
+  2211), and nothing is changed, recorded or sent.
+  `POST /api/admin/boards/{id}/clear-cards` and
+  `POST /api/admin/boards/{id}/clear-categories` answer so to an administrator; anyone
+  else is still refused `403` `Forbidden` first, whether the board is there or not.
+  `DELETE /api/boards/{id}` answers so to everyone, before who is asking is looked at, as
+  `DELETE /boards/:boardId` does. Each was `200` for a board that was not there, the
+  session delete `403` to anyone but an administrator, and the admin page said the cards
+  were cleared, or the board deleted, for a board deleted in another tab.
+- **`GET` and `PUT /api/account/notifications` answer and save `email_request_progress`
+  and `email_mentions`** (card 2146), each `true` or `false` as the other keys are.
+  Neither was answered or saved, so neither could be switched off: My Account's Request
+  Progress went back on at every reload, and the mention mail could be stopped only by
+  switching all mail off. My Account now has a Mentions switch. The keys are listed in
+  [Notifications & Email](notifications-email.md#user-notification-preferences).
+- **The card window sends no `colorTag`** (card 2147), on `PUT /api/cards/{id}` and
+  `POST /api/cards`. It sent `''` with every save from a board or the plan page, which
+  cleared a tag set through the API; such a tag now survives a save there, and the save's
+  `card_updated` entry no longer names `colorTag`. Duplicate still copies a card's tag,
+  and the field is read on both routes as before.
 
 ### Changes on 2026-10-13
 
@@ -1513,6 +1569,10 @@ Create a new board. Default columns (To Do, On Hold, In Progress, Complete) are 
 
 A new board has nothing to look for, so its fields are read first, and the parent card is
 looked for after.
+
+A sub-board sends a live update, `{ "type": "board", "action": "created" }`, to the pages
+open on the board its card is on, so it shows on the card without a reload (card 2143). A
+board made at the top level sends none.
 
 #### `PUT /api/v1/boards/:boardId`
 

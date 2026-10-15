@@ -20,6 +20,7 @@
  */
 
 import { escapeHtml } from '$lib/escape-html';
+import { MASTER_PREF, type NotificationPref } from '$lib/notification-prefs';
 import { sendEmail as sendEmailNow, sendEmailWithAttachment, isSmtpConfigured } from './email';
 import { db } from './db';
 import { afterCommit } from './db/transaction';
@@ -109,11 +110,15 @@ export function getUserNotifPrefs(userId: number): NotifPrefs {
 /**
  * Check if a user should receive a specific notification type.
  * Returns false if the user has disabled that type or disabled all emails.
+ *
+ * `type` is a key of the one list in `$lib/notification-prefs`, which the
+ * account page draws and its route saves (card 2146): a mail cannot read a
+ * preference that nobody can set.
  */
-function shouldNotifyUser(userId: number, type: string): boolean {
+function shouldNotifyUser(userId: number, type: NotificationPref): boolean {
 	const prefs = getUserNotifPrefs(userId);
 	// Master toggle
-	if (prefs.email_all === false) return false;
+	if (prefs[MASTER_PREF] === false) return false;
 	// Per-type toggle
 	if (prefs[type] === false) return false;
 	return true;
@@ -129,7 +134,7 @@ function getUserIdByEmail(email: string): number | null {
  * Filter recipients by notification preferences.
  * Returns only recipients who have the given notification type enabled.
  */
-function filterRecipientsByPref<R extends { email: string; username: string }>(recipients: R[], type: string): R[] {
+function filterRecipientsByPref<R extends { email: string; username: string }>(recipients: R[], type: NotificationPref): R[] {
 	return recipients.filter(r => {
 		const userId = getUserIdByEmail(r.email);
 		if (!userId) return true; // External email — always send

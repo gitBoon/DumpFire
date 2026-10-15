@@ -41,6 +41,7 @@ import { eachWriteInTurn } from './helpers/each-write';
 import { failingWrite } from './helpers/failing-write';
 import { effects, type RecordedEffect } from './helpers/effects';
 import {
+	addBoardMember,
 	makeAttachment,
 	makeBoard,
 	makeCard,
@@ -48,9 +49,11 @@ import {
 	makeMilestone,
 	makeSubBoard,
 	makeSubtask,
+	makeTeam,
 	makeUser,
 	makeWebhook,
 	resetDb,
+	shareBoardWithTeam,
 	testUploadsDir,
 	type BoardFixture,
 	type SubBoardFixture
@@ -771,8 +774,33 @@ describe('deleting for good from the admin panel', () => {
 
 		expect((await api('POST', '/api/admin/purge-archived', { user: w.owner })).status).toBe(403);
 		expect((await api('POST', `/api/admin/boards/${w.A.board.id}/clear-cards`, { user: w.owner })).status).toBe(403);
+		// And for a board that is not there: they are refused before anything is read.
+		expect((await api('POST', '/api/admin/boards/99999/clear-cards', { user: w.owner })).body).toEqual({
+			message: 'Forbidden'
+		});
 
 		expect(diffSnapshots(w.before, snapshotDb())).toEqual([]);
+		expectFiles(w.before, NOTHING);
+	});
+
+	it('clear-cards of a board that is not there is 404, and clears, records and tells nothing', async () => {
+		const w = world();
+		const sent = effects();
+
+		try {
+			// It was 200 { success: true }, and the admin page said the cards were
+			// cleared from a board deleted in another tab (card 2211).
+			const res = await api('POST', '/api/admin/boards/99999/clear-cards', { user: w.admin });
+			await sent.settle();
+
+			expect(res.status).toBe(404);
+			expect(res.body).toEqual({ message: 'Board not found' });
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+		expect(diffSnapshots(w.before, snapshotDb())).toEqual([]);
+		expect(entries()).toEqual([]);
 		expectFiles(w.before, NOTHING);
 	});
 });
@@ -896,11 +924,29 @@ describe('deleting a board', () => {
 		expect(diffSnapshots(w.before, snapshotDb())).toEqual([]);
 	});
 
-	it('answers as each tree always did for a board that is not there', async () => {
-		const admin = makeUser({ role: 'admin' });
+	it.each([
+		{ tree: 'the internal API', path: '/api/boards' },
+		{ tree: 'the v1 API', path: '/api/v1/boards' }
+	])('through $tree, answers 404 for a board that is not there, to everyone, and tells nobody', async ({ path }) => {
+		const w = world();
+		const sent = effects();
 
-		expect((await api('DELETE', '/api/v1/boards/99999', { user: admin })).status).toBe(404);
-		expect((await api('DELETE', '/api/boards/99999', { user: admin })).body).toEqual({ success: true });
+		try {
+			// The session tree answered an administrator 200 { success: true } for
+			// deleting nothing, and anyone else 403; the v1 tree answered 404
+			// (card 2211). Both answer as v1 did.
+			for (const user of [w.admin, w.owner]) {
+				const res = await api('DELETE', `${path}/99999`, { user });
+				expect(res.status).toBe(404);
+				expect(res.body).toEqual({ message: 'Board not found' });
+			}
+			await sent.settle();
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+		expect(diffSnapshots(w.before, snapshotDb())).toEqual([]);
+		expectFiles(w.before, NOTHING);
 	});
 });
 
@@ -942,6 +988,49 @@ describe('deleting a subtask', () => {
 
 		expect(shape(run.writes)).toEqual(['delete from work_dependencies', 'delete from subtasks', 'insert into activity_log']);
 		expect(run.effects.map(name)).toEqual(['event update']);
+	});
+});
+
+describe('removing a share of a board', () => {
+	// Removing something that is not there is 404, as everywhere else: it
+	// answered success, and a second tab's remove of a share already gone was
+	// said to be done.
+	it('removes a person or a team that has the board shared, and answers 404, changing nothing, for one that has not', async () => {
+		const owner = makeUser({ username: 'owner' });
+		const member = makeUser({ username: 'member' });
+		const stranger = makeUser({ username: 'stranger' });
+		const P = makeBoard({ owner, name: 'P' });
+		const team = makeTeam([stranger], 'Team');
+		const otherTeam = makeTeam([], 'Other team');
+		addBoardMember(P.board, member, 'viewer');
+		shareBoardWithTeam(P.board, team, 'editor');
+		const path = `/api/boards/${P.board.id}/share`;
+
+		for (const [type, targetId, says] of [
+			['user', stranger.id, 'This board is not shared with that user'],
+			['team', otherTeam.id, 'This board is not shared with that team']
+		] as const) {
+			const before = snapshotDb();
+			const res = await api('DELETE', path, { user: owner, body: { type, targetId } });
+			expect([res.status, res.body], type).toEqual([404, { message: says }]);
+			expect(diffSnapshots(before, snapshotDb()), type).toEqual([]);
+		}
+
+		for (const [type, targetId] of [['user', member.id], ['team', team.id]] as const) {
+			expect((await api('DELETE', path, { user: owner, body: { type, targetId } })).body, type).toEqual({ success: true });
+			// The second time it is not there.
+			expect((await api('DELETE', path, { user: owner, body: { type, targetId } })).status, type).toBe(404);
+		}
+	});
+
+	it('asks the owner first: anyone else is refused 403, shared or not', async () => {
+		const owner = makeUser({ username: 'owner' });
+		const editor = makeUser({ username: 'editor' });
+		const P = makeBoard({ owner, name: 'P' });
+		addBoardMember(P.board, editor, 'editor');
+
+		const res = await api('DELETE', `/api/boards/${P.board.id}/share`, { user: editor, body: { type: 'user', targetId: owner.id } });
+		expect(res.status).toBe(403);
 	});
 });
 

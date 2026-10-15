@@ -174,7 +174,13 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	return json({ success: true, isPublic });
 };
 
-/** DELETE — Remove access from a user or team. */
+/**
+ * DELETE — Remove access from a user or team.
+ *
+ * Removing a share that is not there is `404`, after the owner's check, as
+ * removing anything else that is not there is: it answered success, so a
+ * second tab's remove of a share already gone was said to be done.
+ */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 	const caller = requireUser(locals.user);
 	const boardId = pathId(params.id, 'board');
@@ -186,14 +192,15 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 		const type = readChoice(body, 'type', { from: SHARE_TYPES, required: true, says: SHARE_TYPE_SAYS });
 		const targetId = readId(body, 'targetId', { required: true });
 
-		if (type === 'user') {
-			db.delete(boardMembers)
+		const removed = type === 'user'
+			? db.delete(boardMembers)
 				.where(and(eq(boardMembers.boardId, boardId), eq(boardMembers.userId, targetId)))
-				.run();
-		} else {
-			db.delete(boardTeams)
+				.run()
+			: db.delete(boardTeams)
 				.where(and(eq(boardTeams.boardId, boardId), eq(boardTeams.teamId, targetId)))
 				.run();
+		if (removed.changes === 0) {
+			throw error(404, type === 'user' ? 'This board is not shared with that user' : 'This board is not shared with that team');
 		}
 	});
 

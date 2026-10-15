@@ -35,8 +35,9 @@
 
 <style>
 	.toast-container {
-		/* Above every dialog: a refusal is shown while the dialog that asked stays open. */
-		position: fixed; bottom: 24px; right: 24px; z-index: 10000;
+		/* Above every dialog: a refusal is shown while the dialog that asked stays open.
+		   Raised clear of the update bar while it shows (src/routes/+layout.svelte). */
+		position: fixed; bottom: calc(24px + var(--update-bar-space, 0px)); right: 24px; z-index: 10000;
 		display: flex; flex-direction: column-reverse; gap: 8px;
 		pointer-events: none;
 	}

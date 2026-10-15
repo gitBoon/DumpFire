@@ -10,6 +10,7 @@ import { publicRequest, requestTokenMatches } from '$lib/server/request-tokens';
 import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } from '$lib/server/notifications';
 import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
 import { linkBaseUrl } from '$lib/server/email';
+import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { pathId, readBody, readChoice, readId, readText } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
@@ -154,10 +155,20 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 					userId: assigneeId
 				}).run();
 
-				// Send assignment email
+				// Send assignment email, and record the assignment as assigning
+				// someone in the card window records it (card 2143): after the
+				// card's own entries, by whoever accepted, from the page. No event
+				// of its own: the card's `created` event refreshes the board.
 				const assignee = db.select({ email: users.email, username: users.username })
 					.from(users).where(eq(users.id, assigneeId)).get();
 				if (assignee) {
+					logUiActivity({
+						boardId: target.boardId,
+						cardId: newCard.id,
+						action: ACTIONS.assigneeAdded,
+						detail: `Assigned ${assignee.username} to "${newCard.title}"`,
+						...actorOf(user)
+					});
 					notifyUserAssigned(boardId, newCard.id, existing.title, assignee.email, assignee.username, user.username, baseUrl);
 				}
 			}
