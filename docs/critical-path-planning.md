@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.12
+version: 1.13
 status: As-Built
 date: 2026-10-15
 tags:
@@ -507,13 +507,105 @@ they answer a real question:
 | Block | Question it answers |
 |-------|---------------------|
 | Progress | How far along is this goal |
+| Burndown | Will it land by its date |
 | Critical path | Which chain cannot slip |
-| Next actionable | What can I start today |
-| Blocked | What is waiting, and on what |
+| The work | What is in the goal, what can I start today, and what is waiting on what |
 | Dependency graph | What is the overall shape |
+
+The work is one table of every card in the goal, searchable and sortable, with a state filter
+(All, Startable, Blocked, Done) whose counts are what were once the Next actionable and Blocked
+lists. A blocked row opens to what it is waiting on.
 
 Nothing is computed in the browser. The server hands over a `MilestoneSummary` and the page
 draws it, so the page and the API can never disagree about what the critical path is.
+
+### Opening a card to its subtasks
+
+Each card in the work table is collapsed by default. A card with subtasks has a button after
+its title, "▸ 3/5 subtasks" (ticked of all), that opens it to **every** one of its subtasks,
+in the card's own order (`position`, then id, as the card window has them). Its name to a
+screen reader is its text and the card, "3/5 subtasks of #123", the same open or closed;
+`aria-expanded` says which. "Expand all" and "Collapse all" beside the state filter act on the
+cards drawn that have subtasks, and the label follows them: it reads "Collapse all" once every
+one of them is drawn open (card 2221).
+
+- **Two kinds of subtask row.** One that carries a dependency is a node of the graph and keeps
+  what the plan says of it: Startable, Blocked or Done, what it waits on, its Unblocks count and
+  whether it is on the critical path. One that does not is Done or Open and nothing more.
+  Clicking either opens its card's window.
+- **Search and the state filter.** A card is listed when it matches or one of its subtasks
+  does, and a subtask that matches opens its card without changing what is remembered. Inside
+  a card opened so, all its subtasks show when the card itself matches, otherwise only the
+  ones that match. A subtask matches a search on its title. Only an ordered subtask has a state
+  the filter can find, and `#123` matches a card's id only. The counts are the cards and the
+  ordered subtasks, as before.
+- **Sorting** orders the cards; a card's subtasks always follow it, in its order.
+- **Remembered per browser**, per milestone, in `localStorage` under `df-plan-open-<id>`, a
+  list of card ids, read once the page is in the browser. A private window or blocked site data
+  means nothing is remembered and every card starts collapsed. Ids no longer in the milestone
+  are dropped on the next write, and stored entries that are not positive whole numbers are
+  dropped on the read.
+- **Under a search or filter, nothing is remembered.** A card opened or closed by hand there,
+  and Expand all or Collapse all there, act for that search and filter alone (`viewOpen`,
+  `viewShut`); a card remembered open and closed under a search is shut for it, never taken
+  out of what is stored. A new search or filter starts from what is remembered again. Only
+  with nothing searched or filtered is what is open written to storage (`afterToggle`,
+  `afterExpandAll`).
+- **Where the subtasks come from.** The page load gives them beside the summary, as
+  `subtasks`, from `planSubtasks(summary)` in `planning.ts`: the subtasks of the summary's member
+  cards that are not withheld, in one read. A card on a board the reader cannot open is withheld
+  in the summary (card 2129), so it has no entry, no button and no subtask rows. The summary is
+  unchanged, so the API, its compact form and both PDFs are too. Each subtask is sent as
+  `id, title, priority, completed`: its card is the key of the list it is under.
+- **Kept current.** Closing the card window re-runs the load, saved or not: the window writes a
+  subtask ticked, added or removed at once, before any Save, and says nothing of it to the
+  page. The burndown is fetched again only when what it charts changes, `burndownKey`: the
+  milestone, its target date, and each member card with its board and whether it is done. A
+  window closed with nothing changed, a subtask ticked or a card moved between open columns
+  leaves it, and the chart is not dimmed for a fetch that would draw the same thing.
+
+```mermaid
+flowchart LR
+    Load["+page.server.ts<br/>load"] --> Summary["getMilestoneSummary<br/>(viewer)"]
+    Summary --> Subs["planSubtasks(summary)<br/>one read of subtasks"]
+    Summary --> Data["page data<br/>summary + subtasks"]
+    Subs --> Data
+    Data --> Groups["cardGroups<br/>a card and its subtask rows"]
+    Groups --> Rows["tableRows<br/>search, filter, open, sort"]
+    Open["openCards<br/>df-plan-open-id"] --> Rows
+    View["viewOpen / viewShut<br/>this search and filter only"] --> Rows
+    Rows --> Table["The work table"]
+    Data --> Key["burndownKey<br/>cards, done, board, target"]
+    Key -->|"changed"| Burn["GET /api/burndown"]
+```
+
+The rows are arranged by `src/lib/plan-table.ts`, pure functions with no DOM, so that
+`tests/plan-table.test.ts` can run them: a page cannot be run in the tests.
+
+```mermaid
+classDiagram
+    class PlanSubtask {
+      id
+      title
+      priority
+      completed
+    }
+    class PlanRow {
+      kind : card or subtask
+      state : ready, blocked, done or open
+      inGraph : boolean
+      subtaskDone
+      subtaskTotal
+      blockers
+      depth
+    }
+    class CardGroup {
+      card : PlanRow
+      subtasks : PlanRow list
+    }
+    CardGroup --> PlanRow
+    PlanRow ..> PlanSubtask : a plain subtask row is made from
+```
 
 ### Why the graph is hand-laid-out SVG
 
@@ -689,6 +781,7 @@ cannot disagree about what the critical path is.
 | `src/routes/api/v1/milestones/**` | Bearer-token API |
 | `src/routes/api/milestones/**`, `src/routes/api/cards/[id]/dependencies` | Session-cookie siblings for the UI |
 | `src/routes/plan/**` | The planning view |
+| `src/lib/plan-table.ts` | The work table's rows: a card and its subtasks, search, the state filter, sorting, what is open and what is remembered, and `burndownKey`, which says when the page fetches the burndown again |
 | `src/lib/server/milestone-report.ts` | The plan as a PDF, in the board-report house style |
 | `src/lib/components/CardModal.svelte` | Dependency editor and milestone picker |
 | `src/lib/api.ts` | `dependencyEndBody()` and `dependencyRow()`: the body that names a row's end by its kind, and how a row reads and which card it opens, for the card window |
