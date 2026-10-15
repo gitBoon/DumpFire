@@ -4,6 +4,7 @@ import { restorableTables } from '$lib/server/db/restore';
 import { inTransaction } from '$lib/server/db/transaction';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import { resetFormSecretCache } from '$lib/server/request-tokens';
+import { resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { moveToTrash, type TrashResult, type UploadFile } from '$lib/server/uploads';
 import type { RequestHandler } from './$types';
@@ -98,6 +99,9 @@ export const POST: RequestHandler = async ({ locals, cookies }) => {
 	// token signed with the old one is refused. Left in memory, the old key
 	// went on signing until the server stopped, with no setting behind it.
 	resetFormSecretCache();
+	// So was the key remembered browsers are signed with (card 2194): every
+	// browser is forgotten, and the next one remembered makes a new key.
+	resetKnownBrowserSecretCache();
 
 	let trash: TrashResult;
 	try {

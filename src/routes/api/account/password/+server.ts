@@ -1,17 +1,18 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { afterCommit, inTransaction } from '$lib/server/db/transaction';
+import { afterCommit } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import {
 	SESSION_COOKIE_NAME,
+	checkCurrentPassword,
 	createSession,
-	currentPasswordMatches,
 	endAccountAccess,
-	hashPassword,
 	setSessionCookie,
-	verifyPassword
+	whilePasswordHolds
 } from '$lib/server/auth';
+import { makePasswordHash } from '$lib/server/passwords';
+import { rememberBrowser } from '$lib/server/known-browsers';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readBoolean, readText } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
@@ -46,29 +47,24 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 
 	// Verify current password. Ten wrong ones in 15 minutes from this session,
 	// and it is refused.
-	if (!currentPasswordMatches(session, userId, currentPassword, user.passwordHash, 'PUT /api/account/password')) {
-		throw error(403, 'Current password is incorrect');
+	const wrong = () => error(403, 'Current password is incorrect');
+	if (!(await checkCurrentPassword(session, userId, currentPassword, user.passwordHash, 'PUT /api/account/password')).matches) {
+		wrong();
 	}
 
 	// Checking a password and hashing one each take about a quarter of a
-	// second, and nothing else can write while a transaction is open. Both are
-	// done out here, before it.
-	const newHash = hashPassword(newPassword);
+	// second, on a worker thread, and are awaited, which a transaction cannot
+	// do. Both are done out here, before it.
+	const newHash = await makePasswordHash(newPassword, 'known');
 
 	// One transaction: the password, the sessions that end and the session that
 	// replaces them change together. A failure after the first used to leave a
 	// new password with the old sessions still good, or with no session at all.
-	const { newToken, apiKeysEnded } = inTransaction(() => {
-		// The password was checked against the row as it was read above. If it
-		// has been changed since, by another request or by an administrator, it
-		// is checked again against the row as it is now. The same guess, so it
-		// is not counted again.
-		const current = db.select().from(users).where(eq(users.id, userId)).get();
-		if (!current) throw error(404, 'User not found');
-		if (current.passwordHash !== user.passwordHash && !verifyPassword(currentPassword, current.passwordHash)) {
-			throw error(403, 'Current password is incorrect');
-		}
-
+	// It runs only while the stored hash is the one the password was checked
+	// against; if another request or an administrator changed it in between,
+	// the password is checked again against the new one, outside, and not
+	// counted again: the same guess.
+	const { newToken, apiKeysEnded } = await whilePasswordHolds(userId, currentPassword, user.passwordHash, () => {
 		// Update password
 		db.update(users)
 			.set({ passwordHash: newHash })
@@ -90,9 +86,12 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 
 		// Create a fresh session so the current user stays logged in
 		return { newToken: createSession(userId), apiKeysEnded: ended.apiKeys };
-	});
+	}, wrong);
 
 	setSessionCookie(cookies, newToken);
+	// The new hash ended every remembered browser of the account; this one,
+	// which made the change, is remembered again (card 2194).
+	rememberBrowser(cookies, userId, newHash);
 
 	return json({ success: true, apiKeysEnded });
 };

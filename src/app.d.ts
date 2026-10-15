@@ -21,7 +21,14 @@ declare global {
 		}
 		// interface PageData {}
 		// interface PageState {}
-		// interface Platform {}
+		interface Platform {
+			/**
+			 * The node adapter's request, under the built server only: its
+			 * socket says whether the caller has gone (`callerHasGone` in
+			 * $lib/server/passwords.ts). Not there under `vite dev` or in tests.
+			 */
+			req?: import('node:http').IncomingMessage;
+		}
 	}
 }
 

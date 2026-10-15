@@ -1,9 +1,9 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { afterCommit, inTransaction } from '$lib/server/db/transaction';
+import { afterCommit } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { SESSION_COOKIE_NAME, currentPasswordMatches, verifyPassword } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, checkCurrentPassword, whilePasswordHolds } from '$lib/server/auth';
 import { endUnusedInvites } from '$lib/server/invites';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readEmail, readText } from '$lib/server/request-body';
@@ -44,26 +44,21 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	const user = db.select().from(users).where(eq(users.id, userId)).get();
 	if (!user) throw error(404, 'User not found');
 
-	// Checking a password takes about a quarter of a second, and nothing else
-	// can write while a transaction is open, so it is checked out here first.
-	// Ten wrong ones in 15 minutes from this session, and it is refused.
-	if (!currentPasswordMatches(session, userId, password, user.passwordHash, 'PUT /api/account/email')) {
-		throw error(403, 'Password is incorrect');
+	// Checking a password takes about a quarter of a second, on a worker
+	// thread, and is awaited, which a transaction cannot do, so it is checked
+	// out here first. Ten wrong ones in 15 minutes from this session, and it
+	// is refused.
+	const wrong = () => error(403, 'Password is incorrect');
+	if (!(await checkCurrentPassword(session, userId, password, user.passwordHash, 'PUT /api/account/email')).matches) {
+		wrong();
 	}
 
 	// One transaction: the account is read again, the address checked as free
-	// and written, and the invites ended, together.
-	inTransaction(() => {
-		// The password was checked against the row as it was read above. If it
-		// has been changed since, by the user or by an administrator, it is
-		// checked again against the row as it is now. The same guess, so it is
-		// not counted again.
-		const current = db.select().from(users).where(eq(users.id, userId)).get();
-		if (!current) throw error(404, 'User not found');
-		if (current.passwordHash !== user.passwordHash && !verifyPassword(password, current.passwordHash)) {
-			throw error(403, 'Password is incorrect');
-		}
-
+	// and written, and the invites ended, together. It runs only while the
+	// stored hash is the one the password was checked against; if the user or
+	// an administrator changed it in between, the password is checked again
+	// against the new one, outside, and not counted again: the same guess.
+	await whilePasswordHolds(userId, password, user.passwordHash, (current) => {
 		// Check if email is already taken by another user
 		const existing = db.select({ id: users.id }).from(users).where(eq(users.email, email)).get();
 		if (existing && existing.id !== userId) {
@@ -87,7 +82,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 				)
 			);
 		}
-	});
+	}, wrong);
 
 	return json({ success: true, email });
 };

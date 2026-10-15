@@ -178,6 +178,12 @@ export type GateOptions = {
 	 * without that header.
 	 */
 	ip?: string | null;
+	/**
+	 * What the node adapter hands a request as `event.platform`: its `req`.
+	 * None by default, as under `vite dev`. A test passes
+	 * `{ req: { socket: { destroyed: true } } }` for a caller who has gone.
+	 */
+	platform?: unknown;
 };
 
 /**
@@ -243,6 +249,7 @@ export async function gate(method: string, path: string, opts: GateOptions = {})
 
 	const ip = opts.ip;
 	return server.respond(request, {
+		platform: opts.platform as App.Platform | undefined,
 		getClientAddress: () => {
 			if (ip === null) {
 				// The adapter's own words (`get_client_address` in its handler.js).

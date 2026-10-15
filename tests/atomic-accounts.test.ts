@@ -22,7 +22,7 @@
  * used as well, in the transaction that writes it (`endUnusedInvites`).
  *
  * Wrong current passwords are counted, ten in 15 minutes for one session, as
- * sign-in counts wrong passwords (`currentPasswordMatches`). The count is in
+ * sign-in counts wrong passwords (`checkCurrentPassword`). The count is in
  * memory and outlives `resetDb()`, which numbers the users from 1 again, so
  * it is cleared before each test.
  *
@@ -37,6 +37,10 @@
  * application's, which takes about a quarter of a second each time. The
  * stand-in notes whether a transaction was open when it was called, because
  * hashing inside one would hold every other write up for that long.
+ *
+ * The suite hashes and checks on the test's own thread, a turn later
+ * (`PASSWORD_THREADS=0`, card 2191), with the bcryptjs that passwords.ts
+ * imports, so this mock sees every call.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -44,7 +48,11 @@ const bcrypt = vi.hoisted(() => ({
 	/** For each password hashed, and each one checked: whether a transaction was open. */
 	inTransaction: [] as boolean[],
 	/** Whether one is open now. Set below, once the connection is imported. */
-	open: (): boolean => false
+	open: (): boolean => false,
+	/** Called after each check, with which check it was, counting from 1; for a test to act between two. */
+	afterCompare: undefined as ((nth: number) => void) | undefined,
+	/** Checks made since the hook was set. */
+	compared: 0
 }));
 
 vi.mock('bcryptjs', async (importOriginal) => {
@@ -57,7 +65,9 @@ vi.mock('bcryptjs', async (importOriginal) => {
 		},
 		compareSync: (password: string, hash: string) => {
 			bcrypt.inTransaction.push(bcrypt.open());
-			return real.compareSync(password, hash);
+			const result = real.compareSync(password, hash);
+			bcrypt.afterCompare?.(++bcrypt.compared);
+			return result;
 		}
 	};
 });
@@ -65,15 +75,17 @@ vi.mock('bcryptjs', async (importOriginal) => {
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { isHttpError, type RequestEvent } from '@sveltejs/kit';
+import { isHttpError, type Cookies, type RequestEvent } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { apiKeys, inviteTokens, sessions, taskRequests, users } from '$lib/server/db/schema';
 import { MASTER_PREF, NOTIFICATION_PREFS } from '$lib/notification-prefs';
-import { hashPassword, verifyPassword, sessionStillOpen, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { PASSWORD_CHANGED_MEANWHILE, sessionStillOpen, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { PASSWORDS_BUSY, checkPassword, makePasswordHash } from '$lib/server/passwords';
 import { endUnusedInvites, issueInvite } from '$lib/server/invites';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
+import { knownBrowserCookie, rememberBrowser, rememberedNonce } from '$lib/server/known-browsers';
 import { PUT as changeOwnPassword } from '../src/routes/api/account/password/+server';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
 import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.server';
@@ -91,13 +103,42 @@ bcrypt.open = () => sqlite.inTransaction;
 const OLD = 'the old password';
 const NEW = 'a new password';
 /** `OLD`, hashed once for every fixture that needs a password that can be checked. */
-const OLD_HASH = hashPassword(OLD);
+const OLD_HASH = await makePasswordHash(OLD, 'known');
+
+/** Whether `password` is the one `hash` was made from, checked as the routes check one. */
+const matches = async (password: string, hash: string) => (await checkPassword(password, hash, 'known')).matches;
 
 beforeEach(() => {
 	resetDb();
 	resetAllRateLimits();
+	// The key remembered browsers are signed with is made the first time a
+	// browser is remembered, a write of its own after the request's
+	// transaction, and then kept in memory (card 2194). Made here, so that
+	// each request's writes are its own whichever test runs first.
+	rememberBrowser({ set: () => {} } as unknown as Cookies, 0, '');
 	bcrypt.inTransaction.length = 0;
+	bcrypt.afterCompare = undefined;
+	bcrypt.compared = 0;
 });
+
+/** What a request's `cookies.get` reads, from the one cookie `name=value`. */
+const sending = (cookie: { name: string; value: string }) => ({
+	get: (name: string) => (name === cookie.name ? cookie.value : undefined)
+});
+
+/** Whether the cookie remembers its browser for the account `id` as the account is now. */
+const remembers = (cookie: { name: string; value: string }, id: number) =>
+	rememberedNonce(sending(cookie), { id, passwordHash: hashOf(id) }) !== null;
+
+/** A cookie that remembers a browser for `user`'s account as it is now. */
+function rememberedFor(user: SessionUser): { name: string; value: string } {
+	let made: { name: string; value: string } | undefined;
+	rememberBrowser({ set: (name: string, value: string) => (made = { name, value }) } as unknown as Cookies, user.id, hashOf(user.id));
+	return made!;
+}
+
+/** The options a remembered browser's cookie is set with (card 2194, decision 17). */
+const KNOWN_OPTIONS = { path: '/login', httpOnly: true, sameSite: 'strict', secure: false, maxAge: 365 * 24 * 60 * 60 };
 
 /** A recorded effect in a few words, so that a whole request reads as a list. */
 function name(effect: RecordedEffect): string {
@@ -198,7 +239,15 @@ const loadInvite = async (token: string) =>
 		unknown
 	>;
 
-/** Nothing was hashed or checked while a transaction was open, and something was. */
+/**
+ * Nothing was hashed or checked while a transaction was open, and something was.
+ *
+ * Since card 2191 a hash or a check is awaited, and runs a turn later, so none
+ * can be made inside a transaction and this always holds. The guards that
+ * matter are `inTransaction`'s type, which refuses a function that returns a
+ * promise, and tests/password-checks.test.ts, which holds that every check is
+ * awaited. Kept so that a hash made some other way would be seen here.
+ */
 function expectHashedOutsideTransaction(): void {
 	expect(bcrypt.inTransaction.length).toBeGreaterThan(0);
 	expect(bcrypt.inTransaction).not.toContain(true);
@@ -234,6 +283,8 @@ async function expectRefused(request: () => Promise<ApiResult>, status: number):
 type OwnResult = ApiResult & {
 	/** The session cookie it set, and whether a transaction was open when it did. */
 	cookie?: { value: string; inTransaction: boolean };
+	/** The cookie that remembers the browser (card 2194), with its options. */
+	known?: { name: string; value: string; options: Record<string, unknown> };
 };
 
 /**
@@ -252,8 +303,9 @@ async function changeOwn(user: SessionUser | null, body: unknown, session = 'my-
 		locals: { user },
 		cookies: {
 			get: (cookie: string) => (cookie === SESSION_COOKIE_NAME ? session : undefined),
-			set: (cookie: string, value: string) => {
+			set: (cookie: string, value: string, options: Record<string, unknown>) => {
 				if (cookie === SESSION_COOKIE_NAME) result.cookie = { value, inTransaction: sqlite.inTransaction };
+				if (user && cookie === knownBrowserCookie(user.id)) result.known = { name: cookie, value, options };
 			}
 		}
 	} as unknown as RequestEvent;
@@ -293,12 +345,12 @@ describe('PUT /api/account/password', () => {
 		const run = await eachWriteInTurn({
 			build: signedInTwice,
 			request: ({ me }) => changeOwn(me, { currentPassword: OLD, newPassword: NEW }),
-			afterSuccess: ({ me, other }, res: OwnResult) => {
+			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true, apiKeysEnded: 0 });
 
-				expect(verifyPassword(NEW, hashOf(me.id))).toBe(true);
-				expect(verifyPassword(OLD, hashOf(me.id))).toBe(false);
+				expect(await matches(NEW, hashOf(me.id))).toBe(true);
+				expect(await matches(OLD, hashOf(me.id))).toBe(false);
 
 				// Both devices are signed out, and this one is signed in again by the
 				// cookie, which names the one session there now is.
@@ -333,10 +385,10 @@ describe('PUT /api/account/password', () => {
 		const run = await eachWriteInTurn({
 			build: signedInTwice,
 			request: ({ me }) => changeOwn(me, { currentPassword: OLD, newPassword: NEW, endApiKeys: true }),
-			afterSuccess: ({ me, other }, res: OwnResult) => {
+			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true, apiKeysEnded: 2 });
-				expect(verifyPassword(NEW, hashOf(me.id))).toBe(true);
+				expect(await matches(NEW, hashOf(me.id))).toBe(true);
 				expect(sessionsOf(me.id)).toEqual([res.cookie!.value]);
 				expect(invitesOf(me.id)).toEqual([]);
 				expect(keysOf(me.id)).toEqual([]);
@@ -416,7 +468,7 @@ describe('PUT /api/account/password', () => {
 
 	it('refuses when the password was changed elsewhere after it was checked, and leaves that change alone', async () => {
 		const { me } = signedInTwice();
-		const elsewhere = hashPassword('changed elsewhere');
+		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
 		const before = snapshotDb();
 		// The first read is the one the current password is checked against.
 		const reads = watchReads('users', (nth) => {
@@ -442,7 +494,7 @@ describe('PUT /api/account/password', () => {
 
 	it('goes ahead when the stored hash changed and the password it is a hash of did not', async () => {
 		const { me } = signedInTwice();
-		const rehashed = hashPassword(OLD);
+		const rehashed = await makePasswordHash(OLD, 'known');
 		const reads = watchReads('users', (nth) => {
 			if (nth === 1) db.update(users).set({ passwordHash: rehashed }).where(eq(users.id, me.id)).run();
 		});
@@ -453,7 +505,48 @@ describe('PUT /api/account/password', () => {
 			reads.restore();
 		}
 
-		expect(verifyPassword(NEW, hashOf(me.id))).toBe(true);
+		expect(await matches(NEW, hashOf(me.id))).toBe(true);
+	});
+
+	// The re-check is made outside the transaction now (card 2191, D8): a
+	// check is awaited, which a transaction cannot do. The transaction writes
+	// only while the stored hash is the one the password was checked against;
+	// changed, the password is checked again against the new one and the
+	// transaction run once more. A second change is answered 409.
+	it('answers 409 with nothing written when the stored hash changes twice while it is being saved, counting one attempt', async () => {
+		const { me } = signedInTwice();
+		const first = await makePasswordHash(OLD, 'known');
+		const second = await makePasswordHash(OLD, 'known');
+		const before = snapshotDb();
+		// After the first check, and after the re-check: each time the hash of
+		// the same password, as another request setting it again would leave it.
+		bcrypt.inTransaction.length = 0;
+		bcrypt.afterCompare = (nth) => {
+			const next = nth === 1 ? first : nth === 2 ? second : null;
+			if (next) db.update(users).set({ passwordHash: next }).where(eq(users.id, me.id)).run();
+		};
+
+		const res = await changeOwn(me, { currentPassword: OLD, newPassword: NEW });
+		bcrypt.afterCompare = undefined;
+
+		expect(res.status).toBe(409);
+		expect(res.body.message).toBe(PASSWORD_CHANGED_MEANWHILE);
+		expect(res.cookie).toBeUndefined();
+		// The check, the new password's hash and one re-check, none inside a
+		// transaction: the second change is answered without a third.
+		expect(bcrypt.inTransaction).toEqual([false, false, false]);
+		expect(bcrypt.compared).toBe(2);
+		// The second change stands, and nothing else changed.
+		expect(hashOf(me.id)).toBe(second);
+		expect(sessionsOf(me.id)).toEqual(['my-laptop', 'my-phone']);
+		expectUnchanged({ ...before, users: snapshotDb().users });
+
+		// The session's count is what one right password leaves, none: ten
+		// wrong ones are answered 403, and the eleventh 429.
+		for (let n = 1; n <= 10; n++) {
+			expect((await changeOwn(me, { currentPassword: 'not it', newPassword: NEW })).status).toBe(403);
+		}
+		expect((await changeOwn(me, { currentPassword: 'not it', newPassword: NEW })).status).toBe(429);
 	});
 });
 
@@ -489,10 +582,10 @@ describe('PUT /api/users/:id/password', () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ admin, target }) => reset(admin, target.id),
-			afterSuccess: ({ admin, target, bystander }, res: ApiResult) => {
+			afterSuccess: async ({ admin, target, bystander }, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true, sessionsEnded: 2, apiKeysEnded: 1 });
-				expect(verifyPassword(NEW, hashOf(target.id))).toBe(true);
+				expect(await matches(NEW, hashOf(target.id))).toBe(true);
 				expect(sessionsOf(target.id)).toEqual([]);
 				expect(invitesOf(target.id)).toEqual([]);
 				expect(keysOf(target.id)).toEqual([]);
@@ -561,7 +654,7 @@ describe('PUT /api/users/:id/password', () => {
 		}
 		// Refused before anything was hashed for.
 		expect(bcrypt.inTransaction).toEqual([]);
-		expect(verifyPassword(OLD, hashOf(target.id))).toBe(true);
+		expect(await matches(OLD, hashOf(target.id))).toBe(true);
 	});
 
 	it('answers as it did for each refusal, with nothing written', async () => {
@@ -660,10 +753,10 @@ describe('POST /api/users', () => {
 			build: scene,
 			request: ({ chief }) =>
 				create(chief, { username: 'deputy', email: 'deputy@example.test', password: NEW, role: 'admin' }),
-			afterSuccess: (_s, res: ApiResult) => {
+			afterSuccess: async (_s, res: ApiResult) => {
 				expect(res.status).toBe(201);
 				expect(res.body).toMatchObject({ username: 'deputy', role: 'admin', invited: false });
-				expect(verifyPassword(NEW, hashOf(res.body.id))).toBe(true);
+				expect(await matches(NEW, hashOf(res.body.id))).toBe(true);
 				expect(db.select().from(inviteTokens).all()).toEqual([]);
 			}
 		});
@@ -806,7 +899,7 @@ describe('POST /api/users/:id/invite', () => {
 
 		const used = await action(`/invite/${second}`, { form });
 		expect(used).toMatchObject({ type: 'redirect', status: 303, location: '/' });
-		expect(verifyPassword(NEW, hashOf(invitee.id))).toBe(true);
+		expect(await matches(NEW, hashOf(invitee.id))).toBe(true);
 	});
 });
 
@@ -848,9 +941,9 @@ describe('the invite page', () => {
 		const run = await eachWriteInTurn({
 			build: invitedWithAccess,
 			request: () => use(),
-			afterSuccess: ({ invitee, bystander }, res: ActionResult) => {
+			afterSuccess: async ({ invitee, bystander }, res: ActionResult) => {
 				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/' });
-				expect(verifyPassword(NEW, hashOf(invitee.id))).toBe(true);
+				expect(await matches(NEW, hashOf(invitee.id))).toBe(true);
 
 				// This invite is kept, marked used; the other is gone, and so are
 				// the sessions and the key. The one session is the cookie's.
@@ -896,7 +989,7 @@ describe('the invite page', () => {
 		);
 		expect(refused).toMatchObject(INVALID);
 		expect(refused.cookies).toEqual({});
-		expect(verifyPassword(NEW, hashOf(invitee.id))).toBe(true);
+		expect(await matches(NEW, hashOf(invitee.id))).toBe(true);
 	});
 
 	it('says on the page which links work, and how many API keys setting a password ends', async () => {
@@ -953,8 +1046,10 @@ describe('the invite page', () => {
 		expect(mine).toHaveLength(1);
 		expect(both.find((res) => res.type === 'redirect')!.cookies[SESSION_COOKIE_NAME].value).toBe(mine[0]);
 		expect(both.find((res) => res.type === 'failure')!.cookies).toEqual({});
-		// The password is the one that was let in's, and no other was hashed.
-		expect(bcrypt.inTransaction).toHaveLength(1);
+		// The password is the one that was let in's. Each submission hashed its
+		// own, since a hash is awaited and the second looks at the invite before
+		// the first commits (card 2191, D10); the transaction let one in.
+		expect(bcrypt.inTransaction).toEqual([false, false]);
 	});
 
 	it('refuses an invite that was used after it was looked at, having changed nothing else', async () => {
@@ -1094,7 +1189,7 @@ describe('POST /api/account/api-keys', () => {
 
 	it('refuses when the password was changed elsewhere after it was checked, and makes no key', async () => {
 		const { me } = scene();
-		const elsewhere = hashPassword('changed elsewhere');
+		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
 		// The first read is the one the password is checked against.
 		const reads = watchReads('users', (nth) => {
 			if (nth === 1) db.update(users).set({ passwordHash: elsewhere }).where(eq(users.id, me.id)).run();
@@ -1266,7 +1361,7 @@ describe('PUT /api/users/:id', () => {
 			status: 303,
 			location: '/'
 		});
-		expect(verifyPassword(NEW, hashOf(target.id))).toBe(true);
+		expect(await matches(NEW, hashOf(target.id))).toBe(true);
 	});
 
 	it('ends nothing when it refuses: an administrator naming another administrator, or their own email', async () => {
@@ -1491,6 +1586,27 @@ describe('wrong current passwords', () => {
 		expect(hashOf(me.id)).toBe(OLD_HASH);
 	});
 
+	// The review's L1. A current password is checked in the first lane, ahead
+	// of every sign-in, and the right one clears the session's count, so a
+	// signed-in user could keep checks in flight without end and hold the
+	// second lane. Each check takes a place at the account's first-lane
+	// checks, five in flight, shared with its remembered browsers' sign-ins.
+	it.each(named)('%s: refuses a sixth check in flight at the account, from any session, without checking it', async (_name, route) => {
+		const { me } = signedIn();
+
+		const six = await Promise.all(
+			Array.from({ length: 6 }, (_, n) => send(route, me, 'not it', n % 2 === 0 ? 'my-laptop' : 'my-phone'))
+		);
+
+		expect(six.map((res) => res.status)).toEqual([403, 403, 403, 403, 403, 429]);
+		expect(six[5].body.message).toBe(PASSWORDS_BUSY);
+		expect(bcrypt.inTransaction).toHaveLength(5);
+		expect(hashOf(me.id)).toBe(OLD_HASH);
+
+		// The places are given back once each is answered.
+		expect((await send(route, me, 'not it')).status).toBe(403);
+	});
+
 	it('keeps one count for the three routes, for the session', async () => {
 		const { me } = signedIn();
 		await wrong(EMAIL, me, 4);
@@ -1529,7 +1645,7 @@ describe('wrong current passwords', () => {
 		// there signs the first one out, which is how the owner of an account
 		// takes it back.
 		expect((await change('second-browser', OLD)).status).toBe(200);
-		expect(verifyPassword(NEW, hashOf(me.id))).toBe(true);
+		expect(await matches(NEW, hashOf(me.id))).toBe(true);
 		expect(sessionStillOpen('first-browser')).toBe(false);
 		expect(sessionStillOpen('their-browser')).toBe(true);
 	});
@@ -1567,7 +1683,7 @@ describe('wrong current passwords', () => {
 	it('counts a request once when its transaction checks the password again', async () => {
 		const { me } = signedIn();
 		await wrong(EMAIL, me, 9);
-		const elsewhere = hashPassword('changed elsewhere');
+		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
 		// The first read is the one the password is checked against.
 		const reads = watchReads('users', (nth) => {
 			if (nth === 1) db.update(users).set({ passwordHash: elsewhere }).where(eq(users.id, me.id)).run();
@@ -1729,13 +1845,13 @@ describe('the setup page', () => {
 		const run = await eachWriteInTurn({
 			build: () => ({}),
 			request: () => setUp(),
-			afterSuccess: (_s, res: ActionResult) => {
+			afterSuccess: async (_s, res: ActionResult) => {
 				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/' });
 
 				const made = db.select().from(users).all();
 				expect(made).toHaveLength(1);
 				expect(made[0]).toMatchObject({ username: 'first', email: 'first@example.test', role: 'superadmin' });
-				expect(verifyPassword(NEW, made[0].passwordHash)).toBe(true);
+				expect(await matches(NEW, made[0].passwordHash)).toBe(true);
 
 				const theirs = sessionsOf(made[0].id);
 				expect(theirs).toHaveLength(1);
@@ -1770,7 +1886,8 @@ describe('the setup page', () => {
 		expect(signedIn).toHaveLength(1);
 		expect(sessionsOf(made[0].id)).toEqual([signedIn[0].cookies[SESSION_COOKIE_NAME].value]);
 		expect(db.select().from(sessions).all()).toHaveLength(1);
-		expect(bcrypt.inTransaction).toHaveLength(1);
+		// Each hashed its own, outside the transaction (card 2191, D10); one was made.
+		expect(bcrypt.inTransaction).toEqual([false, false]);
 	});
 
 	it('makes nobody when a user was created after it looked for one', async () => {
@@ -1805,6 +1922,85 @@ describe('the setup page', () => {
 		expect(late).toMatchObject({ type: 'redirect', status: 303, location: '/' });
 		expect(late.cookies).toEqual({});
 		expect(bcrypt.inTransaction).toEqual([]);
+	});
+});
+
+// ─── Remembered browsers, when a password is set ────────────────────────────
+
+/**
+ * Card 2194. A browser that signs in is remembered for the account by a
+ * cookie whose MAC is over the account's password hash, so setting the
+ * password, by any way there is, forgets every browser of the account at
+ * once. The way that also signs the browser in remembers that browser again,
+ * with the new hash: the holder's own change, an invite's use, set-up. An
+ * administrator's reset signs nobody in, and remembers nobody.
+ */
+describe('remembered browsers, when a password is set', () => {
+	it('are forgotten by the holder’s own change, all but the browser that made it, which is remembered anew', async () => {
+		const me = withPassword(makeUser({ username: 'me' }));
+		makeSession(me, 'my-laptop');
+		const laptop = rememberedFor(me);
+		const phone = rememberedFor(me);
+		expect(remembers(laptop, me.id) && remembers(phone, me.id)).toBe(true);
+
+		const res = await changeOwn(me, { currentPassword: OLD, newPassword: NEW });
+
+		expect(res.status).toBe(200);
+		expect(res.known).toMatchObject({ name: knownBrowserCookie(me.id), options: KNOWN_OPTIONS });
+		expect(res.known!.value).not.toBe(laptop.value);
+		expect(remembers(res.known!, me.id)).toBe(true);
+		expect(remembers(laptop, me.id)).toBe(false);
+		expect(remembers(phone, me.id)).toBe(false);
+	});
+
+	it('are forgotten by a refused change no more than by none', async () => {
+		const me = withPassword(makeUser({ username: 'me' }));
+		makeSession(me, 'my-laptop');
+		const laptop = rememberedFor(me);
+
+		const res = await changeOwn(me, { currentPassword: 'not it', newPassword: NEW });
+
+		expect(res.status).toBe(403);
+		expect(res.known).toBeUndefined();
+		expect(remembers(laptop, me.id)).toBe(true);
+	});
+
+	it('are forgotten by an invite’s use, which remembers the browser that used it', async () => {
+		const invitee = withPassword(makeUser({ username: 'invitee' }));
+		const before = rememberedFor(invitee);
+		makeInvite(invitee, 'the-invite');
+
+		const res = await action('/invite/the-invite', { form: { password: NEW, confirmPassword: NEW } });
+
+		expect(res).toMatchObject({ type: 'redirect', location: '/' });
+		const known = res.cookies[knownBrowserCookie(invitee.id)];
+		expect(known.options).toEqual(KNOWN_OPTIONS);
+		expect(remembers({ name: knownBrowserCookie(invitee.id), value: known.value }, invitee.id)).toBe(true);
+		expect(remembers(before, invitee.id)).toBe(false);
+	});
+
+	it('include the browser that set the instance up, for the superadmin', async () => {
+		const res = await action('/setup', {
+			form: { username: 'first', email: 'first@example.test', password: NEW, confirmPassword: NEW }
+		});
+
+		expect(res).toMatchObject({ type: 'redirect', location: '/' });
+		const [chief] = db.select().from(users).all();
+		const known = res.cookies[knownBrowserCookie(chief.id)];
+		expect(known.options).toEqual(KNOWN_OPTIONS);
+		expect(remembers({ name: knownBrowserCookie(chief.id), value: known.value }, chief.id)).toBe(true);
+	});
+
+	it('are every one forgotten by an administrator’s reset, which remembers none', async () => {
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const target = withPassword(makeUser({ username: 'target' }));
+		const theirs = rememberedFor(target);
+
+		const res = await api('PUT', `/api/users/${target.id}/password`, { user: admin, body: { password: NEW } });
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get('set-cookie')).toBeNull();
+		expect(remembers(theirs, target.id)).toBe(false);
 	});
 });
 

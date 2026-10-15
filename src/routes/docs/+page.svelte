@@ -329,7 +329,7 @@
 						<div class="info-card glass">
 							<h3>Rate Limits</h3>
 							<p>API requests are rate-limited to <strong>60 requests per minute</strong> per API key, counted once the key has been checked.</p>
-							<p>A request with no key DumpFire accepts, a missing <code>Authorization</code> header included, is counted against the address it came from instead, <strong>60 a minute</strong>, in a count of its own. A wrong key no longer spends a real key's allowance, even one that begins as the real key does.</p>
+							<p>A request with no key DumpFire accepts, a missing <code>Authorization</code> header included, is counted against the address it came from instead, <strong>60 a minute</strong>, in a count of its own. A wrong key no longer spends a real key's allowance, even one that begins as the real key does. An IPv6 address is counted by its /64 network, so every address of one network shares the one count; an IPv4 address written as IPv6 is counted as the IPv4 address, and a port is taken off.</p>
 							<p>When exceeded, you'll receive a <code>429</code> response with a <code>Retry-After</code> header:</p>
 							<div class="code-block">
 								<div class="code-block-header">429 Response</div>

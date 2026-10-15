@@ -1,9 +1,9 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { afterCommit, inTransaction } from '$lib/server/db/transaction';
+import { afterCommit } from '$lib/server/db/transaction';
 import { apiKeys, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { SESSION_COOKIE_NAME, currentPasswordMatches, generateApiKey, verifyPassword } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, checkCurrentPassword, generateApiKey, whilePasswordHolds } from '$lib/server/auth';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readText, readTimestamp } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
@@ -76,31 +76,26 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	// transaction that adds the key.
 	requireRoom();
 
-	// Checking a password takes about a quarter of a second, and nothing else
-	// can write while a transaction is open, so it is checked out here first.
-	// Ten wrong ones in 15 minutes from this session, and it is refused.
+	// Checking a password takes about a quarter of a second, on a worker
+	// thread, and is awaited, which a transaction cannot do, so it is checked
+	// out here first. Ten wrong ones in 15 minutes from this session, and it
+	// is refused.
 	const user = db.select().from(users).where(eq(users.id, userId)).get();
 	if (!user) throw error(404, 'User not found');
-	if (!currentPasswordMatches(session, userId, password, user.passwordHash, 'POST /api/account/api-keys')) {
-		throw error(403, 'Password is incorrect');
+	const wrong = () => error(403, 'Password is incorrect');
+	if (!(await checkCurrentPassword(session, userId, password, user.passwordHash, 'POST /api/account/api-keys')).matches) {
+		wrong();
 	}
 
 	const { plaintextKey, keyHash, keyPrefix } = generateApiKey();
 
 	// One transaction: the password and the limit are checked in the one that
 	// adds the key, so a key cannot be made with a password a change has just
-	// ended, nor past the limit by two requests at once.
-	const record = inTransaction(() => {
-		// The password was checked against the row as it was read above. If it
-		// has been changed since, by the user or by an administrator, it is
-		// checked again against the row as it is now. The same guess, so it is
-		// not counted again.
-		const current = db.select().from(users).where(eq(users.id, userId)).get();
-		if (!current) throw error(404, 'User not found');
-		if (current.passwordHash !== user.passwordHash && !verifyPassword(password, current.passwordHash)) {
-			throw error(403, 'Password is incorrect');
-		}
-
+	// ended, nor past the limit by two requests at once. It runs only while the
+	// stored hash is the one the password was checked against; if the user or
+	// an administrator changed it in between, the password is checked again
+	// against the new one, outside, and not counted again: the same guess.
+	const record = await whilePasswordHolds(userId, password, user.passwordHash, () => {
 		requireRoom();
 
 		const row = db.insert(apiKeys)
@@ -119,7 +114,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 		// holder's, shown on their own Account page.
 		afterCommit(() => log.info(`API key ${row.id} created by user ${userId}`, { keyId: row.id }, { userId }));
 		return row;
-	});
+	}, wrong);
 
 	return json({
 		id: record.id,

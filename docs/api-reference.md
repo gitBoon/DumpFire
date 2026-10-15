@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.42
+version: 1.44
 status: As-Built
 date: 2026-10-15
 tags:
@@ -89,7 +89,9 @@ request it counts, and a request that is turned away has written nothing.
   recorded as used.
 - **A request with no key DumpFire accepts**, a missing `Authorization` header included, is
   counted against the address it came from, in a count of its own: sixty a minute are
-  answered `401`, and then `429`. Where the server is behind a proxy that has not been set
+  answered `401`, and then `429`. An IPv6 address is counted by its /64 network, an IPv4
+  address written as IPv6 (`::ffff:198.51.100.7`) as the IPv4 address, and a port is taken
+  off, so every address of one IPv6 network shares the one count. Where the server is behind a proxy that has not been set
   up to say who its callers are, every caller has the proxy's address, and a mistyped key
   may be answered `429` while somebody else is guessing. A valid key is never held up by it.
   See [The Caller's Address Behind a Proxy](deployment.md#the-callers-address-behind-a-proxy).
@@ -686,6 +688,11 @@ new; these answers and fields are:
   depth. A tree already deeper keeps working, and a move that lifts it, or leaves it no
   deeper, is allowed. Archived cards count. See
   [`PUT /api/v1/cards/:cardId/move`](#put-apiv1cardscardidmove).
+- **A request with no key DumpFire accepts is counted by its network** (card 2195). The
+  address it came from is counted by its /64 network when it is IPv6, as the IPv4 address
+  when it is an IPv4 address written as IPv6, and without a port, so the 61st request in a
+  minute from any address of one IPv6 network is answered `429`, where each address had its
+  own sixty. A key's own count is unchanged.
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -1285,13 +1292,64 @@ API:
     "Set up by `<username>`", as the one sent by hand says "Sent by". See
     [Notifications & Email](notifications-email.md#who-a-report-can-be-mailed-to).
 - **Sign-in waits after five wrong passwords at one account** (card 2177), on the login
-  form, from any number of addresses: every sign-in at the account, the right password
-  included, waits 1, 2, then 4 seconds before its password is checked, until 15 minutes
-  pass with no wrong password or the right one is given. Nothing is refused for it, and
-  the answer's status and words do not change. Ten attempts from one address in 15 minutes
-  are still refused `429` "Too many login attempts", at once and not counted at the
-  account. The Sign In button reads "Signing in…" while it waits. See
-  [Authentication & Security](authentication-security.md#guessing-a-password-at-sign-in).
+  form, from any number of addresses: every sign-in at the account from a browser not
+  remembered for it, the right password included, waits 1, 2, then 4 seconds before its
+  password is checked, until 15 minutes pass with no wrong password or the right one is
+  given. The wait itself refuses nothing, and the answer's status and words do not change;
+  card 2194, below, adds a refusal while it lasts. Ten attempts from one address in 15
+  minutes are still refused `429` "Too many login attempts", at once and not counted at the
+  account. The Sign In button reads "Signing in…" while it waits. See [Authentication &
+  Security](authentication-security.md#guessing-a-password-at-sign-in).
+- **A browser that has signed in is remembered, and other browsers are let in one at a time
+  while an account is being guessed at** (card 2194), on the login form. A sign-in that
+  succeeds, a password changed on the Account page, an invite used, set-up and a sign-out
+  with an open session set a cookie, `dumpfire_known_<user id>` (`Path=/login`, `HttpOnly`,
+  `SameSite=Strict`, a year), that lets that browser past the account's wait, the
+  one-at-a-time rule and the per-address limit, until the account's password is set again.
+  While an account (or a name that is no account) has had five wrong passwords within 15
+  minutes of each other, a browser not remembered for it is let in only while fewer such
+  sign-ins are in flight there than the free guesses left, and never fewer than one: the
+  rest are answered at once `429` "A sign-in with this name is already under way from
+  another browser. Wait a few seconds and try again, or sign in from a browser you have used
+  here before.", counted at their address and not at the account. Nothing was refused for
+  the account before. A remembered browser is refused in the same words, counting nothing,
+  only while five of the account's sign-ins from remembered browsers and current-password
+  checks are already in flight. See [Authentication &
+  Security](authentication-security.md#browsers-that-have-signed-in-before).
+- **The login form, an invite's form and set-up can answer `503`** (card 2191) when 150
+  password checks for each thread are already waiting (about thirty seconds of them on a
+  fast host, a minute or more on a small one), or the caller has gone before a
+  thread was free for theirs: "Sign-in is very busy right now. Wait a minute and try again,
+  or sign in from a browser you have used here before.", and on the other two "The server is
+  very busy checking passwords right now. Wait a minute and try again." Passwords are hashed
+  and checked on worker threads, never on the server's own. A name that is no account is now
+  checked as slowly as a wrong password at an account (card 2192), so the time taken no
+  longer tells which names are accounts.
+- **`PUT /api/account/password`, `PUT /api/account/email` and `POST /api/account/api-keys`
+  can answer `409`** "Your password was changed while this was being saved. Nothing was
+  changed. Try again." (card 2191) when the account's password was changed twice while the
+  request was being saved; once, and the current password is checked against the new one, as
+  before. Nothing is written. Each can also answer `429` "The server is very busy checking
+  passwords right now. Wait a minute and try again." when five of the account's
+  current-password checks and sign-ins from remembered browsers are already in flight, with
+  nothing counted or checked. So one account keeps at most five password checks in the
+  first lane, which goes ahead of the rest, plus the new hash of each password change it
+  completes (`PUT /api/account/password` makes its hash after giving its place back). That
+  cannot starve the second lane (sign-ins from browsers not remembered, invites and set-up),
+  which is served at least every fourth job the threads take. See [Authentication &
+  Security](authentication-security.md#off-the-servers-thread-card-2191).
+- **A sign-in that succeeds gives back only the attempts its address made at that account**
+  (card 2226): attempts at another account, at a name that is no account, and refusals stay
+  counted to the end of the 15 minutes, where the whole count was cleared. Sign-in and the
+  public request form (`POST /api/requests`, `GET /api/requests/targets`, `POST
+  /api/requests/{id}/confirm`) count an IPv6 address by its /64 network, an IPv4 address
+  written as IPv6 as the IPv4 address, and no port (card 2195).
+- **A failed sign-in's log line holds nothing that was typed** (card 2193), in `GET
+  /api/logs` and on the Audit page: `Failed login attempt at "alice" (user 12) from IP …
+  (bad password)` with the account as the line's user, or `Failed login attempt for a name
+  that is no account (17 characters) from IP …`, each with the address as its `ip`. The
+  lines already stored for names that were no account are rewritten that way at the first
+  start, and in every backup.
 - **Sub-boards nest at most 20 levels deep in the web application too** (card 2172), as
   `POST /boards` and `PUT /cards/:cardId/move` above: `POST /api/boards` with a
   `parentCardId` is `409` in the same words, and so is `PUT /api/cards/{id}` with a

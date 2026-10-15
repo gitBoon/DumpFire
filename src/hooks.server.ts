@@ -13,7 +13,7 @@ import { createLogger, initLogMaintenance } from '$lib/server/logger';
 import { checkRateLimit } from '$lib/server/rate-limit';
 import { failureAsJson, guardBody } from '$lib/server/api-errors';
 import { bodyLimit, heldToLimit, refuseBody, type Caller } from '$lib/server/body-limits';
-import { addressOf, UNKNOWN_ADDRESS } from '$lib/server/client-address';
+import { addressKey, addressOf, UNKNOWN_ADDRESS } from '$lib/server/client-address';
 import { isNavigation, notSignedIn, secured, sendTo, whereSent } from '$lib/server/gate-answers';
 import { pathToLog } from '$lib/server/secret-paths';
 import { maskLiveLog, refuseUserlessBesideAnother, reportInstallation } from '$lib/server/startup-checks';
@@ -256,8 +256,10 @@ async function handleRequest(event: RequestEvent, resolve: ResolveFn, path: stri
 			// was (ADDRESS_HEADER, in docs/deployment.md) every caller has the
 			// proxy's address, and so shares the one bucket: a valid key is
 			// never held up by it, and a mistyped key may be answered 429 while
-			// somebody else is guessing.
-			const guessing = checkRateLimit(`apikey-none:${address ?? UNKNOWN_ADDRESS}`, 60, 60 * 1000);
+			// somebody else is guessing. Counted by the address's key
+			// (`addressKey`, card 2195): an IPv6 caller by its /64, so that
+			// the addresses of one network share the one allowance.
+			const guessing = checkRateLimit(`apikey-none:${addressKey(address ?? UNKNOWN_ADDRESS)}`, 60, 60 * 1000);
 			if (guessing.limited) return rateLimited(guessing.retryAfterSecs);
 
 			// `Bearer ` with nothing after it is answered here too: a header's

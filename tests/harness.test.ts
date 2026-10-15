@@ -90,6 +90,7 @@ const TEST_FILES = [
 	'migrations.test.ts',
 	'openapi-document.test.ts',
 	'page-failures.test.ts',
+	'password-checks.test.ts',
 	'plan-table.test.ts',
 	'pricing.test.ts',
 	'public-requests.test.ts',

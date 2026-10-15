@@ -85,7 +85,8 @@ import {
 	users,
 	webhooks
 } from '$lib/server/db/schema';
-import { hashPassword, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { makePasswordHash } from '$lib/server/passwords';
 import { api, type ApiResult } from './helpers/api';
 import {
 	addBoardMember,
@@ -3010,7 +3011,7 @@ describe('the accounts, administration, teams, reports and requests that card 21
 
 	it('stores a key’s expiry in one form, in UTC, so that it compares as the time it names (R13)', async () => {
 		const w = world();
-		db.update(users).set({ passwordHash: hashPassword('the password') }).where(eq(users.id, w.owner.id)).run();
+		db.update(users).set({ passwordHash: await makePasswordHash('the password', 'known') }).where(eq(users.id, w.owner.id)).run();
 
 		const res = await api('POST', '/api/account/api-keys', {
 			user: w.owner,
