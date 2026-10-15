@@ -2,7 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
-import { hashPassword } from '$lib/server/auth';
+import { makePasswordHash } from '$lib/server/passwords';
 import { issueInvite } from '$lib/server/invites';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
 import { readBody } from '$lib/server/request-body';
@@ -60,16 +60,17 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 	// Check uniqueness: one rule, shared with PUT /api/users/[id].
 	const requireUnused = () => requireUnusedAccountFields({ username, email });
 
-	// Hashing takes about a quarter of a second, and nothing else can write
-	// while a transaction is open, so the hash is made out here, before it. The
+	// Hashing takes about a quarter of a second, on a worker thread, and is
+	// awaited, which a transaction cannot do, so the hash is made out here,
+	// before it, in the first lane: the caller holds a session. The
 	// name and address are looked at first so that a request that will be
 	// refused is not hashed for, and are read again in the transaction.
 	requireUnused();
 
 	// If password provided, hash and create fully. Otherwise create with placeholder and invite.
 	const passwordHash = password
-		? hashPassword(password)
-		: hashPassword(crypto.randomUUID()); // Random placeholder — user must set via invite
+		? await makePasswordHash(password, 'known')
+		: await makePasswordHash(crypto.randomUUID(), 'known'); // Random placeholder — user must set via invite
 
 	// One transaction: the name and address are checked as unused in the one
 	// that creates the user, and the user and their invite are made together.

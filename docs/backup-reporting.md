@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.13
+version: 1.14
 status: As-Built
 date: 2026-10-15
 tags:
@@ -117,9 +117,10 @@ sequenceDiagram
     Backup->>Live: VACUUM INTO '<db>.backup-temp'
     Note over Live: Complete copy,<br/>including WAL data
     Backup->>Copy: Open '<db>.backup-temp'
-    Copy->>Copy: Mask tokens in system_logs (maskSecretsInLog)
+    Copy->>Copy: Mask tokens and old failed sign-in names in system_logs (maskSecretsInLog)
     Copy->>Copy: DELETE FROM sessions
     Copy->>Copy: DELETE FROM invite_tokens WHERE used = 0
+    Copy->>Copy: DELETE FROM settings WHERE key = 'known_browser_secret'
     Backup->>Copy: VACUUM INTO '<db>.backup-temp-cleared'
     Note over Copy: Written out again, so nothing<br/>deleted is left in the file
     Backup->>FS: readFileSync '<db>.backup-temp-cleared'
@@ -131,7 +132,14 @@ sequenceDiagram
 - **The snapshot includes all WAL data.** A raw file copy would miss unflushed writes.
 - **No session and no unused invite is in the file**, and its system log is masked: every
   invite's address written as `/invite/[token]`, the token of every unused invite replaced
-  wherever a line holds it, and a request link's `token=` masked. The running database is
+  wherever a line holds it, a request link's `token=` masked, and an old failed sign-in line
+  at a name that was no account rewritten to hold only the name's length (card 2193).
+- **The key remembered browsers are signed with is not in the file** (the row
+  `known_browser_secret` of `settings`, card 2194), and a restore never brings it in from a
+  backup of any age (`rowsToRestore()` in `src/lib/server/db/restore.ts`). Whoever held it
+  and an account's password hash, which a backup does hold, could make a cookie that lets a
+  browser past sign-in's throttling for that account. So a restore forgets every remembered
+  browser, and the restored server makes a new key. The running database is
   not touched by a backup. Deleting the rows alone is not enough, because the pages they
   were on stay in the file until it is written again; hence the second `VACUUM INTO`.
 - **The server answers nothing while it runs.** Every step is synchronous, from the first
@@ -487,7 +495,7 @@ Individual card reports can be generated for completion notifications. These inc
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/lib/server/backup.ts` | 374 | Backup scheduling, data generation, upload orchestration |
+| `src/lib/server/backup.ts` | ~490 | Backup scheduling, data generation (`withoutSignIns()`: no session, no unused invite, no key remembered browsers are signed with), upload orchestration |
 | `src/lib/server/backup-destinations.ts` | ~400 | SFTP, S3, Google Drive, OneDrive destination implementations |
 | `src/lib/server/reports.ts` | ~1,700 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()` and the timer's `runDueReportSchedulesOnce()`; `takeReportMail()`, the day's 100 addresses (card 2182) |
 | `src/routes/api/reports/email/+server.ts` | ~170 | A report emailed on demand, and its answer |

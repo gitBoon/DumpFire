@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.28
+version: 1.30
 status: As-Built
 date: 2026-10-15
 tags:
@@ -29,7 +29,10 @@ tags:
   - sub-boards
   - sign-in
   - report-mail
-description: "Deep-dive into DumpFire's authentication system, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, and how attachments are served"
+  - worker-threads
+  - remembered-browsers
+  - ipv6
+description: "Deep-dive into DumpFire's authentication system, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -331,9 +334,170 @@ See the sequence in [Architecture](architecture.md#an-open-stream-and-its-sessio
 ## Password Hashing
 
 - **Algorithm**: bcrypt via `bcryptjs`
-- **Rounds**: 12
-- **Functions**: `hashPassword()` and `verifyPassword()` in `auth.ts`
-- **Never inside a transaction**: hashing takes about a quarter of a second, and nothing else can write while a transaction is open. A password is hashed before the transaction that stores it
+- **Rounds**: 12 (`BCRYPT_ROUNDS`). Every stored hash is cost 12
+- **Functions**: `checkPassword(password, hash, lane, { gone })` and
+  `makePasswordHash(password, lane, { gone })` in `src/lib/server/passwords.ts`, both async.
+  `checkPassword` resolves to `{ matches }`, not to a boolean, so that a missed `await` does
+  not compile: `!checkPassword(…)` on a promise would be `false`, a wrong password read as
+  right, and TypeScript allows `!` of a promise, while `.matches` of one is an error
+  (`npm run check`). `passwords.ts` is the only module that imports bcryptjs, and a test that
+  reads `src/` holds that, and that every call of `checkPassword(` and
+  `checkCurrentPassword(` is awaited. `hashPassword()` and `verifyPassword()` are gone from
+  `auth.ts`
+- **Never inside a transaction**: a hash or a check takes about a fifth of a second, is
+  awaited, and a transaction cannot await. A password is hashed before the transaction that
+  stores it, and a current password checked before the transaction it allows (see
+  `whilePasswordHolds`, below)
+
+### Off the Server's Thread (card 2191)
+
+A bcrypt check at cost 12 takes about 0.2 s, and bcryptjs does it in JavaScript. It was made
+with `compareSync` on the server's one thread, which answered nothing else meanwhile: each
+sign-in held every other request up for 0.2 s, and a burst of them held the server for as
+long as the burst lasted (a thousand attempts, three and a half minutes). bcryptjs's own
+async `compare` gives the thread back only now and then: measured, five at once held it for
+half a second at a stretch.
+
+Every hash and every check is now made on a **worker thread** (`node:worker_threads`), and
+the server's thread only waits for the answer, answering everyone else meanwhile.
+
+```mermaid
+flowchart LR
+    subgraph Server["The server's thread"]
+        Known["A session's request<br/>(current password, reset, new user)<br/>a remembered browser's sign-in"] -->|"await checkPassword or<br/>makePasswordHash"| L1["First lane: known<br/>current passwords and remembered<br/>sign-ins: five in flight an account"]
+        Other["Any other sign-in, a name that is<br/>no account, an invite, set-up"] -->|"await"| L2["Second lane: other<br/>at most 150 a thread waiting"]
+        L1 --> Pick{"A thread free?<br/>first lane, then second,<br/>but never more than three of the<br/>first in a row while the second waits"}
+        L2 --> Pick
+    end
+    Pick -->|"postMessage"| T1["Thread 1<br/>bcryptjs compareSync or hashSync"]
+    Pick -->|"postMessage"| T2["Thread 2<br/>(3 CPUs or more)"]
+    T1 -->|"the answer, to the caller awaiting it"| Pick
+    T2 -->|"the answer, to the caller awaiting it"| Pick
+```
+
+- **How many threads.** `min(2, max(1, CPUs − 1))`: two, or one on a machine with one or two
+  CPUs. Never more than two: the threads are there to keep the server's thread free, not to
+  check faster for whoever is guessing. `PASSWORD_THREADS` sets it (0 to 8); leave it unset
+  (see [Deployment](deployment.md#environment-variables)). Each thread is a V8 heap of its own,
+  about 10 MB.
+- **How a thread starts.** From a string of code held in `passwords.ts`, because a worker file
+  of its own would not be carried into the build. It loads bcryptjs by the absolute path
+  `passwords.ts` resolves, which in the built server is `/app/node_modules/bcryptjs`, kept
+  outside the bundle as every dependency is: the image did not change. A thread is given
+  checks only once it has said it is ready, and never keeps the process alive.
+- **One line in memory, in two lanes, in order of arrival.** A free thread takes the oldest
+  check of the first lane, and of the second when the first is empty, **or when three of the
+  first have been taken in a row while one of the second waited**: the second lane is always
+  served. Without that, a stream of first-lane checks, each sent as the one before was
+  answered, kept the first lane from ever being empty, and every sign-in, invite and set-up
+  behind it waited until the second lane was full and was answered busy (measured: 66 checks
+  of the first lane made while one of the second stayed unmade).
+
+| Lane | Who | Where |
+|------|-----|-------|
+| First (`known`) | A caller the server already knows | The current-password check of the email, password and key routes, and its re-check (`checkCurrentPassword`, `whilePasswordHolds`); the hash of your own change, an administrator's reset and a new user (`POST /api/users`, the placeholder of an invited one included); a sign-in from a browser remembered for the account |
+| Second (`other`) | Everyone else | A sign-in from a browser not remembered, a name that is no account included; the hash of an invite's use and of set-up |
+
+- **The second lane is bounded: 150 checks waiting for each thread**, 300 with two: about
+  thirty seconds of checks on a fast host, and 60 to 90 seconds on a small one, past the 60
+  seconds nginx waits for an answer by default, so that a proxy left at its default answers
+  `504` to whoever was last in the line (the configuration in Deployment waits 86400 s)
+  ([Deployment](deployment.md#the-update-that-brings-password-checks-off-the-servers-thread-and-remembered-browsers)
+  times one check on production). A check that arrives when it is full is not queued, and the
+  caller is answered at once, `503`. Sign-in: "Sign-in is very busy right now. Wait a minute
+  and try again, or sign in from a browser you have used here before."; the invite and
+  set-up forms: "The server is very busy checking passwords right now. Wait a minute and try
+  again." Nothing is counted at the account, since no password was checked; a sign-in was
+  already counted at its address, and stays counted there (a later success at the account
+  does not give it back).
+- **The first lane is bounded for each account: five checks in flight**, its sessions'
+  current passwords (with their re-checks) and its remembered browsers' sign-ins together,
+  each holding a place at `known:user:<id>` (`FIRST_LANE_CHECKS_PER_ACCOUNT`, `enterSignIn`
+  in `rate-limit.ts`) from before its check to its answer. A session's count of ten wrong
+  passwords does not bound it, since the right password clears the count, and nor do a
+  remembered browser's own five in flight, since every right password makes a new cookie.
+  The sixth is refused before anything is counted or checked: a sign-in `429` in the words
+  a browser not remembered is told, "A sign-in with this name is already under way from
+  another browser…"; the email, password and key routes `429` "The server is very busy
+  checking passwords right now. Wait a minute and try again." An administrator's reset and
+  a new user are not bounded this way: they are an administrator's own actions. So one
+  signed-in user, or whoever holds an account's password, keeps at most five checks in the
+  first lane, plus the new hash of each password change it completes: `PUT
+  /api/account/password` makes its hash after giving its place back. That cannot starve the
+  second lane, which is served at least every fourth job while one of its checks waits.
+- **A check whose caller has gone is not made.** When a thread is free for a check, the
+  check's `gone()` is asked first: the sign-in, invite and set-up actions pass
+  `callerHasGone(event.platform)`, which is `req.socket.destroyed` of the request the node
+  adapter hands over. So when a burst ends, or a proxy gives up on a caller (nginx after 60
+  s), the threads are not left checking passwords nobody will be told about. Its route answers
+  as the `503` above, which nobody receives, and counts nothing at the account. Under `vite
+  dev` and in the tests there is no `req`, and nobody is taken for gone. The routes of the
+  first lane pass none.
+- **A thread that stops during a check** is replaced, and the check sent once more, to the
+  replacement, ahead of what arrived after it; a second stop fails the check, which its route
+  answers `500`. **A check that throws** (a stored value 60 characters long that is not a
+  bcrypt hash: `compareSync` throws for it, where a value of any other length is `false`)
+  fails that one check, `500`, and the thread goes on. Nothing times a check: a stored hash of
+  cost 31 would hold one thread, where it would have held the whole server. Only an import
+  or a hand edit can store either. A stored hash of very high cost also holds one of the
+  account's first-lane places for as long as each check of it runs, so five such checks at
+  once leave that account answering `429` until they finish or the server restarts.
+- **When no thread can start at all** (bcryptjs cannot be loaded in one), one `ERROR` line
+  under `AUTH` says so, "Password checks cannot run on worker threads (…). Every password
+  is checked on the server's thread until it restarts, which holds every other request for
+  about a fifth of a second each time.", and every check runs on the server's thread as it
+  did before, a turn later, for the life of the process, with the second lane bounded at
+  150. Nobody is kept from signing in by it.
+- **What it says in the log**, under `AUTH`: one `INFO` line at the first check, "Password
+  checks run on 2 worker thread(s)" (or "on the server's thread (PASSWORD_THREADS=0)");
+  "Password checks are queuing: 34 password checks waiting (sign-ins, invites, set-up), the
+  oldest for 6 s" at `WARN` when the second lane holds more than 20, at most once every five
+  minutes; and "Password checks are full: 300 password checks waiting (sign-ins, invites,
+  set-up); sign-ins from browsers not remembered, invites and set-up are being answered
+  'busy'" at `WARN` when the bound refuses one, at most once every five minutes. See
+  [Admin Guide](admin-guide.md#logs).
+- **What is queued.** The password, cut to its first 256 characters, and nothing else of
+  the request. bcrypt reads only the first 72 bytes of a password, which the first 72
+  characters always hold, so the cut changes no hash and no answer; and a longer passphrase's
+  tail was never read. A password or a hash that is not text is refused with a `TypeError`
+  before it is queued, rather than thrown inside a thread.
+- **A name that is no account costs the same check** (card 2192). Sign-in at a name that
+  matches no account checks the password typed against `DUMMY_HASH`, a fixed cost-12 hash of
+  32 random bytes kept in `passwords.ts` that nothing matches, and ignores the answer: so it
+  takes the time a wrong password at an account takes, in the same lane, and the clock no
+  longer tells which names are accounts. It was answered at once (1 ms against 206 ms,
+  measured). A test holds `DUMMY_HASH` at `BCRYPT_ROUNDS`, so a change of cost cannot leave it
+  behind; an account whose stored hash had another cost would answer in another time, and
+  none has.
+- **In the tests** (`PASSWORD_THREADS=0`, set by `vitest.config.ts`) every check runs on the
+  test's own thread a turn later (`setImmediate`), so that a test's `vi.mock('bcryptjs')` sees
+  every call and a check is still never answered in the turn that asked for it.
+  `tests/password-checks.test.ts` starts real threads.
+
+**The re-check of a current password, outside the transaction.** The email, password and key
+routes check the current password before their transaction, and a password changed in
+between used to be checked again inside it: a bcrypt check with the write lock held, which a
+transaction cannot make now that a check is awaited. `whilePasswordHolds(userId, password,
+checkedHash, write, wrong)` in `auth.ts` runs the route's write in one transaction only while
+the stored hash is still the one the password was checked against. If it has changed,
+nothing is written, the transaction ends, the password is checked against the new hash
+outside it (first lane, holding one of the account's five places, and not counted again:
+the same guess), and the transaction runs
+once more; the route's own `403` if it does not match. A second change in between answers
+`409` "Your password was changed while this was being saved. Nothing was changed. Try
+again." (`PASSWORD_CHANGED_MEANWHILE`). Nothing can change the hash between the comparison
+and the write: better-sqlite3 runs the whole transaction without yielding, under
+`BEGIN IMMEDIATE`.
+
+**What the people using it notice:** nothing, until a burst of sign-in attempts. Then a
+sign-in from a browser the server does not know waits its turn, about a tenth of a second
+for each check ahead of it with two threads, up to a fifth on a host with one or two CPUs,
+and when 150 checks for each thread are already waiting it is answered at once "Sign-in is
+very busy right now…" instead; an invite's form and set-up the same. Signed-in people, and
+browsers remembered for the account, go ahead of them, three at a time at most, and five in
+flight for any one account, plus the new hash of each password change it completes.
+
+Covered by `tests/password-checks.test.ts` and `tests/atomic-accounts.test.ts`.
 
 ### Guessing a Current Password
 
@@ -354,7 +518,9 @@ carries, the right one included, and nothing is written.
 flowchart TD
     Ask["PUT /api/account/email, PUT /api/account/password<br/>or POST /api/account/api-keys"] --> Text{"A password that is text?"}
     Text -->|"no"| Bad["400, in the route's own words:<br/>nothing checked, nothing counted"]
-    Text -->|"yes"| Count["Counted against this session"]
+    Text -->|"yes"| Place{"Fewer than 5 of the account's<br/>first-lane checks in flight?"}
+    Place -->|"no"| Busy["429 The server is very busy<br/>checking passwords right now.<br/>Nothing counted, nothing checked"]
+    Place -->|"yes"| Count["Counted against this session"]
     Count --> Over{"More than ten in 15 minutes?"}
     Over -->|"yes"| Refused["429 Too many wrong passwords.<br/>Try again in N minute(s).<br/>One WARN line, for the first in the window"]
     Over -->|"no"| Check{"The right password?"}
@@ -368,12 +534,23 @@ flowchart TD
   only made by signing in or with an invite, each of which needs the password or sets it, so
   a count on the session slows the guesser as much. Signing in again, or another browser
   already signed in, is not held up.
-- **One function.** `currentPasswordMatches(session, userId, password, hash, where)` in
-  `src/lib/server/auth.ts` counts the attempt, answers the `429`, checks the password and
-  clears the count when it matches. The session comes from the session cookie the gate
-  checked; a request that reaches one of these routes without one is answered `401`. A route
-  that checks the password again inside its transaction, because the password was changed in
-  between, does not count it again: it is the same guess.
+- **Five in flight for the account.** The right password clears the session's count, so the
+  count does not bound how many checks a signed-in user keeps going at once, and they go in
+  the first lane, ahead of every sign-in. Each check holds one of the account's five places
+  in the first lane, shared with its remembered browsers' sign-ins, from before it is counted
+  to its answer; the sixth at once is answered `429` "The server is very busy checking
+  passwords right now. Wait a minute and try again." with nothing counted and nothing
+  checked. Nobody using the pages one at a time meets it. See
+  [Off the Server's Thread](#off-the-servers-thread-card-2191).
+- **One function.** `checkCurrentPassword(session, userId, password, hash, where)` in
+  `src/lib/server/auth.ts` (named `currentPasswordMatches` until card 2191) counts the
+  attempt, answers the `429`, checks the password on a worker thread in the first lane, and
+  clears the count when it matches. It is async and resolves to `{ matches }`, so a missed
+  `await` does not compile. The session comes from the session cookie the gate checked; a
+  request that reaches one of these routes without one is answered `401`. A route whose
+  password was changed in between is checked again by `whilePasswordHolds` (see
+  [Password Hashing](#password-hashing)), which does not count it again: it is the same
+  guess. Two changes in between answer `409`.
 - **A fixed window, not a sliding one.** The 15 minutes start at the session's first attempt,
   and when they end the count starts again from nothing, however many attempts were refused
   in them (`src/lib/server/rate-limit.ts`, sign-in's limiter too). So a guesser who times it
@@ -399,20 +576,44 @@ Covered by `tests/atomic-accounts.test.ts`.
 ### Guessing a Password at Sign-in
 
 The sign-in form (`/login`, its action in `src/routes/login/+page.server.ts`) is the one part
-of DumpFire anybody can reach that checks a password. It counts two things.
+of DumpFire anybody can reach that checks a password. It counts two things, holds browsers it
+does not know to one sign-in at a time at an account under attack, and lets a browser that
+has signed in to the account before past all of it (see
+[Browsers That Have Signed In Before](#browsers-that-have-signed-in-before)).
 
-**Per address, as before.** Ten attempts from one address in 15 minutes, in a fixed window
-from the first; the eleventh is answered at once, `429` "Too many login attempts. Please try
-again in N minute(s).", and a sign-in that succeeds from the address clears its count. It is
-checked first: an attempt it refuses never waits and is not counted at the account, since
+**Per address.** Ten attempts from one address in 15 minutes, in a fixed window from the
+first; the eleventh is answered at once, `429` "Too many login attempts. Please try again in
+N minute(s).". An attempt it refuses never waits and is not counted at the account, since
 no password was checked. On its own it let a guesser with N addresses try 10 × N passwords
-at one account every 15 minutes (card 2177). Because a success clears it, it holds only a
-guesser with no account: someone with an account of their own can sign in to it after every
-nine guesses and go on from the same address. That is its own card.
+at one account every 15 minutes (card 2177).
+
+- **An address is counted by its key** (card 2195): an IPv6 address by its /64 network, an
+  IPv4 address written as IPv6 (`::ffff:198.51.100.7`) as the IPv4 address, and no port. So
+  everyone on one IPv6 network shares the ten, as an office behind one IPv4 address already
+  does, and a caller holding a /64 no longer has 2^64 allowances. See
+  [How an Address Is Counted](#how-an-address-is-counted).
+- **A sign-in that succeeds gives back only the attempts its address made at that account**
+  (card 2226). The count notes which account each admitted attempt was at (the key below:
+  `user:<id>`, so a username and its email are one; `name:<sha-256>` for a name that is no
+  account), and the right password takes that account's attempts off the address's count,
+  and nothing else. Someone who mistypes their own password three times and then signs in
+  has those four back, so mistypes at an account whose owner then signs in never add up
+  across an office. Attempts at another account, at a name that is no account (a mistyped
+  username included), and refusals stay counted to the end of the window, and the count
+  never goes below zero. It used to clear the address's whole count, so anyone with an
+  account could send nine guesses at another, sign in to their own, and go on from the same
+  address as often as they liked: 36 wrong at another account in one window, measured, none
+  refused. A browser remembered for the account is never counted at its address, so its
+  success gives nothing back.
+- **The lookup comes first.** The account is known only after the name is looked up, so the
+  lookup is made before the address is counted; an attempt the address's limit refuses
+  costs one indexed read before its `429`, the same for a name that is an account and one
+  that is not.
 
 **Per account, from any number of addresses (card 2177).** After five wrong passwords at one
-account within 15 minutes of each other, every sign-in at it waits before its password is
-checked, the right password included, and is then answered as it would have been:
+account within 15 minutes of each other, every sign-in at it from a browser not remembered
+for it waits before its password is checked, the right password included, and is then
+answered as it would have been:
 
 | Wrong passwords at the account when the attempt arrives | Wait before the password is checked |
 |---|---|
@@ -421,11 +622,16 @@ checked, the right password included, and is then answered as it would have been
 | 6 | 2 s |
 | 7 or more | 4 s |
 
-- **Never a refusal.** The answer's status and words do not change: a wrong password is
-  `400` "Invalid username/email or password", as before. No path answers `429` for the
-  account, and the right password signs in after at most four seconds, clearing the
-  account's count and the address's. Refusing the account for a while would hand anyone who
-  knows a username a way to keep its owner out.
+- **The wait refuses nothing.** The answer's status and words do not change: a wrong password
+  is `400` "Invalid username/email or password", as before, and the right password signs in
+  after at most four seconds, clearing the account's count and giving back the address's
+  attempts at the account. What can refuse a sign-in at the account is the one-at-a-time
+  rule below (card 2194), which reverses card 2177's "never refused": while the account has
+  had five wrong passwords within 15 minutes of each other, a browser not remembered for it
+  is let in one at a time, and the rest are refused at once, `429`. A browser remembered for
+  the account is never made to wait or counted, and is refused only while five of the
+  account's first-lane checks are already in flight (see
+  [Off the Server's Thread](#off-the-servers-thread-card-2191)).
 - **The key is the account, once the name is found.** The lookup is the one sign-in makes:
   a name with `@` is lower-cased and matched to an email, anything else matched exactly to
   a username. Found, the count is kept under `user:<id>`, so a username and its email share
@@ -439,13 +645,15 @@ checked, the right password included, and is then answered as it would have been
   the waits last as long as the guessing does. A fixed window would give five free guesses
   every 15 minutes.
 - **Read when the attempt arrives, counted after the check.** Attempts sent together read
-  the same count and wait alike; they are not put in a line.
+  the same count and would wait alike, side by side; the one-at-a-time rule below is what
+  bounds how many are let in at once.
 - **A wait holds nothing up.** It is an awaited timer, holding no transaction and no
   database handle, so every other request is answered meanwhile. Everything before it (the
-  form read, the per-address count, the lookup) is one synchronous stretch, after which the
-  sign-in holds only the account's id (or nothing, for a name that is no account), the
-  password cut to its first 256 characters and the name cut to 320 for the answer and the
-  log, each copied so that nothing of the form is kept alive: well under 2 KB besides its
+  form read, the lookup, the remembered browser's cookie, the per-address count and the place
+  of the one-at-a-time rule) is one synchronous stretch, after which the sign-in holds only
+  the account's id (or nothing, for a name that is no account), the password cut to its
+  first 256 characters, the name cut to 320 for the answer, its length, and the address,
+  each copied so that nothing of the form is kept alive: well under 2 KB besides its
   connection, where the form can be the gate's 512 KB. bcrypt reads only the first 72 bytes
   of a password, which 256 characters always hold, so no password that signed in before
   stops signing in. The account is read again by its id after the wait, so the password is
@@ -455,7 +663,8 @@ checked, the right password included, and is then answered as it would have been
   within 15 minutes of each other`, with the account as the line's user, so the Audit page
   finds it by user; or `Sign-ins at a name that is no account are being slowed: …`, with
   none. Not one line per wait, so a guesser does not fill the log. The "Failed login
-  attempt" lines beside it name what was typed, now cut to 320 characters.
+  attempt" lines beside it hold nothing that was typed: see
+  [What a Failed Sign-in Writes](#what-a-failed-sign-in-writes).
 - **The page shows the wait.** The Sign In button is disabled, and reads "Signing in…",
   from the press until the answer, so that four seconds with nothing to see are not met by
   pressing again.
@@ -469,39 +678,79 @@ checked, the right password included, and is then answered as it would have been
   `WRONG_SIGN_IN_KEYS = 10_000` counts, since every name that is no account is one of its
   own: full, the one counted longest ago is forgotten to make room. Pushing an account's
   count out so takes 10,000 names, a thousand addresses' worth of attempts at ten each in
-  15 minutes, or one address for a guesser with an account of their own, who can clear
-  that address's count by signing in (see the per-address paragraph and its own card), and
-  only while the account's own guessing has paused.
+  15 minutes, and only while the account's own guessing has paused. (Before card 2226 one
+  address with an account of its own did it, signing in between: measured, 8.4 s.) A
+  remembered browser's count of wrong passwords, kept under `nonce:<nonce>` in the same map,
+  can be pushed out the same way.
+
+**One at a time, for browsers not remembered (card 2194).** At one key (`user:<id>`, or
+`name:<sha-256>` for a name that is no account), a sign-in from a browser not remembered for
+the account is let in only while fewer such sign-ins are already in flight there than the
+free guesses left, and never fewer than one: `max(1, 5 − n)`, where `n` is the count of
+wrong passwords above. So five free guesses an idle window however they are sent, then
+**one at a time while the waits last**. In flight is from passing the per-address count to
+the answer, the wait and the check included; the place is taken in the synchronous stretch
+as the attempt arrives, so attempts sent together take places in the order they arrived,
+and given back in a `finally` however the sign-in is answered.
+
+- **Beyond it, refused at once:** `429` "A sign-in with this name is already under way from
+  another browser. Wait a few seconds and try again, or sign in from a browser you have used
+  here before." The same words and the same rule for a name that is no account, so the
+  refusal tells nothing about which names are accounts. Counted at the address, as every
+  attempt is, and kept counted there, so a later success at the account does not give it
+  back; not counted at the account, since no password was checked.
+- **One `WARN` line under `AUTH` for the first refusal at a key**, and again only after 15
+  minutes without one: `Sign-ins at "pat" (user 12) from browsers not known here are being
+  let in one at a time`, with the account as the line's user, or `Sign-ins at a name that is
+  no account from browsers not known here are being let in one at a time`, with none.
+- **What it does to a guesser who sends many at once**: one guess per wait and check at one
+  account, about one every 4.3 s, about 210 in 15 minutes, as a guesser who waits for each
+  answer makes. Before it, each request waited its own few seconds side by side, and the
+  first volley of every idle window, all reading a count of 0, was as large as the
+  per-address limit allowed across every address the guesser had.
+- **Turned off on the host** with `SIGN_IN_ONE_AT_A_TIME=off`, for an owner an attack keeps
+  out of every browser not remembered: see
+  [If an Attack Keeps an Owner Out](deployment.md#if-an-attack-keeps-an-owner-out). Off, every browser is
+  let in after the account's wait, as card 2177 had it.
+- **In memory**, in `src/lib/server/rate-limit.ts` (`enterSignIn`, `leaveSignIn`,
+  `wrongSignInsAt`, `FREE_WRONG_SIGN_INS = 5`); a key with none in flight has no entry, so
+  names that are no account do not pile up.
 
 ```mermaid
 flowchart TD
-    Post["POST /login<br/>identity, password"] --> Addr{"Per address:<br/>more than 10 in 15 minutes?"}
-    Addr -->|"yes"| Refuse["429 Too many login attempts<br/>at once, not counted at the account"]
-    Addr -->|"no"| Look["Look the name up<br/>key user:id, or name:sha256 of it as looked up"]
-    Look --> Wait["Wait signInWait(key):<br/>none under 5 wrong, then 1 s, 2 s, 4 s<br/>an awaited timer"]
-    Wait --> Known{"An account?<br/>read again by id"}
-    Known -->|"no"| Wrong["countWrongSignIn(key), WARN at the fifth<br/>400 Invalid username/email or password"]
-    Known -->|"yes"| Check{"The right password?"}
-    Check -->|"no"| Wrong
-    Check -->|"yes"| Ok["forgetWrongSignIns(key),<br/>the address's count cleared,<br/>a session, 303 to /"]
+    Post["POST /login<br/>identity, password"] --> Read["Both fields as text,<br/>name cut to 320, password to 256"]
+    Read --> Look["Look the name up<br/>key user:id, or name:sha256 of it as looked up"]
+    Look --> Known{"Remembered for this account?<br/>dumpfire_known_id valid, its nonce<br/>under five wrong and fewer than<br/>5 - wrong in flight"}
+    Known -->|"yes"| Place{"Fewer than 5 of the account's<br/>first-lane checks in flight?<br/>its sessions' current passwords included"}
+    Place -->|"no"| R429c["429 already under way, at once<br/>counted nowhere"]
+    Place -->|"yes"| CheckK["checkPassword, first lane"]
+    Known -->|"no"| Addr{"Per address, an IPv6 address by its /64:<br/>more than 10 in 15 minutes?"}
+    Addr -->|"yes"| R429a["429 Too many login attempts<br/>at once, not counted at the account"]
+    Addr -->|"no"| Slot{"In flight at this key fewer than<br/>max(1, 5 - wrong)?<br/>unless SIGN_IN_ONE_AT_A_TIME=off"}
+    Slot -->|"no"| R429b["429 already under way, at once<br/>kept counted at the address,<br/>not counted at the account"]
+    Slot -->|"yes"| Wait["Wait signInWait(key):<br/>none under 5 wrong, then 1 s, 2 s, 4 s<br/>an awaited timer"]
+    Wait --> Again["Read the account again by id"]
+    Again --> CheckO["checkPassword, second lane:<br/>the account's hash, or DUMMY_HASH"]
+    CheckO -->|"lane full, or caller gone"| R503["503 Sign-in is very busy"]
+    CheckK -->|"caller gone"| R503
+    CheckK -->|"wrong"| WrongK["counted at the cookie's nonce,<br/>the failed line, 400"]
+    CheckK -->|"right"| OkK["session, cookie issued anew, 303 to /<br/>the account's count left as it is"]
+    CheckO -->|"wrong, or no account"| WrongO["countWrongSignIn(key), WARN at the fifth,<br/>the failed line, 400"]
+    CheckO -->|"right"| OkO["forgetWrongSignIns(key),<br/>the address's attempts at this account given back,<br/>session, cookie issued, 303 to /"]
 ```
 
-What it does, and what it does not, said plainly, because "slowed however many addresses
-are used" is true of each guess but not of every guesser's rate:
+What it does, and what it does not, said plainly:
 
 - **It slows a guesser who waits for each answer**, one request at a time through as many
   addresses as they like, to about one guess every 4 seconds at one account after the first
   five: about 220 in 15 minutes, where it was 10 for each address.
-- **It does not slow a guesser who sends many at once.** Each request waits its own few
-  seconds, side by side, and the rate is what the per-address limit lets through, ten an
-  address every 15 minutes, as before, and more for a guesser with an account of their own,
-  whose own sign-in clears the address's count. No wait that the right password always gets past can
-  do better: the guesser learns within those seconds whether each guess was right. Only
-  refusing some guesses bounds that rate, and refusing is what lets an attacker keep the
-  owner out. The next step, its own card, would let a browser that has signed in to the
-  account before skip the waits and hold every other browser to one sign-in at a time while
-  they last. How many addresses a guesser has depends on how the server reads them behind a
-  proxy: see [Deployment](deployment.md#the-callers-address-behind-a-proxy).
+- **It slows a guesser who sends many at once to the same rate**, by the one-at-a-time rule.
+  No wait that the right password always gets past could: the guesser learns within those
+  seconds whether each guess was right. That rule refuses, and refusing is what can keep an
+  owner out on a browser not remembered (see
+  [Browsers That Have Signed In Before](#browsers-that-have-signed-in-before)). How many
+  addresses a guesser has depends on how the server reads them behind a proxy: see
+  [Deployment](deployment.md#the-callers-address-behind-a-proxy).
 - **It does not slow one password tried across many accounts**, where each account's count
   stays low. The per-address limit bounds that.
 - **The wait can be seen.** One wrong attempt shows whether the account has had five wrong in
@@ -509,14 +758,214 @@ are used" is true of each guess but not of every guesser's rate:
   since one account's username and email share one count, wrong attempts at one show at the
   other: five wrong at a username and a sixth at an email, which waits only if both are one
   account's, tell whether they are, for 6 of an address's 10 attempts. That is accepted (the
-  plan's decision 10, one count for the account, is deliberate): whether a name is an
-  account at all can already be told from how long a wrong password takes to be answered.
+  plan's decision 10, one count for the account, is deliberate), and since card 2192 it is
+  the one tell left: whether a name is an account at all can no longer be told from how long
+  a wrong password takes, because a name that is no account is checked as an account's
+  wrong password is (see [Password Hashing](#password-hashing)). It links a username
+  already known to an email, at the cost of 6 of an address's 10 attempts.
 
 **What the owner of an account notices:** after five wrong passwords at it within 15 minutes
-of each other, every sign-in at it, their own included, waits 1 to 4 seconds before it is
-answered, until 15 minutes pass with no wrong password or the right one is given.
+of each other, every sign-in at it from a browser not remembered for it, their own included,
+waits 1 to 4 seconds before it is answered, until 15 minutes pass with no wrong password or
+the right one is given; and while that lasts, a second sign-in at it at the same moment from
+such a browser is refused at once, "A sign-in with this name is already under way from
+another browser…". On a browser remembered for the account, none of that applies, unless
+five sign-ins and current-password checks of the account are already in flight. A browser
+remembered for the account is also answered `503` when its caller has gone before a thread
+was free for its check, as any other; nobody receives that answer.
 
-Covered by `tests/gate.test.ts`, on a fake clock.
+#### What a Failed Sign-in Writes
+
+Each failed sign-in is one `WARN` line under `AUTH`, and holds nothing that was typed (card
+2193):
+
+| Case | The line | Fields |
+|------|----------|--------|
+| A wrong password at an account | `Failed login attempt at "alice" (user 12) from IP 203.0.113.7 (bad password)` | `user_id`, `ip` |
+| A name that is no account | `Failed login attempt for a name that is no account (17 characters) from IP 203.0.113.7` | `ip` |
+
+- **The account's own username**, from its row and cut to 100 characters, never the name as
+  typed: an email typed is not repeated, and the Audit page finds the line by user, as it
+  finds the "being slowed" line.
+- **A name that is no account by its length only.** The name as typed was written, at any
+  length until card 2177 cut it to 320, so a password typed into the name box was written in
+  clear, where every administrator reads the log (the Audit page, `GET /api/logs`) and into
+  every backup. A short hash of the name was not chosen: a hash of a short password can be
+  matched against a list of common passwords by anyone who reads the log.
+- **The address as received**, cut to 100 characters, in the text and as the line's `ip`,
+  or `unknown` in the text and no `ip` where it cannot be read. Both lines had no `ip`.
+- **The lines already in the log are rewritten** at the first start after the deploy, and in
+  every backup's copy: a line in the old form for a name that was no account,
+  `Failed login attempt for "<what was typed>" from IP …`, becomes
+  `Failed login attempt for a name that is no account (N characters) from IP …`, N being the
+  length of what was between the quotes, the whole of it to the last `" from IP `, quotes
+  and line breaks included. An old line ending ` (bad password)` named an account and is
+  left as it is, with the name as typed; those age out of the log (30 days or 50,000 lines)
+  but stay in backups made before then. It is the third rule of `maskSecretsInLog()` in
+  `src/lib/server/secret-paths.ts`, which `maskLiveLog()` runs at every start and
+  `withoutSignIns()` over every backup's copy; a line in the new form does not begin as the
+  old did, so a second start changes nothing. Backups made before the deploy keep the
+  names.
+
+Covered by `tests/gate.test.ts`, on a fake clock, and `tests/backups.test.ts`.
+
+### Browsers That Have Signed In Before
+
+Each browser that signs in to an account is **remembered for it for a year** (card 2194), by a
+cookie of its own sent only to the sign-in page. A remembered browser skips all of sign-in's
+throttling: the account's wait, the one-at-a-time rule and the per-address limit, and its
+check goes in the first lane. So the account's owner, on a browser they have used, is never
+made to wait or counted, however the account is being guessed at. It is refused only while
+five of the account's checks in the first lane are already in flight, its sessions' current
+passwords included (see [Off the Server's Thread](#off-the-servers-thread-card-2191)): every
+right password makes a new cookie, so the five in flight for each cookie below do not bound
+whoever has the password, and this does. Such a refusal is the one-at-a-time words, `429`,
+and counts nothing. The code is
+`src/lib/server/known-browsers.ts`; the order is the chart above.
+
+**The cookie.**
+
+| | |
+|---|---|
+| Name | `dumpfire_known_<user id>`, one for each account the browser has signed in to |
+| Value | `<issued at>.<nonce>.<mac>`: the time of issue in seconds, 16 random bytes in hex, and `HMAC-SHA256(key, "known-browser:1:<user id>:<issued at>:<nonce>:<the account's password hash>")` in hex. About 110 bytes |
+| Options | `Path=/login`, `HttpOnly`, `SameSite=Strict`, `Secure` by the session cookie's rule (`COOKIE_SECURE` when set, otherwise in production: `secureCookies()` in `auth.ts`), `Max-Age` a year |
+| Good when | It parses, was issued no more than 365 days ago and not more than a minute in the future, and its MAC matches, compared in constant time, with the account's hash as it is now. Anything else is answered as no cookie at all |
+
+**When a browser is remembered.** A new cookie (a new time and nonce) is set to the browser
+that signs in successfully, at each sign-in; to the browser that changes its own password, with
+the new hash; to the browser that uses an invite, and the one that sets the installation up;
+and to a browser that signs out with an open session (`POST /logout`), with the account's
+hash read before the session ends: a browser that signed out is a browser that signed in. So
+after the deploy that brought this in, a browser is remembered once it signs in or signs out.
+`rememberBrowser()` runs after the change is committed and never fails the request: a key
+that cannot be had is one `WARN` line, "A browser could not be remembered for user N: …", and
+no cookie.
+
+**What ends it.** Nothing is stored for a browser, so nothing is deleted:
+
+- **Any change of the account's password hash**: the holder's own change, an administrator's
+  reset, an invite's use. The MAC is over the hash, so every remembered browser of the
+  account stops counting at once. The browser that made the change, or used the invite, is
+  remembered anew; an administrator's reset remembers none. So does an account deleted and
+  its id used again (another hash).
+- **A year** after it was issued.
+- **The key replaced**: a restore (Import Backup), Reset Everything, or the key's row deleted
+  on the host (see [Deployment](deployment.md#if-an-attack-keeps-an-owner-out)).
+- **Not sign-out**, which remembers the browser, and **not** a change of email or role, which
+  ends invites and no session. The cookie outlives every session: ending a session, by
+  signing out, by its expiry or by an administrator's action, does not end it; only setting
+  the password does.
+- **Five wrong passwords from the cookie** within 15 minutes of each other: it then counts as
+  not remembered until 15 minutes pass without one. A remembered browser's wrong password is
+  counted at its own nonce (`nonce:<nonce>`), not at the account, and writes the failed line
+  as any other, but never the "being slowed" line.
+- **At most five sign-ins from one cookie in flight at once**, less its wrong ones; past that
+  an attempt is treated as from a browser not remembered (the per-address limit, the
+  one-at-a-time rule, the wait, the second lane). So a copied cookie (a shared or lost
+  computer, a copied browser profile) buys at most five guesses in flight and five each idle
+  quarter of an hour, never a volley, and setting the password ends it.
+
+**What a remembered browser's success does.** It signs in and is issued a new cookie. It
+leaves the account's count of wrong passwords as it is, because an attack is not over when the
+owner signs in, and gives the address nothing back, since nothing was counted there. A browser
+not remembered keeps card 2177's rule that the right password clears the account's count.
+
+**The key: 32 random bytes in `settings`, key `known_browser_secret`.** Made by the first
+browser remembered (a check of a cookie never makes one: with no key no cookie is good), read
+once into memory, as the request form's key is. **Never in a backup and never restored**:
+`withoutSignIns()` deletes the row from every backup's copy, and `rowsToRestore()` leaves it
+out of a restore, which clears the live row with every other; so the restored server makes a
+new key, and every browser is forgotten, as every session already is. Whoever held the key and
+an account's hash (which a backup holds) could make a cookie for that account. Reset and both
+import paths forget the cached key (`resetKnownBrowserSecretCache()`).
+
+**When an attack keeps an owner out.** On any browser not remembered, while the account is
+being guessed at in parallel, the one place is almost always taken by the guesser, so the
+owner is refused with the one-at-a-time words. Keeping it so needs only the account's username
+or email, which every signed-in user can read, and one admitted attempt per wait and check,
+about two dozen IPv4 addresses, or one IPv6 /48. Each refusal is also counted at the refused
+caller's address. The ways in:
+
+- a browser remembered for the account;
+- a session already open, which is not touched;
+- an invite, only where mail is set up, and only for an account an administrator may manage:
+  never the superadmin's, and an administrator's only from the superadmin. An invite signs the
+  browser in without the sign-in page and remembers it;
+- waiting until 15 minutes after the last wrong guess;
+- `SIGN_IN_ONE_AT_A_TIME=off` on the host, for one sign-in: see
+  [If an Attack Keeps an Owner Out](deployment.md#if-an-attack-keeps-an-owner-out).
+
+An attacker with a whole IPv6 /48 (65,536 networks of /64, each with ten attempts of its own)
+can instead keep the second lane of password checks full, at any accounts or none: every
+sign-in from a browser not remembered, every invite and set-up is then answered busy, `503`.
+`SIGN_IN_ONE_AT_A_TIME=off` does not help with that. Only a remembered browser or a session
+already open gets in, their checks being in the first lane, and only the proxy's own limits,
+if it has any, can hold such an attacker back.
+
+After an administrator sets a password during an attack, no browser is remembered for the
+account: where mail is set up, send an invite instead; where it is not, its owner signs in
+once the attack stops, or the host's operator turns the rule off for one sign-in. Nobody can
+reset the superadmin's password; the superadmin keeps a remembered browser by changing their
+own password from one, which keeps that browser remembered. A restart does not help: it
+empties the counts, and five wrong passwords, a second's work, fill them again.
+
+**What the owner of an account notices:** a browser you have signed in with, or signed out
+of, is remembered for a year or until the password is set again, and signing out does not
+forget it. To forget every browser of an account, set its password; to forget every browser of
+every account, see [Deployment](deployment.md#if-an-attack-keeps-an-owner-out). After the
+deploy, sign in again, or sign out and in, on each browser you will want during an attack,
+the superadmin's first.
+
+Covered by `tests/gate.test.ts` ("a browser that has signed in here before"),
+`tests/atomic-accounts.test.ts` ("remembered browsers, when a password is set") and
+`tests/backups.test.ts`.
+
+### How an Address Is Counted
+
+Three things are counted by the caller's address: sign-in's ten attempts in 15 minutes, the
+public request form's limits (`addressToCount()`, in its three routes), and the documented
+API's sixty requests a minute with no key it accepts (the gate's `apikey-none:` count). Each
+counts the address's **key**, `addressKey()` in `src/lib/server/client-address.ts` (card
+2195), and not the address as received:
+
+| The address received | Counted as |
+|----------------------|------------|
+| `unknown` (no address could be read) | `unknown`, with every other such request |
+| `198.51.100.7`, `198.51.100.7:51234` | `198.51.100.7`: a port is taken off |
+| `::ffff:198.51.100.7`, `::FFFF:c633:6407` | `198.51.100.7`: an IPv4 address written as IPv6 is the IPv4 address |
+| `2001:db8:1:2::1`, `2001:0DB8:0001:0002:ffff::9`, `[2001:db8:1:2::1]:443`, `2001:db8:1:2::198.51.100.7` | `2001:db8:1:2::/64`: an IPv6 address by its first four groups, its /64 network |
+| `fe80::1%eth0` | `fe80:0:0:0::/64`: a zone is taken off |
+| Anything else | As received, cut to 100 characters, so a key's size is bounded |
+
+- **Why the /64.** A whole IPv6 address was counted, so a caller given a /64 (one host, one
+  household, one office subnet: every IPv6 network) had 2^64 allowances: eleven wrong
+  sign-ins from eleven addresses of one /64 were never refused. A /64 is one network, which
+  already shares one IPv4 address through NAT. A /48 is a whole site and would put everyone
+  there in one count; what a holder of many /64s can still do is bounded at each account by
+  the waits and the one-at-a-time rule.
+- **A port is taken off only from what is no address as it stands**, so `fe80::1`, which ends
+  in a group, keeps it. A proxy can write a port into the caller's address header
+  (`1.2.3.4:5678`), and each connection would have been an allowance of its own.
+- **Every log line keeps the address as received**: the gate's `ip`, the sign-in lines. Sign-in's
+  refusal line adds the key where it differs: `Rate limit hit for IP 2001:db8:1:2::9, counted
+  as 2001:db8:1:2::/64 (login attempts)`, with the address as the line's `ip`.
+- **Behind a proxy that is not told the caller's address**, every caller has the proxy's,
+  which is one IPv4 address: nothing here changes. IPv6 reaches the counts only through
+  `ADDRESS_HEADER`, as behind Cloudflare: see
+  [Deployment](deployment.md#the-callers-address-behind-a-proxy).
+
+- **Some addresses share a key they do not share a network with.** Every link-local address
+  (`fe80::…`, any zone) is one key, `fe80:0:0:0::/64`, and every address whose first four
+  groups are zero (`::`, `::1`, the old IPv4-compatible `::198.51.100.7`) is `0:0:0:0::/64`. A caller should never reach the server from either, but
+  behind a proxy that hands one on, all such callers share one count.
+
+**What the people using it notice:** everyone on one IPv6 network shares sign-in's ten attempts
+in 15 minutes and the request form's limits, as an office behind one IPv4 address already
+does: an office whose LAN is one /64 shares the ten, so a few people mistyping at once can
+hold the office's sign-ins for up to 15 minutes. Browsers remembered for an account are not counted at their address at all.
+
+Covered by `tests/gate.test.ts` ("counting an address").
 
 ## Passwords, Sessions and Invites Change Together
 
@@ -636,6 +1085,12 @@ nobody recognises.
   expired API key` from then on, and whatever uses it stops until it is given a new key.
   Before resetting the password of an account a script or an integration runs on, look at
   the dialog's count.
+- **Remembered browsers** (card 2194). Every way of setting a password ends every browser
+  remembered for the account, because the cookie's MAC is over the password hash. Your own
+  change and an invite's use remember the browser that made the change, with the new hash; an
+  administrator's reset remembers none, so during an attack on that account send an invite
+  rather than set a password where mail is set up. See
+  [Browsers That Have Signed In Before](#browsers-that-have-signed-in-before).
 
 Keys made before this are kept: nothing ends them on deploy. Covered by
 `tests/atomic-accounts.test.ts`.
@@ -842,7 +1297,9 @@ session's expiry moves on every time it is used.
   path is ever written, never the query, so a request link's `?token=` is not written down
   at all), and a backup masks the same in every line the log already held, and replaces the
   token of any unused invite wherever else a line holds it. A line that holds a request
-  link's `token=` all the same, written some other way, has that masked too. **The running
+  link's `token=` all the same, written some other way, has that masked too, and an old
+  failed sign-in line at a name that was no account loses the name typed (see
+  [What a Failed Sign-in Writes](#what-a-failed-sign-in-writes)). **The running
   database's log is masked by the same rule at every start** (`maskLiveLog()` in
   `src/lib/server/startup-checks.ts`, after the migrations; `maskSecretsInLog()` in
   `src/lib/server/secret-paths.ts` is the one rule for both), so an installation that ran
@@ -870,12 +1327,20 @@ session's expiry moves on every time it is used.
   read and reply to that request's thread and confirm it, and the key the public request
   form signs its tokens with (`request_form_secret` in `settings`). Taking those out is
   another card's work. Until then a backup is to be kept as carefully as the server.
+- **The key remembered browsers are signed with is in no backup** (`known_browser_secret` in
+  `settings`, card 2194): `withoutSignIns()` deletes its row from every copy, and
+  `rowsToRestore()` never brings it in, from a backup of any age, while the restore clears
+  the live one. Whoever held it and an account's hash, which a backup does hold, could make a
+  cookie that lets a browser past sign-in's throttling for that account. So a restore forgets
+  every remembered browser, as it signs everybody out, and the restored server makes a new
+  key. See [Browsers That Have Signed In Before](#browsers-that-have-signed-in-before).
 - **Not covered.** Copies made before this, at a destination or downloaded, still hold the
   session ids of whoever was signed in then, and those sessions are still good on the
   installation they came from. Only ending every session there makes them dead. The safety
   copy an import writes before it replaces anything (`.pre-restore-safety.json`, in the
   server's working directory) holds every table as it was, sessions included, and is not
-  deleted: see [How Large an Import Can Be](deployment.md#how-large-an-import-can-be).
+  deleted; it leaves out only the key remembered browsers are signed with, as a backup does,
+  since the restore forgets that key anyway: see [How Large an Import Can Be](deployment.md#how-large-an-import-can-be).
 
 Covered by `tests/backups.test.ts`.
 
@@ -964,7 +1429,8 @@ sequenceDiagram
 
 - **An invite cannot be used twice.** The second of two submissions of one link finds it used and is refused, with no password changed and no session made.
 - **Set-up cannot create two superadmins.** The second of two submissions of the set-up form finds a user, creates nothing, gets no session and is redirected to `/`.
-- **A password change is checked against the row as it is.** If the password was changed by another request between the check of the current password and the write, the current password is checked again against the new row inside the transaction. Making an API key and changing your email, which ask for the password too, are checked the same way, so a key cannot be made, nor an address moved, with a password a change has just ended. The email route also looks for the address being taken inside the transaction that writes it.
+- **A password change is checked against the row as it is.** The transaction writes only while the stored hash is still the one the current password was checked against. If the password was changed by another request in between, nothing is written, the current password is checked again against the new hash outside the transaction (a check is awaited, on a worker thread, and a transaction cannot await), and the transaction is run once more; a second change in between answers `409` with nothing written (`whilePasswordHolds()`, see [Password Hashing](#password-hashing)). Making an API key and changing your email, which ask for the password too, are checked the same way, so a key cannot be made, nor an address moved, with a password a change has just ended. The email route also looks for the address being taken inside the transaction that writes it.
+- **Two submissions at once each hash.** The hash of an invite's or set-up's password is awaited, so the second submission passes its first look at the invite before the first commits, and each hashes (card 2191); the one transaction still lets exactly one in.
 
 Covered by `tests/atomic-accounts.test.ts`.
 
@@ -1059,7 +1525,7 @@ sequenceDiagram
     G->>A: findApiKey(key)
     alt no key, or not accepted
         A-->>G: null
-        G->>R: checkRateLimit("apikey-none:" + the caller's address, 60, one minute)
+        G->>R: checkRateLimit("apikey-none:" + addressKey(the caller's address), 60, one minute)<br/>an IPv6 address by its /64
         alt over the limit
             G-->>C: 429 { message, retryAfterSecs }, Retry-After
         else within it
@@ -1090,7 +1556,9 @@ sequenceDiagram
   lookup is one SHA-256 and one read of a unique column.
 - **A request with no key the gate accepts is counted against its address**, a missing
   header included, in a bucket of its own, so guessing at keys is slowed and never spends a
-  real key's allowance. The address is the one the server is given: behind a reverse proxy
+  real key's allowance. An IPv6 address is counted by its /64 network, an IPv4 address
+  written as IPv6 as the IPv4 address, and a port is taken off (card 2195, see
+  [How an Address Is Counted](#how-an-address-is-counted)). The address is the one the server is given: behind a reverse proxy
   that is the proxy's own unless the server is told where to find the caller's
   (`ADDRESS_HEADER`, in [Deployment](deployment.md#the-callers-address-behind-a-proxy)).
   Untold, every caller shares the one bucket: a valid key is never held up by it, and a
@@ -1605,9 +2073,12 @@ report mail names the account behind it, "Sent by" or "Set up by". See
 [Who a Report Can Be Mailed To](notifications-email.md#who-a-report-can-be-mailed-to).
 
 The caller's address is asked so that it cannot throw (`addressToCount()` in
-`src/lib/server/client-address.ts`), as is the sign-in form's, which allows ten attempts in
-15 minutes from one address, a count that a sign-in succeeding from the address clears; its waits at one account are counted by account, whatever the
-address (see [Guessing a Password at Sign-in](#guessing-a-password-at-sign-in)). Where it cannot be read, which a server started with
+`src/lib/server/client-address.ts`), and counted by its key, an IPv6 address by its /64
+network (see [How an Address Is Counted](#how-an-address-is-counted)), as is the sign-in
+form's, which allows ten attempts in 15 minutes from one address, of which a sign-in that
+succeeds gives back only those the address made at the account that signed in; its waits at
+one account are counted by account, whatever the address (see
+[Guessing a Password at Sign-in](#guessing-a-password-at-sign-in)). Where it cannot be read, which a server started with
 `ADDRESS_HEADER` meets in a request that arrives without that header, the request is counted
 as `unknown`, with every other such request, and is never let past a limit uncounted. Asked
 unguarded, as it was, that lookup threw, and every sign-in made that way was answered `500`.
@@ -1753,7 +2224,9 @@ which is what Reset Everything in the admin panel leaves.
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/auth.ts` | Password hashing, session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `currentPasswordMatches()`, the count of current-password guesses for a session; `sessionStillOpen()` and `openSessionUser()`, which an open live stream asks at each heartbeat |
+| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `checkCurrentPassword()`, the count of current-password guesses for a session, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `sessionStillOpen()` and `openSessionUser()`, which an open live stream asks at each heartbeat |
+| `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
+| `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME` |
 | `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS` |
 | `src/lib/server/board-access.ts` | Board-level role resolution and permission checks; `isAdmin()` |
 | `src/lib/server/route-guards.ts` | Per-route guards that resolve the board from the row and throw 401/404/403; `requireManagedAccount()`, `requireTeamManager()` and `requireSuperadmin()`, which look at no board; `requireSubBoardLink()`, who may put a board under a card |
@@ -1769,12 +2242,12 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/live-stream.ts` | In the browser: the live-update streams, opened again after a failure with a growing wait, and not at all after a `401`, `403` or `404` |
 | `src/lib/server/api-errors.ts` | `guardBody()`, which makes a body the caller got wrong a `400` and a body over the size limit a `413`, and `failureAsJson()`, which answers a failure that is not JSON again as JSON |
 | `src/lib/server/body-limits.ts` | How large a request's body may be, route by route and caller by caller; the gate's `413` for a body that declares more, and the count that holds a body with no length to the same limit as it is read |
-| `src/lib/server/client-address.ts` | The caller's address, asked so that it cannot throw, and the `'unknown'` count a request with no readable address is held to |
-| `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]`, written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start |
-| `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions and unused invites |
+| `src/lib/server/client-address.ts` | The caller's address, asked so that it cannot throw, and the `'unknown'` count a request with no readable address is held to; `addressKey()`, what a count by address counts, an IPv6 address by its /64 (card 2195) |
+| `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]`, written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
+| `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites and the key remembered browsers are signed with |
 | `src/lib/server/db/restore.ts` | What a restore brings in and what it never does; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
-| `src/lib/server/startup-checks.ts` | The six lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it; and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens at start |
-| `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177) |
+| `src/lib/server/startup-checks.ts` | The seven lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it; and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
+| `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, and the headers an attachment is served with |
 | `src/lib/server/db/transaction.ts` | `inTransaction()`: the check and the write it guards are one transaction |

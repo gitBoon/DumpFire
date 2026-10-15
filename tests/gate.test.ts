@@ -43,9 +43,27 @@ import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { failureAsJson, guardBody, isJsonAnswer, jsonInPlaceOf } from '$lib/server/api-errors';
 import { FRAMEABLE_ROUTES, SECURITY_HEADERS, preferredType, secured } from '$lib/server/gate-answers';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
-import { countWrongSignIn, resetAllRateLimits, signInWait, WRONG_SIGN_IN_KEYS } from '$lib/server/rate-limit';
+import {
+	countSignInAttempt,
+	countWrongSignIn,
+	keepSignInAttemptCounted,
+	refundSignInAttempts,
+	resetAllRateLimits,
+	signInWait,
+	wrongSignInsAt,
+	WRONG_SIGN_IN_KEYS
+} from '$lib/server/rate-limit';
+import {
+	KNOWN_BROWSER_SECRET_KEY,
+	knownBrowserCookie,
+	rereadSignInsOneAtATime,
+	resetKnownBrowserSecretCache
+} from '$lib/server/known-browsers';
+import { reportSignInsNotOneAtATime } from '$lib/server/startup-checks';
+import { addressKey } from '$lib/server/client-address';
+import { passwordChecks } from '$lib/server/passwords';
 import { handleError } from '../src/hooks.server';
-import { routeMethods, routePatterns } from './helpers/api';
+import { api, routeMethods, routePatterns } from './helpers/api';
 import { failingWrite, type FailingWrite } from './helpers/failing-write';
 import { makeApiKey, makeAttachment, makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
 import { bodyOverTheLimit, gate, gateApiRoutes, gateRoutes, type GateOptions } from './helpers/gate';
@@ -325,10 +343,14 @@ describe('requests to /api/v1/ with no key the gate accepts, from one address', 
 /** A sign-in as a browser posts the form. */
 const LOGIN_FORM = { 'content-type': 'application/x-www-form-urlencoded', origin: 'http://localhost', accept: 'text/html' };
 
-/** POST /login with `identity` and `password`, from `ip` (null: an address that cannot be read). */
-function signIn(identity: string, password: string, ip: string | null = '203.0.113.30'): Promise<Answer> {
+/**
+ * POST /login with `identity` and `password`, from `ip` (null: an address
+ * that cannot be read), sending `cookie` (`name=value`) if there is one: a
+ * browser's remembered cookie (card 2194).
+ */
+function signIn(identity: string, password: string, ip: string | null = '203.0.113.30', cookie?: string): Promise<Answer> {
 	return send('POST', '/login', {
-		headers: LOGIN_FORM,
+		headers: cookie === undefined ? LOGIN_FORM : { ...LOGIN_FORM, cookie },
 		body: `identity=${encodeURIComponent(identity)}&password=${encodeURIComponent(password)}`,
 		ip
 	});
@@ -392,15 +414,21 @@ async function heldInTurn(attempts: (() => Promise<Answer>)[], status = 400): Pr
 
 const WRONG = 'Invalid username/email or password';
 
+/** What a browser not remembered is told when the account's places are taken (card 2194). */
+const ALREADY_UNDER_WAY =
+	'A sign-in with this name is already under way from another browser. Wait a few seconds and try again, or sign in ' +
+	'from a browser you have used here before.';
+
 /**
  * Wrong passwords at one account (card 2177). Sign-in counted attempts per
  * address only, so a guesser with N addresses had 10 × N tries at an account
  * every 15 minutes. Now, after five wrong passwords at one account within 15
  * minutes of each other, every sign-in at it waits 1, 2, then 4 seconds
  * before its password is checked, from whatever address, the right password
- * included, and is then answered as it would have been. Nothing is refused
- * for the account. Each runs on the fake clock, and says how long a sign-in
- * was held by how far the clock had to be moved before it was answered.
+ * included, and is then answered as it would have been. One sent while
+ * another from a browser not remembered is in flight there is refused (card
+ * 2194, below). Each runs on the fake clock, and says how long a sign-in was
+ * held by how far the clock had to be moved before it was answered.
  */
 describe('wrong passwords at one account, from any number of addresses', () => {
 	const A = '203.0.113.31';
@@ -531,6 +559,90 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 		expect(await heldInTurn([wrongAt(user.username, B)])).toEqual([1000]);
 	});
 
+	// Card 2226. A sign-in that succeeded cleared its address's whole count,
+	// so anyone with an account could send nine guesses at another account,
+	// sign in to their own, and send nine more (probe: 36 in one window, every
+	// one answered 400). Now it gives back only its own account's attempts.
+	it('gives back, when a sign-in succeeds, only the attempts its address made at that account', async () => {
+		const other = makeUser();
+		await heldInTurn(Array.from({ length: 9 }, () => wrongAt(other.username, A)));
+
+		const [right] = await heldFor(signIn(user.username, 'right', A));
+		expect(right.res.status).toBe(303);
+
+		// The tenth attempt from A in the window, and then the limit.
+		await heldInTurn([wrongAt(other.username, A)]);
+		const [limited] = await heldFor(signIn(other.username, 'wrong', A));
+		expect(limited.ms).toBe(0);
+		expect(limited.res.status).toBe(429);
+		expect(limited.res.text).toContain('Too many login attempts');
+	});
+
+	it('keeps a name that is no account counted when the address then signs in to an account', async () => {
+		await heldInTurn([wrongAt('nobody-here', A), wrongAt('nobody-here', A)]);
+		await heldInTurn([A, A, A].map((ip) => wrongAt(user.username, ip)));
+		const [right] = await heldFor(signIn(user.username, 'right', A));
+		expect(right.res.status).toBe(303);
+
+		// The two at `nobody-here` stay: eight more, and the ninth is refused.
+		await heldInTurn(Array.from({ length: 8 }, () => wrongAt('nobody-else', A)));
+		const [limited] = await heldFor(signIn('nobody-else', 'wrong', A));
+		expect(limited.ms).toBe(0);
+		expect(limited.res.status).toBe(429);
+	});
+
+	// What clearing the count was for: someone who mistypes and then signs in
+	// has those attempts back, so an office's mistypes do not add up.
+	it('gives back the mistypes of someone who then signs in', async () => {
+		await heldInTurn([A, A, A].map((ip) => wrongAt(user.username, ip)));
+		const [right] = await heldFor(signIn(user.username, 'right', A));
+		expect(right.res.status).toBe(303);
+
+		await heldInTurn(Array.from({ length: 10 }, () => wrongAt('nobody-else', A)));
+		const [limited] = await heldFor(signIn('nobody-else', 'wrong', A));
+		expect(limited.res.status).toBe(429);
+	});
+
+	it('gives back only in the window the attempts were made in, never what was refused, and forgets with every count', () => {
+		const at = '198.51.100.40';
+		const next = () => countSignInAttempt(at, 'user:2').attempts;
+
+		// Three at one account, given back; given back again, nothing more.
+		for (let n = 0; n < 3; n++) countSignInAttempt(at, 'user:1');
+		refundSignInAttempts(at, 'user:1');
+		refundSignInAttempts(at, 'user:1');
+		expect(next()).toBe(1);
+
+		// A refusal stays counted: nine more let in at user:1, which makes ten
+		// in the window, the eleventh refused, and only the nine given back.
+		for (let n = 0; n < 9; n++) countSignInAttempt(at, 'user:1');
+		expect(countSignInAttempt(at, 'user:1')).toMatchObject({ limited: true, attempts: 11 });
+		refundSignInAttempts(at, 'user:1');
+		expect(next()).toBe(3);
+
+		// An attempt let in and then not checked (the server busy) stays counted too.
+		countSignInAttempt(at, 'user:1');
+		countSignInAttempt(at, 'user:1');
+		keepSignInAttemptCounted(at, 'user:1');
+		refundSignInAttempts(at, 'user:1');
+		expect(next()).toBe(5);
+
+		// The record ends with its window.
+		countSignInAttempt(at, 'user:1');
+		vi.advanceTimersByTime(15 * 60 * 1000 + 1);
+		refundSignInAttempts(at, 'user:1');
+		expect(next()).toBe(1);
+		refundSignInAttempts(at, 'user:1');
+		expect(next()).toBe(2);
+
+		// And with every other count.
+		countSignInAttempt(at, 'user:1');
+		resetAllRateLimits();
+		expect(next()).toBe(1);
+		refundSignInAttempts(at, 'user:1');
+		expect(next()).toBe(2);
+	});
+
 	it('holds nothing else up while a sign-in waits', async () => {
 		await heldInTurn([A, A, A, B, B, B, C].map((ip) => wrongAt(user.username, ip)));
 
@@ -546,15 +658,78 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 		expect(held.res.status).toBe(400);
 	});
 
-	it('does not put sign-ins sent together in a line: each waits what the count said when it came', async () => {
+	// Card 2194 (decision 21). Sign-ins sent together each waited its own
+	// second side by side, so a guesser who sent many at once was slowed by
+	// nothing but the per-address limit. Now browsers not remembered are let in
+	// one at a time while the waits last, and the rest are refused at once.
+	it('lets sign-ins sent together in one at a time once the waits have begun, and refuses the rest at once', async () => {
 		await heldInTurn([A, A, B, B, C].map((ip) => wrongAt(user.username, ip)));
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		try {
+			const together = await heldFor(signIn(user.username, 'wrong', B), signIn(user.username, 'wrong', C), signIn(user.username, 'wrong', D));
+			expect(together.map(({ ms, res }) => [ms, res.status])).toEqual([
+				[1000, 400],
+				[0, 429],
+				[0, 429]
+			]);
+			expect(together[1].res.text).toContain(ALREADY_UNDER_WAY);
+			// Counted at the account once: only the one that was checked.
+			expect(wrongSignInsAt(`user:${user.id}`)).toBe(6);
 
-		const together = await heldFor(signIn(user.username, 'wrong', B), signIn(user.username, 'wrong', C), signIn(user.username, 'wrong', D));
-		expect(together.map(({ ms, res }) => [ms, res.status])).toEqual([
-			[1000, 400],
-			[1000, 400],
-			[1000, 400]
+			// And again, which the log does not say a second time.
+			const again = await heldFor(signIn(user.username, 'wrong', B), signIn(user.username, 'wrong', C));
+			expect(again.map(({ ms, res }) => [ms, res.status])).toEqual([
+				[2000, 400],
+				[0, 429]
+			]);
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+		expect(sqlite.prepare("SELECT message, user_id AS userId FROM system_logs WHERE message LIKE '%not known here%'").all()).toEqual([
+			{
+				message: `Sign-ins at "${user.username}" (user ${user.id}) from browsers not known here are being let in one at a time`,
+				userId: user.id
+			}
 		]);
+	});
+
+	// The review's W9: the account's username is cut to 100 characters, as in
+	// the failed sign-in's line.
+	it('names an account in that line by the first 100 characters of its username', async () => {
+		const long = makeUser({ username: 'u'.repeat(150) });
+		await heldInTurn([A, A, B, B, C].map((ip) => wrongAt(long.username, ip)));
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		try {
+			const together = await heldFor(signIn(long.username, 'wrong', B), signIn(long.username, 'wrong', C));
+			expect(together.map(({ res }) => res.status)).toEqual([400, 429]);
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+		expect(sqlite.prepare("SELECT message FROM system_logs WHERE message LIKE '%not known here%'").all()).toEqual([
+			{ message: `Sign-ins at "${'u'.repeat(100)}" (user ${long.id}) from browsers not known here are being let in one at a time` }
+		]);
+	});
+
+	// The way back for an owner an attack keeps out (the review's R3, decision 29).
+	it('lets sign-ins sent together in side by side, each after its wait, while SIGN_IN_ONE_AT_A_TIME is off', async () => {
+		await heldInTurn([A, A, B, B, C].map((ip) => wrongAt(user.username, ip)));
+		process.env.SIGN_IN_ONE_AT_A_TIME = 'off';
+		rereadSignInsOneAtATime();
+		try {
+			const together = await heldFor(signIn(user.username, 'wrong', B), signIn(user.username, 'wrong', C), signIn(user.username, 'wrong', D));
+			expect(together.map(({ ms, res }) => [ms, res.status])).toEqual([
+				[1000, 400],
+				[1000, 400],
+				[1000, 400]
+			]);
+		} finally {
+			delete process.env.SIGN_IN_ONE_AT_A_TIME;
+			rereadSignInsOneAtATime();
+		}
 	});
 
 	it('forgets the count 15 minutes after the last wrong password', async () => {
@@ -573,6 +748,343 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 		const [right] = await heldFor(signIn(user.username, long, D));
 		expect(right.ms).toBe(1000);
 		expect(right.res.status).toBe(303);
+	});
+});
+
+/**
+ * Browsers that have signed in here before (card 2194). The account's waits
+ * slowed a guesser who waits for each answer, and not one who sends many at
+ * once. Now browsers not remembered for an account are let in no more at once
+ * than the free guesses left, and one at a time while the waits last (in the
+ * describe above); and a browser that has signed in to the account is
+ * remembered for it, by a cookie, and is never made to wait, refused or
+ * counted at sign-in, so that its owner is never kept out on it. A copied
+ * cookie is held to five guesses at once and five a quarter of an hour.
+ */
+describe('a browser that has signed in here before', () => {
+	const A = '203.0.113.51';
+	const B = '203.0.113.52';
+	const C = '203.0.113.53';
+	const D = '203.0.113.54';
+	const wrongAt = (identity: string, ip: string, cookie?: string) => () => signIn(identity, 'wrong', ip, cookie);
+	const ONE_AT_A_TIME = [
+		[1000, 400],
+		[0, 429],
+		[0, 429]
+	];
+	const EACH_AT_ONCE = [
+		[0, 400],
+		[0, 400],
+		[0, 400]
+	];
+
+	beforeEach(async () => {
+		sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync('right', 4), user.id);
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		await onTheFakeClock();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** The `Set-Cookie` an answer sent for the cookie `name`, whole. */
+	const setCookie = (res: Answer, name: string) => res.headers.getSetCookie().find((c) => c.startsWith(`${name}=`));
+
+	/** A `Set-Cookie`'s attributes, in lower case and in order. */
+	const attributesOf = (cookie: string) =>
+		cookie
+			.split(';')
+			.slice(1)
+			.map((attribute) => attribute.trim().toLowerCase())
+			.sort();
+
+	/** Sign in to `account` with the right password from `ip`: the cookie that remembers the browser, as `name=value`. */
+	async function rememberedAt(account: SessionUser = user, ip = A): Promise<string> {
+		const [{ res }] = await heldFor(signIn(account.username, 'right', ip));
+		expect(res.status).toBe(303);
+		return setCookie(res, knownBrowserCookie(account.id))!.split(';')[0];
+	}
+
+	/** The nonce of a cookie given as `name=value`. */
+	const nonceOf = (cookie: string) => cookie.split('=')[1].split('.')[1];
+
+	/** Five wrong at `identity` from browsers not remembered, one at a time: its waits begin at the next. */
+	const fiveWrong = (identity = user.username) => heldInTurn([A, A, B, B, C].map((ip) => wrongAt(identity, ip)));
+
+	/** Three wrong at `identity` sent together, each with `cookie` if there is one: how long each was held, and its status. */
+	const threeTogether = async (identity: string, cookie?: string) =>
+		(await heldFor(signIn(identity, 'wrong', B, cookie), signIn(identity, 'wrong', C, cookie), signIn(identity, 'wrong', D, cookie))).map(
+			({ ms, res }) => [ms, res.status]
+		);
+
+	/** The attempts `ip`'s sign-in count holds, this question of it included. */
+	const countedAt = (ip: string) => countSignInAttempt(ip, 'asked-by-the-test').attempts;
+
+	it('is remembered by signing in, for a year, with a cookie sent to the sign-in page alone', async () => {
+		const [{ res }] = await heldFor(signIn(user.username, 'right', A));
+
+		expect(res.status).toBe(303);
+		const cookie = setCookie(res, knownBrowserCookie(user.id));
+		expect(cookie).toMatch(new RegExp(`^dumpfire_known_${user.id}=\\d+\\.[0-9a-f]{32}\\.[0-9a-f]{64};`));
+		expect(attributesOf(cookie!)).toEqual(['httponly', `max-age=${365 * 24 * 60 * 60}`, 'path=/login', 'samesite=strict']);
+	});
+
+	it('is let in at once while the account waits, and leaves the account’s count as it was', async () => {
+		const cookie = await rememberedAt();
+		await heldInTurn([A, A, B, B, C, C, D].map((ip) => wrongAt(user.username, ip)));
+		expect(signInWait(`user:${user.id}`)).toBe(4000);
+
+		const [right] = await heldFor(signIn(user.username, 'right', D, cookie));
+		expect([right.ms, right.res.status]).toEqual([0, 303]);
+
+		// The attack is not over because the owner signed in.
+		expect(await heldInTurn([wrongAt(user.username, D)])).toEqual([4000]);
+	});
+
+	it('is not needed for five sent together at an account with none wrong; the rest are refused at once', async () => {
+		const before = passwordChecks().checked;
+
+		const seven = await heldFor(...[A, A, B, B, C, C, D].map((ip) => signIn(user.username, 'wrong', ip)));
+
+		expect(seven.map(({ ms, res }) => [ms, res.status])).toEqual([...Array(5).fill([0, 400]), [0, 429], [0, 429]]);
+		expect(seven[6].res.text).toContain(ALREADY_UNDER_WAY);
+		expect(passwordChecks().checked).toBe(before + 5);
+		expect(wrongSignInsAt(`user:${user.id}`)).toBe(5);
+	});
+
+	it('holds a name that is no account the same way, in the same words', async () => {
+		await fiveWrong('nobody-here');
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		let together: { ms: number; res: Answer }[];
+		try {
+			together = await heldFor(signIn('nobody-here', 'wrong', B), signIn('nobody-here', 'wrong', C), signIn('nobody-here', 'wrong', D));
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+
+		expect(together.map(({ ms, res }) => [ms, res.status])).toEqual(ONE_AT_A_TIME);
+		expect(together[1].res.text).toContain(ALREADY_UNDER_WAY);
+		expect(together[2].res.text).toContain(ALREADY_UNDER_WAY);
+		expect(sqlite.prepare("SELECT message, user_id AS userId FROM system_logs WHERE message LIKE '%not known here%'").all()).toEqual([
+			{ message: 'Sign-ins at a name that is no account from browsers not known here are being let in one at a time', userId: null }
+		]);
+	});
+
+	// A refusal was let past the address's count and so noted against the
+	// account; a success there would otherwise give it back (card 2226).
+	it('keeps a refusal counted at its address when the account then signs in from it', async () => {
+		await heldInTurn([B, B, C, C, D].map((ip) => wrongAt(user.username, ip)));
+		const together = await heldFor(signIn(user.username, 'wrong', A), signIn(user.username, 'wrong', A), signIn(user.username, 'wrong', A));
+		expect(together.map(({ ms, res }) => [ms, res.status])).toEqual(ONE_AT_A_TIME);
+
+		const [right] = await heldFor(signIn(user.username, 'right', A));
+		expect(right.res.status).toBe(303);
+
+		// The one checked and the right one are given back; the two refused are not.
+		expect(countedAt(A)).toBe(3);
+	});
+
+	it('answers a cookie that does not hold as no cookie at all', async () => {
+		const other = makeUser();
+		sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync('right', 4), other.id);
+		const good = await rememberedAt();
+		const [name, value] = good.split('=');
+		const [issued, nonce, mac] = value.split('.');
+		const theirs = (await rememberedAt(other, B)).split('=')[1];
+
+		/** At an account with five wrong, three sent together with `cookie`. */
+		const sentWith = async (cookie: string) => {
+			resetAllRateLimits();
+			await fiveWrong();
+			return threeTogether(user.username, cookie);
+		};
+
+		expect(await sentWith(good), 'the cookie as it was set').toEqual(EACH_AT_ONCE);
+		expect(await sentWith(`${name}=${issued}.${nonce}.${mac.slice(0, -1)}${mac.endsWith('0') ? '1' : '0'}`), 'its MAC changed').toEqual(
+			ONE_AT_A_TIME
+		);
+		expect(await sentWith(`${name}=${theirs}`), 'another account’s, under this account’s name').toEqual(ONE_AT_A_TIME);
+
+		// The password set again (a new hash of the same password, as a reset makes).
+		sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync('right', 4), user.id);
+		expect(await sentWith(good), 'issued before the password was set').toEqual(ONE_AT_A_TIME);
+
+		const old = await rememberedAt();
+		vi.setSystemTime(Date.now() + 366 * 24 * 60 * 60 * 1000);
+		expect(await sentWith(old), 'issued 366 days ago').toEqual(ONE_AT_A_TIME);
+	});
+
+	it('is not remembered after five wrong from it, until 15 minutes pass without one', async () => {
+		const cookie = await rememberedAt();
+		const nonce = nonceOf(cookie);
+
+		expect(await heldInTurn(Array.from({ length: 5 }, () => wrongAt(user.username, A, cookie)))).toEqual([0, 0, 0, 0, 0]);
+		// Counted at its cookie, and neither at the account nor at the address.
+		expect(wrongSignInsAt(`nonce:${nonce}`)).toBe(5);
+		expect(wrongSignInsAt(`user:${user.id}`)).toBe(0);
+
+		// The sixth is a browser not remembered: counted at its address and at the account.
+		await heldInTurn([wrongAt(user.username, A, cookie)]);
+		expect(wrongSignInsAt(`nonce:${nonce}`)).toBe(5);
+		expect(wrongSignInsAt(`user:${user.id}`)).toBe(1);
+		expect(countedAt(A)).toBe(2);
+
+		// Remembered again 15 minutes after its last wrong one.
+		vi.advanceTimersByTime(15 * 60 * 1000 + 1);
+		await heldInTurn([wrongAt(user.username, A, cookie)]);
+		expect(wrongSignInsAt(`nonce:${nonce}`)).toBe(1);
+		expect(wrongSignInsAt(`user:${user.id}`)).toBe(0);
+	});
+
+	// The review's R2. Attempts sent together all read the cookie's count
+	// before any is checked, so a copied cookie was a volley of guesses.
+	it('is let in five at a time; past that it is a browser not remembered, held one at a time', async () => {
+		const cookie = await rememberedAt();
+		await fiveWrong();
+
+		const eight = await heldFor(...Array.from({ length: 8 }, () => signIn(user.username, 'wrong', D, cookie)));
+
+		expect(eight.map(({ ms, res }) => [ms, res.status])).toEqual([...Array(5).fill([0, 400]), ...ONE_AT_A_TIME]);
+		expect(wrongSignInsAt(`nonce:${nonceOf(cookie)}`)).toBe(5);
+		expect(wrongSignInsAt(`user:${user.id}`)).toBe(6);
+		// The three past it were counted at the address; the five were not.
+		expect(countedAt(D)).toBe(4);
+	});
+
+	// The review's L1. Each right password makes a new cookie, so five in
+	// flight for each cookie did not hold whoever has the password: three
+	// hundred cookies were fifteen hundred checks in the first lane, ahead of
+	// every sign-in from a browser not remembered. A remembered browser also
+	// takes a place at the account's first-lane checks, five in flight, shared
+	// with its sessions' current passwords.
+	it('is refused past five in flight at the account, however many cookies there are, counting nothing', async () => {
+		const cookies: string[] = [];
+		for (const ip of [A, A, B, B, C, C]) cookies.push(await rememberedAt(user, ip));
+		const before = passwordChecks().checked;
+
+		const six = await heldFor(...cookies.map((cookie) => signIn(user.username, 'wrong', D, cookie)));
+
+		expect(six.map(({ ms, res }) => [ms, res.status])).toEqual([...Array(5).fill([0, 400]), [0, 429]]);
+		expect(six[5].res.text).toContain(ALREADY_UNDER_WAY);
+		expect(passwordChecks().checked).toBe(before + 5);
+		// Nothing was checked for it, so nothing is counted: not at its
+		// cookie, not at the account, and not at the address.
+		expect(wrongSignInsAt(`nonce:${nonceOf(cookies[5])}`)).toBe(0);
+		expect(wrongSignInsAt(`user:${user.id}`)).toBe(0);
+		expect(countedAt(D)).toBe(1);
+
+		// And the places are given back: the same six one after another are each checked.
+		expect(await heldInTurn(cookies.map((cookie) => () => signIn(user.username, 'wrong', D, cookie)))).toEqual([0, 0, 0, 0, 0, 0]);
+	});
+
+	it('is not held by its address’s limit, and gives the address nothing back', async () => {
+		const cookie = await rememberedAt();
+		// Ten from A without the cookie: three at the account, and seven at
+		// accounts of their own, so that no account's waits begin.
+		await heldInTurn([A, A, A].map((ip) => wrongAt(user.username, ip)));
+		for (const name of Array.from({ length: 7 }, () => makeUser().username)) {
+			expect((await heldFor(signIn(name, 'wrong', A)))[0].res.status).toBe(400);
+		}
+
+		const [right] = await heldFor(signIn(user.username, 'right', A, cookie));
+		expect([right.ms, right.res.status]).toEqual([0, 303]);
+
+		// Card 2226: its success gave back nothing, not even the three at its
+		// own account, since it was not counted at the address.
+		const [limited] = await heldFor(signIn(user.username, 'wrong', A));
+		expect([limited.ms, limited.res.status]).toEqual([0, 429]);
+		expect(limited.res.text).toContain('Too many login attempts');
+	});
+
+	// The review's R5: nobody signs in at the deploy, so a browser signed in
+	// since before it is remembered when it signs out.
+	it('stays remembered when it signs out, and is remembered by signing out', async () => {
+		const [{ res }] = await heldFor(signIn(user.username, 'right', A));
+		const known = setCookie(res, knownBrowserCookie(user.id))!.split(';')[0];
+		const session = setCookie(res, SESSION_COOKIE_NAME)!.split(';')[0];
+		const logOut = (cookie?: string) =>
+			heldFor(send('POST', '/logout', { headers: cookie ? { ...LOGIN_FORM, cookie } : LOGIN_FORM, body: '', ip: A }));
+
+		const [out] = await logOut(session);
+		expect(out.res.status).toBe(303);
+		const again = setCookie(out.res, knownBrowserCookie(user.id));
+		expect(attributesOf(again!)).toEqual(['httponly', `max-age=${365 * 24 * 60 * 60}`, 'path=/login', 'samesite=strict']);
+		const [none] = await logOut();
+		expect(none.res.headers.getSetCookie()).toEqual([]);
+
+		await fiveWrong();
+		expect(await threeTogether(user.username, known), 'the cookie it had').toEqual(EACH_AT_ONCE);
+		expect(await threeTogether(user.username, again!.split(';')[0]), 'the one signing out gave it').toEqual(EACH_AT_ONCE);
+	});
+
+	it('is signed for with a key kept in the settings, made once; without the key no cookie holds, and a Reset forgets it', async () => {
+		const keys = () => sqlite.prepare('SELECT value FROM settings WHERE key = ?').all(KNOWN_BROWSER_SECRET_KEY) as { value: string }[];
+		resetKnownBrowserSecretCache();
+		sqlite.prepare('DELETE FROM settings WHERE key = ?').run(KNOWN_BROWSER_SECRET_KEY);
+
+		const cookie = await rememberedAt();
+		const [made] = keys();
+		expect(made.value).toMatch(/^[0-9a-f]{64}$/);
+		await rememberedAt(user, B);
+		expect(keys()).toEqual([made]);
+
+		// Its row deleted on the host and the server restarted: no cookie of it holds, and asking makes none.
+		sqlite.prepare('DELETE FROM settings WHERE key = ?').run(KNOWN_BROWSER_SECRET_KEY);
+		resetKnownBrowserSecretCache();
+		await fiveWrong();
+		expect(await threeTogether(user.username, cookie)).toEqual(ONE_AT_A_TIME);
+		expect(keys()).toEqual([]);
+
+		// A Reset clears the settings, and the key kept in memory goes with them.
+		resetAllRateLimits();
+		await rememberedAt();
+		const [before] = keys();
+		expect(before.value).not.toBe(made.value);
+		expect((await api('POST', '/api/admin/reset', { user: chief })).status).toBe(200);
+		expect(keys()).toEqual([]);
+		const owner = makeUser({ role: 'superadmin' });
+		sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync('right', 4), owner.id);
+		await rememberedAt(owner);
+		const [after] = keys();
+		expect(after.value).not.toBe(before.value);
+	});
+
+	it('says at every start, whatever LOG_LEVEL is, while the one-at-a-time rule is off, and takes nothing else for off', () => {
+		const level = process.env.LOG_LEVEL;
+		const warned = vi.mocked(console.warn);
+		try {
+			process.env.LOG_LEVEL = 'ERROR';
+			process.env.SIGN_IN_ONE_AT_A_TIME = 'off';
+			rereadSignInsOneAtATime();
+			expect(reportSignInsNotOneAtATime()).toBe(true);
+			expect(warned.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('SIGN_IN_ONE_AT_A_TIME=off'))).toHaveLength(1);
+
+			process.env.LOG_LEVEL = 'WARN';
+			for (const value of ['on', '', 'maybe']) {
+				process.env.SIGN_IN_ONE_AT_A_TIME = value;
+				rereadSignInsOneAtATime();
+				expect(reportSignInsNotOneAtATime(), value).toBe(false);
+			}
+			delete process.env.SIGN_IN_ONE_AT_A_TIME;
+			rereadSignInsOneAtATime();
+			expect(reportSignInsNotOneAtATime()).toBe(false);
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+			delete process.env.SIGN_IN_ONE_AT_A_TIME;
+			rereadSignInsOneAtATime();
+		}
+		// A value that is neither is said once, and taken as on.
+		expect(sqlite.prepare("SELECT level, message FROM system_logs WHERE message LIKE 'SIGN_IN_ONE_AT_A_TIME%'").all()).toEqual([
+			{
+				level: 'WARN',
+				message:
+					'SIGN_IN_ONE_AT_A_TIME is "maybe", which is neither on nor off: sign-ins from browsers not remembered are held to one at a time'
+			}
+		]);
 	});
 });
 
@@ -629,6 +1141,173 @@ describe('a request whose address cannot be read, to a handler that counts by ad
 
 		const confirmed = await send('POST', '/api/requests/999999/confirm', { headers: { ...JSON_BODY, accept: '*/*' }, body: { token: 'x' }, ip: null });
 		expect(confirmed.status).toBe(404);
+	});
+});
+
+/**
+ * Counting an address (card 2195). Every count by address keyed on the
+ * address exactly as it was received: an IPv6 caller had a count for each of
+ * the 2^64 addresses of its /64 (probe: eleven wrong sign-ins from one /64,
+ * never refused), an IPv4 address written as IPv6 was counted apart from
+ * itself, and each port would have been an allowance of its own. Each limit
+ * counts by `addressKey` now, and the log keeps the address as received.
+ */
+describe('counting an address', () => {
+	it.each([
+		['2001:db8:1:2::1', '2001:db8:1:2::/64'],
+		['2001:0DB8:0001:0002:ffff::9', '2001:db8:1:2::/64'],
+		['2001:db8:1:3::1', '2001:db8:1:3::/64'],
+		['::ffff:198.51.100.7', '198.51.100.7'],
+		['::FFFF:c633:6407', '198.51.100.7'],
+		['198.51.100.7', '198.51.100.7'],
+		['198.51.100.7:51234', '198.51.100.7'],
+		['[2001:db8:1:2::1]:443', '2001:db8:1:2::/64'],
+		['fe80::1%eth0', 'fe80:0:0:0::/64'],
+		['2001:db8:1:2::198.51.100.7', '2001:db8:1:2::/64'],
+		['64:ff9b::198.51.100.7', '64:ff9b:0:0::/64'],
+		['unknown', 'unknown'],
+		['not an address', 'not an address']
+	])('counts %s as %s', (address, key) => {
+		expect(addressKey(address)).toBe(key);
+	});
+
+	it('keeps 100 characters of something that is no address', () => {
+		expect(addressKey('x'.repeat(500))).toBe('x'.repeat(100));
+	});
+
+	it('holds one IPv6 network to ten sign-ins, and logs the address as it was received', async () => {
+		// Each at an account of its own, so that no account's waits begin.
+		const names = Array.from({ length: 11 }, () => makeUser().username);
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			for (let n = 1; n <= 10; n++) {
+				expect((await signIn(names[n - 1], 'wrong', `2001:db8:1:2::${n}`)).status, `attempt ${n}`).toBe(400);
+			}
+			const limited = await signIn(names[10], 'wrong', '2001:db8:1:2::ab');
+			expect(limited.status).toBe(429);
+			expect(limited.text).toContain('Too many login attempts');
+
+			// Another network is counted apart.
+			expect((await signIn(names[10], 'wrong', '2001:db8:1:3::1')).status).toBe(400);
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+
+		// The refusal's line says what it was counted as, and the line and the
+		// gate's own keep the address that was sent.
+		expect(sqlite.prepare("SELECT message, ip FROM system_logs WHERE message LIKE 'Rate limit hit%'").all()).toEqual([
+			{ message: 'Rate limit hit for IP 2001:db8:1:2::ab, counted as 2001:db8:1:2::/64 (login attempts)', ip: '2001:db8:1:2::ab' }
+		]);
+		expect(sqlite.prepare("SELECT ip FROM system_logs WHERE context = 'HTTP' AND message LIKE 'POST /login → 429%'").all()).toEqual([
+			{ ip: '2001:db8:1:2::ab' }
+		]);
+	});
+
+	it('counts an IPv4 address written as IPv6 as the IPv4 address', async () => {
+		const names = Array.from({ length: 11 }, () => makeUser().username);
+		for (let n = 1; n <= 10; n++) {
+			expect((await signIn(names[n - 1], 'wrong', '198.51.100.7')).status, `attempt ${n}`).toBe(400);
+		}
+		expect((await signIn(names[10], 'wrong', '::ffff:198.51.100.7')).status).toBe(429);
+	});
+
+	it('holds one IPv6 network to sixty requests with no key a minute', async () => {
+		for (let n = 1; n <= 60; n++) {
+			expect((await gate('GET', '/api/v1/me', { ip: `2001:db8:5:6::${n.toString(16)}` })).status, `request ${n}`).toBe(401);
+		}
+		expect((await gate('GET', '/api/v1/me', { ip: '2001:db8:5:6:ffff::1' })).status).toBe(429);
+		expect((await gate('GET', '/api/v1/me', { ip: '2001:db8:5:7::1' })).status).toBe(401);
+	});
+
+	it('holds one IPv6 network to the public request form’s five', async () => {
+		const { issueFormToken } = await import('$lib/server/request-tokens');
+		const headers = { 'x-form-token': issueFormToken(), accept: '*/*', ...JSON_BODY };
+		const submit = (ip: string) => send('POST', '/api/requests', { headers, body: { title: '' }, ip });
+
+		for (let n = 1; n <= 5; n++) expect((await submit(`2001:db8:7:8::${n}`)).status, `request ${n}`).toBe(400);
+		expect((await submit('2001:db8:7:8::99')).status).toBe(429);
+	});
+});
+
+/**
+ * The failed sign-in line, and what a name that is no account costs (cards
+ * 2192 and 2193). A name that is no account was answered at once, where a
+ * wrong password at an account took a bcrypt check (probe: 1 ms against 206
+ * ms), so the clock told which names were accounts. And each failed line
+ * wrote the name as typed: a password typed into the name box in clear, and
+ * an email where an account was meant.
+ */
+describe('a failed sign-in', () => {
+	/** Every line sign-in failed with, as the system log holds it. */
+	const failedLines = () =>
+		sqlite.prepare("SELECT message, ip, user_id AS userId FROM system_logs WHERE message LIKE 'Failed login attempt%' ORDER BY id").all();
+
+	beforeEach(() => {
+		sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync('right', 4), user.id);
+	});
+
+	it('at a name that is no account costs the one check a wrong password at an account costs, and is answered alike', async () => {
+		const before = passwordChecks().checked;
+		const real = await signIn(user.username, 'wrong', '203.0.113.40');
+		expect(passwordChecks().checked).toBe(before + 1);
+
+		const none = await signIn('nobody-here', 'wrong', '203.0.113.40');
+		expect(passwordChecks().checked).toBe(before + 2);
+		expect(none.status).toBe(real.status);
+		expect(none.status).toBe(400);
+		expect(none.text).toContain(WRONG);
+	});
+
+	it('writes nothing that was typed: a name that is no account by its length, an account by its own name', async () => {
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			expect((await signIn('n'.repeat(10_000), 'wrong', '203.0.113.41')).status).toBe(400);
+			expect((await signIn('MyS3cret!Passw0rd', 'anything', '203.0.113.42')).status).toBe(400);
+			expect((await signIn(user.email, 'wrong', '203.0.113.43')).status).toBe(400);
+			expect((await signIn('nobody-here', 'wrong', null)).status).toBe(400);
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+
+		const lines = failedLines() as { message: string }[];
+		expect(lines).toEqual([
+			{ message: 'Failed login attempt for a name that is no account (10000 characters) from IP 203.0.113.41', ip: '203.0.113.41', userId: null },
+			{ message: 'Failed login attempt for a name that is no account (17 characters) from IP 203.0.113.42', ip: '203.0.113.42', userId: null },
+			{
+				message: `Failed login attempt at "${user.username}" (user ${user.id}) from IP 203.0.113.43 (bad password)`,
+				ip: '203.0.113.43',
+				userId: user.id
+			},
+			{ message: 'Failed login attempt for a name that is no account (11 characters) from IP unknown', ip: null, userId: null }
+		]);
+		for (const { message } of lines) expect(message.length).toBeLessThan(300);
+
+		// Nowhere in the log: not in a line, nor in what is kept with one.
+		const everything = JSON.stringify(sqlite.prepare('SELECT message, meta FROM system_logs').all());
+		expect(everything).not.toContain('MyS3cret!Passw0rd');
+		expect(everything).not.toContain(user.email);
+		expect(everything).not.toContain('n'.repeat(100));
+	});
+
+	// Card 2177 reads both fields as text, or as nothing: a file was a 500.
+	it.each([
+		['identity', 'Please enter your username or email'],
+		['password', 'Please enter your password']
+	])('is answered 400 with the empty field’s words when the %s is a file', async (field, words) => {
+		const form = new FormData();
+		form.append('identity', user.username);
+		form.append('password', 'wrong');
+		form.set(field, new Blob(['what was in the file']), 'typed.txt');
+
+		const res = await send('POST', '/login', { headers: { origin: 'http://localhost', accept: 'text/html' }, body: form });
+		expect(res.status).toBe(400);
+		expect(res.text).toContain(words);
 	});
 });
 

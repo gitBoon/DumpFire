@@ -3,7 +3,8 @@ import { db } from '$lib/server/db';
 import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { hashPassword, endAccountAccess } from '$lib/server/auth';
+import { endAccountAccess } from '$lib/server/auth';
+import { makePasswordHash } from '$lib/server/passwords';
 import { isAdmin } from '$lib/server/board-access';
 import { requireManagedAccount } from '$lib/server/route-guards';
 import { pathId, readBody, readText } from '$lib/server/request-body';
@@ -43,8 +44,9 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			admin: 'Only superadmin can reset an admin\'s password'
 		});
 
-	// Hashing takes about a quarter of a second, and nothing else can write
-	// while a transaction is open, so the hash is made out here, before it. The
+	// Hashing takes about a quarter of a second, on a worker thread, and is
+	// awaited, which a transaction cannot do, so the hash is made out here,
+	// before it, in the first lane: the caller holds a session. The
 	// user is looked at first so that a request that will be refused is not
 	// hashed for, and is read again in the transaction. The password is read
 	// once the user is found and the caller may set it (card 2117, R1): text,
@@ -52,7 +54,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireTarget();
 	const SHORT = 'Password must be at least 8 characters';
 	const password = readText(body, 'password', { required: true, min: 8, says: { missing: SHORT, empty: SHORT, invalid: SHORT } });
-	const passwordHash = hashPassword(password);
+	const passwordHash = await makePasswordHash(password, 'known');
 
 	// One transaction: the user is read and checked in the one that changes the
 	// password and ends their sessions. A failure between the two used to leave

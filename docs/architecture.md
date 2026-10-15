@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.22
+version: 1.24
 status: As-Built
 date: 2026-10-15
 tags:
@@ -75,7 +75,7 @@ flowchart TD
 | **Language** | TypeScript 5.9 | Type-safe server and client code |
 | **Database** | SQLite via better-sqlite3 | Embedded, zero-config relational database |
 | **ORM** | Drizzle ORM 0.45 | Type-safe schema definition and queries |
-| **Auth** | Session cookies + bcryptjs | Cookie-based sessions for UI, API keys for external access |
+| **Auth** | Session cookies + bcryptjs on worker threads | Cookie-based sessions for UI, API keys for external access; every password hashed and checked off the server's thread (`node:worker_threads`, card 2191), and browsers that have signed in remembered by a signed cookie (card 2194) |
 | **Real-time** | Server-Sent Events | Live board updates without WebSocket complexity |
 | **PDF Reports** | PDFKit | Server-side PDF generation for scheduled and on-demand reports |
 | **Email** | Nodemailer | SMTP integration for notifications and report delivery |
@@ -697,6 +697,31 @@ sequenceDiagram
 - **The next move is a full load.** A `beforeNavigate` in the same layout sets `location.href = to.url.href` when `updated.current && !willUnload && to?.url`, SvelteKit's documented pattern, so a link or a `goto` once the bar has shown loads the new version.
 - **The first release.** A page loaded before the release that brought this asks nothing, so for that release open tabs are reloaded by hand: see [Deployment](deployment.md#updating-a-running-installation), step 7.
 
+## Work Kept Off the Server's Thread
+
+The server runs JavaScript on one thread, so whatever holds that thread holds every request. A bcrypt check at cost 12 takes about a fifth of a second, and was made there with `compareSync`: each sign-in held every other request up for that long, and a burst of them held the server for as long as it lasted. Since card 2191 every password hash and check is made on a **worker thread** by `src/lib/server/passwords.ts`, the only module that imports bcryptjs, and the route awaits the answer while the server's thread answers everyone else.
+
+```mermaid
+flowchart LR
+    subgraph Server["The server's thread"]
+        Known["A session's request<br/>(current password, reset, new user)<br/>a remembered browser's sign-in"] -->|"await checkPassword or<br/>makePasswordHash"| L1["First lane: known<br/>current passwords and remembered<br/>sign-ins: five in flight an account"]
+        Other["Any other sign-in, a name that is<br/>no account, an invite, set-up"] -->|"await"| L2["Second lane: other<br/>at most 150 a thread waiting"]
+        L1 --> Pick{"A thread free?<br/>first lane, then second,<br/>but never more than three of the<br/>first in a row while the second waits"}
+        L2 --> Pick
+    end
+    Pick -->|"postMessage"| T1["Thread 1<br/>bcryptjs compareSync or hashSync"]
+    Pick -->|"postMessage"| T2["Thread 2<br/>(3 CPUs or more)"]
+    T1 -->|"the answer, to the caller awaiting it"| Pick
+    T2 -->|"the answer, to the caller awaiting it"| Pick
+```
+
+- **At most two threads**, `min(2, max(1, CPUs - 1))`, or `PASSWORD_THREADS` (0 to 8, left unset in a deployment; 0 is the server's own thread a turn later, which the tests use). Each is started from a string of code, not a file of its own, because Vite carries no worker file into the server build; it loads bcryptjs from `node_modules` by an absolute path, so the image did not change.
+- **One line, two lanes.** A caller the server already knows goes first, but never more than three in a row while a check of the second lane waits, and an account's current passwords and remembered sign-ins are held to five in flight, so the second lane is always served; the second lane holds at most 150 checks a thread, and a check that arrives when it is full, or whose caller has gone by the time a thread is free (`req.socket.destroyed`, in the built server), is not made and its route answers `503`.
+- **A thread that stops** is replaced and the check sent once more; one that cannot start at all leaves every check on the server's thread, with one `ERROR` line, rather than keep anybody out.
+- **A transaction cannot await**, so no hash or check is made inside one. A route that needs a current password checked again because the hash changed in between does it outside, through `whilePasswordHolds()` in `auth.ts`, which writes only while the stored hash is still the one checked.
+
+The whole rule, with the lanes, the bound, the log lines and what the people using it notice, is in [Password Hashing](authentication-security.md#password-hashing).
+
 ## Writes: One Transaction, Then the Effects
 
 A request that writes makes its writes all or none, and checks the caller where it writes. The route awaits the request body, then passes one function to `inTransaction()` in `src/lib/server/db/transaction.ts`. That function reads what the write depends on, checks the caller with its guard (`route-guards.ts`), makes every write (the activity entry among them) and returns. Only then does the route set a cookie, redirect or answer. Before the body the route asks only what reads no row: the session the gate read and the id in its path. A request with one write follows the same order, so that the row checked is the row written, and a row taken away while the body was arriving is a 404; until 2026-10-14 twenty-two handlers checked the row first and then awaited the body (card 2115).
@@ -714,7 +739,7 @@ sequenceDiagram
     participant O as Webhooks, live events,<br/>mail, uploads trash
 
     C->>R: a request that writes
-    R->>R: await the body, hash a password if there is one
+    R->>R: await the body, and a password's hash<br/>on a worker thread if there is one
     R->>T: fn (not async)
     T->>DB: BEGIN IMMEDIATE
     T->>DB: read what the write depends on, check access
@@ -756,7 +781,7 @@ How the queue behaves:
 - **No `redirect()`, cookie or answer.** Those come after `inTransaction` returns. Throwing `error(...)` or a typed error such as `CardMoveError` is fine: it rolls the transaction back and reaches the caller unchanged.
 - **A database error is not caught and carried on from**, unless the part that failed is its own nested `inTransaction`.
 - **No raw `sqlite.transaction` under the helper.**
-- **Slow work comes first.** Hashing a password takes about a quarter of a second, and nothing else can write while a transaction is open, so the hash is made before the transaction starts.
+- **Slow work comes first.** Hashing a password takes about a fifth of a second, on a worker thread, and is awaited, which a transaction cannot do, so the hash is made before the transaction starts. See [Work Kept Off the Server's Thread](#work-kept-off-the-servers-thread).
 - **The check is made where the write is.** Every route that reads a body reads it first and calls its guard after it, and nothing is awaited between a guard and the write it allows. The handlers card 2115 moved call their guard inside the transaction that writes; a `DELETE` that reads no body checks and writes with no transaction, which is as safe, because the database calls are synchronous and nothing is awaited between the two. `tests/check-at-the-write.test.ts` reads every handler under `src/routes/api` and fails on any call before the body but those that read no row, and on a handler whose text reads a body where it cannot find the read. The attachment upload is the one handler that also looks before its body, so that a caller with no access is not sent 25 MB, and it reads the row again inside the transaction. That is also why an invite cannot be used twice and set-up cannot create two superadmins.
 
 Two things open their own transactions and do not use the helper, because they switch foreign keys off around them: the migration runner, and the restore behind Import Backup. The import of the old JSON export was a third; it was removed on 2026-10-14 (card 2157), and Import Backup takes a `.db` backup only.

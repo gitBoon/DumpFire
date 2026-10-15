@@ -1,5 +1,5 @@
 /**
- * startup-checks.ts — six things about an installation that are said in the
+ * startup-checks.ts — seven things about an installation that are said in the
  * system log when the server starts, because nothing else would say them.
  *
  * None stops the server and none changes anything. They are looked for by
@@ -15,7 +15,9 @@
  * refuses to start when a new database would hide one it can see
  * (db/location.ts). The new-database and off-volume lines are written to the
  * console whatever LOG_LEVEL is, because the deploy checks look for them in
- * `docker logs`.
+ * `docker logs`. The seventh, that sign-ins from browsers not remembered are
+ * not held to one at a time (`SIGN_IN_ONE_AT_A_TIME=off`, card 2194), is
+ * written there too: it is meant to be set for one sign-in and removed.
  *
  * And one that does stop the server, after the migrations and before it
  * listens: `refuseUserlessBesideAnother`, when the database in use has no
@@ -31,6 +33,7 @@ import { DatabaseLocationError, described, heldInContainerLayer, type OtherDatab
 import { PLACEHOLDER_ORIGIN, configuredOrigin, getAppUrl } from './email';
 import { createLogger, isLogged } from './logger';
 import { maskSecretsInLog } from './secret-paths';
+import { signInsOneAtATime } from './known-browsers';
 import { boardsInLoops } from './sub-boards';
 
 const log = createLogger('STARTUP');
@@ -284,10 +287,11 @@ function countUsers(): number {
 
 /**
  * Mask, in the running database's own system log, every invite's token and
- * request link's token a line holds, by the rule a backup's copy is masked
- * with (`maskSecretsInLog`, in secret-paths.ts). Returns how many changes it
- * made, or null when it could not be done. Called once, from hooks.server.ts,
- * as the server loads, after the migrations.
+ * request link's token a line holds, and the name typed at every failed
+ * sign-in at a name that was no account (card 2193), by the rule a backup's
+ * copy is masked with (`maskSecretsInLog`, in secret-paths.ts). Returns how
+ * many changes it made, or null when it could not be done. Called once, from
+ * hooks.server.ts, as the server loads, after the migrations.
  *
  * The gate wrote `GET /invite/<token>` into the log, a live invite in every
  * such line, until 2026-10-14, and any administrator reads that log through
@@ -296,7 +300,7 @@ function countUsers(): number {
  * start on this one, and every start after finds nothing to change: masked
  * text is not masked again. The log holds at most 50,000 lines, and the only
  * lines rewritten are those holding an unused invite's token, or an invite's
- * address or a `token=` not masked yet.
+ * address or a `token=` not masked yet, or a failed sign-in's name as typed.
  *
  * It never throws: a log that cannot be masked is no reason not to start. It
  * is said at WARN, and the server starts.
@@ -307,7 +311,7 @@ export function maskLiveLog(): number | null {
 	} catch (err) {
 		try {
 			log.warn(
-				`The system log could not be masked of the invite and request-link tokens it may hold: ` +
+				`The system log could not be masked of the invite and request-link tokens, and the names typed at failed sign-ins, it may hold: ` +
 					`${(err as Error)?.message ?? err}. GET /api/logs may still show them.`
 			);
 		} catch {
@@ -318,7 +322,30 @@ export function maskLiveLog(): number | null {
 }
 
 /**
- * Say all six, if they are so. Called once, from hooks.server.ts, as the
+ * One WARN line at every start while `SIGN_IN_ONE_AT_A_TIME` is `off`
+ * (decision 29), to the console whatever LOG_LEVEL is. Returns whether it was
+ * said.
+ *
+ * Off, a guesser who sends many attempts at once at an account is slowed by
+ * its waits alone. It is the way back for an owner an attack keeps out of
+ * every browser not remembered for the account, the superadmin above all,
+ * whom no invite reaches: set it, restart, sign in on the browser needed
+ * (which is then remembered), remove it and restart. This line is what says
+ * it was left set.
+ */
+export function reportSignInsNotOneAtATime(off: boolean = !signInsOneAtATime()): boolean {
+	if (!off) return false;
+
+	warnOnConsoleAlways(
+		'SIGN_IN_ONE_AT_A_TIME=off: sign-ins from browsers not remembered are not held to one at a time. Remove it ' +
+			'and restart once the sign-in it was set for is made: see docs/deployment.md, under "If an Attack Keeps an ' +
+			'Owner Out".'
+	);
+	return true;
+}
+
+/**
+ * Say all seven, if they are so. Called once, from hooks.server.ts, as the
  * server loads.
  *
  * It never throws, whatever goes wrong in looking: a fault here must not be
@@ -332,7 +359,8 @@ export function reportInstallation(): void {
 		reportBoardLoops,
 		() => reportNewDatabase(),
 		() => reportDatabaseOffVolume(),
-		() => reportOtherDatabase()
+		() => reportOtherDatabase(),
+		() => reportSignInsNotOneAtATime()
 	]) {
 		try {
 			check();

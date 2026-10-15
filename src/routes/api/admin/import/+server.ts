@@ -54,6 +54,7 @@ import { join } from 'node:path';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 import { resetFormSecretCache } from '$lib/server/request-tokens';
+import { KNOWN_BROWSER_SECRET_KEY, resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { reportBoardLoops } from '$lib/server/startup-checks';
 
@@ -166,13 +167,18 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				if (!backupLacksSuperadmin(backupDb)) {
 					// Create a JSON safety backup BEFORE touching anything. It holds the
 					// tables the restore is about to replace, which does not include the
-					// migration record — see restorableTables.
+					// migration record — see restorableTables. Not the key remembered
+					// browsers are signed with, which no backup holds (card 2194; the
+					// review's I3): the restore forgets it anyway.
 					const safetyBackup: Record<string, unknown[]> = {};
 					const runningTables = restorableTables(sqlite);
 
 					for (const table of runningTables) {
 						try {
-							safetyBackup[table] = sqlite.prepare(`SELECT * FROM "${table}"`).all();
+							safetyBackup[table] =
+								table === 'settings'
+									? sqlite.prepare('SELECT * FROM "settings" WHERE key <> ?').all(KNOWN_BROWSER_SECRET_KEY)
+									: sqlite.prepare(`SELECT * FROM "${table}"`).all();
 						} catch {}
 					}
 					writeFileSync(join(process.cwd(), '.pre-restore-safety.json'), JSON.stringify(safetyBackup));
@@ -192,8 +198,11 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// The settings are the backup's now, and the key the public request
 			// form signs with is one of them. The copy of it in memory is
 			// forgotten, as a reset does, or it would go on signing and
-			// accepting form tokens with the key the restore replaced.
+			// accepting form tokens with the key the restore replaced. So is
+			// the key remembered browsers are signed with, which no backup
+			// holds (card 2194): every browser is forgotten.
 			resetFormSecretCache();
+			resetKnownBrowserSecretCache();
 			// The restore is committed and its transaction is over. Rows it
 			// brought back may name files that a delete since the backup moved
 			// to the trash: those are put back. What could not be is reported
@@ -305,6 +314,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				// That one replaced the settings too, and the sessions.
 				if (err.committed) {
 					resetFormSecretCache();
+					resetKnownBrowserSecretCache();
 					cookies.delete(SESSION_COOKIE_NAME, { path: '/' });
 				}
 				errors = err.errors;

@@ -39,6 +39,7 @@ import { db, sqlite } from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
 import { NO_SUPERADMIN_IN_BACKUP, RestoreError, SIGNED_OUT, backupLacksSuperadmin, restoreFromBackup } from '$lib/server/db/restore';
 import { inviteTokens } from '$lib/server/db/schema';
+import { KNOWN_BROWSER_SECRET_KEY } from '$lib/server/known-browsers';
 import { maskLiveLog, reportInstallation, reportNoSuperadmin } from '$lib/server/startup-checks';
 import { api, routeMethods } from './helpers/api';
 import { makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
@@ -75,6 +76,43 @@ const tempDirs: string[] = [];
 const UNUSED_INVITE = 'invite-not-yet-used-3f6c1d0a9b7e';
 /** One that has been used, and sets nothing any more. */
 const USED_INVITE = 'invite-already-used-8a2e5c4f1d6b';
+
+/**
+ * Failed sign-in lines as sign-in wrote them before card 2193, with the name
+ * exactly as typed, and what each becomes. Only a name that was no account is
+ * rewritten: a line ending ` (bad password)` was at an account, and is left.
+ * One name holds a quote, ` from IP ` and a line break (the review's R7); one
+ * is the 320 characters card 2177 cut a name to.
+ */
+const TYPED_PASSWORD = 'MyS3cret!Passw0rd-typed-as-a-name';
+const TRICKY_NAME = 'tricky" from IP 1.2.3.4\nstill-the-name-6d2a';
+const OLD_FAILED_LINES: { old: string; now: string }[] = [
+	{
+		old: `Failed login attempt for "${TYPED_PASSWORD}" from IP 203.0.113.9`,
+		now: `Failed login attempt for a name that is no account (${TYPED_PASSWORD.length} characters) from IP 203.0.113.9`
+	},
+	{
+		old: 'Failed login attempt for "alice@example.test" from IP 203.0.113.9 (bad password)',
+		now: 'Failed login attempt for "alice@example.test" from IP 203.0.113.9 (bad password)'
+	},
+	{
+		old: `Failed login attempt for "${TRICKY_NAME}" from IP 2001:db8::1`,
+		now: `Failed login attempt for a name that is no account (${TRICKY_NAME.length} characters) from IP 2001:db8::1`
+	},
+	{
+		old: `Failed login attempt for "${'q'.repeat(320)}" from IP 203.0.113.9`,
+		now: 'Failed login attempt for a name that is no account (320 characters) from IP 203.0.113.9'
+	},
+	{ old: 'User "alice" logged in', now: 'User "alice" logged in' }
+];
+
+/** Write `OLD_FAILED_LINES` into the running database's log, as sign-in wrote them. */
+function writeOldFailedLines(): void {
+	const old = sqlite.prepare(
+		"INSERT INTO system_logs (timestamp, level, context, message) VALUES ('2026-10-01T00:00:00.000Z', 'WARN', 'AUTH', ?)"
+	);
+	for (const line of OLD_FAILED_LINES) old.run(line.old);
+}
 
 // The first request through the gate starts the server, which takes seconds
 // while every other file is starting too: done here, with time to do it in.
@@ -248,6 +286,43 @@ describe('a backup', () => {
 		expect(reopened.pragma('integrity_check', { simple: true })).toBe('ok');
 	});
 
+	it('holds no name typed at a failed sign-in, from lines written before sign-in stopped writing it', () => {
+		writeOldFailedLines();
+		const live = JSON.stringify(sqlite.prepare('SELECT message FROM system_logs').all());
+		expect(live).toContain(TYPED_PASSWORD);
+
+		const bytes = generateBackupData();
+
+		expect(bytes.includes(Buffer.from(TYPED_PASSWORD))).toBe(false);
+		expect(bytes.includes(Buffer.from('still-the-name-6d2a'))).toBe(false);
+		expect(bytes.includes(Buffer.from('q'.repeat(320)))).toBe(false);
+		expect(column<string>(opening(bytes), "SELECT message FROM system_logs WHERE context = 'AUTH' ORDER BY id")).toEqual(
+			OLD_FAILED_LINES.map((line) => line.now)
+		);
+		// And the running database's log is as it was.
+		expect(JSON.stringify(sqlite.prepare('SELECT message FROM system_logs').all())).toBe(live);
+	});
+
+	// Card 2194. Whoever held the key could make a cookie that skips sign-in's
+	// throttling for any account whose hash they also hold, and a backup holds
+	// every hash. It is never in one, and a restore makes the server a new one.
+	it('holds no key that remembered browsers are signed with, in an export or in the copy a schedule uploads', async () => {
+		const key = 'b'.repeat(24) + '-known-browser-key-in-the-live-database';
+		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(KNOWN_BROWSER_SECRET_KEY, key);
+		sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://kept.example.test')").run();
+
+		const res = await gate('GET', '/api/admin/export', { headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` } });
+		expect(res.status).toBe(200);
+		for (const bytes of [Buffer.from(await res.arrayBuffer()), generateBackupData()]) {
+			expect(bytes.includes(Buffer.from(key))).toBe(false);
+			expect(bytes.includes(Buffer.from(KNOWN_BROWSER_SECRET_KEY))).toBe(false);
+			// The other settings are there.
+			expect(column(opening(bytes), 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url']);
+		}
+		// And the running database still has it.
+		expect(column(sqlite, `SELECT value FROM settings WHERE key = '${KNOWN_BROWSER_SECRET_KEY}'`)).toEqual([key]);
+	});
+
 	it('holds no invite token the system log wrote down, even from before the gate masked it', async () => {
 		// The gate writes an invite's address with its token masked now. Opened
 		// through the gate, then, and written into the log as an older version
@@ -332,6 +407,24 @@ describe('a restore', () => {
 		expect(column(live, 'SELECT name FROM boards')).toEqual(['From the backup']);
 		// And the backup was only read.
 		expect(column(backup, 'SELECT id FROM sessions')).toHaveLength(2);
+	});
+
+	// Card 2194: a backup made before the key was left out of backups still
+	// holds it, and is restored without it, so that every browser is forgotten.
+	it('brings in no key that remembered browsers are signed with, and clears the one that was here', () => {
+		const live = migratedDb();
+		live.exec(`INSERT INTO settings (key, value) VALUES ('${KNOWN_BROWSER_SECRET_KEY}', 'the-key-that-was-here')`);
+		const backup = backupWithSignIns();
+		backup.exec(`
+			INSERT INTO settings (key, value) VALUES ('${KNOWN_BROWSER_SECRET_KEY}', 'the-key-in-the-backup');
+			INSERT INTO settings (key, value) VALUES ('app_url', 'https://from-the-backup.example.test');
+		`);
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(column(live, 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url']);
+		expect(result.restored.settings).toBe(1);
 	});
 
 	/** Send `body` to the import route, which writes under a temporary working directory. */
@@ -502,6 +595,23 @@ describe('a restore', () => {
 		expect(column(sqlite, 'SELECT username FROM users')).toEqual([]);
 		expect(column(sqlite, 'SELECT name FROM boards')).toEqual(['From the backup']);
 		expect(existsSync(join(res.dir, '.pre-restore-safety.json'))).toBe(true);
+	});
+
+	// The review's I3. The safety copy the import writes beside the database
+	// held every setting, and so the key remembered browsers are signed with,
+	// which no backup holds (card 2194).
+	it('writes a safety copy that leaves out the key remembered browsers are signed with, and keeps every other setting', async () => {
+		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(KNOWN_BROWSER_SECRET_KEY, 'the-key-that-was-here');
+		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('app_url', 'https://here.example.test');
+
+		const res = await importDb(migratedDb());
+
+		expect(res.status).toBe(200);
+		const safety = readFileSync(join(res.dir, '.pre-restore-safety.json'), 'utf8');
+		expect(safety).not.toContain(KNOWN_BROWSER_SECRET_KEY);
+		expect(safety).not.toContain('the-key-that-was-here');
+		const settings = (JSON.parse(safety) as { settings: { key: string; value: string }[] }).settings;
+		expect(settings).toContainEqual(expect.objectContaining({ key: 'app_url', value: 'https://here.example.test' }));
 	});
 
 	it('knows a backup with no superadmin by its users, and one whose users have no role at all', () => {
@@ -787,6 +897,21 @@ describe('the running database’s system log, at start', () => {
 		expect(signInsHere().invites).toEqual([USED_INVITE, UNUSED_INVITE]);
 
 		const masked = everyLine();
+		expect(maskLiveLog()).toBe(0);
+		expect(everyLine()).toBe(masked);
+	});
+
+	it('has the names typed at failed sign-ins taken out, the whole of each, and a second start changes nothing', () => {
+		writeOldFailedLines();
+
+		expect(maskLiveLog()).toBe(3);
+
+		expect(column<string>(sqlite, "SELECT message FROM system_logs WHERE context = 'AUTH' ORDER BY id")).toEqual(
+			OLD_FAILED_LINES.map((line) => line.now)
+		);
+		const masked = everyLine();
+		expect(masked).not.toContain(TYPED_PASSWORD);
+		expect(masked).not.toContain('still-the-name-6d2a');
 		expect(maskLiveLog()).toBe(0);
 		expect(everyLine()).toBe(masked);
 	});

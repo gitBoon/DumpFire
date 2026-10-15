@@ -1,19 +1,27 @@
 /**
  * auth.ts — Server-side authentication utilities for DumpFire.
  *
- * Handles password hashing, session management, and cookie operations.
- * Uses bcryptjs for password hashing and crypto.randomUUID() for session tokens.
+ * Handles session management, cookie operations and the checking of a
+ * current password. Passwords are hashed and checked in passwords.ts, on
+ * worker threads (card 2191); session tokens are crypto.randomUUID().
  */
 
-import { hashSync, compareSync } from 'bcryptjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { db, sqlite } from './db';
-import { afterCommit } from './db/transaction';
+import { afterCommit, inTransaction } from './db/transaction';
 import { users, sessions, apiKeys, type Session, type User } from './db/schema';
 import { eq, lt } from 'drizzle-orm';
 import { error, type Cookies } from '@sveltejs/kit';
 import { endUnusedInvites } from './invites';
-import { checkRateLimit, resetRateLimit } from './rate-limit';
+import {
+	FIRST_LANE_CHECKS_PER_ACCOUNT,
+	checkRateLimit,
+	enterSignIn,
+	firstLaneChecksAt,
+	leaveSignIn,
+	resetRateLimit
+} from './rate-limit';
+import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
 
 const log = createLogger('AUTH');
@@ -21,7 +29,6 @@ const log = createLogger('AUTH');
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 export const SESSION_COOKIE_NAME = 'dumpfire_session';
-const BCRYPT_ROUNDS = 12;
 const SESSION_DURATION_DAYS = 30;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -34,24 +41,31 @@ export type SessionUser = {
 	role: string;
 };
 
-// ─── Password Utilities ──────────────────────────────────────────────────────
-
-/** Hash a plaintext password using bcrypt with 12 rounds. */
-export function hashPassword(password: string): string {
-	return hashSync(password, BCRYPT_ROUNDS);
-}
-
-/** Verify a plaintext password against a bcrypt hash. */
-export function verifyPassword(password: string, hash: string): boolean {
-	return compareSync(password, hash);
-}
-
 // ─── Checking a Current Password ────────────────────────────────────────────
 
 /** How many current passwords one session may try in the window: sign-in's number. */
 const CURRENT_PASSWORD_ATTEMPTS = 10;
 /** Fifteen minutes, as for sign-in. */
 const CURRENT_PASSWORD_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * Run `check` holding one of the account's places in the first lane of
+ * password checks (the review's L1): at most five in flight for an account,
+ * its sessions' current passwords and its remembered browsers' sign-ins
+ * together. A sixth is answered 429, the server busy, before anything is
+ * counted or checked. The first lane goes ahead of every sign-in, invite and
+ * set-up, and a right password clears a session's count, so without it one
+ * signed-in user could keep checks in flight without end.
+ */
+async function holdingFirstLanePlace<T>(userId: number, check: () => Promise<T>): Promise<T> {
+	const place = firstLaneChecksAt(userId);
+	if (!enterSignIn(place, FIRST_LANE_CHECKS_PER_ACCOUNT)) error(429, PASSWORDS_BUSY);
+	try {
+		return await check();
+	} finally {
+		leaveSignIn(place);
+	}
+}
 
 /**
  * Whether `password` is the account's current password, whose hash is `hash`,
@@ -80,18 +94,33 @@ const CURRENT_PASSWORD_WINDOW_MS = 15 * 60 * 1000;
  * the eleventh attempt; the refusals after it in that window are not logged.
  * The session is never logged: it is what signs its holder in.
  *
- * Asked once for a request, before its transaction: a check takes about a
- * quarter of a second. A route that checks again inside the transaction,
- * because the password was changed in between, uses `verifyPassword`. That is
- * the same guess, and is not counted twice.
+ * Asked once for a request, before its transaction, and awaited: the check
+ * is made on a worker thread, in the first lane (passwords.ts), since the
+ * caller holds a session, and holds one of the account's five places there
+ * (`holdingFirstLanePlace`): a sixth in flight is answered 429 before it is
+ * counted. It resolves to `{ matches }` rather than a boolean,
+ * so that a missed `await` does not compile. A route whose password was
+ * changed in between is checked again by `whilePasswordHolds`, which does not
+ * count it: the same guess, not counted twice.
  */
-export function currentPasswordMatches(
+export async function checkCurrentPassword(
 	session: string,
 	userId: number,
 	password: string,
 	hash: string,
 	where: string
-): boolean {
+): Promise<{ matches: boolean }> {
+	return holdingFirstLanePlace(userId, () => checkCounted(session, userId, password, hash, where));
+}
+
+/** `checkCurrentPassword` once it holds its place: the session's count, and the check. */
+async function checkCounted(
+	session: string,
+	userId: number,
+	password: string,
+	hash: string,
+	where: string
+): Promise<{ matches: boolean }> {
 	const key = `current-password:${session}`;
 
 	const { limited, retryAfterSecs, attempts } = checkRateLimit(key, CURRENT_PASSWORD_ATTEMPTS, CURRENT_PASSWORD_WINDOW_MS);
@@ -109,13 +138,59 @@ export function currentPasswordMatches(
 		error(429, `Too many wrong passwords. Try again in ${minutes} minute(s).`);
 	}
 
-	if (verifyPassword(password, hash)) {
+	if ((await checkPassword(password, hash, 'known')).matches) {
 		resetRateLimit(key);
-		return true;
+		return { matches: true };
 	}
 
 	log.warn(`Wrong current password for user ${userId} on ${where}`, { where }, { userId });
-	return false;
+	return { matches: false };
+}
+
+/** What `whilePasswordHolds` answers when the password changed twice while it was trying. */
+export const PASSWORD_CHANGED_MEANWHILE =
+	'Your password was changed while this was being saved. Nothing was changed. Try again.';
+
+/** `never` for a promise: a transaction's work cannot await (transaction.ts). */
+type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
+
+/**
+ * Run `write` in one transaction, only while the account's stored hash is
+ * still `checkedHash`, the one `password` was checked against before it.
+ *
+ * The three routes that ask for a current password used to check it again
+ * inside their transaction when the stored hash had changed in between: a
+ * bcrypt check with the write lock held, which a transaction can no longer
+ * make now that a check is awaited. So the stored hash is compared under the
+ * lock instead. If it has changed, nothing is written, the transaction ends,
+ * the password is checked against the new hash outside it (first lane,
+ * holding one of the account's places there, and not counted again: the same
+ * guess), and the transaction is run once more;
+ * `wrong()` throws the route's own refusal if it does not match. A second
+ * change answers 409 with nothing written. Nothing can change the hash between
+ * the comparison and the write: better-sqlite3 runs the whole transaction
+ * without yielding, under `BEGIN IMMEDIATE`.
+ */
+export async function whilePasswordHolds<T>(
+	userId: number,
+	password: string,
+	checkedHash: string,
+	write: (current: User) => NotAPromise<T>,
+	wrong: () => never
+): Promise<T> {
+	let hash = checkedHash;
+	for (let changes = 0; ; changes++) {
+		const outcome = inTransaction(() => {
+			const current = db.select().from(users).where(eq(users.id, userId)).get();
+			if (!current) throw error(404, 'User not found');
+			if (current.passwordHash !== hash) return { held: false as const, now: current.passwordHash };
+			return { held: true as const, value: write(current) };
+		});
+		if (outcome.held) return outcome.value as T;
+		if (changes >= 1) error(409, PASSWORD_CHANGED_MEANWHILE);
+		if (!(await holdingFirstLanePlace(userId, async () => (await checkPassword(password, outcome.now, 'known')).matches))) wrong();
+		hash = outcome.now;
+	}
 }
 
 // ─── Session Management ─────────────────────────────────────────────────────
@@ -314,15 +389,24 @@ export function cleanExpiredSessions(): void {
 
 // ─── Cookie Utilities ────────────────────────────────────────────────────────
 
+/**
+ * Whether a cookie this server sets is sent over HTTPS only: `COOKIE_SECURE`
+ * when it is set, and otherwise in production. The session cookie's rule,
+ * and the remembered browser's (known-browsers.ts).
+ */
+export function secureCookies(): boolean {
+	return process.env.COOKIE_SECURE !== undefined
+		? process.env.COOKIE_SECURE === 'true'
+		: process.env.NODE_ENV === 'production';
+}
+
 /** Set the session cookie on the response. */
 export function setSessionCookie(cookies: Cookies, token: string): void {
 	cookies.set(SESSION_COOKIE_NAME, token, {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
-		secure: process.env.COOKIE_SECURE !== undefined
-			? process.env.COOKIE_SECURE === 'true'
-			: process.env.NODE_ENV === 'production',
+		secure: secureCookies(),
 		maxAge: SESSION_DURATION_DAYS * 24 * 60 * 60
 	});
 }

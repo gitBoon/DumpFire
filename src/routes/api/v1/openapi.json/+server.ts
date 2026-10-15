@@ -16,7 +16,7 @@ const spec = {
 			'**Changed on 2026-10-14 (version 1.2.0).** New answers and fields: (1) a 413 for a body over the size limit carries `limitBytes`, ' +
 			'the limit as a number, beside its `message`; (2) a 413 for a body that declares more than the limit in Content-Length is answered ' +
 			'before the key is looked at, so a request with no key, or a wrong one, can be answered 413 where it was 401; (3) a request with no key ' +
-			'DumpFire accepts, a missing Authorization header included, is counted against the address it came from, 60 a minute, and the ' +
+			'DumpFire accepts, a missing Authorization header included, is counted against the address it came from (an IPv6 address by its /64 network: (51)), 60 a minute, and the ' +
 			'61st is answered 429 with `retryAfterSecs` and Retry-After where it was 401; (4) a body sent with no Content-Length, in chunks, is ' +
 			'held to the same limit as it is read, and answered 413 with `limitBytes` once it passes it; (5) a body that is a JSON array, `[]` ' +
 			'included, is answered 400, {"message": "The request body must be a JSON object"}, before the operation reads a field of it, where ' +
@@ -103,6 +103,8 @@ const spec = {
 			'(49) GET /api/v1/milestones/{id}/summary answers progress.totalSubtasks, every subtask of the cards progress.openSubtasks counts, ticked or not, so the open figure has a total to be read against; every other field is as before. ' +
 			'(50) sub-boards nest at most 20 levels below a board that is not a sub-board: POST /api/v1/boards with a parentCardId on a board already 20 levels deep, or in or below a loop, answers 409 "Sub-boards can be nested at most 20 levels deep, and a board under this card would be deeper." and creates nothing, ' +
 			'and PUT /api/v1/cards/{cardId}/move to another board answers 409 `Card "<title>" cannot go onto "<board>": its sub-boards would then be nested more than 20 levels deep.` and moves nothing when the card\'s sub-boards would end up deeper than that and deeper than they are now, where both were accepted at any depth; a tree already deeper keeps working, and a move that leaves it no deeper is allowed. ' +
+			'(51) a request with no key DumpFire accepts is counted against its address by the address\'s network: an IPv6 address by its /64, an IPv4 address written as IPv6 (::ffff:198.51.100.7) as the IPv4 address, and without a port, ' +
+			'so the 61st request in a minute from any address of one IPv6 network is answered 429, where each address had sixty of its own; a key\'s own count is unchanged. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2001,7 +2003,7 @@ const spec = {
 			},
 			RateLimited: {
 				description:
-					'More than 60 requests in a minute with this key, counted once the key is checked; or, with no key DumpFire accepts, more than 60 in a minute from this address. The request was turned away and nothing was written: send it again, unchanged, after the Retry-After seconds.',
+					'More than 60 requests in a minute with this key, counted once the key is checked; or, with no key DumpFire accepts, more than 60 in a minute from this address, an IPv6 address counted by its /64 network. The request was turned away and nothing was written: send it again, unchanged, after the Retry-After seconds.',
 				headers: {
 					'Retry-After': {
 						description: 'Seconds until the request can be sent again. The same number as `retryAfterSecs` in the body.',

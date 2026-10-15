@@ -16,6 +16,7 @@ import { dev } from '$app/environment';
 import { schedulerSetting } from '../schedulers';
 import { putBackFromTrash, type UploadFile } from '../uploads';
 import { defaultsForNull, orDefault, runBackfills, type Backfill } from './migrate';
+import { KNOWN_BROWSER_SECRET_KEY } from '../known-browsers';
 
 /** The runner's record of which migration files this database has applied. */
 const MIGRATION_RECORD = '__drizzle_migrations';
@@ -287,7 +288,7 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
 
 /**
  * The backup's rows of `table` that a restore brings in: all of them, for
- * every table but two.
+ * every table but three.
  *
  * No session is brought in, and no invite that has not been used. A backup
  * made by this version holds neither (`withoutSignIns`, in `backup.ts`). One
@@ -298,10 +299,25 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
  * signs everybody out.
  *
  * An invite with no `used` column to say otherwise is taken to be unused.
+ *
+ * Nor is the key remembered browsers are signed with (card 2194), which a
+ * backup made by this version does not hold either: the restored server makes
+ * a new one, and every browser is forgotten, as every session is.
  */
 function rowsToRestore(backup: Database.Database, table: string): Record<string, unknown>[] {
 	const name = table.toLowerCase();
 	if (name === 'sessions') return [];
+	if (name === 'settings') {
+		const hasKey = (backup.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[]).some(
+			(column) => column.name === 'key'
+		);
+		if (hasKey) {
+			return backup.prepare(`SELECT * FROM "${table}" WHERE key IS NOT ?`).all(KNOWN_BROWSER_SECRET_KEY) as Record<
+				string,
+				unknown
+			>[];
+		}
+	}
 	if (name === 'invite_tokens') {
 		const hasUsed = (backup.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[]).some(
 			(column) => column.name === 'used'

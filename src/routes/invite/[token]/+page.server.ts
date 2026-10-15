@@ -4,7 +4,9 @@ import { db } from '$lib/server/db';
 import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { apiKeys, inviteTokens, users } from '$lib/server/db/schema';
 import { eq, and, gt, count } from 'drizzle-orm';
-import { hashPassword, createSession, setSessionCookie, endAccountAccess } from '$lib/server/auth';
+import { createSession, setSessionCookie, endAccountAccess } from '$lib/server/auth';
+import { CheckNotMade, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
+import { rememberBrowser } from '$lib/server/known-browsers';
 import { createLogger } from '$lib/server/logger';
 
 const log = createLogger('AUTH');
@@ -77,7 +79,7 @@ function usableInvite(token: string) {
 }
 
 export const actions: Actions = {
-	default: async ({ params, request, cookies }) => {
+	default: async ({ params, request, cookies, platform }) => {
 		const token = params.token;
 		const invalid = () => fail(400, { error: DEAD_LINK });
 
@@ -100,14 +102,24 @@ export const actions: Actions = {
 			return fail(400, { error: 'Passwords do not match.' });
 		}
 
-		// Hashing takes about a quarter of a second, and nothing else can write
-		// while a transaction is open, so it is done before one is.
-		const passwordHash = hashPassword(password);
+		// Hashing takes about a quarter of a second, on a worker thread, and is
+		// awaited, which a transaction cannot do, so it is done before one is.
+		// In the second lane, as a sign-in's check is: whoever holds the link is
+		// not yet known to the server. Two submissions at once each hash; the
+		// transaction below lets one in. Not made when too many checks are
+		// already waiting, or once the caller has gone.
+		let passwordHash: string;
+		try {
+			passwordHash = await makePasswordHash(password, 'other', { gone: callerHasGone(platform) });
+		} catch (err) {
+			if (err instanceof CheckNotMade) return fail(503, { error: PASSWORDS_BUSY });
+			throw err;
+		}
 
 		// One transaction: the invite is read and checked as unused in the one
 		// that uses it, so it cannot be used twice, and the password, the invite,
 		// what setting a password ends and the session change together.
-		const sessionToken = inTransaction(() => {
+		const signedIn = inTransaction(() => {
 			const invite = usableInvite(token);
 			if (!invite) return null;
 
@@ -137,11 +149,14 @@ export const actions: Actions = {
 			);
 
 			// Create session and log them in
-			return createSession(invite.userId);
+			return { sessionToken: createSession(invite.userId), userId: invite.userId };
 		});
-		if (!sessionToken) return invalid();
+		if (!signedIn) return invalid();
 
-		setSessionCookie(cookies, sessionToken);
+		setSessionCookie(cookies, signedIn.sessionToken);
+		// The new password ended every remembered browser of the account; this
+		// one is remembered for it (card 2194).
+		rememberBrowser(cookies, signedIn.userId, passwordHash);
 
 		throw redirect(303, '/');
 	}

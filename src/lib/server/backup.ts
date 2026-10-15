@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLogger } from './logger';
 import { maskSecretsInLog } from './secret-paths';
+import { KNOWN_BROWSER_SECRET_KEY } from './known-browsers';
 
 const log = createLogger('BACKUP');
 
@@ -99,7 +100,8 @@ export function saveBackupConfig(config: BackupConfig): void {
 /**
  * Write to `to` the database file at `from` with everything taken out of it
  * that signs somebody in by being held: every session, and every invite that
- * has not been used, wherever it is written.
+ * has not been used, wherever it is written; and the key remembered browsers
+ * are signed with (known-browsers.ts), which a restore is meant to lose.
  *
  * A session's id is the whole of what its cookie carries, and an unused
  * invite's token sets its account's password. A backup that held them signed
@@ -150,6 +152,10 @@ export function withoutSignIns(from: string, to: string): void {
 		maskSecretsInLog(copy);
 		if (has('sessions')) copy.prepare('DELETE FROM sessions').run();
 		if (has('invite_tokens')) copy.prepare('DELETE FROM invite_tokens WHERE used = 0').run();
+		// The key remembered browsers are signed with (card 2194): whoever held
+		// it could make a cookie that skips sign-in's throttling for any account
+		// whose hash they also hold, and a backup holds every hash.
+		if (has('settings')) copy.prepare('DELETE FROM settings WHERE key = ?').run(KNOWN_BROWSER_SECRET_KEY);
 
 		copy.exec(`VACUUM INTO '${to.replace(/'/g, "''")}'`);
 	} finally {
