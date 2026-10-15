@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.16
+version: 1.18
 status: As-Built
 date: 2026-10-15
 tags:
@@ -54,14 +54,15 @@ Cards are your tasks. Each card sits in a column and can be enriched with detail
 | **Title and description** | Rich text descriptions with Markdown support |
 | **Priority levels** | Critical, High, Medium, Low — colour-coded badges |
 | **Due dates** | Set deadlines with visual overdue warnings |
-| **Labels** | Tag cards with coloured labels for filtering. Labels are made and changed in the card window, on any saved card: click a label to put it on or take it off, "+ New label" makes one with a name and a colour and puts it on the card, and "Edit labels" renames, recolours or deletes one. A delete asks first, since it takes the label off every card on the board. A new card gets its labels once it is saved |
+| **Labels** | Tag cards with coloured labels for filtering. Labels are made and changed in the card window, on any saved card: click a label to put it on or take it off, "+ New label" makes one with a name and a colour and puts it on the card, and "Edit labels" renames, recolours or deletes one. A delete asks first, since it takes the label off every card on the board. A new card gets its labels once it is saved, but for a card made from a template: the New Task window lists the template's labels that are labels of the board under "Labels from the template", and they are put on the card once it is created. One deleted since the template was saved is left out. A label that cannot be put on is said in a message, and the card is kept; one deleted while the window was open is named "a label of the template that no longer exists". A new card the server does not make is said in a message, in the server's words, and the New Task window stays open with what was typed |
 | **Categories** | Classify cards by a category of their own board, or by a shared one that belongs to no board. The card window offers no other board's: on a board's page it offers those two kinds, and in All Tasks the card's board's own; a card already filed under another board's category keeps it until it is changed, and still shows its name. Lists of categories, Manage Categories among them, show the categories of boards you can open and the shared ones |
-| **Colour tags** | Visual colour dots for quick scanning |
+| **Colour tags** | Set through the API (`colorTag`); shown as a bar across the top of the card on the All Tasks page. The card window has no control for one, and a save there keeps it: until 15 October 2026 a save on a board or the plan page cleared it |
 | **Card ID** | Every card displays a unique `#N` identifier for easy reference. A number is never given to a second card, even after the first is deleted |
 | **Attachments** | Attach files of up to 25 MB to a card. PNG, JPEG, GIF and WebP images show as thumbnails on the card and open in the browser; every other attachment, PDFs included, is saved to disk |
 | **Card covers** | A strip of colour across the top of the card, on the board and in the card window, to make a card stand out. Pick one of eight gradients or eight colours, or any colour of your own, under More options on a saved card |
 | **Business value** | Document why this task matters |
 | **Duplicate** | Right-click a card and choose Duplicate: a copy, its subtasks open, is added at the end of the same column. The copy of a finished card is new work, so it goes to the end of To Do (the board's first column that is not Complete or Done) instead, and the message says where: `Duplicated "Fix bug (Copy)" into To Do` |
+| **Templates** | **Save as Template**, on a saved card, keeps its title, description, priority, subtasks and labels under a name. **From template**, in the New Task window, fills the window from one; its labels are put on the card once it is created |
 | **Pin to top** | Keep important cards at the top of a column |
 | **On-hold notes** | Add a reason when putting a task on hold |
 
@@ -97,8 +98,9 @@ flowchart TD
 
 A card's window lists what the card is **Blocked by** and what it **Blocks**. Either end can be a card or a subtask, on this board or another.
 
+- **A row's link opens that card**, on this board or another, in place of the card whose window was open. Until 15 October 2026 a link to a card on the board already open, or to a card on another board, changed the address and opened no card. **Back** afterwards closes the card that link opened; and going to another board, by any link or by Back, closes a card window that was open, so one board's card is never left open over another board.
 - **A subtask reads as one.** A row for a subtask reads "subtask #45 of #12", and its link opens card 12, the card the subtask belongs to. Removing it removes that link and no other.
-- **Every change is recorded.** Adding or removing one dependency, in the card window or through the API, shows in the board's activity panel and on the Audit page; the panel names one made in the card window "Dependency added" or "Dependency removed". The bulk endpoint writes one `api:dependencies_bulk_added` entry for the whole batch, on the first board it touched only, and the links that go when a card is deleted write none of their own.
+- **Every change is recorded.** Adding or removing one dependency, in the card window or through the API, shows in the board's activity panel and on the Audit page; both activity panels, the board's and All Tasks', name it "Added dependency" or "Removed dependency" whichever way it was done. The bulk endpoint writes one `api:dependencies_bulk_added` entry for the whole batch, "Added dependencies", on the first board it touched only, and the links that go when a card is deleted write none of their own.
 - **Not counted as work.** The activity report does not take a dependency added or removed to be work on the card, or the work of whoever added or removed it.
 - **Work on a board you cannot open is not named.** A card that waits on a card of a board you were not given still shows as blocked, and the other end is listed as "A card on a board you cannot open", with no link and no board or column: on the Blocked chip, in the card window, on All Tasks and on the plan. You can still remove the link.
 
@@ -162,11 +164,15 @@ Assign one or more team members to any card. Assignees receive email notificatio
 Discuss tasks directly on cards:
 - **@mentions** — tag team members to get their attention
 - **Markdown support** — format comments with bold, code, lists
-- **Email notifications** — mentioned users receive email alerts
+- **Email notifications** — mentioned users receive email alerts, which each can switch off under **Mentions** on My Account
 
 ### Real-Time Updates
 
-All changes appear instantly for everyone viewing the same board. No need to refresh — when someone moves a card, you see it move live.
+All changes appear instantly for everyone viewing the same board. No need to refresh — when someone moves a card, you see it move live. Assigning or unassigning someone, editing a comment, renaming a board or filing it under a group, and making a sub-board under a card reach the other open pages too, whether done on a page or through the API.
+
+A board page listens to the board it shows. Following a sub-board, a breadcrumb or a link in a card's window to another board, or going Back or Forward to one, opens that board's page afresh, listening to that board: no selection, open panel, search or filter is carried over from the board left. Until 15 October 2026 the page went on listening to the first board, so the second showed nothing done by others until it was reloaded.
+
+A page left open while DumpFire is updated to a new version says so within about a minute, in a bar across the foot of the window: "DumpFire has been updated. Save anything you are editing, then reload to use the new version." It never reloads by itself, so nothing typed is lost; **Reload** loads the new version, and so does the next page opened from it.
 
 ---
 
@@ -186,7 +192,7 @@ flowchart LR
 - **Choosing a board is optional** — someone without an account sends a request to a person or a team and is not shown any board; whoever accepts the request chooses the board and column. A signed-in requester may pick one of the boards they can open, or leave it to the team
 - **Private conversation link** — each request has its own secret link, emailed to the requester; it is the only way in without an account
 - **Conversation thread** — back-and-forth messaging between requester and team
-- **Progress emails** — requesters get email updates as work progresses
+- **Progress emails** — requesters get email updates as work progresses. A requester with an account can switch them off under **Request Progress** on My Account
 - **Completion report** — a PDF is automatically generated and emailed when the task is finished
 
 ---

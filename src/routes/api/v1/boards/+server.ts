@@ -4,6 +4,7 @@ import { inTransaction } from '$lib/server/db/transaction';
 import { boards, columns, boardMembers } from '$lib/server/db/schema';
 import { desc, inArray, eq } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
 import { requireParentCard, requireUser } from '$lib/server/route-guards';
 import { readBody, readId, readText } from '$lib/server/request-body';
@@ -104,6 +105,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			userName: user.username,
 			userEmoji: user.emoji || '👤'
 		});
+
+		// A sub-board is drawn on its card, so the pages open on that card's
+		// board are told, as `POST /api/boards` tells them (card 2143): neither
+		// did, and the sub-board was not seen there until a reload. Nothing is
+		// sent for a top-level board.
+		if (parent) {
+			const parentBoardId = db
+				.select({ boardId: columns.boardId })
+				.from(columns)
+				.where(eq(columns.id, parent.columnId))
+				.get()!.boardId;
+			emit(parentBoardId, 'update', { type: 'board', action: 'created' });
+		}
 
 		// Return the board with its columns
 		const boardColumns = db.select().from(columns).where(eq(columns.boardId, board.id)).all();

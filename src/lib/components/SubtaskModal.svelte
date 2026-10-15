@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { SubtaskType } from '$lib/types';
+	import { deleteFailure, failureMessage } from '$lib/api';
 
 	let {
 		subtask = null,
@@ -25,6 +26,17 @@
 	let dueDate = $state(subtask?.dueDate || '');
 	let showDueDate = $state(!!subtask?.dueDate);
 	let completed = $state(subtask?.completed || false);
+	/**
+	 * Why the last save or delete was not done, above the buttons (card 2148).
+	 * The window used to close, or take the row off the card, whatever the
+	 * answer was; it stays open now, with what was typed.
+	 */
+	let error = $state('');
+	/**
+	 * A save on its way: Save is disabled until it is answered, so a double
+	 * click on Add Subtask makes one subtask and not two.
+	 */
+	let saving = $state(false);
 
 	const colorTags = [
 		'', '#ef4444', '#f97316', '#f59e0b', '#22c55e',
@@ -32,7 +44,7 @@
 	];
 
 	async function save() {
-		if (!title.trim()) return;
+		if (!title.trim() || saving) return;
 
 		const payload = {
 			title: title.trim(),
@@ -50,40 +62,68 @@
 			return;
 		}
 
-		if (subtask) {
-			// Update existing
-			const res = await fetch(`/api/subtasks/${subtask.id}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(payload)
-			});
-			if (res.ok) {
-				const updated = await res.json();
-				onSave(updated);
+		error = '';
+		saving = true;
+		try {
+			if (subtask) {
+				// Update existing
+				const res = await fetch(`/api/subtasks/${subtask.id}`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(payload)
+				});
+				if (res.ok) {
+					const updated = await res.json();
+					onSave(updated);
+				} else {
+					error = await failureMessage(res, 'The subtask was not saved.');
+				}
+			} else {
+				// Create new
+				const res = await fetch('/api/subtasks', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ cardId, ...payload })
+				});
+				if (res.ok) {
+					const created = await res.json();
+					onSave(created);
+				} else {
+					error = await failureMessage(res, 'The subtask was not added.');
+				}
 			}
-		} else {
-			// Create new
-			const res = await fetch('/api/subtasks', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ cardId, ...payload })
-			});
-			if (res.ok) {
-				const created = await res.json();
-				onSave(created);
-			}
+		} catch {
+			error = 'No answer from the server. The subtask may not have been saved.';
+		} finally {
+			saving = false;
 		}
 	}
 
 	async function handleDelete() {
-		if (subtask && onDelete) {
-			await fetch(`/api/subtasks/${subtask.id}`, {
-				method: 'DELETE',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ boardId })
-			});
+		if (!subtask || !onDelete) return;
+		// A subtask of a card not yet made is on this page alone, with an id of
+		// its own below zero: there is nothing to send, as `save` sends nothing.
+		if (cardId === 0) {
 			onDelete();
+			return;
 		}
+		const id = subtask.id;
+		error = '';
+		const failure = await deleteFailure(
+			() =>
+				fetch(`/api/subtasks/${id}`, {
+					method: 'DELETE',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ boardId })
+				}),
+			'subtask'
+		);
+		if (failure) {
+			// The subtask stays on the card, and the window stays open.
+			error = failure;
+			return;
+		}
+		onDelete();
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -202,6 +242,14 @@
 			</div>
 		{/if}
 
+		<!-- A save or delete that was not done, in the server's words. -->
+		{#if error}
+			<div class="subtask-error" role="alert">
+				<span>{error}</span>
+				<button class="subtask-error-close" onclick={() => (error = '')} aria-label="Close this message" type="button">✕</button>
+			</div>
+		{/if}
+
 		<div class="modal-actions">
 			{#if onDelete && subtask}
 				<button class="btn-danger" onclick={handleDelete}>
@@ -213,7 +261,7 @@
 			{/if}
 			<div style="flex: 1"></div>
 			<button class="btn-ghost" onclick={onClose}>Cancel</button>
-			<button class="btn-primary" onclick={save} disabled={!title.trim()}>
+			<button class="btn-primary" onclick={save} disabled={!title.trim() || saving}>
 				{subtask ? 'Save Changes' : 'Add Subtask'}
 			</button>
 		</div>
@@ -285,6 +333,21 @@
 	}
 	.subtask-checkbox:hover { border-color: var(--accent-indigo); }
 	.subtask-checkbox.checked { background: var(--accent-emerald); border-color: var(--accent-emerald); }
+
+	/* A failure, as the card window shows one */
+	.subtask-error {
+		display: flex; align-items: flex-start; gap: var(--space-sm);
+		margin-bottom: var(--space-lg); padding: 7px 10px;
+		font-size: 0.78rem; line-height: 1.4;
+		background: rgba(244, 63, 94, 0.1); color: var(--accent-rose);
+		border: 1px solid rgba(244, 63, 94, 0.25); border-radius: var(--radius-sm);
+	}
+	.subtask-error span { flex: 1; }
+	.subtask-error-close {
+		background: none; border: none; cursor: pointer; padding: 0 2px;
+		color: inherit; font-size: 0.7rem; opacity: 0.7;
+	}
+	.subtask-error-close:hover { opacity: 1; }
 
 	.modal-actions {
 		display: flex; align-items: center; gap: var(--space-md);

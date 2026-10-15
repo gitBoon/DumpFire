@@ -189,13 +189,30 @@ describe('PATCH /api/requests/:id, accept', () => {
 					createdBy: s.owner.id,
 					completedAt: null
 				});
-				// Its creation is recorded as any card's is: by the accepter, from the page.
+				// Its creation is recorded as any card's is: by the accepter, from the
+				// page. Then its assignee, as an assignment in the card window is
+				// recorded (card 2143).
 				expect(
 					db
-						.select({ action: activityLog.action, userId: activityLog.userId, detail: activityLog.detail, source: activityLog.source })
+						.select({
+							action: activityLog.action,
+							cardId: activityLog.cardId,
+							userId: activityLog.userId,
+							detail: activityLog.detail,
+							source: activityLog.source
+						})
 						.from(activityLog)
 						.all()
-				).toEqual([{ action: 'card_created', userId: s.owner.id, detail: 'Please add an export', source: 'ui' }]);
+				).toEqual([
+					{ action: 'card_created', cardId: made.id, userId: s.owner.id, detail: 'Please add an export', source: 'ui' },
+					{
+						action: 'assignee_added',
+						cardId: made.id,
+						userId: s.owner.id,
+						detail: 'Assigned helper to "Please add an export"',
+						source: 'ui'
+					}
+				]);
 				expect(db.select().from(cards).all()).toHaveLength(2);
 
 				expect(requestRow(s.request.id)).toMatchObject({
@@ -226,13 +243,15 @@ describe('PATCH /api/requests/:id, accept', () => {
 		// assigned and nobody told.
 		// The card's `card_created` entry is written with it (card 2134): this
 		// route wrote none, and the board's webhook and open pages were not told.
+		// Nor the assignee's `assignee_added`, the last write (card 2143).
 		expect(shape(run.writes)).toEqual([
 			'insert into cards',
 			'insert into activity_log',
 			'update task_requests set',
 			'insert into card_comments',
 			'insert into card_comments',
-			'insert into card_assignees'
+			'insert into card_assignees',
+			'insert into activity_log'
 		]);
 		expect(run.effects.map(name)).toEqual([
 			'webhook card.created',

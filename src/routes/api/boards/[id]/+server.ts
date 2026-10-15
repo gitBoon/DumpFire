@@ -2,10 +2,10 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { boards } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { getBoardRole } from '$lib/server/board-access';
 import { inTransaction } from '$lib/server/db/transaction';
 import { deleteBoard } from '$lib/server/deletes';
 import { emit } from '$lib/server/events';
+import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { pathId, readBody, readBoolean, readId, readText } from '$lib/server/request-body';
 import { requireBoard, requireBoardCategory, requireBoardOwner, requireSubBoardLink, requireUser } from '$lib/server/route-guards';
 import { getCardBoardId } from '$lib/server/work-access';
@@ -29,16 +29,18 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		// before the value is read, so an editor is answered 403 whatever it is.
 		if ('isPublic' in body) requireBoardOwner(user, id);
 
+		// Read in the order `PUT /api/v1/boards/{id}` reads them, which is the
+		// order the entry below names them in, as that route's does (card 2143).
 		const updates: Partial<typeof boards.$inferInsert> = {};
 		const name = readText(body, 'name', { trim: true, min: 1, max: 200, keep: board.name });
 		if (name !== undefined) updates.name = name;
 		const emoji = readText(body, 'emoji', { min: 1, max: 32, keep: board.emoji });
 		if (emoji !== undefined) updates.emoji = emoji;
-		const isPublic = readBoolean(body, 'isPublic', { keep: board.isPublic });
-		if (isPublic !== undefined) updates.isPublic = isPublic;
 		// The dashboard grouping the board is filed under, or null for none.
 		const categoryId = readId(body, 'categoryId', { nullable: true, keep: board.categoryId });
 		if (categoryId !== undefined) updates.categoryId = categoryId;
+		const isPublic = readBoolean(body, 'isPublic', { keep: board.isPublic });
+		if (isPublic !== undefined) updates.isPublic = isPublic;
 
 		// `boards.category_id` has no foreign key, so a grouping that is not
 		// there was stored as sent: 404. One all of whose boards the caller
@@ -58,19 +60,33 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		const parent = moving ? requireSubBoardLink(user, id, parentCardId) : null;
 		if (moving) updates.parentCardId = parentCardId;
 
+		const fields = Object.keys(updates);
 		updates.updatedAt = new Date().toISOString();
 		const row = db.update(boards).set(updates).where(eq(boards.id, id)).returning().get();
 
+		// What was sent is recorded, with the fields named, and the board's own
+		// pages are told, as `PUT /api/v1/boards/{id}` does both (card 2143): a
+		// rename or a grouping changed on screen had neither. A body that set no
+		// field changed nothing to record or show.
+		const told = new Set<number>();
+		if (fields.length > 0) {
+			logUiActivity({
+				boardId: id,
+				action: ACTIONS.boardUpdated,
+				detail: `Updated board "${row.name}" (fields: ${fields.join(', ')})`,
+				...actorOf(user)
+			});
+			told.add(id);
+		}
+
 		// The board moved, and the cards it left and joined show it, or stop
-		// showing it: all three boards' pages are told. Nothing is told of a
-		// board that did not move, as before.
+		// showing it: those boards' pages are told as well, each once.
 		if (moving) {
-			const told = new Set([id]);
 			if (parent) told.add(parent.boardId);
 			const left = board.parentCardId === null ? null : getCardBoardId(board.parentCardId);
 			if (left !== null) told.add(left);
-			for (const boardId of told) emit(boardId, 'update', { type: 'board' });
 		}
+		for (const boardId of told) emit(boardId, 'update', { type: 'board' });
 		return row;
 	});
 	return json(updated);
@@ -86,13 +102,13 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// board. Every sub-board at every depth goes with it, and what else goes
 	// is in $lib/server/deletes.ts.
 	inTransaction(() => {
-		// Only owners and admins can delete boards
-		const role = getBoardRole(user, id);
-		if (role !== 'owner' && role !== 'admin') {
-			throw error(403, 'Only board owners and admins can delete boards');
-		}
+		// Only owners and admins can delete boards. A board that is not there
+		// is 404 to everyone, before who is asking is looked at, as
+		// `DELETE /api/v1/boards/{id}` answers it (card 2211): an administrator
+		// was answered 200 for deleting nothing, and anyone else 403.
+		requireBoardOwner(user, id, 'Only board owners and admins can delete boards');
 
-		deleteBoard(id, user);
+		if (!deleteBoard(id, user)) throw error(404, 'Board not found');
 	});
 	return json({ success: true });
 };

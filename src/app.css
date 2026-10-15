@@ -805,6 +805,8 @@ textarea {
 	align-items: center;
 	justify-content: center;
 	z-index: 1000;
+	/* Clear of the update bar at the foot of the screen while it shows (src/routes/+layout.svelte). */
+	padding-bottom: var(--update-bar-space, 0px);
 	animation: fadeIn var(--duration-fast) var(--ease-out);
 }
 

@@ -3,19 +3,17 @@ import { db } from '$lib/server/db';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { getUserNotifPrefs } from '$lib/server/notifications';
+import { defaultPrefs } from '$lib/notification-prefs';
 import { readBody, readBoolean } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
-/** Default notification prefs (all enabled). */
-const DEFAULTS: Record<string, boolean> = {
-	email_all: true,
-	email_assigned: true,
-	email_comments: true,
-	email_moved: true,
-	email_requests: true,
-	email_board_shared: true,
-	email_planning: true
-};
+/**
+ * Default notification prefs (all enabled): every key of the one list in
+ * `$lib/notification-prefs` (card 2146). This route kept a list of its own,
+ * without `email_request_progress` and `email_mentions`, which the mail reads:
+ * neither was answered or saved, so neither could be switched off.
+ */
+const DEFAULTS: Record<string, boolean> = defaultPrefs();
 
 /** GET — Return current user's notification preferences. */
 export const GET: RequestHandler = async ({ locals }) => {

@@ -4,6 +4,8 @@ import { inTransaction } from '$lib/server/db/transaction';
 import { cardAssignees, users, cards, columns } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
+import { emit } from '$lib/server/events';
+import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { notifyUserAssigned } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readId } from '$lib/server/request-body';
@@ -34,6 +36,12 @@ function editableCard(caller: SessionUser, cardId: number): { title: string; boa
  * The card is looked for and the caller checked (404, then 403) before
  * `userId` is read (400) and its user looked for (404), all in the
  * transaction that assigns them.
+ *
+ * It records what `POST /api/v1/cards/{id}/assignees` records (card 2143):
+ * an `assignee_added` entry and the mail when someone was added, and the
+ * board's open pages are told either way, as that route tells them. Neither
+ * was done here, so an assignment made in the card window reached no
+ * Activity Log and refreshed no other page.
  */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
 	const caller = requireUser(locals.user);
@@ -65,6 +73,18 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 			const baseUrl = linkBaseUrl(url);
 			notifyUserAssigned(card.boardId, cardId, card.title, user.email, user.username, caller.username, baseUrl);
 		}
+
+		emit(card.boardId, 'update', { type: 'card' });
+
+		if (!existing) {
+			logUiActivity({
+				boardId: card.boardId,
+				cardId,
+				action: ACTIONS.assigneeAdded,
+				detail: `Assigned ${user.username} to "${card.title}"`,
+				...actorOf(caller)
+			});
+		}
 	});
 
 	return json({ success: true });
@@ -76,6 +96,9 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
  * Removing someone who is not assigned to the card is
  * `404 User is not assigned to this card` (card 2117, decision 9), as the
  * API's route answers it. It was 200, and the card window said it was done.
+ *
+ * A removal writes the `assignee_removed` entry and tells the board's open
+ * pages, as the API's route does (card 2143); a refused one does neither.
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 	const caller = requireUser(locals.user);
@@ -83,7 +106,7 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 	const body = await readBody(request);
 
 	inTransaction(() => {
-		editableCard(caller, cardId);
+		const card = editableCard(caller, cardId);
 
 		const userId = readId(body, 'userId', { required: true, says: { missing: 'userId is required' } });
 
@@ -91,6 +114,17 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 			.where(and(eq(cardAssignees.cardId, cardId), eq(cardAssignees.userId, userId)))
 			.run();
 		if (removed.changes === 0) throw error(404, 'User is not assigned to this card');
+
+		emit(card.boardId, 'update', { type: 'card' });
+
+		const removedUser = db.select({ username: users.username }).from(users).where(eq(users.id, userId)).get();
+		logUiActivity({
+			boardId: card.boardId,
+			cardId,
+			action: ACTIONS.assigneeRemoved,
+			detail: `Removed ${removedUser?.username || 'user'} from "${card.title}"`,
+			...actorOf(caller)
+		});
 	});
 
 	return json({ success: true });

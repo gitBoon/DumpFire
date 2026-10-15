@@ -17,6 +17,7 @@
 	import { formatTokens } from '$lib/tokens';
 	import { costOf, formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
 	import { highlightMentions } from '$lib/utils/mentions';
+	import { templateLabelIds } from '$lib/templates';
 	import { answerBody, deleteFailure, dependencyEndBody, dependencyRow, failureMessage, uploadFailure, uploadNoAnswer, uploadNotRead } from '$lib/api';
 	import {
 		THEMES,
@@ -50,7 +51,7 @@
 		labels: LabelType[];
 		boardId: number;
 		boardUsers?: { id: number; username: string; email?: string; emoji: string }[];
-		onSave: (data: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[] }) => void;
+		onSave: (data: { title: string; description: string; priority: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[]; pendingLabelIds?: number[] }) => void;
 		onDelete?: () => void;
 		onClose: () => void;
 		onCreateSubBoard?: (name: string) => void;
@@ -337,6 +338,14 @@
 	let templateName = $state('');
 	let templateSaving = $state(false);
 
+	/**
+	 * The labels of the template applied to a new card, which the board page
+	 * puts on the card once it is created (card 2163): the picker shows only on
+	 * a saved card. Listed above the footer, so they are seen before the card
+	 * is made.
+	 */
+	let templateLabels = $state<number[]>([]);
+
 	async function loadTemplates() {
 		const res = await fetch(`/api/templates?boardId=${boardId}`);
 		if (res.ok) templates = await res.json();
@@ -405,6 +414,8 @@
 				completed: false
 			}));
 		} catch { /* ignore */ }
+		// Its labels that are labels of this board, once each (`templateLabelIds`).
+		templateLabels = templateLabelIds(tmpl.labelsJson, labels);
 		showTemplatePicker = false;
 	}
 
@@ -425,8 +436,10 @@
 			setTimeout(() => (titleError = false), 1500);
 			return;
 		}
+		// No colour tag: the window has no control for one, and the empty one it
+		// sent cleared a tag set through the API at every save (card 2147).
 		onSave({
-			title: title.trim(), description, priority, colorTag: '', categoryId,
+			title: title.trim(), description, priority, categoryId,
 			dueDate: dueDate || null, onHoldNote: onHoldNote || undefined,
 			businessValue: businessValue || undefined,
 			// Sent as null rather than omitted when cleared, so emptying a field
@@ -444,6 +457,9 @@
 				: undefined,
 			pendingSubBoards: !card && pendingSubBoardNames.length > 0
 				? pendingSubBoardNames
+				: undefined,
+			pendingLabelIds: !card && templateLabels.length > 0
+				? templateLabels
 				: undefined
 		});
 	}
@@ -1881,6 +1897,19 @@
 		</div> <!-- end modal-body-grid -->
 		</div> <!-- end modal-body -->
 
+		<!-- The template's labels, put on the card once it is created: the picker shows only on a saved card (card 2163). -->
+		{#if !card && templateLabels.length > 0}
+			<div class="template-labels">
+				<span class="template-labels-title">Labels from the template:</span>
+				{#each templateLabels as labelId (labelId)}
+					{@const label = labels.find((l) => l.id === labelId)}
+					{#if label}
+						<span class="template-label" style="--lc: {label.color}">{label.name}</span>
+					{/if}
+				{/each}
+			</div>
+		{/if}
+
 		<div class="modal-footer">
 			<div class="footer-left">
 				{#if card}
@@ -1943,7 +1972,7 @@
 	<div class="template-overlay" onclick={() => showSaveTemplate = false}>
 		<div class="template-dialog" onclick={(e) => e.stopPropagation()}>
 			<h3>📋 Save as Template</h3>
-			<p class="template-desc">Save this card's configuration as a reusable template.</p>
+			<p class="template-desc">Saves this card's title, description, priority, subtasks and labels as a reusable template.</p>
 			<div class="template-field">
 				<label for="tmpl-name">Template Name</label>
 				<input id="tmpl-name" type="text" bind:value={templateName} placeholder="e.g. Bug Report, Feature Request..." onkeydown={(e) => e.key === 'Enter' && saveAsTemplate()} autofocus />
@@ -2865,6 +2894,18 @@
 	}
 	.footer-left { display: flex; align-items: center; gap: var(--space-md); }
 	.footer-right { display: flex; align-items: center; gap: var(--space-md); }
+
+	/* The template's labels on a new card: read-only, drawn as the label picker draws one not on the card */
+	.template-labels {
+		display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+		padding: var(--space-md) var(--space-xl) 0;
+	}
+	.template-labels-title { font-size: 0.72rem; color: var(--text-tertiary); margin-right: 4px; }
+	.template-label {
+		padding: 3px 10px; border-radius: var(--radius-full);
+		font-size: 0.7rem; font-weight: 600;
+		border: 1.5px solid var(--lc); color: var(--lc);
+	}
 
 	.template-btn {
 		display: inline-flex; align-items: center; gap: var(--space-sm);

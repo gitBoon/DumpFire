@@ -62,11 +62,15 @@ vi.mock('bcryptjs', async (importOriginal) => {
 	};
 });
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import ts from 'typescript';
 import { isHttpError, type RequestEvent } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
-import { apiKeys, inviteTokens, sessions, users } from '$lib/server/db/schema';
+import { apiKeys, inviteTokens, sessions, taskRequests, users } from '$lib/server/db/schema';
+import { MASTER_PREF, NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import { hashPassword, verifyPassword, sessionStillOpen, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { endUnusedInvites, issueInvite } from '$lib/server/invites';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
@@ -76,8 +80,8 @@ import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.serve
 import { action, type ActionResult } from './helpers/actions';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
-import { effects, type RecordedEffect } from './helpers/effects';
-import { makeApiKey, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
+import { effects, type Effects, type RecordedEffect } from './helpers/effects';
+import { addBoardMember, makeApiKey, makeBoard, makeCard, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
 import { gate } from './helpers/gate';
 import { watchReads } from './helpers/reads';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -1807,12 +1811,16 @@ describe('the setup page', () => {
 // ─── Notification preferences ────────────────────────────────────────────────
 
 describe('/api/account/notifications', () => {
+	// `email_request_progress` and `email_mentions` were neither answered nor
+	// saved, though the mail reads both (card 2146).
 	const DEFAULTS = {
 		email_all: true,
 		email_assigned: true,
 		email_comments: true,
+		email_mentions: true,
 		email_moved: true,
 		email_requests: true,
+		email_request_progress: true,
 		email_board_shared: true,
 		email_planning: true
 	};
@@ -1855,5 +1863,133 @@ describe('/api/account/notifications', () => {
 		const saved = await api('PUT', '/api/account/notifications', { user, body: { email_planning: false } });
 		expect(saved.body).toEqual({ ...DEFAULTS, email_all: false, email_planning: false });
 		expect(JSON.parse(storedFor(user)!)).toEqual({ email_all: false, email_planning: false });
+	});
+
+	/**
+	 * The key each mail in `notifications.ts` reads, as written there: the last
+	 * argument of every call to `shouldNotifyUser` and `filterRecipientsByPref`,
+	 * but the one inside the second that passes its own on. One that is not a
+	 * string literal is kept as its source text, so that it fails the test
+	 * below rather than being passed over.
+	 */
+	function keysTheMailReads(): string[] {
+		const file = join(process.cwd(), 'src', 'lib', 'server', 'notifications.ts');
+		const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+		const keys: string[] = [];
+		const visit = (node: ts.Node) => {
+			if (ts.isFunctionDeclaration(node) && node.name?.text === 'filterRecipientsByPref') return;
+			if (
+				ts.isCallExpression(node) &&
+				ts.isIdentifier(node.expression) &&
+				['shouldNotifyUser', 'filterRecipientsByPref'].includes(node.expression.text)
+			) {
+				const last = node.arguments[node.arguments.length - 1];
+				keys.push(last && ts.isStringLiteral(last) ? last.text : `not a key: ${last?.getText(source)}`);
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(source);
+		return keys;
+	}
+
+	it('saves and answers every preference a mail reads, each of the one list', async () => {
+		const read = keysTheMailReads();
+		// Every mail that can be switched off: assigned, moved, unblocked,
+		// shared, requests twice, comments, request progress, planning, mentions.
+		expect(read.length).toBeGreaterThanOrEqual(10);
+		const listed: string[] = NOTIFICATION_PREFS.map((kind) => kind.key);
+		for (const key of new Set(read)) expect(listed, `notifications.ts reads ${key}`).toContain(key);
+		// And the list is what the route answers: the master key and every kind.
+		expect(Object.keys(DEFAULTS).sort()).toEqual([MASTER_PREF, ...listed].sort());
+
+		// Each, switched off, is stored and answered off. Request progress and
+		// mentions were dropped, so they read as on whatever was sent.
+		const user = makeUser({ username: 'ann' });
+		const allOff = Object.fromEntries(listed.map((key) => [key, false]));
+		const saved = await api('PUT', '/api/account/notifications', { user, body: allOff });
+		expect(saved.status).toBe(200);
+		expect(saved.body).toEqual({ ...DEFAULTS, ...allOff });
+		expect(JSON.parse(storedFor(user)!)).toEqual(allOff);
+		expect((await api('GET', '/api/account/notifications', { user })).body).toEqual({ ...DEFAULTS, ...allOff });
+	});
+
+	/** Board A of `owner`, a card on it, and the request `rita` raised with her account, accepted onto it. */
+	const raisedByAnAccount = () => {
+		const owner = makeUser({ username: 'owner' });
+		const rita = makeUser({ username: 'rita' });
+		const A = makeBoard({ owner, name: 'A' });
+		const card = makeCard(A.cols['To Do'], { title: 'Please build this' });
+		db.insert(taskRequests)
+			.values({
+				targetType: 'user',
+				targetId: owner.id,
+				requesterName: 'rita',
+				requesterEmail: rita.email,
+				requesterUserId: rita.id,
+				title: 'Please build this',
+				status: 'accepted',
+				accessToken: 'a'.repeat(64),
+				resolvedBy: owner.id,
+				resolvedCardId: card.id
+			})
+			.run();
+		makeSmtp();
+		return { owner, rita, A, card };
+	};
+
+	it('sends the requester no progress mail while Request Progress is off, and the next once it is on', async () => {
+		const { owner, rita, A, card } = raisedByAnAccount();
+		const move = (column: string) =>
+			api('PUT', `/api/v1/cards/${card.id}/move`, { user: owner, body: { columnId: A.cols[column].id } });
+		const switchTo = async (on: boolean) => {
+			const res = await api('PUT', '/api/account/notifications', { user: rita, body: { email_request_progress: on } });
+			expect(res.status).toBe(200);
+		};
+
+		const sent = effects();
+		try {
+			await switchTo(false);
+			expect((await move('In Progress')).status).toBe(200);
+			await sent.settle();
+			// It was mailed: the switch was not saved.
+			expect(sent.emails).toEqual([]);
+
+			await switchTo(true);
+			expect((await move('On Hold')).status).toBe(200);
+			await sent.settle();
+			expect(sent.emails.map((e) => `${e.to}: ${e.subject}`)).toEqual([
+				'rita@example.test: Your request moved: Please build this → On Hold'
+			]);
+			expect(sent.duringTransaction).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('sends no mention mail to someone who has Mentions off', async () => {
+		const owner = makeUser({ username: 'owner' });
+		const ann = makeUser({ username: 'ann' });
+		const A = makeBoard({ owner, name: 'A' });
+		addBoardMember(A.board, ann, 'editor');
+		const card = makeCard(A.cols['To Do'], { title: 'Launch' });
+		makeSmtp();
+		const comment = () => api('POST', `/api/cards/${card.id}/comments`, { user: owner, body: { content: '@ann hello' } });
+		const mentions = (sent: Effects) => sent.emails.filter((e) => e.subject === 'owner mentioned you: Launch');
+
+		const sent = effects();
+		try {
+			expect((await api('PUT', '/api/account/notifications', { user: ann, body: { email_mentions: false } })).status).toBe(200);
+			expect((await comment()).status).toBe(201);
+			await sent.settle();
+			// It was mailed: the switch was not saved.
+			expect(mentions(sent)).toEqual([]);
+
+			expect((await api('PUT', '/api/account/notifications', { user: ann, body: { email_mentions: true } })).status).toBe(200);
+			expect((await comment()).status).toBe(201);
+			await sent.settle();
+			expect(mentions(sent).map((e) => e.to)).toEqual(['ann@example.test']);
+		} finally {
+			sent.restore();
+		}
 	});
 });

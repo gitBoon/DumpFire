@@ -579,6 +579,19 @@ describe('POST /api/admin/boards/:id/clear-categories', () => {
 			() => api('POST', `/api/admin/boards/${s.A.board.id}/clear-categories`, { user: s.owner }),
 			403
 		);
+		// For a board that is not there too: refused before anything is read.
+		await expectRefused(() => api('POST', '/api/admin/boards/99999/clear-categories', { user: s.owner }), 403);
+	});
+
+	it('answers 404 for a board that is not there, and clears nothing', async () => {
+		const s = withCategories();
+
+		// It was 200 { success: true }, for clearing nothing (card 2211).
+		const res = await expectRefused(
+			() => api('POST', '/api/admin/boards/99999/clear-categories', { user: s.admin }),
+			404
+		);
+		expect(res.body).toEqual({ message: 'Board not found' });
 	});
 });
 

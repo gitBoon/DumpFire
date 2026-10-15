@@ -7,7 +7,9 @@
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { answerBody, failureMessage } from '$lib/api';
+	import { MASTER_PREF, NOTIFICATION_PREFS, type NotificationPrefKey } from '$lib/notification-prefs';
 	import { onMount } from 'svelte';
+	import { invalidateAll } from '$app/navigation';
 
 	let { data }: { data: PageData } = $props();
 
@@ -25,16 +27,41 @@
 	// Avatar
 	let currentEmoji = $state(data.user.emoji || '👤');
 	let savingEmoji = $state(false);
+	/** Why the last change of avatar was not saved, under the avatar (card 2148). */
+	let emojiError = $state('');
 
+	/**
+	 * The new avatar is shown at once, and the one before it put back if the
+	 * server does not keep it. The picker is disabled while the save is on its
+	 * way, as the mail switches are, so that a refusal of the first cannot be
+	 * put back over a second. Once it is kept, the page's data is read again,
+	 * so that the badge in the corner, which the root layout draws from it,
+	 * shows it without a reload.
+	 */
 	async function changeEmoji(emoji: string) {
+		if (savingEmoji) return;
+		const was = currentEmoji;
 		currentEmoji = emoji;
 		savingEmoji = true;
-		await fetch('/api/account/emoji', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ emoji })
-		});
-		savingEmoji = false;
+		emojiError = '';
+		try {
+			const res = await fetch('/api/account/emoji', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ emoji })
+			});
+			if (!res.ok) {
+				currentEmoji = was;
+				emojiError = await failureMessage(res, 'Your avatar was not changed.');
+			} else {
+				await invalidateAll();
+			}
+		} catch {
+			currentEmoji = was;
+			emojiError = 'No answer from the server. Your avatar may not have been changed.';
+		} finally {
+			savingEmoji = false;
+		}
 	}
 
 	// Password change
@@ -69,25 +96,30 @@
 		emailMessage = '';
 		emailError = false;
 
-		const res = await fetch('/api/account/email', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ newEmail: newEmail.trim(), password: emailPassword })
-		});
+		try {
+			const res = await fetch('/api/account/email', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ newEmail: newEmail.trim(), password: emailPassword })
+			});
 
-		if (res.ok) {
-			const result = await res.json();
-			emailMessage = 'Email updated successfully!';
-			emailError = false;
-			displayedEmail = result.email;
-			newEmail = result.email;
-			emailPassword = '';
-		} else {
-			const errData = await res.json().catch(() => ({ message: 'Failed to update email' }));
-			emailMessage = errData.message || 'Failed to update email';
+			if (res.ok) {
+				const result = await res.json();
+				emailMessage = 'Email updated successfully!';
+				emailError = false;
+				displayedEmail = result.email;
+				newEmail = result.email;
+				emailPassword = '';
+			} else {
+				emailMessage = await failureMessage(res, 'Failed to update email');
+				emailError = true;
+			}
+		} catch {
+			emailMessage = 'No answer from the server. Reload the page to see whether your email was changed.';
 			emailError = true;
+		} finally {
+			changingEmail = false;
 		}
-		changingEmail = false;
 	}
 
 	async function changePassword() {
@@ -155,21 +187,17 @@
 		return styles[role] || 'role-user';
 	}
 
-	// Notification preferences
-	type NotifPrefs = Record<string, boolean>;
-	const NOTIF_TYPES = [
-		{ key: 'email_assigned', label: 'Task Assignments', desc: 'When you are assigned to a card' },
-		{ key: 'email_comments', label: 'Comments', desc: 'When someone comments on a board you belong to' },
-		{ key: 'email_moved', label: 'Card Moves', desc: 'When a card you are assigned to is moved' },
-		{ key: 'email_requests', label: 'Task Requests', desc: 'When someone submits or replies to a request' },
-		{ key: 'email_request_progress', label: 'Request Progress', desc: 'Updates on tasks you requested until completion' },
-		{ key: 'email_board_shared', label: 'Board Sharing', desc: 'When a board is shared with you' },
-		{ key: 'email_planning', label: 'Planning', desc: 'When a new plan is created from cards that depend on each other' }
-	];
+	// Notification preferences. The kinds, their words and the master switch are
+	// the one list in $lib/notification-prefs, which the route saves from and
+	// the mail reads (card 2146): this page kept a list of its own, which
+	// offered a switch the route did not save and left out Mentions.
+	type NotifPrefs = Partial<Record<NotificationPrefKey, boolean>>;
 
 	let notifPrefs = $state<NotifPrefs>({});
 	let notifLoading = $state(true);
 	let notifSaving = $state(false);
+	/** Why the last change of a switch was not saved, under the switches (card 2148). */
+	let notifError = $state('');
 
 	// API Keys
 	type ApiKeyInfo = {
@@ -249,14 +277,23 @@
 		setTimeout(() => keyCopied = false, 2000);
 	}
 
+	/** A refusal is said in the key panel's line, and the key stays in the list (card 2148). */
 	async function revokeKey(id: number) {
 		deletingKeyId = id;
-		const res = await fetch(`/api/account/api-keys/${id}`, { method: 'DELETE' });
-		if (res.ok) {
-			apiKeys = apiKeys.filter(k => k.id !== id);
+		apiKeyError = '';
+		try {
+			const res = await fetch(`/api/account/api-keys/${id}`, { method: 'DELETE' });
+			if (res.ok) {
+				apiKeys = apiKeys.filter(k => k.id !== id);
+			} else {
+				apiKeyError = await failureMessage(res, 'The key was not revoked.');
+			}
+		} catch {
+			apiKeyError = 'No answer from the server. Reload the page to see whether the key was revoked.';
+		} finally {
+			deletingKeyId = null;
+			confirmDeleteId = null;
 		}
-		deletingKeyId = null;
-		confirmDeleteId = null;
 	}
 
 	function formatDate(dateStr: string | null): string {
@@ -275,30 +312,52 @@
 		await loadApiKeys();
 	});
 
-	async function toggleNotif(key: string) {
-		const newVal = !notifPrefs[key];
+	/**
+	 * Turn one switch over, or all of them with the master switch, and save.
+	 * A switch is on unless it is stored as `false`, as the mail reads it and
+	 * as the switch is drawn. A refusal puts every switch back to what it was
+	 * and says why under them; a success shows what the server saved. The
+	 * switches are off while a save is on its way, so that no second save can
+	 * be put back over by the first.
+	 */
+	async function toggleNotif(key: NotificationPrefKey) {
+		const was = notifPrefs;
+		const newVal = notifPrefs[key] === false;
 		notifPrefs = { ...notifPrefs, [key]: newVal };
 
 		// If master toggle is turned off, disable all
-		if (key === 'email_all' && !newVal) {
-			const allOff: NotifPrefs = { email_all: false };
-			for (const t of NOTIF_TYPES) allOff[t.key] = false;
+		if (key === MASTER_PREF && !newVal) {
+			const allOff: NotifPrefs = { [MASTER_PREF]: false };
+			for (const t of NOTIFICATION_PREFS) allOff[t.key] = false;
 			notifPrefs = allOff;
 		}
 		// If master toggle is turned on, enable all
-		if (key === 'email_all' && newVal) {
-			const allOn: NotifPrefs = { email_all: true };
-			for (const t of NOTIF_TYPES) allOn[t.key] = true;
+		if (key === MASTER_PREF && newVal) {
+			const allOn: NotifPrefs = { [MASTER_PREF]: true };
+			for (const t of NOTIFICATION_PREFS) allOn[t.key] = true;
 			notifPrefs = allOn;
 		}
 
 		notifSaving = true;
-		await fetch('/api/account/notifications', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(notifPrefs)
-		});
-		notifSaving = false;
+		notifError = '';
+		try {
+			const res = await fetch('/api/account/notifications', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(notifPrefs)
+			});
+			if (res.ok) {
+				notifPrefs = await res.json();
+			} else {
+				notifPrefs = was;
+				notifError = await failureMessage(res, 'Your notification settings were not saved.');
+			}
+		} catch {
+			notifPrefs = was;
+			notifError = 'No answer from the server. Your notification settings may not have been saved.';
+		} finally {
+			notifSaving = false;
+		}
 	}
 </script>
 
@@ -323,8 +382,11 @@
 			<h2>👤 Profile</h2>
 			<div class="profile-info">
 				<div class="profile-avatar-wrap">
-					<EmojiPicker value={currentEmoji} onSelect={(e) => changeEmoji(e)} />
+					<EmojiPicker value={currentEmoji} onSelect={(e) => changeEmoji(e)} disabled={savingEmoji} />
 					<span class="avatar-edit-hint">Click to change</span>
+					{#if emojiError}
+						<div class="password-msg error avatar-error" role="alert">{emojiError}</div>
+					{/if}
 				</div>
 				<div class="profile-details">
 					<div class="profile-row">
@@ -489,18 +551,18 @@
 							<span class="notif-label">All Email Notifications</span>
 							<span class="notif-hint">Master toggle — disables all emails when off</span>
 						</div>
-						<button class="toggle" class:on={notifPrefs.email_all !== false} onclick={() => toggleNotif('email_all')} aria-label="Toggle all notifications">
+						<button class="toggle" class:on={notifPrefs[MASTER_PREF] !== false} onclick={() => toggleNotif(MASTER_PREF)} disabled={notifSaving} aria-label="Toggle all notifications">
 							<span class="toggle-thumb"></span>
 						</button>
 					</div>
 
-					{#each NOTIF_TYPES as type}
-						<div class="notif-row" class:disabled={notifPrefs.email_all === false}>
+					{#each NOTIFICATION_PREFS as type}
+						<div class="notif-row" class:disabled={notifPrefs[MASTER_PREF] === false}>
 							<div class="notif-info">
 								<span class="notif-label">{type.label}</span>
-								<span class="notif-hint">{type.desc}</span>
+								<span class="notif-hint">{type.description}</span>
 							</div>
-							<button class="toggle" class:on={notifPrefs[type.key] !== false && notifPrefs.email_all !== false} onclick={() => toggleNotif(type.key)} disabled={notifPrefs.email_all === false} aria-label="Toggle {type.label}">
+							<button class="toggle" class:on={notifPrefs[type.key] !== false && notifPrefs[MASTER_PREF] !== false} onclick={() => toggleNotif(type.key)} disabled={notifSaving || notifPrefs[MASTER_PREF] === false} aria-label="Toggle {type.label}">
 								<span class="toggle-thumb"></span>
 							</button>
 						</div>
@@ -509,6 +571,9 @@
 
 				{#if notifSaving}
 					<p class="notif-saving">Saving...</p>
+				{/if}
+				{#if notifError}
+					<div class="password-msg error notif-error" role="alert">{notifError}</div>
 				{/if}
 			{/if}
 		</section>
@@ -698,6 +763,9 @@
 		background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3);
 		color: var(--accent-emerald);
 	}
+	/* A change of avatar or of a mail switch that was not saved, under the control. */
+	.avatar-error { margin: 0; max-width: 180px; font-size: 0.72rem; text-align: center; }
+	.notif-error { margin: var(--space-sm) 0 0; }
 
 	.password-actions {
 		display: flex; align-items: center; justify-content: space-between;

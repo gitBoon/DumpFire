@@ -155,12 +155,30 @@ describe('POST /api/boards', () => {
 						.from(boardMembers)
 						.all()
 				).toEqual([{ boardId: made[0].id, userId: owner.id, role: 'owner' }]);
+				// The entry `POST /api/v1/boards` writes, from the page (card 2143).
+				expect(entries()).toEqual([
+					{
+						boardId: made[0].id,
+						cardId: null,
+						userId: owner.id,
+						action: 'board_created',
+						detail: 'Created board "Roadmap"',
+						source: 'ui'
+					}
+				]);
 			}
 		});
 
 		// A failure at the second of these used to leave a board with no columns,
-		// and at the third a board with no member who owned it.
-		expect(shape(run.writes)).toEqual(['insert into boards', 'insert into columns', 'insert into board_members']);
+		// and at the third a board with no member who owned it. The fourth, the
+		// entry, was not written (card 2143).
+		expect(shape(run.writes)).toEqual([
+			'insert into boards',
+			'insert into columns',
+			'insert into board_members',
+			'insert into activity_log'
+		]);
+		// A top-level board: no page but its maker's has anything to show.
 		expect(run.effects).toEqual([]);
 	});
 

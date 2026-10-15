@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.10
+version: 1.12
 status: As-Built
 date: 2026-10-15
 tags:
@@ -241,7 +241,23 @@ It also fails if `notifications.ts` exports a mail it has no case for.
 
 ### User Notification Preferences
 
-Stored as JSON in `users.notification_prefs`. Each user can toggle individual notification types.
+Stored as JSON in `users.notification_prefs`. Each user can toggle individual notification types, on My Account under **Email Notifications**.
+
+There is one list of them, `NOTIFICATION_PREFS` in `src/lib/notification-prefs.ts`, a module with no server imports (card 2146). The account page draws its switches from it, `GET` and `PUT /api/account/notifications` make their defaults and their save from it (`defaultPrefs()`, every key on), and `shouldNotifyUser()` and `filterRecipientsByPref()` in `notifications.ts` take a key of it as their type, so `npm run check` refuses a mail that reads a key nobody can save. `GET` answers every key, so the page shows what is stored.
+
+| Switch on My Account | Key | Read by |
+|----------------------|-----|---------|
+| All Email Notifications | `email_all` (`MASTER_PREF`) | Every mail below: `false` stops them all, whatever each says. On the page, turning it off turns every switch off, and on turns them all on |
+| Task Assignments | `email_assigned` | User Assigned |
+| Comments | `email_comments` | Comment Added |
+| Mentions | `email_mentions` | User Mentioned |
+| Card Moves | `email_moved` | Card Moved, and Unblocked |
+| Task Requests | `email_requests` | Task Request, Conversation Message |
+| Request Progress | `email_request_progress` | The progress mails of [Requester Progress Notifications](#requester-progress-notifications), Request Complete among them, to a requester who has an account. A requester without one has nothing to switch and is always mailed |
+| Board Sharing | `email_board_shared` | Board Shared |
+| Planning | `email_planning` | The mail about a new plan |
+
+Until 2026-10-15 the page, the route and the mail kept three lists. The route's left out `email_request_progress` and `email_mentions`, so it neither answered nor saved them: the page offered Request Progress, whose switch went back on at every reload, and the progress mail was always sent; and the mention mail read `email_mentions`, which nothing offered, so it could be stopped only by switching all mail off. The page now offers **Mentions**, and both keys are saved and answered. No account had either stored, so a requester who switched Request Progress off before then is mailed until they switch it off again. A key not stored, or a preference that cannot be read, is on. A save that is refused, or gets no answer, puts every switch back as it was and says why under them.
 
 ```mermaid
 flowchart TD
@@ -378,8 +394,13 @@ flowchart LR
 
 | Event | Payload | Trigger |
 |-------|---------|---------|
-| `update` | `{type: 'card'}` | Card updated, moved, archived, restored or deleted. A creation carries `action: 'created'`, `cardTitle`, `userName` and `userEmoji`, an accepted request's card among them (card 2108) |
+| `update` | `{type: 'card'}` | Card updated, moved, archived, restored or deleted. A creation carries `action: 'created'`, `cardTitle`, `userName` and `userEmoji`, an accepted request's card among them (card 2108). Someone assigned to a card (also when they already were) or taken off it, and a comment edited, on a page or through the API (card 2143) |
 | `update` | `{type: 'column'}` | Column added, renamed, reordered, deleted |
+| `update` | `{type: 'board'}` | The board updated: renamed, its emoji or dashboard grouping changed, or made public or private, on a page or through the API (card 2143); or put under a card or taken out from under one, which only a page can do (`PUT /api/boards/{id}` with `parentCardId`: `PUT /api/v1/boards/{id}` reads no `parentCardId`). Sent once to the board, and once to each board whose card it joined or left. A request that sent no field sends nothing |
+| `update` | `{type: 'label'}` | A label of the board made, renamed, recoloured or deleted, or put on or taken off one of its cards: on a page (`POST`, `PATCH`, `PUT` and `DELETE /api/labels`), or through the API (`POST /api/v1/boards/{id}/labels`, `PUT` and `DELETE /api/v1/labels/{id}`, `POST` and `DELETE /api/v1/cards/{id}/labels`) |
+| `update` | `{type: 'category'}` | A category of the board made, changed or deleted: on a page (`POST /api/categories`, `PUT` and `DELETE /api/categories/{id}`), or through the API (`POST /api/v1/boards/{id}/categories`, `PUT` and `DELETE /api/v1/categories/{id}`). A shared category, of no board, tells no board |
+| `update` | `{type: 'subtask'}` | A subtask of one of the board's cards made, saved or deleted on a page (`POST /api/subtasks`, `PUT` and `DELETE /api/subtasks/{id}`). The same through the API sends `{type: 'card'}` |
+| `update` | `{type: 'board', action: 'created'}` | A sub-board was made under a card on this board, on a page or through `POST /api/v1/boards` (card 2143). Nothing is sent for a board made at the top level |
 | `update` | `{type: 'board', action: 'deleted'}` | The board was deleted, or was a sub-board deleted with a board, card or column |
 | `update` | `{type: 'board', action: 'sub_board_deleted'}` | A sub-board deleted on its own hung from a card on this board, which is still there |
 | `update` | `{type: 'card', action: 'purged'}` | Archived cards on the board were purged, or the board was a sub-board removed by the purge |
@@ -395,12 +416,19 @@ nothing.
 
 ### Connection Lifecycle
 
-1. Client opens `GET /api/events?boardId={id}` or `GET /api/events?global=true`
+1. A board page opens `GET /api/boards/{id}/events`, for the board it shows; All Tasks, the dashboard and the burndown page open `GET /api/events`, the stream of every board the reader can open. Each is opened through `keepStreamOpen()` (`src/lib/live-stream.ts`)
 2. Server creates SSE stream with `text/event-stream` content type
 3. Server calls `subscribe(boardId, listener)` or `subscribeGlobal(listener)`
 4. On board mutation, server calls `emit(boardId, event, data)`. Inside a transaction the event is held until the commit, and dropped if the transaction rolls back, so a page told to refresh always finds the change there
 5. All subscribed listeners receive the event
 6. On client disconnect, unsubscribe callback cleans up the listener set
+
+A board page listens to the board it shows. SvelteKit keeps a page when only its address's
+board changes, so `src/routes/board/[id]/+layout.svelte` makes the page afresh for each
+board (`{#key page.params.id}`, card 2184): after a sub-board badge, a breadcrumb, a link in
+the card window, or Back and Forward to another board, the first board's stream is closed as
+its page is destroyed and the second board's opened as its page mounts. A link to a card on
+the same board (`?card=`) keeps the page and its stream.
 
 The global stream carries card titles and who did what on every board, so a subscriber
 is only sent events from boards they can view. The check is made per event and cached
@@ -513,8 +541,10 @@ What is not sent:
 |------|---------|
 | `src/lib/server/email.ts` | SMTP config, transporter creation, sendEmail |
 | `src/lib/server/notifications.ts` | All email notification functions with preference filtering |
+| `src/lib/notification-prefs.ts` | The one list of mail preferences: `MASTER_PREF`, `NOTIFICATION_PREFS`, `defaultPrefs()`. Read by the account page, the preferences route and the mail alike (card 2146) |
 | `src/lib/escape-html.ts` | `escapeHtml()`: the one function every mail puts its texts and links through |
 | `src/lib/server/events.ts` | SSE event emitter with board and global subscriptions |
+| `src/lib/board/sse.ts`, `src/routes/board/[id]/+layout.svelte` | The board page's stream, opened as the page mounts and closed as it goes; the layout makes the page afresh for each board, so the stream follows the board shown (card 2184) |
 | `src/lib/server/webhooks.ts` | Webhook dispatch on board events |
 | `src/lib/server/logActivity.ts` | Writes the activity entry and queues the webhook for it |
 | `src/lib/server/db/transaction.ts` | `afterCommit()`: holds every notification until the write it reports is committed |

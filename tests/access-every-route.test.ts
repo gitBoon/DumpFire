@@ -2688,7 +2688,7 @@ describe('linking a board under a card, PUT /api/boards/[id] with parentCardId',
 		expect(told()).toEqual(sorted([w.A.board.id, Q.board.id]));
 	});
 
-	it('leaves the card it hangs under alone when that is sent back, by an editor too, and tells nobody', async () => {
+	it('leaves the card it hangs under alone when that is sent back, by an editor too, and tells no board it did not leave or join', async () => {
 		const P = parentBoard('P');
 		db.update(boards).set({ parentCardId: P.card.id }).where(eq(boards.id, w.A.board.id)).run();
 
@@ -2697,7 +2697,8 @@ describe('linking a board under a card, PUT /api/boards/[id] with parentCardId',
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(boardA()).toMatchObject({ name: 'Renamed by an editor', parentCardId: P.card.id });
-		expect(sent.events).toEqual([]);
+		// The board itself is told of the rename, once (card 2143), and P is not.
+		expect(sent.events.map((event) => event.boardId)).toEqual([w.A.board.id]);
 	});
 
 	it('lets a member shared as Owner link it, and offers it to them', async () => {

@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 
-	let { value = '📋', onSelect }: { value?: string; onSelect: (emoji: string) => void } = $props();
+	// `disabled` while what the last choice started is on its way (the account
+	// page's avatar): the button does not open the picker.
+	let { value = '📋', onSelect, disabled = false }: { value?: string; onSelect: (emoji: string) => void; disabled?: boolean } = $props();
 
 	let showPicker = $state(false);
 	let activeCategory = $state('Smileys');
@@ -60,7 +62,7 @@
 </script>
 
 <div class="emoji-picker-container">
-	<button class="emoji-trigger" bind:this={triggerEl} onclick={togglePicker} type="button">
+	<button class="emoji-trigger" bind:this={triggerEl} onclick={togglePicker} type="button" {disabled}>
 		<span class="emoji-preview">{value}</span>
 		<svg width="10" height="10" viewBox="0 0 10 10" fill="none">
 			<path d="M2 4l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -100,6 +102,7 @@
 		transition: all var(--duration-fast) var(--ease-out);
 	}
 	.emoji-trigger:hover { background: var(--glass-hover); border-color: var(--accent-indigo); }
+	.emoji-trigger:disabled { opacity: 0.6; cursor: progress; }
 	.emoji-trigger svg { color: var(--text-tertiary); }
 	.emoji-preview { line-height: 1; }
 

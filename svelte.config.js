@@ -36,7 +36,12 @@ const config = {
 		// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
 		// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
 		// See https://svelte.dev/docs/kit/adapters for more information about adapters.
-		adapter: adapter()
+		adapter: adapter(),
+		// An open page asks once a minute whether a new version has been deployed
+		// (/_app/version.json, served before the gate), and the root layout says
+		// so when one has (card 2167). With no interval a page never asked, so a
+		// tab left open across a deploy ran the old scripts until reloaded by hand.
+		version: { pollInterval: 60_000 }
 	}
 };
 

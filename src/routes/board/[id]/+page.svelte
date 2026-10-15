@@ -13,8 +13,9 @@
 	 *   - sse.ts           (Server-Sent Events connection)
 	 */
 	import type { PageData } from './$types';
-	import { invalidateAll } from '$app/navigation';
-	import { onMount, onDestroy } from 'svelte';
+	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
+	// Svelte's `tick` under another name: the page has a `tick` of its own, the live timestamps' counter.
+	import { onMount, onDestroy, tick as nextTick } from 'svelte';
 	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
 	import { dndzone } from 'svelte-dnd-action';
@@ -31,6 +32,7 @@
 	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, isStale, isNew } from '$lib/utils/date-utils';
 	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel } from '$lib/utils/card-utils';
 	import { isCoverValue } from '$lib/colours';
+	import { activityLabel } from '$lib/utils/activity-labels';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	// Board-specific modules
@@ -219,20 +221,52 @@
 	let editingCard = $state<CardType | null>(null);
 	let cardModalColumnId = $state<number | null>(null);
 
-	onMount(() => {
-		const targetCardId = $page.url.searchParams.get('card');
-		if (targetCardId) {
-			const cid = parseInt(targetCardId, 10);
-			const card = boardColumns.flatMap(c => c.cards).find(c => c.id === cid);
-			if (card) {
-				// Strip query param from URL without reloading
-				const newUrl = new URL($page.url);
-				newUrl.searchParams.delete('card');
-				window.history.replaceState({}, '', newUrl.toString());
-				openCardModal(card);
-			}
+	// The card an address names is opened on the first load and after every
+	// navigation that keeps this page: SvelteKit keeps it for every address of
+	// the route, so a dependency link to a card on this board, or on another,
+	// opened no card when it was read in `onMount` alone (card 2164). A window
+	// open before it is closed first when the navigation is to another board,
+	// or, on this board, leaves a saved card's window with an address that
+	// names no card, as Back does (Q-F's review).
+	afterNavigate(({ from, to }) => {
+		if (cardActions.navigationClosesWindow(from, to, editingCard !== null)) {
+			showCardModal = false;
+			editingCard = null;
 		}
+		openCardFromAddress(to?.url);
 	});
+
+	/**
+	 * Opens the card `?card=` names, if it is on the board now shown, and takes
+	 * the parameter off the address.
+	 *
+	 * The card is looked for in `data.columns`, which SvelteKit has set before
+	 * it calls `afterNavigate`: after a link to another board they are that
+	 * board's, and `boardColumns` is filled from them only by an `$effect`. A
+	 * window already open is closed first, and the card opened after the next
+	 * tick: the window fills its fields from its card once, when it is made, and
+	 * would otherwise show the first card's fields under the second's id. What
+	 * was typed in it and not saved is lost, as it is when a link leads to
+	 * another page.
+	 *
+	 * The address is put right with SvelteKit's `replaceState`, after that tick:
+	 * on the first load `afterNavigate` runs before the router counts itself
+	 * started, and until then it throws. `window.history.replaceState` threw
+	 * away SvelteKit's own state in the history entry.
+	 */
+	async function openCardFromAddress(url: URL | undefined) {
+		const named = url?.searchParams.get('card');
+		if (!url || !named) return;
+		const cardId = Number(named);
+		const card = (data.columns as unknown as ColumnType[]).flatMap((c) => c.cards).find((c) => c.id === cardId);
+		showCardModal = false;
+		editingCard = null;
+		await nextTick();
+		const shown = new URL(url);
+		shown.searchParams.delete('card');
+		replaceState(shown, $page.state);
+		if (card) openCardModal(card);
+	}
 
 	function openCardModal(card: CardType) {
 		editingCard = card;
@@ -246,11 +280,27 @@
 		showCardModal = true;
 	}
 
-	async function saveCard(cardData: { title: string; description: string; priority: string; colorTag: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[] }) {
+	async function saveCard(cardData: { title: string; description: string; priority: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[]; pendingLabelIds?: number[] }) {
+		const started = toasts.navigation();
 		const result = await cardActions.saveCard(editingCard, cardModalColumnId, data.board.id, boardColumns, cardData);
+		if (result.failure) {
+			// No card was made: the window stays open with what was typed, and
+			// the reason is said. It used to say "Created".
+			toasts.add(result.failure, 'error', started);
+			return;
+		}
 		showCardModal = false;
 		if (result.isNew && cardData.title) {
 			toasts.add(`Created "${cardData.title}"`);
+
+			// A label of its template that was not put on it (card 2163): the card is kept.
+			// A label deleted while the window was open is no longer among the
+			// board's, and is not named by its number, which says nothing.
+			for (const { labelId, message } of result.labelFailures ?? []) {
+				const label = boardLabels.find((label) => label.id === labelId);
+				const named = label ? `The template's label "${label.name}"` : 'A label of the template that no longer exists';
+				toasts.add(`${named} was not put on "${cardData.title}". ${message}`, 'error', started);
+			}
 
 			// Assign pending users to the newly created card
 			if (result.cardId && cardData.pendingAssigneeIds?.length) {
@@ -842,6 +892,11 @@
 
 	let cleanupSSE: (() => void) | null = null;
 
+	// The live stream is this page's, opened as it mounts and closed as it is
+	// destroyed. `./+layout.svelte` makes the page afresh for each board, so a
+	// link to another board, or Back to one, closes the first board's stream
+	// and opens the second's (card 2184); a `?card=` link on this board keeps
+	// the page and its stream.
 	onMount(() => {
 		refreshXp();
 		tickInterval = setInterval(() => { tick++; }, 15000);
@@ -1434,7 +1489,8 @@
 					<div class="activity-item">
 						<span class="activity-emoji">{activity.userEmoji}</span>
 						<div class="activity-info">
-							<span class="activity-action">{activity.action.replace('api:', '').replace(/_/g, ' ')}</span>
+							<!-- All Tasks' words, from one table (card 2212). -->
+							<span class="activity-action">{activityLabel(activity.action)}</span>
 							<span class="activity-detail">{activity.detail}</span>
 							<span class="activity-time">{new Date(activity.createdAt + 'Z').toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · {activity.userName}</span>
 						</div>
@@ -1705,7 +1761,7 @@
 	.activity-item:hover { background: var(--glass-bg); }
 	.activity-emoji { font-size: 1.2rem; flex-shrink: 0; }
 	.activity-info { display: flex; flex-direction: column; min-width: 0; }
-	.activity-action { font-weight: 600; font-size: 0.78rem; text-transform: capitalize; }
+	.activity-action { font-weight: 600; font-size: 0.78rem; }
 	.activity-detail { font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 	.activity-time { font-size: 0.65rem; color: var(--text-tertiary); }
 	.panel-empty { color: var(--text-tertiary); text-align: center; padding: var(--space-xl); font-size: 0.85rem; }
