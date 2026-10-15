@@ -25,10 +25,11 @@ import {
 import type { SessionUser } from '$lib/server/auth';
 import { columnRole, firstOpenColumn, isCompleteColumnTitle, isHoldColumnTitle } from '$lib/column-role';
 import { isCompleteColumn, isOnHoldColumn } from '$lib/utils/card-utils';
-import { isCompleteColumnTitle as serverIsComplete } from '$lib/server/card-completion';
+import { getCompletionBlocker, isCompleteColumnTitle as serverIsComplete } from '$lib/server/card-completion';
 import { duplicateCard } from '$lib/board/card-actions';
 import type { CardType, ColumnType } from '$lib/types';
 import { api } from './helpers/api';
+import { pageLoad } from './helpers/actions';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects, type RecordedEffect } from './helpers/effects';
 import {
@@ -1162,5 +1163,175 @@ describe('the browser no longer writes activity entries', () => {
 		await expect(
 			api('POST', '/api/activity', { user: owner, body: { boardId: A.board.id, action: 'card_completed' } })
 		).rejects.toThrow(/does not export POST/);
+	});
+});
+
+/**
+ * An archived card on a sub-board is not live work (card 2205). The completion
+ * check counted it, so a card whose sub-board held one archived card in To Do
+ * could not be completed by any route, and the board page counted it in the
+ * sub-board's figures while the dashboard, the card context and the sub-board's
+ * own page left it out. Now one helper, `subBoardProgress`, gives every one of
+ * them the same figures: the cards that are not archived, and of them those in
+ * a Complete column.
+ */
+describe('archived cards on a sub-board (card 2205)', () => {
+	const ARCHIVED = '2026-10-01T00:00:00.000Z';
+	let editor: SessionUser;
+	let parent: Card;
+	let S: ReturnType<typeof makeSubBoard>;
+	let archivedOpen: Card;
+
+	// The world of the plan's probe: Parent in To Do on A, and under it S, with
+	// one card in Complete, one archived card in To Do and one archived card in
+	// Complete. S was made by the owner, so an editor of A cannot open it.
+	beforeEach(() => {
+		editor = makeUser({ username: 'editor' });
+		addBoardMember(A.board, editor, 'editor');
+		parent = makeCard(A.cols['To Do'], { title: 'Parent' });
+		S = makeSubBoard(parent, { owner, name: 'S', cards: { Complete: 1 } });
+		archivedOpen = makeCard(S.cols['To Do'], { archivedAt: ARCHIVED });
+		makeCard(S.cols['Complete'], { archivedAt: ARCHIVED });
+	});
+
+	type Figures = { done: number; total: number };
+	const cardsOnA = async (user: SessionUser): Promise<any[]> => {
+		const res = await pageLoad(`/board/${A.board.id}`, { user });
+		expect(res.type).toBe('data');
+		return ((res as { data: any }).data.columns as any[]).flatMap((col) => col.cards);
+	};
+	const parentOn = async (user: SessionUser) => (await cardsOnA(user)).find((card) => card.id === parent.id);
+	const figuresOf = (sb: Figures) => ({ done: sb.done, total: sb.total });
+	const ofS = (subBoards: { id: number }[]) => subBoards.find((sb) => sb.id === S.board.id) as Figures & { id: number };
+
+	/** S's figures on the board page's card, in the card context and on the dashboard's tile. */
+	async function figuresEverywhere(): Promise<Record<string, Figures>> {
+		const context = await api('GET', `/api/cards/${parent.id}/context`, { user: owner });
+		expect(context.status).toBe(200);
+		const dashboard = await pageLoad('/', { user: owner });
+		expect(dashboard.type).toBe('data');
+		const tile = ((dashboard as { data: any }).data.boards as any[]).find((board) => board.id === A.board.id);
+		return {
+			'board page': figuresOf(ofS((await parentOn(owner)).subBoards)),
+			'card context': figuresOf(ofS(context.body.card.subBoards)),
+			'dashboard tile': figuresOf(ofS(tile.subBoards))
+		};
+	}
+	const same = (figures: Figures) => ({ 'board page': figures, 'card context': figures, 'dashboard tile': figures });
+
+	describe.each(routes)('by $name', ({ move }) => {
+		it('completes a card held back only by an archived card', async () => {
+			const res = await move(parent, A.cols['Complete'], owner);
+
+			expect(res.status).toBe(200);
+			const row = cardRow(parent.id);
+			expect(row.columnId).toBe(A.cols['Complete'].id);
+			expect(row.completedAt).not.toBeNull();
+			expect(xpOf(owner)).toBe(100);
+		});
+
+		it('still refuses it for a live open card, counting that card alone', async () => {
+			makeCard(S.cols['To Do']);
+			const before = snapshotDb();
+
+			const res = await move(parent, A.cols['Complete'], owner);
+
+			expect(res.status).toBe(409);
+			expect(res.body.message).toBe('Sub-board "S" has 1 incomplete card that must be completed first');
+			expectUnchanged(before);
+		});
+	});
+
+	it('gives the same figures in every place: the card in Complete, and neither archived card', async () => {
+		expect(await figuresEverywhere()).toEqual(same({ done: 1, total: 1 }));
+	});
+
+	it('counts a live open card in every place, alike', async () => {
+		makeCard(S.cols['To Do']);
+
+		expect(await figuresEverywhere()).toEqual(same({ done: 1, total: 2 }));
+	});
+
+	it('leaves archived cards out of the count on a sub-board the caller cannot open, so the drop is taken', async () => {
+		const drop = () => routes[0].move(parent, A.cols['Complete'], editor);
+		const live = makeCard(S.cols['To Do']);
+
+		// A live open card: counted, with no name, and the drop refused.
+		const shown = await parentOn(editor);
+		expect(shown.subBoards).toEqual([]);
+		expect(shown.hiddenOpenCount).toBe(1);
+		expect((await drop()).status).toBe(409);
+
+		// Archived, it holds nothing back.
+		db.update(cards).set({ archivedAt: ARCHIVED }).where(eq(cards.id, live.id)).run();
+		expect((await parentOn(editor)).hiddenOpenCount).toBe(0);
+		expect((await drop()).status).toBe(200);
+		expect(cardRow(parent.id).completedAt).not.toBeNull();
+	});
+
+	it('holds nothing back with a sub-board of archived cards only, which reads 0 of 0', async () => {
+		const other = makeCard(A.cols['To Do'], { title: 'Other' });
+		const T = makeSubBoard(other, { owner, name: 'T', cards: {} });
+		makeCard(T.cols['To Do'], { archivedAt: ARCHIVED });
+
+		expect(getCompletionBlocker(other.id)).toBeNull();
+		const shown = (await cardsOnA(owner)).find((card) => card.id === other.id);
+		expect(shown.subBoards.map(figuresOf)).toEqual([{ done: 0, total: 0 }]);
+	});
+
+	it('leaves a completed card complete when an archived card under it is restored', async () => {
+		expect((await routes[2].move(parent, A.cols['Complete'], owner)).status).toBe(200);
+		const completedAt = cardRow(parent.id).completedAt;
+		expect(completedAt).not.toBeNull();
+
+		const res = await api('POST', `/api/cards/${archivedOpen.id}/restore`, { user: owner });
+
+		expect(res.status).toBe(200);
+		expect(cardRow(archivedOpen.id).archivedAt).toBeNull();
+		const row = cardRow(parent.id);
+		expect(row.columnId).toBe(A.cols['Complete'].id);
+		expect(row.completedAt).toBe(completedAt);
+		expect(await figuresEverywhere()).toEqual(same({ done: 1, total: 2 }));
+	});
+
+	it('leaves the rename refusal counting archived cards, which a restore would put back', async () => {
+		// S's Complete column with nothing in it but archived cards.
+		db.update(cards).set({ archivedAt: ARCHIVED }).where(eq(cards.id, S.cards[0].id)).run();
+
+		const res = await api('PUT', `/api/columns/${S.cols['Complete'].id}`, { user: owner, body: { title: 'Shipped' } });
+
+		expect(res.status).toBe(409);
+		expect(res.body.message).toMatch(/^This column holds 2 cards, all of them archived\./);
+	});
+
+	it('is counted by one helper, which every reader calls and none repeats', () => {
+		const read = (file: string) => readFileSync(join(process.cwd(), file), 'utf8');
+		// A function's source, from its declaration to the next export.
+		const bodyOf = (source: string, name: string) => {
+			const start = source.indexOf(`export function ${name}(`);
+			expect(start, name).toBeGreaterThan(-1);
+			const end = source.indexOf('\nexport ', start + 1);
+			return source.slice(start, end === -1 ? undefined : end);
+		};
+		const completion = read('src/lib/server/card-completion.ts');
+		const access = read('src/lib/server/list-access.ts');
+		const readers: Record<string, string> = {
+			getCompletionBlocker: bodyOf(completion, 'getCompletionBlocker'),
+			hiddenOpenCountsFor: bodyOf(access, 'hiddenOpenCountsFor'),
+			'the board page': read('src/routes/board/[id]/+page.server.ts'),
+			'the card context': read('src/routes/api/cards/[id]/context/+server.ts'),
+			'the dashboard': read('src/routes/+page.server.ts')
+		};
+
+		expect(completion).toContain('export function subBoardProgress(');
+		for (const [name, source] of Object.entries(readers)) {
+			expect(source, name).toContain('subBoardProgress(');
+			// None reads a sub-board's columns for itself.
+			expect(source, name).not.toMatch(/eq\(columns\.boardId,\s*sb\.id\)/);
+		}
+		// The two server checks read no card or column at all: the helper does.
+		for (const name of ['getCompletionBlocker', 'hiddenOpenCountsFor']) {
+			expect(readers[name], name).not.toMatch(/\.from\((cards|columns)\)/);
+		}
 	});
 });

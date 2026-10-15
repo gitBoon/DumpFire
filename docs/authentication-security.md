@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.25
+version: 1.26
 status: As-Built
 date: 2026-10-15
 tags:
@@ -1327,7 +1327,13 @@ was an empty list.
   the page did not stop is shown in the server's words, which name the sub-board until card
   2151 is done, and the card is put back. Someone given a
   sub-board but not the board above it sees that board in the breadcrumbs as "🔒 A board
-  you cannot open", with no link.
+  you cannot open", with no link. An archived card on a sub-board is not counted, in the
+  refusal or in any sub-board's progress (card 2205): a card held back only by archived
+  cards can now be completed, by any route, and the board page's sub-board figures, on the
+  card and in its window, show what the dashboard and the plan page already showed: a
+  sub-board with one card in Complete, one archived card in To Do and one archived card in
+  Complete reads 1/1 where the board page read 2/3. A card already complete stays complete
+  when an archived card under it is restored.
 - **"Link existing board"** offers only boards the user owns, so only boards they can open.
 - **Deleting a board deletes its card categories**, and its sub-boards'. A card on another
   board that was filed under one has no category afterwards. They used to stay as shared

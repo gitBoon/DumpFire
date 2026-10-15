@@ -8,7 +8,7 @@ import { getCardTokenTotals, getBoardTokenTotals } from '$lib/server/tokens';
 import { milestonesForBoard } from '$lib/server/milestones';
 import { linkableBoards } from '$lib/server/sub-boards';
 import { cardCategoriesFor, hiddenOpenCountsFor, subBoardsFor } from '$lib/server/list-access';
-import { completeColumnIds } from '$lib/column-role';
+import { subBoardProgress } from '$lib/server/card-completion';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, locals }) => {
@@ -113,20 +113,15 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	// open (card 2130). One they were never given is not on its card.
 	const subBoards = subBoardsFor(user, cardIds);
 
-	// Build a map of cardId -> sub-boards (supports multiple per card)
+	// Build a map of cardId -> sub-boards (supports multiple per card), each
+	// with its progress as the completion check counts it: archived cards left
+	// out, as the dashboard and the card context leave them out (card 2205).
 	type SubBoardInfo = { id: number; name: string; emoji: string; done: number; total: number };
 	const subBoardMap = new Map<number, SubBoardInfo[]>();
+	const progress = subBoardProgress(subBoards.map((sb) => sb.id));
 	for (const sb of subBoards) {
 		if (!sb.parentCardId) continue;
-		const sbCols = db.select().from(columns).where(eq(columns.boardId, sb.id)).all();
-		const sbColIds = sbCols.map(c => c.id);
-		let done = 0, total = 0;
-		if (sbColIds.length > 0) {
-			const sbCards = db.select().from(cards).where(inArray(cards.columnId, sbColIds)).all();
-			total = sbCards.length;
-			const completeColIds = completeColumnIds(sbCols);
-			done = sbCards.filter(c => completeColIds.has(c.columnId)).length;
-		}
+		const { done, total } = progress.get(sb.id)!;
 		const entry: SubBoardInfo = { id: sb.id, name: sb.name, emoji: sb.emoji || '🗂️', done, total };
 		const existing = subBoardMap.get(sb.parentCardId) || [];
 		existing.push(entry);

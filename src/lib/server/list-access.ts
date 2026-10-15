@@ -12,9 +12,7 @@ import {
 	activityLog,
 	boardCategories,
 	boards,
-	cards,
 	categories,
-	columns,
 	teamMembers,
 	teams,
 	users,
@@ -25,7 +23,7 @@ import {
 	type Team
 } from './db/schema';
 import { getAccessibleBoardIds, isAdmin, type Actor } from './board-access';
-import { completeColumnIds } from '$lib/column-role';
+import { subBoardProgress } from './card-completion';
 
 /**
  * The caller's own entries in the activity log, newest first, on the boards
@@ -254,10 +252,10 @@ export function subBoardsFor(user: Actor, parentCardIds?: number[]): Board[] {
  *
  * `subBoardsFor` leaves such a sub-board off its card, but the server still
  * refuses to complete the card while it has open cards
- * (`getCompletionBlocker`, which counts them as this does: every card on the
- * sub-board's own columns that is not in a complete one). The board page
- * asks this before a drop onto Complete, so that it does not show the card
- * as done and then have it refused.
+ * (`getCompletionBlocker`). Both count through `subBoardProgress`: every card
+ * on the sub-board's own columns that is not archived and not in a complete
+ * one (card 2205). The board page asks this before a drop onto Complete, so
+ * that it does not show the card as done and then have it refused.
  */
 export function hiddenOpenCountsFor(user: Actor, parentCardIds: number[]): Map<number, number> {
 	const counts = new Map<number, number>();
@@ -270,16 +268,10 @@ export function hiddenOpenCountsFor(user: Actor, parentCardIds: number[]): Map<n
 		.from(boards)
 		.where(and(inArray(boards.parentCardId, parentCardIds), open.length > 0 ? notInArray(boards.id, open) : undefined))
 		.all();
+	const progress = subBoardProgress(hidden.map((sb) => sb.id));
 	for (const sb of hidden) {
-		const cols = db.select({ id: columns.id, title: columns.title }).from(columns).where(eq(columns.boardId, sb.id)).all();
-		if (cols.length === 0) continue;
-		const complete = completeColumnIds(cols);
-		const notDone = db
-			.select({ columnId: cards.columnId })
-			.from(cards)
-			.where(inArray(cards.columnId, cols.map((c) => c.id)))
-			.all()
-			.filter((card) => !complete.has(card.columnId)).length;
+		const { done, total } = progress.get(sb.id)!;
+		const notDone = total - done;
 		if (notDone > 0) counts.set(sb.parentCardId!, (counts.get(sb.parentCardId!) ?? 0) + notDone);
 	}
 	return counts;

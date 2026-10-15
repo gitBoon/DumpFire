@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.18
+version: 1.19
 status: As-Built
 date: 2026-10-15
 tags:
@@ -818,6 +818,30 @@ sequenceDiagram
 savepoint. A drop of several cards is therefore one transaction: if the last card cannot be
 completed, the earlier ones are rolled back with it and nothing is announced for any of them.
 A failure to write an "Unblocked" notice fails the move it belongs to in the same way.
+
+The check for open subtasks and sub-boards is `getCompletionBlocker()` in
+`src/lib/server/card-completion.ts`. A sub-board holds its card back while it has a card that
+is not archived and not in a Complete column; an archived card is not live work and holds
+nothing back (card 2205). It reads each sub-board's figures from `subBoardProgress(boardIds)`
+beside it, one query giving `{ done, total }` for every board asked: `total` the cards on
+the board's own columns that are not archived, `done` those of them in a Complete column, and
+0 of 0 for a board with no columns or no cards. The board page, the card context, the
+dashboard's tiles and `hiddenOpenCountsFor()` (the open cards on the sub-boards a caller
+cannot open) read the same helper, so every page shows the figures the server refuses a
+completion on. A card already complete stays complete when an archived card under it is
+restored, as it does when a card is added to its sub-board. `completionRoleRefusal()`, which
+refuses a column rename that changes its role, still counts archived cards: a restore would
+put them back in the column.
+
+```mermaid
+flowchart LR
+    Help["subBoardProgress(boardIds)<br/>cards not archived, by column<br/>done = in a Complete column"]
+    Help --> Check["getCompletionBlocker()<br/>409 while total - done is above 0"]
+    Help --> Hidden["hiddenOpenCountsFor()<br/>hiddenOpenCount on the board page"]
+    Help --> Board["Board page load<br/>a card's subBoards"]
+    Help --> Context["GET /api/cards/:id/context<br/>card.subBoards"]
+    Help --> Dash["Dashboard load<br/>a tile's subBoards"]
+```
 
 A card's sub-boards go with it, so a move to another board is refused, `409`
 `Card "<title>" cannot go onto "<board>", which hangs beneath it`, when the target board is
