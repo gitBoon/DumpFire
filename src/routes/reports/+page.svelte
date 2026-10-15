@@ -10,6 +10,9 @@
 	import { theme } from '$lib/stores/theme';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import { page } from '$app/stores';
+	import { deleteFailure, failureMessage } from '$lib/api';
+	import Toast from '$lib/components/Toast.svelte';
+	import { toasts } from '$lib/stores/toast';
 
 	let { data }: { data: PageData } = $props();
 	let currentTheme = $state('light');
@@ -156,8 +159,11 @@
 				})
 			});
 			if (!res.ok) {
-				const err = await res.json();
-				genError = err.error || 'Failed to generate report';
+				// The server's own message if the answer carries one. An answer
+				// that is not JSON, a proxy's error page among them, gets the
+				// plain one: read with a bare `res.json()` it showed the reader
+				// a parser error.
+				genError = await failureMessage(res, 'Failed to generate report');
 			} else {
 				const blob = await res.blob();
 				pdfUrl = URL.createObjectURL(blob);
@@ -217,12 +223,30 @@
 					assigneeUserId: genAssignee === 'all' ? null : Number(genAssignee)
 				})
 			});
-			const data = await res.json();
 			if (res.ok) {
-				emailResult = { message: data.message, type: 'success' };
-				setTimeout(() => { showEmailModal = false; emailResult = null; emailRecipients = ''; }, 2500);
+				const data = await res.json();
+				// A report that reached some recipients and not others is answered
+				// 200, with each one's result (card 2113). It is shown as a failure
+				// and the dialog stays open, with only the addresses not reached left
+				// in the box: sending again goes to those, and not a second time to
+				// everyone who has it.
+				const notSent: string[] = Array.isArray(data.results)
+					? data.results.filter((r: { success?: unknown }) => r?.success === false).map((r: { email: string }) => r.email)
+					: [];
+				if (notSent.length > 0) {
+					emailRecipients = notSent.join(', ');
+					emailResult = {
+						message: `${data.message} Only ${notSent.length === 1 ? 'the address' : 'the addresses'} not reached ${notSent.length === 1 ? 'is' : 'are'} left in the box, to send to again.`,
+						type: 'error'
+					};
+				} else {
+					emailResult = { message: data.message, type: 'success' };
+					setTimeout(() => { showEmailModal = false; emailResult = null; emailRecipients = ''; }, 2500);
+				}
 			} else {
-				emailResult = { message: data.error || 'Failed to send', type: 'error' };
+				// As for the report above: the body of a failure is read as JSON
+				// only by failureMessage, which has a plain text for one that is not.
+				emailResult = { message: await failureMessage(res, 'Failed to send'), type: 'error' };
 			}
 		} catch (e: any) {
 			emailResult = { message: e.message || 'Failed to send', type: 'error' };
@@ -251,43 +275,86 @@
 		schedTarget === 'all' ? null : schedTarget.startsWith('cat:') ? Number(schedTarget.slice(4)) : Number(schedTarget)
 	);
 
+	// The three say what the server said when it is refused. They used to say
+	// nothing, and creating one closed the form and emptied it as if it had
+	// been saved.
+
 	async function createSchedule() {
 		schedCreating = true;
-		await fetch('/api/report-schedules', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				name: schedName || 'Scheduled Report',
-				scope: schedScope,
-				scopeId: schedScopeId,
-				frequency: schedFrequency,
-				dayOfWeek: schedDayOfWeek,
-				dayOfMonth: schedDayOfMonth,
-				timeOfDay: schedTime,
-				recipients: schedRecipients,
-				periodDays: schedPeriodDays,
-				detailLevel: schedDetailLevel,
-				statusFilter: schedStatusFilter
-			})
-		});
-		showNewSchedule = false;
-		schedName = '';
-		schedRecipients = '';
-		await invalidateAll();
-		schedCreating = false;
+		const started = toasts.navigation();
+		try {
+			let res: Response;
+			try {
+				res = await fetch('/api/report-schedules', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					// The name trimmed, as the server trims it: one of spaces alone is
+					// refused. The recipients in the one form a schedule holds, addresses
+					// separated by commas: a line or a `;` between two, which this box
+					// takes as the email dialog does, is refused (card 2117).
+					body: JSON.stringify({
+						name: schedName.trim() || 'Scheduled Report',
+						scope: schedScope,
+						scopeId: schedScopeId,
+						frequency: schedFrequency,
+						dayOfWeek: schedDayOfWeek,
+						dayOfMonth: schedDayOfMonth,
+						timeOfDay: schedTime,
+						recipients: schedRecipients
+							.split(/[,;\n]/)
+							.map((e) => e.trim())
+							.filter((e) => e.length > 0)
+							.join(', '),
+						periodDays: schedPeriodDays,
+						detailLevel: schedDetailLevel,
+						statusFilter: schedStatusFilter
+					})
+				});
+			} catch {
+				toasts.add('No answer from the server. The schedule may not have been created.', 'error', started);
+				return;
+			}
+			if (!res.ok) {
+				// The form stays as it was filled in, to be put right and sent again.
+				toasts.add(await failureMessage(res, 'The schedule was not created.'), 'error', started);
+				return;
+			}
+			showNewSchedule = false;
+			schedName = '';
+			schedRecipients = '';
+			await invalidateAll();
+		} finally {
+			schedCreating = false;
+		}
 	}
 
 	async function toggleSchedule(scheduleId: number, enabled: boolean) {
-		await fetch(`/api/report-schedules/${scheduleId}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ enabled })
-		});
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = await fetch(`/api/report-schedules/${scheduleId}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ enabled })
+			});
+		} catch {
+			toasts.add('No answer from the server. The schedule may not have been changed.', 'error', started);
+			return;
+		}
+		if (!res.ok) {
+			toasts.add(await failureMessage(res, 'The schedule was not changed.'), 'error', started);
+			return;
+		}
 		await invalidateAll();
 	}
 
 	async function deleteSchedule(scheduleId: number) {
-		await fetch(`/api/report-schedules/${scheduleId}`, { method: 'DELETE' });
+		const started = toasts.navigation();
+		const failure = await deleteFailure(() => fetch(`/api/report-schedules/${scheduleId}`, { method: 'DELETE' }), 'schedule');
+		if (failure) {
+			toasts.add(failure, 'error', started);
+			return;
+		}
 		await invalidateAll();
 	}
 
@@ -702,6 +769,8 @@
 	</div>
 </div>
 {/if}
+
+<Toast />
 
 <style>
 	.reports-page {

@@ -1,47 +1,61 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { webhooks, boards } from '$lib/server/db/schema';
+import { webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { canEditBoard, canViewBoard } from '$lib/server/board-access';
+import { inTransaction } from '$lib/server/db/transaction';
+import { pathId, readBody, readChoices, readText, readUrl } from '$lib/server/request-body';
+import { requireBoard, requireUser } from '$lib/server/route-guards';
+import { canSeeWebhookSecret, presentWebhook, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import type { RequestHandler } from './$types';
 
-/** GET /api/v1/boards/:boardId/webhooks — List all webhooks for a board. */
+/**
+ * GET /api/v1/boards/:boardId/webhooks — List all webhooks for a board.
+ *
+ * The signing secret and the address are included only for the board's owner
+ * or an administrator. Everyone else gets `hasSecret`, and no `url`. Both used
+ * to be returned to anyone who could view the board: the address until card
+ * 2133.
+ */
 export const GET: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-
-	const boardId = Number(params.boardId);
-	if (!canViewBoard(locals.user, boardId)) throw error(403, 'No access');
+	const boardId = requireBoard(locals.user, pathId(params.boardId, 'board'), 'view').id;
+	const reveal = canSeeWebhookSecret(locals.user!, boardId);
 
 	const hooks = db.select().from(webhooks)
 		.where(eq(webhooks.boardId, boardId))
 		.all()
-		.map(h => ({ ...h, events: JSON.parse(h.events || '[]') }));
+		.map((h) => presentWebhook(h, reveal));
 
 	return json(hooks);
 };
 
-/** POST /api/v1/boards/:boardId/webhooks — Create a webhook. */
+/**
+ * POST /api/v1/boards/:boardId/webhooks — Create a webhook.
+ *
+ * The response carries the secret and the address back to the caller who has
+ * just supplied them. After this they are only ever shown to the board's owner
+ * or an administrator.
+ */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const boardId = pathId(params.boardId, 'board');
+	const body = await readBody(request);
 
-	const boardId = Number(params.boardId);
-	if (!canEditBoard(locals.user, boardId)) throw error(403, 'No edit access');
+	// The board is looked for and the caller checked in the transaction that
+	// saves the webhook, once the body has arrived.
+	const hook = inTransaction(() => {
+		requireBoard(user, boardId, 'edit');
 
-	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
-	if (!board) throw error(404, 'Board not found');
+		const url = readUrl(body, 'url', { required: true, says: { missing: 'URL is required' } });
+		const secret = readText(body, 'secret', { max: 256 });
+		// Each name trimmed: the wrapper sends "card.created, card.moved" split
+		// on the commas. An empty list, or none, is every event.
+		const events = readChoices(body, 'events', { from: WEBHOOK_EVENTS, trim: true });
 
-	const { url, secret, events } = await request.json();
-	if (!url?.trim()) throw error(400, 'URL is required');
+		return db.insert(webhooks)
+			.values({ boardId, url, secret: secret ?? '', events: JSON.stringify(events ?? []) })
+			.returning()
+			.get();
+	});
 
-	const hook = db.insert(webhooks)
-		.values({
-			boardId,
-			url: url.trim(),
-			secret: secret || '',
-			events: JSON.stringify(events || [])
-		})
-		.returning()
-		.get();
-
-	return json({ ...hook, events: JSON.parse(hook.events || '[]') }, { status: 201 });
+	return json(presentWebhook(hook, true), { status: 201 });
 };

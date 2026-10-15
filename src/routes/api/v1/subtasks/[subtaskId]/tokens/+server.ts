@@ -1,6 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { recordTokenUsage, TokenError } from '$lib/server/tokens';
 import { emit } from '$lib/server/events';
+import { pathId, readBody } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
@@ -18,10 +19,11 @@ import type { RequestHandler } from './$types';
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const subtaskId = Number(params.subtaskId);
-	if (isNaN(subtaskId)) throw error(400, 'Invalid subtask ID');
+	const subtaskId = pathId(params.subtaskId, 'subtask');
 
-	const body = await request.json();
+	// The fields are held to tokens.ts's own rules, which recordTokenUsage
+	// reads, and to nothing stricter (card 2117, R10).
+	const body = await readBody(request);
 	try {
 		const result = recordTokenUsage(
 			locals.user,

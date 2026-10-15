@@ -1,10 +1,13 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
+import { inTransaction } from '$lib/server/db/transaction';
 import { cardComments, cards, columns, users } from '$lib/server/db/schema';
 import { eq, sql } from 'drizzle-orm';
-import { getBoardRole } from '$lib/server/board-access';
+import { canEditBoard, getBoardRole } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
+import { pathId, readBody, readText } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /** Resolve a comment together with the card and board it belongs to. */
@@ -28,8 +31,7 @@ function withAuthor(comment: typeof cardComments.$inferSelect) {
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const commentId = Number(params.commentId);
-	if (isNaN(commentId)) throw error(400, 'Invalid comment ID');
+	const commentId = pathId(params.commentId, 'comment');
 
 	const ctx = loadComment(commentId);
 	if (!ctx) throw error(404, 'Comment not found');
@@ -42,46 +44,67 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 /**
  * PUT /api/v1/comments/:commentId — Edit a comment's text.
  *
- * Same rule as the web UI: only the comment's author or an admin may edit.
- * Body: { "content": "..." }. The text is stored exactly as sent — an edit
- * replaces the whole comment, so the caller owns any tag prefix.
+ * Only the comment's author or an admin may edit, and the author only while
+ * they can still edit the board the comment is on: what posting a comment
+ * asks for, and what PUT /api/cards/[id]/comments/[commentId] asks for.
+ * Body: { "content": "..." }. The text is stored trimmed — an edit replaces
+ * the whole comment, so the caller owns any tag prefix. It is text of 1 to
+ * 50,000 characters once trimmed, read after the comment is looked for and
+ * the caller checked, as the session route reads it.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const commentId = pathId(params.commentId, 'comment');
+	const body = await readBody(request);
 
-	const commentId = Number(params.commentId);
-	if (isNaN(commentId)) throw error(400, 'Invalid comment ID');
+	// One transaction: the comment is read and the caller checked in the one
+	// that changes it and writes the entry.
+	const edited = inTransaction(() => {
+		const ctx = loadComment(commentId);
+		if (!ctx) throw error(404, 'Comment not found');
 
-	const { content } = await request.json();
-	if (typeof content !== 'string' || !content.trim()) throw error(400, 'Comment cannot be empty');
-	if (content.length > 50000) throw error(400, 'Comment too long (max 50000 chars)');
+		// Having written a comment is not access to the board it is on. Someone
+		// taken off a board could go on rewriting what they had written there.
+		// Edit access, as for posting one and as the session route asks: view
+		// access was asked for here, and an author made a viewer could rewrite
+		// through this route what the other refused them, and could post nothing.
+		if (!canEditBoard(user, ctx.boardId)) throw error(403, 'No edit access to this board');
 
-	const ctx = loadComment(commentId);
-	if (!ctx) throw error(404, 'Comment not found');
+		const isAdmin = user.role === 'admin' || user.role === 'superadmin';
+		if (ctx.comment.userId !== user.id && !isAdmin) {
+			throw error(403, 'You can only edit your own comments');
+		}
 
-	const isAdmin = locals.user.role === 'admin' || locals.user.role === 'superadmin';
-	if (ctx.comment.userId !== locals.user.id && !isAdmin) {
-		throw error(403, 'You can only edit your own comments');
-	}
+		const content = readText(body, 'content', {
+			required: true,
+			trim: true,
+			min: 1,
+			max: 50000,
+			keep: ctx.comment.content,
+			says: { missing: 'Comment cannot be empty', empty: 'Comment cannot be empty', invalid: 'Comment too long (max 50000 chars)' }
+		});
 
-	const updated = db.update(cardComments)
-		.set({ content: content.trim(), updatedAt: sql`(datetime('now'))` })
-		.where(eq(cardComments.id, commentId))
-		.returning()
-		.get();
-	if (!updated) throw error(404, 'Comment not found');
+		const updated = db.update(cardComments)
+			.set({ content, updatedAt: sql`(datetime('now'))` })
+			.where(eq(cardComments.id, commentId))
+			.returning()
+			.get();
+		if (!updated) throw error(404, 'Comment not found');
 
-	logActivity({
-		boardId: ctx.boardId,
-		cardId: ctx.comment.cardId,
-		userId: locals.user.id,
-		action: 'api:comment_edited',
-		detail: `Edited a comment on "${ctx.cardTitle}"`,
-		userName: locals.user.username,
-		userEmoji: locals.user.emoji || '👤'
+		logActivity({
+			boardId: ctx.boardId,
+			cardId: ctx.comment.cardId,
+			userId: user.id,
+			action: 'api:comment_edited',
+			detail: `Edited a comment on "${ctx.cardTitle}"`,
+			userName: user.username,
+			userEmoji: user.emoji || '👤'
+		});
+
+		emit(ctx.boardId, 'update', { type: 'card' });
+
+		return withAuthor(updated);
 	});
 
-	emit(ctx.boardId, 'update', { type: 'card' });
-
-	return json(withAuthor(updated));
+	return json(edited);
 };

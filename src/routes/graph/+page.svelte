@@ -37,6 +37,9 @@
 
 	/** Lazy-load node internals when clicked (boards → columns, columns → cards). */
 	async function handleExpand(nodeId: string) {
+		// Until the graph is drawn there is nothing to merge into: leave before
+		// the request, and before the node is marked as expanded.
+		if (!graphComponent) return;
 		if (expandedNodes.has(nodeId)) return;
 
 		let url: string;

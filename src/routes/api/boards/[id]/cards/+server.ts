@@ -2,7 +2,8 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { columns, cards } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and, asc } from 'drizzle-orm';
-import { canViewBoard } from '$lib/server/board-access';
+import { pathId } from '$lib/server/request-body';
+import { requireBoard } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /**
@@ -14,8 +15,10 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const boardId = Number(params.id);
-	if (!canViewBoard(locals.user, boardId)) throw error(403, 'No access to this board');
+	// A board that is not there is 404 to everyone, and then one the caller
+	// cannot see 403: everyone but an administrator was answered 403, and an
+	// administrator an empty list (card 2117, decision 10).
+	const boardId = requireBoard(locals.user, pathId(params.id, 'board'), 'view').id;
 
 	const boardCols = db.select({ id: columns.id, title: columns.title, position: columns.position })
 		.from(columns)

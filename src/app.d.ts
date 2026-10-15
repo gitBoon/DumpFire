@@ -2,7 +2,14 @@
 // for information about these interfaces
 declare global {
 	namespace App {
-		// interface Error {}
+		interface Error {
+			message: string;
+			/**
+			 * The limit, in bytes, on the 413 for a body that passed its route's
+			 * limit as it was read: see `heldToLimit` in $lib/server/body-limits.ts.
+			 */
+			limitBytes?: number;
+		}
 		interface Locals {
 			user: {
 				id: number;

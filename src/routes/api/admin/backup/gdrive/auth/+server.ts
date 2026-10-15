@@ -7,11 +7,15 @@
  * Uses redirect_uri=urn:ietf:wg:oauth:2.0:oob which shows the code on a Google
  * page for the user to copy. This works without a public domain, making it ideal
  * for self-hosted instances.
+ *
+ * The superadmin's alone: see `/api/admin/backup`.
  */
 
 import { json, error } from '@sveltejs/kit';
 import { google } from 'googleapis';
 import { getBackupConfig, saveBackupConfig } from '$lib/server/backup';
+import { requireSuperadmin } from '$lib/server/route-guards';
+import { readBody, readText } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 
@@ -25,9 +29,7 @@ const REDIRECT_URI = 'http://localhost';
 
 /** GET — Generate the Google OAuth consent URL. */
 export const GET: RequestHandler = async ({ locals, url }) => {
-	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
-		throw error(403, 'Forbidden');
-	}
+	requireSuperadmin(locals.user);
 
 	const destName = url.searchParams.get('dest');
 	if (!destName) throw error(400, 'Missing dest parameter');
@@ -53,14 +55,13 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 
 /** POST — Exchange an auth code for tokens and store the refresh token. */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
-		throw error(403, 'Forbidden');
-	}
+	requireSuperadmin(locals.user);
 
-	const body = await request.json();
-	const { code, destName } = body;
-
-	if (!code || !destName) throw error(400, 'Missing code or destName');
+	// Each text: `code` that was not was handed to Google as it was sent.
+	const body = await readBody(request);
+	const MISSING = 'Missing code or destName';
+	const code = readText(body, 'code', { required: true, min: 1, says: { missing: MISSING, empty: MISSING } });
+	const destName = readText(body, 'destName', { required: true, min: 1, says: { missing: MISSING, empty: MISSING } });
 
 	const config = getBackupConfig();
 	const destIndex = config.destinations.findIndex(d => d.name === destName && d.type === 'gdrive');

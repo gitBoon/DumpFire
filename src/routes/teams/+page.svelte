@@ -11,6 +11,9 @@
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import Toast from '$lib/components/Toast.svelte';
+	import { toasts } from '$lib/stores/toast';
+	import { deleteFailure, failureMessage } from '$lib/api';
 
 	let { data }: { data: PageData } = $props();
 
@@ -24,14 +27,13 @@
 	let newTeamName = $state('');
 	let newTeamEmoji = $state('🏢');
 
-	// Toast
-	let toast = $state('');
-	let toastType = $state<'success' | 'error'>('success');
-
-	function showToast(msg: string, type: 'success' | 'error' = 'success') {
-		toast = msg;
-		toastType = type;
-		setTimeout(() => (toast = ''), 4000);
+	/**
+	 * The shared toast: a failure stays until it is closed, anything else goes
+	 * after 3 s. `started` is `toasts.navigation()` as the request began, so
+	 * that a failure arriving after the page was left is not shown.
+	 */
+	function showToast(msg: string, type: 'success' | 'error' = 'success', started?: number) {
+		toasts.add(msg, type, started);
 	}
 
 	// Confirm modal
@@ -45,22 +47,33 @@
 		return team.members.some(m => m.userId === data.currentUser?.id && m.role === 'owner');
 	}
 
+	// Each of the four says what the server said when it is refused: it used to
+	// say a team was deleted or a member removed whatever the answer, and to
+	// say nothing when a member was not added.
+
 	async function createTeam() {
 		if (!newTeamName.trim()) return;
-		const res = await fetch('/api/teams', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: newTeamName.trim(), emoji: newTeamEmoji })
-		});
-		if (res.ok) {
-			showCreateTeam = false;
-			newTeamName = '';
-			newTeamEmoji = '🏢';
-			await invalidateAll();
-			showToast('Team created');
-		} else {
-			showToast('Failed to create team', 'error');
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = await fetch('/api/teams', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: newTeamName.trim(), emoji: newTeamEmoji })
+			});
+		} catch {
+			showToast('No answer from the server. The team may not have been created.', 'error', started);
+			return;
 		}
+		if (!res.ok) {
+			showToast(await failureMessage(res, 'Failed to create team'), 'error', started);
+			return;
+		}
+		showCreateTeam = false;
+		newTeamName = '';
+		newTeamEmoji = '🏢';
+		await invalidateAll();
+		showToast('Team created');
 	}
 
 	async function deleteTeam(teamId: number, teamName: string) {
@@ -70,7 +83,12 @@
 			message: `Delete team "${teamName}"? All members will lose team-based board access.`,
 			onConfirm: async () => {
 				confirmAction.show = false;
-				await fetch(`/api/teams/${teamId}`, { method: 'DELETE' });
+				const started = toasts.navigation();
+				const failure = await deleteFailure(() => fetch(`/api/teams/${teamId}`, { method: 'DELETE' }), 'team');
+				if (failure) {
+					showToast(failure, 'error', started);
+					return;
+				}
 				await invalidateAll();
 				showToast('Team deleted');
 			}
@@ -83,21 +101,35 @@
 
 	async function addTeamMember(teamId: number) {
 		if (!addMemberUserId) return;
-		const res = await fetch(`/api/teams/${teamId}/members/${addMemberUserId}`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ userId: addMemberUserId, role: 'member' })
-		});
-		if (res.ok) {
-			addMemberTeamId = null;
-			addMemberUserId = null;
-			await invalidateAll();
-			showToast('Member added');
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = await fetch(`/api/teams/${teamId}/members/${addMemberUserId}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ userId: addMemberUserId, role: 'member' })
+			});
+		} catch {
+			showToast('No answer from the server. The member may not have been added.', 'error', started);
+			return;
 		}
+		if (!res.ok) {
+			showToast(await failureMessage(res, 'Failed to add member'), 'error', started);
+			return;
+		}
+		addMemberTeamId = null;
+		addMemberUserId = null;
+		await invalidateAll();
+		showToast('Member added');
 	}
 
 	async function removeTeamMember(teamId: number, userId: number) {
-		await fetch(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE' });
+		const started = toasts.navigation();
+		const failure = await deleteFailure(() => fetch(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE' }), 'member', 'removed');
+		if (failure) {
+			showToast(failure, 'error', started);
+			return;
+		}
 		await invalidateAll();
 		showToast('Member removed');
 	}
@@ -230,9 +262,7 @@
 	/>
 {/if}
 
-{#if toast}
-	<div class="toast-notification" class:toast-error={toastType === 'error'}>{toast}</div>
-{/if}
+<Toast />
 
 <style>
 	.teams-page { min-height: 100vh; padding-top: 64px; }
@@ -374,18 +404,4 @@
 
 	.btn-sm { font-size: 0.78rem !important; padding: var(--space-xs) var(--space-md) !important; }
 	.danger-text { color: var(--accent-rose) !important; }
-
-	/* Toast */
-	.toast-notification {
-		position: fixed; bottom: var(--space-xl); left: 50%; transform: translateX(-50%);
-		background: var(--accent-emerald); color: white; padding: var(--space-sm) var(--space-xl);
-		border-radius: var(--radius-full); font-size: 0.85rem; font-weight: 600;
-		box-shadow: var(--shadow-lg); z-index: 9999;
-		animation: toastIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-	}
-	.toast-error { background: var(--accent-rose); }
-	@keyframes toastIn {
-		from { opacity: 0; transform: translateX(-50%) translateY(30px) scale(0.9); }
-		to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
-	}
 </style>

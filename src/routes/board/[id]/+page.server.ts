@@ -1,11 +1,14 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, categories, subtasks, labels, cardLabels, boardMembers, boardTeams, users, teams, cardAssignees, teamMembers, taskRequests } from '$lib/server/db/schema';
+import { boards, columns, cards, subtasks, labels, cardLabels, boardMembers, boardTeams, users, teams, cardAssignees, teamMembers, taskRequests } from '$lib/server/db/schema';
 import { eq, asc, inArray, isNull, and } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
-import { getBoardRole } from '$lib/server/board-access';
-import { getBoardBlockedState } from '$lib/server/planning';
+import { canViewBoard, getBoardRole } from '$lib/server/board-access';
+import { getBoardBlockedState, WITHHELD_BOARD_NAME } from '$lib/server/planning';
 import { getCardTokenTotals, getBoardTokenTotals } from '$lib/server/tokens';
 import { milestonesForBoard } from '$lib/server/milestones';
+import { linkableBoards } from '$lib/server/sub-boards';
+import { cardCategoriesFor, hiddenOpenCountsFor, subBoardsFor } from '$lib/server/list-access';
+import { completeColumnIds } from '$lib/column-role';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, locals }) => {
@@ -24,10 +27,22 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	const canEdit = userBoardRole === 'admin' || userBoardRole === 'owner' || userBoardRole === 'editor';
 	const canManage = userBoardRole === 'admin' || userBoardRole === 'owner';
 
-	// Build ancestry chain for breadcrumbs
-	type BreadcrumbItem = { label: string; emoji: string; href: string };
+	// Build ancestry chain for breadcrumbs. An ancestor the caller cannot open
+	// is shown as "🔒 A board you cannot open", with no link (card 2130): a
+	// sub-board can be shared with someone who was never given the board above
+	// it, and they were told its name. It stays in the chain, which is how the
+	// page knows this is a sub-board and offers Delete Sub-board.
+	//
+	// Each board once (card 2142). A board can hang beneath one of its own
+	// cards: a card moved onto its own sub-board before card 2141, the legacy
+	// import or a restored backup. This walk then went round that loop for ever,
+	// holding the one Node thread, and the server stopped for every user. Now a
+	// loop is shown once round, closing on the board it came back to, so a
+	// board in one still reads as the sub-board it is.
+	type BreadcrumbItem = { label: string; emoji: string; href: string | null };
 	const breadcrumbs: BreadcrumbItem[] = [];
 
+	const walked = new Set<number>([board.id]);
 	let currentBoard = board;
 	while (currentBoard.parentCardId) {
 		// Find the parent card
@@ -41,12 +56,15 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		const parentBoard = db.select().from(boards).where(eq(boards.id, parentCol.boardId)).get();
 		if (!parentBoard) break;
 
-		breadcrumbs.unshift({
-			label: parentBoard.name,
-			emoji: parentBoard.emoji || '📋',
-			href: `/board/${parentBoard.id}`
-		});
+		breadcrumbs.unshift(
+			canViewBoard(user, parentBoard.id)
+				? { label: parentBoard.name, emoji: parentBoard.emoji || '📋', href: `/board/${parentBoard.id}` }
+				: { label: WITHHELD_BOARD_NAME, emoji: '🔒', href: null }
+		);
 
+		// The loop closes here. By id, whoever can open the board.
+		if (walked.has(parentBoard.id)) break;
+		walked.add(parentBoard.id);
 		currentBoard = parentBoard;
 	}
 
@@ -91,10 +109,9 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 					.all()
 			: [];
 
-	// Get sub-board info for cards that have sub-boards
-	const subBoards = cardIds.length > 0
-		? db.select().from(boards).where(inArray(boards.parentCardId, cardIds)).all()
-		: [];
+	// Get sub-board info for cards that have sub-boards: those the caller can
+	// open (card 2130). One they were never given is not on its card.
+	const subBoards = subBoardsFor(user, cardIds);
 
 	// Build a map of cardId -> sub-boards (supports multiple per card)
 	type SubBoardInfo = { id: number; name: string; emoji: string; done: number; total: number };
@@ -107,8 +124,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		if (sbColIds.length > 0) {
 			const sbCards = db.select().from(cards).where(inArray(cards.columnId, sbColIds)).all();
 			total = sbCards.length;
-			const completeCols = sbCols.filter(c => c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done');
-			const completeColIds = new Set(completeCols.map(c => c.id));
+			const completeColIds = completeColumnIds(sbCols);
 			done = sbCards.filter(c => completeColIds.has(c.columnId)).length;
 		}
 		const entry: SubBoardInfo = { id: sb.id, name: sb.name, emoji: sb.emoji || '🗂️', done, total };
@@ -116,6 +132,10 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		existing.push(entry);
 		subBoardMap.set(sb.parentCardId, existing);
 	}
+	// And how many cards are open on the sub-boards the caller cannot open, by
+	// card, with no name: the server refuses to complete the card while there
+	// are any, and the page asks before a drop onto Complete (card 2130's review).
+	const hiddenOpen = hiddenOpenCountsFor(user, cardIds);
 
 	// Get card assignees
 	const allAssignees = cardIds.length > 0
@@ -131,12 +151,13 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		.all()
 		: [];
 
-	// Get request origins for cards created from accepted task requests
+	// Get request origins for cards created from accepted task requests. By
+	// the requester's name: the address of someone who often has no account
+	// went to every viewer of the board, and no screen reads it (card 2128's review).
 	const requestOrigins = cardIds.length > 0
 		? db.select({
 			resolvedCardId: taskRequests.resolvedCardId,
 			requesterName: taskRequests.requesterName,
-			requesterEmail: taskRequests.requesterEmail,
 			title: taskRequests.title
 		})
 		.from(taskRequests)
@@ -155,34 +176,27 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 				subtasks: allSubtasks.filter((st) => st.cardId === card.id),
 				labelIds: allCardLabels.filter((cl) => cl.cardId === card.id).map((cl) => cl.labelId),
 				subBoards: subBoardMap.get(card.id) || [],
+				hiddenOpenCount: hiddenOpen.get(card.id) ?? 0,
 				assignees: allAssignees
 					.filter(a => a.cardId === card.id)
 					.map(a => ({ id: a.userId, username: a.username, emoji: a.emoji || '👤' })),
 				requestOrigin: (() => {
 					const ro = requestOriginMap.get(card.id);
-					return ro ? { requesterName: ro.requesterName, requesterEmail: ro.requesterEmail || undefined, requestTitle: ro.title } : null;
+					return ro ? { requesterName: ro.requesterName, requestTitle: ro.title } : null;
 				})()
 			}))
 	}));
 
-	const boardCategories = db
-		.select()
-		.from(categories)
-		.orderBy(asc(categories.name))
-		.all();
+	// The categories of the boards the caller can open and the shared ones, and
+	// any other a card here carries, marked `carried` (card 2128): every
+	// board's was sent to the browser.
+	const boardCategories = cardCategoriesFor(user, allCards);
 
 	const boardLabels = db
 		.select()
 		.from(labels)
 		.where(eq(labels.boardId, boardId))
 		.all();
-
-	// Get linkable boards (top-level boards except this one)
-	const linkableBoards = db.select({ id: boards.id, name: boards.name, emoji: boards.emoji })
-		.from(boards)
-		.where(isNull(boards.parentCardId))
-		.all()
-		.filter(b => b.id !== boardId);
 
 	// Get users who have access to this board (for assignee picker)
 	const boardUserIds = new Set<number>();
@@ -218,8 +232,10 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		.all();
 	adminUsers.forEach(a => boardUserIds.add(a.id));
 
+	// By name and emoji: no screen reads an address, and every administrator's
+	// went to every viewer of the board (card 2128, R1).
 	const boardUsers = boardUserIds.size > 0
-		? db.select({ id: users.id, username: users.username, email: users.email, emoji: users.emoji })
+		? db.select({ id: users.id, username: users.username, emoji: users.emoji })
 			.from(users)
 			.where(inArray(users.id, Array.from(boardUserIds)))
 			.all()
@@ -227,7 +243,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 
 	// Open blockers for every card on the board in one pass, so the "Blocked"
 	// chip costs one query for the board rather than one request per card face.
-	const blockedState = getBoardBlockedState(boardId);
+	// A blocker on a board the caller cannot open is withheld (card 2129).
+	const blockedState = getBoardBlockedState(boardId, user);
 
 	// Cost per card, one query for the board rather than one per card face.
 	// Cards absent from the map have nothing recorded, which the face renders as
@@ -246,7 +263,10 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		columns: columnsWithCards,
 		categories: boardCategories,
 		labels: boardLabels,
-		linkableBoards,
+		// What "Link existing board" offers: what the server would let this
+		// caller put under a card here (`$lib/server/sub-boards.ts`). Boards
+		// they own, so only boards they can open, which card 2130 asks of it.
+		linkableBoards: linkableBoards(user, boardId),
 		canEdit,
 		canManage,
 		userBoardRole,

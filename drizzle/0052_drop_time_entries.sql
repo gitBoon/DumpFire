@@ -1,0 +1,14 @@
+-- Drop `time_entries` (card 2006, 2026-10-12).
+--
+-- Migration 0028 created the table and nothing has used it since: no code
+-- reads or writes it, it is not in the model (src/lib/server/db/schema.ts), and
+-- on production it never held a row. Its removal was planned under card 2010
+-- and is brought forward here, so that a database has the tables the model
+-- declares and no others.
+--
+-- IF EXISTS because not every database still has it: one that was altered with
+-- `drizzle-kit push` has already lost it. A new database creates the table in
+-- 0028 and drops it here, which is harmless.
+--
+-- Runs once. The runner records this file by name and never runs it again.
+DROP TABLE IF EXISTS `time_entries`;

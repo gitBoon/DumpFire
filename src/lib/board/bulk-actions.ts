@@ -28,16 +28,24 @@ export async function bulkMove(
 }
 
 /**
- * Deletes all selected cards one-by-one.
+ * Archives all selected cards one-by-one (`api.deleteCard` archives).
  * Sequential to avoid race conditions on the server.
+ *
+ * @returns How many the server said were archived, and each card that was
+ * not, with what to tell the reader about it.
  */
 export async function bulkDelete(
 	selectedCardIds: Set<number>,
 	boardId: number
-): Promise<void> {
+): Promise<{ archived: number; failed: { cardId: number; message: string }[] }> {
+	let archived = 0;
+	const failed: { cardId: number; message: string }[] = [];
 	for (const cardId of selectedCardIds) {
-		await api.deleteCard(cardId, boardId);
+		const message = await api.deleteFailure(() => api.deleteCard(cardId, boardId), 'card', 'archived');
+		if (message) failed.push({ cardId, message });
+		else archived++;
 	}
+	return { archived, failed };
 }
 
 /**

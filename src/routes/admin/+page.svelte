@@ -9,8 +9,24 @@
 	import type { PageData } from './$types';
 	import { invalidateAll, goto } from '$app/navigation';
 	import { theme } from '$lib/stores/theme';
+	import {
+		PURGE_DESCRIPTION,
+		PURGE_WARNING,
+		RESET_WARNING,
+		answerBody,
+		boardDeleteWarning,
+		clearCardsWarning,
+		failureMessage,
+		uploadFailure,
+		uploadNoAnswer,
+		uploadNotRead,
+		userDeleteWarning
+	} from '$lib/api';
+	import { mayManageAccount } from '$lib/account-rule';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import Toast from '$lib/components/Toast.svelte';
+	import { toasts } from '$lib/stores/toast';
 
 	let { data }: { data: PageData } = $props();
 
@@ -19,26 +35,150 @@
 
 	let isSuperadmin = $derived(data.currentUser?.role === 'superadmin');
 
+	/**
+	 * Who the superadmin is, for the line an administrator is shown in place
+	 * of what is the superadmin's alone: the export, the import and the reset,
+	 * the scheduled backups, and the mail and App URL settings. Null if no
+	 * account is one, which the server says in its log when it starts.
+	 */
+	let superadminName = $derived(data.users.find((u) => u.role === 'superadmin')?.username ?? null);
+
 	/** Confirm modal state for destructive admin actions. */
 	let confirmAction = $state<{ show: boolean; title: string; message: string; action: () => Promise<void> }>({
 		show: false, title: '', message: '', action: async () => {}
 	});
 
-	let toast = $state('');
-	let toastType = $state<'success' | 'error'>('success');
 	let importing = $state(false);
 	let exporting = $state(false);
 
-	/** Shows a temporary toast notification that auto-dismisses after 4s. */
-	function showToast(msg: string, type: 'success' | 'error' = 'success') {
-		toast = msg;
-		toastType = type;
-		setTimeout(() => (toast = ''), 4000);
+	/**
+	 * What an import could not do, or what a working copy had switched off,
+	 * kept on the page until it is dismissed. A toast is a line in a corner,
+	 * and one that is not a failure is gone in three seconds: neither a list of
+	 * rows that were left out of the database nor an account of what no longer
+	 * reaches outside is something to show in one.
+	 *
+	 * `trouble` is false when nothing went wrong and this is only here to say
+	 * what a working copy switched off and removed.
+	 *
+	 * `reload` is true when the database was changed, or may have been. The
+	 * page is not reloaded until this has been read: a restore signs everybody
+	 * out, the reader included, so the reload ends at the login page.
+	 */
+	let importReport = $state<{
+		headline: string;
+		/** One line of the figures that matter: the size of the backup and what it held. */
+		detail?: string;
+		/** What a working copy switched off and removed. */
+		workingCopy?: string;
+		/** Attachment files the import had back from the uploads trash, when there were any. */
+		putBack?: string;
+		/** Who the superadmin is now: who can sign in to export, import or reset again. */
+		superadmin?: string;
+		/** Every table restored, with its rows, for whoever wants all of it. */
+		tables?: [string, number][];
+		problems: string[];
+		reload: boolean;
+		trouble: boolean;
+	} | null>(null);
+
+	const count = (n: number) => n.toLocaleString('en-GB');
+
+	/**
+	 * What an import restored, said the way a person would: the size of the
+	 * backup and the handful of figures that show it is the right one. The
+	 * server's own message lists every table in one sentence, which is for the
+	 * log; the full list is kept, folded away, for anyone who wants it.
+	 */
+	function accountOf(result: {
+		sizeBytes?: number;
+		restored?: Record<string, number>;
+		workingCopy?: string;
+		attachmentsPutBack?: number;
+		superadmins?: string[];
+	}) {
+		const restored = result.restored ?? {};
+		const figures: [string, string, string][] = [
+			['boards', 'board', 'boards'],
+			['columns', 'column', 'columns'],
+			['cards', 'card', 'cards'],
+			['subtasks', 'subtask', 'subtasks'],
+			['card_comments', 'comment', 'comments'],
+			['comments', 'comment', 'comments'],
+			['users', 'user', 'users']
+		];
+		const parts = figures
+			.filter(([key]) => typeof restored[key] === 'number')
+			.map(([key, one, many]) => `${count(restored[key])} ${restored[key] === 1 ? one : many}`);
+		const bytes = result.sizeBytes;
+		const size =
+			bytes === undefined
+				? null
+				: bytes >= 1024 * 1024
+					? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+					: `${Math.max(1, Math.round(bytes / 1024))} KB`;
+		const from = size ? `From a ${size} backup` : 'From the backup';
+		// Rows the import brought back can name files that a delete since the
+		// backup had moved to the uploads trash. The import puts those back.
+		const putBack = typeof result.attachmentsPutBack === 'number' ? result.attachmentsPutBack : 0;
+		return {
+			detail: parts.length > 0 ? `${from}: ${parts.join(', ')}.` : `${from}. It held no rows.`,
+			workingCopy: result.workingCopy,
+			// The import signed everybody out, and the backup's accounts are the
+			// ones there are now: this is the one to sign in as to undo it.
+			superadmin: !Array.isArray(result.superadmins)
+				? undefined
+				: result.superadmins.length === 0
+					? 'There are no user accounts now: set-up is open, and whoever completes it is the superadmin.'
+					: result.superadmins.length === 1
+						? `The superadmin is now ${result.superadmins[0]}.`
+						: `The superadmins are now ${result.superadmins.join(', ')}.`,
+			putBack:
+				putBack > 0
+					? `${count(putBack)} attachment ${putBack === 1 ? 'file' : 'files'} put back from the trash.`
+					: undefined,
+			tables: Object.entries(restored)
+				.filter(([, rows]) => rows > 0)
+				.sort(([a], [b]) => a.localeCompare(b))
+		};
 	}
+
+	/**
+	 * The shared toast: a failure stays until it is closed, anything else goes
+	 * after 3 s. `started` is `toasts.navigation()` as the request began, so
+	 * that a failure arriving after the page was left is not shown.
+	 */
+	function showToast(msg: string, type: 'success' | 'error' = 'success', started?: number) {
+		toasts.add(msg, type, started);
+	}
+
+	/** What a request that got no answer says: it is not known to have failed. */
+	const NO_ANSWER = 'No answer from the server. It is not known whether this was done.';
 
 	/** Opens the confirm modal for a destructive action. */
 	function confirm(title: string, message: string, action: () => Promise<void>) {
 		confirmAction = { show: true, title, message, action };
+	}
+
+	/**
+	 * Send a request that changes something, and say so in a toast if it was
+	 * not done. Returns the answer when the server said it was done and null
+	 * when it did not, so that a caller changes the page only for an answer.
+	 *
+	 * The toast is the server's own message where it gave one, and `fallback`
+	 * where it did not. A request that got no answer is not known to have
+	 * failed, and the toast says that instead.
+	 */
+	async function sent(send: () => Promise<Response>, fallback: string): Promise<Response | null> {
+		const started = toasts.navigation();
+		try {
+			const res = await send();
+			if (res.ok) return res;
+			showToast(await failureMessage(res, fallback), 'error', started);
+		} catch {
+			showToast(NO_ANSWER, 'error', started);
+		}
+		return null;
 	}
 
 	// ─── Scheduled Backups ────────────────────────────────────────────────
@@ -106,6 +246,9 @@
 	let destFolderPath = $state('/DumpFire Backups');
 
 	$effect(() => {
+		// The backup settings and the App URL are the superadmin's, and an
+		// administrator is refused them: they are not asked for.
+		if (!isSuperadmin) return;
 		loadBackupConfig();
 		loadAppUrl();
 	});
@@ -128,15 +271,20 @@
 	async function saveAppUrl() {
 		appUrlSaving = true;
 		try {
-			const res = await fetch('/api/admin/smtp', {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ appUrl })
-			});
-			if (res.ok) showToast('App URL saved');
-			else showToast('Failed to save App URL', 'error');
-		} catch { showToast('Failed to save App URL', 'error'); }
-		appUrlSaving = false;
+			const res = await sent(
+				() =>
+					fetch('/api/admin/smtp', {
+						method: 'PUT',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ appUrl })
+					}),
+				'Failed to save App URL'
+			);
+			if (!res) return;
+			showToast('App URL saved');
+		} finally {
+			appUrlSaving = false;
+		}
 	}
 
 	function resetDestForm() {
@@ -211,57 +359,75 @@
 		backupLoading = false;
 	}
 
-	async function saveBackupConfig() {
+	/**
+	 * Save the backup settings and destinations as the page shows them. True
+	 * when the server saved them; when it did not, the toast gives its reason,
+	 * and a destination added, changed or removed just before is put back.
+	 */
+	async function saveBackupConfig(): Promise<boolean> {
 		backupSaving = true;
 		try {
-			const res = await fetch('/api/admin/backup', {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					schedule: backupSchedule,
-					scheduleTime: backupScheduleTime,
-					scheduleDay: backupScheduleDay,
-					retention: backupRetention,
-					notifyOnFailure: backupNotifyOnFailure,
-					notifyEmail: backupNotifyEmail,
-					destinations: backupDestinations
-				})
-			});
-			if (res.ok) {
-				showToast('Backup settings saved');
-			} else {
-				showToast('Failed to save backup settings', 'error');
-			}
-		} catch {
-			showToast('Failed to save backup settings', 'error');
+			const res = await sent(
+				() =>
+					fetch('/api/admin/backup', {
+						method: 'PUT',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							schedule: backupSchedule,
+							scheduleTime: backupScheduleTime,
+							scheduleDay: backupScheduleDay,
+							// A box cleared is no number, and is not sent: the retention
+							// stored is kept. `null` is refused (card 2117).
+							retention: backupRetention ?? undefined,
+							notifyOnFailure: backupNotifyOnFailure,
+							notifyEmail: backupNotifyEmail,
+							destinations: backupDestinations
+						})
+					}),
+				'Failed to save backup settings'
+			);
+			if (!res) return false;
+			showToast('Backup settings saved');
+			return true;
+		} finally {
+			backupSaving = false;
 		}
-		backupSaving = false;
 	}
 
-	function addDestination() {
+	async function addDestination() {
 		if (!destName.trim()) { showToast('Destination name is required', 'error'); return; }
 		if (backupDestinations.some(d => d.name === destName.trim())) { showToast('A destination with that name already exists', 'error'); return; }
+		const was = backupDestinations;
 		backupDestinations = [...backupDestinations, buildDestConfig()];
+		if (!(await saveBackupConfig())) {
+			// Not saved: off the list again, and still in the form as typed.
+			backupDestinations = was;
+			return;
+		}
 		resetDestForm();
 		showAddDestination = false;
-		saveBackupConfig();
 	}
 
-	function updateDestination() {
+	async function updateDestination() {
 		if (!editingDest || !destName.trim()) return;
 		const idx = backupDestinations.findIndex(d => d.name === editingDest);
 		if (idx === -1) return;
+		const was = backupDestinations;
 		const updated = [...backupDestinations];
 		updated[idx] = buildDestConfig();
 		backupDestinations = updated;
+		if (!(await saveBackupConfig())) {
+			backupDestinations = was;
+			return;
+		}
 		editingDest = null;
 		resetDestForm();
-		saveBackupConfig();
 	}
 
-	function removeDestination(name: string) {
+	async function removeDestination(name: string) {
+		const was = backupDestinations;
 		backupDestinations = backupDestinations.filter(d => d.name !== name);
-		saveBackupConfig();
+		if (!(await saveBackupConfig())) backupDestinations = was;
 	}
 
 	function startEditDestination(dest: DestinationUI) {
@@ -272,41 +438,55 @@
 
 	async function testDestination(dest: DestinationUI) {
 		testingDest = dest.name;
+		const started = toasts.navigation();
 		try {
-			const res = await fetch('/api/admin/backup/test', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(dest)
-			});
-			const result = await res.json();
-			showToast(result.message || (result.success ? 'Connection successful' : 'Connection failed'), result.success ? 'success' : 'error');
-		} catch {
-			showToast('Connection test failed', 'error');
+			const res = await sent(
+				() =>
+					fetch('/api/admin/backup/test', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify(dest)
+					}),
+				'Connection test failed'
+			);
+			if (!res) return;
+			// Answered: whether the destination could be reached is in the answer.
+			const result = await answerBody(res);
+			const said = typeof result?.message === 'string' && result.message ? result.message : null;
+			showToast(said || (result?.success ? 'Connection successful' : 'Connection failed'), result?.success ? 'success' : 'error', started);
+		} finally {
+			testingDest = null;
 		}
-		testingDest = null;
 	}
 
 	async function runManualBackup() {
 		backupRunning = true;
+		const started = toasts.navigation();
 		try {
-			const res = await fetch('/api/admin/backup', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({})
-			});
-			const result = await res.json();
-			const results = result.results || [];
+			// A refusal used to be read as a backup to no destinations, and was
+			// said to be "Backup completed to 0 destinations".
+			const res = await sent(
+				() =>
+					fetch('/api/admin/backup', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({})
+					}),
+				'Backup failed'
+			);
+			if (!res) return;
+			const result = await answerBody(res);
+			const results = Array.isArray(result?.results) ? result.results : [];
 			const failed = results.filter((r: any) => r.status === 'failed');
 			if (failed.length === 0) {
 				showToast(`Backup completed to ${results.length} destination${results.length !== 1 ? 's' : ''}`);
 			} else {
-				showToast(`${failed.length} of ${results.length} backup(s) failed`, 'error');
+				showToast(`${failed.length} of ${results.length} backup(s) failed`, 'error', started);
 			}
 			await loadBackupConfig();
-		} catch {
-			showToast('Backup failed', 'error');
+		} finally {
+			backupRunning = false;
 		}
-		backupRunning = false;
 	}
 
 	const destTypeLabels: Record<DestType, string> = {
@@ -355,13 +535,14 @@
 	async function connectGDriveOAuth(destName: string) {
 		gdriveConnecting = destName;
 		gdriveAuthCode = '';
+		const started = toasts.navigation();
 		try {
 			const res = await fetch(`/api/admin/backup/gdrive/auth?dest=${encodeURIComponent(destName)}`);
-			if (!res.ok) { showToast('Failed to generate auth URL', 'error'); gdriveConnecting = ''; return; }
+			if (!res.ok) { showToast('Failed to generate auth URL', 'error', started); gdriveConnecting = ''; return; }
 			const { authUrl } = await res.json();
 			window.open(authUrl, '_blank', 'width=600,height=700');
 		} catch {
-			showToast('Failed to start OAuth flow', 'error');
+			showToast('Failed to start OAuth flow', 'error', started);
 			gdriveConnecting = '';
 		}
 	}
@@ -369,6 +550,7 @@
 	async function exchangeGDriveCode() {
 		if (!gdriveAuthCode.trim() || !gdriveConnecting) return;
 		gdriveExchanging = true;
+		const started = toasts.navigation();
 
 		// Extract the code from a full URL if the user pasted the entire redirect URL
 		let code = gdriveAuthCode.trim();
@@ -379,61 +561,112 @@
 		} catch { /* not a URL, use as-is */ }
 
 		try {
-			const res = await fetch('/api/admin/backup/gdrive/auth', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ code, destName: gdriveConnecting })
-			});
-			const data = await res.json();
-			if (data.success) {
-				showToast(data.message || 'Google Drive connected!');
+			const res = await sent(
+				() =>
+					fetch('/api/admin/backup/gdrive/auth', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ code, destName: gdriveConnecting })
+					}),
+				'Failed to exchange authorization code'
+			);
+			if (!res) return;
+			// Answered: whether Google gave a token to keep is in the answer.
+			const result = await answerBody(res);
+			const said = typeof result?.message === 'string' && result.message ? result.message : null;
+			if (result?.success) {
+				showToast(said || 'Google Drive connected!');
 				await loadBackupConfig();
 			} else {
-				showToast(data.message || 'Failed to connect', 'error');
+				showToast(said || 'Failed to connect', 'error', started);
 			}
-		} catch {
-			showToast('Failed to exchange authorization code', 'error');
+		} finally {
+			gdriveExchanging = false;
+			gdriveConnecting = '';
+			gdriveAuthCode = '';
 		}
-		gdriveExchanging = false;
-		gdriveConnecting = '';
-		gdriveAuthCode = '';
 	}
 
 	// ─── Board Management ─────────────────────────────────────────────────
 
 	async function deleteBoard(id: number) {
-		await fetch(`/api/boards/${id}`, { method: 'DELETE' });
+		if (!(await sent(() => fetch(`/api/boards/${id}`, { method: 'DELETE' }), 'Failed to delete board'))) return;
 		await invalidateAll();
 		showToast('Board deleted');
 	}
 
 	async function clearBoardCards(id: number) {
-		await fetch(`/api/admin/boards/${id}/clear-cards`, { method: 'POST' });
+		if (!(await sent(() => fetch(`/api/admin/boards/${id}/clear-cards`, { method: 'POST' }), 'Failed to clear cards'))) return;
 		await invalidateAll();
 		showToast('All cards cleared from board');
 	}
 
 	async function clearBoardCategories(id: number) {
-		await fetch(`/api/admin/boards/${id}/clear-categories`, { method: 'POST' });
+		if (!(await sent(() => fetch(`/api/admin/boards/${id}/clear-categories`, { method: 'POST' }), 'Failed to clear categories'))) return;
 		await invalidateAll();
 		showToast('All categories cleared from board');
 	}
 
+	/**
+	 * What a reset has to say that must be read: that it failed, or that it
+	 * was done and some attachment files are where they were. A toast is a
+	 * line in a corner, and after a reset that was done the page is about to
+	 * leave for set-up, which takes every toast with it, so this stays up
+	 * until it is answered.
+	 *
+	 * `redirect` is where to go from it, after a reset that was done. Null
+	 * when nothing was cleared and the page stays.
+	 */
+	let resetNotice = $state<{ title: string; message: string; problems: string[]; redirect: string | null } | null>(null);
+
 	async function resetDatabase() {
-		const res = await fetch('/api/admin/reset', { method: 'POST' });
-		const data = await res.json();
-		if (data.redirect) {
-			window.location.href = data.redirect;
+		let res: Response;
+		try {
+			res = await fetch('/api/admin/reset', { method: 'POST' });
+		} catch {
+			resetNotice = {
+				title: 'Reset not confirmed',
+				message: 'No answer from the server, so it is not known whether the reset ran. Reload the page to find out.',
+				problems: [],
+				redirect: null
+			};
+			return;
 		}
+		if (!res.ok) {
+			// 500 with "The reset failed and nothing was cleared: …", or a refusal.
+			resetNotice = {
+				title: 'Reset failed',
+				message: await failureMessage(res, 'The reset failed.'),
+				problems: [],
+				redirect: null
+			};
+			return;
+		}
+
+		const result = await res.json().catch(() => null);
+		const redirect = typeof result?.redirect === 'string' && result.redirect ? result.redirect : '/setup';
+		const failed: string[] = Array.isArray(result?.trash?.failed) ? result.trash.failed.map(String) : [];
+		if (failed.length > 0) {
+			// Done, with something to read before leaving for set-up.
+			resetNotice = {
+				title: 'Reset done',
+				message:
+					'Everything was cleared, but some attachment files could not be moved to the trash and are where they were:',
+				problems: failed,
+				redirect
+			};
+			return;
+		}
+		window.location.href = redirect;
 	}
 
 	async function vacuumDatabase() {
-		await fetch('/api/admin/vacuum', { method: 'POST' });
-		showToast('Database vacuumed — IDs will restart from 1 for new records');
+		if (!(await sent(() => fetch('/api/admin/vacuum', { method: 'POST' }), 'Failed to vacuum the database'))) return;
+		showToast('Database vacuumed. Unused space was reclaimed.');
 	}
 
 	async function resetAllXp() {
-		await fetch('/api/admin/reset-xp', { method: 'POST' });
+		if (!(await sent(() => fetch('/api/admin/reset-xp', { method: 'POST' }), 'Failed to reset XP'))) return;
 		showToast('All XP has been reset to 0');
 	}
 
@@ -442,16 +675,15 @@
 	async function purgeArchivedCards() {
 		purgingArchived = true;
 		try {
-			const res = await fetch('/api/admin/purge-archived', { method: 'POST' });
-			if (res.ok) {
-				const result = await res.json();
-				showToast(`Purged ${result.purged} archived card${result.purged !== 1 ? 's' : ''} permanently`);
-				await invalidateAll();
-			} else {
-				showToast('Failed to purge archived cards', 'error');
-			}
-		} catch {
-			showToast('Failed to purge archived cards', 'error');
+			const res = await sent(() => fetch('/api/admin/purge-archived', { method: 'POST' }), 'Failed to purge archived cards');
+			if (!res) return;
+			const result = await res.json().catch(() => null);
+			showToast(
+				typeof result?.purged === 'number'
+					? `Purged ${result.purged} archived card${result.purged !== 1 ? 's' : ''} permanently`
+					: 'Archived cards purged permanently'
+			);
+			await invalidateAll();
 		} finally {
 			purgingArchived = false;
 		}
@@ -459,8 +691,15 @@
 
 	async function exportDatabase() {
 		exporting = true;
+		const started = toasts.navigation();
 		try {
 			const res = await fetch('/api/admin/export');
+			if (!res.ok) {
+				// A refusal is an answer too, and was once saved as the backup: a
+				// file of a few bytes of JSON, named .db, under "exported successfully".
+				showToast(await failureMessage(res, 'Export failed: no file was saved'), 'error', started);
+				return;
+			}
 			const blob = await res.blob();
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
@@ -472,13 +711,28 @@
 			URL.revokeObjectURL(url);
 			showToast('Database exported successfully');
 		} catch {
-			showToast('Export failed', 'error');
+			showToast('Export failed', 'error', started);
 		} finally {
 			exporting = false;
 		}
 	}
 
-	let fileInput: HTMLInputElement;
+	// State, because it is bound to an element that is there for the superadmin only.
+	let fileInput = $state<HTMLInputElement>();
+
+	/**
+	 * The import dialog, and which of its two ways to restore is chosen: `keep`
+	 * restores everything as the backup has it, `off` restores a working copy.
+	 * The choice outlives the dialog, because the file is picked after it closes.
+	 */
+	let showImportDialog = $state(false);
+	let importOutside = $state<'keep' | 'off'>('keep');
+
+	/** Opens the import dialog with this instance's default selected, whatever was chosen the last time. */
+	function openImportDialog() {
+		importOutside = data.importOutsideDefault;
+		showImportDialog = true;
+	}
 
 	async function importDatabase() {
 		fileInput?.click();
@@ -489,46 +743,121 @@
 		if (!file) return;
 
 		importing = true;
+		const started = toasts.navigation();
 		try {
-			const isDbFile = file.name.endsWith('.db') || file.name.endsWith('.sqlite') || file.name.endsWith('.sqlite3');
+			// In any case: a backup saved as BACKUP.DB is a .db backup.
+			const named = file.name.toLowerCase();
+			const isDbFile = named.endsWith('.db') || named.endsWith('.sqlite') || named.endsWith('.sqlite3');
+			const what = `The backup "${file.name}"`;
 
-			let res: Response;
-			if (isDbFile) {
-				// Send raw binary for .db files
-				const buffer = await file.arrayBuffer();
-				res = await fetch('/api/admin/import', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/octet-stream' },
-					body: buffer
-				});
-			} else {
-				// Legacy JSON import
-				const text = await file.text();
-				const data = JSON.parse(text);
-				if (!data.version || !data.boards) {
-					showToast('Invalid backup file format', 'error');
-					return;
-				}
-				res = await fetch('/api/admin/import', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: text
-				});
+			/**
+			 * A failure that changed nothing, said in the report under the Import
+			 * button. Not in a toast as well: a failure's toast stays until it is
+			 * closed, so it was the same words twice, to be closed twice.
+			 */
+			const notImported = (headline: string) => {
+				importReport = { headline, problems: [], reload: false, trouble: true };
+			};
+
+			// Only a .db backup is imported. Any other file is refused here, and
+			// nothing is read or sent: the server would refuse it too. The old
+			// JSON export is named, because it is the one file somebody may
+			// still have that once was imported.
+			if (!isDbFile) {
+				notImported(
+					`The file "${file.name}" is not a .db backup. Exports in the old JSON format, which DumpFire wrote only ` +
+						'from 1 to 7 April 2026, are no longer imported. Nothing was sent.'
+				);
+				return;
 			}
 
-			const result = await res.json();
-			if (res.ok) {
-				await invalidateAll();
-				showToast(result.message || 'Database imported successfully');
+			// One of four things has gone wrong when an import is not accepted,
+			// and each is said for what it is: see `uploadFailure` in $lib/api.
+			// The first: the file could not be read here, so nothing was sent.
+			let body: ArrayBuffer;
+			try {
+				body = await file.arrayBuffer();
+			} catch {
+				notImported(uploadNotRead(what));
+				return;
+			}
+
+			// The second: no answer. It is not known whether the import ran.
+			let res: Response;
+			try {
+				res = await fetch(`/api/admin/import?outside=${importOutside}`, {
+					method: 'POST',
+					// The file's bytes, as they are.
+					headers: { 'Content-Type': 'application/octet-stream' },
+					body
+				});
+			} catch {
+				importReport = {
+					headline: `${uploadNoAnswer(what)} Reload the page to see what the database holds.`,
+					problems: [],
+					reload: true,
+					trouble: true
+				};
+				return;
+			}
+
+			// The third and the fourth: an answer that is not DumpFire's, which is
+			// a proxy's refusal, and DumpFire's own 413. Nothing was changed by
+			// either. Read from a copy, so that `uploadFailure` can read it too.
+			const result: Record<string, any> | null = await answerBody(res.clone());
+			if (result === null || res.status === 413) {
+				notImported(await uploadFailure(res, what));
+				return;
+			}
+
+			const problems: string[] = Array.isArray(result.errors) ? result.errors.map(String) : [];
+			const restoredAs = result.outside ? 'Database restored as a working copy' : 'Database restored';
+			if (res.ok && problems.length === 0) {
+				// Restored, and nothing wrong with it. The toast says so in a few
+				// words and is gone in three seconds; what was restored, and what a
+				// working copy switched off, stays on the page until it is dismissed.
+				// The page is not reloaded until then: a restore signs everybody
+				// out, so the reload is a sign-in.
+				importReport = { headline: restoredAs, ...accountOf(result), problems, reload: true, trouble: false };
+				showToast(`${restoredAs}.`);
+			} else if (res.ok) {
+				// Restored, with something to read: a row that was left out, or one
+				// that was copied and refers to a row that is not there. That is an
+				// error to show, not a success with a footnote, and the report shows
+				// it as one.
+				importReport = {
+					headline: `${restoredAs}, with ${problems.length} problem${problems.length === 1 ? '' : 's'}`,
+					...accountOf(result),
+					problems,
+					reload: true,
+					trouble: true
+				};
 			} else {
-				showToast(result.error || 'Import failed', 'error');
+				// `committed` is the one failure after which the data has changed.
+				importReport = { headline: result.message || 'Import failed', problems, reload: result.committed === true, trouble: true };
 			}
 		} catch {
-			showToast('Invalid backup file', 'error');
+			// None of the four, and not the file's doing: a fault in this page
+			// once the answer was in. What the import did is not known from here,
+			// and there is no report to say it in, so the toast does.
+			showToast('The answer to the import could not be shown. Reload the page to see what the database holds.', 'error', started);
 		} finally {
 			importing = false;
 			if (fileInput) fileInput.value = '';
 		}
+	}
+
+	/**
+	 * Puts the import report away and, if the database was changed, loads the
+	 * page again from nothing. A full reload and not `invalidateAll`: the
+	 * backup and mail panels are read once, when the page opens, and would go
+	 * on showing what was there before the import. A restore brings in no
+	 * session, so the reload is what asks for a sign-in.
+	 */
+	function dismissImportReport() {
+		const reload = importReport?.reload === true;
+		importReport = null;
+		if (reload) window.location.reload();
 	}
 
 	// ─── User Management ──────────────────────────────────────────────────
@@ -559,81 +888,177 @@
 				role: newUserRole
 			};
 			if (newPassword) body.password = newPassword;
-			const res = await fetch('/api/users', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body)
-			});
-			if (res.ok) {
-				const result = await res.json();
-				showCreateUser = false;
-				newUsername = ''; newEmail = ''; newPassword = ''; newUserRole = 'user'; newUserEmoji = '👤';
-				await invalidateAll();
-				showToast(result.invited ? 'User created — invite email sent!' : 'User created');
-			} else {
-				const err = await res.json();
-				showToast(err.message || 'Failed to create user', 'error');
-			}
-		} catch {
-			showToast('Failed to create user', 'error');
+			// A refusal is read with failureMessage: a proxy's page in place of
+			// one used to make the page's own reading of it throw.
+			const res = await sent(
+				() =>
+					fetch('/api/users', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify(body)
+					}),
+				'Failed to create user'
+			);
+			if (!res) return;
+			const result = await answerBody(res);
+			showCreateUser = false;
+			newUsername = ''; newEmail = ''; newPassword = ''; newUserRole = 'user'; newUserEmoji = '👤';
+			await invalidateAll();
+			showToast(result?.invited ? 'User created — invite email sent!' : 'User created');
+		} finally {
+			creatingUser = false;
 		}
-		creatingUser = false;
 	}
 
-	async function changeUserRole(userId: number, newRole: string) {
-		const res = await fetch(`/api/users/${userId}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ role: newRole })
-		});
+	/**
+	 * The role chosen in a row's select. The select shows it before the
+	 * answer comes, so it is put back to the role the account has when the
+	 * change is not made.
+	 */
+	async function changeUserRole(userId: number, select: HTMLSelectElement) {
+		const newRole = select.value;
+		const putBack = () => {
+			select.value = data.users.find((u) => u.id === userId)?.role ?? select.value;
+		};
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = await fetch(`/api/users/${userId}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ role: newRole })
+			});
+		} catch {
+			putBack();
+			showToast(NO_ANSWER, 'error', started);
+			return;
+		}
 		if (res.ok) {
+			// A change of role ends any invite to the account not yet used: it
+			// was sent to the account as it was. The answer says how many.
+			const result = await answerBody(res);
+			const invitesEnded = result?.invitesEnded;
 			await invalidateAll();
-			showToast('Role updated');
+			showToast(
+				typeof invitesEnded === 'number' && invitesEnded > 0
+					? 'Role updated. The invite sent to this account earlier no longer works: send a new one with 📧.'
+					: 'Role updated'
+			);
 		} else {
-			const err = await res.json();
-			showToast(err.message || 'Failed to update role', 'error');
+			putBack();
+			showToast(await failureMessage(res, 'Failed to update role'), 'error', started);
 		}
 	}
 
 	let resetPasswordUserId = $state<number | null>(null);
 	let resetPasswordValue = $state('');
+	/** The password the administrator has now. Asked for only when the account in the dialog is their own. */
+	let resetPasswordCurrent = $state('');
+	/**
+	 * The dialog is open on the signed-in administrator's own row. The reset
+	 * route refuses the caller's own account: their password is changed where
+	 * everyone's is, with the one they have, and their other sessions end.
+	 */
+	let resettingOwnPassword = $derived(resetPasswordUserId !== null && resetPasswordUserId === data.currentUser?.id);
+	/** The account in the dialog, from the page's list of users as last read. */
+	let resetTarget = $derived(data.users.find((u) => u.id === resetPasswordUserId));
+	/**
+	 * The page's data has been read again since the dialog opened. The list
+	 * the page was loaded with may be older than a key made since, so until
+	 * then no count is shown.
+	 */
+	let resetKeysRead = $state(false);
+	/** Which opening of the dialog the latest read belongs to. */
+	let resetOpenings = 0;
+	/**
+	 * How many API keys that account holds. A reset ends every one of them, and
+	 * the dialog says how many before it is confirmed: one of them may be the
+	 * key a script or an integration runs on. Null until the count has been
+	 * read again, and for an account the caller may not reset, which the page
+	 * is given no count for.
+	 */
+	let resetTargetKeys = $derived(resetKeysRead ? (resetTarget?.apiKeys ?? null) : null);
+
+	/** Open the dialog on an account, and read the key counts again for it. */
+	async function openResetDialog(userId: number) {
+		resetPasswordUserId = userId;
+		resetPasswordValue = '';
+		resetPasswordCurrent = '';
+		resetKeysRead = false;
+		const opening = ++resetOpenings;
+		try {
+			await invalidateAll();
+		} catch {
+			// Not read: the dialog shows no count rather than an old one.
+			return;
+		}
+		// Only if the dialog is still open on the same account, and was not
+		// opened again meanwhile.
+		if (opening === resetOpenings && resetPasswordUserId === userId) resetKeysRead = true;
+	}
+
+	/** `1 session`, `2 API keys`: a count with its noun. */
+	const counted = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
 	async function resetPassword() {
 		if (!resetPasswordUserId || !resetPasswordValue || resetPasswordValue.length < 8) return;
-		const res = await fetch(`/api/users/${resetPasswordUserId}/password`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ password: resetPasswordValue })
-		});
+		if (resettingOwnPassword && !resetPasswordCurrent) return;
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = resettingOwnPassword
+				? await fetch('/api/account/password', {
+						method: 'PUT',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ currentPassword: resetPasswordCurrent, newPassword: resetPasswordValue })
+					})
+				: await fetch(`/api/users/${resetPasswordUserId}/password`, {
+						method: 'PUT',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ password: resetPasswordValue })
+					});
+		} catch {
+			// The dialog stays open: whether the password was set is not known.
+			showToast(NO_ANSWER, 'error', started);
+			return;
+		}
 		if (res.ok) {
+			const own = resettingOwnPassword;
 			resetPasswordUserId = null;
 			resetPasswordValue = '';
-			showToast('Password reset');
+			resetPasswordCurrent = '';
+			if (own) {
+				showToast('Password changed');
+			} else {
+				// What the reset ended, in the answer's own counts.
+				const result = await answerBody(res);
+				const sessionsEnded = result?.sessionsEnded;
+				const apiKeysEnded = result?.apiKeysEnded;
+				showToast(
+					typeof sessionsEnded === 'number' && typeof apiKeysEnded === 'number'
+						? `Password reset: ${counted(sessionsEnded, 'session')} and ${counted(apiKeysEnded, 'API key')} ended`
+						: 'Password reset'
+				);
+				// The key counts are read again: the account now holds none.
+				await invalidateAll();
+			}
 		} else {
-			showToast('Failed to reset password', 'error');
+			// The server's own words: a refusal says whose password this is not to set.
+			showToast(await failureMessage(res, 'Failed to reset password'), 'error', started);
 		}
 	}
 
 	async function deleteUser(userId: number) {
-		const res = await fetch(`/api/users/${userId}`, { method: 'DELETE' });
-		if (res.ok) {
-			await invalidateAll();
-			showToast('User deleted');
-		} else {
-			const err = await res.json();
-			showToast(err.message || 'Failed to delete user', 'error');
-		}
+		if (!(await sent(() => fetch(`/api/users/${userId}`, { method: 'DELETE' }), 'Failed to delete user'))) return;
+		await invalidateAll();
+		showToast('User deleted');
 	}
 
 	async function resendInvite(userId: number) {
-		const res = await fetch(`/api/users/${userId}/invite`, { method: 'POST' });
-		if (res.ok) {
-			const result = await res.json();
-			showToast(result.message || 'Invite sent!');
-		} else {
-			const err = await res.json();
-			showToast(err.message || 'Failed to send invite', 'error');
-		}
+		const res = await sent(() => fetch(`/api/users/${userId}/invite`, { method: 'POST' }), 'Failed to send invite');
+		if (!res) return;
+		const said = (await answerBody(res))?.message;
+		showToast(typeof said === 'string' && said ? said : 'Invite sent!');
 	}
 
 	// ─── Team Management ──────────────────────────────────────────────────
@@ -644,23 +1069,24 @@
 
 	async function createTeam() {
 		if (!newTeamName.trim()) return;
-		const res = await fetch('/api/teams', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: newTeamName.trim(), emoji: newTeamEmoji })
-		});
-		if (res.ok) {
-			showCreateTeam = false;
-			newTeamName = ''; newTeamEmoji = '🏢';
-			await invalidateAll();
-			showToast('Team created');
-		} else {
-			showToast('Failed to create team', 'error');
-		}
+		const res = await sent(
+			() =>
+				fetch('/api/teams', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name: newTeamName.trim(), emoji: newTeamEmoji })
+				}),
+			'Failed to create team'
+		);
+		if (!res) return;
+		showCreateTeam = false;
+		newTeamName = ''; newTeamEmoji = '🏢';
+		await invalidateAll();
+		showToast('Team created');
 	}
 
 	async function deleteTeam(teamId: number) {
-		await fetch(`/api/teams/${teamId}`, { method: 'DELETE' });
+		if (!(await sent(() => fetch(`/api/teams/${teamId}`, { method: 'DELETE' }), 'Failed to delete team'))) return;
 		await invalidateAll();
 		showToast('Team deleted');
 	}
@@ -671,21 +1097,28 @@
 
 	async function addTeamMember() {
 		if (!addMemberTeamId || !addMemberUserId) return;
-		const res = await fetch(`/api/teams/${addMemberTeamId}/members/${addMemberUserId}`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ userId: addMemberUserId, role: addMemberRole })
-		});
-		if (res.ok) {
-			addMemberTeamId = null;
-			addMemberUserId = null;
-			await invalidateAll();
-			showToast('Member added');
-		}
+		const teamId = addMemberTeamId;
+		const userId = addMemberUserId;
+		// A member not added used to be said nowhere.
+		const res = await sent(
+			() =>
+				fetch(`/api/teams/${teamId}/members/${userId}`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ userId, role: addMemberRole })
+				}),
+			'Failed to add member'
+		);
+		if (!res) return;
+		addMemberTeamId = null;
+		addMemberUserId = null;
+		await invalidateAll();
+		showToast('Member added');
 	}
 
 	async function removeTeamMember(teamId: number, userId: number) {
-		await fetch(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE' });
+		// It used to say "Member removed" whatever the answer.
+		if (!(await sent(() => fetch(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE' }), 'Failed to remove member'))) return;
 		await invalidateAll();
 		showToast('Member removed');
 	}
@@ -708,6 +1141,8 @@
 	let smtpIsError = $state(false);
 
 	$effect(() => {
+		// The superadmin's too, and not asked for by anybody else.
+		if (!isSuperadmin) return;
 		loadSmtpConfig();
 	});
 
@@ -749,15 +1184,17 @@
 				smtpMessage = 'SMTP settings saved!';
 				smtpIsError = false;
 			} else {
-				smtpMessage = 'Failed to save SMTP settings';
+				// The server's reason, which used to be "Failed to save" for all of them.
+				smtpMessage = await failureMessage(res, 'Failed to save SMTP settings');
 				smtpIsError = true;
 			}
 		} catch {
-			smtpMessage = 'Failed to save SMTP settings';
+			smtpMessage = NO_ANSWER;
 			smtpIsError = true;
 		}
 		smtpSaving = false;
-		setTimeout(() => (smtpMessage = ''), 5000);
+		// A failure stays until the next save or test, as a failure toast does.
+		if (!smtpIsError) setTimeout(() => { if (!smtpIsError) smtpMessage = ''; }, 5000);
 	}
 
 	async function testSmtp() {
@@ -770,20 +1207,20 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ to: recipient })
 			});
-			const result = await res.json();
 			if (res.ok) {
-				smtpMessage = result.message || 'Test email sent!';
+				const said = (await answerBody(res))?.message;
+				smtpMessage = typeof said === 'string' && said ? said : 'Test email sent!';
 				smtpIsError = false;
 			} else {
-				smtpMessage = result.message || 'Test email failed';
+				smtpMessage = await failureMessage(res, 'Test email failed');
 				smtpIsError = true;
 			}
 		} catch {
-			smtpMessage = 'Test email failed';
+			smtpMessage = NO_ANSWER;
 			smtpIsError = true;
 		}
 		smtpTesting = false;
-		setTimeout(() => (smtpMessage = ''), 8000);
+		if (!smtpIsError) setTimeout(() => { if (!smtpIsError) smtpMessage = ''; }, 8000);
 	}
 </script>
 
@@ -841,10 +1278,13 @@
 			</div>
 		</section>
 
+		<!-- The superadmin's alone: the App URL, export and import, and the scheduled backups.
+		     An administrator is refused each of them by its route, and is shown one line in their place. -->
+		{#if isSuperadmin}
 		<!-- Application Settings -->
 		<section class="admin-card glass fade-in-up" style="animation-delay: 40ms">
 			<h2>🌐 Application Settings</h2>
-			<p class="section-desc">Configure the public URL for your DumpFire instance. This is used for invite emails, OAuth callbacks, and backup integrations.</p>
+			<p class="section-desc">Configure the public URL for your DumpFire instance. Every link in a mail begins with it: an invite, a request's confirmation and reply links, and the links in notifications.</p>
 			<div class="form-row" style="align-items: flex-end">
 				<div style="flex: 2; display: flex; flex-direction: column; gap: 4px">
 					<label style="font-size: 0.72rem; font-weight: 600; color: var(--text-secondary)">Application URL</label>
@@ -856,7 +1296,7 @@
 			</div>
 			{#if !appUrl}
 				<p style="font-size: 0.68rem; color: var(--accent-amber); margin-top: var(--space-xs)">
-					⚠️ No App URL set. Invite links and Google Drive OAuth will use auto-detected URLs which may not work behind reverse proxies.
+					⚠️ No App URL set. Links in mail begin with the address the server was started with (ORIGIN), and never with what a request says. If that is not the address people reach this server at, set it here.
 				</p>
 			{/if}
 		</section>
@@ -897,7 +1337,7 @@
 						<strong>Import Database</strong>
 						<p>Restore from a backup file. <span class="warning-text">This will replace ALL current data.</span></p>
 					</div>
-					<button class="btn-backup import" onclick={() => confirm('Import Database', 'This will REPLACE ALL existing data with the backup — users, teams, boards, cards, comments, labels, task requests, and settings will all be overwritten. You will need to log in again. Continue?', importDatabase)} disabled={importing}>
+					<button class="btn-backup import" onclick={openImportDialog} disabled={importing}>
 						{#if importing}
 							<span class="spinner"></span> Importing...
 						{:else}
@@ -908,7 +1348,48 @@
 				</div>
 			</div>
 
-			<input type="file" accept=".db,.json,.sqlite,.sqlite3" class="hidden-input" bind:this={fileInput} onchange={handleFileSelected} />
+			{#if importReport}
+				<div class="import-report" class:import-report-done={!importReport.trouble} role={importReport.trouble ? 'alert' : 'status'}>
+					<strong>{importReport.headline}</strong>
+					{#if importReport.detail}
+						<p class="import-report-detail">{importReport.detail}</p>
+					{/if}
+					{#if importReport.putBack}
+						<p class="import-report-detail">{importReport.putBack}</p>
+					{/if}
+					{#if importReport.workingCopy}
+						<p class="import-report-detail">{importReport.workingCopy}</p>
+					{/if}
+					{#if importReport.superadmin}
+						<p class="import-report-detail">{importReport.superadmin}</p>
+					{/if}
+					{#if importReport.tables && importReport.tables.length > 0}
+						<details class="import-report-tables">
+							<summary>All {importReport.tables.length} tables restored</summary>
+							<dl>
+								{#each importReport.tables as [table, rows]}
+									<div><dt>{table}</dt><dd>{count(rows)}</dd></div>
+								{/each}
+							</dl>
+						</details>
+					{/if}
+					{#if importReport.problems.length > 0}
+						<ul>
+							{#each importReport.problems.slice(0, 100) as problem}
+								<li>{problem}</li>
+							{/each}
+						</ul>
+						{#if importReport.problems.length > 100}
+							<p>…and {importReport.problems.length - 100} more.</p>
+						{/if}
+					{/if}
+					<button class="btn-ghost btn-sm" onclick={dismissImportReport}>
+						{importReport.reload ? 'Dismiss and reload' : 'Dismiss'}
+					</button>
+				</div>
+			{/if}
+
+			<input type="file" accept=".db,.sqlite,.sqlite3" class="hidden-input" bind:this={fileInput} onchange={handleFileSelected} />
 		</section>
 
 		<!-- Scheduled Backups -->
@@ -996,7 +1477,8 @@
 									{testingDest === dest.name ? '⏳' : '🧪'} Test
 								</button>
 								<button class="btn-ghost btn-xs" onclick={() => startEditDestination(dest)}>✏️ Edit</button>
-								<button class="btn-ghost btn-xs danger" onclick={() => confirm('Remove Destination', `Remove "${dest.name}" from backup destinations?`, async () => removeDestination(dest.name))}>🗑️</button>
+								<!-- Off while the destinations are being saved: a second removal sent before the first was answered was put back wrongly when the first was refused. -->
+								<button class="btn-ghost btn-xs danger" disabled={backupSaving} onclick={() => confirm('Remove Destination', `Remove "${dest.name}" from backup destinations?`, async () => removeDestination(dest.name))}>🗑️</button>
 							</div>
 						</div>
 						<div class="dest-card-detail">
@@ -1222,6 +1704,18 @@
 				{/if}
 			{/if}
 		</section>
+		{:else}
+		<section class="admin-card glass fade-in-up" style="animation-delay: 40ms">
+			<h2>🔒 The superadmin's</h2>
+			<p class="section-desc" style="margin-bottom: 0">
+				{#if superadminName}
+					Exporting, importing and resetting the database, the scheduled backups and their destinations, and the mail and App URL settings belong to the superadmin, <strong>{superadminName}</strong>, and are on this page for that account only.
+				{:else}
+					Exporting, importing and resetting the database, the scheduled backups and their destinations, and the mail and App URL settings belong to the superadmin, and no account is the superadmin. Whoever runs the server can make one: see "If nobody can sign in as the superadmin" in the deployment guide.
+				{/if}
+			</p>
+		</section>
+		{/if}
 
 		<!-- Board management -->
 		<section class="admin-card glass fade-in-up" style="animation-delay: 160ms">
@@ -1244,14 +1738,14 @@
 								</div>
 							</div>
 							<div class="board-actions">
-								<button class="btn-ghost action-btn" onclick={() => confirm('Clear Cards', `Remove all cards from "${board.name}"? Columns and categories will be kept.`, () => clearBoardCards(board.id))}>
+								<button class="btn-ghost action-btn" onclick={() => confirm('Clear Cards', clearCardsWarning(board.name), () => clearBoardCards(board.id))}>
 									<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 3h10M3 3V2a1 1 0 011-1h4a1 1 0 011 1v1m-6 0v7a1 1 0 001 1h4a1 1 0 001-1V3" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
 									Clear Cards
 								</button>
 								<button class="btn-ghost action-btn" onclick={() => confirm('Clear Categories', `Remove all categories from "${board.name}"?`, () => clearBoardCategories(board.id))}>
 									Clear Cats
 								</button>
-								<button class="btn-ghost action-btn danger" onclick={() => confirm('Delete Board', `Permanently delete "${board.name}" and ALL its data? This cannot be undone.`, () => deleteBoard(board.id))}>
+								<button class="btn-ghost action-btn danger" onclick={() => confirm('Delete Board', boardDeleteWarning(board.name), () => deleteBoard(board.id))}>
 									Delete
 								</button>
 							</div>
@@ -1267,6 +1761,7 @@
 				<h2>👥 User Management</h2>
 				<button class="btn-primary btn-sm" onclick={() => (showCreateUser = true)}>+ Add User</button>
 			</div>
+			<p class="section-desc">Each row shows only what you may do to that account. Only the superadmin changes an administrator's account, and nobody else changes the superadmin's: those rows show 🔒. On your own row there is only 🔑, to change your password.</p>
 
 			{#if showCreateUser}
 				<div class="inline-form">
@@ -1301,20 +1796,25 @@
 								<span class="user-row-email">{u.email}</span>
 							</div>
 							<span class="role-badge role-{u.role}">{u.role}</span>
-							{#if u.role !== 'superadmin'}
-								<select
-									value={u.role}
-									onchange={(e) => changeUserRole(u.id, (e.target as HTMLSelectElement).value)}
-									class="role-select"
-								>
-									<option value="user">User</option>
-									{#if isSuperadmin}<option value="admin">Admin</option>{/if}
-								</select>
-								<button class="btn-ghost btn-sm" onclick={() => { resetPasswordUserId = u.id; resetPasswordValue = ''; }} title="Reset password">🔑</button>
-								<button class="btn-ghost btn-sm" onclick={() => resendInvite(u.id)} title="Resend invite email">📧</button>
-								<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete User', `Delete user "${u.username}"? This removes them from all teams and boards.`, () => deleteUser(u.id))} title="Delete user">🗑️</button>
+							<!-- Only what the server would let you do to this account (the rule in $lib/account-rule.ts). On your own row, only the password. -->
+							{#if mayManageAccount(data.currentUser, u)}
+								{#if u.id !== data.currentUser.id}
+									<select
+										value={u.role}
+										onchange={(e) => changeUserRole(u.id, e.currentTarget)}
+										class="role-select"
+									>
+										<option value="user">User</option>
+										{#if isSuperadmin}<option value="admin">Admin</option>{/if}
+									</select>
+								{/if}
+								<button class="btn-ghost btn-sm" onclick={() => openResetDialog(u.id)} title="Reset password">🔑</button>
+								{#if u.id !== data.currentUser.id}
+									<button class="btn-ghost btn-sm" onclick={() => resendInvite(u.id)} title="Resend invite email">📧</button>
+									<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete User', userDeleteWarning(u.username), () => deleteUser(u.id))} title="Delete user">🗑️</button>
+								{/if}
 							{:else}
-								<span class="superadmin-lock" title="Superadmin cannot be modified">🔒</span>
+								<span class="superadmin-lock" title={u.role === 'superadmin' ? "The superadmin's account is theirs alone" : "Only the superadmin can change an administrator's account"}>🔒</span>
 							{/if}
 						</div>
 					{/each}
@@ -1328,12 +1828,24 @@
 			<div class="modal-overlay" role="dialog" aria-modal="true">
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
 				<div class="modal-content" onclick={(e) => e.stopPropagation()} role="document">
-					<h2>🔑 Reset Password</h2>
-					<p>Enter a new password for {data.users.find(u => u.id === resetPasswordUserId)?.username || 'user'}.</p>
-					<input type="password" placeholder="New password (min 8 chars)" bind:value={resetPasswordValue} class="form-input" style="width: 100%; margin: var(--space-md) 0;" />
+					<h2>🔑 {resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}</h2>
+					{#if resettingOwnPassword}
+						<!-- Their own account: the password they have is asked for, as on the Account page. -->
+						<p>This is your own account. Enter your current password and a new one. Your other sessions will be signed out.</p>
+						<!-- Sent with no endApiKeys, so the keys are kept. The Account page offers the choice. -->
+						<p>Your API keys keep working. To end them too, change your password on the <a href="/account">Account page</a>.</p>
+						<input type="password" placeholder="Current password" bind:value={resetPasswordCurrent} class="form-input" style="width: 100%; margin: var(--space-md) 0 0;" autocomplete="current-password" />
+					{:else}
+						<p>Enter a new password for {resetTarget?.username || 'user'}.</p>
+						{#if resetTargetKeys !== null && resetTargetKeys > 0}
+							<p class="warning-text">They have {counted(resetTargetKeys, 'API key')}, which {resetTargetKeys === 1 ? 'stops' : 'stop'} working.</p>
+						{/if}
+						<p>They are signed out everywhere, every API key they have stops working, and any invite not yet used stops working.</p>
+					{/if}
+					<input type="password" placeholder="New password (min 8 chars)" bind:value={resetPasswordValue} class="form-input" style="width: 100%; margin: var(--space-md) 0;" autocomplete="new-password" />
 					<div class="modal-actions">
 						<button class="btn-ghost" onclick={() => (resetPasswordUserId = null)}>Cancel</button>
-						<button class="btn-primary" onclick={resetPassword} disabled={resetPasswordValue.length < 8}>Reset Password</button>
+						<button class="btn-primary" onclick={resetPassword} disabled={resetPasswordValue.length < 8 || (resettingOwnPassword && !resetPasswordCurrent)}>{resettingOwnPassword ? 'Change Password' : 'Reset Password'}</button>
 					</div>
 				</div>
 			</div>
@@ -1397,7 +1909,8 @@
 			{/if}
 		</section>
 
-		<!-- SMTP Configuration -->
+		<!-- SMTP Configuration: the superadmin's alone, as above -->
+		{#if isSuperadmin}
 		<section class="admin-card glass fade-in-up" style="animation-delay: 220ms">
 			<h2>📧 Email / SMTP</h2>
 			<p class="section-desc">Configure SMTP to enable email notifications, user invites, and task alerts.</p>
@@ -1435,6 +1948,7 @@
 				</div>
 			{/if}
 		</section>
+		{/if}
 
 		<!-- Danger zone -->
 		<section class="admin-card glass danger-zone fade-in-up" style="animation-delay: 240ms">
@@ -1445,18 +1959,18 @@
 				<div class="danger-item">
 					<div>
 						<strong>Purge Archived Cards</strong>
-						<p>Permanently deletes all archived/soft-deleted cards and their subtasks, labels, and assignees. This cannot be undone.</p>
+						<p>{PURGE_DESCRIPTION}</p>
 					</div>
-					<button class="btn-outline" onclick={() => confirm('Purge Archived Cards', 'This will permanently delete ALL archived cards across every board, including their subtasks, labels, and assignees. This cannot be undone. Are you sure?', purgeArchivedCards)} disabled={purgingArchived}>
+					<button class="btn-outline" onclick={() => confirm('Purge Archived Cards', PURGE_WARNING, purgeArchivedCards)} disabled={purgingArchived}>
 						{purgingArchived ? 'Purging...' : 'Purge All'}
 					</button>
 				</div>
 				<div class="danger-item">
 					<div>
 						<strong>Vacuum Database</strong>
-						<p>Reclaims unused space and resets auto-increment IDs for deleted records. New boards/cards will get lower IDs.</p>
+						<p>Rebuilds the database file to reclaim unused space. No data is changed, and ids are not reset.</p>
 					</div>
-					<button class="btn-outline" onclick={() => confirm('Vacuum Database', 'This will optimise the database and reset auto-increment counters. Existing data is not affected.', vacuumDatabase)}>
+					<button class="btn-outline" onclick={() => confirm('Vacuum Database', 'This rebuilds the database file to reclaim unused space. No data is changed, and ids are not reset.', vacuumDatabase)}>
 						Vacuum
 					</button>
 				</div>
@@ -1469,15 +1983,18 @@
 						Reset XP
 					</button>
 				</div>
+				<!-- The superadmin's alone: whoever sets up after a reset is the superadmin. -->
+				{#if isSuperadmin}
 				<div class="danger-item">
 					<div>
 						<strong>Reset Everything</strong>
-						<p>Deletes ALL data including boards, users, teams, and sessions. You will be redirected to initial setup.</p>
+						<p>Deletes ALL data including boards, users, teams, and sessions. The system log and the backup history are kept. You will be redirected to initial setup.</p>
 					</div>
-					<button class="btn-danger-solid" onclick={() => confirm('Reset Everything', 'This will DELETE EVERYTHING — all boards, users, teams, and settings. You will need to set up DumpFire from scratch. Are you absolutely sure?', resetDatabase)}>
+					<button class="btn-danger-solid" onclick={() => confirm('Reset Everything', RESET_WARNING, resetDatabase)}>
 						Reset Everything
 					</button>
 				</div>
+				{/if}
 			</div>
 		</section>
 	</main>
@@ -1494,6 +2011,68 @@
 			<div class="modal-actions">
 				<button class="btn-ghost" onclick={() => (confirmAction.show = false)}>Cancel</button>
 				<button class="btn-danger-solid" onclick={async () => { confirmAction.show = false; await confirmAction.action(); }}>Confirm</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- What a reset has to say: that it failed, or what it could not move. No way out of it but its one button. -->
+{#if resetNotice}
+	<div class="modal-overlay" role="alertdialog" aria-modal="true" aria-label={resetNotice.title}>
+		<div class="modal-content confirm-modal" role="document" style="max-width: 520px">
+			<h2>{resetNotice.title}</h2>
+			<p style={resetNotice.problems.length > 0 ? 'margin-bottom: var(--space-sm)' : undefined}>{resetNotice.message}</p>
+			{#if resetNotice.problems.length > 0}
+				<ul class="reset-problems">
+					{#each resetNotice.problems.slice(0, 100) as problem}
+						<li>{problem}</li>
+					{/each}
+					{#if resetNotice.problems.length > 100}
+						<li>…and {resetNotice.problems.length - 100} more.</li>
+					{/if}
+				</ul>
+			{/if}
+			<div class="modal-actions">
+				{#if resetNotice.redirect}
+					<button class="btn-primary" onclick={() => { window.location.href = resetNotice?.redirect ?? '/setup'; }}>Continue to set-up</button>
+				{:else}
+					<button class="btn-ghost" onclick={() => (resetNotice = null)}>Close</button>
+				{/if}
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Import dialog: the warning, and which of the two ways to restore -->
+{#if showImportDialog}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<div class="modal-overlay" role="dialog" aria-modal="true">
+		<!-- svelte-ignore a11y_click_events_have_key_events -->
+		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px">
+			<h2>Import Database</h2>
+			<p style="margin-bottom: var(--space-md)">This will REPLACE ALL existing data with the backup — users, teams, boards, cards, comments, labels, task requests, and settings will all be overwritten. Everybody is signed out, you included: no session is restored, whatever the backup holds, so you will sign in again with an account the backup has. Invites that have not been used yet stop working. A backup with users and no superadmin among them is refused.</p>
+			<div class="import-choices" role="radiogroup" aria-label="How to restore the backup">
+				<label class="import-choice" class:selected={importOutside === 'keep'}>
+					<input type="radio" name="import-outside" value="keep" bind:group={importOutside} />
+					<span>
+						<strong>Restore everything as it is</strong>
+						<span class="import-choice-desc">For putting this installation back. Backup destinations, report schedules, mail settings and webhooks come back exactly as the backup has them, and act as they did.</span>
+					</span>
+				</label>
+				<label class="import-choice" class:selected={importOutside === 'off'}>
+					<input type="radio" name="import-outside" value="off" bind:group={importOutside} />
+					<span>
+						<strong>Restore as a working copy</strong>
+						<span class="import-choice-desc">For a copy that must not reach outside. Report schedules and webhooks are switched off, the backup schedule is switched off and its destinations removed, and the mail settings are removed. Everything else is restored.</span>
+					</span>
+				</label>
+				{#if data.importOutsideDefault === 'off' && importOutside === 'off'}
+					<span class="import-default-note">Working copy is selected because this instance's schedulers are off.</span>
+				{/if}
+			</div>
+			<div class="modal-actions">
+				<button class="btn-ghost" onclick={() => (showImportDialog = false)}>Cancel</button>
+				<button class="btn-danger-solid" onclick={async () => { showImportDialog = false; await importDatabase(); }}>Confirm</button>
 			</div>
 		</div>
 	</div>
@@ -1530,9 +2109,7 @@
 {/if}
 
 <!-- Toast -->
-{#if toast}
-	<div class="toast-notification" class:toast-error={toastType === 'error'}>{toast}</div>
-{/if}
+<Toast />
 
 <style>
 	.admin-page { min-height: 100vh; padding-top: 64px; }
@@ -1650,6 +2227,36 @@
 
 	.hidden-input { display: none; }
 
+	/* What an import could not do: stays until dismissed */
+	.import-report {
+		margin-top: var(--space-md); padding: var(--space-lg);
+		background: rgba(244, 63, 94, 0.08);
+		border: 1px solid var(--accent-rose); border-radius: var(--radius-md);
+		font-size: 0.85rem; line-height: 1.5;
+		display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-sm);
+	}
+	.import-report strong { color: var(--accent-rose); }
+	.import-report ul {
+		margin: 0; padding-left: var(--space-lg);
+		max-height: 240px; overflow-y: auto; align-self: stretch;
+		color: var(--text-secondary); overflow-wrap: anywhere;
+	}
+	.import-report p { margin: 0; color: var(--text-tertiary); }
+	/* Nothing wrong: what was restored, and what a working copy switched off */
+	.import-report-done { background: rgba(52, 211, 153, 0.08); border-color: var(--accent-emerald); }
+	.import-report-done strong { color: var(--accent-emerald); }
+	.import-report strong { font-size: 0.95rem; }
+	.import-report p.import-report-detail { color: var(--text-secondary); }
+	.import-report-tables { align-self: stretch; color: var(--text-secondary); }
+	.import-report-tables summary { cursor: pointer; color: var(--text-tertiary); font-size: 0.8rem; }
+	.import-report-tables dl {
+		margin: var(--space-sm) 0 0; display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px var(--space-lg);
+	}
+	.import-report-tables dl div { display: flex; justify-content: space-between; gap: var(--space-md); font-size: 0.8rem; }
+	.import-report-tables dt { color: var(--text-tertiary); }
+	.import-report-tables dd { margin: 0; font-variant-numeric: tabular-nums; }
+
 	/* Board management */
 	.board-list { display: flex; flex-direction: column; gap: var(--space-sm); }
 	.board-row {
@@ -1708,21 +2315,35 @@
 	.confirm-modal h2 { font-size: 1.1rem; margin-bottom: var(--space-sm); }
 	.confirm-modal p { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: var(--space-xl); line-height: 1.5; }
 	.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-md); }
+	/* What a reset could not move to the trash */
+	.reset-problems {
+		margin: 0 0 var(--space-xl); padding-left: var(--space-lg);
+		max-height: 240px; overflow-y: auto;
+		font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; overflow-wrap: anywhere;
+	}
+
+	/* Import dialog: the two ways to restore */
+	.import-choices { display: flex; flex-direction: column; gap: var(--space-sm); margin-bottom: var(--space-xl); }
+	.import-choice {
+		display: flex; align-items: flex-start; gap: var(--space-sm);
+		padding: var(--space-md); background: var(--bg-base);
+		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+		cursor: pointer; transition: border-color 0.2s ease;
+	}
+	.import-choice:hover, .import-choice.selected { border-color: var(--accent-indigo); }
+	/* The global rule for inputs gives every one of them the full width and a
+	   text field's padding. A radio button takes its own size here, and the
+	   words beside it take the rest of the row. */
+	.import-choice input {
+		width: auto; padding: 0; margin: 3px 0 0; flex: none;
+		border: none; background: none; cursor: pointer;
+	}
+	.import-choice > span { flex: 1; min-width: 0; }
+	.import-choice strong { font-size: 0.9rem; display: block; margin-bottom: 4px; }
+	.import-choice-desc { font-size: 0.78rem; color: var(--text-tertiary); line-height: 1.4; display: block; }
+	.import-default-note { font-size: 0.78rem; color: var(--text-secondary); line-height: 1.4; }
 
 	.empty-msg { font-size: 0.85rem; color: var(--text-tertiary); text-align: center; padding: var(--space-xl); }
-
-	.toast-notification {
-		position: fixed; bottom: var(--space-xl); left: 50%; transform: translateX(-50%);
-		background: var(--accent-emerald); color: white; padding: var(--space-sm) var(--space-xl);
-		border-radius: var(--radius-full); font-size: 0.85rem; font-weight: 600;
-		box-shadow: var(--shadow-lg); z-index: 9999;
-		animation: toastIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-	}
-	.toast-error { background: var(--accent-rose); }
-	@keyframes toastIn {
-		from { opacity: 0; transform: translateX(-50%) translateY(30px) scale(0.9); }
-		to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
-	}
 
 	/* Section header with title + action */
 	.section-header {

@@ -1,33 +1,24 @@
 /**
  * /api/admin/export — Download a complete SQLite database backup.
  *
- * Uses VACUUM INTO to create a self-contained .db copy that includes all WAL
- * data. This captures everything automatically — no need to list tables.
+ * The superadmin's alone: the file holds every user's password hash, the mail
+ * password and every backup destination's credentials.
+ *
+ * It is the copy a scheduled backup uploads, made by the same function
+ * (`generateBackupData`): VACUUM INTO, which captures everything, WAL
+ * included, with no need to list tables, and then cleared of every session
+ * and every unused invite. So the file signs nobody in, and restoring it signs
+ * everybody out.
  */
 
-import { error } from '@sveltejs/kit';
-import { sqlite, getDbPath } from '$lib/server/db';
-import { readFileSync, unlinkSync } from 'node:fs';
+import { generateBackupData } from '$lib/server/backup';
+import { requireSuperadmin } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals }) => {
-	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
-		throw error(403, 'Forbidden');
-	}
+	requireSuperadmin(locals.user);
 
-	const dbPath = getDbPath();
-	const backupPath = dbPath + '.export-temp';
-
-	// Remove any stale temp file
-	try { unlinkSync(backupPath); } catch {}
-
-	// VACUUM INTO creates a complete, self-contained copy including all WAL data
-	sqlite.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
-
-	const dbBuffer = readFileSync(backupPath);
-
-	// Clean up temp file
-	try { unlinkSync(backupPath); } catch {}
+	const dbBuffer = generateBackupData();
 
 	const timestamp = new Date().toISOString().slice(0, 10);
 

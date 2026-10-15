@@ -1,204 +1,115 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { cards, columns, userXp } from '$lib/server/db/schema';
+import { inTransaction } from '$lib/server/db/transaction';
+import { cards } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { emit } from '$lib/server/events';
-import { canEditBoard } from '$lib/server/board-access';
-import { notifyCardMoved, notifyRequesterProgress } from '$lib/server/notifications';
-import { resolveBaseUrl } from '$lib/server/email';
-import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
-import { applyUnblockEffects } from '$lib/server/planning';
-import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
+import { requireColumn, requireUser } from '$lib/server/route-guards';
+import { linkBaseUrl } from '$lib/server/email';
+import {
+	applyCardMove,
+	announceCardMoves,
+	recordUnblockedByMoves,
+	CardMoveError,
+	type CardMove
+} from '$lib/server/card-moves';
+import { readBody, readId, readNumber, readObjects } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
+/**
+ * PUT /api/cards/reorder — persist the result of a drag and drop.
+ *
+ * Body: `{ updates: [{ id, columnId, position }] }` — every card whose column
+ * or position the drop changed. Each entry is an object, its `id` and
+ * `columnId` ids and its `position` a number, if sent (card 2117):
+ * `updates[<n>].position must be a number`. Text was stored as a position,
+ * and an entry that was not an object was a 500.
+ */
 export const PUT: RequestHandler = async ({ request, url, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const body = await readBody(request);
 
-	const { updates, boardId } = await request.json();
+	const updates = readObjects(body, 'updates', {
+		required: true,
+		says: { missing: 'updates must be an array', type: 'updates must be an array' }
+	});
+	if (updates.length === 0) return json({ success: true });
 
-	// Use authenticated user identity — never trust client-supplied userName
-	const userName = locals.user.username;
-	const userEmoji = locals.user.emoji || '👤';
+	const baseUrl = linkBaseUrl(url);
 
-	// Verify board access
-	if (boardId && !canEditBoard(locals.user, boardId)) {
-		throw error(403, 'No edit access to this board');
-	}
-
-	// Snapshot old column assignments to detect moves to Complete.
-	//
-	// Every card that completes in this request is collected, not just the last
-	// one. These were single variables, each overwritten by the next qualifying
-	// card, so dragging two cards to Complete in one drop stamped `completedAt`
-	// on one of them, awarded XP once and ran the unblock hook once — and the
-	// other card sat in the Complete column with no completion date, invisible
-	// to every report that buckets by `completedAt`.
-	const completions: {
-		id: number;
-		title: string;
-		priority: string;
-		alreadyCompleted: boolean;
-	}[] = [];
-
-	if (boardId) {
-		const completeColumns = db
-			.select({ id: columns.id, title: columns.title })
-			.from(columns)
-			.where(eq(columns.boardId, boardId))
-			.all()
-			.filter((col) => isCompleteColumnTitle(col.title))
-			.map((c) => c.id);
-
-		if (completeColumns.length > 0) {
-			for (const update of updates) {
-				if (completeColumns.includes(update.columnId)) {
-					// Check if this card was previously NOT in a complete column
-					const existing = db.select().from(cards).where(eq(cards.id, update.id)).get();
-					if (existing && !completeColumns.includes(existing.columnId)) {
-						// Block completion if subtasks or sub-boards are incomplete
-						const blocker = getCompletionBlocker(update.id);
-						if (blocker) {
-							throw error(409, blocker);
-						}
-						completions.push({
-							id: existing.id,
-							title: existing.title,
-							priority: existing.priority,
-							// Already completed once before — no XP, to close the
-							// out-and-back-in exploit.
-							alreadyCompleted: !!existing.completedAt
-						});
-					}
+	// One transaction from the first check to the last write. The checks read
+	// the rows the moves then change, so nothing can alter them in between, and
+	// a refusal or a failed write leaves the board as it was.
+	try {
+		inTransaction(() => {
+			// Work out which board this reorder is on from the rows themselves: the
+			// column each card is in now, and the column each is going to. The body's
+			// `boardId` is ignored. It used to be the only thing checked, and when it
+			// was left out nothing was checked at all — any signed-in user could move
+			// any card on any board by omitting it.
+			//
+			// Checked once per distinct column, not once per card: a drop re-sends the
+			// position of every card in the columns it touched.
+			const columnBoards = new Map<number, number>();
+			const editableBoardOf = (columnId: number): number => {
+				let found = columnBoards.get(columnId);
+				if (found === undefined) {
+					found = requireColumn(user, columnId, 'edit').boardId;
+					columnBoards.set(columnId, found);
 				}
-			}
-		}
-	}
+				return found;
+			};
 
-	const movedToComplete = completions.length > 0;
-	const completedIds = new Set(completions.map((c) => c.id));
-
-	// Track the most recent cross-column move for toast notification
-	let movedCardTitle = '';
-	let movedFromCol = '';
-	let movedToCol = '';
-
-	for (const update of updates) {
-		// Track column changes for notifications
-		const existingCard = db.select().from(cards).where(eq(cards.id, update.id)).get();
-		const movedColumn = existingCard && existingCard.columnId !== update.columnId;
-
-		// Moving a card IS an edit, and `updatedAt` has to say so. It did not:
-		// the v1 move endpoint stamped it and this one did not, so a card dragged
-		// across the board kept `updatedAt === createdAt` and still looked as
-		// though nothing had ever happened to it. Reports read that as "raised and
-		// untouched", which is how work that was actively in flight came out in a
-		// management report as "to do".
-		//
-		// Position-only reordering within a column is excluded deliberately —
-		// nothing about the card changed, only its neighbours.
-		db.update(cards)
-			.set({
-				columnId: update.columnId,
-				position: update.position,
-				...(movedColumn ? { updatedAt: new Date().toISOString() } : {})
-			})
-			.where(eq(cards.id, update.id))
-			.run();
-
-		// Fire move notification if card changed columns
-		if (movedColumn && existingCard && boardId) {
-			const fromCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, existingCard.columnId)).get();
-			const toCol = db.select({ title: columns.title }).from(columns).where(eq(columns.id, update.columnId)).get();
-			if (fromCol && toCol) {
-				movedCardTitle = existingCard.title;
-				movedFromCol = fromCol.title;
-				movedToCol = toCol.title;
-				const baseUrl = resolveBaseUrl(request, url);
-
-				// Record EVERY card that changed column, not just the last one the
-				// loop happened to see. This is the write that was missing entirely:
-				// a card dragged to Complete in the UI produced notifications, XP and
-				// a celebration, but no audit entry — so the log said 103 completions
-				// where the cards said 145.
-				const completing = isCompleteColumnTitle(toCol.title);
-				logUiActivity({
-					boardId,
-					cardId: update.id,
-					action: completing ? ACTIONS.cardCompleted : ACTIONS.cardMoved,
-					detail: `${existingCard.title}: ${fromCol.title} → ${toCol.title}`,
-					...actorOf(locals.user)
-				});
-				notifyCardMoved(boardId, update.id, existingCard.title, userName, fromCol.title, toCol.title, baseUrl);
-
-				// Notify the original requester about progress
-				notifyRequesterProgress({
-					cardId: update.id,
-					action: completedIds.has(update.id) ? 'completed' : 'moved',
-					summary: `${fromCol.title} → ${toCol.title}`,
-					actorName: userName,
-					baseUrl,
-					fromColumn: fromCol.title,
-					toColumn: toCol.title,
-					actorUserId: locals.user.id
-				});
-			}
-		}
-	}
-
-	// Stamp completedAt on every card that completed, not just one of them.
-	// Reports bucket by this field, so a card that lands in Complete without it
-	// is delivered work that no report will ever count.
-	if (movedToComplete) {
-		const completedAt = new Date().toISOString();
-		const baseUrl = resolveBaseUrl(request, url);
-		for (const c of completions) {
-			db.update(cards).set({ completedAt }).where(eq(cards.id, c.id)).run();
-
-			// Anything that was waiting on this card may now be startable.
-			applyUnblockEffects(c.id, locals.user, baseUrl);
-		}
-	}
-
-	if (boardId) {
-		emit(boardId, 'update', {
-			type: 'card',
-			action: movedCardTitle ? 'moved' : 'reorder',
-			cardTitle: movedCardTitle || undefined,
-			fromColumn: movedFromCol || undefined,
-			toColumn: movedToCol || undefined,
-			userName,
-			userEmoji
-		});
-		// XP for every first-time completion in this request, summed. Cards
-		// completed once before earn nothing, which is what closes the
-		// out-of-Complete-and-back-in exploit.
-		if (movedToComplete && userName) {
-			const xpMap: Record<string, number> = { low: 50, medium: 100, high: 150, critical: 200 };
-			const xpAmount = completions
-				.filter((c) => !c.alreadyCompleted)
-				.reduce((sum, c) => sum + (xpMap[c.priority] || 100), 0);
-
-			if (xpAmount > 0) {
-				const existing = db.select().from(userXp).where(eq(userXp.name, userName)).get();
-				if (existing) {
-					db.update(userXp)
-						.set({ xp: existing.xp + xpAmount, emoji: userEmoji || existing.emoji })
-						.where(eq(userXp.name, userName)).run();
-				} else {
-					db.insert(userXp).values({ name: userName, xp: xpAmount, emoji: userEmoji || '👤' }).run();
-				}
-				emit(boardId, 'xp-update', {});
-			}
-
-			// One celebration names the last card completed, as it always did.
-			emit(boardId, 'celebrate', {
-				type: 'complete',
-				cardTitle: completions[completions.length - 1].title,
-				userName: userName,
-				userEmoji: userEmoji || '👤',
-				xpGained: xpAmount
+			// Each entry names two rows that are guarded, its card and the column it
+			// goes to, so their ids are read first.
+			const boardIds = new Set<number>();
+			const drops = updates.map((update, i) => {
+				const cardId = readId(update, 'id', { required: true, says: `updates[${i}].id must be an id` });
+				const card = db
+					.select({ columnId: cards.columnId })
+					.from(cards)
+					.where(eq(cards.id, cardId))
+					.get();
+				if (!card) throw error(404, `Card ${cardId} not found`);
+				boardIds.add(editableBoardOf(card.columnId));
+				const toColumnId = readId(update, 'columnId', { required: true, says: `updates[${i}].columnId must be an id` });
+				boardIds.add(editableBoardOf(toColumnId));
+				return { cardId, toColumnId };
 			});
-		}
+
+			// A drag and drop happens on one board. Moving a card to another board is a
+			// different operation with its own routes.
+			if (boardIds.size !== 1) throw error(400, 'A reorder must stay within one board');
+
+			// Then each position, once every card and column is known to be the caller's.
+			const positions = updates.map((update, i) =>
+				readNumber(update, 'position', { says: `updates[${i}].position must be a number` })
+			);
+
+			// Every card in the drop moves or none does. One that cannot be completed —
+			// open subtasks, say — rolls the whole drop back, so the board never ends up
+			// showing half of what was dragged.
+			const moves: CardMove[] = [];
+			for (const [i, drop] of drops.entries()) {
+				moves.push(
+					applyCardMove({
+						cardId: drop.cardId,
+						toColumnId: drop.toColumnId,
+						position: positions[i],
+						actor: user,
+						source: 'ui'
+					})
+				);
+			}
+
+			// After the last move, so that a card this drop both unblocked and
+			// completed gets no notice. Nothing is announced before the commit.
+			const unblocked = recordUnblockedByMoves(moves, user);
+			announceCardMoves(moves, unblocked, user, 'ui', baseUrl);
+		});
+	} catch (e) {
+		if (e instanceof CardMoveError) throw error(e.status, e.message);
+		throw e;
 	}
+
 	return json({ success: true });
 };

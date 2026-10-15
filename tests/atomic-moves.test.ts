@@ -1,0 +1,889 @@
+/**
+ * Card and subtask moves and completion are all or nothing, and nobody is told
+ * of one until it is committed.
+ *
+ * Each route here makes several writes for one request: the card, the XP, the
+ * activity entry, the "Unblocked" notice on whatever was waiting. Most tests
+ * use `eachWriteInTurn`, which makes the request once to count its writes and
+ * then once more for each of them, with that write failing, and checks every
+ * time that not one row changed and nothing was sent.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { eq, inArray } from 'drizzle-orm';
+import { db } from '$lib/server/db';
+import { inTransaction } from '$lib/server/db/transaction';
+import {
+	activityLog,
+	boardMembers,
+	cardComments,
+	cardLabels,
+	cards,
+	subtasks,
+	taskRequests,
+	teamMembers,
+	tokenUsage,
+	userXp,
+	workDependencies,
+	type Card
+} from '$lib/server/db/schema';
+import type { SessionUser } from '$lib/server/auth';
+import { createDependencyBatch, recordUnblocked } from '$lib/server/planning';
+import { recordTokenUsageBatch } from '$lib/server/tokens';
+import { api } from './helpers/api';
+import { eachWriteInTurn } from './helpers/each-write';
+import { effects, type Effects, type RecordedEffect } from './helpers/effects';
+import {
+	addBoardMember,
+	assignCard,
+	makeBoard,
+	makeCard,
+	makeDependency,
+	makeLabel,
+	makeSmtp,
+	makeSubtask,
+	makeTeam,
+	makeUser,
+	makeWebhook,
+	resetDb,
+	shareBoardWithTeam,
+	type BoardFixture
+} from './helpers/fixtures';
+import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+
+beforeEach(resetDb);
+
+const cardRow = (id: number) => db.select().from(cards).where(eq(cards.id, id)).get()!;
+const notices = () => db.select().from(cardComments).all();
+const actions = () => db.select().from(activityLog).all().map((e) => e.action);
+
+/** A recorded effect in a few words, so that a whole request reads as a list. */
+function name(effect: RecordedEffect): string {
+	if (effect.kind === 'webhook') return `webhook ${effect.event}`;
+	if (effect.kind === 'email') return `email to ${effect.to}: ${effect.subject}`;
+	return `event ${effect.event}${effect.data?.action ? ` (${effect.data.action})` : ''}`;
+}
+
+/** Someone outside asked for this card's work, and is told how it goes. */
+function makeRequestFor(card: Card, owner: SessionUser): void {
+	db.insert(taskRequests)
+		.values({
+			targetType: 'user',
+			targetId: owner.id,
+			requesterName: 'Rita',
+			requesterEmail: 'rita@example.test',
+			title: 'Please build this',
+			status: 'accepted',
+			accessToken: 'a'.repeat(64),
+			resolvedBy: owner.id,
+			resolvedCardId: card.id
+		})
+		.run();
+}
+
+type Scene = {
+	owner: SessionUser;
+	/** Assigned to both cards, and a viewer of A. */
+	assignee: SessionUser;
+	A: BoardFixture;
+	/** The card the request moves. */
+	first: Card;
+	/** A card waiting on `first` and on nothing else. */
+	waiting: Card;
+};
+
+/**
+ * Board A with a webhook, mail switched on, a card to move and a card waiting
+ * on it. Both have an assignee, so both a "moved" and an "unblocked" mail have
+ * somebody to go to. The assignee can open A: an assignee who cannot is not
+ * mailed about its cards (card 2180).
+ */
+function scene(): Scene {
+	const owner = makeUser({ username: 'owner' });
+	const assignee = makeUser({ username: 'assignee' });
+	const A = makeBoard({ owner, name: 'A' });
+	addBoardMember(A.board, assignee, 'viewer');
+	makeSmtp();
+	makeWebhook(A.board);
+	const first = makeCard(A.cols['To Do'], { title: 'First', priority: 'high' });
+	const waiting = makeCard(A.cols['To Do'], { title: 'Waiting' });
+	assignCard(first, assignee);
+	assignCard(waiting, assignee);
+	makeDependency({ blocked: waiting, blocker: first });
+	return { owner, assignee, A, first, waiting };
+}
+
+describe('PUT /api/cards/:id', () => {
+	it('with a move and another field, failed at each write, leaves the card unmoved and unedited', async () => {
+		const run = await eachWriteInTurn({
+			build: scene,
+			request: ({ owner, A, first }) =>
+				api('PUT', `/api/cards/${first.id}`, {
+					user: owner,
+					body: { columnId: A.cols['Complete'].id, title: 'Renamed' }
+				}),
+			afterSuccess: ({ A, first, waiting }, res) => {
+				expect(res.status).toBe(200);
+				expect(cardRow(first.id)).toMatchObject({ columnId: A.cols['Complete'].id, title: 'Renamed' });
+				expect(res.body).toMatchObject({ columnId: A.cols['Complete'].id, title: 'Renamed' });
+				expect(actions()).toEqual(['card_completed', 'card_updated']);
+				expect(notices().map((n) => n.cardId)).toEqual([waiting.id]);
+			}
+		});
+
+		// The move, the XP and its entry; the edit and its entry; the notice. The
+		// move used to be committed before the fourth of these was attempted.
+		expect(run.writes.map((sql) => sql.split(/[ (]/).slice(0, 3).join(' '))).toEqual([
+			'update "cards" set',
+			'insert into "user_xp"',
+			'insert into "activity_log"',
+			'update "cards" set',
+			'insert into "activity_log"',
+			'insert into "card_comments"'
+		]);
+		expect(run.effects.map(name)).toEqual([
+			'webhook card.completed',
+			'webhook card.updated',
+			'email to assignee@example.test: Card moved: First → Complete',
+			'email to assignee@example.test: Unblocked: Waiting',
+			'event update',
+			'event update (moved)',
+			'event xp-update',
+			'event celebrate'
+		]);
+	});
+
+	it('with an edit alone, saves the edit and its activity entry together', async () => {
+		const run = await eachWriteInTurn({
+			build: scene,
+			request: ({ owner, first }) =>
+				api('PUT', `/api/cards/${first.id}`, { user: owner, body: { title: 'Renamed', priority: 'low' } }),
+			afterSuccess: ({ first }) => {
+				expect(cardRow(first.id)).toMatchObject({ title: 'Renamed', priority: 'low' });
+				expect(actions()).toEqual(['card_updated']);
+			}
+		});
+
+		expect(run.writes).toHaveLength(2);
+		expect(run.effects.map(name)).toEqual(['webhook card.updated', 'event update']);
+	});
+
+	it('refused as a move, saves nothing of the edit sent with it and announces nothing', async () => {
+		const { owner, A, first } = scene();
+		makeSubtask(first, { completed: false });
+		const before = snapshotDb();
+		const sent = effects();
+
+		try {
+			const res = await api('PUT', `/api/cards/${first.id}`, {
+				user: owner,
+				body: { columnId: A.cols['Complete'].id, title: 'Renamed' }
+			});
+			await sent.settle();
+
+			// The refusal reaches the caller as the 409 it always was.
+			expect(res.status).toBe(409);
+			expect(res.body.message).toMatch(/1 incomplete subtask/);
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('answers 403 from inside the transaction, having written nothing', async () => {
+		const { A, first } = scene();
+		const outsider = makeUser({ username: 'outsider' });
+		const before = snapshotDb();
+
+		const res = await api('PUT', `/api/cards/${first.id}`, {
+			user: outsider,
+			body: { columnId: A.cols['Complete'].id, title: 'Hijacked' }
+		});
+
+		expect(res.status).toBe(403);
+		expectUnchanged(before);
+	});
+});
+
+describe('PUT /api/cards/reorder', () => {
+	/** A drop that completes two cards and shifts a third within its column. */
+	const drop = ({ owner, A, first }: Scene, second: Card, third: Card) =>
+		api('PUT', '/api/cards/reorder', {
+			user: owner,
+			body: {
+				updates: [
+					{ id: first.id, columnId: A.cols['Complete'].id, position: 0 },
+					{ id: second.id, columnId: A.cols['Complete'].id, position: 1 },
+					{ id: third.id, columnId: A.cols['To Do'].id, position: 0 }
+				]
+			}
+		});
+
+	const withTwoMore = () => {
+		const s = scene();
+		const second = makeCard(s.A.cols['To Do'], { title: 'Second', priority: 'low' });
+		const third = makeCard(s.A.cols['To Do'], { title: 'Third', position: 4 });
+		return { ...s, second, third };
+	};
+
+	it('moves every card of a drop or none, whichever write fails', async () => {
+		const run = await eachWriteInTurn({
+			build: withTwoMore,
+			request: (s) => drop(s, s.second, s.third),
+			afterSuccess: ({ A, first, second, third, waiting, owner }, res) => {
+				expect(res.status).toBe(200);
+				expect(cardRow(first.id).columnId).toBe(A.cols['Complete'].id);
+				expect(cardRow(second.id).columnId).toBe(A.cols['Complete'].id);
+				expect(cardRow(third.id).position).toBe(0);
+				expect(db.select().from(userXp).all()).toMatchObject([{ name: owner.username, xp: 200 }]);
+				expect(notices().map((n) => n.cardId)).toEqual([waiting.id]);
+			}
+		});
+
+		// Two completions (card, XP, entry each), one change of position, one notice.
+		expect(run.writes).toHaveLength(8);
+		expect(run.writes.at(-1)).toMatch(/^insert into "card_comments"/);
+		expect(run.effects.map(name)).toEqual([
+			'webhook card.completed',
+			'webhook card.completed',
+			'email to assignee@example.test: Card moved: First → Complete',
+			'email to assignee@example.test: Unblocked: Waiting',
+			'event update',
+			'event update (moved)',
+			'event xp-update',
+			'event celebrate'
+		]);
+	});
+
+	it('has announced nothing when a later card of the drop is refused', async () => {
+		const s = withTwoMore();
+		// The first card completes cleanly. The second cannot be completed.
+		makeSubtask(s.second, { completed: false });
+		const before = snapshotDb();
+		const sent = effects();
+
+		try {
+			const res = await drop(s, s.second, s.third);
+			await sent.settle();
+
+			expect(res.status).toBe(409);
+			expectUnchanged(before);
+			// The first card's webhook used to have gone out by now.
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('writes no notice on a card that the same drop unblocked and then completed', async () => {
+		const { owner, A, first, waiting } = scene();
+		// `waiting` waits on `first` and is completed after it in the same drop.
+		// A third card waits on `first` too and stays where it is.
+		const bystander = makeCard(A.cols['To Do'], { title: 'Bystander' });
+		makeDependency({ blocked: bystander, blocker: first });
+		// The drop has a webhook to deliver and a mail to send: recorded, not sent.
+		const sent = effects();
+
+		try {
+			const res = await api('PUT', '/api/cards/reorder', {
+				user: owner,
+				body: {
+					updates: [
+						{ id: first.id, columnId: A.cols['Complete'].id, position: 0 },
+						{ id: waiting.id, columnId: A.cols['Complete'].id, position: 1 }
+					]
+				}
+			});
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(cardRow(waiting.id).completedAt).not.toBeNull();
+			expect(notices().map((n) => n.cardId)).toEqual([bystander.id]);
+			expect(notices()[0].content).toBe(
+				`Unblocked: #${first.id} "First" completed — nothing is blocking this card now.`
+			);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('writes one notice, and mails each assignee once, when a drop completes two cards that block the same card', async () => {
+		const { owner, A, first, waiting } = scene();
+		// `waiting` waits on `first` and on `second`, and one drop completes both.
+		const second = makeCard(A.cols['To Do'], { title: 'Second' });
+		makeDependency({ blocked: waiting, blocker: second });
+		const another = makeUser({ username: 'another' });
+		addBoardMember(A.board, another, 'viewer');
+		assignCard(waiting, another);
+		const sent = effects();
+
+		try {
+			const res = await api('PUT', '/api/cards/reorder', {
+				user: owner,
+				body: {
+					updates: [
+						{ id: first.id, columnId: A.cols['Complete'].id, position: 0 },
+						{ id: second.id, columnId: A.cols['Complete'].id, position: 1 }
+					]
+				}
+			});
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			// Each of the two used to write one, both finding nothing left open.
+			// It names the second: with only the first done, the card was blocked.
+			expect(notices().map((n) => ({ cardId: n.cardId, content: n.content }))).toEqual([
+				{
+					cardId: waiting.id,
+					content: `Unblocked: #${second.id} "Second" completed — nothing is blocking this card now.`
+				}
+			]);
+			expect(
+				sent.emails
+					.filter((e) => e.subject === 'Unblocked: Waiting')
+					.map((e) => e.to)
+					.sort()
+			).toEqual(['another@example.test', 'assignee@example.test']);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('starts every effect of a drop after its transaction has closed', async () => {
+		const s = withTwoMore();
+		const sent = effects();
+		try {
+			await drop(s, s.second, s.third);
+			await sent.settle();
+
+			expect(sent.all.length).toBeGreaterThan(0);
+			expect(sent.duringTransaction).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+});
+
+describe('PUT /api/v1/cards/:id/move', () => {
+	/**
+	 * `first` carries a label of board A and is moved to board B's Complete
+	 * column. Its assignee can open B too, so is mailed that it moved there.
+	 */
+	const acrossBoards = () => {
+		const s = scene();
+		const B = makeBoard({ owner: s.owner, name: 'B' });
+		addBoardMember(B.board, s.assignee, 'viewer');
+		makeWebhook(B.board, { url: 'https://hooks.example.test/b' });
+		const label = makeLabel(s.A.board);
+		db.insert(cardLabels).values({ cardId: s.first.id, labelId: label.id }).run();
+		return { ...s, B };
+	};
+
+	it('moves a card to another board with everything that follows, or not at all', async () => {
+		const run = await eachWriteInTurn({
+			build: acrossBoards,
+			request: ({ owner, first, B }) =>
+				api('PUT', `/api/v1/cards/${first.id}/move`, { user: owner, body: { columnId: B.cols['Complete'].id } }),
+			afterSuccess: ({ first, waiting, B }, res) => {
+				expect(res.status).toBe(200);
+				expect(res.body).toMatchObject({ id: first.id, boardId: B.board.id, columnTitle: 'Complete' });
+				expect(db.select().from(cardLabels).all()).toEqual([]);
+				expect(actions()).toEqual(['api:card_moved_away', 'api:card_moved_in', 'api:card_completed']);
+				expect(notices().map((n) => n.cardId)).toEqual([waiting.id]);
+			}
+		});
+
+		expect(run.writes.map((sql) => sql.split(/[ (]/).slice(0, 3).join(' '))).toEqual([
+			'delete from "card_labels"',
+			'update "cards" set',
+			'insert into "user_xp"',
+			'insert into "activity_log"',
+			'insert into "activity_log"',
+			'insert into "activity_log"',
+			'insert into "card_comments"'
+		]);
+		// Board B's webhook hears of the completion, and the assignee is mailed
+		// that the card moved: a completion is mailed whichever route made it
+		// (card 2134). A plain move through the API mails nobody.
+		expect(run.effects.map(name)).toEqual([
+			'webhook card.completed',
+			'email to assignee@example.test: Card moved: First → Complete',
+			'email to assignee@example.test: Unblocked: Waiting',
+			'event update',
+			'event update (moved_away)',
+			'event update (moved_in)',
+			'event xp-update',
+			'event celebrate'
+		]);
+		expect(run.effects[0]).toMatchObject({ url: 'https://hooks.example.test/b' });
+	});
+
+	it('refused, leaves the card where it was and announces nothing', async () => {
+		const { owner, A, first } = scene();
+		makeSubtask(first, { completed: false });
+		const before = snapshotDb();
+		const sent = effects();
+
+		try {
+			const res = await api('PUT', `/api/v1/cards/${first.id}/move`, {
+				user: owner,
+				body: { columnId: A.cols['Complete'].id }
+			});
+			await sent.settle();
+
+			expect(res.status).toBe(409);
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+});
+
+describe('the requester of a card', () => {
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+	});
+	afterEach(() => sent.restore());
+
+	it('is mailed that it moved, after the commit', async () => {
+		const { owner, A, first } = scene();
+		makeRequestFor(first, owner);
+
+		await api('PUT', `/api/v1/cards/${first.id}/move`, { user: owner, body: { columnId: A.cols['In Progress'].id } });
+		await sent.settle();
+
+		expect(sent.emails.map((e) => `${e.to}: ${e.subject}`)).toEqual([
+			'rita@example.test: Your request moved: Please build this → In Progress'
+		]);
+		expect(sent.duringTransaction).toEqual([]);
+	});
+
+	it('is mailed the report when it is completed, which is built after the commit', async () => {
+		const { owner, A, first } = scene();
+		makeRequestFor(first, owner);
+
+		await api('PUT', `/api/v1/cards/${first.id}/move`, { user: owner, body: { columnId: A.cols['Complete'].id } });
+
+		// The PDF takes a moment; the move has long since been answered.
+		const report = await vi.waitFor(
+			() => {
+				const mail = sent.emails.find((e) => e.to === 'rita@example.test');
+				expect(mail).toBeDefined();
+				return mail!;
+			},
+			{ timeout: 10_000 }
+		);
+		expect(report.subject).toBe('Your request is complete: Please build this ✅');
+		expect(report.attachments).toHaveLength(1);
+		expect(report.attachments[0]).toMatch(/^dumpfire-task-report-.*\.pdf$/);
+		expect(sent.duringTransaction).toEqual([]);
+	});
+});
+
+/**
+ * Who is mailed that a card moved (card 2180). Taking someone off a board, or
+ * out of the team it is shared with, leaves them assigned to its cards, and
+ * the "Card moved" mail told them the card's title, who moved it and the
+ * board's name. An assignee is now mailed only when they can open the board
+ * the card is on after the move. Preferences decide after that, as before.
+ */
+describe('who is mailed that a card moved (card 2180)', () => {
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+	});
+	afterEach(() => sent.restore());
+
+	/** The usernames mailed "Card moved", in the order mailed. */
+	const mailedMoved = () =>
+		sent.emails.filter((e) => e.subject.startsWith('Card moved: ')).map((e) => e.to.replace('@example.test', ''));
+
+	/**
+	 * A card on A assigned to `gone` (an editor of A whose membership is then
+	 * deleted), `member` (a viewer of A), `teamMate` (in a team A is shared
+	 * with) and `boss` (an administrator who is not on A).
+	 */
+	function world() {
+		makeSmtp();
+		const owner = makeUser({ username: 'owner' });
+		const A = makeBoard({ owner, name: 'A' });
+		const gone = makeUser({ username: 'gone' });
+		const member = makeUser({ username: 'member' });
+		const teamMate = makeUser({ username: 'teammate' });
+		const boss = makeUser({ username: 'boss', role: 'admin' });
+		addBoardMember(A.board, gone, 'editor');
+		addBoardMember(A.board, member, 'viewer');
+		const team = makeTeam([teamMate]);
+		shareBoardWithTeam(A.board, team, 'viewer');
+		const card = makeCard(A.cols['To Do'], { title: 'Secret' });
+		for (const user of [gone, member, teamMate, boss]) assignCard(card, user);
+		db.delete(boardMembers).where(eq(boardMembers.userId, gone.id)).run();
+		return { owner, A, teamMate, card };
+	}
+
+	it('mails the assignees who can open the board, and not one taken off it, on both page routes', async () => {
+		const { owner, A, card } = world();
+
+		expect((await api('PUT', `/api/cards/${card.id}`, { user: owner, body: { columnId: A.cols['In Progress'].id } })).status).toBe(200);
+		await sent.settle();
+		expect(mailedMoved().sort()).toEqual(['boss', 'member', 'teammate']);
+
+		sent.clear();
+		const drag = { updates: [{ id: card.id, columnId: A.cols['On Hold'].id, position: 0 }] };
+		expect((await api('PUT', '/api/cards/reorder', { user: owner, body: drag })).status).toBe(200);
+		await sent.settle();
+		expect(mailedMoved().sort()).toEqual(['boss', 'member', 'teammate']);
+	});
+
+	it('does not mail an assignee taken out of the team the board is shared with', async () => {
+		const { owner, A, teamMate, card } = world();
+		db.delete(teamMembers).where(eq(teamMembers.userId, teamMate.id)).run();
+
+		expect((await api('PUT', `/api/cards/${card.id}`, { user: owner, body: { columnId: A.cols['In Progress'].id } })).status).toBe(200);
+		await sent.settle();
+
+		expect(mailedMoved().sort()).toEqual(['boss', 'member']);
+	});
+
+	/**
+	 * A card on A assigned to `onlyA` (an editor of A) and `both` (an editor of
+	 * A and of BRAVO), moved to BRAVO. The mail names the board the card is on
+	 * now, so it goes only to whoever can open that one.
+	 */
+	function acrossBoards() {
+		makeSmtp();
+		const owner = makeUser({ username: 'owner' });
+		const A = makeBoard({ owner, name: 'A' });
+		const B = makeBoard({ owner, name: 'BRAVO' });
+		const onlyA = makeUser({ username: 'onlya' });
+		const both = makeUser({ username: 'both' });
+		addBoardMember(A.board, onlyA, 'editor');
+		addBoardMember(A.board, both, 'editor');
+		addBoardMember(B.board, both, 'editor');
+		const card = makeCard(A.cols['To Do'], { title: 'Travels' });
+		assignCard(card, onlyA);
+		assignCard(card, both);
+		return { owner, B, card };
+	}
+
+	it('mails, of a card moved to another board, only the assignees who can open that board', async () => {
+		const { owner, B, card } = acrossBoards();
+
+		expect((await api('PUT', `/api/cards/${card.id}`, { user: owner, body: { columnId: B.cols['In Progress'].id } })).status).toBe(200);
+		await sent.settle();
+
+		expect(mailedMoved()).toEqual(['both']);
+		expect(sent.emails[0].html).toContain('Board: BRAVO');
+	});
+
+	it('mails the same for a completion on another board through the API', async () => {
+		const { owner, B, card } = acrossBoards();
+
+		const res = await api('PUT', `/api/v1/cards/${card.id}/move`, { user: owner, body: { columnId: B.cols['Complete'].id } });
+		expect(res.status).toBe(200);
+		await sent.settle();
+
+		expect(mailedMoved()).toEqual(['both']);
+	});
+});
+
+describe('PUT /api/subtasks/:id', () => {
+	/** `first` has one open subtask, and `waiting` waits on that subtask alone. */
+	const withStep = () => {
+		const s = scene();
+		db.delete(workDependencies).run();
+		const step = makeSubtask(s.first, { title: 'Write it', completed: false });
+		makeDependency({ blocked: s.waiting, blocker: step });
+		makeRequestFor(s.first, s.owner);
+		return { ...s, step };
+	};
+
+	it('ticks a subtask with its activity entry and its notice, or not at all', async () => {
+		const run = await eachWriteInTurn({
+			build: withStep,
+			request: ({ owner, step }) => api('PUT', `/api/subtasks/${step.id}`, { user: owner, body: { completed: true } }),
+			afterSuccess: ({ step, waiting, owner, first }, res) => {
+				expect(res.status).toBe(200);
+				expect(res.body).toMatchObject({ id: step.id, completed: true });
+				expect(db.select().from(activityLog).all()).toMatchObject([
+					{ action: 'subtask_completed', cardId: first.id, userId: owner.id }
+				]);
+				expect(notices()).toMatchObject([
+					{
+						cardId: waiting.id,
+						userId: owner.id,
+						content: 'Unblocked: subtask "Write it" completed — nothing is blocking this card now.'
+					}
+				]);
+			}
+		});
+
+		expect(run.writes.map((sql) => sql.split(/[ (]/).slice(0, 3).join(' '))).toEqual([
+			'update "subtasks" set',
+			'insert into "activity_log"',
+			'insert into "card_comments"'
+		]);
+		expect(run.effects.map(name)).toEqual([
+			'event update',
+			'email to assignee@example.test: Unblocked: Waiting',
+			'event update',
+			'email to rita@example.test: Subtask completed on your request: Please build this'
+		]);
+	});
+
+	it('writes one notice when the same subtask is ticked twice at once', async () => {
+		const { owner, step, waiting } = withStep();
+		// The tick has mail to send: recorded, not sent.
+		const sent = effects();
+
+		try {
+			// Both requests are past their access check and waiting for their body
+			// before either writes. Each used to have read the subtask as open by
+			// then, and each wrote a notice.
+			const [a, b] = await Promise.all([
+				api('PUT', `/api/subtasks/${step.id}`, { user: owner, body: { completed: true } }),
+				api('PUT', `/api/subtasks/${step.id}`, { user: owner, body: { completed: true } })
+			]);
+			await sent.settle();
+
+			expect([a.status, b.status]).toEqual([200, 200]);
+			expect(notices().map((n) => n.cardId)).toEqual([waiting.id]);
+			expect(actions()).toEqual(['subtask_completed']);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('writes nothing more when a subtask already ticked is ticked again', async () => {
+		const { owner, step } = withStep();
+		const sent = effects();
+
+		try {
+			// The first tick has mail to send. It is recorded, not sent, and then forgotten.
+			await api('PUT', `/api/subtasks/${step.id}`, { user: owner, body: { completed: true } });
+			await sent.settle();
+			sent.clear();
+
+			const again = await api('PUT', `/api/subtasks/${step.id}`, { user: owner, body: { completed: true } });
+			await sent.settle();
+
+			expect(again.status).toBe(200);
+			expect(notices()).toHaveLength(1);
+			expect(actions()).toEqual(['subtask_completed']);
+			// The page is told to refresh; nobody is mailed a second time.
+			expect(sent.all.map(name)).toEqual(['event update']);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('answers 400 for a body with nothing to change, having written nothing', async () => {
+		const { owner, step } = withStep();
+		const before = snapshotDb();
+
+		const res = await api('PUT', `/api/subtasks/${step.id}`, { user: owner, body: { cardId: 99 } });
+
+		expect(res.status).toBe(400);
+		expectUnchanged(before);
+	});
+});
+
+describe('PUT /api/v1/subtasks/:id', () => {
+	const withStep = () => {
+		const s = scene();
+		db.delete(workDependencies).run();
+		const step = makeSubtask(s.first, { title: 'Write it', completed: false });
+		// A subtask of another card waits on it this time.
+		const blockedStep = makeSubtask(s.waiting, { title: 'Review it', completed: false });
+		makeDependency({ blocked: blockedStep, blocker: step });
+		return { ...s, step, blockedStep };
+	};
+
+	it('ticks a subtask with its entry and its notice, or not at all', async () => {
+		const run = await eachWriteInTurn({
+			build: withStep,
+			request: ({ owner, step }) =>
+				api('PUT', `/api/v1/subtasks/${step.id}`, { user: owner, body: { completed: true, title: 'Written' } }),
+			afterSuccess: ({ step, waiting }, res) => {
+				expect(res.status).toBe(200);
+				expect(db.select().from(subtasks).where(eq(subtasks.id, step.id)).get()).toMatchObject({
+					completed: true,
+					title: 'Written'
+				});
+				// The notice goes on the card the unblocked subtask belongs to.
+				expect(notices()).toMatchObject([
+					{
+						cardId: waiting.id,
+						content: 'Unblocked: subtask "Written" completed — nothing is blocking subtask "Review it" now.'
+					}
+				]);
+				expect(actions()).toEqual(['api:subtask_completed']);
+			}
+		});
+
+		// The tick, its entry (card 2108: there was none), then the notice, as
+		// `PUT /api/subtasks/:id` writes them.
+		expect(run.writes.map((sql) => sql.split(/[ (]/).slice(0, 3).join(' '))).toEqual([
+			'update "subtasks" set',
+			'insert into "activity_log"',
+			'insert into "card_comments"'
+		]);
+		expect(run.effects.map(name)).toEqual([
+			'email to assignee@example.test: Unblocked: Review it (subtask)',
+			'event update',
+			'event update'
+		]);
+	});
+
+	it('writes one notice when the same subtask is ticked twice at once', async () => {
+		const { owner, step } = withStep();
+		// The tick has mail to send: recorded, not sent.
+		const sent = effects();
+
+		try {
+			const [a, b] = await Promise.all([
+				api('PUT', `/api/v1/subtasks/${step.id}`, { user: owner, body: { completed: true } }),
+				api('PUT', `/api/v1/subtasks/${step.id}`, { user: owner, body: { completed: true } })
+			]);
+			await sent.settle();
+
+			expect([a.status, b.status]).toEqual([200, 200]);
+			expect(notices()).toHaveLength(1);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('answers 403 from inside the transaction, having written nothing', async () => {
+		const { step } = withStep();
+		const outsider = makeUser({ username: 'outsider' });
+		const before = snapshotDb();
+
+		const res = await api('PUT', `/api/v1/subtasks/${step.id}`, { user: outsider, body: { completed: true } });
+
+		expect(res.status).toBe(403);
+		expectUnchanged(before);
+	});
+});
+
+describe('the "Unblocked" notice is part of the completion', () => {
+	it('cannot be written outside a transaction', () => {
+		const { owner, first } = scene();
+
+		expect(() => recordUnblocked([first.id], owner.id)).toThrow(/inside the transaction/);
+		expect(notices()).toEqual([]);
+	});
+
+	it('is written for each thing that was waiting, only when nothing else blocks it, and only once', () => {
+		const { owner, A, first, waiting } = scene();
+		const second = makeCard(A.cols['To Do'], { title: 'Second' });
+		const other = makeCard(A.cols['To Do'], { title: 'Other blocker' });
+		const stillBlocked = makeCard(A.cols['To Do'], { title: 'Still blocked' });
+		// `waiting` waits on two cards, and both are completed. `stillBlocked`
+		// waits on both of them too, and on one that is not.
+		makeDependency({ blocked: waiting, blocker: second });
+		makeDependency({ blocked: stillBlocked, blocker: first });
+		makeDependency({ blocked: stillBlocked, blocker: second });
+		makeDependency({ blocked: stillBlocked, blocker: other });
+		db.update(cards)
+			.set({ columnId: A.cols['Complete'].id })
+			.where(inArray(cards.id, [first.id, second.id]))
+			.run();
+
+		const written = inTransaction(() => recordUnblocked([first.id, second.id], owner.id));
+
+		// One notice for two completions, put down to the later of them.
+		expect(written).toEqual([
+			{
+				kind: 'card',
+				id: waiting.id,
+				cardId: waiting.id,
+				title: 'Waiting',
+				boardId: A.board.id,
+				completed: { kind: 'card', id: second.id, title: 'Second' }
+			}
+		]);
+		expect(notices().map((n) => n.cardId)).toEqual([waiting.id]);
+	});
+
+	it('names the last of its blockers to be completed, whichever kind it is and whatever its id', () => {
+		const { owner, A, first, waiting } = scene();
+		const step = makeSubtask(first, { title: 'Write it', completed: true });
+		const later = makeCard(A.cols['Complete'], { title: 'Made later' });
+		makeDependency({ blocked: waiting, blocker: step });
+		makeDependency({ blocked: waiting, blocker: later });
+		db.update(cards).set({ columnId: A.cols['Complete'].id }).where(eq(cards.id, first.id)).run();
+
+		// The order they were completed in is the order given, and it is not the
+		// order of their ids or of the links.
+		const written = inTransaction(() =>
+			recordUnblocked([later.id, first.id, { kind: 'subtask', id: step.id }], owner.id)
+		);
+
+		expect(written.map((w) => w.completed)).toEqual([{ kind: 'subtask', id: step.id, title: 'Write it' }]);
+		expect(notices().map((n) => n.content)).toEqual([
+			'Unblocked: subtask "Write it" completed — nothing is blocking this card now.'
+		]);
+	});
+
+	it('writes one notice when the same completion is given twice', () => {
+		const { owner, A, first, waiting } = scene();
+		db.update(cards).set({ columnId: A.cols['Complete'].id }).where(eq(cards.id, first.id)).run();
+
+		inTransaction(() => recordUnblocked([first.id, first.id], owner.id));
+
+		expect(notices().map((n) => n.cardId)).toEqual([waiting.id]);
+	});
+});
+
+describe('the batch writers that already had a transaction', () => {
+	it('createDependencyBatch records every link or none', async () => {
+		const run = await eachWriteInTurn({
+			build: () => {
+				const owner = makeUser();
+				const { cols } = makeBoard({ owner });
+				const [a, b, c, d] = [1, 2, 3, 4].map(() => makeCard(cols['To Do']));
+				return { owner, a, b, c, d };
+			},
+			request: ({ owner, a, b, c, d }) =>
+				createDependencyBatch(
+					[
+						{ blocked: b.id, blocker: a.id },
+						{ blocked: c.id, blocker: b.id },
+						{ blocked: d.id, blocker: c.id }
+					],
+					owner.id
+				),
+			afterSuccess: (_, written) => {
+				expect(written).toBe(3);
+				expect(db.select().from(workDependencies).all()).toHaveLength(3);
+			}
+		});
+
+		expect(run.writes).toHaveLength(3);
+	});
+
+	it('recordTokenUsageBatch records every entry or none', async () => {
+		const run = await eachWriteInTurn({
+			build: () => {
+				const owner = makeUser();
+				const { cols } = makeBoard({ owner });
+				const card = makeCard(cols['To Do']);
+				return { owner, card, step: makeSubtask(card) };
+			},
+			request: ({ owner, card, step }) =>
+				recordTokenUsageBatch(owner, [
+					{ cardId: card.id, tokens: 1200, model: 'claude-opus-5-5' },
+					{ subtaskId: step.id, tokens: 800, model: 'claude-opus-5-5' }
+				]),
+			afterSuccess: (_, result) => {
+				expect(result).toMatchObject({ written: 2, problems: [] });
+				expect(db.select().from(tokenUsage).all()).toHaveLength(2);
+			}
+		});
+
+		expect(run.writes).toHaveLength(2);
+	});
+});

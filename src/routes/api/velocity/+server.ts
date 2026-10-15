@@ -2,6 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { columns, cards, cardAssignees } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
+import { completeColumnIds } from '$lib/column-role';
 import type { RequestHandler } from './$types';
 
 /**
@@ -47,10 +48,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			.from(columns)
 			.where(inArray(columns.id, colIds))
 			.all();
-		doneColIds = new Set(
-			cols.filter(c => c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done')
-				.map(c => c.id)
-		);
+		doneColIds = completeColumnIds(cols);
 	}
 
 	const completed = myCards.filter(c => doneColIds.has(c.columnId) && c.completedAt);

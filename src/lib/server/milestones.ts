@@ -8,6 +8,7 @@
  */
 
 import { db } from './db';
+import { inTransaction } from './db/transaction';
 import { milestones, cards, columns, boards } from './db/schema';
 import { eq, and, isNull, inArray } from 'drizzle-orm';
 import { canViewBoard, canEditBoard, getAccessibleBoardIds } from './board-access';
@@ -189,17 +190,24 @@ export interface CreateMilestoneInput {
 	targetDate?: string | null;
 }
 
+/**
+ * The board a new milestone is to belong to, if it is there and the caller
+ * may edit it. A route that reads its body field by field asks this first,
+ * as the milestone's guard, and reads the other fields after it.
+ */
+export function requireMilestoneBoard(user: SessionUser, boardId: number): void {
+	const board = db.select({ id: boards.id }).from(boards).where(eq(boards.id, boardId)).get();
+	if (!board) throw new MilestoneError(404, 'Board not found');
+	if (!canEditBoard(user, boardId)) throw new MilestoneError(403, 'No edit access to that board');
+}
+
 export function createMilestone(user: SessionUser, input: CreateMilestoneInput): MilestoneRow {
 	const name = (input.name ?? '').trim();
 	if (!name) throw new MilestoneError(400, 'name is required');
 	if (name.length > 200) throw new MilestoneError(400, 'name too long (max 200 chars)');
 
 	const boardId = input.boardId ?? null;
-	if (boardId !== null) {
-		const board = db.select({ id: boards.id }).from(boards).where(eq(boards.id, boardId)).get();
-		if (!board) throw new MilestoneError(404, 'Board not found');
-		if (!canEditBoard(user, boardId)) throw new MilestoneError(403, 'No edit access to that board');
-	}
+	if (boardId !== null) requireMilestoneBoard(user, boardId);
 
 	return db
 		.insert(milestones)
@@ -256,48 +264,112 @@ export function updateMilestone(user: SessionUser, milestoneId: number, patch: U
 /**
  * Delete a milestone. Its cards are released, never deleted — losing a goal
  * must never lose the work, so the cards go back to having no milestone.
+ *
+ * One transaction: the milestone is checked, its cards are released and it is
+ * deleted together. A failure between the two writes used to leave the
+ * milestone in place with every card taken out of it.
  */
 export function deleteMilestone(user: SessionUser, milestoneId: number): { released: number } {
-	requireMilestone(user, milestoneId, true);
+	return inTransaction(() => {
+		requireMilestone(user, milestoneId, true);
 
-	const released = db
-		.update(cards)
-		.set({ milestoneId: null })
-		.where(eq(cards.milestoneId, milestoneId))
-		.returning()
-		.all().length;
+		const released = db
+			.update(cards)
+			.set({ milestoneId: null })
+			.where(eq(cards.milestoneId, milestoneId))
+			.returning()
+			.all().length;
 
-	db.delete(milestones).where(eq(milestones.id, milestoneId)).run();
-	return { released };
+		db.delete(milestones).where(eq(milestones.id, milestoneId)).run();
+		return { released };
+	});
 }
 
 /**
- * Put a card in a milestone, or take it out with `milestoneId: null`.
- *
- * Needs edit access to the card's board and to the milestone; a board-scoped
- * milestone will not take a card from another board, because the goal claims to
- * belong to that board and its counts would then be lying.
+ * What a caller is told who puts an archived card in a milestone: the words
+ * the batch (`POST /api/v1/milestones/:id/cards/bulk`) reports one in.
  */
-export function setCardMilestone(user: SessionUser, cardId: number, milestoneId: number | null): { cardId: number; milestoneId: number | null; boardId: number } {
-	const card = db.select({ id: cards.id, columnId: cards.columnId }).from(cards).where(eq(cards.id, cardId)).get();
+export const ARCHIVED_CARD = 'Card does not exist or is archived';
+
+/** The card, and the board it is on, if the caller may edit that board. */
+function editableCard(user: SessionUser, cardId: number) {
+	const card = db
+		.select({ id: cards.id, columnId: cards.columnId, milestoneId: cards.milestoneId, archivedAt: cards.archivedAt })
+		.from(cards)
+		.where(eq(cards.id, cardId))
+		.get();
 	if (!card) throw new MilestoneError(404, 'Card not found');
 
 	const col = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, card.columnId)).get();
 	if (!col) throw new MilestoneError(404, 'Card column not found');
 	if (!canEditBoard(user, col.boardId)) throw new MilestoneError(403, 'No edit access to this card\'s board');
+	return { card, boardId: col.boardId };
+}
 
-	if (milestoneId !== null) {
+/**
+ * Put a card in a milestone. Taking one out is `takeCardOutOfMilestone`.
+ *
+ * Needs edit access to the card's board and to the milestone; a board-scoped
+ * milestone will not take a card from another board, because the goal claims to
+ * belong to that board and its counts would then be lying. An archived card is
+ * refused, as the batch refuses one: it counts towards no goal.
+ *
+ * A card already in another milestone leaves it, so the caller needs edit
+ * access to that one too, first: R5's removal rule. Without it, a card was
+ * taken out of a goal its maker or an administrator alone may change by
+ * putting it in another goal, and then in none.
+ *
+ * One transaction: the card and the milestone are read in the one that
+ * writes, so what was checked is what is written.
+ */
+export function setCardMilestone(user: SessionUser, cardId: number, milestoneId: number): { cardId: number; milestoneId: number; boardId: number } {
+	return inTransaction(() => {
+		const { card, boardId } = editableCard(user, cardId);
+
+		if (card.milestoneId !== null && card.milestoneId !== milestoneId) requireMilestone(user, card.milestoneId, true);
 		const m = requireMilestone(user, milestoneId, true);
-		if (m.boardId !== null && m.boardId !== col.boardId) {
+		if (card.archivedAt !== null) throw new MilestoneError(400, ARCHIVED_CARD);
+		if (m.boardId !== null && m.boardId !== boardId) {
 			throw new MilestoneError(
 				400,
 				'That milestone belongs to a single board. Make it cross-board first, or move the card.'
 			);
 		}
-	}
 
-	db.update(cards).set({ milestoneId, updatedAt: new Date().toISOString() }).where(eq(cards.id, cardId)).run();
-	return { cardId, milestoneId, boardId: col.boardId };
+		db.update(cards).set({ milestoneId, updatedAt: new Date().toISOString() }).where(eq(cards.id, cardId)).run();
+		return { cardId, milestoneId, boardId };
+	});
+}
+
+/**
+ * Take a card out of its milestone. The one rule for every route that does
+ * (card 2117, R5): `DELETE /api/v1/milestones/:id/cards`, `milestoneId: null`
+ * on `PUT /api/v1/cards/:id`, the session route's `attach: false`, and the
+ * batch, which asks the same of each card. Putting a card in another
+ * milestone takes it out of this one, and `setCardMilestone` and the batch
+ * attach ask the same of the milestone it leaves.
+ *
+ * The caller needs edit access to the card's board and to the milestone the
+ * card is in: someone who may edit a board, and neither made a cross-board
+ * goal nor is an administrator, could not put a card in that goal and cannot
+ * take one out of it. Where the route names a milestone (`named`), it must be
+ * there and the caller able to change it (404, 403), and the card must be in
+ * it: `404 Card is not in this milestone`. Taking a card out through another
+ * milestone's id took it out of its own.
+ *
+ * One transaction: the card's milestone is read in the one that clears it.
+ */
+export function takeCardOutOfMilestone(user: SessionUser, cardId: number, named?: number): { cardId: number; milestoneId: null; boardId: number } {
+	return inTransaction(() => {
+		if (named !== undefined) requireMilestone(user, named, true);
+		const { card, boardId } = editableCard(user, cardId);
+
+		if (named !== undefined && card.milestoneId !== named) throw new MilestoneError(404, 'Card is not in this milestone');
+		if (card.milestoneId !== null) requireMilestone(user, card.milestoneId, true);
+
+		db.update(cards).set({ milestoneId: null, updatedAt: new Date().toISOString() }).where(eq(cards.id, cardId)).run();
+		return { cardId, milestoneId: null, boardId };
+	});
 }
 
 /** Milestones a user may attach a card on this board to. */

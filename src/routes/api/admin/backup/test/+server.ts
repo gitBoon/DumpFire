@@ -1,10 +1,16 @@
 /**
  * /api/admin/backup/test — Test a destination connection.
+ *
+ * The superadmin's alone: see `/api/admin/backup`. A test of a destination
+ * whose secrets are masked connects with the stored ones, to whatever host
+ * the request names.
  */
 
-import { json, error } from '@sveltejs/kit';
-import { createDestination, type DestinationConfig } from '$lib/server/backup-destinations';
+import { json } from '@sveltejs/kit';
+import { createDestination, readDestination } from '$lib/server/backup-destinations';
 import { getBackupConfig } from '$lib/server/backup';
+import { readBody } from '$lib/server/request-body';
+import { requireSuperadmin } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 
@@ -12,31 +18,19 @@ const log = createLogger('BACKUP');
 
 /** POST — Test a specific destination connection. */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
-		throw error(403, 'Forbidden');
-	}
+	requireSuperadmin(locals.user);
 
-	const body = await request.json();
-	const destConfig = body as DestinationConfig;
-
-	if (!destConfig.type || !destConfig.name) {
-		throw error(400, 'Missing destination type or name');
-	}
-
-	// If secrets are masked, pull from existing config
+	// The destination, read as PUT /api/admin/backup reads one (card 2117,
+	// R10): its fields by its type, and a secret sent masked the one stored
+	// under its name.
+	const body = await readBody(request);
 	const existing = getBackupConfig();
-	const existingDest = existing.destinations.find(d => d.name === destConfig.name);
-
-	if (existingDest) {
-		const merged = destConfig as unknown as Record<string, unknown>;
-		if (merged.password === '••••••••') merged.password = (existingDest as any).password || '';
-		if (merged.privateKey === '••••••••') merged.privateKey = (existingDest as any).privateKey || '';
-		if (merged.secretAccessKey === '••••••••') merged.secretAccessKey = (existingDest as any).secretAccessKey || '';
-		if (merged.clientSecret === '••••••••') merged.clientSecret = (existingDest as any).clientSecret || '';
-		if (typeof merged.serviceAccountJson === 'string' && (merged.serviceAccountJson as string).includes('••••••••')) {
-			merged.serviceAccountJson = (existingDest as any).serviceAccountJson || '';
-		}
-	}
+	const destConfig = readDestination(
+		body,
+		null,
+		(name) => existing.destinations.find((d) => d.name === name),
+		'Missing destination type or name'
+	);
 
 	try {
 		const dest = createDestination(destConfig);

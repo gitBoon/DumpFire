@@ -9,9 +9,14 @@ import { db, sqlite, getDbPath } from './db';
 import { settings, backupLog } from './db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { createDestination, type DestinationConfig } from './backup-destinations';
+import { escapeHtml } from '$lib/escape-html';
 import { sendEmail, isSmtpConfigured } from './email';
-import { readFileSync, unlinkSync } from 'node:fs';
+import Database from 'better-sqlite3';
+import { mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createLogger } from './logger';
+import { maskSecretsInLog } from './secret-paths';
 
 const log = createLogger('BACKUP');
 
@@ -34,6 +39,9 @@ function setSetting(key: string, value: string): void {
 // ─── Backup Schedule ─────────────────────────────────────────────────────────
 
 export type BackupSchedule = 'disabled' | 'hourly' | 'every6h' | 'every12h' | 'daily' | 'weekly';
+
+/** Every schedule there is, as PUT /api/admin/backup reads one. */
+export const BACKUP_SCHEDULES: readonly BackupSchedule[] = ['disabled', 'hourly', 'every6h', 'every12h', 'daily', 'weekly'];
 
 const SCHEDULE_INTERVALS: Record<BackupSchedule, number> = {
 	disabled: 0,
@@ -89,26 +97,125 @@ export function saveBackupConfig(config: BackupConfig): void {
 // ─── Backup Data Generation ─────────────────────────────────────────────────
 
 /**
- * Generate a consistent SQLite backup file.
- * Uses VACUUM INTO to create a complete, self-contained .db copy that includes
- * all WAL data — readFileSync alone would miss unflushed WAL entries.
+ * Write to `to` the database file at `from` with everything taken out of it
+ * that signs somebody in by being held: every session, and every invite that
+ * has not been used, wherever it is written.
+ *
+ * A session's id is the whole of what its cookie carries, and an unused
+ * invite's token sets its account's password. A backup that held them signed
+ * in whoever read it, as anybody who was signed in when it was made, for as
+ * long as that session went on being used. Password hashes stay: a backup that
+ * cannot restore its users is not a backup.
+ *
+ * An invite's token is also the last part of its address, and the system log
+ * wrote that address down for every request to it until the gate masked it
+ * (`pathToLog`, in secret-paths.ts). So the log's lines are masked here too,
+ * as the gate masks them now, and any line that still holds the token of an
+ * unused invite anywhere else has it replaced (`maskSecretsInLog`): an
+ * installation whose log already holds tokens makes backups that do not. The
+ * running database's log is masked by the same rule once at every start.
+ *
+ * Deleting the rows is not enough. The pages they were on are still in the
+ * file, with the ids in them: after a plain DELETE of 400 sessions, their ids
+ * were found in the file 925 times. So the copy is written out again, from the
+ * rows it still has, with `VACUUM INTO` to `to`, and only then is nothing of
+ * them left. `to` is the file to read; `from` is thrown away.
+ *
+ * Written out, and not vacuumed in place: a `VACUUM` of the copy needs a
+ * rollback journal on the volume as large as the copy, and was measured
+ * taking two to three times as long as `VACUUM INTO` (docs/deployment.md, "What
+ * a Backup Holds"). For the same reason `from` keeps no journal at all while
+ * its rows are deleted: nothing of it is kept, so nothing of it needs undoing.
+ *
+ * `from` is a copy. This is never given the running database.
+ *
+ * A table that is not there is skipped. Anything else that goes wrong is
+ * thrown: a copy that could not be cleared is not one to hand on.
  */
-export function generateBackupData(): Buffer {
+export function withoutSignIns(from: string, to: string): void {
+	const copy = new Database(from);
+	try {
+		// better-sqlite3 opens every connection in SQLite's defensive mode,
+		// which refuses `journal_mode = OFF` without an error and keeps the
+		// journal on the disk. This connection is to a copy that is thrown away
+		// once `to` is written, so it is let have no journal.
+		copy.unsafeMode(true);
+		copy.pragma('journal_mode = OFF');
+		const has = (table: string) =>
+			!!copy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+
+		// The log first, while the unused invites whose tokens it looks for are
+		// still there to be asked. The same rule the running log is masked with
+		// at start: see maskSecretsInLog.
+		maskSecretsInLog(copy);
+		if (has('sessions')) copy.prepare('DELETE FROM sessions').run();
+		if (has('invite_tokens')) copy.prepare('DELETE FROM invite_tokens WHERE used = 0').run();
+
+		copy.exec(`VACUUM INTO '${to.replace(/'/g, "''")}'`);
+	} finally {
+		copy.close();
+	}
+}
+
+/**
+ * Generate a consistent SQLite backup file, with no session and no unused
+ * invite in it.
+ *
+ * Uses VACUUM INTO to create a complete, self-contained .db copy that includes
+ * all WAL data — readFileSync alone would miss unflushed WAL entries. The copy
+ * is then cleared of what signs somebody in and written out again
+ * (`withoutSignIns`), and that second file is read. The running database is
+ * not touched by any of it: its sessions are as they were.
+ *
+ * The export the superadmin downloads and the copy a schedule uploads are
+ * both made here, so that neither can hold what the other does not.
+ *
+ * Two `VACUUM INTO`s, then, and every step of it is synchronous: better-sqlite3
+ * waits on SQLite, and the file is read with `readFileSync`. So the server
+ * answers nothing for the whole of it, both copies, the masking, the deletes
+ * and the read, and not only while the first copy reads the running database.
+ * How long that is was measured only in parts, on a made-up 196 MB database
+ * on a development machine: 0.7 to 1.5 s for the first copy and 0.5 to 1.3 s
+ * for the second, so about 1.2 to 2.8 s for the two added together, and the
+ * rest on top, unmeasured (docs/deployment.md, "How long the server stops
+ * answering"). Expect more on a larger database.
+ *
+ * The two files are written beside the database, which is where there is room
+ * for them. A database in memory has nothing beside it, so they go to a
+ * folder of their own under the temp folder.
+ */
+export function generateBackupData(): Buffer<ArrayBuffer> {
 	const dbPath = getDbPath();
-	const backupPath = dbPath + '.backup-temp';
+	const tempDir = dbPath === ':memory:' ? mkdtempSync(join(tmpdir(), 'dumpfire-backup-')) : null;
+	const backupPath = tempDir ? join(tempDir, 'backup.db') : dbPath + '.backup-temp';
+	const clearedPath = tempDir ? join(tempDir, 'backup-cleared.db') : dbPath + '.backup-temp-cleared';
+
+	// The two files, and what SQLite may leave beside one while it is being changed.
+	const removeCopy = () => {
+		for (const path of [backupPath, clearedPath]) {
+			for (const suffix of ['', '-journal', '-wal', '-shm']) {
+				try { unlinkSync(path + suffix); } catch {}
+			}
+		}
+	};
 
 	// Remove any stale temp file
-	try { unlinkSync(backupPath); } catch {}
+	removeCopy();
 
-	// VACUUM INTO creates a fresh, complete copy including all WAL data
-	sqlite.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+	try {
+		// VACUUM INTO creates a fresh, complete copy including all WAL data
+		sqlite.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
 
-	const data = readFileSync(backupPath);
+		withoutSignIns(backupPath, clearedPath);
 
-	// Clean up temp file
-	try { unlinkSync(backupPath); } catch {}
-
-	return data;
+		return readFileSync(clearedPath);
+	} finally {
+		// Clean up temp file, whether or not it could be made and cleared
+		removeCopy();
+		if (tempDir) {
+			try { rmSync(tempDir, { recursive: true, force: true }); } catch {}
+		}
+	}
 }
 
 // ─── Backup History ──────────────────────────────────────────────────────────
@@ -260,7 +367,9 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 
 			log.error(`Backup failed: ${destConfig.name} → ${errMsg}`);
 
-			// Send failure notification if configured
+			// Send failure notification if configured. The error is whatever the
+			// destination's server answered, so it and the destination's name
+			// and type are escaped where they are put (card 2149).
 			if (config.notifyOnFailure && config.notifyEmail && isSmtpConfigured()) {
 				try {
 					await sendEmail(
@@ -269,11 +378,11 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 						`<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
 							<h2 style="color: #f43f5e;">Scheduled Backup Failed</h2>
 							<p style="color: #64748b; line-height: 1.6;">
-								A scheduled backup to <strong>${destConfig.name}</strong> (${destConfig.type}) failed.
+								A scheduled backup to <strong>${escapeHtml(String(destConfig.name))}</strong> (${escapeHtml(String(destConfig.type))}) failed.
 							</p>
 							<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 16px 0;">
 								<strong style="color: #991b1b;">Error:</strong>
-								<p style="color: #991b1b; margin: 4px 0 0;">${errMsg}</p>
+								<p style="color: #991b1b; margin: 4px 0 0;">${escapeHtml(String(errMsg))}</p>
 							</div>
 							<p style="color: #94a3b8; font-size: 12px;">Check your Admin Panel → Scheduled Backups for details.</p>
 						</div>`

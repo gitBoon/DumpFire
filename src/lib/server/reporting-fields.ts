@@ -23,6 +23,7 @@
  * filled in with whatever gets the dialog closed.
  */
 
+import { error } from '@sveltejs/kit';
 import {
 	CLOSE_REASONS,
 	THEMES,
@@ -42,9 +43,6 @@ export {
 };
 export type { CloseReason, Theme, ReleaseState } from '$lib/reporting';
 
-
-export class ReportingFieldError extends Error {}
-
 /** Case-insensitive match against a fixed vocabulary, returning the canonical spelling. */
 function oneOf<T extends readonly string[]>(
 	value: string,
@@ -52,11 +50,7 @@ function oneOf<T extends readonly string[]>(
 	field: string
 ): T[number] {
 	const hit = allowed.find((a) => a.toLowerCase() === value.toLowerCase());
-	if (!hit) {
-		throw new ReportingFieldError(
-			`${field} must be one of: ${allowed.join(', ')} (got "${value}")`
-		);
-	}
+	if (!hit) error(400, `${field} must be one of: ${allowed.join(', ')} (got "${value}")`);
 	return hit;
 }
 
@@ -81,9 +75,11 @@ function customerImpactOf(value: string): string {
  * An explicit `null` clears a field — that is how a value recorded in error gets
  * removed, and it has to be distinguishable from "not mentioned".
  *
- * @throws {ReportingFieldError} when a value is outside its vocabulary. Callers
- * turn this into a 400: a silently dropped invalid value would report as "not
- * recorded" and look identical to never having been set.
+ * A value outside its vocabulary, or one that is not text, is a 400 naming the
+ * field, thrown here (card 2117): a silently dropped invalid value would report
+ * as "not recorded" and look identical to never having been set. Each caller
+ * used to turn an error of its own into the 400, and `POST /api/cards` did not,
+ * and answered 500.
  */
 export function normaliseReportingFields(body: Record<string, unknown>): ReportingFields {
 	const out: ReportingFields = {};
@@ -95,18 +91,14 @@ export function normaliseReportingFields(body: Record<string, unknown>): Reporti
 			out[key] = null;
 			return;
 		}
-		if (typeof raw !== 'string') {
-			throw new ReportingFieldError(`${key} must be a string or null`);
-		}
+		if (typeof raw !== 'string') error(400, `${key} must be a string or null`);
 		const trimmed = raw.trim();
 		out[key] = trimmed === '' ? null : parse(trimmed);
 	};
 
 	read('summary', (v) => {
 		if (v.length > SUMMARY_MAX) {
-			throw new ReportingFieldError(
-				`summary must be ${SUMMARY_MAX} characters or fewer — it is quoted verbatim into report appendices (got ${v.length})`
-			);
+			error(400, `summary must be ${SUMMARY_MAX} characters or fewer — it is quoted verbatim into report appendices (got ${v.length})`);
 		}
 		return v;
 	});

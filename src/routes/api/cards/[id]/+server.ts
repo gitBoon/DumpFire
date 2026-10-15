@@ -1,153 +1,215 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { cards, columns } from '$lib/server/db/schema';
+import { inTransaction } from '$lib/server/db/transaction';
+import { cards, type Card } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
-import { canEditBoard } from '$lib/server/board-access';
-import { getCompletionBlocker, isCompleteColumnTitle } from '$lib/server/card-completion';
-import { applyUnblockEffects, removeWorkNodeEdges } from '$lib/server/planning';
-import { resolveBaseUrl } from '$lib/server/email';
+import { requireCard, requireColumn, requireUser } from '$lib/server/route-guards';
+import {
+	applyCardMove,
+	announceCardMoves,
+	recordUnblockedByMoves,
+	CardMoveError,
+	type CardMove
+} from '$lib/server/card-moves';
+import { archiveCard, deleteCard } from '$lib/server/deletes';
+import { linkBaseUrl } from '$lib/server/email';
 import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
-import { normaliseReportingFields, ReportingFieldError } from '$lib/server/reporting-fields';
+import { normaliseReportingFields } from '$lib/server/reporting-fields';
+import { PRIORITIES, requireCardCategory } from '$lib/server/card-fields';
+import {
+	pathId,
+	readBody,
+	readBoolean,
+	readChoice,
+	readColour,
+	readCover,
+	readDate,
+	readId,
+	readNumber,
+	readText
+} from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
-/** Resolve the board that a card belongs to. */
-function getCardBoardId(cardId: number): number | null {
-	const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, cardId)).get();
-	if (!card) return null;
-	const col = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, card.columnId)).get();
-	return col?.boardId ?? null;
-}
-
+/**
+ * PUT /api/cards/:id — change a card, and move it if `columnId` says so.
+ *
+ * The card is looked for and the caller checked first (404, then 403), then
+ * every field is read (400), then what the body names is looked for: the
+ * column it moves to (404, 403) and the category (404). A value the card
+ * already holds, sent back unchanged, is accepted as it is, whatever the
+ * rules say of it (decision 8): the card window sends the stored priority,
+ * due date and category back on every save. Card 2117; the fields are read
+ * as `PUT /api/v1/cards/:cardId` reads them. `coverUrl` is a colour, one of
+ * the preset gradients, or null (`readCover`, card 2010).
+ *
+ * `recurrenceRule` is not read: nothing acts on a recurrence, and no page
+ * sets one, so a request that names it changes nothing (card 2010). The
+ * column stays, and every card answer still has it.
+ *
+ * `completedAt` and `archivedAt` are not read: they record that something
+ * happened, so the server stamps them when it happens. A card is archived
+ * with DELETE and restored through the restore route.
+ */
 export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const id = pathId(params.id, 'card');
 
-	const id = Number(params.id);
-	const data = await request.json();
-	const { boardId: clientBoardId, ...rawData } = data;
+	const body = await readBody(request);
+	const baseUrl = linkBaseUrl(url);
 
-	// Resolve and verify board access
-	const resolvedBoardId = clientBoardId || getCardBoardId(id);
-	if (!resolvedBoardId) throw error(404, 'Card not found');
-	if (!canEditBoard(locals.user, resolvedBoardId)) {
-		throw error(403, 'No edit access to this board');
-	}
-
-	// Whitelist allowed fields to prevent mass assignment
-	const updateData: Record<string, unknown> = {};
-	const allowed = ['title', 'description', 'priority', 'colorTag', 'categoryId', 'dueDate',
-		'onHoldNote', 'businessValue', 'pinned', 'position', 'columnId', 'completedAt',
-		'archivedAt', 'coverUrl', 'recurrenceRule'];
-	for (const key of allowed) {
-		if (key in rawData) updateData[key] = rawData[key];
-	}
-
-	// Reporting fields carry fixed vocabularies, so they are validated rather
-	// than whitelisted through. A bad value is a 400: dropped silently it would
-	// read as "not recorded", which is a different and misleading answer.
+	// One transaction: the card is read, checked, moved, updated and logged
+	// together, and a failure anywhere leaves it as it was. The move used to
+	// commit first, with the other fields and their log entry written after
+	// it, so a failure between the two left a card moved with its edits lost.
+	// The card is read in here and not before the body was awaited: another
+	// request could have changed it in between.
+	let updated: Card;
 	try {
-		Object.assign(updateData, normaliseReportingFields(rawData));
+		updated = inTransaction(() => {
+			// The board comes from the card's own row. A `boardId` in the body is
+			// ignored: it names the board the caller wants to be judged against, which
+			// need not be the one this card is on.
+			const { card: existingCard, boardId: currentBoardId } = requireCard(user, id, 'edit');
+
+			// Every field, read against its rule and the value the card holds.
+			const updateData: Partial<typeof cards.$inferInsert> = {};
+			const title = readText(body, 'title', {
+				trim: true,
+				min: 1,
+				max: 500,
+				keep: existingCard.title,
+				says: { empty: 'title cannot be empty', invalid: 'Title too long (max 500 chars)' }
+			});
+			if (title !== undefined) updateData.title = title;
+			const description = readText(body, 'description', {
+				max: 50000,
+				keep: existingCard.description,
+				says: { invalid: 'Description too long (max 50000 chars)' }
+			});
+			if (description !== undefined) updateData.description = description;
+			const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true, keep: existingCard.priority });
+			if (priority !== undefined) updateData.priority = priority;
+			const colorTag = readColour(body, 'colorTag', { allowEmpty: true, keep: existingCard.colorTag });
+			if (colorTag !== undefined) updateData.colorTag = colorTag;
+			const categoryId = readId(body, 'categoryId', { nullable: true, keep: existingCard.categoryId });
+			if (categoryId !== undefined) updateData.categoryId = categoryId;
+			const dueDate = readDate(body, 'dueDate', { nullable: true, keep: existingCard.dueDate });
+			if (dueDate !== undefined) updateData.dueDate = dueDate;
+			const onHoldNote = readText(body, 'onHoldNote', { max: 50000, keep: existingCard.onHoldNote });
+			if (onHoldNote !== undefined) updateData.onHoldNote = onHoldNote;
+			const businessValue = readText(body, 'businessValue', {
+				max: 10000,
+				keep: existingCard.businessValue,
+				says: { invalid: 'Business value too long (max 10000 chars)' }
+			});
+			if (businessValue !== undefined) updateData.businessValue = businessValue;
+			const pinned = readBoolean(body, 'pinned', { keep: existingCard.pinned });
+			if (pinned !== undefined) updateData.pinned = pinned;
+			const position = readNumber(body, 'position', { keep: existingCard.position });
+			if (position !== undefined) updateData.position = position;
+			const coverUrl = readCover(body, 'coverUrl', { nullable: true, keep: existingCard.coverUrl });
+			if (coverUrl !== undefined) updateData.coverUrl = coverUrl;
+			// Reporting fields carry fixed vocabularies, and answer their own 400. A
+			// bad value dropped silently would read as "not recorded", which is a
+			// different and misleading answer.
+			Object.assign(updateData, normaliseReportingFields(body));
+			const columnId = readId(body, 'columnId', { keep: existingCard.columnId, says: 'Invalid column ID' });
+
+			// A change of column is a move, possibly to another board (the All Tasks
+			// page does this). The caller needs edit access at both ends: without the
+			// check on the target, anyone who could edit one card could push it into a
+			// board they cannot open.
+			//
+			// The move itself goes through the same service as a drag and an API move,
+			// so completing a card from here stamps the date, awards the XP and logs
+			// the completion exactly as those do. It used to do the first and neither
+			// of the others.
+			const target = columnId !== undefined && columnId !== existingCard.columnId ? requireColumn(user, columnId, 'edit') : null;
+			const boardId = target?.boardId ?? currentBoardId;
+
+			// What else the body names, once every field is known to be sound: a
+			// category of the board the card ends on, or a shared one (R3). One
+			// the card already holds, sent back, is not looked at again.
+			//
+			// But on a move to another board, the one it holds sent back is not
+			// written: the move decides, and clears one of the old board's, which
+			// cannot follow the card. The card window sends the category back on
+			// every save, and wrote the old board's over the move's clearing. A
+			// different one sent is checked against the board the card ends on.
+			if (target && target.boardId !== currentBoardId && categoryId === existingCard.categoryId) {
+				delete updateData.categoryId;
+			}
+			if (categoryId !== undefined && categoryId !== null && categoryId !== existingCard.categoryId) {
+				requireCardCategory(categoryId, boardId);
+			}
+
+			let move: CardMove | null = null;
+			if (target) {
+				move = applyCardMove({
+					cardId: id,
+					toColumnId: target.column.id,
+					position: updateData.position,
+					actor: user,
+					source: 'ui'
+				});
+				delete updateData.position;
+			}
+
+			let row = move?.card ?? existingCard;
+			const changed = Object.keys(updateData);
+			if (changed.length > 0) {
+				const written = db
+					.update(cards)
+					.set({ ...updateData, updatedAt: new Date().toISOString() })
+					.where(eq(cards.id, id))
+					.returning()
+					.get();
+				if (!written) throw error(404, 'Card not found');
+				row = written;
+
+				logUiActivity({
+					boardId,
+					cardId: id,
+					action: ACTIONS.cardUpdated,
+					detail: `Updated fields: ${changed.join(', ')} on "${row.title}"`,
+					...actorOf(user)
+				});
+			}
+
+			// Nothing below is sent before the commit, or at all if this rolls back.
+			if (move) {
+				const unblocked = recordUnblockedByMoves([move], user);
+				announceCardMoves([move], unblocked, user, 'ui', baseUrl);
+			} else {
+				emit(boardId, 'update', { type: 'card' });
+			}
+
+			return row;
+		});
 	} catch (e) {
-		if (e instanceof ReportingFieldError) throw error(400, e.message);
+		if (e instanceof CardMoveError) throw error(e.status, e.message);
 		throw e;
 	}
 
-	// Block completion if columnId is being changed to a Complete column
-	let justCompleted = false;
-	if (updateData.columnId) {
-		const existingCard = db.select().from(cards).where(eq(cards.id, id)).get();
-		if (existingCard && existingCard.columnId !== updateData.columnId) {
-			const targetCol = db.select().from(columns).where(eq(columns.id, updateData.columnId as number)).get();
-			if (targetCol && isCompleteColumnTitle(targetCol.title)) {
-				const blocker = getCompletionBlocker(id);
-				if (blocker) {
-					throw error(409, blocker);
-				}
-				justCompleted = true;
-			}
-		}
-	}
-
-	updateData.updatedAt = new Date().toISOString();
-
-	// Completing a card through this route stamped no completion date unless the
-	// client happened to send one, so a card completed from the modal rather than
-	// by dragging was invisible to every report that buckets by completedAt.
-	if (justCompleted && !('completedAt' in updateData)) {
-		updateData.completedAt = new Date().toISOString();
-	}
-
-	const updated = db
-		.update(cards)
-		.set(updateData)
-		.where(eq(cards.id, id))
-		.returning()
-		.get();
-	if (!updated) throw error(404, 'Card not found');
-
-	// Anything that was waiting on this card may now be startable.
-	if (justCompleted) {
-		applyUnblockEffects(id, locals.user, resolveBaseUrl(request, url));
-	}
-
-	if (resolvedBoardId) {
-		const changed = Object.keys(updateData).filter((k) => k !== 'updatedAt');
-		logUiActivity({
-			boardId: resolvedBoardId,
-			cardId: id,
-			action: justCompleted ? ACTIONS.cardCompleted : ACTIONS.cardUpdated,
-			detail: justCompleted
-				? `"${updated.title}"`
-				: `Updated fields: ${changed.join(', ')} on "${updated.title}"`,
-			...actorOf(locals.user)
-		});
-		emit(resolvedBoardId, 'update', { type: 'card' });
-	}
 	return json(updated);
 };
 
-export const DELETE: RequestHandler = async ({ params, request, url, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-
-	const id = Number(params.id);
+export const DELETE: RequestHandler = async ({ params, url, locals }) => {
+	const id = pathId(params.id, 'card');
 	const permanent = url.searchParams.get('permanent') === 'true';
 
-	let clientBoardId: number | undefined;
-	try {
-		const data = await request.json();
-		clientBoardId = data.boardId;
-	} catch {}
+	// One transaction: the card is read and the caller checked in the same one
+	// that archives or deletes it. See $lib/server/deletes.ts for what goes
+	// with a permanent delete; an archive touches nothing but the card.
+	inTransaction(() => {
+		const { boardId } = requireCard(locals.user, id, 'edit');
+		const user = locals.user!;
 
-	// Resolve and verify board access
-	const resolvedBoardId = clientBoardId || getCardBoardId(id);
-	if (resolvedBoardId && !canEditBoard(locals.user, resolvedBoardId)) {
-		throw error(403, 'No edit access to this board');
-	}
+		if (permanent) deleteCard(id, user, 'ui');
+		else archiveCard(id, user, 'ui');
 
-	// Read the title before the row goes, or the log entry says "Unknown".
-	const cardTitle =
-		db.select({ title: cards.title }).from(cards).where(eq(cards.id, id)).get()?.title ?? 'Unknown';
-
-	if (permanent) {
-		// Polymorphic dependency ids do not cascade — clear this card's edges.
-		removeWorkNodeEdges('card', id);
-		db.delete(cards).where(eq(cards.id, id)).run();
-	} else {
-		// Soft-delete: move to archive
-		db.update(cards)
-			.set({ archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
-			.where(eq(cards.id, id))
-			.run();
-	}
-	if (resolvedBoardId) {
-		logUiActivity({
-			boardId: resolvedBoardId,
-			cardId: permanent ? null : id,
-			action: permanent ? ACTIONS.cardDeleted : 'card_archived',
-			detail: `"${cardTitle}"`,
-			...actorOf(locals.user)
-		});
-		emit(resolvedBoardId, 'update', { type: 'card' });
-	}
+		emit(boardId, 'update', { type: 'card' });
+	});
 	return json({ success: true });
 };

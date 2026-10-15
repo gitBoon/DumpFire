@@ -1,341 +1,329 @@
 /**
- * /api/admin/import — Restore from a .db or legacy .json backup.
+ * /api/admin/import — Restore from a .db backup.
  *
- * Accepts the uploaded file, detects the format, and restores accordingly:
- * - .db files: opens as a separate SQLite connection, copies all data into the
- *   running database using transactions (no server restart needed)
- * - .json files: legacy import using row-by-row INSERT (backward compat)
+ * Takes the uploaded file, sent as `application/octet-stream` (or
+ * `application/x-sqlite3`), opens it as a separate SQLite connection and
+ * copies all data into the running database in one transaction (no server
+ * restart needed). The rows are replaced and the structure is not: the
+ * running database keeps its own tables, columns and migration record.
+ *
+ * A body sent as anything else is refused 400 before it is read. The legacy
+ * import of a JSON export, which DumpFire wrote only from 1 to 7 April 2026,
+ * was removed (card 2157). If one is ever wanted, import it into an empty
+ * installation of an image built before that change, and export a .db there.
+ *
+ * `?outside=keep` restores everything as the backup has it. `?outside=off`
+ * restores a working copy: report schedules and webhooks switched off, the
+ * backup schedule switched off and its destinations removed, and the mail
+ * settings removed. Without it, the choice follows whether this instance runs
+ * its schedulers — see defaultOutside.
+ *
+ * The superadmin's alone. A backup that has users and no superadmin among
+ * them is refused before anything is written, and a restore whose rows would
+ * leave users and no superadmin, because the superadmin's row could not be
+ * copied, is rolled back (`restoreFromBackup`). No session and no unused
+ * invite is brought in, whatever the backup holds, so every import signs
+ * everybody out, whoever sent it included, and the answer says so, and names
+ * the superadmin there is now (`superadmins`).
+ *
+ * A backup taken before card 2141 can bring back a board beneath one of its
+ * own cards. Once the restore is committed, the line the server writes about
+ * such a board at every start is written at once (`reportBoardLoops`).
  */
 
-import { json } from '@sveltejs/kit';
+import { isHttpError, json } from '@sveltejs/kit';
+import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import { sqlite } from '$lib/server/db';
+import {
+	NO_SUPERADMIN_IN_BACKUP,
+	RestoreError,
+	RestoreLeavesNoSuperadmin,
+	SIGNED_OUT,
+	backupLacksSuperadmin,
+	defaultOutside,
+	putBackTrashedFiles,
+	restorableTables,
+	restoreFromBackup,
+	superadminsOf,
+	type OutsideSwitchedOff,
+	type RestoreResult
+} from '$lib/server/db/restore';
 import Database from 'better-sqlite3';
 import { writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
+import { resetFormSecretCache } from '$lib/server/request-tokens';
+import { requireSuperadmin } from '$lib/server/route-guards';
+import { reportBoardLoops } from '$lib/server/startup-checks';
 
 const log = createLogger('IMPORT');
 
-export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
-		return json({ error: 'Forbidden' }, { status: 403 });
+/** The answer to a body that is not sent as a .db backup: see the header. */
+const NOT_A_DB_BACKUP =
+	'Import takes a .db backup, sent as application/octet-stream. Exports in the old JSON format, which DumpFire ' +
+	'wrote only from 1 to 7 April 2026, are no longer imported. Nothing was changed.';
+
+/**
+ * What a working copy had switched off or removed, as the one sentence that
+ * ends the answer and the log line. Every count is given, a zero included:
+ * "0 webhook(s) switched off" says that it was looked at.
+ */
+function workingCopySentence(done: OutsideSwitchedOff): string {
+	return (
+		`Restored as a working copy: ${done.reportSchedules} report schedule(s) and ${done.webhooks} webhook(s) ` +
+		`switched off, the backup schedule ${done.backupScheduleWasOn ? 'switched off' : 'was already off'}, ` +
+		`${done.backupDestinations} backup destination(s) removed, ${done.mailSettings} mail setting(s) removed.`
+	);
+}
+
+/** How many attachment files an import had back from the uploads trash. */
+function putBackSentence(count: number): string {
+	return `${count} attachment file(s) put back from the trash.`;
+}
+
+/**
+ * Who can sign in as the superadmin now, as a sentence. Whoever imported has
+ * been signed out with everybody else, and the backup's accounts are the ones
+ * there are: this is the account that can export, import or reset again. A
+ * restore never commits with users and no superadmin among them
+ * (`restoreFromBackup`), so with none there are no users, and set-up is open.
+ */
+function superadminSentence(names: readonly string[]): string {
+	if (names.length === 0) return 'There are no user accounts now: set-up is open, and whoever completes it is the superadmin.';
+	if (names.length === 1) return `The superadmin is now ${names[0]}.`;
+	return `The superadmins are now ${names.join(', ')}.`;
+}
+
+/** `text`, closed with a full stop if it has none, and then `sentence`. */
+function endingWith(text: string, sentence: string): string {
+	return `${text.replace(/\.?$/, '.')} ${sentence}`;
+}
+
+export const POST: RequestHandler = async ({ request, locals, url, cookies }) => {
+	// The superadmin's alone, and asked before the upload is read: an import
+	// replaces every account with the backup's, so whoever may import may make
+	// themselves anybody. The gate lets this route be sent the largest body of
+	// any, and a caller who is refused here has had none of it read if it said
+	// how long it was. One sent in chunks may have had a chunk or two read
+	// ahead by then, as soon as the gate handed it on, and no more.
+	requireSuperadmin(locals.user);
+
+	// Settled before the upload is read or anything is written. A value that
+	// is neither is refused, not given the default: a misspelt `off` must not
+	// restore a copy with everything in it still live.
+	const asked = url.searchParams.get('outside');
+	if (asked !== null && asked !== 'keep' && asked !== 'off') {
+		return json(
+			{
+				message:
+					`outside must be "keep" (restore everything as it is) or "off" (restore as a working copy), ` +
+					`not "${asked}". Nothing was changed.`
+			},
+			{ status: 400 }
+		);
+	}
+	const outside = asked ?? defaultOutside();
+
+	// Only a .db backup is imported, and a body that is not sent as one is
+	// refused here, before any of it is read. The import of the JSON export
+	// DumpFire wrote in its first week was removed (card 2157): no such file
+	// can hold what has been added since, and it left twelve tables of the
+	// data it replaced in place, so that an API key could answer as another
+	// account. The media type alone is compared, without its parameters and
+	// in any case: `application/json; x=application/octet-stream` is JSON.
+	const mediaType = (request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+	if (mediaType !== 'application/octet-stream' && mediaType !== 'application/x-sqlite3') {
+		return json({ message: NOT_A_DB_BACKUP }, { status: 400 });
 	}
 
 	try {
-		const contentType = request.headers.get('content-type') || '';
+		const buffer = Buffer.from(await request.arrayBuffer());
 
-		// ── SQLite .db file restore ──────────────────────────────────
-		if (contentType.includes('application/octet-stream') || contentType.includes('application/x-sqlite3')) {
-			const buffer = Buffer.from(await request.arrayBuffer());
+		// Validate it's a SQLite file (magic header: "SQLite format 3\0")
+		const header = buffer.slice(0, 16).toString('ascii');
+		if (!header.startsWith('SQLite format 3')) {
+			return json({ message: 'Invalid file — not a SQLite database' }, { status: 400 });
+		}
 
-			// Validate it's a SQLite file (magic header: "SQLite format 3\0")
-			const header = buffer.slice(0, 16).toString('ascii');
-			if (!header.startsWith('SQLite format 3')) {
-				return json({ error: 'Invalid file — not a SQLite database' }, { status: 400 });
-			}
+		// Write the uploaded backup to a temp file so we can open it as a DB
+		const tempPath = join(process.cwd(), '.restore-temp.db');
+		writeFileSync(tempPath, buffer);
 
-			// Create a JSON safety backup BEFORE touching anything
-			const safetyBackup: Record<string, unknown[]> = {};
-			const runningTables: string[] = sqlite
-				.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_drizzle%' AND name NOT LIKE '__new_%'")
-				.all()
-				.map((r: any) => r.name);
+		let errors: string[] = [];
 
-			for (const table of runningTables) {
-				try {
-					safetyBackup[table] = sqlite.prepare(`SELECT * FROM "${table}"`).all();
-				} catch {}
-			}
-			writeFileSync(join(process.cwd(), '.pre-restore-safety.json'), JSON.stringify(safetyBackup));
+		try {
+			const backupDb = new Database(tempPath, { readonly: true });
 
-			// Write the uploaded backup to a temp file so we can open it as a DB
-			const tempPath = join(process.cwd(), '.restore-temp.db');
-			writeFileSync(tempPath, buffer);
-
-			const errors: string[] = [];
-			const restored: Record<string, number> = {};
-
+			// The copy itself, with foreign keys off for its duration and back
+			// on whether it succeeds or throws, followed by the runner's
+			// backfills — see restoreFromBackup.
+			let result: RestoreResult | null = null;
 			try {
-				const backupDb = new Database(tempPath, { readonly: true });
+				// Asked of the backup before anything here is touched, the
+				// safety copy included: a backup with users and no superadmin
+				// among them would leave nobody able to undo it.
+				if (!backupLacksSuperadmin(backupDb)) {
+					// Create a JSON safety backup BEFORE touching anything. It holds the
+					// tables the restore is about to replace, which does not include the
+					// migration record — see restorableTables.
+					const safetyBackup: Record<string, unknown[]> = {};
+					const runningTables = restorableTables(sqlite);
 
-				// MUST be set OUTSIDE transaction — SQLite ignores this inside transactions
-				sqlite.pragma('foreign_keys = OFF');
-
-				const restoreTransaction = sqlite.transaction(() => {
-					// Clear tables that exist in BOTH the running DB and backup
 					for (const table of runningTables) {
 						try {
-							sqlite.prepare(`DELETE FROM "${table}"`).run();
-						} catch (e: any) {
-							errors.push(`Clear ${table}: ${e.message}`);
-						}
+							safetyBackup[table] = sqlite.prepare(`SELECT * FROM "${table}"`).all();
+						} catch {}
 					}
+					writeFileSync(join(process.cwd(), '.pre-restore-safety.json'), JSON.stringify(safetyBackup));
 
-					// Copy data from backup into running DB, table by table
-					for (const table of runningTables) {
-						try {
-							// Check if this table exists in the backup
-							const exists = backupDb
-								.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
-								.get(table);
-							if (!exists) continue;
-
-							const rows = backupDb.prepare(`SELECT * FROM "${table}"`).all();
-							if (rows.length === 0) continue;
-
-							// Get column names and filter to only columns that exist in running DB
-							const backupCols = Object.keys(rows[0] as Record<string, unknown>);
-							const runningCols: string[] = sqlite
-								.prepare(`PRAGMA table_info("${table}")`)
-								.all()
-								.map((c: any) => c.name);
-							const commonCols = backupCols.filter(c => runningCols.includes(c));
-
-							if (commonCols.length === 0) {
-								errors.push(`${table}: no matching columns`);
-								continue;
-							}
-
-							const placeholders = commonCols.map(() => '?').join(', ');
-							const quotedCols = commonCols.map(c => `"${c}"`).join(', ');
-							const insertStmt = sqlite.prepare(
-								`INSERT INTO "${table}" (${quotedCols}) VALUES (${placeholders})`
-							);
-
-							let rowCount = 0;
-							for (const row of rows) {
-								const values = commonCols.map(c => (row as Record<string, unknown>)[c]);
-								try {
-									insertStmt.run(...values);
-									rowCount++;
-								} catch (e: any) {
-									errors.push(`${table} row: ${e.message}`);
-								}
-							}
-							restored[table] = rowCount;
-						} catch (e: any) {
-							errors.push(`${table}: ${e.message}`);
-						}
-					}
-				});
-
-				restoreTransaction();
-				sqlite.pragma('foreign_keys = ON');
+					result = restoreFromBackup(sqlite, backupDb, { outside });
+				}
+			} finally {
 				backupDb.close();
-
-				// Clean up temp file
+			}
+			if (result === null) {
 				try { unlinkSync(tempPath); } catch {}
+				return json({ message: NO_SUPERADMIN_IN_BACKUP }, { status: 400 });
+			}
+			// No session came in with the backup, and the one this request was
+			// made with went with the rest: its cookie names nothing now.
+			cookies.delete(SESSION_COOKIE_NAME, { path: '/' });
+			// The settings are the backup's now, and the key the public request
+			// form signs with is one of them. The copy of it in memory is
+			// forgotten, as a reset does, or it would go on signing and
+			// accepting form tokens with the key the restore replaced.
+			resetFormSecretCache();
+			// The restore is committed and its transaction is over. Rows it
+			// brought back may name files that a delete since the backup moved
+			// to the trash: those are put back. What could not be is reported
+			// with the rest, about a restore that succeeded.
+			const files = putBackTrashedFiles(sqlite);
+			errors = [...result.errors, ...files.errors];
+			const putBack = files.putBack > 0 ? putBackSentence(files.putBack) : null;
 
-				const summary = Object.entries(restored)
-					.filter(([, count]) => count > 0)
-					.map(([table, count]) => `${table}: ${count}`)
-					.join(', ');
+			// Clean up temp file
+			try { unlinkSync(tempPath); } catch {}
 
+			const size = `${(buffer.length / 1024).toFixed(1)} KB`;
+			const summary = Object.entries(result.restored)
+				.filter(([, count]) => count > 0)
+				.map(([table, count]) => `${table}: ${count}`)
+				.join(', ');
+
+			// Nothing is logged until here, with the restore's transaction over:
+			// the logger writes to system_logs on this same connection.
+			//
+			// What was restored and what was filled in, whether or not there is
+			// a problem to report as well: the restore is committed either way.
+			const filled = [
+				`first_completed_at on ${result.backfilled.firstCompletedAt} card(s)`,
+				`access_token on ${result.backfilled.accessTokens} request(s)`,
+				...result.defaulted.map(
+					(d) => `the default (${d.value}) in place of NULL in ${d.table}.${d.column} on ${d.rows} row(s)`
+				)
+			].join(', ');
+			// A working copy says what it switched off and removed, at the end
+			// of this line and of the answer, with or without a problem.
+			const workingCopy = result.outside ? workingCopySentence(result.outside) : null;
+			// Files put back are said too, before it, and only when there were any.
+			const ending = (text: string) =>
+				[putBack, workingCopy].reduce<string>((said, sentence) => (sentence ? endingWith(said, sentence) : said), text);
+			// The answer says two things more than the log line does, to whoever
+			// is reading it: that they have been signed out with everybody else,
+			// and who the superadmin is now, which is whoever can sign in to put
+			// it back.
+			const superadmins = superadminsOf(sqlite);
+			const answering = (text: string) =>
+				ending(endingWith(endingWith(text, SIGNED_OUT), superadminSentence(superadmins)));
+			// The same account as the message, in parts, for a page that lays
+			// it out instead of printing one long sentence.
+			const figures = {
+				sizeBytes: buffer.length,
+				restored: result.restored,
+				attachmentsPutBack: files.putBack,
+				workingCopy: workingCopy ?? undefined,
+				superadmins
+			};
+			log.info(
+				ending(`Database restored from an uploaded backup (${size}). Rows: ${summary || 'none'}. Filled in: ${filled}.`)
+			);
+			// A backup taken before card 2141 can hold a board beneath one of its
+			// own cards. Said now, as the server says it at every start, so that
+			// it is not first seen at the next one. A check that cannot be made
+			// is no reason to answer a committed restore with a failure.
+			try {
+				reportBoardLoops(log);
+			} catch (err) {
+				log.error(`The restored boards could not be checked for a loop: ${(err as Error)?.message ?? err}`);
+			}
+
+			if (errors.length > 0) {
+				// Committed, with something to report. Said in the log, in the
+				// message and in the list, because a message that only said
+				// "restored" is how a missing row goes unnoticed. Neither line
+				// says that anything was left out: the list also holds notes
+				// about rows that were copied, such as a card whose column is not
+				// in the backup either, and then it would not be true.
+				const shown =
+					errors.slice(0, 10).join('; ') + (errors.length > 10 ? `; and ${errors.length - 10} more` : '');
+				log.error(`Restore committed, with ${errors.length} problem(s): ${shown}`);
 				return json({
 					success: true,
-					message: `Database restored (${(buffer.length / 1024).toFixed(1)} KB). ${summary || 'No data rows found in backup.'}`,
-					errors: errors.length > 0 ? errors : undefined
+					message: answering(
+						`Database restored (${size}), with ${errors.length} problem(s); each is given in the list. ` +
+							(summary || 'No data rows found in backup.')
+					),
+					errors,
+					outside: result.outside ?? undefined,
+					...figures
 				});
-			} catch (err: any) {
-				try { unlinkSync(tempPath); } catch {}
-				log.critical(`Database restore failed: ${err.message}`, { errors });
-				return json({ error: `Restore failed: ${err.message}`, errors }, { status: 500 });
 			}
+
+			return json({
+				success: true,
+				message: answering(`Database restored (${size}). ${summary || 'No data rows found in backup.'}`),
+				outside: result.outside ?? undefined,
+				...figures
+			});
+		} catch (err: any) {
+			try { unlinkSync(tempPath); } catch {}
+			if (err instanceof RestoreLeavesNoSuperadmin) {
+				// Refused for what the backup holds, as one with no superadmin
+				// in it is refused above, and rolled back: nothing was changed,
+				// and the server is as it was. A 422 and a WARN, not a fault.
+				errors = err.errors;
+				log.warn(`Database restore refused: ${err.message}`, errors.length > 0 ? { errors } : undefined);
+				return json({ message: err.message, errors, committed: false }, { status: 422 });
+			}
+			if (err instanceof RestoreError) {
+				// A restore that throws never returned its list of what went wrong
+				// along the way; the error carries it out instead. Its message is
+				// the whole account and is passed on as it is: it says whether
+				// anything was changed, and one of them is not a failed restore at
+				// all but a committed one on a connection that needs a restart.
+				// That one replaced the settings too, and the sessions.
+				if (err.committed) {
+					resetFormSecretCache();
+					cookies.delete(SESSION_COOKIE_NAME, { path: '/' });
+				}
+				errors = err.errors;
+				log.critical(`Database restore: ${err.message}`, errors.length > 0 ? { errors } : undefined);
+				return json({ message: err.message, errors, committed: err.committed }, { status: 500 });
+			}
+			log.critical(`Database restore failed: ${err.message}`);
+			return json({ message: `Restore failed: ${err.message}`, errors }, { status: 500 });
 		}
-
-		// ── Legacy JSON import (backward compat) ─────────────────────
-		const data = await request.json();
-
-		if (!data.version || !data.boards || !data.columns) {
-			return json({ error: 'Invalid backup file format' }, { status: 400 });
-		}
-
-		sqlite.pragma('foreign_keys = OFF');
-
-		const importTransaction = sqlite.transaction(() => {
-
-			sqlite.prepare('DELETE FROM card_comments').run();
-			sqlite.prepare('DELETE FROM card_assignees').run();
-			sqlite.prepare('DELETE FROM card_labels').run();
-			sqlite.prepare('DELETE FROM subtasks').run();
-			sqlite.prepare('DELETE FROM task_requests').run();
-			sqlite.prepare('DELETE FROM activity_log').run();
-			sqlite.prepare('DELETE FROM labels').run();
-			sqlite.prepare('DELETE FROM cards').run();
-			sqlite.prepare('DELETE FROM categories').run();
-			sqlite.prepare('DELETE FROM columns').run();
-			sqlite.prepare('DELETE FROM board_teams').run();
-			sqlite.prepare('DELETE FROM board_members').run();
-			sqlite.prepare('DELETE FROM board_categories').run();
-			sqlite.prepare('DELETE FROM boards').run();
-			sqlite.prepare('DELETE FROM team_members').run();
-			sqlite.prepare('DELETE FROM teams').run();
-			sqlite.prepare('DELETE FROM sessions').run();
-			sqlite.prepare('DELETE FROM invite_tokens').run();
-			sqlite.prepare('DELETE FROM users').run();
-			sqlite.prepare('DELETE FROM user_xp').run();
-			sqlite.prepare('DELETE FROM settings').run();
-
-			for (const row of (data.users || [])) {
-				sqlite.prepare(
-					'INSERT INTO users (id, username, email, password_hash, emoji, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-				).run(row.id, row.username, row.email, row.password_hash, row.emoji, row.role, row.created_at);
-			}
-
-			for (const row of (data.teams || [])) {
-				sqlite.prepare(
-					'INSERT INTO teams (id, name, emoji, created_at) VALUES (?, ?, ?, ?)'
-				).run(row.id, row.name, row.emoji, row.created_at);
-			}
-
-			for (const row of (data.teamMembers || [])) {
-				sqlite.prepare(
-					'INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, ?)'
-				).run(row.team_id, row.user_id, row.role);
-			}
-
-			for (const row of (data.boardCategories || [])) {
-				sqlite.prepare(
-					'INSERT INTO board_categories (id, name, color) VALUES (?, ?, ?)'
-				).run(row.id, row.name, row.color);
-			}
-
-			for (const row of data.boards) {
-				sqlite.prepare(
-					'INSERT INTO boards (id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-				).run(
-					row.id, row.name, row.emoji,
-					row.parent_card_id ?? null, row.category_id ?? null,
-					row.is_public ?? 0, row.created_by ?? null,
-					row.created_at, row.updated_at
-				);
-			}
-
-			for (const row of (data.boardMembers || [])) {
-				sqlite.prepare(
-					'INSERT INTO board_members (board_id, user_id, role) VALUES (?, ?, ?)'
-				).run(row.board_id, row.user_id, row.role);
-			}
-
-			for (const row of (data.boardTeams || [])) {
-				sqlite.prepare(
-					'INSERT INTO board_teams (board_id, team_id, role) VALUES (?, ?, ?)'
-				).run(row.board_id, row.team_id, row.role);
-			}
-
-			for (const row of data.columns) {
-				sqlite.prepare(
-					'INSERT INTO columns (id, board_id, title, position, color, show_add_card) VALUES (?, ?, ?, ?, ?, ?)'
-				).run(row.id, row.board_id, row.title, row.position, row.color, row.show_add_card ?? 0);
-			}
-
-			for (const row of data.categories) {
-				sqlite.prepare(
-					'INSERT INTO categories (id, board_id, name, color) VALUES (?, ?, ?, ?)'
-				).run(row.id, row.board_id, row.name, row.color);
-			}
-
-			for (const row of data.cards) {
-				sqlite.prepare(
-					'INSERT INTO cards (id, column_id, category_id, title, description, position, priority, color_tag, due_date, on_hold_note, business_value, pinned, completed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-				).run(
-					row.id, row.column_id, row.category_id, row.title, row.description,
-					row.position, row.priority, row.color_tag, row.due_date,
-					row.on_hold_note, row.business_value ?? '', row.pinned ?? 0,
-					row.completed_at, row.created_at, row.updated_at
-				);
-			}
-
-			for (const row of (data.subtasks || [])) {
-				sqlite.prepare(
-					'INSERT INTO subtasks (id, card_id, title, description, priority, color_tag, due_date, completed, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-				).run(row.id, row.card_id, row.title, row.description, row.priority, row.color_tag, row.due_date, row.completed, row.position);
-			}
-
-			for (const row of (data.labels || [])) {
-				sqlite.prepare(
-					'INSERT INTO labels (id, board_id, name, color) VALUES (?, ?, ?, ?)'
-				).run(row.id, row.board_id, row.name, row.color);
-			}
-
-			for (const row of (data.cardLabels || [])) {
-				sqlite.prepare(
-					'INSERT INTO card_labels (card_id, label_id) VALUES (?, ?)'
-				).run(row.card_id, row.label_id);
-			}
-
-			for (const row of (data.cardAssignees || [])) {
-				sqlite.prepare(
-					'INSERT INTO card_assignees (card_id, user_id) VALUES (?, ?)'
-				).run(row.card_id, row.user_id);
-			}
-
-			for (const row of (data.cardComments || [])) {
-				sqlite.prepare(
-					'INSERT INTO card_comments (id, card_id, user_id, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-				).run(row.id, row.card_id, row.user_id, row.content, row.created_at, row.updated_at);
-			}
-
-			for (const row of (data.activityLog || [])) {
-				sqlite.prepare(
-					'INSERT INTO activity_log (id, board_id, card_id, user_id, action, detail, user_name, user_emoji, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-				).run(row.id, row.board_id, row.card_id, row.user_id, row.action, row.detail, row.user_name, row.user_emoji, row.created_at);
-			}
-
-			for (const row of (data.userXp || [])) {
-				sqlite.prepare(
-					'INSERT INTO user_xp (name, xp, emoji) VALUES (?, ?, ?)'
-				).run(row.name, row.xp, row.emoji);
-			}
-
-			for (const row of (data.taskRequests || [])) {
-				sqlite.prepare(
-					'INSERT INTO task_requests (id, target_type, target_id, requester_name, requester_email, requester_user_id, title, description, priority, status, business_value, resolved_by, resolved_card_id, reject_reason, created_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-				).run(
-					row.id, row.target_type, row.target_id, row.requester_name,
-					row.requester_email, row.requester_user_id, row.title,
-					row.description, row.priority, row.status, row.business_value,
-					row.resolved_by, row.resolved_card_id, row.reject_reason,
-					row.created_at, row.resolved_at
-				);
-			}
-
-			for (const row of (data.settings || [])) {
-				sqlite.prepare(
-					'INSERT INTO settings (key, value) VALUES (?, ?)'
-				).run(row.key, row.value);
-			}
-
-			sqlite.prepare('DELETE FROM backup_log').run();
-			for (const row of (data.backupLog || [])) {
-				sqlite.prepare(
-					'INSERT INTO backup_log (id, destination_type, destination_name, filename, size_bytes, status, error, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-				).run(row.id, row.destination_type, row.destination_name, row.filename, row.size_bytes, row.status, row.error, row.duration_ms, row.created_at);
-			}
-
-		});
-
-		importTransaction();
-		sqlite.pragma('foreign_keys = ON');
-
-		const counts = {
-			users: (data.users || []).length,
-			teams: (data.teams || []).length,
-			boards: (data.boards || []).length,
-			cards: (data.cards || []).length,
-			comments: (data.cardComments || []).length,
-			requests: (data.taskRequests || []).length
-		};
-
-		return json({
-			success: true,
-			message: `Restored ${counts.users} users, ${counts.teams} teams, ${counts.boards} boards, ${counts.cards} cards, ${counts.comments} comments, ${counts.requests} task requests`
-		});
-	} catch (error) {
-		try { sqlite.pragma('foreign_keys = ON'); } catch {}
-		const msg = error instanceof Error ? error.message : 'Unknown error';
-		log.critical(`Legacy JSON import failed: ${msg}`, error);
-		return json({ error: `Import failed: ${msg}` }, { status: 500 });
+	} catch (err) {
+		// An error SvelteKit made is an answer already, and is passed on as it
+		// is: a body sent in chunks that runs past the limit is refused 413
+		// where it is read, above. It is not an Error, so left to the lines
+		// below it would be answered 500 "Import failed: Unknown error".
+		if (isHttpError(err)) throw err;
+		// Anything else thrown before the restore, which answers for itself:
+		// the upload could not be written down to be opened, above all.
+		const msg = err instanceof Error ? err.message : 'Unknown error';
+		log.critical(`Import failed: ${msg}`, err);
+		return json({ message: `Import failed: ${msg}` }, { status: 500 });
 	}
 };

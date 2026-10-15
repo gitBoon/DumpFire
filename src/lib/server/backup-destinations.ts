@@ -14,6 +14,7 @@ import { google } from 'googleapis';
 import { Client as GraphClient } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
 import { Readable } from 'node:stream';
+import { readChoice, readNumber, readText, type RequestBody } from './request-body';
 
 // ─── Common Interface ────────────────────────────────────────────────────────
 
@@ -32,7 +33,8 @@ export interface SftpDestinationConfig {
 	type: 'sftp';
 	name: string;
 	host: string;
-	port: number;
+	/** null is the default, 22: a Port box cleared sends null. */
+	port: number | null;
 	username: string;
 	password?: string;
 	privateKey?: string;
@@ -114,7 +116,7 @@ export class SftpDestination implements BackupDestination {
 				await sftp.mkdir(this.config.remotePath, true);
 			}
 			await sftp.end();
-			return { success: true, message: `Connected to ${this.config.host}:${this.config.port}` };
+			return { success: true, message: `Connected to ${this.config.host}:${this.config.port || 22}` };
 		} catch (err: any) {
 			try { await sftp.end(); } catch {}
 			return { success: false, message: err.message || 'Connection failed' };
@@ -410,6 +412,117 @@ export class OneDriveDestination implements BackupDestination {
 		const folderPath = this.getFolderPath();
 		await client.api(`/drives/root:/${folderPath}/${filename}`).delete();
 	}
+}
+
+// ─── A destination, as a request sends it ────────────────────────────────────
+
+/** The kinds of destination there are. */
+export const DESTINATION_TYPES = ['sftp', 's3', 'gdrive', 'onedrive'] as const;
+
+/** What each kind holds beside its `type` and `name`. Each is text, but an SFTP `port` and Google Drive's `authMethod`. */
+const DESTINATION_FIELDS: Record<DestinationConfig['type'], readonly string[]> = {
+	sftp: ['host', 'port', 'username', 'password', 'privateKey', 'remotePath'],
+	s3: ['region', 'bucket', 'accessKeyId', 'secretAccessKey', 'prefix', 'endpoint'],
+	gdrive: ['authMethod', 'serviceAccountJson', 'clientId', 'clientSecret', 'refreshToken', 'folderId'],
+	onedrive: ['tenantId', 'clientId', 'clientSecret', 'folderPath']
+};
+
+/** How GET /api/admin/backup sends a secret: one sent back so is the one stored. */
+export const MASKED_SECRET = '••••••••';
+
+/** The secrets that are sent masked, and so may come back masked. */
+const SECRETS = ['password', 'privateKey', 'secretAccessKey', 'clientSecret'];
+
+/** The most a destination's text may hold, its name among them. */
+const LONGEST_TEXT = 2048;
+
+/**
+ * The two that hold a file pasted in, and are longer than any address or
+ * name: an SSH private key (one of 4,096 bits is about 3,300 characters) and a
+ * Google service account's JSON (about 2,400). 2,048 would refuse both.
+ */
+const PASTED_FILES: Record<string, number> = { privateKey: 20000, serviceAccountJson: 20000 };
+
+/**
+ * A destination, from a request body or an entry of one (card 2117, R10): a
+ * text `name`, a `type` of `sftp`, `s3`, `gdrive` or `onedrive`, and the fields
+ * that type holds, each text but an SFTP `port` (a whole number from 1 to
+ * 65535, or `null` for the default, 22, as a Port box cleared sends it) and
+ * Google Drive's `authMethod` (`service_account` or `oauth`). Any
+ * other field is not kept. Every field went into the settings as it was sent.
+ * Text is at most 2,048 characters, but a private key and a service account's
+ * JSON, at most 20,000.
+ *
+ * `at` names the destination in a refusal (`destinations[2].port must be a
+ * whole number from 1 to 65535`); none for a body that is one destination.
+ * `stored` finds the destination saved under the name sent: a value it holds,
+ * sent back unchanged, is kept as it is (decision 8), and a secret sent back
+ * masked, as the settings' GET sends it, is its. `missing` is the text for a
+ * name or a type not sent, where a route has its own.
+ */
+export function readDestination(
+	entry: RequestBody,
+	at: string | null,
+	stored: (name: string) => DestinationConfig | undefined,
+	missing?: string
+): DestinationConfig {
+	const prefix = at === null ? '' : `${at}.`;
+	const name = readText(entry, 'name', {
+		required: true,
+		min: 1,
+		max: LONGEST_TEXT,
+		says: {
+			missing: missing ?? `${prefix}name is required`,
+			empty: missing ?? `${prefix}name cannot be empty`,
+			type: `${prefix}name must be text`,
+			invalid: `${prefix}name must be at most ${LONGEST_TEXT} characters`
+		}
+	});
+	const oneOf = `${prefix}type must be one of: ${DESTINATION_TYPES.join(', ')}`;
+	const type = readChoice(entry, 'type', {
+		required: true,
+		from: DESTINATION_TYPES,
+		says: { missing: missing ?? `${prefix}type is required`, type: oneOf, invalid: oneOf }
+	});
+	const saved = stored(name) as Record<string, unknown> | undefined;
+
+	const destination: Record<string, unknown> = { type, name };
+	for (const field of DESTINATION_FIELDS[type]) {
+		const keep = saved?.[field];
+		let value: unknown;
+		if (field === 'port') {
+			// null is 22 when the destination connects (`port || 22`), as it was
+			// before card 2117 (its second fix pass).
+			value = readNumber(entry, field, {
+				whole: true,
+				min: 1,
+				max: 65535,
+				nullable: true,
+				keep,
+				says: { type: `${prefix}port must be a whole number`, invalid: `${prefix}port must be a whole number from 1 to 65535` }
+			});
+		} else if (field === 'authMethod') {
+			value = readChoice(entry, field, {
+				from: ['service_account', 'oauth'],
+				keep,
+				says: `${prefix}authMethod must be one of: service_account, oauth`
+			});
+		} else {
+			const max = PASTED_FILES[field] ?? LONGEST_TEXT;
+			value = readText(entry, field, {
+				max,
+				keep,
+				says: { type: `${prefix}${field} must be text`, invalid: `${prefix}${field} must be at most ${max} characters` }
+			});
+		}
+		if (value === undefined) continue;
+		// Sent back masked: the secret stored under this name, as before.
+		const masked =
+			(SECRETS.includes(field) && value === MASKED_SECRET) ||
+			(field === 'serviceAccountJson' && typeof value === 'string' && value.includes(MASKED_SECRET));
+		destination[field] = masked && saved ? saved[field] || '' : value;
+	}
+	return destination as unknown as DestinationConfig;
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────────

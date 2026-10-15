@@ -1,21 +1,18 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { columns } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
-import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
+import { inTransaction } from '$lib/server/db/transaction';
+import { pathId, readBody, readNumber, readText } from '$lib/server/request-body';
+import { requireBoard, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards/:boardId/columns — List all columns for a board. */
 export const GET: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-
-	const boardId = Number(params.boardId);
-	if (isNaN(boardId)) throw error(400, 'Invalid board ID');
-
-	if (!canViewBoard(locals.user, boardId)) {
-		throw error(403, 'No access to this board');
-	}
+	const boardId = pathId(params.boardId, 'board');
+	// A board that is not there is 404 to everyone, then one the caller cannot open 403.
+	requireBoard(locals.user, boardId, 'view');
 
 	const cols = db.select()
 		.from(columns)
@@ -28,40 +25,48 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 /** POST /api/v1/boards/:boardId/columns — Create a new column. */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const boardId = pathId(params.boardId, 'board');
+	const body = await readBody(request);
 
-	const boardId = Number(params.boardId);
-	if (isNaN(boardId)) throw error(400, 'Invalid board ID');
+	// The board is looked for and the caller checked in the transaction that
+	// adds the column, once the body has arrived. A board that is not there is
+	// 404 to everyone: it was 403, and for an administrator a 500 from the
+	// database.
+	const col = inTransaction(() => {
+		requireBoard(user, boardId, 'edit');
 
-	if (!canEditBoard(locals.user, boardId)) {
-		throw error(403, 'No edit access to this board');
-	}
+		const title = readText(body, 'title', {
+			required: true,
+			trim: true,
+			min: 1,
+			max: 200,
+			says: { missing: 'title is required', empty: 'title is required', invalid: 'Column title too long (max 200 chars)' }
+		});
+		const color = readText(body, 'color', { min: 1, max: 32 });
+		const position = readNumber(body, 'position', {});
 
-	const body = await request.json();
-	const { title, color, position } = body;
+		// If no position specified, put it at the end
+		const existingCols = db.select({ position: columns.position })
+			.from(columns)
+			.where(eq(columns.boardId, boardId))
+			.orderBy(asc(columns.position))
+			.all();
+		const maxPos = existingCols.length > 0 ? Math.max(...existingCols.map(c => c.position)) : -1;
 
-	if (!title || !String(title).trim()) throw error(400, 'title is required');
-	if (String(title).length > 200) throw error(400, 'Column title too long (max 200 chars)');
+		const row = db.insert(columns)
+			.values({
+				boardId,
+				title,
+				color: color ?? '#6366f1',
+				position: position ?? maxPos + 1
+			})
+			.returning()
+			.get();
 
-	// If no position specified, put it at the end
-	const existingCols = db.select({ position: columns.position })
-		.from(columns)
-		.where(eq(columns.boardId, boardId))
-		.orderBy(asc(columns.position))
-		.all();
-	const maxPos = existingCols.length > 0 ? Math.max(...existingCols.map(c => c.position)) : -1;
-
-	const col = db.insert(columns)
-		.values({
-			boardId,
-			title: String(title).trim(),
-			color: color || '#6366f1',
-			position: position ?? maxPos + 1
-		})
-		.returning()
-		.get();
-
-	emit(boardId, 'update', { type: 'column' });
+		emit(boardId, 'update', { type: 'column' });
+		return row;
+	});
 
 	return json(col, { status: 201 });
 };

@@ -1,39 +1,109 @@
 /**
  * notifications.ts — Email notification service for DumpFire.
  *
- * Sends emails for card events (creation, moves, assignment).
+ * Sends emails for card events (moves, assignment, comments, mentions,
+ * unblocked work), shared boards, invites, task requests and new plans.
+ * There is no mail for a new card. Whoever is put on one is mailed "Assigned":
+ * accepting a task request with an assignee makes the card and assigns it,
+ * and a page that makes a card with assignees adds each after it. The "Card
+ * created" mail would have told them twice; nothing called it, and it was
+ * removed (card 2010).
  * All functions silently no-op if SMTP is not configured.
  * Notifications are fire-and-forget — they never block API responses.
+ *
+ * Every text put into a mail's HTML here goes through `escapeHtml` where it is
+ * put, each link in an `href` included (the rule is in `$lib/escape-html`).
+ * Left bare: numbers, the colours taken from a table in the same function,
+ * and a block built in the same function from values already escaped
+ * (`descBlock`, `chainBlock`, `detailHtml`). Subjects are plain text and are
+ * not escaped.
  */
 
-import { sendEmail, sendEmailWithAttachment, isSmtpConfigured } from './email';
+import { escapeHtml } from '$lib/escape-html';
+import { sendEmail as sendEmailNow, sendEmailWithAttachment, isSmtpConfigured } from './email';
 import { db } from './db';
+import { afterCommit } from './db/transaction';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams, taskRequests } from './db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { createLogger } from './logger';
+import { requestReplyUrl } from './request-tokens';
+import { canViewBoard, type Actor } from './board-access';
 
 const log = createLogger('NOTIFY');
 
-/** Escape HTML entities to prevent injection in email templates. */
-function esc(str: string): string {
-	return str
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;')
-		.replace(/'/g, '&#039;');
+/**
+ * Send an email once the write it follows from is committed.
+ *
+ * Every mail in this file tells somebody about a write. Called inside a
+ * transaction, the send waits for the commit and never happens if the
+ * transaction rolls back, in which case the promise returned here is never
+ * settled. Outside a transaction it is sent at once, as `sendEmail` in
+ * `email.ts` does. Callers that await a result (the SMTP test, the scheduled
+ * reports) use that one directly and are not inside a transaction.
+ */
+function sendEmail(to: string, subject: string, html: string): Promise<boolean> {
+	return new Promise((resolve, reject) => {
+		afterCommit(() => sendEmailNow(to, subject, html).then(resolve, reject));
+	});
+}
+
+/**
+ * True when there is no address to make a mail's link from, with one WARN
+ * line that says which mail was not sent for the want of it.
+ *
+ * `baseUrl` is what `linkBaseUrl` in `email.ts` gave: the App URL, or failing
+ * that the address the server was started with, and never anything a request
+ * said. It is null on a built server that was given neither. A mail whose
+ * link goes nowhere is worse than no mail, so the notification is skipped.
+ * Nothing is thrown: this is called from the write the mail is about, and
+ * that write has succeeded.
+ *
+ * Every function here asks it last, once it is known that there is somebody
+ * to tell, so that a server with no address logs a line for a mail it would
+ * have sent and for nothing else.
+ */
+function noLinkAddress(baseUrl: string | null, what: string): baseUrl is null {
+	if (baseUrl !== null) return false;
+	log.warn(
+		`${what} was not sent: this server has no address to make its link from. ` +
+			'Set the App URL on the admin page, or start the server with ORIGIN set to its public address.'
+	);
+	return true;
 }
 
 // ─── Notification Preferences ────────────────────────────────────────────────
 
 type NotifPrefs = Record<string, boolean>;
 
-/** Get a user's notification preferences (defaults to all enabled). */
-function getUserNotifPrefs(userId: number): NotifPrefs {
+/**
+ * Get a user's notification preferences (defaults to all enabled).
+ *
+ * Preferences that cannot be read, because the stored text is not JSON or is
+ * not a JSON object, are the defaults, and a WARN line names the user. This is
+ * called inside the transaction of whoever made the change being mailed about,
+ * and an error thrown here used to fail that person's write: a comment could
+ * not be saved on a board one of whose members had a `notification_prefs`
+ * that would not parse.
+ *
+ * The account's own route (`api/account/notifications`) reads them through
+ * here too, so a user whose stored preferences are unreadable is shown the
+ * defaults and can save over them.
+ */
+export function getUserNotifPrefs(userId: number): NotifPrefs {
 	const user = db.select({ notificationPrefs: users.notificationPrefs })
 		.from(users).where(eq(users.id, userId)).get();
-	const stored = user?.notificationPrefs ? JSON.parse(user.notificationPrefs) : {};
-	return stored;
+	if (!user?.notificationPrefs) return {};
+	try {
+		const stored: unknown = JSON.parse(user.notificationPrefs);
+		if (stored !== null && typeof stored === 'object' && !Array.isArray(stored)) return stored as NotifPrefs;
+	} catch {
+		// Not JSON. Reported below, with what is JSON and not an object.
+	}
+	log.warn(
+		`The notification preferences of user ${userId} could not be read, so the defaults were used: ` +
+			'notification_prefs is not a JSON object'
+	);
+	return {};
 }
 
 /**
@@ -59,7 +129,7 @@ function getUserIdByEmail(email: string): number | null {
  * Filter recipients by notification preferences.
  * Returns only recipients who have the given notification type enabled.
  */
-function filterRecipientsByPref(recipients: { email: string; username: string }[], type: string): { email: string; username: string }[] {
+function filterRecipientsByPref<R extends { email: string; username: string }>(recipients: R[], type: string): R[] {
 	return recipients.filter(r => {
 		const userId = getUserIdByEmail(r.email);
 		if (!userId) return true; // External email — always send
@@ -67,20 +137,54 @@ function filterRecipientsByPref(recipients: { email: string; username: string }[
 	});
 }
 
-/** Get email addresses for all assignees of a card. */
-function getAssigneeEmails(cardId: number): { email: string; username: string }[] {
+/**
+ * The recipients, among these, who can open the board.
+ *
+ * The rule for every mail about a board's cards that goes to people somebody
+ * else chose, such as a card's assignees: only those who can open the board
+ * are mailed (card 2180). An assignee stays assigned when they are taken off
+ * the board, or out of the team it is shared with, or when the card moves to
+ * a board they cannot open, and the mail would tell them the card's title,
+ * the board's name and who did what. The board's owner, a member of any role,
+ * a member of a team it is shared with, anyone for a public board, and an
+ * administrator can open it, as `canViewBoard` has it. Preferences decide
+ * after this.
+ */
+function whoCanOpen<R extends Actor>(recipients: R[], boardId: number): R[] {
+	return recipients.filter(r => canViewBoard(r, boardId));
+}
+
+/** An assignee as the card mails read them. */
+type Assignee = {
+	id: number;
+	email: string;
+	username: string;
+	/** The account's role (`users.role`), not a role on the board. */
+	role: string;
+};
+
+/**
+ * The assignees of a card who can open `boardId`, the board the mail is
+ * about, but `excludeUserId` if given.
+ *
+ * Taking someone off a board leaves them assigned to its cards, so the
+ * assignees are asked here, when the mail is sent, and not when they were
+ * assigned (`whoCanOpen`).
+ */
+function getAssigneeEmails(cardId: number, boardId: number, excludeUserId?: number): Assignee[] {
 	const assignees = db.select({ userId: cardAssignees.userId })
 		.from(cardAssignees)
 		.where(eq(cardAssignees.cardId, cardId))
 		.all();
 
-	if (assignees.length === 0) return [];
+	const userIds = assignees.map(a => a.userId).filter(id => id !== excludeUserId);
+	if (userIds.length === 0) return [];
 
-	const userIds = assignees.map(a => a.userId);
-	return db.select({ email: users.email, username: users.username })
+	const rows = db.select({ id: users.id, email: users.email, username: users.username, role: users.role })
 		.from(users)
 		.where(inArray(users.id, userIds))
 		.all();
+	return whoCanOpen(rows, boardId);
 }
 
 /** Get board name for email context. */
@@ -122,55 +226,35 @@ function emailTemplate(title: string, content: string): string {
 
 // ─── Notification Functions ──────────────────────────────────────────────────
 
-/** Notify assignees when a card is created. */
-export function notifyCardCreated(boardId: number, cardId: number, cardTitle: string, creatorName: string, baseUrl: string) {
+/**
+ * Notify assignees when a card is moved between columns.
+ *
+ * The mover is left out, as the commenter is left out of the comment mail: an
+ * assignee who moves their own card is not told that they moved it (card
+ * 2134, R4). Turning "card moved" mail off to stop that would also stop the
+ * "Unblocked" mail, which reads the same preference.
+ *
+ * `boardId` is the board the card is on now, which the mail names: only the
+ * assignees who can open it are mailed (card 2180).
+ */
+export function notifyCardMoved(boardId: number, cardId: number, cardTitle: string, moverName: string, fromColumn: string, toColumn: string, moverId: number, baseUrl: string | null) {
 	if (!isSmtpConfigured()) return;
 	const boardName = getBoardName(boardId);
-	const allAssignees = getAssigneeEmails(cardId);
-	const assignees = filterRecipientsByPref(allAssignees, 'email_assigned');
-	if (assignees.length === 0) return;
-
-	const boardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
-
-	const details = getCardDetails(cardId);
-	const descBlock = details.description ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Description:</strong> ${esc(details.description.length > 200 ? details.description.slice(0, 200) + '…' : details.description)}</p>` : '';
-	const bvBlock = details.businessValue ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Business Value:</strong> ${esc(details.businessValue.length > 200 ? details.businessValue.slice(0, 200) + '…' : details.businessValue)}</p>` : '';
-
-	const html = emailTemplate('New Card Created', `
-		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #6366f1;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
-			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">
-				Created by <strong>${esc(creatorName)}</strong> in <strong>${esc(boardName)}</strong>
-			</p>
-			${descBlock}
-			${bvBlock}
-			<div style="margin-top: 16px;"><a href="${boardUrl}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a></div>
-		</div>
-	`);
-
-	for (const a of assignees) {
-		sendEmail(a.email, `New card: ${cardTitle}`, html).catch(err => log.error(`Card-created notification failed for ${a.email}`, err));
-	}
-}
-
-/** Notify assignees when a card is moved between columns. */
-export function notifyCardMoved(boardId: number, cardId: number, cardTitle: string, moverName: string, fromColumn: string, toColumn: string, baseUrl: string) {
-	if (!isSmtpConfigured()) return;
-	const boardName = getBoardName(boardId);
-	const allAssignees = getAssigneeEmails(cardId);
+	const allAssignees = getAssigneeEmails(cardId, boardId, moverId);
 	const assignees = filterRecipientsByPref(allAssignees, 'email_moved');
 	if (assignees.length === 0) return;
+	if (noLinkAddress(baseUrl, 'The mail about a card that was moved')) return;
 
 	const boardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
 
 	const html = emailTemplate('Card Moved', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #f59e0b;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(cardTitle)}</p>
 			<p style="margin: 0; font-size: 13px; color: #475569;">
-				<strong>${esc(moverName)}</strong> moved this card from <strong>${esc(fromColumn)}</strong> → <strong>${esc(toColumn)}</strong>
+				<strong>${escapeHtml(moverName)}</strong> moved this card from <strong>${escapeHtml(fromColumn)}</strong> → <strong>${escapeHtml(toColumn)}</strong>
 			</p>
-			<p style="margin: 4px 0 16px; font-size: 12px; color: #64748b;">Board: ${esc(boardName)}</p>
-			<a href="${boardUrl}" style="display: inline-block; padding: 8px 16px; background: #f59e0b; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a>
+			<p style="margin: 4px 0 16px; font-size: 12px; color: #64748b;">Board: ${escapeHtml(boardName)}</p>
+			<a href="${escapeHtml(boardUrl)}" style="display: inline-block; padding: 8px 16px; background: #f59e0b; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a>
 		</div>
 	`);
 
@@ -180,30 +264,31 @@ export function notifyCardMoved(boardId: number, cardId: number, cardTitle: stri
 }
 
 /** Notify a user when they are assigned to a card. */
-export function notifyUserAssigned(boardId: number, cardId: number, cardTitle: string, assigneeEmail: string, assigneeName: string, assignerName: string, baseUrl: string) {
+export function notifyUserAssigned(boardId: number, cardId: number, cardTitle: string, assigneeEmail: string, assigneeName: string, assignerName: string, baseUrl: string | null) {
 	if (!isSmtpConfigured()) return;
 
 	// Check assignee's notification preferences
 	const userId = getUserIdByEmail(assigneeEmail);
 	if (userId && !shouldNotifyUser(userId, 'email_assigned')) return;
+	if (noLinkAddress(baseUrl, 'The mail about a card that was assigned')) return;
 
 	const boardName = getBoardName(boardId);
 
 	const boardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
 
 	const details = getCardDetails(cardId);
-	const descBlock = details.description ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Description:</strong> ${esc(details.description.length > 200 ? details.description.slice(0, 200) + '…' : details.description)}</p>` : '';
-	const bvBlock = details.businessValue ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Business Value:</strong> ${esc(details.businessValue.length > 200 ? details.businessValue.slice(0, 200) + '…' : details.businessValue)}</p>` : '';
+	const descBlock = details.description ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Description:</strong> ${escapeHtml(details.description.length > 200 ? details.description.slice(0, 200) + '…' : details.description)}</p>` : '';
+	const bvBlock = details.businessValue ? `<p style="margin: 8px 0; font-size: 13px; color: #334155; line-height: 1.5;"><strong>Business Value:</strong> ${escapeHtml(details.businessValue.length > 200 ? details.businessValue.slice(0, 200) + '…' : details.businessValue)}</p>` : '';
 
 	const html = emailTemplate('You\'ve Been Assigned', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #10b981;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(cardTitle)}</p>
 			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">
-				<strong>${esc(assignerName)}</strong> assigned you to this card in <strong>${esc(boardName)}</strong>
+				<strong>${escapeHtml(assignerName)}</strong> assigned you to this card in <strong>${escapeHtml(boardName)}</strong>
 			</p>
 			${descBlock}
 			${bvBlock}
-			<div style="margin-top: 16px;"><a href="${boardUrl}" style="display: inline-block; padding: 8px 16px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a></div>
+			<div style="margin-top: 16px;"><a href="${escapeHtml(boardUrl)}" style="display: inline-block; padding: 8px 16px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a></div>
 		</div>
 	`);
 
@@ -217,10 +302,10 @@ export function sendInviteEmail(email: string, username: string, inviteToken: st
 	const inviteUrl = `${baseUrl}/invite/${inviteToken}`;
 	const html = emailTemplate('Welcome to DumpFire!', `
 		<p style="color: #334155; line-height: 1.6;">
-			Hi <strong style="color: #0f172a;">${esc(username)}</strong>, you've been invited to join DumpFire — a blazingly fast Kanban board.
+			Hi <strong style="color: #0f172a;">${escapeHtml(username)}</strong>, you've been invited to join DumpFire — a blazingly fast Kanban board.
 		</p>
 		<div style="text-align: center; margin: 24px 0;">
-			<a href="${inviteUrl}" style="display: inline-block; padding: 12px 32px; background: #6366f1; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
+			<a href="${escapeHtml(inviteUrl)}" style="display: inline-block; padding: 12px 32px; background: #6366f1; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
 				Set Your Password
 			</a>
 		</div>
@@ -234,22 +319,23 @@ export function sendInviteEmail(email: string, username: string, inviteToken: st
 }
 
 /** Notify a user when they are added to a board. */
-export function notifyBoardShared(boardId: number, boardName: string, userEmail: string, userName: string, sharerName: string, role: string, baseUrl: string) {
+export function notifyBoardShared(boardId: number, boardName: string, userEmail: string, userName: string, sharerName: string, role: string, baseUrl: string | null) {
 	if (!isSmtpConfigured()) return;
 
 	// Check recipient's notification preferences
 	const userId = getUserIdByEmail(userEmail);
 	if (userId && !shouldNotifyUser(userId, 'email_board_shared')) return;
+	if (noLinkAddress(baseUrl, 'The mail about a board that was shared')) return;
 
 	const boardUrl = `${baseUrl}/board/${boardId}`;
 
 	const html = emailTemplate('Board Shared With You', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(boardName)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(boardName)}</p>
 			<p style="margin: 0 0 16px; font-size: 13px; color: #475569;">
-				<strong>${esc(sharerName)}</strong> shared this board with you as <strong style="text-transform: capitalize;">${esc(role)}</strong>
+				<strong>${escapeHtml(sharerName)}</strong> shared this board with you as <strong style="text-transform: capitalize;">${escapeHtml(role)}</strong>
 			</p>
-			<a href="${boardUrl}" style="display: inline-block; padding: 8px 16px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open Board</a>
+			<a href="${escapeHtml(boardUrl)}" style="display: inline-block; padding: 8px 16px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open Board</a>
 		</div>
 	`);
 
@@ -257,7 +343,7 @@ export function notifyBoardShared(boardId: number, boardName: string, userEmail:
 }
 
 /** Notify the target user(s) when a new task request is submitted. */
-export function notifyTaskRequest(targetType: string, targetId: number, title: string, requesterName: string, priority: string, baseUrl: string) {
+export function notifyTaskRequest(targetType: string, targetId: number, title: string, requesterName: string, priority: string, baseUrl: string | null) {
 	if (!isSmtpConfigured()) return;
 
 	// Determine recipients
@@ -278,6 +364,7 @@ export function notifyTaskRequest(targetType: string, targetId: number, title: s
 
 	recipients = filterRecipientsByPref(recipients, 'email_requests');
 	if (recipients.length === 0) return;
+	if (noLinkAddress(baseUrl, 'The mail about a new request')) return;
 
 	const inboxUrl = `${baseUrl}/inbox`;
 
@@ -288,12 +375,12 @@ export function notifyTaskRequest(targetType: string, targetId: number, title: s
 
 	const html = emailTemplate('New Task Request', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid ${borderColor};">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(title)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(title)}</p>
 			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
-				From <strong>${esc(requesterName)}</strong> · Priority: <strong style="text-transform: capitalize;">${esc(priority)}</strong>
+				From <strong>${escapeHtml(requesterName)}</strong> · Priority: <strong style="text-transform: capitalize;">${escapeHtml(priority)}</strong>
 			</p>
 			<p style="margin: 8px 0 16px; font-size: 12px; color: #64748b;">Review this request in your inbox to accept or reject it.</p>
-			<a href="${inboxUrl}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open Inbox</a>
+			<a href="${escapeHtml(inboxUrl)}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open Inbox</a>
 		</div>
 	`);
 
@@ -331,26 +418,27 @@ function getBoardMemberEmails(boardId: number, excludeUserId?: number): { email:
 }
 
 /** Notify all board members when a comment is posted on a task. */
-export function notifyCommentAdded(boardId: number, cardId: number, cardTitle: string, commenterName: string, commentPreview: string, commenterId: number, baseUrl: string) {
+export function notifyCommentAdded(boardId: number, cardId: number, cardTitle: string, commenterName: string, commentPreview: string, commenterId: number, baseUrl: string | null) {
 	if (!isSmtpConfigured()) return;
 	const boardName = getBoardName(boardId);
 	const allRecipients = getBoardMemberEmails(boardId, commenterId);
 	const recipients = filterRecipientsByPref(allRecipients, 'email_comments');
 	if (recipients.length === 0) return;
+	if (noLinkAddress(baseUrl, 'The mail about a comment')) return;
 
 	const boardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
 	const preview = commentPreview.length > 120 ? commentPreview.slice(0, 120) + '…' : commentPreview;
 
 	const html = emailTemplate('New Comment', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #06b6d4;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(cardTitle)}</p>
 			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
-				<strong>${esc(commenterName)}</strong> commented in <strong>${esc(boardName)}</strong>
+				<strong>${escapeHtml(commenterName)}</strong> commented in <strong>${escapeHtml(boardName)}</strong>
 			</p>
 			<blockquote style="margin: 12px 0 16px; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid #06b6d4; color: #334155; font-size: 13px; border-radius: 4px;">
-				${esc(preview)}
+				${escapeHtml(preview)}
 			</blockquote>
-			<a href="${boardUrl}" style="display: inline-block; padding: 8px 16px; background: #06b6d4; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a>
+			<a href="${escapeHtml(boardUrl)}" style="display: inline-block; padding: 8px 16px; background: #06b6d4; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a>
 		</div>
 	`);
 
@@ -367,9 +455,9 @@ export function notifyRequesterAccepted(email: string, requestTitle: string, res
 
 	const html = emailTemplate('Request Accepted ✅', `
 		<div style="background: #f0fdf4; padding: 16px; border-radius: 8px; border-left: 4px solid #22c55e;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(requestTitle)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(requestTitle)}</p>
 			<p style="margin: 0; font-size: 13px; color: #475569;">
-				Great news! <strong>${esc(resolverName)}</strong> has accepted your request and created a task for it.
+				Great news! <strong>${escapeHtml(resolverName)}</strong> has accepted your request and created a task for it.
 			</p>
 		</div>
 	`);
@@ -382,14 +470,14 @@ export function notifyRequesterRejected(email: string, requestTitle: string, res
 	if (!isSmtpConfigured() || !email) return;
 
 	const reasonBlock = reason
-		? `<blockquote style="margin: 12px 0 0; padding: 8px 12px; background: #fef2f2; border-left: 3px solid #ef4444; color: #334155; font-size: 13px; border-radius: 4px;">${esc(reason)}</blockquote>`
+		? `<blockquote style="margin: 12px 0 0; padding: 8px 12px; background: #fef2f2; border-left: 3px solid #ef4444; color: #334155; font-size: 13px; border-radius: 4px;">${escapeHtml(reason)}</blockquote>`
 		: '';
 
 	const html = emailTemplate('Request Declined', `
 		<div style="background: #fef2f2; padding: 16px; border-radius: 8px; border-left: 4px solid #ef4444;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(requestTitle)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(requestTitle)}</p>
 			<p style="margin: 0; font-size: 13px; color: #475569;">
-				<strong>${esc(resolverName)}</strong> has declined this request.
+				<strong>${escapeHtml(resolverName)}</strong> has declined this request.
 			</p>
 			${reasonBlock}
 		</div>
@@ -399,22 +487,52 @@ export function notifyRequesterRejected(email: string, requestTitle: string, res
 }
 
 /** Notify the requester when an admin sends a conversation message. */
-export function notifyRequesterMessage(email: string, requestTitle: string, senderName: string, message: string, requestId: number, baseUrl: string) {
+/**
+ * Ask someone who has just submitted a request to confirm it is theirs.
+ *
+ * This is the only email an unconfirmed request sends. The team is told
+ * nothing until the link in it is followed, so a form filled in with somebody
+ * else's address reaches that one person and no further.
+ */
+export function notifyRequesterConfirm(email: string, requestTitle: string, confirmUrl: string) {
 	if (!isSmtpConfigured() || !email) return;
 
-	const replyUrl = `${baseUrl}/request/${requestId}/reply?email=${encodeURIComponent(email)}`;
+	const html = emailTemplate('Confirm Your Request', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #6366f1;">
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(requestTitle)}</p>
+			<p style="margin: 0 0 16px; font-size: 13px; color: #475569;">
+				Someone submitted this request using your email address. If it was you, confirm it and we will pass it to the team.
+				If it was not, ignore this message and nothing further will happen.
+			</p>
+			<a href="${escapeHtml(confirmUrl)}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Confirm my request</a>
+		</div>
+	`);
+
+	sendEmail(email, `Confirm your request: ${requestTitle}`, html).catch(err => log.error(`Request-confirmation email failed for ${email}`, err));
+}
+
+/**
+ * @param replyUrl The requester's own link to the thread — build it with
+ * `requestReplyUrl`. It carries the request's token; it used to carry their
+ * email address, which anyone who knew the address could reproduce. Null
+ * where the server has no address to build it from, and then nothing is sent.
+ */
+export function notifyRequesterMessage(email: string, requestTitle: string, senderName: string, message: string, replyUrl: string | null) {
+	if (!isSmtpConfigured() || !email) return;
+	if (noLinkAddress(replyUrl, 'The mail to a requester about a reply to their request')) return;
+
 	const preview = message.length > 300 ? message.slice(0, 300) + '…' : message;
 
 	const html = emailTemplate('New Message on Your Request', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #6366f1;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(requestTitle)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(requestTitle)}</p>
 			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
-				<strong>${esc(senderName)}</strong> sent you a message:
+				<strong>${escapeHtml(senderName)}</strong> sent you a message:
 			</p>
 			<blockquote style="margin: 12px 0 16px; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid #6366f1; color: #334155; font-size: 13px; border-radius: 4px;">
-				${esc(preview)}
+				${escapeHtml(preview)}
 			</blockquote>
-			<a href="${replyUrl}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View & Reply</a>
+			<a href="${escapeHtml(replyUrl)}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View & Reply</a>
 		</div>
 	`);
 
@@ -422,7 +540,7 @@ export function notifyRequesterMessage(email: string, requestTitle: string, send
 }
 
 /** Notify admin/team when the requester replies. */
-export function notifyAdminMessage(targetType: string, targetId: number, requestTitle: string, requesterName: string, message: string, baseUrl: string) {
+export function notifyAdminMessage(targetType: string, targetId: number, requestTitle: string, requesterName: string, message: string, baseUrl: string | null) {
 	if (!isSmtpConfigured()) return;
 
 	let recipients: { email: string; username: string }[] = [];
@@ -441,20 +559,21 @@ export function notifyAdminMessage(targetType: string, targetId: number, request
 
 	recipients = filterRecipientsByPref(recipients, 'email_requests');
 	if (recipients.length === 0) return;
+	if (noLinkAddress(baseUrl, 'The mail about a reply from a requester')) return;
 
 	const inboxUrl = `${baseUrl}/inbox`;
 	const preview = message.length > 300 ? message.slice(0, 300) + '…' : message;
 
 	const html = emailTemplate('Reply on Task Request', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #f59e0b;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(requestTitle)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(requestTitle)}</p>
 			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
-				<strong>${esc(requesterName)}</strong> replied:
+				<strong>${escapeHtml(requesterName)}</strong> replied:
 			</p>
 			<blockquote style="margin: 12px 0 16px; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid #f59e0b; color: #334155; font-size: 13px; border-radius: 4px;">
-				${esc(preview)}
+				${escapeHtml(preview)}
 			</blockquote>
-			<a href="${inboxUrl}" style="display: inline-block; padding: 8px 16px; background: #f59e0b; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open Inbox</a>
+			<a href="${escapeHtml(inboxUrl)}" style="display: inline-block; padding: 8px 16px; background: #f59e0b; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open Inbox</a>
 		</div>
 	`);
 
@@ -477,8 +596,8 @@ interface RequesterProgressEvent {
 	summary: string;
 	/** Who performed the action. */
 	actorName: string;
-	/** Base URL for building links. */
-	baseUrl: string;
+	/** Base URL for building links, or null if this server has none: see `linkBaseUrl`. */
+	baseUrl: string | null;
 	/** For 'moved' events — the column the card moved to. */
 	toColumn?: string;
 	/** For 'moved' events — the column the card moved from. */
@@ -494,8 +613,17 @@ interface RequesterProgressEvent {
  * Sends a styled email with event-specific content.
  * Automatically stops if the card already has completedAt set (unless this IS the completion event).
  * Skips if the actor is the requester themselves.
+ *
+ * Fire-and-forget, and nothing of it runs until the write it reports is
+ * committed. The work is async (a completion builds a PDF first), so started
+ * inside a transaction its later part would run whether or not that
+ * transaction was rolled back. A failure is logged and reaches no caller.
  */
-export async function notifyRequesterProgress(event: RequesterProgressEvent): Promise<void> {
+export function notifyRequesterProgress(event: RequesterProgressEvent): void {
+	afterCommit(() => sendRequesterProgress(event));
+}
+
+async function sendRequesterProgress(event: RequesterProgressEvent): Promise<void> {
 	if (!isSmtpConfigured()) return;
 
 	const { cardId, action, summary, actorName, baseUrl, toColumn, fromColumn, actorUserId } = event;
@@ -506,7 +634,8 @@ export async function notifyRequesterProgress(event: RequesterProgressEvent): Pr
 		requesterEmail: taskRequests.requesterEmail,
 		requesterUserId: taskRequests.requesterUserId,
 		title: taskRequests.title,
-		status: taskRequests.status
+		status: taskRequests.status,
+		accessToken: taskRequests.accessToken
 	})
 	.from(taskRequests)
 	.where(and(eq(taskRequests.resolvedCardId, cardId), eq(taskRequests.status, 'accepted')))
@@ -528,9 +657,13 @@ export async function notifyRequesterProgress(event: RequesterProgressEvent): Pr
 		if (!shouldNotifyUser(request.requesterUserId, 'email_request_progress')) return;
 	}
 
+	// Its link is the requester's own way in to their request, so with no
+	// address to make it from there is no mail. The move it reports is done.
+	if (noLinkAddress(baseUrl, `The progress mail to the requester of request ${request.id}`)) return;
+
 	// Build event-specific email content
 	const requestTitle = request.title;
-	const replyUrl = `${baseUrl}/request/${request.id}/reply?email=${encodeURIComponent(request.requesterEmail)}`;
+	const replyUrl = requestReplyUrl(baseUrl, request);
 
 	const actionConfigs: Record<RequesterProgressAction, { subject: string; borderColor: string; heading: string; icon: string }> = {
 		comment: {
@@ -567,31 +700,31 @@ export async function notifyRequesterProgress(event: RequesterProgressEvent): Pr
 		const preview = summary.length > 300 ? summary.slice(0, 300) + '…' : summary;
 		detailHtml = `
 			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
-				<strong>${esc(actorName)}</strong> commented:
+				<strong>${escapeHtml(actorName)}</strong> commented:
 			</p>
 			<blockquote style="margin: 12px 0 0; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid ${config.borderColor}; color: #334155; font-size: 13px; border-radius: 4px;">
-				${esc(preview)}
+				${escapeHtml(preview)}
 			</blockquote>
 		`;
 	} else if (action === 'moved') {
 		detailHtml = `
 			<p style="margin: 0; font-size: 13px; color: #475569;">
-				<strong>${esc(actorName)}</strong> moved this task from <strong>${esc(fromColumn || 'Unknown')}</strong> → <strong>${esc(toColumn || 'Unknown')}</strong>
+				<strong>${escapeHtml(actorName)}</strong> moved this task from <strong>${escapeHtml(fromColumn || 'Unknown')}</strong> → <strong>${escapeHtml(toColumn || 'Unknown')}</strong>
 			</p>
 		`;
 	} else if (action === 'subtask_completed') {
 		detailHtml = `
 			<p style="margin: 0; font-size: 13px; color: #475569;">
-				<strong>${esc(actorName)}</strong> completed a subtask:
+				<strong>${escapeHtml(actorName)}</strong> completed a subtask:
 			</p>
 			<p style="margin: 8px 0 0; font-size: 13px; color: #334155; font-weight: 500;">
-				${esc(summary)}
+				${escapeHtml(summary)}
 			</p>
 		`;
 	} else if (action === 'completed') {
 		detailHtml = `
 			<p style="margin: 0; font-size: 13px; color: #475569;">
-				Great news! <strong>${esc(actorName)}</strong> has completed the task for your request.
+				Great news! <strong>${escapeHtml(actorName)}</strong> has completed the task for your request.
 			</p>
 			<p style="margin: 8px 0 0; font-size: 12px; color: #64748b;">
 				No further progress updates will be sent for this request.
@@ -603,10 +736,10 @@ export async function notifyRequesterProgress(event: RequesterProgressEvent): Pr
 
 	const html = emailTemplate(`${config.icon} ${config.heading}`, `
 		<div style="background: ${bgColor}; padding: 16px; border-radius: 8px; border-left: 4px solid ${config.borderColor};">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(requestTitle)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(requestTitle)}</p>
 			${detailHtml}
 			<div style="margin-top: 16px;">
-				<a href="${replyUrl}" style="display: inline-block; padding: 8px 16px; background: ${config.borderColor}; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Request</a>
+				<a href="${escapeHtml(replyUrl)}" style="display: inline-block; padding: 8px 16px; background: ${config.borderColor}; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Request</a>
 			</div>
 		</div>
 	`);
@@ -652,7 +785,8 @@ export async function notifyRequesterProgress(event: RequesterProgressEvent): Pr
  * has to poll the board to notice that their turn came round. Uses the
  * `email_moved` preference rather than a new toggle — being unblocked is a
  * column change on somebody else's card, and a user who muted moves does not
- * want this either.
+ * want this either. Only the assignees who can open the waiting card's board
+ * (`boardId`) are mailed (card 2180).
  */
 export function notifyCardUnblocked(
 	boardId: number,
@@ -661,25 +795,26 @@ export function notifyCardUnblocked(
 	completedCardId: number,
 	completedCardTitle: string,
 	completerName: string,
-	baseUrl: string
+	baseUrl: string | null
 ): void {
 	if (!isSmtpConfigured()) return;
 
-	const assignees = filterRecipientsByPref(getAssigneeEmails(cardId), 'email_moved');
+	const assignees = filterRecipientsByPref(getAssigneeEmails(cardId, boardId), 'email_moved');
 	if (assignees.length === 0) return;
+	if (noLinkAddress(baseUrl, 'The mail about a card that is no longer blocked')) return;
 
 	const boardName = getBoardName(boardId);
 	const cardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
 
 	const html = emailTemplate('Ready to start', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #10b981;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(cardTitle)}</p>
 			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">
-				Nothing is blocking this card any more — <strong>${esc(completerName)}</strong> completed
-				#${completedCardId} <strong>${esc(completedCardTitle)}</strong>, which was the last one.
+				Nothing is blocking this card any more — <strong>${escapeHtml(completerName)}</strong> completed
+				#${completedCardId} <strong>${escapeHtml(completedCardTitle)}</strong>, which was the last one.
 			</p>
-			<p style="margin: 4px 0 16px; font-size: 12px; color: #64748b;">Board: ${esc(boardName)}</p>
-			<a href="${cardUrl}" style="display: inline-block; padding: 8px 16px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a>
+			<p style="margin: 4px 0 16px; font-size: 12px; color: #64748b;">Board: ${escapeHtml(boardName)}</p>
+			<a href="${escapeHtml(cardUrl)}" style="display: inline-block; padding: 8px 16px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a>
 		</div>
 	`);
 
@@ -720,7 +855,7 @@ export function notifyPlanCreated(
 	cardIds: number[],
 	creatorName: string,
 	creatorUserId: number,
-	baseUrl: string
+	baseUrl: string | null
 ): void {
 	if (!isSmtpConfigured()) return;
 	if (cardIds.length === 0) return;
@@ -759,6 +894,7 @@ export function notifyPlanCreated(
 
 	const toSend = filterRecipientsByPref(recipients, 'email_planning');
 	if (toSend.length === 0) return;
+	if (noLinkAddress(baseUrl, 'The mail about a new plan')) return;
 
 	const planUrl = `${baseUrl}/plan/${notice.milestoneId}`;
 	const scope = notice.boards.length > 0 ? notice.boards.join(', ') : 'no boards yet';
@@ -767,7 +903,7 @@ export function notifyPlanCreated(
 		notice.criticalPath.length > 0
 			? `<p style="margin: 12px 0 6px; font-size: 13px; font-weight: 600; color: #0f172a;">The chain that cannot slip</p>
 			   <ol style="margin: 0 0 8px; padding-left: 20px; font-size: 13px; color: #334155; line-height: 1.6;">
-			     ${notice.criticalPath.map((c) => `<li>#${c.id} ${esc(c.title)}</li>`).join('')}
+			     ${notice.criticalPath.map((c) => `<li>#${c.id} ${escapeHtml(c.title)}</li>`).join('')}
 			   </ol>`
 			: `<p style="margin: 12px 0 8px; font-size: 13px; color: #64748b;">
 			     No ordering recorded yet — nothing in this goal is waiting on anything else.
@@ -775,18 +911,18 @@ export function notifyPlanCreated(
 
 	const html = emailTemplate('A plan was created', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(notice.name)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(notice.name)}</p>
 			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">
-				<strong>${esc(creatorName)}</strong> grouped ${notice.cardCount} card${notice.cardCount === 1 ? '' : 's'}
+				<strong>${escapeHtml(creatorName)}</strong> grouped ${notice.cardCount} card${notice.cardCount === 1 ? '' : 's'}
 				into a goal because they have an order that has to be respected.
 			</p>
-			<p style="margin: 0 0 4px; font-size: 12px; color: #64748b;">Covering: ${esc(scope)}</p>
+			<p style="margin: 0 0 4px; font-size: 12px; color: #64748b;">Covering: ${escapeHtml(scope)}</p>
 			<p style="margin: 0 0 8px; font-size: 12px; color: #64748b;">
 				${notice.startable} can be started now &middot; ${notice.blocked} waiting
 			</p>
 			${chainBlock}
 			<div style="margin-top: 16px;">
-				<a href="${planUrl}" style="display: inline-block; padding: 8px 16px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View the plan</a>
+				<a href="${escapeHtml(planUrl)}" style="display: inline-block; padding: 8px 16px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View the plan</a>
 			</div>
 		</div>
 	`);
@@ -811,25 +947,26 @@ export function notifyMention(
 	cardTitle: string,
 	commentText: string,
 	boardId: number,
-	baseUrl: string
+	baseUrl: string | null
 ): void {
 	if (!isSmtpConfigured()) return;
 	if (!shouldNotifyUser(mentionedUser.id, 'email_mentions')) return;
+	if (noLinkAddress(baseUrl, 'The mail about a mention')) return;
 
 	const boardName = getBoardName(boardId);
 	const preview = commentText.length > 300 ? commentText.slice(0, 300) + '…' : commentText;
 	const cardUrl = `${baseUrl}/board/${boardId}`;
 
-	const html = emailTemplate(`You were mentioned by ${esc(authorUsername)}`, `
+	const html = emailTemplate(`You were mentioned by ${escapeHtml(authorUsername)}`, `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
-			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${esc(cardTitle)}</p>
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(cardTitle)}</p>
 			<p style="margin: 0 0 4px; font-size: 13px; color: #475569;">
-				<strong>${esc(authorUsername)}</strong> mentioned you in a comment on <strong>${esc(boardName)}</strong>:
+				<strong>${escapeHtml(authorUsername)}</strong> mentioned you in a comment on <strong>${escapeHtml(boardName)}</strong>:
 			</p>
 			<blockquote style="margin: 12px 0 16px; padding: 8px 12px; background: #f1f5f9; border-left: 3px solid #8b5cf6; color: #334155; font-size: 13px; border-radius: 4px;">
-				${esc(preview)}
+				${escapeHtml(preview)}
 			</blockquote>
-			<a href="${cardUrl}" style="display: inline-block; padding: 8px 16px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Board</a>
+			<a href="${escapeHtml(cardUrl)}" style="display: inline-block; padding: 8px 16px; background: #8b5cf6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Board</a>
 		</div>
 	`);
 

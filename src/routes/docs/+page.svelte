@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
+	import { answerFile, curlSample, formatDescription, powershellSample, pythonSample, typeLabel, type Sample } from '$lib/docs-format';
 
 	type Schema = { type?: string | string[]; properties?: Record<string, any>; items?: any; $ref?: string; enum?: string[]; required?: string[]; description?: string; format?: string; default?: any; maxLength?: number };
 	type Param = { name: string; in: string; required?: boolean; schema?: Schema; description?: string };
 	type OpResponse = { description?: string; content?: Record<string, { schema?: Schema; example?: any }> };
-	type Operation = { tags?: string[]; summary?: string; description?: string; operationId?: string; parameters?: (Param | { $ref: string })[]; requestBody?: { required?: boolean; content?: Record<string, { schema?: Schema; example?: any }> }; responses?: Record<string, OpResponse | { $ref: string }> };
+	type Operation = { tags?: string[]; summary?: string; description?: string; operationId?: string; security?: unknown[]; parameters?: (Param | { $ref: string })[]; requestBody?: { required?: boolean; content?: Record<string, { schema?: Schema; example?: any; examples?: Record<string, { summary?: string; value?: any }> }> }; responses?: Record<string, OpResponse | { $ref: string }> };
 	type PathItem = Record<string, Operation>;
 	type OASSpec = { openapi: string; info: { title: string; version: string; description: string }; paths: Record<string, PathItem>; tags?: { name: string; description: string }[]; components?: any };
 
@@ -30,7 +31,11 @@
 			const res = await fetch('/api/v1/openapi.json');
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			spec = await res.json();
-			if (spec?.tags?.[0]) activeTag = spec.tags[0].name;
+			// The page opens on what the document says of itself: how a failure is
+			// answered, what changed and when, and what a caller must know of every
+			// operation. Without a description it opens on the first group.
+			if (spec?.info?.description) activeTag = '__overview';
+			else if (spec?.tags?.[0]) activeTag = spec.tags[0].name;
 		} catch (e: any) {
 			error = e.message || 'Failed to load API spec';
 		} finally {
@@ -120,6 +125,9 @@
 		if (!op.requestBody?.content?.['application/json']) return '';
 		const ct = op.requestBody.content['application/json'];
 		if (ct.example) return JSON.stringify(ct.example, null, 2);
+		// No `example`: the first of `examples`, which is how some operations give theirs.
+		const first = ct.examples ? Object.values(ct.examples)[0] : undefined;
+		if (first?.value !== undefined) return JSON.stringify(first.value, null, 2);
 		if (ct.schema) {
 			const s = resolveSchema(ct.schema);
 			if (s.properties) {
@@ -140,59 +148,40 @@
 		const req = s.required || [];
 		return Object.entries(s.properties).map(([name, prop]: [string, any]) => {
 			const resolved = resolveSchema(prop);
-			let type = Array.isArray(resolved.type) ? resolved.type.join(' | ') : (resolved.type || 'any');
-			if (resolved.enum) type = resolved.enum.join(' | ');
-			return { name, type, required: req.includes(name), description: resolved.description || '' };
+			return { name, type: typeLabel(resolved), required: req.includes(name), description: resolved.description || '' };
 		});
 	}
 
+	/** Does the operation need a key? One that declares `security: []` does not, and its samples send none. */
+	function needsKey(op: Operation): boolean {
+		return !(Array.isArray(op.security) && op.security.length === 0);
+	}
+
+	/**
+	 * What the three samples of an operation are made from. They are written in
+	 * `$lib/docs-format`, which says how: the body as each language writes it,
+	 * and an answer that is a file saved to one where the others are parsed.
+	 */
+	function sampleOf(method: string, path: string, op: Operation): Sample {
+		const responses = Object.fromEntries(Object.entries(op.responses ?? {}).map(([status, r]) => [status, resolveResponse(r)]));
+		return { method, path, keyed: needsKey(op), body: getRequestExample(op), saveAs: answerFile(responses) };
+	}
+
 	function generateCurl(method: string, path: string, op: Operation): string {
-		const upperM = method.toUpperCase();
-		let cmd = `curl -s`;
-		if (upperM !== 'GET') cmd += ` -X ${upperM}`;
-		cmd += ` \\\n  -H "Authorization: Bearer \$API_KEY"`;
-		const body = getRequestExample(op);
-		if (body) {
-			cmd += ` \\\n  -H "Content-Type: application/json"`;
-			cmd += ` \\\n  -d '${body}'`;
-		}
-		const displayPath = path.replace(/\{(\w+)\}/g, ':$1');
-		cmd += ` \\\n  "$BASE_URL${displayPath}"`;
-		return cmd;
+		return curlSample(sampleOf(method, path, op));
 	}
 
 	function generatePython(method: string, path: string, op: Operation): string {
-		const body = getRequestExample(op);
-		const displayPath = path.replace(/\{(\w+)\}/g, (_, k) => `{${k}}`);
-		let code = `import requests\n\nAPI_KEY = "df_your_key"\nBASE = "https://your-instance.com"\nHEADERS = {"Authorization": f"Bearer {API_KEY}"}\n\n`;
-		if (method === 'get') {
-			code += `resp = requests.get(f"{BASE}${displayPath}", headers=HEADERS)\nprint(resp.json())`;
-		} else if (method === 'delete' && !body) {
-			code += `resp = requests.delete(f"{BASE}${displayPath}", headers=HEADERS)\nprint(resp.json())`;
-		} else {
-			const m = method === 'delete' ? 'delete' : (method === 'put' ? 'put' : 'post');
-			code += `resp = requests.${m}(\n    f"{BASE}${displayPath}",\n    headers=HEADERS,\n    json=${body || '{}'}\n)\nprint(resp.json())`;
-		}
-		return code;
+		return pythonSample(sampleOf(method, path, op));
 	}
 
 	function generatePowershell(method: string, path: string, op: Operation): string {
-		const body = getRequestExample(op);
-		const displayPath = path.replace(/\{(\w+)\}/g, (_, k) => `$${k}`);
-		let code = `$Headers = @{ "Authorization" = "Bearer $ApiKey" }\n`;
-		if (method === 'get') {
-			code += `Invoke-RestMethod -Uri "$Base${displayPath}" -Headers $Headers`;
-		} else {
-			const psMethod = method.charAt(0).toUpperCase() + method.slice(1);
-			if (body) {
-				code += `$Headers["Content-Type"] = "application/json"\n`;
-				code += `$Body = '${body}'\n`;
-				code += `Invoke-RestMethod -Method ${psMethod} -Uri "$Base${displayPath}" -Headers $Headers -Body $Body`;
-			} else {
-				code += `Invoke-RestMethod -Method ${psMethod} -Uri "$Base${displayPath}" -Headers $Headers`;
-			}
-		}
-		return code;
+		return powershellSample(sampleOf(method, path, op));
+	}
+
+	/** The document's description of itself, one entry for each paragraph of it. */
+	function overviewParagraphs(): string[] {
+		return (spec?.info?.description ?? '').split(/\n{2,}/).filter((paragraph) => paragraph.trim() !== '');
 	}
 
 	function getCodeTab(id: string): string {
@@ -252,6 +241,12 @@
 			<nav class="docs-sidebar glass" class:open={sidebarOpen}>
 				<div class="sidebar-section">
 					<div class="sidebar-label">Overview</div>
+					{#if spec.info.description}
+						<button class="sidebar-link" class:active={activeTag === '__overview'} onclick={() => { activeTag = '__overview'; sidebarOpen = false; }}>
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+							About this API
+						</button>
+					{/if}
 					<button class="sidebar-link" class:active={activeTag === '__auth'} onclick={() => { activeTag = '__auth'; sidebarOpen = false; }}>
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
 						Authentication
@@ -276,13 +271,25 @@
 
 			<!-- Content area -->
 			<main class="docs-main">
-				{#if activeTag === '__auth'}
+				{#if activeTag === '__overview'}
+					<!-- What the document says of itself: its `info.description`, a paragraph at a time. -->
+					<section class="docs-section animate-fade-in">
+						<div class="section-header">
+							<h2>📖 {spec.info.title}</h2>
+						</div>
+						<div class="info-card glass overview-card">
+							{#each overviewParagraphs() as paragraph}
+								<p>{@html formatDescription(paragraph)}</p>
+							{/each}
+						</div>
+					</section>
+				{:else if activeTag === '__auth'}
 					<section class="docs-section animate-fade-in">
 						<div class="section-header">
 							<h2>🔒 Authentication</h2>
 						</div>
 						<div class="info-card glass">
-							<p>All API requests require an API key sent via the <code>Authorization</code> header as a Bearer token.</p>
+							<p>Every API request needs an API key, sent in the <code>Authorization</code> header as a Bearer token. The one exception is <code>GET /api/v1/openapi.json</code>, the document this page is drawn from, which needs none.</p>
 							<div class="code-block">
 								<div class="code-block-header">Header</div>
 								<pre><code>Authorization: Bearer df_your_api_key_here</code></pre>
@@ -293,15 +300,25 @@
 								<li>Navigate to <strong>My Account</strong> (⚙️)</li>
 								<li>Scroll to the <strong>🔑 API Keys</strong> section</li>
 								<li>Enter a descriptive name (e.g. "CI Pipeline", "n8n Automation")</li>
+								<li>Enter your current password. A wrong one is refused with "Password is incorrect". After ten wrong ones in 15 minutes from one signed-in browser, counted with the Account page's email and password forms, that browser is refused for up to 15 minutes, the right password included</li>
 								<li>Click <strong>Generate Key</strong></li>
 								<li><strong>Copy the key immediately</strong> — it is only displayed once</li>
 							</ol>
+							<p>A key is made only there, by the account's holder, with the password: the API itself has no route that makes a key. An account has at most ten.</p>
 							<div class="info-callout">
 								<span class="callout-icon">💡</span>
 								<p>API keys inherit the permissions of the user who created them. A regular user can only access boards they have edit/view access to. Admin users have global access.</p>
 							</div>
 							<h3>Revoking a Key</h3>
 							<p>Go to <strong>My Account → API Keys</strong> and click <strong>Revoke</strong> on any key. The key is immediately invalidated.</p>
+							<h3>When a Key Ends Without Being Revoked</h3>
+							<p>Setting the account's password can end every key it has, at once:</p>
+							<ul>
+								<li>Your own change on <strong>My Account</strong> keeps them, unless you tick <strong>End my API keys too</strong>, which is not ticked by default. Your own change on your row of the admin page keeps them</li>
+								<li>An administrator's reset of your password ends them all</li>
+								<li>An invite link used to set your password ends them all</li>
+							</ul>
+							<p>A key that has ended is answered <code>401</code> with <code>Invalid or expired API key</code>, as a revoked one is, and whatever uses it stops until it is given a new key. Before an administrator resets the password of an account a script runs on, the reset dialog says how many keys it has.</p>
 						</div>
 					</section>
 				{:else if activeTag === '__errors'}
@@ -311,18 +328,26 @@
 						</div>
 						<div class="info-card glass">
 							<h3>Rate Limits</h3>
-							<p>API requests are rate-limited to <strong>60 requests per minute</strong> per API key.</p>
+							<p>API requests are rate-limited to <strong>60 requests per minute</strong> per API key, counted once the key has been checked.</p>
+							<p>A request with no key DumpFire accepts, a missing <code>Authorization</code> header included, is counted against the address it came from instead, <strong>60 a minute</strong>, in a count of its own. A wrong key no longer spends a real key's allowance, even one that begins as the real key does.</p>
 							<p>When exceeded, you'll receive a <code>429</code> response with a <code>Retry-After</code> header:</p>
 							<div class="code-block">
 								<div class="code-block-header">429 Response</div>
-								<pre><code>{JSON.stringify({ error: "Rate limit exceeded", retryAfterSecs: 42 }, null, 2)}</code></pre>
+								<pre><code>{JSON.stringify({ message: "Rate limit exceeded", retryAfterSecs: 42 }, null, 2)}</code></pre>
 							</div>
 
 							<h3>Error Format</h3>
-							<p>All errors return JSON with an <code>error</code> field:</p>
+							<p>Every error DumpFire answers under <code>/api/v1/</code> is JSON with a <code>message</code> field, whatever <code>Accept</code> header the request sent. A request body that is missing, is not valid JSON or is not a JSON object, a JSON array among them, is answered <code>400</code>.</p>
+							<p>Every field is read by its type and range, and one the operation cannot use is answered <code>400</code> with a <code>message</code> that names it: text where a number belongs, <code>"false"</code> where <code>true</code> or <code>false</code> belongs, a date not written <code>YYYY-MM-DD</code>, a priority other than <code>low</code>, <code>medium</code>, <code>high</code> or <code>critical</code>, a text past its limit. A number written as text that is exactly a number, such as <code>"5"</code>, is read as that number. A value the record already holds, sent back unchanged, is accepted as it is. Each operation's fields and their rules are under its tag.</p>
+							<p>A request is answered for the first thing wrong with it: the body and the ids in the path (<code>400</code>), then what the path names (<code>404</code>, to everyone), then whether the caller may do this (<code>403</code>), then each field (<code>400</code>), then what a field names, such as a category or a user (<code>404</code>). So a caller who would be refused is answered <code>404</code> or <code>403</code> whatever the body holds. A create with nothing in its path to look for, the token routes and the dependency and token batches read their fields first. The two milestone batches look for the milestone and check the caller before they read <code>cardIds</code>.</p>
+							<p>A request body may be up to <strong>512 KB</strong> on every route of this API. A body over that is answered <code>413</code>, with the limit in the <code>message</code> and as <code>limitBytes</code>. One that declares more in <code>Content-Length</code> is answered before it is read, and before the key is looked at; one sent in chunks, with no <code>Content-Length</code>, is read until it passes the limit and answered there. A body does not have to say its length.</p>
+							<div class="code-block">
+								<div class="code-block-header">413 Response</div>
+								<pre><code>{JSON.stringify({ message: "The request is larger than this server accepts here: it is 600 KB, and the limit is 512 KB", limitBytes: 524288 }, null, 2)}</code></pre>
+							</div>
 							<div class="code-block">
 								<div class="code-block-header">Error Response</div>
-								<pre><code>{JSON.stringify({ error: "Description of what went wrong" }, null, 2)}</code></pre>
+								<pre><code>{JSON.stringify({ message: "Description of what went wrong" }, null, 2)}</code></pre>
 							</div>
 
 							<h3>HTTP Status Codes</h3>
@@ -332,11 +357,14 @@
 									<tbody>
 										<tr><td><span class="status-badge s2xx">200</span></td><td>Success</td></tr>
 										<tr><td><span class="status-badge s2xx">201</span></td><td>Resource created</td></tr>
-										<tr><td><span class="status-badge s4xx">400</span></td><td>Bad request (missing or invalid fields)</td></tr>
+										<tr><td><span class="status-badge s4xx">400</span></td><td>Bad request (a field missing, of the wrong type or holding what it may not; an id in the path or the query string that is not a whole number of 1 or more; or a body that is missing, is not valid JSON or is not a JSON object)</td></tr>
 										<tr><td><span class="status-badge s4xx">401</span></td><td>Unauthorized (missing or invalid API key)</td></tr>
 										<tr><td><span class="status-badge s4xx">403</span></td><td>Forbidden (no access to the requested resource)</td></tr>
-										<tr><td><span class="status-badge s4xx">404</span></td><td>Resource not found</td></tr>
-										<tr><td><span class="status-badge s4xx">429</span></td><td>Rate limit exceeded</td></tr>
+										<tr><td><span class="status-badge s4xx">404</span></td><td>Resource not found, whoever asks; an id in the body that names nothing; something to be removed that is not there; or no such route</td></tr>
+										<tr><td><span class="status-badge s4xx">405</span></td><td>Method not allowed on this route (the <code>Allow</code> header names the methods it has)</td></tr>
+										<tr><td><span class="status-badge s4xx">409</span></td><td>Conflict (open subtasks or sub-boards on a card moved to Complete, a card moved onto a board beneath it, at any depth, a dependency that already exists or would close a loop, a rejected batch)</td></tr>
+										<tr><td><span class="status-badge s4xx">413</span></td><td>Request body over the size limit, 512 KB: the <code>message</code> says the limit and <code>limitBytes</code> is the limit in bytes</td></tr>
+										<tr><td><span class="status-badge s4xx">429</span></td><td>Rate limit exceeded: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts</td></tr>
 										<tr><td><span class="status-badge s5xx">500</span></td><td>Internal server error</td></tr>
 									</tbody>
 								</table>
@@ -350,7 +378,7 @@
 						<div class="section-header">
 							<h2>{activeTag}</h2>
 							{#if tagInfo?.description}
-								<p class="section-desc">{tagInfo.description}</p>
+								<p class="section-desc">{@html formatDescription(tagInfo.description)}</p>
 							{/if}
 						</div>
 
@@ -371,7 +399,7 @@
 									{#if isExpanded}
 										<div class="endpoint-body">
 											{#if op.description}
-												<p class="endpoint-desc">{op.description}</p>
+												<p class="endpoint-desc">{@html formatDescription(op.description)}</p>
 											{/if}
 
 											<!-- Parameters -->
@@ -387,9 +415,9 @@
 																	<tr>
 																		<td><code>{p.name}</code></td>
 																		<td><span class="param-in">{p.in}</span></td>
-																		<td><code>{p.schema?.type || 'any'}</code></td>
+																		<td><code>{typeLabel(p.schema ? resolveSchema(p.schema) : undefined)}</code></td>
 																		<td>{p.required ? '✅' : '—'}</td>
-																		<td>{p.description || ''}</td>
+																		<td>{@html formatDescription(p.description)}</td>
 																	</tr>
 																{/each}
 															</tbody>
@@ -414,7 +442,7 @@
 																			<td><code>{f.name}</code></td>
 																			<td><code>{f.type}</code></td>
 																			<td>{f.required ? '✅' : '—'}</td>
-																			<td>{f.description}</td>
+																			<td>{@html formatDescription(f.description)}</td>
 																		</tr>
 																	{/each}
 																</tbody>
@@ -442,7 +470,7 @@
 																<span class="status-badge" class:s2xx={status.startsWith('2')} class:s4xx={status.startsWith('4')} class:s5xx={status.startsWith('5')}>
 																	{status}
 																</span>
-																<span>{resp.description || ''}</span>
+																<span>{@html formatDescription(resp.description)}</span>
 															</div>
 															{#if respExample}
 																<div class="code-block">
@@ -746,12 +774,14 @@
 		margin-top: var(--space-md);
 	}
 
-	.info-card ol {
+	.info-card ol,
+	.info-card ul {
 		padding-left: var(--space-xl);
 		margin: var(--space-sm) 0;
 	}
 
-	.info-card ol li {
+	.info-card ol li,
+	.info-card ul li {
 		margin: var(--space-xs) 0;
 	}
 
@@ -871,6 +901,35 @@
 		color: var(--text-secondary);
 		margin-bottom: var(--space-lg);
 		line-height: 1.6;
+	}
+
+	/* ── Text drawn from the document ──────────────── */
+	/* A description's `code` and **bold** are drawn with {@html}, so those
+	   elements are not in this component's own markup and a scoped rule does
+	   not reach them. They are styled as the page's own inline code is. */
+	.overview-card :global(code),
+	.section-desc :global(code),
+	.endpoint-desc :global(code),
+	.response-status :global(code),
+	.param-table :global(code) {
+		font-family: var(--font-mono);
+		font-size: 0.92em;
+		padding: 1px 5px;
+		border-radius: 3px;
+		background: var(--bg-elevated);
+		color: var(--text-accent);
+	}
+
+	.overview-card :global(strong),
+	.endpoint-desc :global(strong),
+	.response-status :global(strong),
+	.param-table :global(strong) {
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.overview-card p + p {
+		margin-top: var(--space-md);
 	}
 
 	.endpoint-section {

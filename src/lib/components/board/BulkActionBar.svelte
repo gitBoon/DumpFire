@@ -2,7 +2,7 @@
   BulkActionBar.svelte — Floating action bar for bulk card operations.
 
   Appears at the bottom of the screen when cards are selected in
-  selection mode. Provides move-to-column, priority change, and delete actions.
+  selection mode. Provides move-to-column, priority change, and archive actions.
 -->
 <script lang="ts">
   import type { ColumnType } from '$lib/types';
@@ -12,7 +12,7 @@
    * @prop columns — Board columns (for "move to" buttons)
    * @prop onMove — Callback to move selected cards to a column
    * @prop onPriority — Callback to set priority on selected cards
-   * @prop onDelete — Callback to delete selected cards
+   * @prop onDelete — Callback to archive selected cards
    * @prop onClear — Callback to clear selection and exit selection mode
    */
   let {
@@ -52,8 +52,8 @@
       <button class="btn-ghost bulk-btn" onclick={() => onPriority('low')}>🟢</button>
     </div>
     <div class="bulk-divider"></div>
-    <!-- Delete selected -->
-    <button class="btn-ghost bulk-btn bulk-danger" onclick={onDelete}>🗑️ Delete</button>
+    <!-- Archive selected: the board's onDelete archives each card -->
+    <button class="btn-ghost bulk-btn bulk-danger" onclick={onDelete}>🗄️ Archive</button>
   </div>
   <button class="btn-ghost" onclick={onClear}>✕</button>
 </div>

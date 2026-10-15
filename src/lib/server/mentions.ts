@@ -39,7 +39,7 @@ export function processMentions(
 	cardId: number,
 	cardTitle: string,
 	boardId: number,
-	baseUrl: string
+	baseUrl: string | null
 ) {
 	try {
 		const usernames = parseMentions(text);

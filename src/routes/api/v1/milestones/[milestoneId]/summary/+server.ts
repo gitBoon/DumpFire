@@ -1,6 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { requireMilestone, MilestoneError } from '$lib/server/milestones';
 import { getMilestoneSummary } from '$lib/server/planning';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
@@ -17,13 +18,19 @@ import type { RequestHandler } from './$types';
  *   blocked        — what is waiting, and on what
  *
  * `?compact=true` drops the graph (nodes/edges/layers), which is the bulky part
- * and is only needed for drawing. Everything a planner reasons about stays.
+ * and is only needed for drawing. Everything a planner reasons about stays,
+ * with the titles the ids refer to: `cardTitles` by card id and
+ * `subtaskTitles` by subtask id. Both were in `cardTitles`, by the bare id, so
+ * card 32 and subtask 32 took one key between them.
+ *
+ * Made for the key's user: work on a board they cannot open is in it withheld,
+ * its title replaced in the nodes and so in both lists of titles, and its
+ * board counted in one entry of `progress.boards` with no id (card 2129).
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const id = Number(params.milestoneId);
-	if (isNaN(id)) throw error(400, 'Invalid milestone ID');
+	const id = pathId(params.milestoneId, 'milestone');
 
 	try {
 		requireMilestone(locals.user, id);
@@ -32,15 +39,18 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 		throw e;
 	}
 
-	const summary = getMilestoneSummary(id);
+	const summary = getMilestoneSummary(id, locals.user);
 	if (!summary) throw error(404, 'Milestone not found');
 
 	if (url.searchParams.get('compact') === 'true') {
 		const { graph, ...rest } = summary;
+		const titles = (kind: 'card' | 'subtask') =>
+			Object.fromEntries(graph.nodes.filter((n) => n.kind === kind).map((n) => [n.id, n.title]));
 		return json({
 			...rest,
 			// Keep the titles the ids refer to, or a compact response is unreadable.
-			cardTitles: Object.fromEntries(graph.nodes.map((n) => [n.id, n.title]))
+			cardTitles: titles('card'),
+			subtaskTitles: titles('subtask')
 		});
 	}
 

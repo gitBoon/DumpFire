@@ -3,6 +3,8 @@ import { db } from '$lib/server/db';
 import { boards, columns, cards, categories, labels, cardLabels, cardAssignees, users, subtasks } from '$lib/server/db/schema';
 import { eq, and, isNull, inArray, asc } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
+import { pathId } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /** Escape a value for CSV: wrap in quotes if it contains commas, quotes, or newlines. */
@@ -17,8 +19,10 @@ function csvEscape(val: string | null | undefined): string {
 
 /** GET — Export all cards from a board as CSV */
 export const GET: RequestHandler = async ({ params, locals }) => {
-	const boardId = Number(params.id);
-	const user = locals.user!;
+	// A caller who is not signed in is 401, where `locals.user!` threw and
+	// only the gate stood in front of it (card 2117).
+	const user = requireUser(locals.user);
+	const boardId = pathId(params.id, 'board');
 
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) throw error(404, 'Board not found');

@@ -1,12 +1,15 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
+import { inTransaction } from '$lib/server/db/transaction';
 import { cards, columns, cardAssignees, users } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { canEditBoard, getBoardRole } from '$lib/server/board-access';
+import { canEditBoard, canViewBoard, getBoardRole } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { notifyUserAssigned } from '$lib/server/notifications';
-import { resolveBaseUrl } from '$lib/server/email';
+import { linkBaseUrl } from '$lib/server/email';
 import { logActivity } from '$lib/server/logActivity';
+import { pathId, readBody, readId } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board and card title that a card belongs to. */
@@ -22,11 +25,16 @@ function getCardContext(cardId: number): { boardId: number; cardTitle: string } 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const cardId = Number(params.cardId);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	const cardId = pathId(params.cardId, 'card');
 
 	const ctx = getCardContext(cardId);
 	if (!ctx) throw error(404, 'Card not found');
+
+	// Who a card is assigned to is part of the card: it is read by whoever may
+	// read the card, and answered as GET /api/v1/cards/:cardId answers.
+	if (!canViewBoard(locals.user, ctx.boardId)) {
+		throw error(403, 'No access to this card\'s board');
+	}
 
 	const assignees = db.select({
 		id: users.id,
@@ -43,94 +51,105 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 /** POST /api/v1/cards/:cardId/assignees — Assign a user to a card. Body: { userId: number } */
 export const POST: RequestHandler = async ({ params, request, url, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const caller = requireUser(locals.user);
+	const cardId = pathId(params.cardId, 'card');
+	const body = await readBody(request);
 
-	const cardId = Number(params.cardId);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	// One transaction: the card is read and the caller checked in the one that
+	// assigns the user and writes the entry. Whether the user is already
+	// assigned is read in it too, so two requests cannot both find them
+	// unassigned. The mail is worked out in here and sent once it is committed.
+	const existing = inTransaction(() => {
+		const ctx = getCardContext(cardId);
+		if (!ctx) throw error(404, 'Card not found');
 
-	const ctx = getCardContext(cardId);
-	if (!ctx) throw error(404, 'Card not found');
+		if (!canEditBoard(caller, ctx.boardId)) {
+			throw error(403, 'No edit access to this card\'s board');
+		}
 
-	if (!canEditBoard(locals.user, ctx.boardId)) {
-		throw error(403, 'No edit access to this card\'s board');
-	}
+		const userId = readId(body, 'userId', { required: true, says: { missing: 'userId is required' } });
 
-	const { userId } = await request.json();
-	if (!userId) throw error(400, 'userId is required');
+		// Verify the user exists
+		const user = db.select().from(users).where(eq(users.id, userId)).get();
+		if (!user) throw error(404, 'User not found');
 
-	// Verify the user exists
-	const user = db.select().from(users).where(eq(users.id, userId)).get();
-	if (!user) throw error(404, 'User not found');
+		// Check the target user has access to this board
+		const targetRole = getBoardRole(user, ctx.boardId);
+		if (!targetRole) throw error(400, 'User does not have access to this board');
 
-	// Check the target user has access to this board
-	const targetRole = getBoardRole(
-		{ id: user.id, username: user.username, email: user.email, emoji: user.emoji || '👤', role: user.role },
-		ctx.boardId
-	);
-	if (!targetRole) throw error(400, 'User does not have access to this board');
+		// Upsert — skip if already assigned
+		const existing = db.select().from(cardAssignees)
+			.where(and(eq(cardAssignees.cardId, cardId), eq(cardAssignees.userId, userId)))
+			.get();
 
-	// Upsert — skip if already assigned
-	const existing = db.select().from(cardAssignees)
-		.where(and(eq(cardAssignees.cardId, cardId), eq(cardAssignees.userId, userId)))
-		.get();
+		if (!existing) {
+			db.insert(cardAssignees).values({ cardId, userId }).run();
 
-	if (!existing) {
-		db.insert(cardAssignees).values({ cardId, userId }).run();
+			// Send assignment notification email (fire-and-forget)
+			const baseUrl = linkBaseUrl(url);
+			notifyUserAssigned(ctx.boardId, cardId, ctx.cardTitle, user.email, user.username, caller.username, baseUrl);
+		}
 
-		// Send assignment notification email (fire-and-forget)
-		const baseUrl = resolveBaseUrl(request, url);
-		notifyUserAssigned(ctx.boardId, cardId, ctx.cardTitle, user.email, user.username, locals.user.username, baseUrl);
-	}
+		emit(ctx.boardId, 'update', { type: 'card' });
 
-	emit(ctx.boardId, 'update', { type: 'card' });
+		if (!existing) {
+			logActivity({
+				boardId: ctx.boardId,
+				cardId,
+				userId: caller.id,
+				action: 'api:assignee_added',
+				detail: `Assigned ${user.username} to "${ctx.cardTitle}"`,
+				userName: caller.username,
+				userEmoji: caller.emoji || '👤'
+			});
+		}
 
-	if (!existing) {
-		logActivity({
-			boardId: ctx.boardId,
-			cardId,
-			userId: locals.user.id,
-			action: 'api:assignee_added',
-			detail: `Assigned ${user.username} to "${ctx.cardTitle}"`,
-			userName: locals.user.username,
-			userEmoji: locals.user.emoji || '👤'
-		});
-	}
+		return !!existing;
+	});
 
 	return json({ success: true, message: existing ? 'User already assigned' : 'User assigned' });
 };
 
-/** DELETE /api/v1/cards/:cardId/assignees — Remove a user from a card. Body: { userId: number } */
+/**
+ * DELETE /api/v1/cards/:cardId/assignees — Remove a user from a card. Body: { userId: number }
+ *
+ * Removing someone who is not assigned to the card is 404 (decision 9). It
+ * was 200, with an activity entry that said they had been removed.
+ */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const caller = requireUser(locals.user);
+	const cardId = pathId(params.cardId, 'card');
+	const body = await readBody(request);
 
-	const cardId = Number(params.cardId);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	// One transaction: the card is read and the caller checked in the one that
+	// removes the assignee and writes the entry.
+	inTransaction(() => {
+		const ctx = getCardContext(cardId);
+		if (!ctx) throw error(404, 'Card not found');
 
-	const ctx = getCardContext(cardId);
-	if (!ctx) throw error(404, 'Card not found');
+		if (!canEditBoard(caller, ctx.boardId)) {
+			throw error(403, 'No edit access');
+		}
 
-	if (!canEditBoard(locals.user, ctx.boardId)) {
-		throw error(403, 'No edit access');
-	}
+		const userId = readId(body, 'userId', { required: true, says: { missing: 'userId is required' } });
 
-	const { userId } = await request.json();
-	if (!userId) throw error(400, 'userId is required');
+		const removed = db.delete(cardAssignees)
+			.where(and(eq(cardAssignees.cardId, cardId), eq(cardAssignees.userId, userId)))
+			.run();
+		if (removed.changes === 0) throw error(404, 'User is not assigned to this card');
 
-	db.delete(cardAssignees)
-		.where(and(eq(cardAssignees.cardId, cardId), eq(cardAssignees.userId, userId)))
-		.run();
+		emit(ctx.boardId, 'update', { type: 'card' });
 
-	emit(ctx.boardId, 'update', { type: 'card' });
-
-	const removedUser = db.select({ username: users.username }).from(users).where(eq(users.id, userId)).get();
-	logActivity({
-		boardId: ctx.boardId,
-		cardId,
-		userId: locals.user.id,
-		action: 'api:assignee_removed',
-		detail: `Removed ${removedUser?.username || 'user'} from "${ctx.cardTitle}"`,
-		userName: locals.user.username,
-		userEmoji: locals.user.emoji || '👤'
+		const removedUser = db.select({ username: users.username }).from(users).where(eq(users.id, userId)).get();
+		logActivity({
+			boardId: ctx.boardId,
+			cardId,
+			userId: caller.id,
+			action: 'api:assignee_removed',
+			detail: `Removed ${removedUser?.username || 'user'} from "${ctx.cardTitle}"`,
+			userName: caller.username,
+			userEmoji: caller.emoji || '👤'
+		});
 	});
 
 	return json({ success: true });

@@ -1,8 +1,10 @@
 import { json, error } from '@sveltejs/kit';
 import { db, sqlite } from '$lib/server/db';
 import { activityLog } from '$lib/server/db/schema';
-import { eq, desc, and, gte, lte, like, notLike, or, sql } from 'drizzle-orm';
-import { canonicalAction, readSource } from '$lib/server/logActivity';
+import { eq, desc, and, gte, lte, like, notLike, sql } from 'drizzle-orm';
+import { actionCondition, canonicalAction, readSource } from '$lib/server/logActivity';
+import { isAdmin } from '$lib/server/board-access';
+import { readLimit, readOffset, readQueryId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /** Default page size. Stated here, in the docs, and in every response. */
@@ -17,14 +19,21 @@ const MAX_LIMIT = 500;
  *   ?boardId=N       — Filter by board (the board at the time of the event)
  *   ?action=string   — Action type. Matches the canonical name regardless of
  *                      source, so `card_moved` finds both UI and API moves;
- *                      a trailing `*` is a prefix match.
+ *                      a trailing `*` is a prefix match, and nothing else is
+ *                      a wildcard: `card_*` does not find `cards_purged`.
  *   ?source=ui|api   — Where the action came from
  *   ?userId=N        — Filter by user
  *   ?cardId=N        — Filter by card
  *   ?from=ISO        — From date (inclusive)
  *   ?to=ISO          — To date (inclusive)
- *   ?limit=N         — Max results (default 100, max 500)
- *   ?offset=N        — Pagination offset
+ *   ?limit=N         — Max results (default 100, max 500). A whole number,
+ *                      rounded down and held between 1 and 500: -1 is 1, and
+ *                      not every row, which is what SQLite gave for it.
+ *   ?offset=N        — Pagination offset: rounded down, and 0 or more.
+ *
+ * The three ids are read as an id in the path is read: `2.5` and `abc` are
+ * `400 Invalid <thing> ID`, where they matched nothing, or a row they did not
+ * name.
  *
  * Every response carries `pagination.total` and `pagination.hasMore`, so a
  * truncated page is obvious. It was not before: the default limit of 100 was
@@ -35,17 +44,18 @@ const MAX_LIMIT = 500;
  */
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
-	if (locals.user.role !== 'admin') throw error(403, 'Admin access required');
+	// isAdmin, not `role !== 'admin'`: the bare comparison locked superadmin out.
+	if (!isAdmin(locals.user)) throw error(403, 'Admin access required');
 
-	const boardId = url.searchParams.get('boardId');
+	const boardId = readQueryId(url.searchParams.get('boardId'), 'board');
 	const action = url.searchParams.get('action');
 	const source = url.searchParams.get('source');
-	const userId = url.searchParams.get('userId');
-	const cardId = url.searchParams.get('cardId');
+	const userId = readQueryId(url.searchParams.get('userId'), 'user');
+	const cardId = readQueryId(url.searchParams.get('cardId'), 'card');
 	const from = url.searchParams.get('from');
 	const to = url.searchParams.get('to');
-	const limit = Math.min(Number(url.searchParams.get('limit')) || DEFAULT_LIMIT, MAX_LIMIT);
-	const offset = Number(url.searchParams.get('offset')) || 0;
+	const limit = readLimit(url.searchParams.get('limit'), { max: MAX_LIMIT, fallback: DEFAULT_LIMIT });
+	const offset = readOffset(url.searchParams.get('offset'));
 
 	if (source && source !== 'ui' && source !== 'api') {
 		throw error(400, 'source must be "ui" or "api"');
@@ -53,23 +63,13 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	// Build conditions array
 	const conditions = [];
-	if (boardId) conditions.push(eq(activityLog.boardId, Number(boardId)));
-	if (userId) conditions.push(eq(activityLog.userId, Number(userId)));
-	if (cardId) conditions.push(eq(activityLog.cardId, Number(cardId)));
-	if (action) {
-		// The same action is stored as `card_moved` from the UI and
-		// `api:card_moved` from the API, so a filter has to match both or it
-		// answers a different question than the caller asked.
-		const canonical = canonicalAction(action);
-		if (canonical.endsWith('*')) {
-			const stem = canonical.replace('*', '%');
-			conditions.push(or(like(activityLog.action, stem), like(activityLog.action, `api:${stem}`)));
-		} else {
-			conditions.push(
-				or(eq(activityLog.action, canonical), eq(activityLog.action, `api:${canonical}`))
-			);
-		}
-	}
+	if (boardId !== undefined) conditions.push(eq(activityLog.boardId, boardId));
+	if (userId !== undefined) conditions.push(eq(activityLog.userId, userId));
+	if (cardId !== undefined) conditions.push(eq(activityLog.cardId, cardId));
+	// The same action is stored as `card_moved` from the UI and
+	// `api:card_moved` from the API, so a filter has to match both or it
+	// answers a different question than the caller asked.
+	if (action) conditions.push(actionCondition(action));
 	// Source is filtered on the stored spelling, not the `source` column, because
 	// rows written before that column existed have it null. The prefix is the
 	// same fact and covers the whole history, so a source filter does not make

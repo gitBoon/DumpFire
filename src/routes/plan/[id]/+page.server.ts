@@ -18,8 +18,9 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 
 	// The whole plan is computed server-side in one pass. The page draws it and
 	// re-fetches /api/milestones/:id/summary after an edit; it never derives the
-	// critical path or the actionable list itself.
-	const summary = getMilestoneSummary(id);
+	// critical path or the actionable list itself. Work on a board the caller
+	// cannot open is in it withheld (card 2129).
+	const summary = getMilestoneSummary(id, locals.user);
 	if (!summary) throw error(404, 'Milestone not found');
 
 	return { user: locals.user, summary };

@@ -1,16 +1,22 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.2
+version: 1.20
 status: As-Built
-date: 2026-09-30
+date: 2026-10-15
 tags:
   - architecture
   - sveltekit
   - sqlite
   - kanban
   - system-design
-description: "High-level and component-level architecture of the DumpFire Kanban board system"
+  - migrations
+  - transactions
+  - deletes
+  - uploads
+  - hooks
+  - errors
+description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, when its effects are sent, and what a delete takes"
 ---
 
 # DumpFire Architecture Overview
@@ -91,7 +97,7 @@ flowchart TB
     end
 
     subgraph Server["SvelteKit Server"]
-        Hooks["hooks.server.ts\nAuth Guard + Rate Limiting"]
+        Hooks["hooks.server.ts\nBody Guard, Auth Guard,\nRate Limiting, JSON Failures for v1"]
 
         subgraph InternalAPI["Internal API"]
             BoardsAPI["Boards"]
@@ -119,21 +125,421 @@ flowchart TB
             Snapshots["Snapshot Scheduler"]
             ActivityLogger["Activity Logger"]
             SSE["SSE Emitter"]
+            Tx["Transaction Helper\ndb/transaction.ts"]
+            Deletes["Shared Delete\ndeletes.ts"]
+            Uploads["Uploads + Trash\nuploads.ts"]
+            ApiErrors["API Failures\napi-errors.ts"]
         end
 
         DB[("SQLite")]
+        Files[("Uploads folder\nbeside the database")]
     end
 
     Client --> Hooks
+    Hooks --> ApiErrors
     Hooks --> InternalAPI
     Hooks --> ExternalAPI
     InternalAPI --> Services
     ExternalAPI --> Services
     Services --> DB
+    Deletes --> Tx
+    Deletes --> Uploads
+    Uploads --> Files
     SSE -.->|"Server-Sent Events"| Client
     ReportEngine -.->|"SMTP"| EmailServer["Email Server"]
     BackupService -.->|"Push"| BackupDest["Backup Destinations"]
 ```
+
+## The Gate
+
+Every request passes `handle` in `src/hooks.server.ts` before it reaches a page or a route
+handler. It is where a caller is identified, where an API key is counted against its rate
+limit, and where a failure of the external API is made JSON. The functions it uses for that
+last part are in `src/lib/server/api-errors.ts`; how large a body may be is in
+`src/lib/server/body-limits.ts`; and the answers it gives of its own when it sends a request
+away, and the security headers it puts on every answer, are in
+`src/lib/server/gate-answers.ts`.
+
+Loading the module is also what starts the server's own work, once, before the first
+request: `runMigrations()`, `cleanExpiredSessions()`, `initLogMaintenance()` and
+`startSchedulers()`.
+
+```mermaid
+flowchart TD
+    Req["A request"] --> Kit{"SvelteKit, before handle is called"}
+    Kit -->|"a write sent as a form with no matching Origin (built server only),<br/>a trailing slash, a URL that is not validly encoded,<br/>a path that begins /_app but a remote call"| Early["403, 308, 400 or 404.<br/>The gate never sees it"]
+    Kit --> Path["routedPath(event): the path as the router sees it.<br/>Every rule below is decided on it"]
+    Path --> Remote{"Step 1: a call to a remote function,<br/>/_app/remote/...?"}
+    Remote -->|"Yes"| E404r["404 message: Not found,<br/>whatever path its header names"]
+    Remote -->|"No"| Size["Step 2: refuseBody(): 413 for a body declared<br/>over what the route gives anybody"]
+    Size --> Static{"Step 3: /_app/ or /favicon.ico,<br/>and no body refused?"}
+    Static -->|"Yes"| Pass["handOn, unlogged, then secured()"]
+    Static -->|"No"| Refused{"A body refused in step 2?"}
+    Refused -->|"Yes: that is the answer"| Log
+    Refused -->|"No"| V1{"Step 4: path under /api/v1/ ?"}
+
+    V1 -->|"Yes"| Accept["Set the request's Accept header<br/>to application/json"]
+    Accept --> Doc{"/api/v1/openapi.json ?"}
+    Doc -->|"Yes"| DocResolve["failureAsJson(resolve)<br/>No key, no rate limit"]
+    Doc -->|"No"| Find{"findApiKey(): a Bearer key,<br/>known and not expired?"}
+    Find -->|"No, or no header"| Guess{"More than 60 in the minute<br/>from this address with no such key?"}
+    Guess -->|"Yes"| E429a["429 message, retryAfterSecs,<br/>Retry-After"]
+    Guess -->|"No"| E401["401 message"]
+    Find -->|"Yes"| Limit{"More than 60 in the minute<br/>for this key's id?"}
+    Limit -->|"Yes"| E429["429, as above"]
+    Limit -->|"No"| Used["markApiKeyUsed()"]
+    Used --> Route{"event.route.id is null ?"}
+    Route -->|"Yes: no such route"| E404["404 message: Not found"]
+    Route -->|"No"| Resolve["failureAsJson(resolve)"]
+
+    V1 -->|"No"| Session["Read the session cookie,<br/>attach the user or null"]
+    Session --> Setup{"Any user in the database?"}
+    Setup -->|"No, and /setup"| SetupResolve["resolve"]
+    Setup -->|"No, a script asking<br/>an internal route"| E401b["401 Not authenticated"]
+    Setup -->|"No, anything else"| ToSetup["sendTo /setup"]
+    Setup -->|"Yes, and /setup"| ToHome1["sendTo /"]
+    Setup -->|"Yes"| Signed{"Signed in?"}
+    Signed -->|"No, a public route"| PublicResolve["resolve"]
+    Signed -->|"No, a script asking<br/>an internal route"| E401c["401 Not authenticated"]
+    Signed -->|"No, anything else"| ToLogin["sendTo /login"]
+    Signed -->|"Yes, and /login"| ToHome2["sendTo /"]
+    Signed -->|"Yes"| AdminRoute{"/admin or /audit,<br/>and not an administrator?"}
+    AdminRoute -->|"Yes"| ToHome3["sendTo /"]
+    AdminRoute -->|"No"| PageResolve["handOn"]
+
+    Log["Step 5: log the status that is sent:<br/>500 and above ERROR, 400 and above WARN, the rest INFO,<br/>a redirect with where it sends the caller,<br/>an invite's address as /invite/[token]"]
+    E404r --> Log
+    E404 --> Log
+    Resolve --> Log
+    E401 --> Log
+    E429a --> Log
+    E429 --> Log
+    DocResolve --> Log
+    E401b --> Log
+    E401c --> Log
+    PageResolve --> Log
+    PublicResolve --> Log
+    SetupResolve --> Log
+    ToSetup --> Log
+    ToLogin --> Log
+    ToHome1 --> Log
+    ToHome2 --> Log
+    ToHome3 --> Log
+    Log --> Secured["Step 6: secured(): every security header<br/>the answer does not already carry"]
+```
+
+### The order of `handle`
+
+| # | Step | What it does |
+|---|------|--------------|
+| 1 | A remote call | A call to a remote function, `/_app/remote/<id>`, is answered `404` `{ "message": "Not found" }`, to anybody. SvelteKit sets its `event.url` and route from the `x-sveltekit-pathname` header, which the caller writes, so no rule below can be decided on it. DumpFire has no remote functions |
+| 2 | Body size | `refuseBody()` asks every request whose body declares a length in `Content-Length` whether that is more than its route gives anybody: `413` with the limit if it is. A body with no length is let through to be counted (see `handOn`, below). The answer is kept, not thrown. See [Authentication & Security](authentication-security.md#how-large-a-request-may-be) |
+| 3 | Static assets | `/_app/` and `/favicon.ico`, exactly, are handed on at once and not logged, unless step 2 refused the body, which is logged like any other answer. Every other path that begins `/_app`, but a remote call, is answered `404` by SvelteKit before the gate is called |
+| 4 | `handleRequest()` | The `/api/v1/` branch, or the session branch for everything else. Each is set out below. Every refusal and every redirect in it is an answer that is returned: none is thrown. Every request it lets through is handed on by `handOn` |
+| 5 | The request log | One line under the `HTTP` context with the method, the address as it was sent, the status that is sent and the time taken: `ERROR` for 500 and above, `WARN` for 400 and above, `INFO` for the rest. A redirect is logged with where it sends the caller. An invite's address is written `/invite/[token]`, and a remote call at the address it was sent to (`pathToLog()` in `src/lib/server/secret-paths.ts`). A fault in the gate itself, thrown, is logged at `ERROR` with its reason, once, and thrown on for SvelteKit to answer `500` |
+| 6 | The security headers | `secured()` sets each of the five headers the answer does not already carry, `X-Frame-Options` but on the public request form's three pages. See [Authentication & Security](authentication-security.md#security-headers) |
+
+`handOn` is how every request the gate lets through reaches SvelteKit, from each of the
+places `handleRequest()` hands one on and from step 3. It asks the body's size again, now
+that the caller is known: the attachment upload gives 26 MB to anybody signed in, and the
+import the whole of `BODY_SIZE_LIMIT` to the superadmin alone. Then it hands on a copy of the
+request whose body passes through a count (`heldToLimit()`), so that a body with no length
+is refused `413` once it is read past the limit, and puts `guardBody()` on that copy, which
+replaces its readers so that a body that is missing or not JSON is a `400` and a body over
+the limit a `413`. A request the server makes of itself is guarded and not limited.
+
+After the gate, SvelteKit calls `handleError`, in the same file, for anything a handler or a
+page's load throws, a fault in the gate, and a path that is no route. It writes a fault (a
+status of 500 or more) to the system log at `ERROR` with the exception, the route and the
+user, leaves one the gate has already written, answers SvelteKit's own message for the
+status, and cannot throw. See
+[Authentication & Security](authentication-security.md#when-something-fails).
+
+### The path a rule is decided on
+
+Every step above that asks about the path, `/api/`, `/api/v1/`, a public route, `/admin`,
+asks about the path as the router sees it, and never about `event.url.pathname`, which is
+the address as it was sent. `routedPath()` in `src/hooks.server.ts` works it out once, at
+the top of `handle`.
+
+SvelteKit decodes an address before it looks for a route, so `/%61dmin` is served by the
+route `/admin`. A rule that compared the address as sent with `/admin` did not apply to it:
+a signed-in user who was no administrator was shown the admin page, and `/%61pi/v1/me` was
+answered with a session and no key, uncounted.
+
+| The request | What the rules are decided on |
+|-------------|-------------------------------|
+| A route matched | The route's id, `/admin` or `/api/cards/[id]`: the router's own answer, so the gate and the router cannot disagree. A request for a page's data, `/admin/__data.json`, has the id of the page |
+| No route matched | The address decoded as SvelteKit decodes it, `decodeURI` on each piece between one `%25` and the next. Nothing but a `404` is served for it |
+
+- **`%2F` stays `%2F`.** It is no `/` to the router or to the gate: `/api%2Fv1%2Fme` is not
+  under `/api/v1/` and is no route.
+- **Nothing is decoded twice.** `/%2561dmin` is the address `/%61dmin` spelt out, and is no
+  route.
+- **A sequence that cannot be decoded never reaches the gate.** SvelteKit answers it `400`
+  first.
+- **The two page loads check for themselves.** `src/routes/admin/+page.server.ts` and
+  `src/routes/audit/+page.server.ts` send a caller who is not signed in to `/login` and one
+  who is not an administrator to `/`, as the gate does. The gate was the only thing in
+  front of them.
+- **No route is inside a `(group)`.** A group's name is in the route's id and not in the
+  address, so a rule would not match it. `tests/gate.test.ts` fails if one is added.
+- **The log keeps the address as it was sent**: `/%61dmin` is logged as `/%61dmin`.
+
+### The body guard
+
+A handler reads its JSON body with `readBody(request)`, which calls `request.json()` (see
+[Reading a body](#reading-a-body)), and two read a file: the attachment upload with
+`formData()` and the backup import with `arrayBuffer()`. The guard is what makes a body the
+caller got wrong a `400` or a `413` and not a `500`, for every handler under `/api/` at
+once.
+
+| The body | What the handler's `request.json()` does |
+|----------|------------------------------------------|
+| Missing, empty, or not JSON (the read throws a `SyntaxError`) | Throws `error(400, 'The request body is missing or is not valid JSON')` |
+| JSON that is `null`, a number, a string or a boolean | Throws `error(400, 'The request body must be a JSON object')` |
+| A JSON object | Returns it |
+| A JSON array, `[]` included | Throws `error(400, 'The request body must be a JSON object')`. No handler takes one, and one that gave every field a default made a board out of `[]` |
+| Read with `formData()`, and not sent as `multipart/form-data` or `application/x-www-form-urlencoded` | `formData()` throws `error(400, 'The request body is not a form')` and reads nothing. undici's own refusal of a type that is a form only up to its first `;` (`application/x-www-form-urlencoded;a=b, text/plain`) is the same `400` |
+| Sent with no length, and read past the route's limit | Throws `error(413, { message, limitBytes })`, as the gate's own `413` for a declared length says it. So do the other readers |
+| Run past the length it declared | Throws `error(413, 'Payload Too Large')`. So do the other readers |
+| Read a second time | Not caught: it stays a fault |
+
+- **The readers are replaced on the one request object `handOn` hands on**, which is the
+  object SvelteKit hands the handler: a copy of the request the gate was given, with its body
+  passed through the count (`heldToLimit()`). `json`, `formData` and `arrayBuffer` are the
+  three a route reads with; `text()`, `blob()` and `bytes()` are replaced as well, for the
+  `413` alone, so that a body read past its limit is a `413` however it is read. A `clone()`
+  of the request is not guarded, and no route reads one, but the count is on the body, so a
+  clone is held to the limit all the same.
+- **A body over the limit is known by its status, not its class.** The node adapter fails
+  the body's stream with a `413` of its own copy of SvelteKit's error class. SvelteKit
+  takes a status only from an error it knows by `instanceof`, so the adapter's `413` was
+  answered `500` by a built server. The guard throws any fault whose `status` is `413`
+  again as SvelteKit's own.
+- **The JSON guard is on the read, not on the `Content-Type`.** A body sent as
+  `application/xml` and read with `json()` is judged by what it holds. `formData()` is the
+  one reader that asks the `Content-Type` first: a body not sent as a form is the `400`
+  above, before any of it is read, on the attachment upload and on the three form actions
+  (`/login`, `/setup`, `/invite/[token]`), which the guard reaches because it runs on every
+  request. A form body that is broken, or cut off as it arrives, still fails in the read and
+  is passed on as it was. A body sent with no `Content-Type` at all is not passed on by the
+  server and is a body that is missing.
+- **One handler catches what is thrown inside it, and passes SvelteKit's errors on.**
+  `POST /api/admin/import` refuses a body that is not sent as a `.db` backup by its media
+  type before reading it, and reads the rest as bytes, never as JSON, so the body guard's
+  `400` never reaches it. Its outer `catch` first rethrows an error SvelteKit made, so that a
+  `.db` backup sent in chunks that runs past the limit stays a `413`. A failure inside the
+  restore is answered there: a `RestoreError` is `500` with its own message, a restore that
+  would leave no superadmin `422`, and anything else `500` "Restore failed: …".
+  Anything else thrown before the restore, the upload that could not be written down above
+  all, is `500` "Import failed: …".
+- **The test helper applies the same guard.** `api()` in `tests/helpers/api.ts` calls
+  handlers beneath the gate and guards each request it builds, so a handler test meets what
+  the wire has. See [Testing](testing.md#the-gate-harness).
+
+### Reading a body
+
+The guard says whether a body is a JSON object. What each field of it may hold is the
+handler's to say, and every handler in both API trees says it one way, through
+`src/lib/server/request-body.ts` (card 2117). Each handler used to read
+`await request.json()` and use the fields as they came. A field of the wrong type then
+went one of three ways: it was stored (`"top"` as a position, `"false"` as true), it was a
+`500` (`.trim` called on a number), or it named something that did not exist and the
+foreign key refused it with a `500`. The twins in the two trees checked what they checked in
+their own words, and drifted.
+
+```mermaid
+flowchart LR
+    Req["request"] --> RB["readBody(request)<br/>a JSON object, its fields unknown"]
+    Params["params.id"] --> PI["pathId(params.id, 'card')<br/>a whole number of 1 or more,<br/>or 400 Invalid card ID"]
+    Query["url.searchParams.get(...)"] --> QR["readQueryId, readLimit, readOffset,<br/>readQueryCount, readQueryDate"]
+    RB --> FR["Field readers: readText, readNumber,<br/>readId, readBoolean, readChoice, readDate,<br/>readTime, readTimestamp, readUrl, readEmail,<br/>readEmailText, readColour, readCover, readList,<br/>readObjects, readIds, readChoices, readEmailList,<br/>and asObject for a list's entry"]
+    FR -->|"the value as it is to be written,<br/>or undefined when not sent"| Write["The write"]
+    FR -->|"anything else"| E400["error(400, 'title must be text')"]
+```
+
+- **`readBody(request)`** hands back the body as `Record<string, unknown>`. The type check
+  then refuses a handler that uses a field as text, a number or anything else before a
+  reader has looked at it. Its parameter is called `request` so that
+  `tests/openapi-document.test.ts`, which follows the functions a handler calls, still sees
+  `request.json()`.
+- **A field reader** takes `(body, name, rule)` and hands back the value exactly as it is to
+  be written, or `undefined` when the field was not sent and is not required. It refuses
+  with `error(400, ...)` and a text that names the field (`title must be text`,
+  `priority must be one of: low, medium, high, critical`). It looks at the type before
+  anything else, so `["x".repeat(600)]` is not a list one long enough to pass a length check.
+  Only the body's own fields are read.
+- **Every reader's `rule`** may say `required` (not sent is `<name> is required`), `nullable`
+  (`null` is read as `null`, where the column can be empty; anywhere else it is the wrong
+  type), `keep` and `says`.
+- **`keep`** is the value the row holds now. A value sent that is the same JSON type and
+  value is handed back unchecked, so a page that sends a card's stored fields back, with a
+  priority stored before the rules, still saves. A create has no `keep`.
+- **`says`** replaces the reader's texts, all of them or one of `missing`, `type`, `empty`
+  and `invalid`. It is how the texts that tests, documents and pages quote were kept:
+  `says: { invalid: 'Title too long (max 500 chars)' }`.
+- **Nothing is turned into another type**, but for a number written as text that is exactly
+  a number (`"5"`, `"-2.5"`, not `"1e3"`), which is read as that number wherever a number or
+  an id is read.
+- **`pathId(params.x, 'card')`** reads an id in the path: digits and nothing else, 1 or
+  more, or `400` `Invalid card ID`, the guards' own words. `1.5`, `abc`, `0` and `1e3` are
+  refused, where `Number()` and `isNaN` let some of them through. The query readers take
+  the value and not the parameter's name (`readLimit(url.searchParams.get('limit'), ...)`),
+  so the name stays written in the handler, where the OpenAPI test reads it.
+- **What a field is for** lives beside the readers where more than one handler needs it:
+  the four priorities and a card's category rule in `src/lib/server/card-fields.ts`, a
+  colour in `src/lib/colours.ts` (`#rrggbb`, which a page can ask too), and a card's cover
+  there too (`isCoverValue`: a colour or one of the eight gradients of `COVER_PRESETS`,
+  which `readCover` reads and the board and the card window ask before they draw one,
+  card 2010), the reporting
+  fields' vocabularies in `reporting-fields.ts`, an account's username and email in
+  `account-fields.ts`, a backup destination in `readDestination()` in
+  `backup-destinations.ts`.
+
+**The order of the refusals.** Each handler refuses in one order, so that a caller who would
+be refused is not told about the fields first, and a field reader that needs the stored row
+(`keep`) reads it after the row is found:
+
+```mermaid
+sequenceDiagram
+    participant H as Handler
+    participant T as inTransaction
+    participant G as Guard (route-guards.ts)
+    participant R as Field readers
+    H->>H: readBody(request), pathId(params.x)
+    Note over H: 400 for the body or a path id
+    H->>T: the write, and everything it depends on
+    T->>G: requireBoard / requireCard / ...
+    Note over G: 404 to everyone, then 403
+    G-->>T: the row
+    T->>R: every field, with keep: the row's value
+    Note over R: 400 naming the field
+    T->>T: what a field names (category, user, milestone)
+    Note over T: 404, e.g. Category not found on this board
+    T->>T: write, then commit
+```
+
+A create with no parent row to look for (`POST /api/boards`, a board grouping, a milestone of
+no board) reads its fields first. The token routes keep `tokens.ts`'s own order, the fields
+before the card or subtask, and the three batches read every entry before they look for
+what the entries name and report each problem in their `409`.
+
+**The rule, held by a test.** `tests/request-body.test.ts` reads the source of every
+`+server.ts` under `src/routes` and every module under `src/lib/server`, and fails on:
+
+- a body read from the request (`json()`, `text()`, `arrayBuffer()`, `blob()`, `bytes()`,
+  `formData()` or `.body`), on `request`, `{ request: req }`, `event.request` or a name typed
+  `Request`, anywhere but `request-body.ts` and `api-errors.ts`, unless the read is on
+  `NOT_JSON`: the import's `arrayBuffer()`, the upload's `formData()` and the gate's count.
+  `STILL_READING`, the list of files that read their body themselves while the build moved
+  them, is empty and is held empty;
+- fewer than 80 calls of `readBody`, so that a parser that sees nothing cannot pass;
+- a cast of what `readBody`, `readObjects` or `asObject` hands back, of a field of it, or a
+  type written on the name it is kept in. `asObject(value)` hands back an entry of a list
+  read with `readList` as a body when it is a JSON object (a dependency batch's `chain`),
+  and the test follows what it hands back as it follows `readBody`'s; the entry was spread
+  into a new object, which it could not see;
+- a body, or an entry of `readObjects`, read by a key that is not written out
+  (`updateData[key] = body[key]`), spread, handed to `Object.assign`, `Object.keys`,
+  `Object.entries` or `Object.values`, walked with `for…in`, or with a field turned by
+  `Number()`, `String()`, `Boolean()` or `!!`.
+
+It finds a body by the names it is kept in, in the function it is kept in, so a body handed
+whole to another function and used there is not followed: `normaliseReportingFields(body)`
+and `recordTokenUsage(…, body)` read theirs with checks of their own. See
+[Testing](testing.md#the-list-of-test-files).
+
+### The four rules for `/api/v1/`
+
+The external API answers every failure as JSON with one key, `message`. Four rules in the
+gate make that hold for the failures no handler writes.
+
+| Rule | What the gate does | Why |
+|------|--------------------|-----|
+| **The request asks for JSON** | The first statement of the branch sets the request's `Accept` header to `application/json`, on the request itself | SvelteKit answers a handler's `error(status, text)` as `{ message }` or as an HTML page by the `Accept` header, and picks the page for a caller that sends none. The header is set in place and the request is not replaced by a copy, because SvelteKit answers an error thrown out of the hook from the object it gave the hook |
+| **The gate's own refusals are JSON** | The three `401`s and the `429` are returned as `json({ message, ... })`, never thrown | An error thrown by the hook is logged as an unhandled error |
+| **No such route** | Once the key is accepted, a request whose `event.route.id` is `null` is answered `404 { "message": "Not found" }` by the gate, and SvelteKit is not asked | SvelteKit would render its 404 page: HTML, with the key owner's name, email and role in it, which the root layout loads for every page. It is answered only once the key is accepted, so without a key every path is a `401` |
+| **A failure that is not JSON is answered again** | `failureAsJson()` looks at what `resolve` answered. A status of 400 or above whose content type is not JSON is replaced by a new `json({ message })` with the same status | What SvelteKit answers without asking a handler is plain text: above all a method the route does not have, a `405` |
+
+`failureAsJson()` never touches a success, whatever its type, so a PDF and the OpenAPI
+document pass through, and it hands back a failure that is already JSON as it is. The answer
+it puts in place of another is made from nothing: only the `Allow` header is copied, because
+the old answer's `Content-Length` and `Content-Type` describe the old body. Its `message` is
+`<METHOD> method not allowed` for a `405`. For anything else it is what the old answer said,
+if that was a plain text of 200 characters or fewer, and otherwise the standard phrase for
+the status.
+
+`/api/v1/openapi.json` returns before the key is asked for and before the rate limit. The
+first and the last of the four rules cover it all the same, so a `POST` to it is a `405` in
+JSON.
+
+There are two `401`s. A request with no `Authorization` header, or one that is not a
+`Bearer` header, is told so. A key that is not known, has expired or belongs to a deleted
+user is answered `Invalid or expired API key`. `Bearer ` with nothing after it gets the
+first: a header's value loses the spaces at its end before the gate sees it, so it arrives
+as `Bearer`, which is no `Bearer` header. The gate had a third, `API key is empty`, for it,
+which nothing could reach, and card 2117 took it out.
+
+The key is looked up before anything is counted, and its requests are counted against the
+key's own row (`findApiKey()`, then `checkRateLimit('apikey:' + id)`, then
+`markApiKeyUsed()`), so a key over its limit is not marked as used. A request with no key
+the gate accepts, a missing header included, is counted against the caller's address in a
+bucket of its own, `apikey-none:`. The address is asked for guarded, because the adapter
+throws when it is started with `ADDRESS_HEADER` and a request arrives without that header.
+
+Every v1 answer carries the five security headers, the gate's own `401`s, `404` and `429`
+included, set in step 6 like every other answer's.
+
+### Everything else
+
+Outside `/api/v1/` the gate decides who the caller is and where they may go, and leaves the
+answer as SvelteKit made it.
+
+- **The body guard still applies** to the internal routes under `/api/`.
+- **A failure is JSON or a page by the `Accept` header.** A page's own `fetch` asks for
+  anything and is answered `{ message }`. A browser that opens an internal route's address
+  gets SvelteKit's error page, and a method the route does not have is plain text.
+- **A script with no session is refused; a browser is redirected.** A request for an
+  internal route (under `/api/`, outside `/api/v1/` and the public routes) with no session
+  is answered `401` `{ "message": "Not authenticated" }` before its body is looked at,
+  unless it is a navigation (`Sec-Fetch-Mode: navigate`, or an `Accept` that prefers
+  `text/html`), which is sent to `/login`, as every page is. `isNavigation()` and
+  `notSignedIn()` are in `gate-answers.ts`.
+- **The public routes are a list of route ids, matched exactly:** `/login`, `/docs`,
+  `/invite/[token]`, `/request`, `/request/[id]/confirm`, `/request/[id]/reply`, the five
+  routes under `/api/requests`, and `/api/v1/openapi.json`. `/setup` is the set-up page,
+  exactly. A path that is no route is never public. See
+  [Authentication & Security](authentication-security.md#who-is-let-through-without-a-session).
+- **A redirect is an answer the gate makes, not one it throws.** `sendTo()` makes it as
+  SvelteKit would have made it of a thrown `redirect(303, ...)`: a `303` with `Location`;
+  for a page's data request, `200` `{ "type": "redirect", "location" }`; and for a form a
+  page's script posts, `200` `{ "type": "redirect", "status": 303, "location" }`.
+  `tests/gate.test.ts` holds each against SvelteKit's own function for it.
+- **`/api/v1` with nothing after it is not under `/api/v1/`.** It takes this branch, as a
+  path under `/api/` that is no route: a script is answered `401`, a browser sent to
+  `/login`.
+- **The five security headers** are set on every answer, in step 6. See
+  [Authentication & Security](authentication-security.md#security-headers).
+
+### What is answered before the gate
+
+SvelteKit answers four kinds of request without calling `handle`, so the gate cannot make
+them JSON or head them. The first three are documented to callers as the exceptions, with
+what to send instead, in the
+[External API Reference](api-reference.md#answers-that-are-not-json), and all four, with the
+static files of a built server, as the proxy's to head in
+[Deployment](deployment.md#security-headers-from-the-proxy).
+
+| Request | SvelteKit's answer |
+|---------|--------------------|
+| A `POST`, `PUT`, `PATCH` or `DELETE` whose `Content-Type` is a form's or `text/plain`, with no `Origin` that matches the server. A built server only: the check is skipped under `vite dev` | `403`, as plain text unless the `Accept` header is exactly `application/json` |
+| A path with a trailing slash that names a route | `308` to the path without it |
+| A URL that is not validly encoded | `400` `Malformed URI`, plain text |
+| A path that begins `/_app` and is no file the server has, but a call to a remote function, which the gate answers itself | `404` `Not found`, plain text |
+
+The first is SvelteKit's protection against cross-site form posts (`csrf.checkOrigin`),
+which the configuration leaves on.
 
 ## Authentication and Authorisation
 
@@ -193,11 +599,199 @@ sequenceDiagram
     S-->>A: SSE update event
     S-->>B: SSE update event
 
-    A->>S: Move card to Complete
-    S->>S: emit celebrate event
+    A->>S: Move a card to Complete, or create one there
+    S->>S: emit xp-update (when XP was given) and celebrate
     S-->>A: SSE celebrate
     S-->>B: SSE celebrate
 ```
+
+An event raised while a transaction is open is held until that transaction commits, and is dropped if it rolls back. See the next section.
+
+A card created in a Complete column is completed as a moved one is, and celebrated the same way (card 2134; see [Data Model](data-model.md#one-completion-however-a-card-arrives)). A delete tells the pages open on every board it removes or empties with an `update` that names nothing, `{ type: 'board', action: 'deleted' }`, `{ type: 'card', action: 'purged' }` or `{ type: 'card', action: 'cleared' }`, and the board a deleted sub-board hung from, which is still there, with `{ type: 'board', action: 'sub_board_deleted' }` (card 2108; see [Notifications & Email](notifications-email.md#event-types)).
+
+### An open stream and its session
+
+The gate looks at a request's session once, when it arrives, and a stream is one request that stays open. So each of the three streams (`/api/events`, `/api/boards/[id]/events` and `/api/logs/stream`) reads its session cookie when it is opened, and asks at each heartbeat it already sends (every 30 seconds; 25 for the log) whether that session is still open: there, not expired, and with an account. When it is not, the stream stops listening, stops its heartbeat and closes, and sends nothing more. The board stream asks `sessionStillOpen()` in `src/lib/server/auth.ts`. The two streams let in for an administrator's role ask `openSessionUser()`, which gives the session's account as it is now, and end as well when the role they were let in for has changed: the log stream when the account is no longer an administrator, and `/api/events` when it has become one or stopped being one, since that decides which boards' events it sends. Both share one private function with `validateSession()`, so that what counts as an open session is decided in one place. Unlike `validateSession()` they write nothing, log nothing and do not move the session's expiry on: an open tab would otherwise keep its session alive for ever.
+
+```mermaid
+sequenceDiagram
+    participant P as An open page
+    participant S as A stream route
+    participant DB as sessions
+    participant G as The gate
+    P->>S: GET /api/boards/7/events (cookie: session X)
+    S-->>P: : heartbeat
+    Note over DB: session X deleted (a reset, a sign-out elsewhere, a password change, a restore)
+    S->>DB: at the next heartbeat: is X there, unexpired, with an account?
+    DB-->>S: no
+    S-->>P: the stream ends, and nothing more is sent
+    P->>P: keepStreamOpen waits 3 s
+    P->>G: fetch the stream's address
+    G-->>P: 401
+    P->>P: stays closed, and signed-out.ts sends the page to /login
+```
+
+- **Only the session that opened it counts.** Another session of the same account ending does not end the stream.
+- **A check that cannot be made ends the stream too.** The check runs inside the heartbeat's `try`. If it throws, the stream ends as for a session that has gone, and one `WARN` line is written under `AUTH`, "Live stream ended: its session could not be checked", with the route and the error. Nothing escapes the timer, where it would end the process.
+- **What the page does.** Nothing new: `keepStreamOpen()` sees the stream drop, asks again three seconds later, is answered `401` and stays closed, and a page that holds a stream (a board, the dashboard, All Tasks, Burndown) goes to the login page by itself, about 35 seconds after the session ended at most. A page that holds none (Account, Admin, Reports) goes there at its next request. A stream that ended because its holder changed their own password opens again at once on the browser's new cookie, one that `/api/events` ended for a change of role opens again with the role as it is now, and the page re-reads its data. The audit console's own `EventSource` is refused when it tries again (`401`, or `403` for an account that is no longer an administrator), gives up, and the console shows it is disconnected.
+- **What access each stream checks again.** The board stream keeps the board access it was opened with: a user taken off a board goes on receiving that board's events while the session lasts, so that a deleted board's page is told by its event (card 2170 is to handle it). `/api/events` asks again whether an ordinary user may open a board, through a cache that keeps each answer about 30 seconds. An administrator made an ordinary user stops receiving the log and every board's events at the next heartbeat.
+
+Covered by `tests/live-streams.test.ts`.
+
+In the browser every stream but one is opened by `keepStreamOpen()` in `src/lib/live-stream.ts`. The one is the audit console's live log, `src/routes/audit/+page.svelte`, which opens its own `EventSource` on `/api/logs/stream` and leaves reconnecting to the browser: it tries again after a dropped connection, and gives up on an answer that is not a stream, a `401` or a `403` among them, when the console says it is disconnected. On reconnecting the stream sends its last 100 entries again, and the console skips each it has shown: one whose id is at or below the last one shown and which is no later than it (the ids count from 1 again after a restart). After a failure it waits 3 seconds, then twice as long after each failure that follows, up to five minutes; it asks the stream's address with `fetch` before it opens it again, and leaves it closed after a `401`, `403` or `404`. A stream that opens again after a gap has the page re-read its data, since nothing replays the events it missed. See [Authentication & Security](authentication-security.md#who-is-let-through-without-a-session).
+
+## Writes: One Transaction, Then the Effects
+
+A request that writes makes its writes all or none, and checks the caller where it writes. The route awaits the request body, then passes one function to `inTransaction()` in `src/lib/server/db/transaction.ts`. That function reads what the write depends on, checks the caller with its guard (`route-guards.ts`), makes every write (the activity entry among them) and returns. Only then does the route set a cookie, redirect or answer. Before the body the route asks only what reads no row: the session the gate read and the id in its path. A request with one write follows the same order, so that the row checked is the row written, and a row taken away while the body was arriving is a 404; until 2026-10-14 twenty-two handlers checked the row first and then awaited the body (card 2115).
+
+Nothing leaves the process from inside a transaction. A webhook delivery, a live event, an email and a file move are each queued with `afterCommit()` and start once the outermost transaction has committed. If it rolls back they are dropped, so nobody is told of a change that was not saved.
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant R as Route handler
+    participant T as inTransaction()
+    participant DB as SQLite
+    participant Q as afterCommit queue
+    participant L as Logger
+    participant O as Webhooks, live events,<br/>mail, uploads trash
+
+    C->>R: a request that writes
+    R->>R: await the body, hash a password if there is one
+    R->>T: fn (not async)
+    T->>DB: BEGIN IMMEDIATE
+    T->>DB: read what the write depends on, check access
+    T->>DB: every write, the activity entry among them
+    T->>Q: emit(), logActivity(), notify...(), trashAfterCommit()
+    T->>L: log lines are printed at once, their rows held
+    alt fn throws, or a write fails
+        T->>DB: ROLLBACK
+        T->>Q: drop what this transaction queued
+        T->>L: write the held rows to system_logs
+        T-->>R: the error, as it was thrown
+        R-->>C: 4xx or 500, with the database as it was
+    else fn returns
+        T->>DB: COMMIT
+        T->>L: write the held rows to system_logs
+        T->>O: start each queued effect, in order, not awaited
+        T-->>R: what fn returned
+        R-->>C: cookie, redirect or answer
+    end
+```
+
+### The helper
+
+| Function | What it does |
+|----------|--------------|
+| `inTransaction(fn)` | Runs `fn` in one transaction on the application's connection and returns what it returns. The outermost call is `BEGIN IMMEDIATE`, which takes the write lock at the start, so nothing `fn` reads can be changed under it before it writes. A call made inside another `inTransaction` is a savepoint: if it throws and the code around it catches the error, only that part is rolled back. A call made while a transaction the helper did not open is open on the connection throws before `fn` is run, so the request is answered 500 and writes nothing. |
+| `afterCommit(effect)` | Queues `effect` until the outermost transaction commits. Called with no transaction open, it runs the effect at once. Whether a transaction is open is read from the connection (`sqlite.inTransaction`), not counted by the helper. |
+
+How the queue behaves:
+
+- **A part that fails takes its own effects with it.** Each `inTransaction` call notes the length of the queue when it starts and cuts the queue back to that length if its function throws. What the code around it had already queued stays.
+- **Effects are started, never awaited.** They run in the order they were queued. One that throws, or returns a promise that rejects, is logged at `ERROR` under the `TX` context and goes no further: the write is committed and the caller is told so.
+- **Moving files is synchronous.** A delete has moved its attachment files to the trash before the request is answered.
+- **An effect queued inside a transaction the helper did not open is not sent.** Nothing does that today. If something did, the helper cannot know whether that transaction committed, so the effect is dropped and an `ERROR` line says how many were.
+
+### Rules for code inside a transaction
+
+- **No `await`.** A transaction is over when the function returns. The part of an async function after its first `await` runs later, outside the transaction, and is not rolled back with it. The type of `inTransaction` refuses a function that returns a promise, so `npm run check` fails on one; at run time such a function is refused with a `TypeError` and what it wrote before its first `await` is rolled back.
+- **No `redirect()`, cookie or answer.** Those come after `inTransaction` returns. Throwing `error(...)` or a typed error such as `CardMoveError` is fine: it rolls the transaction back and reaches the caller unchanged.
+- **A database error is not caught and carried on from**, unless the part that failed is its own nested `inTransaction`.
+- **No raw `sqlite.transaction` under the helper.**
+- **Slow work comes first.** Hashing a password takes about a quarter of a second, and nothing else can write while a transaction is open, so the hash is made before the transaction starts.
+- **The check is made where the write is.** Every route that reads a body reads it first and calls its guard after it, and nothing is awaited between a guard and the write it allows. The handlers card 2115 moved call their guard inside the transaction that writes; a `DELETE` that reads no body checks and writes with no transaction, which is as safe, because the database calls are synchronous and nothing is awaited between the two. `tests/check-at-the-write.test.ts` reads every handler under `src/routes/api` and fails on any call before the body but those that read no row, and on a handler whose text reads a body where it cannot find the read. The attachment upload is the one handler that also looks before its body, so that a caller with no access is not sent 25 MB, and it reads the row again inside the transaction. That is also why an invite cannot be used twice and set-up cannot create two superadmins.
+
+Two things open their own transactions and do not use the helper, because they switch foreign keys off around them: the migration runner, and the restore behind Import Backup. The import of the old JSON export was a third; it was removed on 2026-10-14 (card 2157), and Import Backup takes a `.db` backup only.
+
+### Log lines written during a transaction
+
+The logger writes to `system_logs` on the same connection as everything else. A row written inside a transaction that rolls back would vanish with it, and the line that explains a failure is exactly that row. So while a transaction is open the logger prints the line to the console and the live feed at once and keeps the database row in memory. `inTransaction` writes the held rows when its outermost transaction ends, whichever way it ended, with the time each was logged at. At most 2,000 rows are held; past that the oldest are dropped and a `WARN` row says how many.
+
+A line that should be stored only if the write was committed, such as "board 12 was deleted by …", is queued with `afterCommit` instead.
+
+### The shared delete
+
+`src/lib/server/deletes.ts` is the one routine behind every permanent delete: a card with `?permanent=true`, a column, a board, Purge Archived Cards and Clear Cards, in both API trees. The foreign keys take most of what goes, by cascade. The routine takes what they do not:
+
+- dependency links (`work_dependencies`) with a deleted card or subtask at either end;
+- sub-boards at every depth, each by its own statement and not as a side effect of the cascade;
+- for a deleted board or sub-board, the report schedules that name it, and the membership of cards on other boards in its milestones;
+- the attachment files, which are moved to the trash once the delete has committed.
+
+Archiving is not deleting: `archiveCard()` stamps the card and writes the activity entry and touches nothing else. `deleteUser()` is in the same module. What each delete removes and leaves is set out in [Data Model](data-model.md#what-a-delete-removes).
+
+Each function in the module opens its own `inTransaction` and checks no access. A route calls it inside the transaction in which it read the row and checked the caller, which makes the delete a savepoint of the route's transaction.
+
+### Sub-boards and the board tree
+
+A board hangs under a card by `boards.parent_card_id`, and the card is on a board, so the boards make a tree: the dashboard lists the top-level boards, and the board page's breadcrumbs walk up from a sub-board. Nothing in the schema stops the tree going round. `src/lib/server/sub-boards.ts` answers the two questions about it that linking an existing board asks (card 2139):
+
+- `wouldLoop(boardId, parentBoardId)` walks up from the parent card's board with a recursive query built with `UNION`, which keeps each board once and so ends on a loop already in the data, as the shared delete's walk down does, and says whether the board being linked is on the way. `requireSubBoardLink()` in `route-guards.ts` refuses that with 409, after asking for the board's owner or an administrator and for edit access to the card's board.
+- `linkableBoards(user, boardId)` is what the board page's "Link existing board" offers: top-level boards the caller owns by `getBoardRole`'s rule (those they created and those where they are a member stored as owner, read in two queries whatever the number of boards), every one to an administrator, except the board itself and the top of its own chain of parents, and none to a caller who cannot edit the board. An owner can always open a board, so it offers only boards the caller can open, which card 2130 asks of it.
+
+A sub-board is a board of its own and inherits no access from the board its card is on. Since card 2130 every place that shows a card's sub-boards shows only those the caller can open, as the graph already did: `subBoardsFor(user, parentCardIds?)` in `src/lib/server/list-access.ts` reads them for the board page, the card context and the dashboard, whose tiles, sub-board count, All Tasks walk, cost and spend by person all start from it. The breadcrumb walk up from a sub-board shows a board above it that the caller cannot open as "🔒 A board you cannot open", with no link, and keeps it in the chain, so that the page still knows it is a sub-board. See [Authentication & Security](authentication-security.md#what-a-list-gives).
+
+```mermaid
+flowchart TD
+    Page["Board page, card context, dashboard"] --> Subs["subBoardsFor(user, cardIds)"]
+    Subs --> Open{"getAccessibleBoardIds():<br/>can the caller open the sub-board?"}
+    Open -->|"yes, or an administrator"| Shown["On the card, the tile and in the figures"]
+    Open -->|"no"| Left["Left out: no name, no progress, not counted"]
+    Crumbs["Breadcrumbs: walk up from the board"] --> Each{"canViewBoard(ancestor)?"}
+    Each -->|"yes"| Named["name, emoji, link"]
+    Each -->|"no"| Withheld["🔒 A board you cannot open, no link"]
+```
+
+`PUT /api/boards/:id` writes `parentCardId` in the transaction that runs those checks, with any other field the request sends, and the board, the card's board and the board it left are each sent a live update.
+
+```mermaid
+flowchart TD
+    Put["PUT /api/boards/X { parentCardId: c }"] --> Edit{"requireBoard(X, 'edit')"}
+    Edit -->|"no"| R1["404 or 403"]
+    Edit --> Owner{"requireBoardOwner(X):<br/>owner or administrator?"}
+    Owner -->|"no"| R2["403"]
+    Owner --> Parent{"requireParentCard(c):<br/>edit access to P, c's board?"}
+    Parent -->|"no"| R3["404 or 403"]
+    Parent --> Loop{"wouldLoop(X, P):<br/>X on the walk up from P?"}
+    Loop -->|"yes"| R4["409"]
+    Loop -->|"no"| Write["X.parent_card_id = c,<br/>live update to X, P and X's old parent board"]
+```
+
+The breadcrumb walk on the board page and a card moved onto its own sub-board are not guarded here; each has a card of its own (the plan's found nearby a and b).
+
+### Uploads and the trash
+
+`src/lib/server/uploads.ts` is the one definition of where attachment files are. An attachment row holds a file name only; every path is built from the card id and that name.
+
+```
+<uploads>/<cardId>/<filename>            a card's file
+<uploads>/.trash/<cardId>/<filename>     the same file, once its row is deleted
+<uploads>/.trash/<cardId>/.trashed-at    when that folder was last added to
+```
+
+The uploads folder is the folder `uploads` beside the database file. The module refuses, the first time it is asked, a folder that is or contains the database's folder or the working directory.
+
+```mermaid
+stateDiagram-v2
+    [*] --> CardFolder : Upload - the file is written, then its row
+    CardFolder --> [*] : The row could not be written, so the file is removed again
+    CardFolder --> Trash : Its row is deleted and the delete commits
+    CardFolder --> CardFolder : The card is archived or restored - nothing moves
+    Trash --> CardFolder : Import Backup brings back a row that names the file
+    Trash --> Removed : In the trash for more than 30 days, ten minutes after a start or at a six-hourly tick
+    Removed --> [*]
+```
+
+A row is deleted, and its file moved, by deleting the attachment itself, by a permanent delete of its card, column or board, by Purge Archived Cards, by Clear Cards and by Reset.
+
+- **A file is never deleted with its row.** Backups hold the database and not the files, so a file whose row has gone is moved to the trash, where an import of an earlier backup can find it.
+- **Only the files named by the deleted rows are moved.** The card's folder is then removed if it is empty, and never recursively. A file that is not there is passed over: a working copy restored from a backup has none.
+- **A stored file name is treated as data.** A name with a separator, a drive letter or `..` in it, which a restored backup could hold, is refused before it is joined into a path.
+- **The trash is emptied by the log maintenance timer**, ten minutes after the server starts and then every six hours, of every folder last added to more than 30 days before. The timer starts with the server, and its first look at the trash is ten minutes later: nothing is removed from the disk as the server starts. It looks only at numbered folders directly inside `.trash`, removes the files in one that is due and then the folder, follows no link and never goes into a folder inside one, so it cannot reach anything outside the trash.
+- **Serving.** `attachmentHeaders()` answers every attachment as a download (`Content-Disposition: attachment`, `application/octet-stream`) except PNG, JPEG, GIF, WebP and `.txt` files, which are shown in the browser, and only when the stored type and the file's extension agree. A PDF, an HTML file and an SVG file are downloads. Every answer carries `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`. On a card, those four image types have a thumbnail that opens the image, and the name of every attachment is a link that saves the file. See [Authentication & Security](authentication-security.md#attachments).
+
+How an operator backs the folder up, and what a restore does with the trash, is in [Deployment](deployment.md#attachment-files).
 
 ## Request Lifecycle
 
@@ -205,7 +799,10 @@ External users can submit task requests without authentication:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Pending : Requester submits form
+    [*] --> Pending : Signed-in user submits
+    [*] --> Unverified : Someone without an account submits
+    Unverified --> Pending : Requester confirms from the emailed link
+    Unverified --> [*] : Not confirmed within 7 days, deleted
     Pending --> Accepted : Admin accepts
     Pending --> Rejected : Admin rejects
     Accepted --> CardCreated : Card created on board
@@ -224,6 +821,8 @@ stateDiagram-v2
 | Report Scheduler | Weekly/Monthly | Generate and email PDF reports |
 | Snapshot Scheduler | Hourly check, once a day | Card counts per column for the CFD (burndowns are rebuilt from card timestamps — see [Burndown Charts](burndown-charts.md)) |
 | Session Cleanup | On startup | Remove expired session tokens |
+| Log Maintenance | On startup, then every six hours | Prune `system_logs` past its retention |
+| Uploads Trash | Ten minutes after startup, then every six hours, on the log maintenance timer; never on startup itself | Remove attachment files that have been in the trash for more than 30 days |
 
 ## Key Design Decisions
 
@@ -233,6 +832,12 @@ stateDiagram-v2
 
 3. **Single-process architecture** — No external message queues, no separate worker processes. All schedulers run in-process with `setInterval`. Suitable for the target scale (team-sized deployments).
 
-4. **Drizzle ORM** — Type-safe schema that serves as the source of truth. Migrations managed via `drizzle-kit` with SQL files checked into `drizzle/`.
+4. **Drizzle ORM** — Type-safe schema (`src/lib/server/db/schema.ts`) that serves as the source of truth: queries are written against it, and every database is checked against it. Migrations are numbered SQL files checked into `drizzle/`. They are applied at start-up by the application's own runner (`src/lib/server/db/migrate.ts`), one transaction per file, and a file that fails stops the server before it listens. `drizzle-kit` does not apply them and is not in the production image. It is used only in development, to export the model's DDL into the expected schema that the runner compares each database with (`npm run schema:expected`). See [Data Model](data-model.md#migrations-and-schema-reconciliation) and [Deployment](deployment.md#start-up-sequence).
 
-5. **Soft-delete (archive)** — Cards are soft-deleted by setting `archivedAt`. Hard delete available via `?permanent=true` query parameter. Admin purge endpoint for bulk cleanup.
+5. **Soft-delete (archive)** — Cards are soft-deleted by setting `archivedAt`, which touches nothing but the card, so a restore brings it back whole. Hard delete available via `?permanent=true` query parameter. Admin purge endpoint for bulk cleanup. Every hard delete goes through one routine, `deletes.ts`.
+
+6. **Commit first, then tell** — A webhook, a live event, an email or a file move is an effect of a write and is sent only once the write is committed. The cost is that an effect can fail after the write succeeded; that is logged and the caller is still told the write succeeded, because it did. The alternative, sending from inside the transaction, announces changes that are then rolled back.
+
+7. **Attachment files are moved, not deleted** — Backups hold the database only. A deleted card's files go to a trash folder for 30 days, so that restoring an earlier backup can have them back.
+
+8. **One way to read a body, and no schema library** — Every handler reads its body, its path ids and its query through the small readers of `request-body.ts`, which refuse what a field cannot hold with a `400` that names it. A schema library would have been the first validation dependency in the project; checks written into each handler are how the two API trees drifted apart. A value the row already holds is accepted as it is, so rows stored before the rules still save. See [Reading a body](#reading-a-body).

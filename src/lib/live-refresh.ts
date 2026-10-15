@@ -15,7 +15,12 @@
  * The board has its own richer handler in $lib/board/sse.ts (it needs the
  * per-board stream plus celebrations), and All Tasks keeps its own because it
  * drives toasts off the event payload. This is the plain case: refresh only.
+ *
+ * Opening it again after a failure, and how long to wait first, is
+ * $lib/live-stream.ts's: it backs off, and does not open again a stream that
+ * was refused because the session has ended.
  */
+import { keepStreamOpen } from '$lib/live-stream';
 
 /**
  * Opens the connection and returns a cleanup function that closes it.
@@ -23,11 +28,6 @@
  * @param onRefresh — called when the page's data should be re-read.
  */
 export function connectLiveRefresh(onRefresh: () => void): () => void {
-	let eventSource: EventSource | null = null;
-	let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-	// The first open is the page loading its own data and needs no re-read;
-	// every later one follows a gap in which events were missed.
-	let hasConnected = false;
 	let pending: ReturnType<typeof setTimeout> | null = null;
 
 	/**
@@ -44,21 +44,9 @@ export function connectLiveRefresh(onRefresh: () => void): () => void {
 		}, 250);
 	}
 
-	function connect() {
-		eventSource = new EventSource('/api/events');
-
-		eventSource.onopen = () => {
-			if (hasConnected) scheduleRefresh();
-			hasConnected = true;
-		};
-
+	function listen(eventSource: EventSource) {
 		eventSource.addEventListener('update', () => scheduleRefresh());
 		eventSource.addEventListener('xp-update', () => scheduleRefresh());
-
-		eventSource.onerror = () => {
-			if (eventSource) eventSource.close();
-			reconnectTimeout = setTimeout(connect, 3000);
-		};
 	}
 
 	/**
@@ -72,15 +60,12 @@ export function connectLiveRefresh(onRefresh: () => void): () => void {
 	}
 	document.addEventListener('visibilitychange', onVisibilityChange);
 
-	connect();
+	// Every open after the first follows a gap, and the page is re-read.
+	const close = keepStreamOpen('/api/events', listen, scheduleRefresh);
 
 	return () => {
 		document.removeEventListener('visibilitychange', onVisibilityChange);
 		if (pending) clearTimeout(pending);
-		if (reconnectTimeout) clearTimeout(reconnectTimeout);
-		if (eventSource) {
-			eventSource.close();
-			eventSource = null;
-		}
+		close();
 	};
 }

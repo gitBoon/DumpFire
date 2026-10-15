@@ -340,23 +340,16 @@ export function forecast(basis: BurndownPoint[]): BurndownForecast {
 }
 
 /**
- * The forecast for a set of cards as of `to`, over the trailing basis window.
+ * The days a pace is measured over — shared by the forecast and the delivery
+ * estimate so the two can never disagree about what "recently" means. When
+ * everything arrived today there is no pace yet, and the single day returned
+ * still lets "done" be recognised.
  *
  * A scope younger than the window is measured from the day AFTER its first
  * cards arrived, with that day's end state as the baseline. A goal is usually
  * carded in one burst, and counting the burst as scope growth projected
  * remaining work climbing steeply for a milestone that had not changed since
  * the day it was written down.
- */
-export function forecastCards(cards: CardLifeline[], to: Day): BurndownForecast {
-	return forecast(forecastBasis(cards, to));
-}
-
-/**
- * The days a pace is measured over — shared by the forecast and the delivery
- * estimate so the two can never disagree about what "recently" means. When
- * everything arrived today there is no pace yet, and the single day returned
- * still lets "done" be recognised.
  */
 export function forecastBasis(cards: CardLifeline[], to: Day): BurndownPoint[] {
 	const earliest = firstDay(cards);

@@ -1,5 +1,14 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import type { PageData } from './$types';
+
+	let { data }: { data: PageData } = $props();
+
+	/**
+	 * Sent with every call the form makes. Without an account this token, issued
+	 * with the page, is what the server checks; signed in, the session is.
+	 */
+	const formHeaders: Record<string, string> = data.formToken ? { 'X-Form-Token': data.formToken } : {};
 
 	type Target = { id: number; name: string; emoji: string; type: 'user' | 'team' };
 	type BoardOption = { id: number; name: string; emoji: string };
@@ -16,6 +25,8 @@
 	let requesterEmail = $state('');
 	let submitting = $state(false);
 	let submitted = $state(false);
+	/** True when the server is holding the request until the emailed link is followed. */
+	let needsConfirmation = $state(false);
 	let errorMsg = $state('');
 
 	// Check if user is authenticated (injected by layout)
@@ -29,18 +40,19 @@
 		} catch {}
 
 		// Load targets and boards
-		const res = await fetch('/api/requests/targets');
+		const res = await fetch('/api/requests/targets', { headers: formHeaders });
 		if (res.ok) {
-			const data = await res.json();
-			targets = data.targets;
-			boardOptions = data.boards;
+			const loaded = await res.json();
+			targets = loaded.targets;
+			boardOptions = loaded.boards;
+		} else if (res.status === 401 || res.status === 403) {
+			errorMsg = 'This form has expired. Reload the page to continue.';
 		}
 	});
 
 	async function submit() {
 		if (!title.trim()) { errorMsg = 'Title is required'; return; }
 		if (!selectedTarget) { errorMsg = 'Please select a target'; return; }
-		if (!selectedBoardId) { errorMsg = 'Please select a board/project'; return; }
 		if (!requesterName.trim()) { errorMsg = 'Your name is required'; return; }
 		if (!requesterEmail.trim()) { errorMsg = 'Your email is required'; return; }
 
@@ -52,11 +64,13 @@
 
 		const res = await fetch('/api/requests', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: { 'Content-Type': 'application/json', ...formHeaders },
 			body: JSON.stringify({
 				targetType: type,
 				targetId,
-				desiredBoardId: Number(selectedBoardId),
+				// Optional: whoever accepts the request picks the board. Left out when
+				// none is chosen, and someone without an account is offered none.
+				desiredBoardId: selectedBoardId ? Number(selectedBoardId) : undefined,
 				title: title.trim(),
 				description,
 				businessValue,
@@ -68,10 +82,12 @@
 
 		submitting = false;
 		if (res.ok) {
+			const created = await res.json().catch(() => ({}));
+			needsConfirmation = created.verificationRequired === true;
 			submitted = true;
 		} else {
-			const data = await res.json().catch(() => ({}));
-			errorMsg = data.message || 'Failed to submit request';
+			const failure = await res.json().catch(() => ({}));
+			errorMsg = failure.message || 'Failed to submit request';
 		}
 	}
 
@@ -92,9 +108,18 @@
 	<div class="request-container">
 		{#if submitted}
 			<div class="success-card">
-				<div class="success-icon">✅</div>
-				<h1>Request Submitted!</h1>
-				<p>Your task request has been sent and will be reviewed shortly.</p>
+				{#if needsConfirmation}
+					<div class="success-icon">📧</div>
+					<h1>Check Your Email</h1>
+					<p>
+						We have sent a confirmation link to <strong>{requesterEmail}</strong>.
+						Your request is passed to the team once you follow it.
+					</p>
+				{:else}
+					<div class="success-icon">✅</div>
+					<h1>Request Submitted!</h1>
+					<p>Your task request has been sent and will be reviewed shortly.</p>
+				{/if}
 				<div class="success-actions">
 					<button class="btn-primary" onclick={() => { submitted = false; title = ''; description = ''; businessValue = ''; selectedTarget = ''; selectedBoardId = ''; priority = 'medium'; requesterName = ''; requesterEmail = ''; }}>
 						Submit Another
@@ -129,16 +154,19 @@
 					</select>
 				</div>
 
-				<!-- Board / Project -->
-				<div class="form-group">
-					<label for="board">Board / Project <span class="required">*</span></label>
-					<select id="board" bind:value={selectedBoardId} class="form-select">
-						<option value="">Choose a board/project...</option>
-						{#each boardOptions as b}
-							<option value={b.id}>{b.emoji} {b.name}</option>
-						{/each}
-					</select>
-				</div>
+				<!-- Board / Project: the boards a signed-in requester can open. Someone
+				     without an account is given none, and the field is not shown. -->
+				{#if boardOptions.length > 0}
+					<div class="form-group">
+						<label for="board">Board / Project</label>
+						<select id="board" bind:value={selectedBoardId} class="form-select">
+							<option value="">No board: whoever accepts it chooses</option>
+							{#each boardOptions as b}
+								<option value={b.id}>{b.emoji} {b.name}</option>
+							{/each}
+						</select>
+					</div>
+				{/if}
 
 				<!-- Title -->
 				<div class="form-group">
@@ -180,7 +208,7 @@
 				<div class="form-group requester-fields">
 					<label>Your details <span class="required">*</span></label>
 					<div class="requester-row">
-						<input type="text" bind:value={requesterName} placeholder="Your name" class="form-input" required />
+						<input type="text" bind:value={requesterName} placeholder="Your name" class="form-input" maxlength="200" required />
 						<input type="email" bind:value={requesterEmail} placeholder="Your email" class="form-input" required />
 					</div>
 				</div>

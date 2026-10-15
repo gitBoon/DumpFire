@@ -4,6 +4,7 @@ import { cards, columns } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canViewBoard } from '$lib/server/board-access';
 import { getCardBoardHistory } from '$lib/server/activity-report';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
@@ -21,8 +22,7 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const cardId = Number(params.cardId);
-	if (!Number.isInteger(cardId)) throw error(400, 'Invalid card ID');
+	const cardId = pathId(params.cardId, 'card');
 
 	const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, cardId)).get();
 	if (!card) throw error(404, 'Card not found');

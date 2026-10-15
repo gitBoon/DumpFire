@@ -3,6 +3,10 @@ import { db } from '$lib/server/db';
 import { boards, columns, cards, activityLog } from '$lib/server/db/schema';
 import { eq, and, isNotNull, inArray, gte, sql } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
+import { completeColumnIds } from '$lib/column-role';
+import { ACTIONS, storedActions } from '$lib/server/logActivity';
+import { pathId } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /**
@@ -12,8 +16,10 @@ import type { RequestHandler } from './$types';
  * Query params: ?days=N (default: 30)
  */
 export const GET: RequestHandler = async ({ params, locals, url }) => {
-	const boardId = Number(params.id);
-	const user = locals.user!;
+	// A caller who is not signed in is 401, where `locals.user!` threw and
+	// only the gate stood in front of it (card 2117).
+	const user = requireUser(locals.user);
+	const boardId = pathId(params.id, 'board');
 
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) throw error(404, 'Board not found');
@@ -32,10 +38,7 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 	if (colIds.length === 0) return json({ leadTime: null, cycleTime: null, completed: 0, cards: [] });
 
 	// Find complete columns
-	const completeCols = boardCols.filter(c =>
-		c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done'
-	);
-	const completeColIds = completeCols.map(c => c.id);
+	const completeColIds = [...completeColumnIds(boardCols)];
 
 	if (completeColIds.length === 0) return json({ leadTime: null, cycleTime: null, completed: 0, cards: [] });
 
@@ -61,7 +64,9 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 	.from(activityLog)
 	.where(and(
 		inArray(activityLog.cardId, cardIds),
-		eq(activityLog.action, 'card_moved')
+		// A move made through the API is stored as `api:card_moved`. Matching only
+		// the bare name meant cycle time ignored every card moved by the API.
+		inArray(activityLog.action, storedActions(ACTIONS.cardMoved))
 	))
 	.groupBy(activityLog.cardId)
 	.all();

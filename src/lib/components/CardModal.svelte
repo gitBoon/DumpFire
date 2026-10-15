@@ -7,13 +7,17 @@
 	 * Supports both create and edit modes.
 	 */
 	import SubtaskModal from './SubtaskModal.svelte';
+	import LabelPicker from './LabelPicker.svelte';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
+	import { COVER_PRESETS, isCoverValue } from '$lib/colours';
+	import { priorityToCopy } from '$lib/utils/card-utils';
 	import { completionPercent } from '$lib/progress';
 	import { formatTokens } from '$lib/tokens';
 	import { costOf, formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
 	import { highlightMentions } from '$lib/utils/mentions';
+	import { answerBody, deleteFailure, dependencyEndBody, dependencyRow, failureMessage, uploadFailure, uploadNoAnswer, uploadNotRead } from '$lib/api';
 	import {
 		THEMES,
 		RELEASE_STATES,
@@ -57,25 +61,39 @@
 	} = $props();
 
 	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
-	let newSubBoardName = $state(card?.title || '');
+	// A board's name is at most 200 characters and a card's title 500: the
+	// title as it is would be refused (card 2117).
+	let newSubBoardName = $state((card?.title || '').slice(0, 200));
 	let showLinkPicker = $state(false);
 
+	/**
+	 * Why the last change made in this window was not made, shown at the top of
+	 * the window until it is closed or the next change is tried: the server's
+	 * own words for a refusal (`failureMessage`). A label, the cover, an
+	 * assignee, a subtask ticked, a comment or a file used to look changed, or
+	 * stay as it was, with nothing said either way. What was changed on the
+	 * window before the answer came is put back.
+	 */
+	let windowError = $state('');
+
+	/**
+	 * The box `windowError` is shown in. It keeps to the top of the window as
+	 * it scrolls (`position: sticky`), and is brought into view when it is
+	 * set: a refusal of a control far down the window, a comment or a file,
+	 * was said above the top of what could be seen.
+	 */
+	let windowErrorBox = $state<HTMLDivElement | null>(null);
+	$effect(() => {
+		if (windowError && windowErrorBox) windowErrorBox.scrollIntoView({ block: 'nearest' });
+	});
+
+	/** What a change that got no answer says: it may or may not have been made. */
+	const NO_ANSWER = 'No answer from the server. It is not known whether that was saved.';
+
+	// The card's labels: put on and taken off by the label picker
+	// (`LabelPicker.svelte`), and saved with a template.
 	// svelte-ignore state_referenced_locally
 	let cardLabelIds = $state<number[]>((card as any)?.labelIds || []);
-
-	async function toggleLabel(labelId: number) {
-		if (!card) return;
-		await fetch('/api/labels', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ cardId: card.id, labelId, boardId })
-		});
-		if (cardLabelIds.includes(labelId)) {
-			cardLabelIds = cardLabelIds.filter(id => id !== labelId);
-		} else {
-			cardLabelIds = [...cardLabelIds, labelId];
-		}
-	}
 
 	// Pending subtasks for new card creation (full objects, not just titles)
 	type PendingSubtask = {
@@ -167,41 +185,39 @@
 		!!card?.requestOrigin || !!card?.businessValue || !!businessValue
 	);
 
-	// Card cover state
+	// Card cover state. A cover is a colour written #rrggbb or one of the
+	// presets (`COVER_PRESETS`); it is drawn only when `isCoverValue` says it is
+	// one, so a value stored before the rule is kept and not drawn (card 2010).
 	// svelte-ignore state_referenced_locally
 	let coverUrl = $state(card?.coverUrl || '');
-	const coverPresets = [
-		'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-		'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-		'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
-		'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
-		'linear-gradient(135deg, #fa709a 0%, #fee140 100%)',
-		'linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)',
-		'linear-gradient(135deg, #fccb90 0%, #d57eeb 100%)',
-		'linear-gradient(135deg, #e0c3fc 0%, #8ec5fc 100%)',
-		'#6366f1', '#ef4444', '#f59e0b', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'
-	];
 
+	/** Shown at once, and put back as it was if the server does not save it. */
 	async function setCover(value: string) {
+		const was = coverUrl;
 		coverUrl = value;
-		if (card) {
-			await fetch(`/api/cards/${card.id}`, {
+		if (!card) return;
+		windowError = '';
+		let res: Response;
+		try {
+			res = await fetch(`/api/cards/${card.id}`, {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ coverUrl: value || null, boardId })
 			});
+		} catch {
+			coverUrl = was;
+			windowError = NO_ANSWER;
+			return;
+		}
+		if (!res.ok) {
+			coverUrl = was;
+			windowError = await failureMessage(res, 'The cover was not changed.');
 		}
 	}
 
+	/** No cover: sent as null, which is what an empty one is. */
 	async function clearCover() {
-		coverUrl = '';
-		if (card) {
-			await fetch(`/api/cards/${card.id}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ coverUrl: null, boardId })
-			});
-		}
+		await setCover('');
 	}
 	let cardSubtasks = $state<SubtaskType[]>(card?.subtasks || []);
 
@@ -210,22 +226,39 @@
 	let newCatName = $state('');
 	let newCatColor = $state('#6366f1');
 	let localCategories = $state<CategoryType[]>([...categories]);
+	// What the picker offers: this board's categories and the shared ones, of
+	// no board, which are everybody's. The server files a card under nothing
+	// else (card 2117, R3); the page passes those of every board the caller can
+	// open, and one a card carries from a board they cannot, marked `carried`
+	// (card 2128), which this leaves out too. A card already filed under
+	// another board's keeps it, and its chip still names it.
+	const pickableCategories = $derived(localCategories.filter((c) => c.boardId === boardId || c.boardId === null));
 
 	async function createCategoryInline() {
 		if (!newCatName.trim()) return;
-		const res = await fetch('/api/categories', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ boardId, name: newCatName.trim(), color: newCatColor })
-		});
-		if (res.ok) {
-			const created = await res.json();
-			localCategories = [...localCategories, created];
-			categoryId = created.id;
-			newCatName = '';
-			newCatColor = '#6366f1';
-			showNewCategory = false;
+		windowError = '';
+		let res: Response;
+		try {
+			res = await fetch('/api/categories', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ boardId, name: newCatName.trim(), color: newCatColor })
+			});
+		} catch {
+			windowError = NO_ANSWER;
+			return;
 		}
+		if (!res.ok) {
+			// The name stays in the form, to be put right and sent again.
+			windowError = await failureMessage(res, 'The category was not created.');
+			return;
+		}
+		const created = await res.json();
+		localCategories = [...localCategories, created];
+		categoryId = created.id;
+		newCatName = '';
+		newCatColor = '#6366f1';
+		showNewCategory = false;
 	}
 
 	// Planned sub-boards for new card creation
@@ -241,14 +274,23 @@
 
 		if (card) {
 			// Existing card — assign via API
-			const res = await fetch(`/api/cards/${card.id}/assignees`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ userId })
-			});
-			if (res.ok) {
-				cardAssignees = [...cardAssignees, { id: user.id, username: user.username, emoji: user.emoji }];
+			windowError = '';
+			let res: Response;
+			try {
+				res = await fetch(`/api/cards/${card.id}/assignees`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ userId })
+				});
+			} catch {
+				windowError = NO_ANSWER;
+				return;
 			}
+			if (!res.ok) {
+				windowError = await failureMessage(res, `${user.username} was not assigned.`);
+				return;
+			}
+			cardAssignees = [...cardAssignees, { id: user.id, username: user.username, emoji: user.emoji }];
 		} else {
 			// New card — queue locally
 			cardAssignees = [...cardAssignees, { id: user.id, username: user.username, emoji: user.emoji }];
@@ -257,11 +299,23 @@
 
 	async function unassignUser(userId: number) {
 		if (card) {
-			await fetch(`/api/cards/${card.id}/assignees`, {
-				method: 'DELETE',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ userId })
-			});
+			// Taken off the list only once the server has taken them off the card.
+			const cardId = card.id;
+			windowError = '';
+			const failure = await deleteFailure(
+				() =>
+					fetch(`/api/cards/${cardId}/assignees`, {
+						method: 'DELETE',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ userId })
+					}),
+				'assignee',
+				'removed'
+			);
+			if (failure) {
+				windowError = failure;
+				return;
+			}
 		}
 		cardAssignees = cardAssignees.filter(a => a.id !== userId);
 	}
@@ -288,25 +342,51 @@
 		if (res.ok) templates = await res.json();
 	}
 
+	/**
+	 * Why the open template dialog's last request was not done, shown in that
+	 * dialog: it is in front of the window. A template that was not saved used
+	 * to close the dialog as if it had been, and one not deleted left the list.
+	 */
+	let templateError = $state('');
+
 	async function saveAsTemplate() {
 		if (!templateName.trim()) return;
 		templateSaving = true;
-		await fetch('/api/templates', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				boardId,
-				name: templateName.trim(),
-				title: title,
-				description: description,
-				priority: priority,
-				subtasks: card ? cardSubtasks.map(s => ({ title: s.title, description: s.description, priority: s.priority })) : [],
-				labels: cardLabelIds
-			})
-		});
-		templateSaving = false;
-		showSaveTemplate = false;
-		templateName = '';
+		templateError = '';
+		try {
+			let res: Response;
+			try {
+				res = await fetch('/api/templates', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						boardId,
+						name: templateName.trim(),
+						title: title,
+						description: description,
+						priority: priority,
+						// A subtask's description may be stored as null, which a template's
+						// reader refuses as no text (card 2117): none is empty text. A
+						// priority stored that is not one of the four is left out, and the
+						// template's step is medium, where the template was refused.
+						subtasks: card ? cardSubtasks.map(s => ({ title: s.title, description: s.description ?? '', priority: priorityToCopy(s.priority) })) : [],
+						labels: cardLabelIds
+					})
+				});
+			} catch {
+				templateError = NO_ANSWER;
+				return;
+			}
+			if (!res.ok) {
+				// The dialog stays open, with the name as it was typed.
+				templateError = await failureMessage(res, 'The template was not saved.');
+				return;
+			}
+			showSaveTemplate = false;
+			templateName = '';
+		} finally {
+			templateSaving = false;
+		}
 	}
 
 	function applyTemplate(tmpl: TemplateItem) {
@@ -329,7 +409,13 @@
 	}
 
 	async function deleteTemplate(id: number) {
-		await fetch(`/api/templates/${id}`, { method: 'DELETE' });
+		templateError = '';
+		const failure = await deleteFailure(() => fetch(`/api/templates/${id}`, { method: 'DELETE' }), 'template');
+		if (failure) {
+			// It stays in the list: somebody else's template is refused.
+			templateError = failure;
+			return;
+		}
 		templates = templates.filter(t => t.id !== id);
 	}
 
@@ -413,9 +499,18 @@
 		});
 	}
 
+	/** The window's own overlay, to tell a confirmation of its own from one of the page's. */
+	let overlay = $state<HTMLDivElement | null>(null);
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (showSubtaskModal) return; // Let subtask modal handle its own escape
-		if (e.key === 'Escape') onClose();
+		if (e.key !== 'Escape') return;
+		// A confirmation the page opened over this window, such as All Tasks' or
+		// the board page's "Archive Card", answers Escape itself, as Cancel. It
+		// used to close this window as well, and with it what was typed in it.
+		const confirming = document.querySelector('.confirm-modal');
+		if (confirming && !overlay?.contains(confirming)) return;
+		onClose();
 	}
 
 	// Subtask operations
@@ -448,15 +543,24 @@
 	}
 
 	async function toggleSubtask(subtask: SubtaskType) {
-		const res = await fetch(`/api/subtasks/${subtask.id}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ completed: !subtask.completed, boardId })
-		});
-		if (res.ok) {
-			subtask.completed = !subtask.completed;
-			cardSubtasks = [...cardSubtasks];
+		windowError = '';
+		let res: Response;
+		try {
+			res = await fetch(`/api/subtasks/${subtask.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ completed: !subtask.completed, boardId })
+			});
+		} catch {
+			windowError = NO_ANSWER;
+			return;
 		}
+		if (!res.ok) {
+			windowError = await failureMessage(res, 'The subtask was not changed.');
+			return;
+		}
+		subtask.completed = !subtask.completed;
+		cardSubtasks = [...cardSubtasks];
 	}
 
 	$effect(() => {
@@ -625,7 +729,9 @@
 		pickerSearching = true;
 		pickerTimer = setTimeout(async () => {
 			try {
-				const res = await fetch(`/api/cards/search?q=${encodeURIComponent(q)}&exclude=${card?.id ?? 0}`);
+				// No card yet, no `exclude`: 0 is no id, and is refused.
+				const exclude = card?.id ? `&exclude=${card.id}` : '';
+				const res = await fetch(`/api/cards/search?q=${encodeURIComponent(q)}${exclude}`);
 				pickerResults = res.ok ? await res.json() : [];
 			} finally {
 				pickerSearching = false;
@@ -636,12 +742,19 @@
 	async function addDependency(otherCardId: number) {
 		if (!card || !pickerMode) return;
 		depError = '';
-		const body = pickerMode === 'blocked-by' ? { dependsOnCardId: otherCardId } : { blocksCardId: otherCardId };
-		const res = await fetch(`/api/cards/${card.id}/dependencies`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(body)
-		});
+		// The picker finds cards only.
+		const body = dependencyEndBody(pickerMode, { kind: 'card', cardId: otherCardId });
+		let res: Response;
+		try {
+			res = await fetch(`/api/cards/${card.id}/dependencies`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			});
+		} catch {
+			depError = NO_ANSWER;
+			return;
+		}
 		if (res.ok) {
 			const data = await res.json();
 			blockedBy = data.blockedBy;
@@ -652,31 +765,52 @@
 		} else {
 			// A rejected cycle names the loop it found, which is the whole value of
 			// the check — surface the server's message rather than a generic error.
-			const err = await res.json().catch(() => ({}));
-			depError = err.message || 'Could not add that dependency';
+			depError = await failureMessage(res, 'Could not add that dependency');
 		}
 	}
 
-	async function removeDependency(otherCardId: number, mode: 'blocked-by' | 'blocks') {
+	/** Remove the link the row `d` shows. A subtask row's id is the subtask's, and is sent as one. */
+	async function removeDependency(d: DependencyRefType, mode: 'blocked-by' | 'blocks') {
 		if (!card) return;
 		depError = '';
-		const body = mode === 'blocked-by' ? { dependsOnCardId: otherCardId } : { blocksCardId: otherCardId };
-		const res = await fetch(`/api/cards/${card.id}/dependencies`, {
-			method: 'DELETE',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(body)
-		});
+		const body = dependencyEndBody(mode, d);
+		let res: Response;
+		try {
+			res = await fetch(`/api/cards/${card.id}/dependencies`, {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body)
+			});
+		} catch {
+			depError = NO_ANSWER;
+			return;
+		}
 		if (res.ok) {
 			const data = await res.json();
 			blockedBy = data.blockedBy;
 			blocks = data.blocks;
+		} else {
+			// A link somebody else already removed is answered 404. Say so, where
+			// this used to do nothing and leave the row looking removable.
+			depError = await failureMessage(res, 'Could not remove that dependency');
+			// And read the links again, as when the card was opened: the row
+			// that was refused is the one that is out of date, and left in the
+			// list it still looks removable beside a message saying it is gone.
+			await loadDependencies();
 		}
 	}
 
-	async function saveMilestone(next: number | null) {
+	/**
+	 * `select` shows the choice before the answer comes, and is put back to the
+	 * milestone the card is in when the change is not made.
+	 */
+	async function saveMilestone(next: number | null, select?: HTMLSelectElement) {
 		if (!card) return;
 		milestoneSaving = true;
 		depError = '';
+		const putBack = () => {
+			if (select) select.value = String(milestoneId ?? '');
+		};
 		try {
 			const target = next ?? milestoneId;
 			if (target === null) return;
@@ -688,9 +822,12 @@
 			if (res.ok) {
 				milestoneId = next;
 			} else {
-				const err = await res.json().catch(() => ({}));
-				depError = err.message || 'Could not change the milestone';
+				putBack();
+				depError = await failureMessage(res, 'Could not change the milestone');
 			}
+		} catch {
+			putBack();
+			depError = NO_ANSWER;
 		} finally {
 			milestoneSaving = false;
 		}
@@ -710,36 +847,62 @@
 
 	async function postComment() {
 		if (!card || !newComment.trim()) return;
-		const res = await fetch(`/api/cards/${card.id}/comments`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ content: newComment.trim() })
-		});
-		if (res.ok) {
-			const created = await res.json();
-			comments = [created, ...comments];
-			newComment = '';
+		windowError = '';
+		let res: Response;
+		try {
+			res = await fetch(`/api/cards/${card.id}/comments`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ content: newComment.trim() })
+			});
+		} catch {
+			windowError = NO_ANSWER;
+			return;
 		}
+		if (!res.ok) {
+			// What was written stays in the box.
+			windowError = await failureMessage(res, 'The comment was not posted.');
+			return;
+		}
+		const created = await res.json();
+		comments = [created, ...comments];
+		newComment = '';
 	}
 
 	async function deleteComment(commentId: number) {
 		if (!card) return;
-		const res = await fetch(`/api/cards/${card.id}/comments/${commentId}`, { method: 'DELETE' });
-		if (res.ok) comments = comments.filter(c => c.id !== commentId);
+		const cardId = card.id;
+		windowError = '';
+		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/comments/${commentId}`, { method: 'DELETE' }), 'comment');
+		if (failure) {
+			windowError = failure;
+			return;
+		}
+		comments = comments.filter(c => c.id !== commentId);
 	}
 
 	async function saveEditComment(commentId: number) {
 		if (!card || !editingCommentText.trim()) return;
-		const res = await fetch(`/api/cards/${card.id}/comments/${commentId}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ content: editingCommentText.trim() })
-		});
-		if (res.ok) {
-			comments = comments.map(c => c.id === commentId ? { ...c, content: editingCommentText.trim(), updatedAt: new Date().toISOString() } : c);
-			editingCommentId = null;
-			editingCommentText = '';
+		windowError = '';
+		let res: Response;
+		try {
+			res = await fetch(`/api/cards/${card.id}/comments/${commentId}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ content: editingCommentText.trim() })
+			});
+		} catch {
+			windowError = NO_ANSWER;
+			return;
 		}
+		if (!res.ok) {
+			// Still open to edit, with what was written.
+			windowError = await failureMessage(res, 'The comment was not saved.');
+			return;
+		}
+		comments = comments.map(c => c.id === commentId ? { ...c, content: editingCommentText.trim(), updatedAt: new Date().toISOString() } : c);
+		editingCommentId = null;
+		editingCommentText = '';
 	}
 
 	function commentTimeAgo(dateStr: string): string {
@@ -769,28 +932,80 @@
 		} finally { loadingAttachments = false; }
 	}
 
+	/**
+	 * Why each file of the last upload that was not attached was not, a line
+	 * a file. It stays until the next upload: a file that fails used to be
+	 * dropped without a word.
+	 */
+	let uploadErrors = $state<string[]>([]);
+
 	async function uploadFiles(files: FileList | File[]) {
 		if (!card) return;
 		uploading = true;
-		for (const file of files) {
-			const form = new FormData();
-			form.append('file', file);
-			const res = await fetch(`/api/cards/${card.id}/attachments`, {
+		uploadErrors = [];
+		try {
+			for (const file of files) {
+				const failure = await uploadFile(card.id, file);
+				if (failure) uploadErrors = [...uploadErrors, failure];
+			}
+		} finally {
+			// Whatever happened. A request that threw used to leave this set, and
+			// the tab saying "Uploading..." until the card was closed.
+			uploading = false;
+		}
+	}
+
+	/**
+	 * Attach one file to the card. Null once it is attached, and if it is not,
+	 * which of the four things went wrong: see `uploadFailure` in `$lib/api`.
+	 */
+	async function uploadFile(cardId: number, file: File): Promise<string | null> {
+		const what = `"${file.name}"`;
+
+		// The first: it cannot be read here, a folder that was dropped or a file
+		// that has moved since. Asked for one byte, so that it is known before
+		// the request and not taken for a server that gave no answer.
+		try {
+			await file.slice(0, 1).arrayBuffer();
+		} catch {
+			return uploadNotRead(what);
+		}
+
+		const form = new FormData();
+		form.append('file', file);
+
+		// The second: no answer.
+		let res: Response;
+		try {
+			res = await fetch(`/api/cards/${cardId}/attachments`, {
 				method: 'POST',
 				body: form
 			});
-			if (res.ok) {
-				const created = await res.json();
-				attachments = [...attachments, created];
-			}
+		} catch {
+			return uploadNoAnswer(what);
 		}
-		uploading = false;
+
+		// The third and the fourth, and anything else the server said of it.
+		const created = res.ok ? await answerBody(res.clone()) : null;
+		if (created === null) return uploadFailure(res, what);
+
+		attachments = [...attachments, created as AttachmentItem];
+		return null;
 	}
 
 	async function deleteAttachment(id: number) {
 		if (!card) return;
-		const res = await fetch(`/api/cards/${card.id}/attachments/${id}`, { method: 'DELETE' });
-		if (res.ok) attachments = attachments.filter(a => a.id !== id);
+		const cardId = card.id;
+		windowError = '';
+		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/attachments/${id}`, { method: 'DELETE' }), 'attachment');
+		if (failure) {
+			windowError = failure;
+			// And the list is read again, as when the tab was opened: a file
+			// somebody else deleted first is the row known to be out of date.
+			await loadAttachments();
+			return;
+		}
+		attachments = attachments.filter(a => a.id !== id);
 	}
 
 	function formatFileSize(bytes: number): string {
@@ -799,8 +1014,24 @@
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
-	function isImageMime(mime: string): boolean {
-		return mime.startsWith('image/');
+	/**
+	 * The attachments the server answers as an image, which are the only ones
+	 * an <img> can show: PNG, JPEG, GIF and WebP, and each by both the type
+	 * stored with the upload and the extension of its name. Everything else is
+	 * answered as a download, an SVG among them, and gets the ordinary file row.
+	 * Keep in step with `attachmentHeaders` in `$lib/server/uploads.ts`.
+	 */
+	const SHOWN_AS_IMAGE: { stored: string; extensions: string[] }[] = [
+		{ stored: 'image/png', extensions: ['png'] },
+		{ stored: 'image/jpeg', extensions: ['jpg', 'jpeg'] },
+		{ stored: 'image/gif', extensions: ['gif'] },
+		{ stored: 'image/webp', extensions: ['webp'] }
+	];
+
+	function isShownAsImage(att: { originalName: string; mimeType: string }): boolean {
+		const extension = /\.([A-Za-z0-9]+)$/.exec(String(att.originalName ?? ''))?.[1].toLowerCase() ?? '';
+		const stored = String(att.mimeType ?? '').split(';')[0].trim().toLowerCase();
+		return SHOWN_AS_IMAGE.some((type) => type.stored === stored && type.extensions.includes(extension));
 	}
 
 	function handleDrop(e: DragEvent) {
@@ -855,10 +1086,10 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Card editor">
+<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Card editor" bind:this={overlay}>
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-content card-modal-content" onclick={(e) => { e.stopPropagation(); closeAllDropdowns(); }} role="document">
-		{#if coverUrl}
+		{#if isCoverValue(coverUrl)}
 			<div class="modal-cover-preview" style="background: {coverUrl}"></div>
 		{/if}
 		<div class="modal-header">
@@ -885,6 +1116,12 @@
 		</div>
 
 		<div class="modal-body">
+		{#if windowError}
+			<div class="dep-error window-error" role="alert" bind:this={windowErrorBox}>
+				<span>{windowError}</span>
+				<button class="window-error-close" onclick={() => (windowError = '')} aria-label="Close this message" type="button">✕</button>
+			</div>
+		{/if}
 		<div class="title-field" class:title-error={titleError}>
 			<input id="card-title" class="modal-title-input" type="text" placeholder="What needs to be done?" bind:value={title} oninput={() => (titleError = false)} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()} autofocus />
 			{#if titleError}<span class="title-error-msg">A title is required</span>{/if}
@@ -966,7 +1203,7 @@
 					{#if showCategoryDrop}
 					<div class="chip-dropdown" onclick={(e) => e.stopPropagation()}>
 						<button class="chip-dropdown-item" class:selected={!categoryId} onclick={() => { categoryId = null; showCategoryDrop = false; }}>None</button>
-						{#each localCategories as cat}
+						{#each pickableCategories as cat}
 							<button class="chip-dropdown-item" class:selected={categoryId === cat.id} onclick={() => { categoryId = cat.id; showCategoryDrop = false; }}>
 								<span class="chip-dot" style="background: {cat.color}"></span>
 								{cat.name}
@@ -1373,6 +1610,14 @@
 				<input type="file" multiple class="upload-input" onchange={(e) => { const el = e.target as HTMLInputElement; if (el.files?.length) uploadFiles(el.files); el.value = ''; }} />
 			</div>
 
+			{#if uploadErrors.length > 0}
+				<div class="dep-error" role="alert" style="margin-top: 8px">
+					{#each uploadErrors as failure}
+						<div>{failure}</div>
+					{/each}
+				</div>
+			{/if}
+
 			{#if loadingAttachments}
 				<div class="comments-loading">Loading attachments...</div>
 			{:else if attachments.length === 0}
@@ -1384,7 +1629,7 @@
 				<div class="attachment-list">
 					{#each attachments as att (att.id)}
 						<div class="attachment-item">
-							{#if isImageMime(att.mimeType)}
+							{#if isShownAsImage(att)}
 								<a href="/api/cards/{card.id}/attachments/{att.id}" target="_blank" class="attachment-thumb">
 									<img src="/api/cards/{card.id}/attachments/{att.id}" alt={att.originalName} />
 								</a>
@@ -1453,8 +1698,8 @@
 							value={milestoneId ?? ''}
 							disabled={milestoneSaving}
 							onchange={(e) => {
-								const v = (e.target as HTMLSelectElement).value;
-								saveMilestone(v === '' ? null : Number(v));
+								const v = e.currentTarget.value;
+								saveMilestone(v === '' ? null : Number(v), e.currentTarget);
 							}}
 						>
 							<option value="">No milestone</option>
@@ -1488,13 +1733,15 @@
 						{:else}
 							<div class="dep-list">
 								{#each blockedBy as d}
+									{@const row = dependencyRow(d)}
 									<div class="dep-row" class:is-resolved={d.resolved}>
-										<a class="dep-link" href="/board/{d.boardId}?card={d.cardId}" title={d.title}>
-											<span class="dep-id">#{d.cardId}</span>
+										<a class="dep-link" href={row.href} title={d.title}>
+											<span class="dep-id">{row.label}</span>
 											<span class="dep-title">{d.title}</span>
-											<span class="dep-where">{#if d.boardId !== boardId}{d.boardName} / {/if}{d.columnName}</span>
+											<!-- A withheld row, on a board the caller cannot open, has no link and no board or column (card 2129). -->
+											{#if !d.withheld}<span class="dep-where">{#if d.boardId !== boardId}{d.boardName} / {/if}{d.columnName}</span>{/if}
 										</a>
-										<button class="dep-remove" title="Remove this dependency" onclick={() => removeDependency(d.cardId, 'blocked-by')}>✕</button>
+										<button class="dep-remove" title="Remove this dependency" onclick={() => removeDependency(d, 'blocked-by')}>✕</button>
 									</div>
 								{/each}
 							</div>
@@ -1515,13 +1762,14 @@
 						{:else}
 							<div class="dep-list">
 								{#each blocks as d}
+									{@const row = dependencyRow(d)}
 									<div class="dep-row" class:is-resolved={d.resolved}>
-										<a class="dep-link" href="/board/{d.boardId}?card={d.cardId}" title={d.title}>
-											<span class="dep-id">#{d.cardId}</span>
+										<a class="dep-link" href={row.href} title={d.title}>
+											<span class="dep-id">{row.label}</span>
 											<span class="dep-title">{d.title}</span>
-											<span class="dep-where">{#if d.boardId !== boardId}{d.boardName} / {/if}{d.columnName}</span>
+											{#if !d.withheld}<span class="dep-where">{#if d.boardId !== boardId}{d.boardName} / {/if}{d.columnName}</span>{/if}
 										</a>
-										<button class="dep-remove" title="Remove this dependency" onclick={() => removeDependency(d.cardId, 'blocks')}>✕</button>
+										<button class="dep-remove" title="Remove this dependency" onclick={() => removeDependency(d, 'blocks')}>✕</button>
 									</div>
 								{/each}
 							</div>
@@ -1559,7 +1807,7 @@
 						{/if}
 						{#if onCreateSubBoard}
 							<div class="subboard-create-row">
-								<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." bind:value={newSubBoardName} onkeydown={(e) => e.key === 'Enter' && newSubBoardName.trim() && onCreateSubBoard!(newSubBoardName.trim())} />
+								<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." maxlength="200" bind:value={newSubBoardName} onkeydown={(e) => e.key === 'Enter' && newSubBoardName.trim() && onCreateSubBoard!(newSubBoardName.trim())} />
 								<button class="btn-ghost subboard-add-btn" onclick={() => { if (newSubBoardName.trim()) onCreateSubBoard!(newSubBoardName.trim()); }} disabled={!newSubBoardName.trim()}>+ Create</button>
 							</div>
 						{/if}
@@ -1589,36 +1837,37 @@
 							</div>
 						{/if}
 						<div class="subboard-create-row">
-							<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." bind:value={newPendingSubBoardName} onkeydown={(e) => { if (e.key === 'Enter' && newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} />
+							<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." maxlength="200" bind:value={newPendingSubBoardName} onkeydown={(e) => { if (e.key === 'Enter' && newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} />
 							<button class="btn-ghost subboard-add-btn" onclick={() => { if (newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} disabled={!newPendingSubBoardName.trim()}>+ Add</button>
 						</div>
 					{/if}
 				</div>
 
-				{#if labels.length > 0}
+				<!-- Labels and a cover are put on a saved card: a new one has no id to put them on yet. -->
+				{#if card}
 				<div class="form-group">
 					<label>Labels</label>
-					<div class="labels-picker">
-						{#each labels as label}
-							<button class="label-toggle" class:active={cardLabelIds.includes(label.id)} style="--lc: {label.color}" onclick={() => toggleLabel(label.id)}>{label.name}</button>
-						{/each}
-					</div>
+					<LabelPicker cardId={card.id} {boardId} {labels} bind:selected={cardLabelIds} />
 				</div>
-				{/if}
 
 				<div class="form-group">
 					<label>Cover</label>
 					<div class="cover-picker">
 						<button class="cover-swatch cover-swatch-none" class:active={!coverUrl} onclick={clearCover} title="No cover" type="button"></button>
-						{#each coverPresets as preset}
+						{#each COVER_PRESETS as preset}
 							<button class="cover-swatch" class:active={coverUrl === preset} style="background: {preset}" onclick={() => setCover(preset)} title="Set cover" type="button"></button>
 						{/each}
 						<label class="color-custom-wrapper">
 							<input type="color" value={coverUrl || '#6366f1'} onchange={(e) => setCover((e.target as HTMLInputElement).value)} class="color-native-input" />
-							<span class="cover-swatch custom" style="background: {coverUrl || 'var(--bg-elevated)'}">✎</span>
+							{#if isCoverValue(coverUrl)}
+								<span class="cover-swatch custom" style="background: {coverUrl}">✎</span>
+							{:else}
+								<span class="cover-swatch custom" style="background: var(--bg-elevated)">✎</span>
+							{/if}
 						</label>
 					</div>
 				</div>
+				{/if}
 			</div>
 			{/if}
 		</div>
@@ -1635,12 +1884,12 @@
 		<div class="modal-footer">
 			<div class="footer-left">
 				{#if card}
-					<button class="template-btn" onclick={() => { showSaveTemplate = true; templateName = title; }} type="button">
+					<button class="template-btn" onclick={() => { showSaveTemplate = true; templateName = title.slice(0, 200); templateError = ''; }} type="button">
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
 						Save as Template
 					</button>
 				{:else}
-					<button class="template-btn" onclick={() => { showTemplatePicker = true; loadTemplates(); }} type="button">
+					<button class="template-btn" onclick={() => { showTemplatePicker = true; templateError = ''; loadTemplates(); }} type="button">
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
 						From template
 					</button>
@@ -1648,7 +1897,7 @@
 				{#if onDelete}
 					<button class="btn-danger" onclick={onDelete}>
 						<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-						Delete
+						Archive
 					</button>
 				{/if}
 			</div>
@@ -1699,6 +1948,9 @@
 				<label for="tmpl-name">Template Name</label>
 				<input id="tmpl-name" type="text" bind:value={templateName} placeholder="e.g. Bug Report, Feature Request..." onkeydown={(e) => e.key === 'Enter' && saveAsTemplate()} autofocus />
 			</div>
+			{#if templateError}
+				<div class="dep-error" role="alert">{templateError}</div>
+			{/if}
 			<div class="template-actions">
 				<button class="btn-ghost" onclick={() => showSaveTemplate = false}>Cancel</button>
 				<button class="btn-primary" onclick={saveAsTemplate} disabled={!templateName.trim() || templateSaving}>
@@ -1716,6 +1968,9 @@
 	<div class="template-overlay" onclick={() => showTemplatePicker = false}>
 		<div class="template-dialog" onclick={(e) => e.stopPropagation()}>
 			<h3>📋 Create from Template</h3>
+			{#if templateError}
+				<div class="dep-error" role="alert">{templateError}</div>
+			{/if}
 			{#if templates.length === 0}
 				<p class="template-empty">No templates yet. Save a card as a template first.</p>
 			{:else}
@@ -2218,6 +2473,22 @@
 		background: rgba(244, 63, 94, 0.1); color: var(--accent-rose);
 		border: 1px solid rgba(244, 63, 94, 0.25); border-radius: var(--radius-sm);
 	}
+	/*
+	 * A change the window made that was not saved: it stays until closed, at
+	 * the top of the window however far it is scrolled. Its tint is laid on
+	 * the window's own colour, so what scrolls under it does not show through.
+	 */
+	.window-error {
+		display: flex; align-items: flex-start; gap: 8px;
+		position: sticky; top: 0; z-index: 1;
+		background: linear-gradient(rgba(244, 63, 94, 0.1), rgba(244, 63, 94, 0.1)), var(--bg-surface);
+	}
+	.window-error span { flex: 1; }
+	.window-error-close {
+		background: none; border: none; cursor: pointer; padding: 0 2px;
+		color: inherit; font-size: 0.7rem; opacity: 0.7;
+	}
+	.window-error-close:hover { opacity: 1; }
 
 	.subboard-list {
 		display: flex;
@@ -2360,19 +2631,6 @@
 	}
 	.pending-remove { padding: 2px !important; opacity: 0.5; }
 	.pending-remove:hover { opacity: 1; }
-
-	/* Labels picker */
-	.labels-section { margin-bottom: var(--space-md); }
-	.labels-section label { display: block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); margin-bottom: var(--space-xs); }
-	.labels-picker { display: flex; flex-wrap: wrap; gap: 4px; }
-	.label-toggle {
-		padding: 3px 10px; border-radius: var(--radius-full);
-		font-size: 0.7rem; font-weight: 600; cursor: pointer;
-		border: 1.5px solid var(--lc); color: var(--lc);
-		background: transparent; transition: all 0.15s;
-	}
-	.label-toggle:hover { background: color-mix(in srgb, var(--lc) 10%, transparent); }
-	.label-toggle.active { background: var(--lc); color: white; }
 
 	/* Description preview */
 	.desc-header { display: flex; align-items: center; justify-content: space-between; }

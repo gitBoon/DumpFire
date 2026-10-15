@@ -1,5 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { buildActivityReport } from '$lib/server/activity-report';
+import { isAdmin } from '$lib/server/board-access';
+import { pathId, readQueryCount, readQueryDate, readQueryId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
@@ -8,11 +10,15 @@ import type { RequestHandler } from './$types';
  * Query parameters:
  *   ?userId=N            Report on one person's activity. Omit for everyone.
  *   ?from=ISO&to=ISO     Window. Bare dates are whole days, `to` inclusive.
- *                        Defaults to the last 30 days.
+ *                        Defaults to the last 30 days. Each is a date or a
+ *                        timestamp (`400 from is not a date`); a timestamp
+ *                        with an offset, or no zone, is read in UTC.
  *   ?boardIds=1,2,3      Restrict to these boards. Omit for every board the
- *                        caller can see.
+ *                        caller can see. Each is an id.
  *   ?include=subtasks,comments   Opt in to per-card detail.
  *   ?commentLimit=N      Most recent N comments per card (default 3, max 20).
+ *                        0 gives each card an empty `comments` list; a
+ *                        negative number, or one that is not whole, is a 400.
  *
  * Boards the caller cannot view are excluded, and the count of them is reported
  * in `meta.boardsExcludedForAccess` rather than silently dropped — a report with
@@ -21,32 +27,34 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const userIdParam = url.searchParams.get('userId');
-	const userId = userIdParam ? Number(userIdParam) : null;
-	if (userIdParam && !Number.isInteger(userId)) throw error(400, 'userId must be an integer');
+	const userId = readQueryId(url.searchParams.get('userId'), 'user', 'userId must be an integer') ?? null;
 
 	// Reporting on someone else is an admin act: these payloads carry every card
 	// title and comment that person touched.
-	if (userId && userId !== locals.user.id && locals.user.role !== 'admin') {
+	// isAdmin, not `role !== 'admin'`: the bare comparison locked superadmin out.
+	if (userId && userId !== locals.user.id && !isAdmin(locals.user)) {
 		throw error(403, 'Only an admin can report on another user');
 	}
 
-	const to = url.searchParams.get('to') || new Date().toISOString();
+	const to = readQueryDate(url.searchParams.get('to'), 'to') ?? new Date().toISOString();
 	const from =
-		url.searchParams.get('from') ||
+		readQueryDate(url.searchParams.get('from'), 'from') ??
 		new Date(Date.now() - 30 * 86_400_000).toISOString();
 
-	if (Date.parse(normalise(from)) > Date.parse(normalise(to))) {
+	if (Date.parse(normalise(from, 'start')) > Date.parse(normalise(to, 'end'))) {
 		throw error(400, '`from` is after `to`');
 	}
 
 	const boardIdsParam = url.searchParams.get('boardIds');
 	let boardIds: number[] | null = null;
 	if (boardIdsParam) {
+		// Each an id, as an id in the path is read. One that was not was left out,
+		// so a report asked for of board `2.5` was a report of the others.
 		boardIds = boardIdsParam
 			.split(',')
-			.map((s) => Number(s.trim()))
-			.filter((n) => Number.isInteger(n) && n > 0);
+			.map((s) => s.trim())
+			.filter((s) => s !== '')
+			.map((s) => pathId(s, 'board', 'boardIds must be a comma-separated list of ids'));
 		if (boardIds.length === 0) throw error(400, 'boardIds must be a comma-separated list of ids');
 	}
 
@@ -58,7 +66,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	// Capped rather than rejected: a caller asking for 500 comments a card wants
 	// as much context as possible, and silently returning fewer is kinder than a
 	// 400 — but the cap is stated in the docs so the truncation is expected.
-	const commentLimit = Math.min(Math.max(Number(url.searchParams.get('commentLimit')) || 3, 0), 20);
+	// 0 is no comments, where it was read as 3, and a negative number a 400.
+	const commentLimit = readQueryCount(url.searchParams.get('commentLimit'), 'commentLimit', { fallback: 3, max: 20 });
 
 	const report = buildActivityReport({
 		actor: locals.user,
@@ -74,7 +83,14 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	return json(report);
 };
 
-/** Accept a bare date or a full ISO timestamp when sanity-checking the window. */
-function normalise(value: string): string {
-	return /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00.000Z` : value;
+/**
+ * Accept a bare date or a full ISO timestamp when sanity-checking the window.
+ * A bare date is a whole day, as the report reads it: its start as the lower
+ * bound, and its end as the upper one. A bare `to` was read as its start, so
+ * `from=2026-10-14T09:00:00Z&to=2026-10-14`, which is the rest of that day,
+ * was refused as `from` after `to` (card 2117).
+ */
+function normalise(value: string, bound: 'start' | 'end'): string {
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+	return bound === 'start' ? `${value}T00:00:00.000Z` : `${value}T23:59:59.999Z`;
 }

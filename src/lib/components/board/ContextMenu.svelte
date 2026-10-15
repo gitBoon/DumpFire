@@ -2,7 +2,7 @@
   ContextMenu.svelte — Right-click context menu for Kanban cards.
 
   Provides quick actions: move to column, change priority, pin/unpin,
-  duplicate, create sub-board, navigate to sub-boards, and delete.
+  duplicate, create sub-board, navigate to sub-boards, and archive.
   Positioned at the mouse cursor location.
 -->
 <script lang="ts">
@@ -20,7 +20,7 @@
    * @prop onTogglePin — Callback to pin/unpin the card
    * @prop onDuplicate — Callback to duplicate the card
    * @prop onCreateSubBoard — Callback to create a sub-board for the card
-   * @prop onDelete — Callback to delete the card
+   * @prop onDelete — Callback to archive the card
    */
   let {
     card,
@@ -93,8 +93,8 @@
     {/each}
   {/if}
   <div class="ctx-divider"></div>
-  <!-- Delete -->
-  <button class="ctx-item ctx-danger" onclick={() => { onDelete(card.id); onClose(); }}>🗑️ Delete</button>
+  <!-- Archive: the board's onDelete archives the card, and asks first -->
+  <button class="ctx-item ctx-danger" onclick={() => { onDelete(card.id); onClose(); }}>🗄️ Archive</button>
 </div>
 
 <style>

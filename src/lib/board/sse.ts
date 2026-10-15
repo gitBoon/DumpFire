@@ -11,7 +11,12 @@
  * the gap — `add-tokens` run from a terminal while the laptop was asleep, or
  * an idle proxy closing the stream — stays stale on screen indefinitely, and
  * looks exactly like work that cost nothing.
+ *
+ * Opening it again after a failure, and how long to wait first, is
+ * $lib/live-stream.ts's: it backs off, and does not open again a stream that
+ * was refused because the session has ended.
  */
+import { keepStreamOpen } from '$lib/live-stream';
 
 export interface SSECallbacks {
 	/** Called when the server pushes an 'update' event (data changed). */
@@ -31,20 +36,7 @@ export interface SSECallbacks {
  * @returns A cleanup function to close the connection.
  */
 export function connectSSE(boardId: number, callbacks: SSECallbacks): () => void {
-	let eventSource: EventSource | null = null;
-	let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-	// Whether a stream has been established before. The first open is the page
-	// loading its own data and needs no re-read; every later one follows a gap.
-	let hasConnected = false;
-
-	function connect() {
-		eventSource = new EventSource(`/api/boards/${boardId}/events`);
-
-		eventSource.onopen = () => {
-			if (hasConnected) callbacks.onUpdate();
-			hasConnected = true;
-		};
-
+	function listen(eventSource: EventSource) {
 		eventSource.addEventListener('update', () => {
 			callbacks.onUpdate();
 		});
@@ -71,12 +63,6 @@ export function connectSSE(boardId: number, callbacks: SSECallbacks): () => void
 		eventSource.addEventListener('xp-update', () => {
 			callbacks.onXpUpdate();
 		});
-
-		eventSource.onerror = () => {
-			if (eventSource) eventSource.close();
-			// Auto-reconnect after 3 seconds
-			reconnectTimeout = setTimeout(connect, 3000);
-		};
 	}
 
 	/**
@@ -90,15 +76,12 @@ export function connectSSE(boardId: number, callbacks: SSECallbacks): () => void
 	}
 	document.addEventListener('visibilitychange', onVisibilityChange);
 
-	connect();
+	// Every open after the first follows a gap, and the board is re-read.
+	const close = keepStreamOpen(`/api/boards/${boardId}/events`, listen, () => callbacks.onUpdate());
 
 	/** Cleanup: close the connection and cancel any pending reconnect. */
 	return () => {
 		document.removeEventListener('visibilitychange', onVisibilityChange);
-		if (reconnectTimeout) clearTimeout(reconnectTimeout);
-		if (eventSource) {
-			eventSource.close();
-			eventSource = null;
-		}
+		close();
 	};
 }

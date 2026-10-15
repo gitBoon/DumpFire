@@ -21,13 +21,22 @@ import {
 	ensureSpace,
 	formatDate
 } from './reports';
-import type { MilestoneSummary, MilestoneNode, PlanNode } from './planning';
+import type { MilestoneSummary, MilestoneNode } from './planning';
 
 /** A4 portrait with the same margins the board reports use. */
 const MARGIN = 40;
 
+/**
+ * What a piece of work is called beside its title. A withheld subtask, of a
+ * card on a board the reader cannot open, has no card given (card 2129): it
+ * was "step of #?".
+ */
 const label = (n: { kind: string; id: number; parentCardId?: number }) =>
-	n.kind === 'subtask' ? `step of #${n.parentCardId ?? '?'}` : `#${n.id}`;
+	n.kind !== 'subtask'
+		? `#${n.id}`
+		: n.parentCardId === undefined
+			? 'a step of a card on a board you cannot open'
+			: `step of #${n.parentCardId}`;
 
 const stateOf = (n: MilestoneNode): 'Done' | 'Blocked' | 'Startable' =>
 	n.isComplete ? 'Done' : n.openBlockers.length > 0 ? 'Blocked' : 'Startable';
@@ -36,8 +45,8 @@ const stateColour = (s: string) =>
 	s === 'Done' ? C.emerald : s === 'Blocked' ? C.amber : C.blue;
 
 /** Wrap-aware text height, so a row can be sized before it is drawn. */
-function heightOf(doc: PDFKit.PDFDocument, text: string, width: number, size: number): number {
-	doc.font('Helvetica').fontSize(size);
+function heightOf(doc: PDFKit.PDFDocument, text: string, width: number, size: number, font = 'Helvetica'): number {
+	doc.font(font).fontSize(size);
 	return doc.heightOfString(text || ' ', { width });
 }
 
@@ -61,10 +70,6 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 
 		const pw = doc.page.width - MARGIN * 2;
 		const mx = MARGIN;
-
-		const byKey = new Map(summary.graph.nodes.map((n) => [`${n.kind}:${n.id}`, n]));
-		const titleOf = (n: { kind: string; id: number }) =>
-			stripTag(byKey.get(`${n.kind}:${n.id}`)?.title ?? '');
 
 		// ─── Header ──────────────────────────────────────────────────────────
 		doc.rect(0, 0, doc.page.width, 80).fill(C.headerBg);
@@ -149,7 +154,8 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 		} else {
 			summary.criticalPathNodes.forEach((n, i) => {
 				const title = stripTag(n.title);
-				const h = Math.max(20, heightOf(doc, title, pw - 74, 8.5) + 10);
+				// Tall enough for the label too, which for a withheld step runs to several lines.
+				const h = Math.max(20, heightOf(doc, title, pw - 74, 8.5) + 10, heightOf(doc, label(n), 40, 7, 'Helvetica-Bold') + 10);
 				y = ensureSpace(doc, h + 4, y);
 
 				doc.roundedRect(mx, y, pw, h, 3).fill(i % 2 === 0 ? C.rowAlt : C.white);
@@ -188,7 +194,7 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 		} else {
 			for (const b of summary.blocked) {
 				const title = stripTag(b.card.title);
-				const h = Math.max(18, heightOf(doc, title, pw - 60, 8.5) + 8);
+				const h = Math.max(18, heightOf(doc, title, pw - 60, 8.5) + 8, heightOf(doc, label(b.card), 46, 7, 'Helvetica-Bold') + 6);
 				y = ensureSpace(doc, h + b.blockers.length * 13 + 8, y);
 
 				doc.font('Helvetica-Bold').fontSize(7).fillColor(C.textMuted)
@@ -242,7 +248,7 @@ function drawWorkRows(
 	nodes.forEach((n, i) => {
 		const title = stripTag(n.title);
 		const titleW = pw - 60 - (showUnblocks ? 74 : 0);
-		const h = Math.max(17, heightOf(doc, title, titleW, 8.5) + 7);
+		const h = Math.max(17, heightOf(doc, title, titleW, 8.5) + 7, heightOf(doc, label(n), 46, 7, 'Helvetica-Bold') + 7);
 		y = ensureSpace(doc, h + 2, y);
 
 		if (i % 2 === 0) doc.rect(mx, y, pw, h).fill(C.rowAlt);
@@ -347,7 +353,7 @@ function drawGraphOrSayWhyNot(
 			.strokeColor(n.onCriticalPath ? C.red : C.border)
 			.stroke();
 		doc.font('Helvetica-Bold').fontSize(5.6).fillColor(C.textMuted)
-			.text(n.external ? `${label(n)} · outside` : label(n), pt.x + 5, pt.y + 4, { width: NW - 10 });
+			.text(n.external ? `${label(n)} · outside` : label(n), pt.x + 5, pt.y + 4, { width: NW - 10, height: 7, ellipsis: true });
 		doc.font('Helvetica').fontSize(6.4).fillColor(C.heading)
 			.text(stripTag(n.title), pt.x + 5, pt.y + 12, { width: NW - 10, height: 11, ellipsis: true });
 	}
@@ -416,7 +422,8 @@ function drawFullTable(
 		doc.font('Helvetica').fontSize(7.5).fillColor(C.heading)
 			.text(title, mx + colId + 6 + (indent ? 12 : 0), y + 3.5, { width: tw });
 		doc.font('Helvetica').fontSize(6.8).fillColor(C.textMuted)
-			.text(n.kind === 'subtask' ? '' : `${n.boardName} · ${n.columnTitle}`,
+			// A withheld card has a board name in words and no column: no "· " after it.
+			.text(n.kind === 'subtask' ? '' : n.columnTitle ? `${n.boardName} · ${n.columnTitle}` : n.boardName,
 				mx + colId + colTitle + 10, y + 4, { width: colBoard, ellipsis: true });
 		doc.font('Helvetica-Bold').fontSize(6.5).fillColor(stateColour(state))
 			.text(state, mx + colId + colTitle + colBoard + 12, y + 4, { width: colState });

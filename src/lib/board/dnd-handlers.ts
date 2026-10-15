@@ -30,7 +30,9 @@ import {
 export type DndFinalizeResult =
 	| { action: 'blocked'; blockedState: BlockedState }
 	| { action: 'on-hold'; onHoldState: OnHoldState; updatedColumns: ColumnType[] }
-	| { action: 'committed'; movedCards: { card: CardType; fromName: string; toName: string; isComplete: boolean }[]; updatedColumns: ColumnType[] };
+	| { action: 'committed'; movedCards: { card: CardType; fromName: string; toName: string; isComplete: boolean }[]; updatedColumns: ColumnType[] }
+	/** The server did not take the move, in its own words: the page puts the columns back and says so. */
+	| { action: 'refused'; message: string };
 
 /**
  * Processes a card DnD finalize event with all the complex business logic.
@@ -62,9 +64,12 @@ export async function handleCardDndFinalize(
 			if (card.columnId !== columnId && isCardBlocked(card)) {
 				const reason = hasIncompleteSubBoard(card) ? 'subboard' as const : 'subtasks' as const;
 				const count = reason === 'subboard' ? subBoardIncompleteCount(card) : incompleteCount(card);
+				// The sub-board the modal offers to open: one on the card with open
+				// cards. None when only sub-boards the caller cannot open hold it back.
+				const subBoardId = reason === 'subboard' ? (card.subBoards.find((sb) => sb.done < sb.total)?.id ?? null) : null;
 				return {
 					action: 'blocked',
-					blockedState: { show: true, card, incomplete: count, reason }
+					blockedState: { show: true, card, incomplete: count, reason, subBoardId }
 				};
 			}
 		}
@@ -122,7 +127,16 @@ export async function handleCardDndFinalize(
 		}
 	}
 
-	await api.reorderCards(updates, boardId, userName, userEmoji);
+	// The answer is read: a move the server refused (a card it will not
+	// complete, a board the caller may not edit) was shown as done, with its
+	// sound, and was put back by the next reload without a word.
+	let res: Response;
+	try {
+		res = await api.reorderCards(updates, boardId, userName, userEmoji);
+	} catch {
+		return { action: 'refused', message: 'No answer from the server. The move may not have been saved.' };
+	}
+	if (!res.ok) return { action: 'refused', message: await api.failureMessage(res, 'The move was not saved.') };
 
 	const movedEntries = movedCards.map(card => {
 		const fromCol = columns.find(c => c.id === card.columnId);

@@ -6,6 +6,7 @@
   and cycle time / lead time metrics.
 -->
 <script lang="ts">
+  import { isCompleteColumnTitle } from '$lib/column-role';
   import type { ColumnType, CategoryType, CardType } from '$lib/types';
   import { getDueStatus } from '$lib/utils/date-utils';
   import { onMount } from 'svelte';
@@ -42,7 +43,7 @@
   /** Cards in columns named "Complete" or "Done". */
   const completedCards = $derived(
     boardColumns
-      .filter(c => c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done')
+      .filter(c => isCompleteColumnTitle(c.title))
       .flatMap(c => c.cards).length
   );
 

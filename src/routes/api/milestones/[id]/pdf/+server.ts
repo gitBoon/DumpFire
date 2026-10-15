@@ -6,13 +6,13 @@ import { error } from '@sveltejs/kit';
 import { requireMilestone, MilestoneError } from '$lib/server/milestones';
 import { getMilestoneSummary } from '$lib/server/planning';
 import { generateMilestonePdf, milestonePdfFilename } from '$lib/server/milestone-report';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const id = Number(params.id);
-	if (isNaN(id)) throw error(400, 'Invalid milestone ID');
+	const id = pathId(params.id, 'milestone');
 
 	// Exporting a plan is reading it, so it is governed by the same rule.
 	try {
@@ -22,7 +22,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		throw e;
 	}
 
-	const summary = getMilestoneSummary(id);
+	// The caller's own view of the plan: a document they take away holds no
+	// more than the page shows them (card 2129).
+	const summary = getMilestoneSummary(id, locals.user);
 	if (!summary) throw error(404, 'Milestone not found');
 
 	const pdf = await generateMilestonePdf(summary);

@@ -2,6 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import { getCardTokenTotal, getCardTokenEntries } from '$lib/server/tokens';
 import { getCardBoardId } from '$lib/server/work-access';
 import { canViewBoard } from '$lib/server/board-access';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
@@ -18,8 +19,7 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const cardId = Number(params.id);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	const cardId = pathId(params.id, 'card');
 
 	const boardId = getCardBoardId(cardId);
 	if (boardId === null) throw error(404, 'Card not found');

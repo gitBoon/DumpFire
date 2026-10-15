@@ -7,6 +7,7 @@
  */
 
 import PDFDocument from 'pdfkit';
+import { error } from '@sveltejs/kit';
 import { db } from './db';
 import {
 	boards, columns, cards, cardAssignees, users, subtasks,
@@ -14,9 +15,12 @@ import {
 } from './db/schema';
 import { eq, inArray, isNull, isNotNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds, canViewBoard } from './board-access';
-import { sendEmailWithAttachment } from './email';
+import { completeColumnIds, isCompleteColumnTitle } from '$lib/column-role';
+import { escapeHtml } from '$lib/escape-html';
+import { isSmtpConfigured, sendEmailWithAttachment } from './email';
 import type { SessionUser } from './auth';
 import { createLogger } from './logger';
+import { readId, readQueryDate, readText, type RequestBody } from './request-body';
 
 const log = createLogger('REPORTS');
 
@@ -40,7 +44,52 @@ export const REPORT_STATUS_FILTER_LABELS: Record<ReportStatusFilter, string> = {
 	todo: 'To Do only'
 };
 
-/** Coerce an untrusted value (request body, DB column) to a valid filter, defaulting to 'all'. */
+/** What a report or a schedule covers: one board, a grouping of boards, or every board. */
+export const REPORT_SCOPES = ['board', 'category', 'all'] as const;
+/** How much a report says of each task. */
+export const REPORT_DETAIL_LEVELS = ['summary', 'detailed'] as const;
+
+/**
+ * One end of a report's period, from a request body, as it was sent: a date
+ * (`2026-10-01`) or a timestamp, and one written with an offset or with no
+ * zone in UTC, as `readQueryDate` reads one. `missing` is the route's text
+ * for a period not sent. Any value was taken, and one that was not text was
+ * a 500 when the PDF was drawn (card 2117).
+ */
+export function readReportPeriod(body: RequestBody, name: 'periodStart' | 'periodEnd', missing: string): string {
+	const sent = readText(body, name, { required: true, min: 1, says: { missing, empty: missing } });
+	return readQueryDate(sent, name) ?? sent;
+}
+
+/**
+ * A report's period, from a request body: each end as `readReportPeriod` reads
+ * it, and `periodStart` not after `periodEnd`, or `400 periodStart is after
+ * periodEnd`. They are compared as the activity report compares its window
+ * (`normalise()` in v1/reports/activity): a bare date is a whole day, its
+ * start for `periodStart` and its end for `periodEnd`, so one day's report,
+ * from a date to the same date, is a day. A period that ended before it began
+ * was drawn as a report of nothing.
+ */
+export function readReportWindow(body: RequestBody, missing: string): { periodStart: string; periodEnd: string } {
+	const periodStart = readReportPeriod(body, 'periodStart', missing);
+	const periodEnd = readReportPeriod(body, 'periodEnd', missing);
+	const bound = (value: string, end: boolean) =>
+		/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T${end ? '23:59:59.999' : '00:00:00.000'}Z` : value;
+	if (Date.parse(bound(periodStart, false)) > Date.parse(bound(periodEnd, true))) error(400, 'periodStart is after periodEnd');
+	return { periodStart, periodEnd };
+}
+
+/**
+ * The person a report is narrowed to, from a request body: `assigneeUserId`,
+ * or `userId` as it was also read, an id or null for everyone. Text that was
+ * not a number, `"all"` and `""` were taken for everyone.
+ */
+export function readReportAssignee(body: RequestBody): number | null {
+	const says = 'assigneeUserId must be a user id';
+	return readId(body, 'assigneeUserId', { nullable: true, says }) ?? readId(body, 'userId', { nullable: true, says }) ?? null;
+}
+
+/** Coerce an untrusted value (DB column) to a valid filter, defaulting to 'all'. */
 export function parseStatusFilter(raw: unknown): ReportStatusFilter {
 	return typeof raw === 'string' && (REPORT_STATUS_FILTERS as readonly string[]).includes(raw)
 		? (raw as ReportStatusFilter)
@@ -142,7 +191,6 @@ export interface ReportData {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const DONE_COLUMN_TITLES = ['complete', 'done'];
 const TODO_COLUMN_TITLES = ['to do', 'todo', 'to-do', 'backlog', 'inbox', 'not started', 'new', 'planned', 'ideas', 'idea', 'later'];
 
 /**
@@ -152,7 +200,7 @@ const TODO_COLUMN_TITLES = ['to do', 'todo', 'to-do', 'backlog', 'inbox', 'not s
  */
 function classifyColumnTitle(title: string): CardStatus {
 	const t = title.toLowerCase().trim();
-	if (DONE_COLUMN_TITLES.includes(t)) return 'completed';
+	if (isCompleteColumnTitle(title)) return 'completed';
 	if (TODO_COLUMN_TITLES.includes(t)) return 'todo';
 	return 'in_progress';
 }
@@ -162,11 +210,7 @@ function getDoneColumnIds(boardIds: number[]): Set<number> {
 	const allCols = db.select().from(columns)
 		.where(inArray(columns.boardId, boardIds))
 		.all();
-	return new Set(
-		allCols
-			.filter(c => DONE_COLUMN_TITLES.includes(c.title.toLowerCase().trim()))
-			.map(c => c.id)
-	);
+	return completeColumnIds(allCols);
 }
 
 interface ColumnInfo { title: string; boardId: number; status: CardStatus }
@@ -1409,8 +1453,23 @@ function getPeriodForSchedule(schedule: typeof reportSchedules.$inferSelect, now
 	return { start: start.toISOString(), end };
 }
 
-async function checkAndRunScheduledReports(): Promise<void> {
-	const now = new Date();
+/**
+ * Run each enabled schedule that is due at `now`: build its report, mail it,
+ * and give it its next run. The timer of `initReportScheduler` calls it every
+ * minute, through `runDueReportSchedulesOnce`, which skips a tick while the
+ * last run is still going; it is exported for the tests, where that timer is
+ * off (`SCHEDULERS=off`).
+ *
+ * The system log says what happened (card 2113). Each send's result is
+ * counted: one WARN line when every recipient was sent the report, or one
+ * ERROR line naming each address it did not reach. It used to say "emailed
+ * to N recipient(s)" whatever the mail server answered. A schedule that
+ * produces no report, because what it covers is gone or its owner can no
+ * longer read it, says so in a WARN line, where it used to say nothing. Either
+ * way the schedule moves on to its next run: a retry would mail the report a
+ * second time to everyone it did reach.
+ */
+export async function runDueReportSchedules(now: Date): Promise<void> {
 	const nowStr = now.toISOString();
 
 	const activeSchedules = db.select().from(reportSchedules)
@@ -1457,14 +1516,19 @@ async function checkAndRunScheduledReports(): Promise<void> {
 					.filter(e => e.length > 0);
 
 				if (recipients.length > 0) {
+					const notReached: string[] = [];
 					for (const email of recipients) {
+						let sent = false;
 						try {
-							await sendEmailWithAttachment(
+							// The schedule's name is its owner's typing, mailed to the
+							// addresses they listed: escaped where it is put (card
+							// 2149). The subject is plain text and keeps it as typed.
+							sent = await sendEmailWithAttachment(
 								email,
 								`DumpFire Report: ${reportName}`,
 								`<h2>DumpFire Report</h2>
-								<p><strong>${reportName}</strong></p>
-								<p>Period: ${periodLabel}</p>
+								<p><strong>${escapeHtml(reportName)}</strong></p>
+								<p>Period: ${escapeHtml(periodLabel)}</p>
 								<p>Please find the attached PDF report.</p>
 								<p style="color: #8b8fa3; font-size: 12px;">— DumpFire Automated Reports</p>`,
 								{
@@ -1476,11 +1540,36 @@ async function checkAndRunScheduledReports(): Promise<void> {
 						} catch (emailErr) {
 							log.error(`Failed to email report to ${email}`, emailErr);
 						}
+						if (!sent) notReached.push(email);
 					}
-					log.warn(`Scheduled report emailed: "${schedule.name}" to ${recipients.length} recipient(s)`);
+					const reached = recipients.length - notReached.length;
+					if (notReached.length === 0) {
+						log.warn(`Scheduled report emailed: "${schedule.name}" to ${reached} of ${recipients.length} recipient(s)`);
+					} else {
+						// With no mail set up, `email.ts` returns false and logs nothing.
+						const why = isSmtpConfigured()
+							? 'The mail server did not accept it: its reason is in the EMAIL line logged for each address'
+							: 'Mail is not set up on this server';
+						log.error(
+							`Scheduled report "${schedule.name}" was not emailed to ${notReached.join(', ')} (${reached} of ${recipients.length} recipient(s) reached). ${why}. It is not sent again before its next run.`
+						);
+					}
 				} else {
 					log.warn(`Scheduled report generated but no recipients configured: "${schedule.name}"`);
 				}
+			} else {
+				// This used to pass without a word, and the schedule moved on.
+				// `generateCategoryReport` is null for a grouping that is there
+				// too, when it holds no board or none its owner can read.
+				const what = schedule.scope === 'category' ? 'grouping' : 'board';
+				const why = schedule.scope === 'all'
+					? "a report on every board is for an administrator, and the schedule's owner is not one"
+					: !schedule.scopeId
+						? `the schedule has no ${what}`
+						: schedule.scope === 'category'
+							? `the grouping it covers (id ${schedule.scopeId}) is gone, holds no board, or holds none the schedule's owner can read`
+							: `the board it covers (id ${schedule.scopeId}) is gone, or the schedule's owner can no longer read it`;
+				log.warn(`Scheduled report "${schedule.name}" produced no report, so nothing was sent: ${why}`);
 			}
 
 			const nextRun = computeNextRunAt(schedule);
@@ -1492,6 +1581,32 @@ async function checkAndRunScheduledReports(): Promise<void> {
 		} catch (err) {
 			log.error(`Failed to run scheduled report "${schedule.name}"`, err);
 		}
+	}
+}
+
+/** True while a run of `runDueReportSchedulesOnce` is going. */
+let scheduleRunInFlight = false;
+
+/**
+ * One tick of the scheduler's timer: `runDueReportSchedules(now)`, unless the
+ * last tick's run is still going. Returns false when it skipped the tick.
+ *
+ * A run can take longer than the minute between ticks: about 35 s for each
+ * address a slow mail server holds up, and the PDF before that. A schedule's
+ * next run is written only once its mail has gone, so a tick that started
+ * while the last run was still sending found the same schedule due and sent
+ * its report a second time. A schedule that came due while the run was going
+ * is still due at the next tick that runs. The `finally` clears the flag when
+ * a run throws, so one failure does not stop the scheduler.
+ */
+export async function runDueReportSchedulesOnce(now: Date): Promise<boolean> {
+	if (scheduleRunInFlight) return false;
+	scheduleRunInFlight = true;
+	try {
+		await runDueReportSchedules(now);
+		return true;
+	} finally {
+		scheduleRunInFlight = false;
 	}
 }
 
@@ -1513,7 +1628,7 @@ export function initReportScheduler(): void {
 
 	reportTimer = setInterval(async () => {
 		try {
-			await checkAndRunScheduledReports();
+			await runDueReportSchedulesOnce(new Date());
 		} catch (err) {
 			log.error('Report scheduler error', err);
 		}

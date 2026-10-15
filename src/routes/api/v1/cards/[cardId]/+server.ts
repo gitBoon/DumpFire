@@ -3,10 +3,27 @@ import { db } from '$lib/server/db';
 import { cards, columns, subtasks, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
-import { getCardDependencies, removeWorkNodeEdges } from '$lib/server/planning';
+import { getCardDependencies } from '$lib/server/planning';
+import { inTransaction } from '$lib/server/db/transaction';
+import { archiveCard, deleteCard } from '$lib/server/deletes';
+import { restoreCard } from '$lib/server/card-restore';
 import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
-import { normaliseReportingFields, ReportingFieldError } from '$lib/server/reporting-fields';
+import { normaliseReportingFields } from '$lib/server/reporting-fields';
+import { setCardMilestone, takeCardOutOfMilestone, MilestoneError } from '$lib/server/milestones';
+import { PRIORITIES, requireCardCategory } from '$lib/server/card-fields';
+import {
+	pathId,
+	readBody,
+	readBoolean,
+	readChoice,
+	readColour,
+	readCover,
+	readDate,
+	readId,
+	readText
+} from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -21,8 +38,7 @@ function getCardBoardId(cardId: number): number | null {
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const cardId = Number(params.cardId);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	const cardId = pathId(params.cardId, 'card');
 
 	const boardId = getCardBoardId(cardId);
 	if (!boardId) throw error(404, 'Card not found');
@@ -63,8 +79,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		.get();
 
 	// Dependency state ships with the card so a planning caller never has to
-	// make a second request just to know whether this card is startable.
-	const deps = getCardDependencies(cardId);
+	// make a second request just to know whether this card is startable. An end
+	// on a board the key's user cannot open is withheld (card 2129).
+	const deps = getCardDependencies(cardId, locals.user);
 
 	return json({
 		...card,
@@ -79,83 +96,164 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		blockedBy: deps.blockedBy.map(d => ({
 			kind: d.kind, cardId: d.id, parentCardId: d.parentCardId ?? null,
 			title: d.title, boardId: d.boardId, boardName: d.boardName,
-			columnName: d.columnTitle, resolved: d.isComplete
+			columnName: d.columnTitle, resolved: d.isComplete, withheld: d.withheld
 		})),
 		blocks: deps.blocks.map(d => ({
 			kind: d.kind, cardId: d.id, parentCardId: d.parentCardId ?? null,
 			title: d.title, boardId: d.boardId, boardName: d.boardName,
-			columnName: d.columnTitle, resolved: d.isComplete
+			columnName: d.columnTitle, resolved: d.isComplete, withheld: d.withheld
 		}))
 	});
 };
 
-/** PUT /api/v1/cards/:cardId — Update card fields. */
+/**
+ * PUT /api/v1/cards/:cardId — Update card fields.
+ *
+ * The card is looked for and the caller checked first (404, then 403), then
+ * every field is read (400), then what the body names is looked for: the
+ * category (404) and the milestone. A value the card already holds, sent back
+ * unchanged, is accepted as it is, whatever the rules say of it (decision 8).
+ *
+ * `archivedAt: null` restores an archived card, which is how the tracking
+ * workflow restores one. Any other value is refused: a card is archived with
+ * `DELETE /cards/{cardId}`, which a timestamp sent here only pretended to do.
+ *
+ * A restore is recorded as one: `api:card_restored`, as the page's restore
+ * writes `card_restored` (card 2108, R2). It was `api:card_updated` naming
+ * `archivedAt`. The `api:card_updated` entry is written for the other fields,
+ * when there are any. An `archivedAt` that changes nothing, `null` on a card
+ * that is not archived or the stamp the card holds, is named in it as before.
+ */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const cardId = pathId(params.cardId, 'card');
+	const body = await readBody(request);
 
-	const cardId = Number(params.cardId);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	// One transaction: the card is read and the caller checked in the one that
+	// writes the milestone, the other fields and the activity entry, and all of
+	// them are saved or none. The card is read in here and not before the body
+	// was awaited: another request could have moved or deleted it in between.
+	const updated = inTransaction(() => {
+		const boardId = getCardBoardId(cardId);
+		if (!boardId) throw error(404, 'Card not found');
 
-	const boardId = getCardBoardId(cardId);
-	if (!boardId) throw error(404, 'Card not found');
+		if (!canEditBoard(user, boardId)) {
+			throw error(403, 'No edit access to this card\'s board');
+		}
+		const card = db.select().from(cards).where(eq(cards.id, cardId)).get()!;
 
-	if (!canEditBoard(locals.user, boardId)) {
-		throw error(403, 'No edit access to this card\'s board');
-	}
+		// Every field, read against its rule and the value the card holds.
+		const updateData: Partial<typeof cards.$inferInsert> = {};
+		const title = readText(body, 'title', {
+			trim: true,
+			min: 1,
+			max: 500,
+			keep: card.title,
+			says: { empty: 'title cannot be empty', invalid: 'Title too long (max 500 chars)' }
+		});
+		if (title !== undefined) updateData.title = title;
+		const description = readText(body, 'description', {
+			max: 50000,
+			keep: card.description,
+			says: { invalid: 'Description too long (max 50000 chars)' }
+		});
+		if (description !== undefined) updateData.description = description;
+		const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true, keep: card.priority });
+		if (priority !== undefined) updateData.priority = priority;
+		const colorTag = readColour(body, 'colorTag', { allowEmpty: true, keep: card.colorTag });
+		if (colorTag !== undefined) updateData.colorTag = colorTag;
+		const categoryId = readId(body, 'categoryId', { nullable: true, keep: card.categoryId });
+		if (categoryId !== undefined) updateData.categoryId = categoryId;
+		const dueDate = readDate(body, 'dueDate', { nullable: true, keep: card.dueDate });
+		if (dueDate !== undefined) updateData.dueDate = dueDate;
+		const onHoldNote = readText(body, 'onHoldNote', { max: 50000, keep: card.onHoldNote });
+		if (onHoldNote !== undefined) updateData.onHoldNote = onHoldNote;
+		const businessValue = readText(body, 'businessValue', { max: 10000, keep: card.businessValue });
+		if (businessValue !== undefined) updateData.businessValue = businessValue;
+		const pinned = readBoolean(body, 'pinned', { keep: card.pinned });
+		if (pinned !== undefined) updateData.pinned = pinned;
+		// A colour, one of the preset gradients, or null: it is drawn on the board
+		// for every viewer, so nothing else is taken (card 2010, decision 14).
+		const coverUrl = readCover(body, 'coverUrl', { nullable: true, keep: card.coverUrl });
+		if (coverUrl !== undefined) updateData.coverUrl = coverUrl;
+		// Reporting fields go through their own vocabularies, with their own 400.
+		// A rejected value that reported as "not recorded" would be
+		// indistinguishable from never having set one.
+		Object.assign(updateData, normaliseReportingFields(body));
 
-	const data = await request.json();
+		// `archivedAt` restores, and does nothing else (decision 12). The stamp
+		// the card already holds, sent back, changes nothing.
+		const restoring = 'archivedAt' in body && body.archivedAt === null;
+		if ('archivedAt' in body && !restoring && body.archivedAt !== card.archivedAt) {
+			throw error(400, 'archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}');
+		}
 
-	// Whitelist allowed fields
-	const updateData: Record<string, unknown> = {};
-	const allowed = ['title', 'description', 'priority', 'colorTag', 'categoryId', 'dueDate',
-		'onHoldNote', 'businessValue', 'pinned', 'coverUrl', 'archivedAt', 'milestoneId'];
-	for (const key of allowed) {
-		if (key in data) updateData[key] = data[key];
-	}
+		const milestoneId = readId(body, 'milestoneId', { nullable: true, keep: card.milestoneId });
+		const settingMilestone = milestoneId !== undefined;
+		if (Object.keys(updateData).length === 0 && !settingMilestone && !('archivedAt' in body)) {
+			throw error(400, 'No valid fields to update');
+		}
 
-	// Reporting fields go through their own vocabularies. An invalid value is a
-	// 400 rather than a silent drop: a rejected value that reported as "not
-	// recorded" would be indistinguishable from never having set one.
-	try {
-		Object.assign(updateData, normaliseReportingFields(data));
-	} catch (e) {
-		if (e instanceof ReportingFieldError) throw error(400, e.message);
-		throw e;
-	}
+		// What the body names, once every field is known to be sound: a
+		// category of the card's board or a shared one, and the milestone.
+		if (categoryId !== undefined && categoryId !== null && categoryId !== card.categoryId) {
+			requireCardCategory(categoryId, boardId);
+		}
 
-	if (Object.keys(updateData).length === 0) {
-		throw error(400, 'No valid fields to update');
-	}
+		// Restored before the milestone is set, which refuses an archived card:
+		// `archivedAt: null` with a `milestoneId` was refused as archived. A
+		// milestone refused rolls the restore back, and its entry, with
+		// everything else.
+		const restored = restoring && restoreCard(cardId, user, 'api')?.restored === true;
 
-	// Validate lengths
-	if (updateData.title && typeof updateData.title === 'string' && updateData.title.length > 500) {
-		throw error(400, 'Title too long (max 500 chars)');
-	}
-	if (updateData.description && typeof updateData.description === 'string' && updateData.description.length > 50000) {
-		throw error(400, 'Description too long (max 50000 chars)');
-	}
+		// A milestone is not a plain field. Joining one needs the caller to be able
+		// to see it, and a single-board milestone only takes that board's cards.
+		// Leaving one needs edit access to it, as joining does: R5's rule, the
+		// same on every route that takes a card out, and on a move from one
+		// milestone to another. The milestone the card is already in, sent back,
+		// changes nothing.
+		if (settingMilestone && milestoneId !== card.milestoneId) {
+			try {
+				if (milestoneId === null) takeCardOutOfMilestone(user, cardId);
+				else setCardMilestone(user, cardId, milestoneId);
+			} catch (e) {
+				if (e instanceof MilestoneError) throw error(e.status, e.message);
+				throw e;
+			}
+		}
 
-	updateData.updatedAt = new Date().toISOString();
+		updateData.updatedAt = new Date().toISOString();
 
-	const updated = db.update(cards)
-		.set(updateData)
-		.where(eq(cards.id, cardId))
-		.returning()
-		.get();
+		const updated = db.update(cards)
+			.set(updateData)
+			.where(eq(cards.id, cardId))
+			.returning()
+			.get();
 
-	if (!updated) throw error(404, 'Card not found');
+		if (!updated) throw error(404, 'Card not found');
 
-	emit(boardId, 'update', { type: 'card' });
+		emit(boardId, 'update', { type: 'card' });
 
-	const changedFields = Object.keys(updateData).filter(k => k !== 'updatedAt').join(', ');
-	logActivity({
-		boardId,
-		cardId,
-		userId: locals.user.id,
-		action: 'api:card_updated',
-		detail: `Updated fields: ${changedFields} on "${updated.title}"`,
-		userName: locals.user.username,
-		userEmoji: locals.user.emoji || '👤'
+		// A restore has its own entry, written by `restoreCard`, and is not
+		// named here as well.
+		const changedFields = [
+			...Object.keys(updateData).filter(k => k !== 'updatedAt'),
+			...('archivedAt' in body && !restored ? ['archivedAt'] : []),
+			...(settingMilestone ? ['milestoneId'] : [])
+		].join(', ');
+		if (changedFields) {
+			logActivity({
+				boardId,
+				cardId,
+				userId: user.id,
+				action: 'api:card_updated',
+				detail: `Updated fields: ${changedFields} on "${updated.title}"`,
+				userName: user.username,
+				userEmoji: user.emoji || '👤'
+			});
+		}
+
+		return updated;
 	});
 
 	return json(updated);
@@ -163,42 +261,30 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 /** DELETE /api/v1/cards/:cardId — Archive (soft-delete) a card. Use ?permanent=true for hard delete. */
 export const DELETE: RequestHandler = async ({ params, url, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-
-	const cardId = Number(params.cardId);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
-
-	const boardId = getCardBoardId(cardId);
-	if (!boardId) throw error(404, 'Card not found');
-
-	if (!canEditBoard(locals.user, boardId)) {
-		throw error(403, 'No edit access to this card\'s board');
-	}
-
+	const user = requireUser(locals.user);
+	const cardId = pathId(params.cardId, 'card');
 	const permanent = url.searchParams.get('permanent') === 'true';
-	const cardTitle = db.select({ title: cards.title }).from(cards).where(eq(cards.id, cardId)).get()?.title || 'Unknown';
 
-	if (permanent) {
-		// Polymorphic dependency ids do not cascade — clear this card's edges.
-		removeWorkNodeEdges('card', cardId);
-		db.delete(cards).where(eq(cards.id, cardId)).run();
-	} else {
-		db.update(cards)
-			.set({ archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
-			.where(eq(cards.id, cardId))
-			.run();
-	}
+	// One transaction: the card is read and the caller checked in the same one
+	// that archives or deletes it. See $lib/server/deletes.ts for what goes
+	// with a permanent delete; an archive touches nothing but the card.
+	//
+	// The permanent delete used to give the activity log the id of the card it
+	// had just deleted, which the foreign key refuses: the card was gone and
+	// the answer was a 500. The entry is stored with no card id now, and the
+	// `card.deleted` webhook carries it.
+	inTransaction(() => {
+		const boardId = getCardBoardId(cardId);
+		if (!boardId) throw error(404, 'Card not found');
 
-	emit(boardId, 'update', { type: 'card' });
+		if (!canEditBoard(user, boardId)) {
+			throw error(403, 'No edit access to this card\'s board');
+		}
 
-	logActivity({
-		boardId,
-		cardId,
-		userId: locals.user.id,
-		action: permanent ? 'api:card_deleted' : 'api:card_archived',
-		detail: `"${cardTitle}"`,
-		userName: locals.user.username,
-		userEmoji: locals.user.emoji || '👤'
+		if (permanent) deleteCard(cardId, user, 'api');
+		else archiveCard(cardId, user, 'api');
+
+		emit(boardId, 'update', { type: 'card' });
 	});
 
 	return json({ success: true });

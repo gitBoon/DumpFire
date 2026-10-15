@@ -7,7 +7,9 @@
 
 import nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
+import { dev } from '$app/environment';
 import { db } from './db';
+import { inTransaction } from './db/transaction';
 import { settings } from './db/schema';
 import { eq } from 'drizzle-orm';
 import { createLogger } from './logger';
@@ -58,15 +60,22 @@ export function getSmtpConfig(): SmtpConfig | null {
 	};
 }
 
-/** Save SMTP configuration to the settings table. */
+/**
+ * Save SMTP configuration to the settings table.
+ *
+ * One transaction: each setting is a row of its own, and a failure part of
+ * the way used to leave a new host saved with the old port and password.
+ */
 export function saveSmtpConfig(config: Partial<SmtpConfig>): void {
-	if (config.host !== undefined) setSetting('smtp_host', config.host);
-	if (config.port !== undefined) setSetting('smtp_port', String(config.port));
-	if (config.secure !== undefined) setSetting('smtp_secure', String(config.secure));
-	if (config.user !== undefined) setSetting('smtp_user', config.user);
-	if (config.pass !== undefined) setSetting('smtp_pass', config.pass);
-	if (config.fromAddress !== undefined) setSetting('smtp_from_address', config.fromAddress);
-	if (config.fromName !== undefined) setSetting('smtp_from_name', config.fromName);
+	inTransaction(() => {
+		if (config.host !== undefined) setSetting('smtp_host', config.host);
+		if (config.port !== undefined) setSetting('smtp_port', String(config.port));
+		if (config.secure !== undefined) setSetting('smtp_secure', String(config.secure));
+		if (config.user !== undefined) setSetting('smtp_user', config.user);
+		if (config.pass !== undefined) setSetting('smtp_pass', config.pass);
+		if (config.fromAddress !== undefined) setSetting('smtp_from_address', config.fromAddress);
+		if (config.fromName !== undefined) setSetting('smtp_from_name', config.fromName);
+	});
 }
 
 /** Quick check if SMTP is configured (has a host set). */
@@ -76,9 +85,12 @@ export function isSmtpConfigured(): boolean {
 
 // ─── App URL ─────────────────────────────────────────────────────────────────
 
-/** Get the configured app URL (no trailing slash). */
+/**
+ * Get the configured app URL (no trailing slash): the App URL setting, or
+ * failing that the `APP_URL` environment variable.
+ */
 export function getAppUrl(): string | null {
-	let url = getSetting('app_url') || process.env.APP_URL || null;
+	let url = (getSetting('app_url') || process.env.APP_URL || '').trim().replace(/\/+$/, '') || null;
 	if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
 		url = `http://${url}`;
 	}
@@ -91,31 +103,71 @@ export function setAppUrl(url: string): void {
 	setSetting('app_url', url.replace(/\/+$/, ''));
 }
 
+/** The `ORIGIN` the image is built with, which is nobody's real address. */
+export const PLACEHOLDER_ORIGIN = 'http://localhost:3000';
+
 /**
- * Resolve the public-facing base URL for links (invite emails, etc.).
- * Priority: DB setting → APP_URL env → reverse proxy headers → request URL.
+ * `ORIGIN` as the node adapter reads it (`parse_origin` in its handler): the
+ * origin of the address it holds, so `https://kanban.example.com/` and
+ * `https://KANBAN.example.com` are both `https://kanban.example.com`. Null if
+ * it is not set, or is not an http or https address: the adapter refuses to
+ * start on that, so in a built server it is never the case.
  */
-export function resolveBaseUrl(request?: Request, url?: URL): string {
-	// 1. Explicit setting (admin-configured or env var)
+export function configuredOrigin(value: string | undefined = process.env.ORIGIN): string | null {
+	if (value === undefined) return null;
+	try {
+		const url = new URL(value.trim());
+		return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The address a link in a mail begins with, with no trailing slash, or null
+ * if this server has none it may use.
+ *
+ * In order:
+ *
+ *   1. the App URL setting;
+ *   2. the `APP_URL` environment variable;
+ *   3. `ORIGIN`, the address the server was started with, as the adapter
+ *      reads it.
+ *
+ * All three are configuration. Nothing a request says is used in a built
+ * server: not `Host`, not `X-Forwarded-Host`, not the address it was sent to.
+ * A link used to take its host from `X-Forwarded-Host` when no App URL was
+ * set, so whoever could send a request could have an invite mailed with a
+ * link to a server of their own, and an invite sets a password.
+ *
+ * Under `vite dev` there is no `ORIGIN`, and the address the request was sent
+ * to (`url`) is used last of all, as it always was.
+ *
+ * Null, then, is a built server started with no `ORIGIN` and given no App
+ * URL. What each caller does about it is its own to say: an invite and a
+ * public request are refused before anything is written (`NO_LINK_ADDRESS`),
+ * and a notification is not sent (`notifications.ts`).
+ *
+ * `isDev` is the mode, and is this server's own unless it is given: a test
+ * asks what a built server does by passing `false`.
+ */
+export function linkBaseUrl(url?: URL, isDev: boolean = dev): string | null {
 	const configured = getAppUrl();
 	if (configured) return configured;
 
-	// 2. Reverse proxy headers (nginx, Traefik, Cloudflare, etc.)
-	if (request) {
-		const forwardedHost = request.headers.get('x-forwarded-host');
-		const forwardedProto = request.headers.get('x-forwarded-proto') || 'https';
-		if (forwardedHost) {
-			return `${forwardedProto}://${forwardedHost}`;
-		}
-	}
+	const origin = configuredOrigin();
+	if (origin) return origin;
 
-	// 3. Fall back to request URL
-	if (url) {
-		return `${url.protocol}//${url.host}`;
-	}
+	if (isDev && url) return `${url.protocol}//${url.host}`;
 
-	return 'http://localhost:3000';
+	return null;
 }
+
+/** What a request is refused with when the link it would mail cannot be made. */
+export const NO_LINK_ADDRESS =
+	'This server has no address configured to make the link from, so nothing was sent and nothing was saved. ' +
+	'The superadmin sets it as the App URL on the admin page, under Application Settings; or the server is ' +
+	'started with ORIGIN set to its public address';
 
 // ─── Transporter ─────────────────────────────────────────────────────────────
 

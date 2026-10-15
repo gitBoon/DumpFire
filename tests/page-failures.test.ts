@@ -1,0 +1,2469 @@
+/**
+ * What a page does with an answer that is a failure, in the places where it
+ * did the wrong thing.
+ *
+ *   - The reports page read the body of a failed answer with a bare
+ *     `await res.json()`. An answer that is not JSON, a proxy's HTML 502 above
+ *     all, made that throw, and the reader was shown the parser's complaint
+ *     ("Unexpected token '<' ...") in place of anything about the report. It
+ *     now asks `failureMessage` in `src/lib/api.ts`, as the other pages do.
+ *   - The card's dependency list showed the server's message when removing a
+ *     link was refused, and left the row where it was. The refusal is nearly
+ *     always that somebody else removed the link first, so the row left
+ *     behind was the one thing known to be out of date. The list is now read
+ *     again, as it is when the card is opened.
+ *   - The import said "Invalid backup file" for every failure there is, a
+ *     proxy's refusal of the upload for its size among them, and a card's
+ *     attachments said nothing at all and could be left saying "Uploading..."
+ *     for ever. Both tell four things apart now, in `uploadFailure` and its
+ *     neighbours in `src/lib/api.ts`.
+ *   - The export saved whatever it was answered as the backup: a refusal was a
+ *     file of a few bytes named `.db`, under "exported successfully".
+ *   - The admin page showed an administrator what is the superadmin's alone,
+ *     and asked the server for it when it opened.
+ *   - A page whose session had ended was handed the login page's HTML, with
+ *     a 200, for every request it made to an internal route, and went on as
+ *     if each had worked. The gate answers those 401 now, and the page is
+ *     sent to the login page on the first: `src/hooks.client.ts` and
+ *     `$lib/signed-out.ts`.
+ *   - The live-update streams asked again every three seconds, for ever,
+ *     whatever had refused them. They wait longer each time now, and do not
+ *     ask again for a stream refused because the session has ended:
+ *     `$lib/live-stream.ts`.
+ *   - Generate Key on the account page said nothing when it was refused. It
+ *     asks for the password now, so a wrong one is a refusal the person must
+ *     see. And the three pages where a password is set say what setting it
+ *     ends: the account page, the admin page's reset dialog and the invite page.
+ *   - Restoring a card, deleting a team, removing a member, saving a card in
+ *     All Tasks, a template, a label, a cover, a schedule (card 2109): on the
+ *     archived, All Tasks, teams, admin and reports pages, in the card window
+ *     and for the board page's restore, a write that was refused said it had
+ *     worked, or said nothing. Each now says what the server said, and puts
+ *     back what it had changed on the page. A failure's toast stays until it
+ *     is closed. A write whose answer is thrown away anywhere else is on a
+ *     list that can only shrink. The admin page shows on each user's row only
+ *     what the server would let the caller do there, by the server's own rule.
+ *   - The card window's labels moved into a picker of their own, which makes,
+ *     renames, recolours and deletes them as well (card 2010). It is held to
+ *     the same rule as the window's other controls: each answer read, a chip
+ *     changed only once the server has changed it, to what the server says
+ *     it is now, and a refusal said.
+ *
+ * A page cannot be run here: these tests have no browser and no DOM. So, as
+ * `tests/error-shape.test.ts` does for the routes, this reads the source. The
+ * `<script lang="ts">` of each page is parsed with the TypeScript compiler
+ * and the branch that handles a failure is looked at. `failureMessage`, the
+ * watch on `fetch` and the stream that opens itself again are functions, and
+ * are called, with stand-ins for what they would reach for in a browser.
+ *
+ * Only the account rule needs the database: it is held to the server's guard
+ * with accounts made by `makeUser`. `tests/setup.ts` runs, as it does for
+ * every file, and gives this one a database of its own.
+ */
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import ts from 'typescript';
+import { get } from 'svelte/store';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+	answerBody,
+	cardArchiveWarning,
+	dependencyEndBody,
+	dependencyRow,
+	failureMessage,
+	sizeInWords,
+	subBoardLinkWarning,
+	uploadFailure,
+	uploadNoAnswer,
+	uploadNotRead
+} from '$lib/api';
+import { mayManageAccount } from '$lib/account-rule';
+import * as cardActions from '$lib/board/card-actions';
+import * as dndHandlers from '$lib/board/dnd-handlers';
+import { keepStreamOpen, reconnectDelay, streamVerdict, type StreamEnvironment } from '$lib/live-stream';
+import { requireManagedAccount } from '$lib/server/route-guards';
+import { endsTheSession, watchForSignOut, type Fetch } from '$lib/signed-out';
+import { MOST_FAILURES, TOAST_MS, toasts } from '$lib/stores/toast';
+import type { CardType, ColumnType } from '$lib/types';
+import { isCardBlocked, subBoardIncompleteCount } from '$lib/utils/card-utils';
+import { makeUser, resetDb } from './helpers/fixtures';
+
+const ROOT = process.cwd();
+
+/** The `<script lang="ts">` of a Svelte file, parsed. */
+function scriptOf(file: string, source = readFileSync(join(ROOT, file), 'utf8')): ts.SourceFile {
+	const script = /<script lang="ts">([\s\S]*?)<\/script>/.exec(source);
+	if (!script) throw new Error(`${file} has no <script lang="ts">`);
+	return ts.createSourceFile(file, script[1], ts.ScriptTarget.Latest, true);
+}
+
+/** The function declared as `name` at the top of a script. */
+function functionNamed(tree: ts.SourceFile, name: string): ts.FunctionDeclaration {
+	const found = tree.statements.find(
+		(statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === name
+	);
+	if (!found) throw new Error(`${tree.fileName} has no function ${name}`);
+	return found;
+}
+
+/** Every call of `callee`, written as it is in the source (`res.json`, `failureMessage`), inside `within`. */
+function callsOf(within: ts.Node, callee: string): ts.CallExpression[] {
+	const found: ts.CallExpression[] = [];
+	const visit = (node: ts.Node) => {
+		if (ts.isCallExpression(node) && node.expression.getText() === callee) found.push(node);
+		ts.forEachChild(node, visit);
+	};
+	visit(within);
+	return found;
+}
+
+/**
+ * Which side of an `if` on `res.ok` a node is on: 'ok' in the branch taken
+ * when the answer is a success, 'failed' in the other, and null when it is
+ * in neither, which is to say it runs whatever the answer was.
+ */
+function branchOf(node: ts.Node): 'ok' | 'failed' | null {
+	for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+		if (!ts.isIfStatement(parent)) continue;
+		const test = parent.expression.getText().replace(/\s/g, '');
+		if (test !== 'res.ok' && test !== '!res.ok') continue;
+		if (parent.thenStatement === child) return test === 'res.ok' ? 'ok' : 'failed';
+		if (parent.elseStatement === child) return test === 'res.ok' ? 'failed' : 'ok';
+	}
+	return null;
+}
+
+/** For each call of `callee` in the function `name`: the branch it is in. */
+const branches = (tree: ts.SourceFile, name: string, callee: string) =>
+	callsOf(functionNamed(tree, name), callee).map(branchOf);
+
+describe('failureMessage, given an answer that is a failure', () => {
+	it('gives the fallback for a proxy’s HTML 502, and not what the parser said about it', async () => {
+		const page = new Response('<html><body><h1>502 Bad Gateway</h1></body></html>', {
+			status: 502,
+			headers: { 'content-type': 'text/html' }
+		});
+
+		expect(await failureMessage(page, 'Failed to generate report')).toBe('Failed to generate report');
+		expect(await failureMessage(new Response(null, { status: 504 }), 'Failed to send')).toBe('Failed to send');
+	});
+
+	it('gives the server’s own message when the answer carries one', async () => {
+		const refused = Response.json({ message: 'Admin only for a report on all boards' }, { status: 403 });
+
+		expect(await failureMessage(refused, 'Failed to generate report')).toBe('Admin only for a report on all boards');
+	});
+
+	it('gives the fallback for a message that says nothing', async () => {
+		for (const body of [{ message: 'Internal Error' }, { message: '  ' }, { message: 5 }, { error: 'No' }, [], null]) {
+			expect(await failureMessage(Response.json(body, { status: 500 }), 'Failed to send')).toBe('Failed to send');
+		}
+	});
+});
+
+describe('the reports page, src/routes/reports/+page.svelte', () => {
+	const page = scriptOf('src/routes/reports/+page.svelte');
+
+	it.each(['generateReport', 'sendReportEmail'])('%s reads the body of a failure with failureMessage alone', (name) => {
+		// Read as JSON only where the answer is known to be a success.
+		expect(branches(page, name, 'res.json').filter((branch) => branch !== 'ok')).toEqual([]);
+		// And asked for its message where it is known to be a failure, once.
+		expect(branches(page, name, 'failureMessage')).toEqual(['failed']);
+		const [asked] = callsOf(functionNamed(page, name), 'failureMessage');
+		expect(asked.arguments[0].getText()).toBe('res');
+		// A plain fallback, written out where it is used.
+		expect(ts.isStringLiteralLike(asked.arguments[1])).toBe(true);
+	});
+
+	it('imports failureMessage from $lib/api', () => {
+		expect(page.getText()).toMatch(/import \{[^}]*\bfailureMessage\b[^}]*\} from '\$lib\/api';/);
+	});
+});
+
+describe('the card’s dependency list, src/lib/components/CardModal.svelte', () => {
+	const modal = scriptOf('src/lib/components/CardModal.svelte');
+
+	it('is read when the card is opened by loadDependencies', () => {
+		const opened = modal.statements
+			.filter((statement) => ts.isExpressionStatement(statement) && statement.getText().startsWith('onMount('))
+			.flatMap((statement) => callsOf(statement, 'loadDependencies'));
+
+		expect(opened).toHaveLength(1);
+	});
+
+	it('is read again by loadDependencies after a removal that was refused', () => {
+		// In the branch for a failure, and nowhere else: a removal that worked
+		// is answered with the two lists as they now are.
+		expect(branches(modal, 'removeDependency', 'loadDependencies')).toEqual(['failed']);
+		// The message is still set there, before the lists are read again.
+		const refused = functionNamed(modal, 'removeDependency').getText();
+		const said = "depError = await failureMessage(res, 'Could not remove that dependency')";
+		expect(refused.indexOf(said)).toBeGreaterThan(-1);
+		expect(refused.indexOf(said)).toBeLessThan(refused.indexOf('loadDependencies()'));
+	});
+
+	// Card 2138. A row is a card or a subtask, and its `cardId` is its own id: a
+	// subtask's for a subtask row. The remove button sent it as a card's
+	// whatever the row was, and the row's number and link named that card.
+
+	it('names the other end of a link by its kind, in one function: the four bodies', () => {
+		const card = { kind: 'card' as const, cardId: 12, parentCardId: null };
+		const subtask = { kind: 'subtask' as const, cardId: 45, parentCardId: 12 };
+
+		expect(dependencyEndBody('blocked-by', card)).toEqual({ dependsOnCardId: 12 });
+		expect(dependencyEndBody('blocked-by', subtask)).toEqual({ dependsOnSubtaskId: 45 });
+		expect(dependencyEndBody('blocks', card)).toEqual({ blocksCardId: 12 });
+		expect(dependencyEndBody('blocks', subtask)).toEqual({ blocksSubtaskId: 45 });
+	});
+
+	it('labels a row by its kind, and links a subtask row to its card', () => {
+		expect(dependencyRow({ kind: 'card', cardId: 12, parentCardId: null, boardId: 3 })).toEqual({ label: '#12', href: '/board/3?card=12' });
+		expect(dependencyRow({ kind: 'subtask', cardId: 45, parentCardId: 12, boardId: 3 })).toEqual({
+			label: 'subtask #45 of #12',
+			href: '/board/3?card=12'
+		});
+		// A subtask whose card is not known links nowhere, rather than to card 45.
+		expect(dependencyRow({ kind: 'subtask', cardId: 45, parentCardId: null, boardId: 3 })).toEqual({ label: 'subtask #45', href: undefined });
+		// Nor does a row on a board the caller cannot open (card 2129): the page would refuse them.
+		expect(dependencyRow({ kind: 'card', cardId: 12, parentCardId: null, boardId: null, withheld: true })).toEqual({ label: '#12', href: undefined });
+		expect(dependencyRow({ kind: 'card', cardId: 12, parentCardId: null, boardId: 3, withheld: true })).toEqual({ label: '#12', href: undefined });
+	});
+
+	it('builds the bodies it sends with dependencyEndBody, and writes no field name of its own', () => {
+		for (const name of ['addDependency', 'removeDependency']) {
+			const fn = functionNamed(modal, name);
+			expect(callsOf(fn, 'dependencyEndBody'), name).toHaveLength(1);
+			expect(fn.getText(), name).not.toMatch(/\b(dependsOn|blocks)(Card|Subtask)Id\b/);
+		}
+	});
+
+	it('passes the row from both remove buttons, and numbers and links each row through dependencyRow', () => {
+		const source = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
+		const markup = source.slice(source.indexOf('</script>'));
+
+		expect(markup.match(/removeDependency\([^)]*\)/g)).toEqual(["removeDependency(d, 'blocked-by')", "removeDependency(d, 'blocks')"]);
+		expect(markup.match(/\{@const row = dependencyRow\(d\)\}/g)).toHaveLength(2);
+		expect(markup.match(/<a class="dep-link" href=\{row\.href\}/g)).toHaveLength(2);
+		expect(markup.match(/<span class="dep-id">\{row\.label\}<\/span>/g)).toHaveLength(2);
+		// Nothing in the lists takes a row's own id for a card's.
+		expect(markup).not.toContain('?card={d.cardId}');
+		expect(markup).not.toContain('#{d.cardId}');
+	});
+});
+
+// ─── Uploads ─────────────────────────────────────────────────────────────────
+
+describe('an upload that was not accepted, said for what it is', () => {
+	const PROXY_413 = () =>
+		new Response('<html><head><title>413 Request Entity Too Large</title></head><body>nginx</body></html>', {
+			status: 413,
+			headers: { 'content-type': 'text/html' }
+		});
+
+	it('is a file that could not be read here, or a server that gave no answer', () => {
+		expect(uploadNotRead('"notes.pdf"')).toBe('"notes.pdf" could not be read on this computer, so nothing was sent.');
+		expect(uploadNoAnswer('"notes.pdf"')).toBe('No answer from the server. It is not known whether "notes.pdf" was accepted.');
+	});
+
+	it('is a refusal before it reached DumpFire when the answer is not JSON, with the status the proxy gave', async () => {
+		expect(await uploadFailure(PROXY_413(), 'The backup "production.db"')).toBe(
+			'The backup "production.db" was refused before it reached DumpFire, probably a size limit at the proxy in front of it (HTTP 413).'
+		);
+		expect(await uploadFailure(new Response(null, { status: 502 }), '"notes.pdf"')).toBe(
+			'"notes.pdf" was refused before it reached DumpFire, probably a size limit at the proxy in front of it (HTTP 502).'
+		);
+		// JSON that is no object is not DumpFire's either: every failure it answers is { message }.
+		expect(await uploadFailure(Response.json('too big', { status: 413 }), '"notes.pdf"')).toContain('before it reached DumpFire');
+	});
+
+	it('is larger than this server accepts when DumpFire answers 413, with the limit the answer gives', async () => {
+		const gate = Response.json(
+			{ message: 'The request is larger than this server accepts here: it is 27 MB, and the limit is 26 MB', limitBytes: 26 * 1024 * 1024 },
+			{ status: 413 }
+		);
+		expect(await uploadFailure(gate, '"film.mov"')).toBe('"film.mov" is larger than this server accepts. The limit here is 26 MB.');
+
+		// The adapter's own, of a body that ran past the length it declared: no limit in it.
+		const adapter = Response.json({ message: 'Payload Too Large' }, { status: 413 });
+		expect(await uploadFailure(adapter, '"film.mov"')).toBe('"film.mov" is larger than this server accepts.');
+	});
+
+	it('is the server’s own message for anything else it refused, by the rule failureMessage goes by', async () => {
+		const refused = Response.json({ message: 'No edit access to this board' }, { status: 403 });
+		expect(await uploadFailure(refused, '"notes.pdf"')).toBe('No edit access to this board');
+
+		const fault = Response.json({ message: 'Internal Error' }, { status: 500 });
+		expect(await uploadFailure(fault, '"notes.pdf"')).toBe('"notes.pdf" was not accepted (HTTP 500).');
+	});
+
+	it('is a page in place of an answer when a success is not JSON, which is what a session that ended looks like', async () => {
+		const login = new Response('<!doctype html><title>Sign in</title>', { status: 200, headers: { 'content-type': 'text/html' } });
+
+		expect(await uploadFailure(login, '"notes.pdf"')).toBe(
+			'"notes.pdf" was not accepted: the answer was a page and not DumpFire\'s (HTTP 200). You may have been signed out. Reload the page and try again.'
+		);
+	});
+
+	it('reads an answer’s body as a JSON object or as nothing, and a size as a person reads it', async () => {
+		expect(await answerBody(Response.json({ id: 4 }))).toEqual({ id: 4 });
+		for (const none of [Response.json([1]), Response.json(null), Response.json('x'), new Response('<html>'), new Response(null)]) {
+			expect(await answerBody(none)).toBeNull();
+		}
+		expect([100, 512 * 1024, 26 * 1024 * 1024, 1536 * 1024 * 1024].map(sizeInWords)).toEqual(['100 bytes', '512 KB', '26 MB', '1.5 GB']);
+	});
+});
+
+/** Every `try` in `within` that has a `finally`, as the text of that `finally`. */
+function finallyBlocks(within: ts.Node): string[] {
+	const found: string[] = [];
+	const visit = (node: ts.Node) => {
+		if (ts.isTryStatement(node) && node.finallyBlock) found.push(node.finallyBlock.getText().replace(/\s+/g, ' '));
+		ts.forEachChild(node, visit);
+	};
+	visit(within);
+	return found;
+}
+
+describe('a card’s attachments, src/lib/components/CardModal.svelte', () => {
+	const source = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
+	const modal = scriptOf('src/lib/components/CardModal.svelte');
+
+	it('says which of the four things went wrong, once each, and reads no answer as JSON unguarded', () => {
+		const one = functionNamed(modal, 'uploadFile');
+
+		for (const callee of ['uploadNotRead', 'uploadNoAnswer', 'uploadFailure']) {
+			expect(callsOf(one, callee), callee).toHaveLength(1);
+		}
+		// A bare `res.json()` on an answer that is a proxy's page is what threw.
+		expect(callsOf(one, 'res.json')).toEqual([]);
+		expect(source).toMatch(/import \{[^}]*\buploadFailure\b[^}]*\} from '\$lib\/api';/);
+	});
+
+	it('stops saying "Uploading..." whatever happened: the flag is cleared in a finally', () => {
+		const all = functionNamed(modal, 'uploadFiles');
+
+		expect(finallyBlocks(all)).toHaveLength(1);
+		expect(finallyBlocks(all)[0]).toContain('uploading = false;');
+		// And nowhere outside it, where a request that threw would skip it.
+		expect(all.getText().match(/uploading = false/g)).toHaveLength(1);
+		// Each file is tried, whatever became of the one before.
+		expect(callsOf(all, 'uploadFile')).toHaveLength(1);
+	});
+
+	it('shows what it was told, for each file that was not attached', () => {
+		expect(functionNamed(modal, 'uploadFiles').getText()).toContain('uploadErrors = [...uploadErrors, failure]');
+		expect(source).toMatch(/\{#if uploadErrors\.length > 0\}[\s\S]*?role="alert"[\s\S]*?\{#each uploadErrors as failure\}/);
+	});
+});
+
+describe('the card window’s own messages and Escape, src/lib/components/CardModal.svelte', () => {
+	const source = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
+	const modal = scriptOf('src/lib/components/CardModal.svelte');
+
+	it('shows a refusal at the top of the window however far it is scrolled, and brings it into view when it is set', () => {
+		// A refusal of a comment or a file, far down the window, was said above what could be seen.
+		const style = /\.window-error \{([^}]*)\}/.exec(source)![1].replace(/\s+/g, ' ');
+		expect(style).toContain('position: sticky; top: 0; z-index: 1;');
+		// Opaque, so that what scrolls under it does not show through.
+		expect(style).toContain('var(--bg-surface)');
+		expect(source).toContain('<div class="dep-error window-error" role="alert" bind:this={windowErrorBox}>');
+
+		const shown = modal.statements.filter(
+			(statement) => ts.isExpressionStatement(statement) && statement.getText().startsWith('$effect(') && statement.getText().includes('windowErrorBox')
+		);
+		expect(shown).toHaveLength(1);
+		expect(shown[0].getText().replace(/\s+/g, ' ')).toContain("if (windowError && windowErrorBox) windowErrorBox.scrollIntoView({ block: 'nearest' });");
+	});
+
+	it('leaves Escape to a confirmation the page opened over it, which takes it as Cancel, and closes on Escape otherwise', () => {
+		// All Tasks' "Archive Card" and the board page's: Escape cancelled the
+		// confirmation and closed the window under it as well.
+		const handler = functionNamed(modal, 'handleKeydown').getText().replace(/\s+/g, ' ');
+		const leaves = 'if (confirming && !overlay?.contains(confirming)) return;';
+		expect(handler).toContain("const confirming = document.querySelector('.confirm-modal');");
+		expect(handler).toContain(leaves);
+		expect(handler.indexOf(leaves)).toBeLessThan(handler.indexOf('onClose();'));
+		expect(handler).toContain("if (e.key !== 'Escape') return;");
+		expect(source).toContain('aria-label="Card editor" bind:this={overlay}>');
+
+		// What it looks for is the confirmation those pages open, which answers Escape itself.
+		const confirmation = readFileSync(join(ROOT, 'src/lib/components/ConfirmModal.svelte'), 'utf8');
+		expect(confirmation).toContain('<div class="confirm-modal"');
+		expect(confirmation).toContain("if (e.key === 'Escape') onCancel();");
+		for (const file of ['src/routes/all/+page.svelte', 'src/routes/board/[id]/+page.svelte']) {
+			const page = readFileSync(join(ROOT, file), 'utf8');
+			expect(page, file).toContain('<CardModal');
+			expect(page, file).toContain('<ConfirmModal');
+		}
+	});
+});
+
+/**
+ * The `{#if}` blocks a place in a Svelte file's markup is inside, outermost
+ * first: each with its condition, and whether the place is in its `{:else}`.
+ */
+function blocksAround(source: string, index: number): { condition: string; inElse: boolean }[] {
+	const stack: { condition: string; inElse: boolean }[] = [];
+	for (const tag of source.slice(0, index).matchAll(/\{#if ([^}]+)\}|\{:else[^}]*\}|\{\/if\}/g)) {
+		if (tag[0].startsWith('{#if')) stack.push({ condition: tag[1].trim(), inElse: false });
+		else if (tag[0].startsWith('{:else')) stack[stack.length - 1].inElse = true;
+		else stack.pop();
+	}
+	return stack;
+}
+
+describe('the admin page, src/routes/admin/+page.svelte', () => {
+	const file = 'src/routes/admin/+page.svelte';
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const page = scriptOf(file);
+	const markup = source.slice(source.indexOf('</script>'));
+	const from = source.indexOf('</script>');
+
+	/** Whether the one place `text` is in the markup is shown to the superadmin only. */
+	const forSuperadminOnly = (text: string) => {
+		expect(markup.split(text), text).toHaveLength(2);
+		return blocksAround(source, from + markup.indexOf(text)).some((block) => block.condition === 'isSuperadmin' && !block.inElse);
+	};
+
+	it.each([
+		'<h2>🌐 Application Settings</h2>',
+		'<h2>💾 Backup & Restore</h2>',
+		'<h2>☁️ Scheduled Backups</h2>',
+		'<h2>📧 Email / SMTP</h2>',
+		'<strong>Reset Everything</strong>',
+		'onclick={exportDatabase}',
+		'onclick={openImportDialog}',
+		'onclick={runManualBackup}',
+		'onchange={handleFileSelected}'
+	])('shows %s to the superadmin and to nobody else', (text) => {
+		expect(forSuperadminOnly(text)).toBe(true);
+	});
+
+	it.each([
+		'<h2>📊 Database Overview</h2>',
+		'<h2>📋 Board Management</h2>',
+		'<h2>👥 User Management</h2>',
+		'<h2>🏢 Team Management</h2>',
+		'<strong>Purge Archived Cards</strong>',
+		'<strong>Vacuum Database</strong>',
+		'<strong>Reset All XP</strong>'
+	])('still shows %s to an administrator', (text) => {
+		expect(forSuperadminOnly(text)).toBe(false);
+	});
+
+	it('tells an administrator, in their place, whose they are and who that is', () => {
+		const line = 'belong to the superadmin, <strong>{superadminName}</strong>';
+		expect(markup.split(line)).toHaveLength(2);
+
+		const around = blocksAround(source, from + markup.indexOf(line));
+		// In the `{:else}` of the block the superadmin's sections are in.
+		expect(around[0]).toEqual({ condition: 'isSuperadmin', inElse: true });
+		expect(markup).toContain('Exporting, importing and resetting the database, the scheduled backups and their destinations, and the mail and App URL settings belong to the superadmin');
+		// The name is the account whose role it is, from the list the page was loaded with.
+		expect(page.getText()).toContain("data.users.find((u) => u.role === 'superadmin')?.username");
+	});
+
+	it('asks the server for none of it when it opens, unless it is the superadmin who opened it', () => {
+		// What is asked for as the page opens is asked in an `$effect`. Each of
+		// the three that fetch what is the superadmin's begins by leaving.
+		const LOADS = ['loadBackupConfig', 'loadAppUrl', 'loadSmtpConfig'];
+		const effects = page.statements.filter(
+			(statement) => ts.isExpressionStatement(statement) && statement.getText().startsWith('$effect(')
+		);
+		const loading = effects.filter((effect) => LOADS.some((load) => callsOf(effect, load).length > 0));
+
+		expect(LOADS.flatMap((load) => effects.flatMap((effect) => callsOf(effect, load)))).toHaveLength(3);
+		for (const effect of loading) {
+			const call = (effect as ts.ExpressionStatement).expression as ts.CallExpression;
+			const body = (call.arguments[0] as ts.ArrowFunction).body as ts.Block;
+			expect(body.statements[0].getText()).toBe('if (!isSuperadmin) return;');
+		}
+		// And none of the three is called as the script runs, outside a function.
+		const atTheTop = page.statements.filter((statement) => ts.isExpressionStatement(statement) && !effects.includes(statement));
+		expect(LOADS.flatMap((load) => atTheTop.flatMap((statement) => callsOf(statement, load)))).toEqual([]);
+		// Each fetches a route that is the superadmin's.
+		for (const load of LOADS) expect(functionNamed(page, load).getText()).toMatch(/fetch\('\/api\/admin\/(smtp|backup)'\)/);
+	});
+
+	it('saves no file for an export that was refused, and shows the refusal as a failure', () => {
+		const exporting = functionNamed(page, 'exportDatabase');
+		const text = exporting.getText();
+
+		// The answer is looked at before it is read as the file.
+		const refusal = text.indexOf('if (!res.ok) {');
+		const file = text.indexOf('res.blob()');
+		expect(refusal).toBeGreaterThan(-1);
+		expect(file).toBeGreaterThan(refusal);
+		// And what is done about it is to say so and stop.
+		expect(branches(page, 'exportDatabase', 'failureMessage')).toEqual(['failed']);
+		const [asked] = callsOf(exporting, 'failureMessage');
+		expect(branchOf(asked)).toBe('failed');
+		const stop = text.slice(refusal, file);
+		expect(stop).toMatch(/showToast\(await failureMessage\(res, '[^']+'\), 'error', started\);\s+return;\s+\}/);
+		expect(text.indexOf("showToast('Database exported successfully')")).toBeGreaterThan(file);
+	});
+
+	it('says which of the four things went wrong with an import, and no longer blames the file for all of them', () => {
+		const importing = functionNamed(page, 'handleFileSelected');
+
+		for (const callee of ['uploadNotRead', 'uploadNoAnswer', 'uploadFailure']) {
+			expect(callsOf(importing, callee), callee).toHaveLength(1);
+		}
+		expect(callsOf(importing, 'res.json')).toEqual([]);
+		expect(source).not.toContain("'Invalid backup file'");
+		// A proxy's refusal and DumpFire's own 413 are both handed to uploadFailure.
+		expect(importing.getText()).toContain('if (result === null || res.status === 413) {');
+		expect(finallyBlocks(importing).some((block) => block.includes('importing = false;'))).toBe(true);
+	});
+
+	it('says an import that failed in the report under the button, and not in a toast as well', () => {
+		const importing = functionNamed(page, 'handleFileSelected');
+		const failing = callsOf(importing, 'showToast').filter((call) => call.arguments[1]?.getText() === "'error'");
+
+		// Each failure the report shows is set with no toast beside it: the
+		// toast waits to be closed, and was the same words a second time.
+		const reported = assignmentsTo(importing, 'importReport').filter((set) => set.right.getText().includes('trouble: true'));
+		expect(reported).toHaveLength(4);
+		// One toast is left, for a fault after the answer came, when there is no report to say it in.
+		expect(failing).toHaveLength(1);
+		const caught = ts.findAncestor(failing[0], ts.isCatchClause);
+		expect(caught).toBeDefined();
+		expect(assignmentsTo(caught!, 'importReport')).toEqual([]);
+		// The catch of the whole import, not of one of its steps.
+		expect(caught!.parent).toBe(importing.body!.statements.find(ts.isTryStatement));
+	});
+
+	it('offers no second removal of a backup destination while the first is being saved', () => {
+		// Two quick removals, the first refused, put the first's list back over the second's.
+		const button = markup.split('\n').filter((line) => line.includes('removeDestination(dest.name)'));
+		expect(button).toHaveLength(1);
+		expect(button[0]).toContain('disabled={backupSaving}');
+		// And the flag is up for the whole of the save a removal makes.
+		expect(callsOf(functionNamed(page, 'removeDestination'), 'saveBackupConfig')).toHaveLength(1);
+		const saving = functionNamed(page, 'saveBackupConfig');
+		expect(saving.body!.statements[0].getText()).toBe('backupSaving = true;');
+		expect(finallyBlocks(saving)).toEqual(['{ backupSaving = false; }']);
+	});
+
+	it('knows a .db backup by the ending of its name in any case', () => {
+		const said = functionNamed(page, 'handleFileSelected').getText().replace(/\s+/g, ' ');
+
+		expect(said).toContain('const named = file.name.toLowerCase();');
+		expect(said).toContain("const isDbFile = named.endsWith('.db') || named.endsWith('.sqlite') || named.endsWith('.sqlite3');");
+	});
+
+	it('says in the import dialog that everybody is signed out, and that a backup with no superadmin is refused', () => {
+		const dialog = markup.slice(markup.indexOf('<h2>Import Database</h2>'));
+
+		expect(dialog).toContain('Everybody is signed out, you included: no session is restored, whatever the backup holds');
+		expect(dialog).toContain('A backup with users and no superadmin among them is refused.');
+		expect(source).not.toContain('unless the backup holds your current session');
+	});
+
+	it('says after a change of role that an invite sent earlier no longer works, when the answer says one ended', () => {
+		const changing = functionNamed(page, 'changeUserRole');
+
+		expect(branches(page, 'changeUserRole', 'answerBody')).toEqual(['ok']);
+		const said = changing.getText().replace(/\s+/g, ' ');
+		expect(said).toContain('const invitesEnded = result?.invitesEnded;');
+		expect(said).toContain(
+			"typeof invitesEnded === 'number' && invitesEnded > 0 " +
+				"? 'Role updated. The invite sent to this account earlier no longer works: send a new one with 📧.' " +
+				": 'Role updated'"
+		);
+	});
+});
+
+// ─── What setting a password ends, said on the page ─────────────────────────
+//
+// Setting a password ends the account's sessions and its invites not yet
+// used. An administrator's reset and an invite end its API keys too, and the
+// holder's own change ends them only when asked (cards 2116 and 2137). Making
+// a key asks for the password. These are what the three pages say about it.
+
+/** Every `name = ...` inside `within`. */
+function assignmentsTo(within: ts.Node, name: string): ts.BinaryExpression[] {
+	const found: ts.BinaryExpression[] = [];
+	const visit = (node: ts.Node) => {
+		if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.left.getText() === name) {
+			found.push(node);
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(within);
+	return found;
+}
+
+/** The names of the properties of the object each `JSON.stringify({ ... })` in `within` sends. */
+function bodiesSent(within: ts.Node): string[][] {
+	return callsOf(within, 'JSON.stringify').map((call) => {
+		const sent = call.arguments[0];
+		if (!sent || !ts.isObjectLiteralExpression(sent)) return [];
+		return sent.properties.map((property) => property.name?.getText() ?? '');
+	});
+}
+
+describe('the account page, src/routes/account/+page.svelte', () => {
+	const file = 'src/routes/account/+page.svelte';
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const page = scriptOf(file);
+	const markup = source.slice(source.indexOf('</script>'));
+	const from = source.indexOf('</script>');
+	const around = (text: string) => {
+		expect(markup.split(text), text).toHaveLength(2);
+		return blocksAround(source, from + markup.indexOf(text));
+	};
+
+	it('makes a key with the password, and shows a refusal of it in the server’s words', () => {
+		const generating = functionNamed(page, 'generateApiKey');
+
+		// The password goes with the name.
+		expect(bodiesSent(generating)).toEqual([['name', 'password']]);
+		// Read as JSON only where the answer is a success, and a refusal asked
+		// for its message, once, in the branch for a failure.
+		expect(branches(page, 'generateApiKey', 'res.json')).toEqual(['ok']);
+		expect(branches(page, 'generateApiKey', 'failureMessage')).toEqual(['failed']);
+		const [asked] = callsOf(generating, 'failureMessage');
+		expect(asked.arguments[0].getText()).toBe('res');
+		expect(ts.isStringLiteralLike(asked.arguments[1])).toBe(true);
+		expect(asked.parent.parent.getText()).toBe(`apiKeyError = ${asked.parent.getText()}`);
+		expect(page.getText()).toMatch(/import \{[^}]*\bfailureMessage\b[^}]*\} from '\$lib\/api';/);
+
+		// And the page shows it.
+		expect(around('{apiKeyError}')).toEqual([{ condition: 'apiKeyError', inElse: false }]);
+	});
+
+	it('clears the password after every attempt, and keeps Generate Key off until there is a name and a password', () => {
+		const cleared = assignmentsTo(functionNamed(page, 'generateApiKey'), 'newKeyPassword');
+
+		expect(cleared.map((assignment) => assignment.right.getText())).toEqual(["''"]);
+		// Whatever the answer was: in neither branch.
+		expect(cleared.map(branchOf)).toEqual([null]);
+		// A password field of its own, which a browser fills with the one it has saved.
+		expect(markup).toMatch(/<input\s+id="apikey-password"\s+type="password"\s+bind:value=\{newKeyPassword\}[^>]*autocomplete="current-password"/);
+		expect(markup).toContain('disabled={!newKeyName.trim() || !newKeyPassword || generatingKey}');
+	});
+
+	it('offers to end the API keys with a password change, not ticked, and only when there are keys to end', () => {
+		// Not ticked unless the holder ticks it.
+		expect(page.getText()).toContain('let endApiKeysToo = $state(false);');
+		expect(assignmentsTo(page, 'endApiKeysToo').map((assignment) => assignment.right.getText())).toEqual(['false', 'false']);
+		// And cleared whenever the list is empty, not only after a change: a box
+		// ticked beside a key that was then revoked must not come back ticked
+		// beside the next one.
+		const cleared = page.statements.filter(
+			(statement) => ts.isExpressionStatement(statement) && statement.getText().startsWith('$effect(')
+		);
+		expect(cleared.map((statement) => assignmentsTo(statement, 'endApiKeysToo').length)).toContain(1);
+		expect(page.getText()).toMatch(/\$effect\(\(\) => \{\s*if \(apiKeys\.length === 0\) endApiKeysToo = false;\s*\}\);/);
+
+		// The box, with the count, only when the list holds a key.
+		expect(around('bind:checked={endApiKeysToo}')).toEqual([{ condition: 'apiKeys.length > 0', inElse: false }]);
+		// "It" for one key, "they" for more.
+		expect(markup).toContain(
+			"You have {keysInWords(apiKeys.length)}. {apiKeys.length === 1 ? 'It keeps' : 'They keep'} working after a password change unless you tick the box."
+		);
+		expect(markup).toContain(
+			"End my {keysInWords(apiKeys.length)} too. Do this if anyone else may have used your account. Anything that uses {apiKeys.length === 1 ? 'it' : 'them'} stops working until it is given a new key."
+		);
+	});
+
+	it('sends the choice as endApiKeys, says what the change ended, and reads the key list again after keys were ended', () => {
+		const changing = functionNamed(page, 'changePassword');
+
+		expect(bodiesSent(changing)).toEqual([['currentPassword', 'newPassword', 'endApiKeys']]);
+		expect(changing.getText()).toContain('const endApiKeys = endApiKeysToo && apiKeys.length > 0;');
+		// The count is the answer's, read where the answer is a success.
+		expect(branches(page, 'changePassword', 'answerBody')).toEqual(['ok']);
+		expect(changing.getText()).toContain('(await answerBody(res))?.apiKeysEnded');
+		expect(changing.getText()).toContain("'Password changed. Your other sessions were signed out'");
+		expect(branches(page, 'changePassword', 'loadApiKeys')).toEqual(['ok']);
+		expect(branches(page, 'changePassword', 'failureMessage')).toEqual(['failed']);
+	});
+
+	it('hides a key just made once a change has ended it, and is never left at "Changing..."', () => {
+		const changing = functionNamed(page, 'changePassword');
+		const within = (node: ts.Node, block: ts.Node | undefined) => {
+			for (let at: ts.Node | undefined = node; at; at = at.parent) if (at === block) return true;
+			return false;
+		};
+
+		// The panel that shows a new key goes when the keys were ended.
+		const hidden = assignmentsTo(changing, 'newlyCreatedKey');
+		expect(hidden.map((assignment) => assignment.right.getText())).toEqual(["''"]);
+		expect(hidden.map(branchOf)).toEqual(['ok']);
+		const ifEnded = hidden[0].parent.parent.parent;
+		expect(ts.isIfStatement(ifEnded) && ifEnded.expression.getText()).toBe('endApiKeys');
+
+		// The button is given back in a finally, as Generate Key's is, and a
+		// request with no answer says so.
+		const attempts = changing.body!.statements.filter(ts.isTryStatement);
+		expect(attempts).toHaveLength(1);
+		const [attempt] = attempts;
+		expect(within(callsOf(changing, 'fetch')[0], attempt.tryBlock)).toBe(true);
+		const settled = assignmentsTo(changing, 'changingPassword').filter((assignment) => assignment.right.getText() === 'false');
+		expect(settled.map((assignment) => within(assignment, attempt.finallyBlock))).toEqual([true]);
+		expect(attempt.catchClause?.getText()).toContain("passwordMessage = 'No answer from the server.");
+	});
+
+	it('links to the API documentation the application serves', () => {
+		expect(markup).toContain('<a href="/docs" target="_blank">API documentation</a>');
+		expect(source).not.toContain('DUMPFIRE_API.md');
+	});
+});
+
+describe('the admin page’s password dialog, src/routes/admin/+page.svelte', () => {
+	const file = 'src/routes/admin/+page.svelte';
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const page = scriptOf(file);
+	const markup = source.slice(source.indexOf('</script>'));
+	const from = source.indexOf('</script>');
+	const around = (text: string) => {
+		expect(markup.split(text), text).toHaveLength(2);
+		return blocksAround(source, from + markup.indexOf(text));
+	};
+
+	it('tells an administrator on their own row that their keys keep working, and sends no endApiKeys', () => {
+		const line = 'Your API keys keep working. To end them too, change your password on the <a href="/account">Account page</a>.';
+
+		expect(around(line).at(-1)).toEqual({ condition: 'resettingOwnPassword', inElse: false });
+		expect(bodiesSent(functionNamed(page, 'resetPassword'))).toEqual([['currentPassword', 'newPassword'], ['password']]);
+	});
+
+	it('says beforehand how many API keys a reset ends, from the count the page was loaded with', () => {
+		const count = "They have {counted(resetTargetKeys, 'API key')}, which {resetTargetKeys === 1 ? 'stops' : 'stop'} working.";
+
+		// None for null, which the page is given for an account the caller may not reset.
+		expect(around(count).slice(-2)).toEqual([
+			{ condition: 'resettingOwnPassword', inElse: true },
+			{ condition: 'resetTargetKeys !== null && resetTargetKeys > 0', inElse: false }
+		]);
+		expect(around('They are signed out everywhere, every API key they have stops working, and any invite not yet used stops working.').at(-1)).toEqual({
+			condition: 'resettingOwnPassword',
+			inElse: true
+		});
+		expect(page.getText()).toContain('let resetTarget = $derived(data.users.find((u) => u.id === resetPasswordUserId));');
+		expect(page.getText()).toContain('let resetTargetKeys = $derived(resetKeysRead ? (resetTarget?.apiKeys ?? null) : null);');
+	});
+
+	it('reads the counts again when the dialog opens, and shows none until it has', () => {
+		// The one way the dialog opens.
+		expect(markup).toContain('onclick={() => openResetDialog(u.id)} title="Reset password">🔑</button>');
+		expect(assignmentsTo(page, 'resetPasswordUserId').map((assignment) => assignment.right.getText())).toEqual(['userId', 'null']);
+		expect(markup).not.toMatch(/resetPasswordUserId = (?!null)/);
+
+		// Not read, then read again, then read.
+		const opening = functionNamed(page, 'openResetDialog');
+		const rereads = callsOf(opening, 'invalidateAll');
+		expect(rereads).toHaveLength(1);
+		const marks = assignmentsTo(opening, 'resetKeysRead');
+		expect(marks.map((assignment) => assignment.right.getText())).toEqual(['false', 'true']);
+		expect(marks[0].getStart()).toBeLessThan(rereads[0].getStart());
+		expect(marks[1].getStart()).toBeGreaterThan(rereads[0].getStart());
+		// Only for the opening the read was made for.
+		expect(marks[1].parent.parent.getText()).toBe(
+			'if (opening === resetOpenings && resetPasswordUserId === userId) resetKeysRead = true;'
+		);
+		// And nowhere else.
+		expect(assignmentsTo(page, 'resetKeysRead')).toHaveLength(2);
+	});
+
+	it('gives the counts the answer gives in the toast after a reset, and reads the counts on the page again', () => {
+		const resetting = functionNamed(page, 'resetPassword');
+
+		expect(branches(page, 'resetPassword', 'answerBody')).toEqual(['ok']);
+		expect(resetting.getText()).toContain(
+			"`Password reset: ${counted(sessionsEnded, 'session')} and ${counted(apiKeysEnded, 'API key')} ended`"
+		);
+		expect(branches(page, 'resetPassword', 'invalidateAll')).toEqual(['ok']);
+		expect(branches(page, 'resetPassword', 'failureMessage')).toEqual(['failed']);
+	});
+});
+
+describe('the invite page, src/routes/invite/[token]/+page.svelte', () => {
+	const file = 'src/routes/invite/[token]/+page.svelte';
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const markup = source.slice(source.indexOf('</script>'));
+	const from = source.indexOf('</script>');
+	const around = (text: string) => {
+		expect(markup.split(text), text).toHaveLength(2);
+		return blocksAround(source, from + markup.indexOf(text));
+	};
+
+	/** The words the form answers a dead link with: `DEAD_LINK` in the page's server file, its pieces joined. */
+	function formWords(): string {
+		const server = ts.createSourceFile(
+			'+page.server.ts',
+			readFileSync(join(ROOT, 'src/routes/invite/[token]/+page.server.ts'), 'utf8'),
+			ts.ScriptTarget.Latest,
+			true
+		);
+		const pieces: string[] = [];
+		const visit = (node: ts.Node) => {
+			if (ts.isVariableDeclaration(node) && node.name.getText() === 'DEAD_LINK' && node.initializer) {
+				const collect = (part: ts.Node) => {
+					if (ts.isStringLiteralLike(part)) pieces.push(part.text);
+					ts.forEachChild(part, collect);
+				};
+				collect(node.initializer);
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(server);
+		return pieces.join('');
+	}
+
+	it('says the same about a dead link as the form does, whatever made it so', () => {
+		const words = formWords();
+
+		expect(words).toBe(
+			'This invite link no longer works. It has expired, it has already been used, or it was cancelled when a ' +
+				"newer invite was sent or the account's password, email address or role was changed. Ask an " +
+				'administrator to send you a new one.'
+		);
+		expect(around(words)).toEqual([{ condition: 'data.valid', inElse: true }]);
+		expect(source).not.toContain('invalid or has already been used');
+	});
+
+	it('says, before the form is sent, that setting a password ends the account’s API keys', () => {
+		const notice = "Setting a password here ends this account's {apiKeys} API key{apiKeys === 1 ? '' : 's'} and signs it out everywhere else.";
+
+		expect(around(notice)).toEqual([
+			{ condition: 'data.valid', inElse: false },
+			{ condition: 'apiKeys > 0', inElse: false }
+		]);
+		expect(scriptOf(file).getText()).toContain('let apiKeys = $derived(data.apiKeys ?? 0);');
+	});
+});
+
+// ─── A session that has ended ────────────────────────────────────────────────
+
+describe('a 401 that says the page’s session has ended, src/lib/signed-out.ts', () => {
+	const PAGE = 'http://localhost/board/1';
+
+	it('is one from this page’s own server, under /api/, and outside /api/v1/ and the request form’s routes', () => {
+		const cases: [RequestInfo | URL, boolean][] = [
+			['/api/boards', true],
+			['/api/cards/1/attachments', true],
+			['http://localhost/api/cards/1', true],
+			[new URL('http://localhost/api/events'), true],
+			[new Request('http://localhost/api/boards/1/events'), true],
+			// Named like the form's routes, and not one of them: the gate answers it as an internal route.
+			['/api/requestsX', true],
+			// Read against the page's own address, as the browser reads it.
+			['api/boards', false],
+			['https://elsewhere.example.test/api/boards', false],
+			['http://localhost:5173/api/boards', false],
+			['/api/v1/me', false],
+			['/api/requests', false],
+			['/api/requests/targets', false],
+			['/api/requests/4/messages?token=x', false],
+			['/login', false],
+			['/board/1/__data.json', false],
+			['/api', false],
+			['http://[not an address', false]
+		];
+
+		for (const [input, ends] of cases) {
+			expect({ input: String(input instanceof Request ? input.url : input), ends: endsTheSession(input, PAGE) }).toEqual({
+				input: String(input instanceof Request ? input.url : input),
+				ends
+			});
+		}
+	});
+
+	/** A `fetch` that answers each request with the next of `statuses`, and the page it watches for. */
+	function stage(statuses: number[], signedIn: () => boolean = () => true) {
+		const sentToLogin: string[] = [];
+		const answered: Response[] = [];
+		const fetch: Fetch = async () => {
+			const res = new Response(JSON.stringify({ message: 'x' }), { status: statuses.shift() ?? 200 });
+			answered.push(res);
+			return res;
+		};
+		const watched = watchForSignOut(fetch, { address: () => PAGE, signedIn, toLogin: () => sentToLogin.push('/login') });
+		return { watched, sentToLogin, answered };
+	}
+
+	it('sends a signed-in page to the login page on the first, once, and hands every answer back as it came', async () => {
+		const { watched, sentToLogin, answered } = stage([401, 401, 401]);
+
+		const first = await watched('/api/boards');
+		await watched('/api/cards/1', { method: 'PUT' });
+		await watched('/api/events');
+
+		expect(sentToLogin).toEqual(['/login']);
+		expect(first).toBe(answered[0]);
+		expect(first.status).toBe(401);
+		expect(await first.json()).toEqual({ message: 'x' });
+	});
+
+	it('leaves a page with nobody signed in where it is: a requester whose form has lapsed has no account to sign in to', async () => {
+		const { watched, sentToLogin } = stage([401, 401], () => false);
+
+		await watched('/api/boards');
+		await watched('/api/cards/1');
+
+		expect(sentToLogin).toEqual([]);
+	});
+
+	it('leaves every other answer alone: another status, the documented API, the request form’s routes, another server', async () => {
+		const { watched, sentToLogin } = stage([403, 404, 500, 200, 401, 401, 401]);
+
+		for (const input of ['/api/boards', '/api/boards', '/api/boards', '/api/boards', '/api/v1/me', '/api/requests/targets', 'https://elsewhere.example.test/api/boards']) {
+			await watched(input);
+		}
+
+		expect(sentToLogin).toEqual([]);
+	});
+
+	it('cannot make a request fail that would not have, nor one succeed that would not have', async () => {
+		const confused = watchForSignOut(async () => new Response(null, { status: 401 }), {
+			address: () => PAGE,
+			signedIn: () => {
+				throw new Error('cannot tell');
+			},
+			toLogin: () => {}
+		});
+		expect((await confused('/api/boards')).status).toBe(401);
+
+		const offline = new TypeError('Failed to fetch');
+		const unreachable = watchForSignOut(
+			async () => {
+				throw offline;
+			},
+			{ address: () => PAGE, signedIn: () => true, toLogin: () => {} }
+		);
+		await expect(unreachable('/api/boards')).rejects.toBe(offline);
+	});
+});
+
+describe('a live-update stream that fails, src/lib/live-stream.ts', () => {
+	type Fake = {
+		url: string;
+		onopen: (() => void) | null;
+		onerror: (() => void) | null;
+		closed: boolean;
+		close: () => void;
+		addEventListener: () => void;
+	};
+
+	/** A stream as the page would keep it, with stand-ins for the browser: each ask is answered with the next of `answers`. */
+	function stage(answers: (number | 'no answer')[]) {
+		const opened: Fake[] = [];
+		const timers: { run: () => void; ms: number }[] = [];
+		const asked: { url: string; signal: AbortSignal | null | undefined }[] = [];
+		const listened: Fake[] = [];
+		let reopened = 0;
+
+		const env: StreamEnvironment = {
+			open: (url) => {
+				const source: Fake = {
+					url,
+					onopen: null,
+					onerror: null,
+					closed: false,
+					close() {
+						this.closed = true;
+					},
+					addEventListener: () => {}
+				};
+				opened.push(source);
+				return source as unknown as EventSource;
+			},
+			fetch: async (input, init) => {
+				asked.push({ url: String(input), signal: init?.signal });
+				const answer = answers.shift();
+				if (answer === undefined || answer === 'no answer') throw new TypeError('Failed to fetch');
+				return new Response(null, { status: answer });
+			},
+			setTimeout: (run, ms) => {
+				const timer = { run, ms };
+				timers.push(timer);
+				return timer;
+			},
+			clearTimeout: (timer) => {
+				const at = timers.indexOf(timer as (typeof timers)[number]);
+				if (at >= 0) timers.splice(at, 1);
+			}
+		};
+
+		const close = keepStreamOpen('/api/events', (source) => listened.push(source as unknown as Fake), () => reopened++, env);
+
+		/** The wait that is pending, run, and whatever it asked answered. */
+		const waitOut = async () => {
+			const timer = timers.shift();
+			if (!timer) throw new Error('nothing is waiting');
+			timer.run();
+			await new Promise((settled) => setTimeout(settled, 0));
+			return timer.ms;
+		};
+		const latest = () => opened[opened.length - 1];
+
+		return { close, opened, timers, asked, listened, waitOut, latest, reopened: () => reopened };
+	}
+
+	it('waits three seconds after a failure, twice as long after each failure that follows, and five minutes at most', () => {
+		expect([1, 2, 3, 4, 5, 6, 7, 8, 9, 20].map(reconnectDelay)).toEqual([
+			3000, 6000, 12000, 24000, 48000, 96000, 192000, 300000, 300000, 300000
+		]);
+	});
+
+	it('asks for the stream before it opens it again, opens it again on a success, and has the page re-read', async () => {
+		const s = stage([200]);
+		s.latest().onopen?.();
+		expect(s.reopened()).toBe(0);
+
+		s.latest().onerror?.();
+		expect(s.opened[0].closed).toBe(true);
+		expect(await s.waitOut()).toBe(3000);
+
+		expect(s.asked.map((a) => a.url)).toEqual(['/api/events']);
+		expect(s.opened).toHaveLength(2);
+		expect(s.listened).toEqual(s.opened);
+		s.latest().onopen?.();
+		expect(s.reopened()).toBe(1);
+	});
+
+	it.each([401, 403, 404])('stays closed when the stream is refused %i: asking again would not mend it', async (status) => {
+		const s = stage([status]);
+		s.latest().onopen?.();
+		s.latest().onerror?.();
+		await s.waitOut();
+
+		expect(s.asked).toHaveLength(1);
+		expect(s.opened).toHaveLength(1);
+		expect(s.timers).toEqual([]);
+	});
+
+	it('waits longer each time there is no answer or a failure that may pass, and from three seconds again once it is open', async () => {
+		const s = stage(['no answer', 503, 429, 200]);
+		s.latest().onopen?.();
+		s.latest().onerror?.();
+
+		const waits = [await s.waitOut(), await s.waitOut(), await s.waitOut(), await s.waitOut()];
+		expect(waits).toEqual([3000, 6000, 12000, 24000]);
+		expect(s.opened).toHaveLength(2);
+
+		s.latest().onopen?.();
+		s.latest().onerror?.();
+		expect(s.timers.map((t) => t.ms)).toEqual([3000]);
+	});
+
+	it('lets go of the answer it asked for as soon as it has the status', async () => {
+		const s = stage([200]);
+		s.latest().onerror?.();
+		await s.waitOut();
+
+		expect(s.asked[0].signal?.aborted).toBe(true);
+		expect(await streamVerdict('/api/events', async () => new Response(null, { status: 502 }))).toBe('later');
+	});
+
+	it('stops waiting, and opens nothing more, once the page closes it', async () => {
+		const s = stage([200]);
+		s.latest().onerror?.();
+		s.close();
+		expect(s.timers).toEqual([]);
+
+		const asking = stage([200]);
+		asking.latest().onerror?.();
+		const timer = asking.timers.shift()!;
+		timer.run();
+		asking.close();
+		await new Promise((settled) => setTimeout(settled, 0));
+		expect(asking.opened).toHaveLength(1);
+	});
+});
+
+describe('where the watch and the streams are used, read from the source', () => {
+	it('src/hooks.client.ts watches fetch once, as the app starts, for a page with a signed-in user', () => {
+		const tree = ts.createSourceFile('hooks.client.ts', readFileSync(join(ROOT, 'src/hooks.client.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+		const init = tree.statements.find(
+			(statement) => ts.isVariableStatement(statement) && statement.getText().startsWith('export const init: ClientInit = ')
+		);
+		expect(init).toBeDefined();
+		const text = init!.getText().replace(/\s+/g, ' ');
+
+		expect(text).toContain('window.fetch = watchForSignOut(window.fetch.bind(window), {');
+		expect(text).toContain('signedIn: () => Boolean(page.data?.user)');
+		expect(text).toContain("toLogin: () => window.location.assign('/login')");
+		expect(tree.getText().match(/watchForSignOut\(/g)).toHaveLength(1);
+		expect(tree.getText()).toContain("import { page } from '$app/state';");
+	});
+
+	it('opens every live-update stream through keepStreamOpen, and nothing else opens one again', () => {
+		const files = (readdirSync(join(ROOT, 'src'), { recursive: true }) as string[])
+			.map((file) => file.split('\\').join('/'))
+			.filter((file) => /\.(ts|svelte)$/.test(file));
+		const opening = files.filter((file) => readFileSync(join(ROOT, 'src', file), 'utf8').includes('new EventSource('));
+
+		// The audit page's console is the one other. It opens one stream and
+		// only notes an error: the browser's own EventSource gives up on a
+		// refusal, and nothing opens another (see the console's own tests).
+		expect(opening.sort()).toEqual(['lib/live-stream.ts', 'routes/audit/+page.svelte']);
+		const audit = readFileSync(join(ROOT, 'src/routes/audit/+page.svelte'), 'utf8');
+		expect(audit.match(/new EventSource\(/g)).toHaveLength(1);
+		expect(audit).not.toContain('setTimeout(');
+
+		for (const file of ['src/lib/board/sse.ts', 'src/lib/live-refresh.ts', 'src/routes/all/+page.svelte']) {
+			const source = readFileSync(join(ROOT, file), 'utf8');
+			expect(source.match(/keepStreamOpen\(/g), file).toHaveLength(1);
+			expect(source, file).not.toMatch(/setTimeout\(connect/);
+		}
+	});
+});
+
+describe('the audit console’s live log, src/routes/audit/+page.svelte', () => {
+	const file = 'src/routes/audit/+page.svelte';
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const markup = source.slice(source.indexOf('</script>'));
+
+	/** A stand-in for the browser's EventSource, opened and driven by hand. */
+	class FakeEventSource {
+		static readonly CONNECTING = 0;
+		static readonly OPEN = 1;
+		static readonly CLOSED = 2;
+		readyState = FakeEventSource.CONNECTING;
+		onopen: (() => void) | null = null;
+		onerror: (() => void) | null = null;
+		onmessage: ((e: { data: string }) => void) | null = null;
+		constructor(readonly url: string) {}
+		close() {
+			this.readyState = FakeEventSource.CLOSED;
+		}
+	}
+
+	type Console = { es: FakeEventSource; connected: boolean; disconnected: boolean; entries: { id: number }[] };
+
+	/**
+	 * The page's `onMount` that opens the stream, as written, run with the
+	 * stand-in: the page's state is three plain variables here.
+	 */
+	function mount(): Console {
+		const opening = scriptOf(file).statements.find(
+			(statement) => ts.isExpressionStatement(statement) && statement.getText().startsWith('onMount(') && statement.getText().includes('new EventSource(')
+		) as ts.ExpressionStatement | undefined;
+		expect(opening).toBeDefined();
+		const start = ((opening!.expression as ts.CallExpression).arguments[0] as ts.ArrowFunction).getText();
+		const js = ts.transpileModule(`const start = ${start};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+		let es: FakeEventSource | undefined;
+		const Opening = class extends FakeEventSource {
+			constructor(url: string) {
+				super(url);
+				es = this;
+			}
+		};
+		const state = new Function(
+			'EventSource',
+			`let connected = false, disconnected = false, entries = [];\n${js}\nstart();\n` +
+				'return { get connected() { return connected; }, get disconnected() { return disconnected; }, get entries() { return entries; } };'
+		)(Opening) as Omit<Console, 'es'>;
+		expect(es?.url).toBe('/api/logs/stream');
+		return Object.assign(state, { es: es! }) as Console;
+	}
+
+	const at = (second: number) => `2026-10-14T10:00:${String(second).padStart(2, '0')}.000Z`;
+	const entry = (id: number, second: number) => ({ id, timestamp: at(second), level: 'INFO', context: 'TEST', message: `line ${id}`, meta: null, userId: null, ip: null });
+	const send = (c: Console, ...sent: ReturnType<typeof entry>[]) => {
+		for (const e of sent) c.es.onmessage!({ data: JSON.stringify(e) });
+	};
+
+	it('says it is disconnected once the browser has given up on the stream, not reconnecting for ever', () => {
+		const c = mount();
+		c.es.readyState = FakeEventSource.OPEN;
+		c.es.onopen!();
+		expect([c.connected, c.disconnected]).toEqual([true, false]);
+
+		// A dropped connection: the browser is trying again.
+		c.es.readyState = FakeEventSource.CONNECTING;
+		c.es.onerror!();
+		expect([c.connected, c.disconnected]).toEqual([false, false]);
+
+		// Answered 401 (or 403) when it tried: it has given up for good.
+		c.es.readyState = FakeEventSource.CLOSED;
+		c.es.onerror!();
+		expect([c.connected, c.disconnected]).toEqual([false, true]);
+
+		// And the status says so, where it said "reconnecting…" for ever.
+		expect(markup).toContain(
+			"{connected ? '● live' : disconnected ? '○ disconnected: reload the page' : '○ reconnecting…'}"
+		);
+	});
+
+	it('shows each entry once when the stream sends its last entries again on reconnecting, and every entry after a restart', () => {
+		const c = mount();
+		send(c, entry(1, 1), entry(2, 2), entry(3, 3));
+
+		// Reconnected: the last entries again, then a new one.
+		send(c, entry(1, 1), entry(2, 2), entry(3, 3), entry(4, 4));
+		expect(c.entries.map((e) => e.id)).toEqual([1, 2, 3, 4]);
+
+		// The server restarted, and its ids count from 1 again: later entries, shown.
+		send(c, entry(1, 10), entry(2, 11));
+		expect(c.entries.map((e) => e.id)).toEqual([1, 2, 3, 4, 1, 2]);
+	});
+});
+
+// ─── Every page action that can fail says so (card 2109) ────────────────────
+//
+// In the archived, All Tasks, teams, admin and reports pages and the card
+// window, and for the board page's restore, archive and duplicate, a write
+// that was refused said it had worked, or said nothing. Each now reads the
+// refusal with `failureMessage`, `deleteFailure` or the admin page's `sent()`,
+// says it, and changes the page only for a success, putting back what it
+// changed before the answer came.
+
+/**
+ * What the test of an `if` says about a request's answer: 'failed' when the
+ * `if` is taken for a request that was not done, 'ok' when it is taken for
+ * one that was, and null when it says neither. A failure is `!res.ok`;
+ * `failure`, which is what `deleteFailure` gives; `!res`, which is what the
+ * admin page's `sent()` gives; or a call that was awaited, negated, as
+ * `!(await sent(...))` and `!(await saveBackupConfig())`.
+ */
+function takenWhen(statement: ts.IfStatement): 'ok' | 'failed' | null {
+	const test = statement.expression.getText().replace(/\s/g, '');
+	if (test === 'res.ok') return 'ok';
+	if (test === '!res.ok' || test === 'failure' || test === '!res' || /^!\(await[\w.]+\(/.test(test)) return 'failed';
+	return null;
+}
+
+/** Whether `node` is inside `block`, or is it. */
+function isWithin(node: ts.Node, block: ts.Node): boolean {
+	for (let at: ts.Node | undefined = node; at; at = at.parent) if (at === block) return true;
+	return false;
+}
+
+/** Whether a statement always ends by returning: a `return`, or a block whose last statement is one. */
+function endsByReturning(statement: ts.Statement): boolean {
+	if (ts.isReturnStatement(statement)) return true;
+	return ts.isBlock(statement) && statement.statements.length > 0 && ts.isReturnStatement(statement.statements[statement.statements.length - 1]);
+}
+
+/**
+ * Which side of a request's answer a node is on. 'failed': in the branch for
+ * an answer that is a failure, or in a `catch`, which is a request that got
+ * no answer. 'ok': in the branch for a success, or after a branch for a
+ * failure that ends by returning. Null: neither, which is to say it runs
+ * whatever the answer was. The nearest decides.
+ */
+function sideOf(node: ts.Node): 'ok' | 'failed' | null {
+	for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+		if (ts.isCatchClause(parent)) return 'failed';
+		if (ts.isIfStatement(parent) && child !== parent.expression) {
+			const taken = takenWhen(parent);
+			if (taken) return (parent.thenStatement === child) === (taken === 'failed') ? 'failed' : 'ok';
+		}
+		if (ts.isBlock(parent) || ts.isSourceFile(parent)) {
+			const before = parent.statements.slice(0, parent.statements.indexOf(child as ts.Statement));
+			const failedFirst = before.some(
+				(earlier) =>
+					ts.isIfStatement(earlier) && takenWhen(earlier) === 'failed' && !earlier.elseStatement && endsByReturning(earlier.thenStatement)
+			);
+			if (failedFirst) return 'ok';
+		}
+	}
+	return null;
+}
+
+/** Every statement in `within` that is `text` and nothing more, as written (`showCardModal = false`). */
+function statementsOf(within: ts.Node, text: string): ts.ExpressionStatement[] {
+	const wanted = text.replace(/\s+/g, ' ');
+	const found: ts.ExpressionStatement[] = [];
+	const visit = (node: ts.Node) => {
+		if (ts.isExpressionStatement(node) && node.expression.getText().replace(/\s+/g, ' ') === wanted) found.push(node);
+		ts.forEachChild(node, visit);
+	};
+	visit(within);
+	return found;
+}
+
+/** The functions of `$lib/api.ts` that send a write: each calls `jsonRequest`, or `fetch` with a method that writes. */
+function apiWrites(): string[] {
+	const tree = ts.createSourceFile('api.ts', readFileSync(join(ROOT, 'src/lib/api.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+	return tree.statements
+		.filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && !!statement.name)
+		.filter((fn) => fn.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+		.filter((fn) => callsOf(fn, 'jsonRequest').length > 0 || callsOf(fn, 'fetch').some((call) => writeOf(call, []) !== null))
+		.map((fn) => fn.name!.text);
+}
+
+/**
+ * The write a call sends, or null for a call that sends none: `fetch PUT`
+ * for `fetch` with a method that writes, and `api.updateCard` for a write of
+ * `$lib/api.ts`, whose names are `writes`.
+ */
+function writeOf(call: ts.CallExpression, writes: string[]): string | null {
+	const callee = call.expression.getText();
+	if (callee === 'fetch') {
+		const method = /method:\s*['"](POST|PUT|PATCH|DELETE)['"]/.exec(call.arguments[1]?.getText() ?? '');
+		return method ? `fetch ${method[1]}` : null;
+	}
+	const named = /^api\.(\w+)$/.exec(callee);
+	return named && writes.includes(named[1]) ? callee : null;
+}
+
+/** The name of the function `node` is in: declared, or an arrow or function given to a name. */
+function enclosingName(node: ts.Node): string {
+	for (let at = node.parent; at; at = at.parent) {
+		if (ts.isFunctionDeclaration(at) && at.name) return at.name.text;
+		if (ts.isVariableDeclaration(at) && at.initializer && (ts.isArrowFunction(at.initializer) || ts.isFunctionExpression(at.initializer))) {
+			return at.name.getText();
+		}
+	}
+	return '(top)';
+}
+
+/** The helpers that are handed a request to send and read its answer themselves. */
+const READ_BY = ['sent', 'deleteFailure', 'api.deleteFailure'];
+
+/** Whether the variable `name`, declared by `declared`, is read anywhere in the function it is declared in. */
+function isRead(declared: ts.VariableDeclaration): boolean {
+	const name = declared.name.getText();
+	const scope = ts.findAncestor(declared, (node) => ts.isFunctionLike(node) || ts.isSourceFile(node)) ?? declared.getSourceFile();
+	let read = false;
+	const visit = (node: ts.Node) => {
+		if (ts.isIdentifier(node) && node !== declared.name && node.text === name) read = true;
+		if (!read) ts.forEachChild(node, visit);
+	};
+	visit(scope);
+	return read;
+}
+
+/**
+ * Whether the answer to the request `call` sends is thrown away. It is when
+ * the request is, awaited or not:
+ *
+ *   - a statement and nothing more: `fetch(...)`, `await fetch(...)`;
+ *   - after `void`;
+ *   - followed by `.then` or `.catch`, which a page has used to swallow it;
+ *   - the body of an arrow written without braces, `() => fetch(...)`, that
+ *     is not handed to a helper that reads the answer (`sent`,
+ *     `deleteFailure`): an event handler, or a `.map` for `Promise.all`;
+ *   - kept as a variable that is never read: `const res = await fetch(...)`.
+ */
+function thrownAway(call: ts.CallExpression): boolean {
+	let at: ts.Node = call;
+	while (ts.isAwaitExpression(at.parent) || ts.isParenthesizedExpression(at.parent)) at = at.parent;
+	const parent = at.parent;
+	if (ts.isExpressionStatement(parent) || ts.isVoidExpression(parent)) return true;
+	if (ts.isPropertyAccessExpression(parent) && parent.expression === at && ['then', 'catch'].includes(parent.name.text)) return true;
+	if (ts.isArrowFunction(parent) && parent.body === at) {
+		const handedTo = ts.isCallExpression(parent.parent) && parent.parent.arguments.includes(parent) ? parent.parent.expression.getText() : null;
+		return !READ_BY.includes(handedTo ?? '');
+	}
+	if (ts.isVariableDeclaration(parent) && parent.initializer === at && ts.isIdentifier(parent.name)) return !isRead(parent);
+	return false;
+}
+
+/**
+ * The code of a file, parsed: a module whole, and a `.svelte` file in every
+ * `<script>` and in every `on...={...}` of its markup. `where` names an event
+ * handler of the markup, `markup onclick`, and is absent for a script.
+ */
+function codeOf(file: string, source: string): { tree: ts.SourceFile; where?: string }[] {
+	const parse = (code: string) => ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
+	if (!file.endsWith('.svelte')) return [{ tree: parse(source) }];
+	const found: { tree: ts.SourceFile; where?: string }[] = [];
+	for (const script of source.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) found.push({ tree: parse(script[1]) });
+	const markup = source.replace(/<script[^>]*>[\s\S]*?<\/script>|<style[^>]*>[\s\S]*?<\/style>/g, '');
+	for (const handler of markup.matchAll(/\b(on\w+)=\{/g)) {
+		const open = handler.index! + handler[0].length - 1;
+		let depth = 0;
+		let end = open;
+		for (; end < markup.length; end++) {
+			if (markup[end] === '{') depth++;
+			else if (markup[end] === '}' && --depth === 0) break;
+		}
+		found.push({ tree: parse(`(${markup.slice(open + 1, end)});`), where: `markup ${handler[1]}` });
+	}
+	return found;
+}
+
+/**
+ * Every write in a file whose answer is thrown away (`thrownAway`): `fetch`
+ * with a method that writes, or `api.<write>(...)`. Each as
+ * `file › where › what`, `where` being the function it is in, or
+ * `markup onclick` for an event handler written in a Svelte file's markup.
+ */
+function discardedIn(file: string, source: string, writes: string[]): string[] {
+	const found: string[] = [];
+	for (const { tree, where } of codeOf(file, source)) {
+		const visit = (node: ts.Node) => {
+			if (ts.isCallExpression(node)) {
+				const what = writeOf(node, writes);
+				if (what && thrownAway(node)) found.push(`${file} › ${where ?? enclosingName(node)} › ${what}`);
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(tree);
+	}
+	return found;
+}
+
+/** Every file under `dir` whose name ends with `ending`, as a path from the repository. */
+const filesUnder = (dir: string, ending: string) =>
+	(readdirSync(join(ROOT, dir), { recursive: true }) as string[])
+		.map((file) => `${dir}/${file.split('\\').join('/')}`)
+		.filter((file) => file.endsWith(ending));
+
+/** What a write of one of the pages must do with its answer. */
+type Write = {
+	/** The function, by its name at the top of the page's script. */
+	name: string;
+	/** How a refusal is read and put into words. */
+	reads?: 'failureMessage' | 'deleteFailure' | 'sent';
+	/** It sends through another function of the page, which is in the table. */
+	via?: string;
+	/** What puts back what was changed before the answer came: each only for a failure. */
+	putsBack?: string[];
+	/** What says it was done, or acts as if it was: each only for a success. */
+	done?: string[];
+};
+
+/**
+ * Every write in the seven files of card 2109, and in the label picker of card
+ * 2010; for the board page, the three it names and card 2134's column rename.
+ */
+const WRITES: Record<string, Write[]> = {
+	'src/routes/board/[id]/+page.svelte': [
+		{ name: 'restoreCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)', "toasts.add('Card restored')"] },
+		{ name: 'confirmDeleteCard', reads: 'deleteFailure', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'showCardModal = false'] },
+		// Card 2139: it said "Board linked as sub-board" whatever the answer, and nothing was saved.
+		{ name: 'linkSubBoard', reads: 'failureMessage', done: ['await invalidateAll()', "toasts.add('Board linked as sub-board')"] },
+		// Card 2134: a rename that would change whether the column is a Complete
+		// column is refused while it holds cards, and the page showed the new title.
+		{ name: 'finishEditColumn', reads: 'failureMessage', done: ['col.title = title'] }
+	],
+	'src/routes/archived/+page.svelte': [
+		{ name: 'restoreCard', reads: 'deleteFailure', done: ["toasts.add('Card restored')", 'await invalidateAll()'] },
+		{ name: 'permanentlyDeleteCard', reads: 'deleteFailure', done: ['await invalidateAll()'] },
+		{ name: 'purgeAll', reads: 'failureMessage', done: ['await invalidateAll()'] }
+	],
+	'src/routes/all/+page.svelte': [
+		{ name: 'doMoveCard', reads: 'failureMessage', done: ['showMoveModal = false', 'playMoveSound()', 'playCompleteSound()'] },
+		{ name: 'saveCard', reads: 'failureMessage', done: ["toasts.add('Card updated')", 'showCardModal = false'] },
+		{ name: 'deleteCard', reads: 'deleteFailure', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'showCardModal = false'] },
+		{ name: 'restoreArchivedCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)', "toasts.add('Card restored')"] },
+		{ name: 'permanentlyDeleteArchivedCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)'] }
+	],
+	'src/routes/teams/+page.svelte': [
+		{ name: 'createTeam', reads: 'failureMessage', done: ['showCreateTeam = false', "showToast('Team created')"] },
+		{ name: 'deleteTeam', reads: 'deleteFailure', done: ["showToast('Team deleted')"] },
+		{ name: 'addTeamMember', reads: 'failureMessage', done: ['addMemberUserId = null', "showToast('Member added')"] },
+		{ name: 'removeTeamMember', reads: 'deleteFailure', done: ["showToast('Member removed')"] }
+	],
+	'src/routes/admin/+page.svelte': [
+		{ name: 'saveAppUrl', reads: 'sent', done: ["showToast('App URL saved')"] },
+		{ name: 'saveBackupConfig', reads: 'sent', done: ["showToast('Backup settings saved')"] },
+		{ name: 'addDestination', via: 'saveBackupConfig', putsBack: ['backupDestinations = was'], done: ['resetDestForm()', 'showAddDestination = false'] },
+		{ name: 'updateDestination', via: 'saveBackupConfig', putsBack: ['backupDestinations = was'], done: ['editingDest = null', 'resetDestForm()'] },
+		{ name: 'removeDestination', via: 'saveBackupConfig', putsBack: ['backupDestinations = was'] },
+		{ name: 'testDestination', reads: 'sent' },
+		{ name: 'runManualBackup', reads: 'sent', done: ['await loadBackupConfig()'] },
+		{ name: 'exchangeGDriveCode', reads: 'sent', done: ['await loadBackupConfig()'] },
+		{ name: 'deleteBoard', reads: 'sent', done: ["showToast('Board deleted')"] },
+		{ name: 'clearBoardCards', reads: 'sent', done: ["showToast('All cards cleared from board')"] },
+		{ name: 'clearBoardCategories', reads: 'sent', done: ["showToast('All categories cleared from board')"] },
+		{ name: 'resetDatabase', reads: 'failureMessage', done: ['window.location.href = redirect'] },
+		{ name: 'vacuumDatabase', reads: 'sent', done: ["showToast('Database vacuumed. Unused space was reclaimed.')"] },
+		{ name: 'resetAllXp', reads: 'sent', done: ["showToast('All XP has been reset to 0')"] },
+		{ name: 'purgeArchivedCards', reads: 'sent', done: ['await invalidateAll()'] },
+		{ name: 'createUser', reads: 'sent', done: ['showCreateUser = false'] },
+		{ name: 'changeUserRole', reads: 'failureMessage', putsBack: ['putBack()'], done: ['await invalidateAll()'] },
+		{ name: 'resetPassword', reads: 'failureMessage', done: ['resetPasswordUserId = null'] },
+		{ name: 'deleteUser', reads: 'sent', done: ["showToast('User deleted')"] },
+		{ name: 'resendInvite', reads: 'sent' },
+		{ name: 'createTeam', reads: 'sent', done: ['showCreateTeam = false', "showToast('Team created')"] },
+		{ name: 'deleteTeam', reads: 'sent', done: ["showToast('Team deleted')"] },
+		{ name: 'addTeamMember', reads: 'sent', done: ['addMemberUserId = null', "showToast('Member added')"] },
+		{ name: 'removeTeamMember', reads: 'sent', done: ["showToast('Member removed')"] },
+		{ name: 'saveSmtp', reads: 'failureMessage', done: ["smtpMessage = 'SMTP settings saved!'"] },
+		{ name: 'testSmtp', reads: 'failureMessage' }
+	],
+	'src/routes/reports/+page.svelte': [
+		{ name: 'generateReport', reads: 'failureMessage' },
+		{ name: 'sendReportEmail', reads: 'failureMessage' },
+		{ name: 'createSchedule', reads: 'failureMessage', done: ['showNewSchedule = false', "schedName = ''", 'await invalidateAll()'] },
+		{ name: 'toggleSchedule', reads: 'failureMessage', done: ['await invalidateAll()'] },
+		{ name: 'deleteSchedule', reads: 'deleteFailure', done: ['await invalidateAll()'] }
+	],
+	'src/lib/components/CardModal.svelte': [
+		// A label is put on and taken off by the label picker, below (card 2010).
+		{ name: 'setCover', reads: 'failureMessage', putsBack: ['coverUrl = was'] },
+		{ name: 'clearCover', via: 'setCover' },
+		{ name: 'createCategoryInline', reads: 'failureMessage', done: ['showNewCategory = false'] },
+		{ name: 'assignUser', reads: 'failureMessage' },
+		{ name: 'unassignUser', reads: 'deleteFailure' },
+		{ name: 'saveAsTemplate', reads: 'failureMessage', done: ['showSaveTemplate = false', "templateName = ''"] },
+		{ name: 'deleteTemplate', reads: 'deleteFailure', done: ['templates = templates.filter(t => t.id !== id)'] },
+		{ name: 'toggleSubtask', reads: 'failureMessage', done: ['subtask.completed = !subtask.completed'] },
+		{ name: 'addDependency', reads: 'failureMessage', done: ['pickerMode = null'] },
+		{ name: 'removeDependency', reads: 'failureMessage', putsBack: ['await loadDependencies()'], done: ['blocks = data.blocks'] },
+		{ name: 'saveMilestone', reads: 'failureMessage', putsBack: ['putBack()'], done: ['milestoneId = next'] },
+		{ name: 'postComment', reads: 'failureMessage', done: ["newComment = ''"] },
+		{ name: 'deleteComment', reads: 'deleteFailure', done: ['comments = comments.filter(c => c.id !== commentId)'] },
+		{ name: 'saveEditComment', reads: 'failureMessage', done: ['editingCommentId = null'] },
+		{ name: 'deleteAttachment', reads: 'deleteFailure', putsBack: ['await loadAttachments()'], done: ['attachments = attachments.filter(a => a.id !== id)'] }
+	],
+	// Card 2010: the card window's Labels section. The chip changes only once
+	// the server has changed it, as the window's own toggle did (card 2109),
+	// and to what the server says it is now (`toggled`), not to the opposite of
+	// what the window believed; a label made is offered and put on the card,
+	// and one changed or deleted is shown so, only once the server has said yes.
+	'src/lib/components/LabelPicker.svelte': [
+		{ name: 'toggleLabel', reads: 'failureMessage', done: ['selected = toggled ? [...others, labelId] : others'] },
+		{
+			name: 'createLabel',
+			reads: 'failureMessage',
+			done: ['list = [...list.filter((label) => label.id !== made.id), made]', 'showNew = false', 'await toggleLabel(made.id)']
+		},
+		{ name: 'saveLabel', reads: 'failureMessage', done: ['list = list.map((label) => (label.id === changed.id ? changed : label))', 'editingId = null'] },
+		{
+			name: 'deleteLabel',
+			reads: 'deleteFailure',
+			done: ['list = list.filter((label) => label.id !== id)', 'selected = selected.filter((labelId) => labelId !== id)', 'editingId = null']
+		}
+	]
+};
+
+/** Writes in the files above that have tests of their own above, by file. */
+const TESTED_ABOVE: Record<string, string[]> = {
+	'src/routes/admin/+page.svelte': ['handleFileSelected'],
+	'src/lib/components/CardModal.svelte': ['uploadFile']
+};
+
+describe('every write of the seven pages of card 2109, and of the label picker, says when it was refused', () => {
+	const writes = apiWrites();
+
+	it.each(Object.keys(WRITES).filter((file) => !file.startsWith('src/routes/board/')))(
+		'%s: every function that sends a write is in the table',
+		(file) => {
+			const sending = scriptOf(file)
+				.statements.filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && !!statement.name)
+				.filter((fn) => {
+					let sends = false;
+					const visit = (node: ts.Node) => {
+						if (ts.isCallExpression(node) && writeOf(node, writes)) sends = true;
+						ts.forEachChild(node, visit);
+					};
+					visit(fn);
+					return sends;
+				})
+				.map((fn) => fn.name!.text);
+			const named = [...WRITES[file].map((write) => write.name), ...(TESTED_ABOVE[file] ?? [])];
+
+			expect(sending.length).toBeGreaterThan(0);
+			expect(sending.filter((name) => !named.includes(name))).toEqual([]);
+		}
+	);
+
+	const cases = Object.entries(WRITES).flatMap(([file, list]) => list.map((write) => [`${file} ${write.name}`, file, write] as const));
+
+	it.each(cases)('%s says what the server said, and changes the page only for a success', (_, file, write) => {
+		const fn = functionNamed(scriptOf(file), write.name);
+
+		if (write.reads === 'failureMessage') {
+			const asked = [...callsOf(fn, 'failureMessage'), ...callsOf(fn, 'api.failureMessage')];
+			expect(asked.length).toBeGreaterThan(0);
+			expect(asked.map(sideOf)).toEqual(asked.map(() => 'failed'));
+		}
+		if (write.reads === 'deleteFailure') {
+			const asked = [...callsOf(fn, 'deleteFailure'), ...callsOf(fn, 'api.deleteFailure')];
+			expect(asked).toHaveLength(1);
+			// Kept as `failure`, and what is said when there is one.
+			const kept = asked[0].parent.parent;
+			expect(ts.isVariableDeclaration(kept) && kept.name.getText()).toBe('failure');
+			const ifFailure: ts.IfStatement[] = [];
+			const visit = (node: ts.Node) => {
+				if (ts.isIfStatement(node) && node.expression.getText() === 'failure') ifFailure.push(node);
+				ts.forEachChild(node, visit);
+			};
+			visit(fn);
+			expect(ifFailure).toHaveLength(1);
+			expect(ifFailure[0].thenStatement.getText()).toMatch(/\(failure[,)]|= failure;/);
+		}
+		if (write.reads === 'sent') expect(callsOf(fn, 'sent')).toHaveLength(1);
+		if (write.via) expect(callsOf(fn, write.via)).toHaveLength(1);
+
+		// No answer is read as JSON unless it is a success.
+		expect(callsOf(fn, 'res.json').map(sideOf).filter((side) => side !== 'ok')).toEqual([]);
+		for (const text of write.putsBack ?? []) {
+			const found = statementsOf(fn, text);
+			expect(found.length, text).toBeGreaterThan(0);
+			expect(found.map(sideOf), text).toEqual(found.map(() => 'failed'));
+			// For a refusal, and not only for a request that got no answer.
+			const inCatch = (node: ts.Node) => ts.findAncestor(node, ts.isCatchClause) !== undefined;
+			expect(found.some((statement) => !inCatch(statement)), text).toBe(true);
+		}
+		for (const text of write.done ?? []) {
+			const found = statementsOf(fn, text);
+			expect(found.length, text).toBeGreaterThan(0);
+			expect(found.map(sideOf), text).toEqual(found.map(() => 'ok'));
+		}
+	});
+
+	it('leaves no request whose failure goes unsaid: each is asked in a try whose catch says so, or through a helper that does', () => {
+		// A request that gets no answer throws. Where a page calls `fetch` itself
+		// for one of these writes, it does so in a `try` with a `catch`; the
+		// helpers (`deleteFailure`, `sent`) have their own.
+		for (const [file, list] of Object.entries(WRITES)) {
+			const tree = scriptOf(file);
+			for (const write of list) {
+				const fn = functionNamed(tree, write.name);
+				for (const call of callsOf(fn, 'fetch')) {
+					let caught = false;
+					let helped = false;
+					for (let at: ts.Node | undefined = call; at && at !== fn; at = at.parent) {
+						if (ts.isTryStatement(at.parent) && at.parent.tryBlock === at && at.parent.catchClause) caught = true;
+						if (ts.isCallExpression(at) && ['sent', 'deleteFailure', 'api.deleteFailure'].includes(at.expression.getText())) helped = true;
+					}
+					expect(caught || helped, `${file} ${write.name}`).toBe(true);
+				}
+			}
+		}
+	});
+});
+
+describe('no page throws away the answer to a write', () => {
+	/**
+	 * The writes whose answer is still thrown away, each a fault known and left
+	 * for a card of its own, with the number of the card that puts it right.
+	 * The list can only shrink: an entry that is no longer found fails the
+	 * test, so take it off when the write is put right.
+	 */
+	const LEFT: Record<string, 2012 | 2148> = {
+		// Card 2012, which rewrites the board page's writes and the modules in
+		// src/lib/board it sends them through. Until then they are as they were.
+		'src/routes/board/[id]/+page.svelte › saveInlineEdit › api.updateCard': 2012,
+		'src/routes/board/[id]/+page.svelte › cyclePriority › api.updateCard': 2012,
+		'src/routes/board/[id]/+page.svelte › saveCompletionPrompt › api.updateCard': 2012,
+		// The assignees chosen for a new card, each sent in a `.map` whose answers `Promise.all` drops.
+		'src/routes/board/[id]/+page.svelte › saveCard › fetch POST': 2012,
+		'src/routes/board/[id]/+page.svelte › markup onMove › api.reorderCards': 2012,
+		'src/routes/board/[id]/+page.svelte › markup onPriority › api.updateCard': 2012,
+		'src/routes/board/[id]/+page.svelte › markup onAdd › api.createCategory': 2012,
+		'src/routes/board/[id]/+page.svelte › markup onDeleteCategory › api.deleteCategoryApi': 2012,
+		'src/lib/board/board-actions.ts › saveBoardName › api.updateBoard': 2012,
+		'src/lib/board/board-actions.ts › saveBoardEmoji › api.updateBoard': 2012,
+		'src/lib/board/board-actions.ts › addColumn › api.createColumn': 2012,
+		'src/lib/board/board-actions.ts › addCategory › api.createCategory': 2012,
+		'src/lib/board/board-actions.ts › deleteCategory › api.deleteCategoryApi': 2012,
+		'src/lib/board/bulk-actions.ts › bulkMove › api.reorderCards': 2012,
+		'src/lib/board/bulk-actions.ts › bulkPriority › api.updateCard': 2012,
+		'src/lib/board/card-actions.ts › saveCard › api.updateCard': 2012,
+		'src/lib/board/card-actions.ts › saveCard › api.createSubtask': 2012,
+		'src/lib/board/card-actions.ts › togglePin › api.updateCard': 2012,
+		'src/lib/board/dnd-handlers.ts › handleCardDndFinalize › api.updateCard': 2012,
+		'src/lib/board/dnd-handlers.ts › confirmOnHold › api.updateCard': 2012,
+		'src/lib/board/dnd-handlers.ts › confirmOnHold › api.reorderCards': 2012,
+		'src/lib/board/dnd-handlers.ts › handleColumnDndFinalize › api.reorderColumns': 2012,
+		// Card 2148, found beside card 2109 (its plan's section 4, item 10):
+		// sharing a board, deleting a subtask from its window, the dashboard's
+		// favourite and grouping, and the account page's emoji and mail settings.
+		// The share window's `updateRole` came off with card 2115's review: see
+		// "the share window's role select" below.
+		'src/lib/components/ShareModal.svelte › removeAccess › fetch DELETE': 2148,
+		'src/lib/components/SubtaskModal.svelte › handleDelete › fetch DELETE': 2148,
+		'src/routes/+page.svelte › toggleFavourite › fetch POST': 2148,
+		'src/routes/+page.svelte › setBoardCategory › fetch PUT': 2148,
+		'src/routes/account/+page.svelte › changeEmoji › fetch PUT': 2148,
+		'src/routes/account/+page.svelte › toggleNotif › fetch PUT': 2148
+	};
+
+	it('finds none but the ones left for a card of their own, and each of those', () => {
+		const writes = apiWrites();
+		const files = [...filesUnder('src/routes', '.svelte'), ...filesUnder('src/lib/components', '.svelte'), ...filesUnder('src/lib/board', '.ts')];
+		const found = files.flatMap((file) => discardedIn(file, readFileSync(join(ROOT, file), 'utf8'), writes));
+
+		expect(found.sort()).toEqual(Object.keys(LEFT).sort());
+	});
+
+	it('leaves each to the card that owns its file: 2012 the board page and src/lib/board, 2148 the rest', () => {
+		for (const [write, card] of Object.entries(LEFT)) {
+			const boards = write.startsWith('src/routes/board/[id]/+page.svelte ›') || write.startsWith('src/lib/board/');
+			expect({ write, card }).toEqual({ write, card: boards ? 2012 : 2148 });
+		}
+	});
+
+	it('knows the writes of $lib/api.ts, and no read among them', () => {
+		const writes = apiWrites();
+
+		expect(writes).toEqual(expect.arrayContaining(['createCard', 'updateCard', 'deleteCard', 'reorderCards', 'deleteBoardApi', 'toggleLabel']));
+		expect(writes).not.toContain('loadActivities');
+		expect(writes).not.toContain('fetchXp');
+		expect(writes).not.toContain('deleteFailure');
+	});
+});
+
+describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+		for (const shown of get(toasts)) toasts.dismiss(shown.id);
+	});
+
+	const shown = () => get(toasts).map((toast) => `${toast.type}: ${toast.message}`);
+
+	it('keeps a failure until it is closed, and lets anything else go after three seconds', () => {
+		vi.useFakeTimers();
+		toasts.add('Saved');
+		toasts.add('No edit access to this board', 'error');
+		toasts.add('Card archived', 'info');
+		toasts.add('Over the WIP limit', 'warning');
+
+		vi.advanceTimersByTime(TOAST_MS - 1);
+		expect(shown()).toHaveLength(4);
+		vi.advanceTimersByTime(1);
+		expect(shown()).toEqual(['error: No edit access to this board']);
+		expect(TOAST_MS).toBe(3000);
+
+		// Ten minutes on, it is still there: it waits to be closed.
+		vi.advanceTimersByTime(10 * 60_000);
+		expect(shown()).toEqual(['error: No edit access to this board']);
+		toasts.dismiss(get(toasts)[0].id);
+		expect(shown()).toEqual([]);
+	});
+
+	it('clears every failure and nothing else when its page is left', () => {
+		vi.useFakeTimers();
+		toasts.add('Card not found', 'error');
+		toasts.add('Restored');
+		toasts.add('The team was not deleted.', 'error');
+
+		toasts.clearErrors();
+		expect(shown()).toEqual(['success: Restored']);
+		vi.advanceTimersByTime(TOAST_MS);
+		expect(shown()).toEqual([]);
+	});
+
+	it('shows the same failure once, as the newest, and no more than three failures, the oldest going first', () => {
+		vi.useFakeTimers();
+		toasts.add('Card not found', 'error');
+		toasts.add('Saved');
+		toasts.add('Card not found', 'error');
+		expect(shown()).toEqual(['success: Saved', 'error: Card not found']);
+
+		toasts.add('One', 'error');
+		toasts.add('Two', 'error');
+		toasts.add('Three', 'error');
+		expect(MOST_FAILURES).toBe(3);
+		expect(shown()).toEqual(['success: Saved', 'error: One', 'error: Two', 'error: Three']);
+		// What is not a failure is not counted among them.
+		toasts.add('Card archived', 'info');
+		expect(shown()).toEqual(['success: Saved', 'error: One', 'error: Two', 'error: Three', 'info: Card archived']);
+		// The same as one shown is not a fourth: it is shown once, as the newest.
+		toasts.add('One', 'error');
+		expect(shown()).toEqual(['success: Saved', 'error: Two', 'error: Three', 'info: Card archived', 'error: One']);
+	});
+
+	it('drops a failure whose request was started before a navigation, and shows one started after it', () => {
+		const before = toasts.navigation();
+		toasts.add('Card not found', 'error', before);
+		expect(shown()).toEqual(['error: Card not found']);
+
+		toasts.navigated();
+		expect(toasts.navigation()).toBe(before + 1);
+		toasts.clearErrors();
+		// The answer to a request the page left behind comes in on the next page.
+		toasts.add('The team was not deleted.', 'error', before);
+		expect(shown()).toEqual([]);
+		// One started on this page is shown, and so is a check made before any request.
+		toasts.add('The schedule was not changed.', 'error', toasts.navigation());
+		toasts.add('Destination name is required', 'error');
+		expect(shown()).toEqual(['error: The schedule was not changed.', 'error: Destination name is required']);
+	});
+
+	it('is cleared of failures by Toast.svelte when its page goes, and when the page is navigated without going', () => {
+		const component = scriptOf('src/lib/components/Toast.svelte');
+		const given = (callee: string) => callsOf(component, callee).map((call) => call.arguments.map((argument) => argument.getText()));
+
+		expect(given('onDestroy')).toEqual([['() => toasts.clearErrors()']]);
+		// From a board to its sub-board SvelteKit keeps the page: nothing is destroyed.
+		expect(given('afterNavigate')).toEqual([['() => toasts.clearErrors()']]);
+		// And each navigation is counted as it begins, so that a failure that comes after it is dropped.
+		expect(given('onNavigate')).toEqual([['() => toasts.navigated()']]);
+		expect(component.getText()).toContain("import { afterNavigate, onNavigate } from '$app/navigation';");
+	});
+
+	it.each(Object.keys(WRITES))('%s gives each failure that follows a request the navigation the request was started in', (file) => {
+		const source = readFileSync(join(ROOT, file), 'utf8');
+		const awaitsIn = (fn: ts.Node) => {
+			const found: ts.AwaitExpression[] = [];
+			const visit = (node: ts.Node) => {
+				if (ts.isAwaitExpression(node)) found.push(node);
+				ts.forEachChild(node, visit);
+			};
+			visit(fn);
+			return found;
+		};
+		const checked: string[] = [];
+		for (const { tree } of codeOf(file, source)) {
+			const failures = [...callsOf(tree, 'toasts.add'), ...callsOf(tree, 'showToast')].filter((call) => call.arguments[1]?.getText().includes("'error'"));
+			for (const call of failures) {
+				const fn = ts.findAncestor(call.parent, ts.isFunctionLike);
+				// A check made before any request, such as a name left empty, has no request to wait for.
+				if (!fn || !awaitsIn(fn).some((waited) => waited.getStart() < call.getStart())) continue;
+				checked.push(call.getText());
+				expect(call.arguments[2]?.getText(), call.getText()).toBe('started');
+				// Read as the request starts: before the first `await` of the function that reads it.
+				let declared: ts.VariableDeclaration | undefined;
+				for (let at: ts.Node | undefined = fn; at && !declared; at = ts.findAncestor(at.parent, ts.isFunctionLike)) {
+					const outer = at;
+					const visit = (node: ts.Node) => {
+						if (ts.isVariableDeclaration(node) && node.name.getText() === 'started' && ts.findAncestor(node.parent, ts.isFunctionLike) === outer) declared = node;
+						if (!declared) ts.forEachChild(node, visit);
+					};
+					visit(outer);
+				}
+				expect(declared?.initializer?.getText(), call.getText()).toBe('toasts.navigation()');
+				const reader = ts.findAncestor(declared!.parent, ts.isFunctionLike)!;
+				expect(awaitsIn(reader).every((waited) => waited.getStart() > declared!.getStart()), call.getText()).toBe(true);
+			}
+		}
+		// The card window and its label picker say a refusal on a line of their own, not in a toast.
+		if (!['src/lib/components/CardModal.svelte', 'src/lib/components/LabelPicker.svelte'].includes(file)) expect(checked.length).toBeGreaterThan(0);
+	});
+
+	it('is shown above every dialog, which a refusal is shown beside', () => {
+		const zIndexes = (file: string) => [...readFileSync(join(ROOT, file), 'utf8').matchAll(/z-index:\s*(\d+)/g)].map((found) => Number(found[1]));
+		const [toast] = zIndexes('src/lib/components/Toast.svelte');
+
+		for (const dialog of [
+			'src/app.css',
+			'src/lib/components/CardModal.svelte',
+			'src/lib/components/ConfirmModal.svelte',
+			...Object.keys(WRITES).filter((file) => file.startsWith('src/routes/'))
+		]) {
+			for (const below of zIndexes(dialog)) expect(toast, dialog).toBeGreaterThan(below);
+		}
+		// The archived page's own confirmation is one of them, at 9999.
+		expect(zIndexes('src/routes/archived/+page.svelte')).toContain(9999);
+	});
+
+	it.each(['src/routes/admin/+page.svelte', 'src/routes/teams/+page.svelte', 'src/routes/reports/+page.svelte', 'src/routes/all/+page.svelte'])(
+		'%s shows its toasts through the shared one, and no toast of its own',
+		(file) => {
+			const source = readFileSync(join(ROOT, file), 'utf8');
+			const markup = source.slice(source.indexOf('</script>'));
+
+			expect(source).toContain("import Toast from '$lib/components/Toast.svelte';");
+			expect(markup.match(/<Toast \/>/g)).toHaveLength(1);
+			expect(source).not.toContain('toast-notification');
+			expect(source).not.toMatch(/setTimeout\(\(\) => \(toast = ''\)/);
+		}
+	);
+
+	it.each(['src/routes/admin/+page.svelte', 'src/routes/teams/+page.svelte'])('%s keeps showToast, as one line that adds to the store', (file) => {
+		const body = functionNamed(scriptOf(file), 'showToast').body!;
+
+		expect(body.statements.map((statement) => statement.getText())).toEqual(['toasts.add(msg, type, started);']);
+	});
+
+	it('is never a dialog box: no alert, which would hold the page while a 401 sends it to the login page', () => {
+		const files = [
+			...filesUnder('src/routes', '.svelte'),
+			...filesUnder('src/routes', '.ts'),
+			...filesUnder('src/lib/components', '.svelte'),
+			...filesUnder('src/lib/board', '.ts')
+		];
+		const alerting = files.filter((file) => /\balert\(/.test(readFileSync(join(ROOT, file), 'utf8')));
+
+		expect(files.length).toBeGreaterThan(50);
+		expect(alerting).toEqual([]);
+	});
+});
+
+describe('a page whose session has ended, for the seven pages of card 2109', () => {
+	it.each(Object.keys(WRITES))('%s sends through the global fetch, and does nothing of its own about a 401', (file) => {
+		const script = scriptOf(file).getText();
+
+		// The one fetch the sign-out watch replaces (src/hooks.client.ts).
+		expect(script).not.toMatch(/(window|globalThis|self)\.fetch\b/);
+		// The watch sends the page to the login page; the page only says what failed.
+		expect(script).not.toMatch(/\b401\b/);
+		expect(script).not.toMatch(/['"`]\/login/);
+	});
+});
+
+describe('archiving a card from All Tasks, src/routes/all/+page.svelte', () => {
+	const page = scriptOf('src/routes/all/+page.svelte');
+	const board = scriptOf('src/routes/board/[id]/+page.svelte');
+
+	it('asks first, in the board page’s words, and sends the archive only once it is confirmed', () => {
+		const archiving = functionNamed(page, 'deleteCard');
+		const asked = callsOf(archiving, 'showConfirm');
+		expect(asked).toHaveLength(1);
+		expect(asked[0].arguments[1].getText()).toBe('cardArchiveWarning(editingCard.title)');
+
+		const confirmed = asked[0].arguments[3];
+		expect(ts.isArrowFunction(confirmed)).toBe(true);
+		const requests = callsOf(archiving, 'fetch');
+		expect(requests).toHaveLength(1);
+		expect(requests[0].arguments[1].getText()).toContain("method: 'DELETE'");
+		expect(isWithin(requests[0], confirmed)).toBe(true);
+	});
+
+	it('says the same as the board page before and after, from one text', () => {
+		expect(callsOf(functionNamed(board, 'confirmDeleteCard'), 'api.cardArchiveWarning')).toHaveLength(1);
+		expect(callsOf(functionNamed(page, 'deleteCard'), 'cardArchiveWarning')).toHaveLength(1);
+		for (const tree of [page, board]) {
+			expect(tree.getText()).toContain("toasts.add('Card archived. Restore it from Archived Cards.', 'info');");
+			expect(tree.getText()).not.toContain('It is taken off the board and nothing on it is deleted');
+		}
+		expect(cardArchiveWarning('Ship it')).toBe(
+			'Archive "Ship it"? It is taken off the board and nothing on it is deleted. It can be restored from Archived Cards, in the More menu.'
+		);
+		expect(cardArchiveWarning(undefined)).toMatch(/^Archive this card\? /);
+	});
+
+	it('has the confirmation and the toast in its markup', () => {
+		const source = readFileSync(join(ROOT, 'src/routes/all/+page.svelte'), 'utf8');
+		const markup = source.slice(source.indexOf('</script>'));
+
+		expect(markup).toContain('{#if confirmState.show}');
+		expect(markup).toContain('onConfirm={() => { confirmState.show = false; confirmState.onConfirm(); }}');
+		expect(callsOf(functionNamed(page, 'permanentlyDeleteArchivedCard'), 'showConfirm')).toHaveLength(1);
+		expect(page.getText()).not.toMatch(/window\.(alert|confirm)\(/);
+	});
+});
+
+describe('Purge on the archived page, src/routes/archived/+page.svelte', () => {
+	it('is offered inside a block for an administrator alone, as it already was', () => {
+		const file = 'src/routes/archived/+page.svelte';
+		const source = readFileSync(join(ROOT, file), 'utf8');
+		const from = source.indexOf('</script>');
+		const markup = source.slice(from);
+		const button = 'onclick={purgeAll}';
+
+		expect(markup.split(button)).toHaveLength(2);
+		const around = blocksAround(source, from + markup.indexOf(button));
+		expect(around.some((block) => block.condition.startsWith('data.isAdmin') && !block.inElse)).toBe(true);
+	});
+});
+
+describe('duplicating a card, src/lib/board/card-actions.ts and the board page', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const answer = (status: number, body: unknown) =>
+		new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+	const card = {
+		id: 7,
+		title: 'Ship it',
+		description: '',
+		priority: 'urgent',
+		colorTag: '',
+		categoryId: null,
+		dueDate: null,
+		subtasks: [
+			{ title: 'One', description: '', priority: 'low', colorTag: '', dueDate: null },
+			{ title: 'Two', description: '', priority: 'low', colorTag: '', dueDate: null },
+			{ title: 'Three', description: '', priority: 'low', colorTag: '', dueDate: null }
+		]
+	} as unknown as CardType;
+	const columns = [{ id: 3, cards: [card] }] as unknown as ColumnType[];
+
+	/** A `fetch` that answers each request with the next of `answers`, and the requests it was sent. */
+	function stage(answers: (Response | 'no answer')[]) {
+		const sent: string[] = [];
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			sent.push(`${init.method} ${url}`);
+			const next = answers.shift();
+			if (next === undefined || next === 'no answer') throw new TypeError('fetch failed');
+			return next;
+		});
+		return sent;
+	}
+
+	it('is not "Duplicated" when the copy is refused: the server’s words, and no subtask is sent', async () => {
+		const sent = stage([answer(400, { message: 'priority must be one of low, medium, high or critical' })]);
+
+		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({
+			title: null,
+			failure: 'priority must be one of low, medium, high or critical'
+		});
+		expect(sent).toEqual(['POST /api/cards']);
+
+		stage(['no answer']);
+		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({
+			title: null,
+			failure: 'No answer from the server. The card may not have been duplicated.'
+		});
+	});
+
+	it('stops at the first subtask refused, keeps the copy and says how far it got', async () => {
+		const sent = stage([answer(201, { id: 50 }), answer(201, { id: 1 }), answer(400, { message: 'Title is required' }), answer(201, { id: 3 })]);
+
+		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({
+			title: 'Ship it',
+			failure: '"Ship it" was duplicated with 1 of its 3 subtasks. Subtask "Two" was not copied, nor the 1 after it. Title is required'
+		});
+		expect(sent).toEqual(['POST /api/cards', 'POST /api/subtasks', 'POST /api/subtasks']);
+	});
+
+	it('is the title alone when the copy and every subtask were made', async () => {
+		const sent = stage([answer(201, { id: 50 }), answer(201, {}), answer(201, {}), answer(201, {})]);
+
+		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({ title: 'Ship it', failure: null });
+		expect(sent).toHaveLength(4);
+	});
+
+	it('is said by the board page in the server’s words, and "Duplicated" only when nothing failed', () => {
+		const said = functionNamed(scriptOf('src/routes/board/[id]/+page.svelte'), 'duplicateCard').getText().replace(/\s+/g, ' ');
+
+		expect(said).toContain('const { title, failure, into } = await cardActions.duplicateCard(card, boardColumns, data.board.id, boardCategories);');
+		// The copy of a finished card is made in another column, which it names (card 2134, O7).
+		expect(said).toContain(
+			"if (failure) { toasts.add(failure, 'error', started); } else if (title) { toasts.add(into ? `Duplicated \"${title} (Copy)\" into ${into}` : `Duplicated \"${title}\"`); }"
+		);
+	});
+});
+
+describe('linking an existing board under a card, src/lib/board/card-actions.ts and the board page (card 2139)', () => {
+	// The page said "Board linked as sub-board" whatever the answer, and the
+	// route saved nothing. The route saves it now, for the board's owner; the
+	// page asks first and says what the server said.
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const board = scriptOf('src/routes/board/[id]/+page.svelte');
+
+	it('sends the card to the board route and hands back the answer', async () => {
+		const sent: { url: string; method?: string; body: unknown }[] = [];
+		const refused = Response.json({ message: 'Only the board’s owner may' }, { status: 403 });
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			sent.push({ url, method: init.method, body: JSON.parse(String(init.body)) });
+			return refused;
+		});
+
+		expect(await cardActions.linkSubBoard(3, 7)).toBe(refused);
+		expect(sent).toEqual([{ url: '/api/boards/7', method: 'PUT', body: { parentCardId: 3 } }]);
+	});
+
+	it('asks first, saying what linking does, and sends the link only once it is confirmed', () => {
+		const linking = functionNamed(board, 'linkSubBoard');
+		const asked = callsOf(linking, 'showConfirm');
+		expect(asked).toHaveLength(1);
+		expect(asked[0].arguments[1].getText()).toBe('api.subBoardLinkWarning(name)');
+
+		const confirmed = asked[0].arguments[3];
+		expect(ts.isArrowFunction(confirmed)).toBe(true);
+		const requests = callsOf(linking, 'cardActions.linkSubBoard');
+		expect(requests).toHaveLength(1);
+		expect(isWithin(requests[0], confirmed)).toBe(true);
+	});
+
+	it('says in the dialog who will see the board and its cards, who can move it, that the card cannot be completed while it has open cards, and what deletes it', () => {
+		expect(subBoardLinkWarning('Website')).toBe(
+			'Put "Website" under this card? It will be shown on this card instead of on the dashboard, and its members who cannot open this board will no longer see it on theirs. ' +
+				'Those who can open this board see it on this card only if they can open "Website" too, ' +
+				"but this board's reports, scheduled ones included, will include its cards for all of them. " +
+				"This board's editors can move this card, taking \"Website\" with it. " +
+				'This card cannot be completed while "Website" has cards that are not complete, and "Website" is deleted for good, with everything on it, if this card, its column or this board is ever deleted for good.'
+		);
+	});
+});
+
+describe('a drop onto Complete, src/lib/board/dnd-handlers.ts and the board page (card 2130’s review)', () => {
+	// The board page leaves off a card the sub-boards the caller cannot open,
+	// and the server still refuses to complete the card while they have open
+	// cards. The page counted only the ones it showed, and threw the answer to
+	// the move away: the card landed in Complete with its sound, and the next
+	// reload put it back without a word.
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	const answer = (status: number, body: unknown) =>
+		new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+	const card = (over: Partial<CardType> = {}) =>
+		({ id: 7, columnId: 1, title: 'Ship it', subtasks: [], subBoards: [], onHoldNote: '', ...over }) as unknown as CardType;
+	const columnsWith = (moving: CardType) =>
+		[
+			{ id: 1, title: 'In Progress', cards: [moving] },
+			{ id: 2, title: 'Complete', cards: [] }
+		] as unknown as ColumnType[];
+
+	/** `moving` dropped onto Complete, with `fetch` answering each request with the next of `answers`; and what was sent. */
+	async function drop(moving: CardType, answers: (Response | 'no answer')[] = []) {
+		const sent: string[] = [];
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			sent.push(`${init.method} ${url}`);
+			const next = answers.shift();
+			if (next === undefined || next === 'no answer') throw new TypeError('fetch failed');
+			return next;
+		});
+		const result = await dndHandlers.handleCardDndFinalize(2, [moving], columnsWith(moving), 9, 'editor', '🦊');
+		return { result, sent };
+	}
+
+	it('counts the open cards on sub-boards the caller cannot open, and stops the drop on them alone, offering none to open and sending nothing', async () => {
+		const held = card({ hiddenOpenCount: 2 });
+		expect(isCardBlocked(held)).toBe(true);
+		expect(subBoardIncompleteCount(held)).toBe(2);
+
+		const { result, sent } = await drop(held);
+		expect(result).toEqual({
+			action: 'blocked',
+			blockedState: { show: true, card: held, incomplete: 2, reason: 'subboard', subBoardId: null }
+		});
+		expect(sent).toEqual([]);
+	});
+
+	it('offers to open a sub-board on the card that has open cards, and counts the hidden ones beside it', async () => {
+		const held = card({
+			subBoards: [
+				{ id: 30, name: 'Finished', emoji: '🗂️', done: 2, total: 2 },
+				{ id: 31, name: 'Site', emoji: '🗂️', done: 1, total: 3 }
+			],
+			hiddenOpenCount: 1
+		});
+
+		expect((await drop(held)).result).toMatchObject({ action: 'blocked', blockedState: { incomplete: 3, reason: 'subboard', subBoardId: 31 } });
+	});
+
+	it('moves a card that has nothing open once the server has taken it', async () => {
+		const free = card({ hiddenOpenCount: 0 });
+		const { result, sent } = await drop(free, [answer(200, { success: true })]);
+
+		expect(result).toMatchObject({ action: 'committed', movedCards: [{ card: free, fromName: 'In Progress', toName: 'Complete', isComplete: true }] });
+		expect(sent).toEqual(['PUT /api/cards/reorder']);
+	});
+
+	it('is refused in the server’s words when the server does not take the move, and says so when there is no answer', async () => {
+		const said = 'Sub-board "Site" has 1 incomplete card that must be completed first';
+
+		expect((await drop(card(), [answer(409, { message: said })])).result).toEqual({ action: 'refused', message: said });
+		expect((await drop(card(), [new Response('<html>Bad gateway</html>', { status: 502 })])).result).toEqual({
+			action: 'refused',
+			message: 'The move was not saved.'
+		});
+		expect((await drop(card(), ['no answer'])).result).toEqual({
+			action: 'refused',
+			message: 'No answer from the server. The move may not have been saved.'
+		});
+	});
+
+	it('is said by the board page through the shared toast, with the columns read again, and no sound', () => {
+		const finalize = functionNamed(scriptOf('src/routes/board/[id]/+page.svelte'), 'handleCardDndFinalize');
+		const clauses: ts.CaseClause[] = [];
+		const visit = (node: ts.Node) => {
+			if (ts.isCaseClause(node)) clauses.push(node);
+			ts.forEachChild(node, visit);
+		};
+		visit(finalize);
+		const refused = clauses.find((clause) => clause.expression.getText() === "'refused'");
+		expect(refused).toBeDefined();
+		const said = refused!.getText().replace(/\s+/g, ' ');
+
+		expect(said).toContain("toasts.add(result.message, 'error', started);");
+		expect(said).toContain('await invalidateAll();');
+		expect(said).not.toMatch(/Sound|queueCompletionPrompt/);
+		// `started` is read before the move is sent, so a toast for a page since left is not shown.
+		const text = finalize.getText();
+		expect(text.indexOf('const started = toasts.navigation();')).toBeGreaterThan(-1);
+		expect(text.indexOf('const started = toasts.navigation();')).toBeLessThan(text.indexOf('dndHandlers.handleCardDndFinalize('));
+	});
+
+	it('offers no sub-board to open when only ones the caller cannot open hold the card back', () => {
+		const source = readFileSync(join(ROOT, 'src/routes/board/[id]/+page.svelte'), 'utf8');
+		const start = source.indexOf('{#if blockedState.show}');
+		const modal = source.slice(start, source.indexOf('{/if}', start)).replace(/\s+/g, ' ');
+
+		expect(modal).toContain("confirmText={blockedState.subBoardId !== null ? 'Open Sub-board' : 'Open Card'}");
+		expect(modal).toContain('on a sub-board you cannot open.');
+		expect(modal).toContain('if (blockedState.subBoardId !== null) { window.location.href = `/board/${blockedState.subBoardId}`; } else { openCardModal(blockedState.card); }');
+	});
+});
+
+describe('the share window’s role select, src/lib/components/ShareModal.svelte (card 2115’s review)', () => {
+	// The share route makes nobody an owner now (card 2117's readers, card
+	// 2115's guard): `owner` is refused to anyone not already stored as one.
+	// The window offered Owner on every person's row and threw the answer
+	// away, so the choice snapped back on the next read and nothing was said.
+	// The minimal part of card 2148's decision 13.
+	const file = 'src/lib/components/ShareModal.svelte';
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const markup = source.slice(source.indexOf('</script>'));
+	const updateRole = functionNamed(scriptOf(file), 'updateRole');
+
+	it('offers Owner only on a row already stored as owner, and never for a team or a new share', () => {
+		expect(markup.match(/<option value="owner">/g)).toHaveLength(1);
+		expect(markup).toMatch(/\{#if member\.role === 'owner'\}\s*<option value="owner">Owner<\/option>\s*\{\/if\}/);
+	});
+
+	it('hands updateRole the select itself, from both lists, so that it can be put back', () => {
+		const given = [...markup.matchAll(/updateRole\(([^)]*)\)/g)].map((call) => call[1]);
+
+		expect(given).toEqual(["'user', member.userId, e.currentTarget", "'team', team.teamId, e.currentTarget"]);
+	});
+
+	it('says what the server said, and puts the select back, for a refusal only; reads the list again for a success only', () => {
+		const asked = callsOf(updateRole, 'failureMessage');
+		expect(asked).toHaveLength(1);
+		expect(sideOf(asked[0])).toBe('failed');
+
+		const putBack = statementsOf(updateRole, 'putBack()');
+		expect(putBack.map(sideOf)).toEqual(['failed', 'failed']);
+		// For a refusal, and not only for a request that got no answer.
+		expect(putBack.some((statement) => ts.findAncestor(statement, ts.isCatchClause) === undefined)).toBe(true);
+
+		expect(statementsOf(updateRole, 'await loadData()').map(sideOf)).toEqual(['ok']);
+		expect(callsOf(updateRole, 'res.json')).toEqual([]);
+	});
+
+	it('shows each failure in the shared toast, with the navigation the request was started in', () => {
+		const failures = callsOf(updateRole, 'toasts.add');
+		expect(failures).toHaveLength(2);
+		for (const call of failures) {
+			expect(call.arguments[1]?.getText()).toBe("'error'");
+			expect(call.arguments[2]?.getText()).toBe('started');
+		}
+		const declared = updateRole.body!.statements.find(
+			(statement) => ts.isVariableStatement(statement) && statement.declarationList.declarations[0].name.getText() === 'started'
+		) as ts.VariableStatement | undefined;
+		expect(declared?.declarationList.declarations[0].initializer?.getText()).toBe('toasts.navigation()');
+
+		// The request is asked in a try whose catch says so.
+		const [request] = callsOf(updateRole, 'fetch');
+		const tried = ts.findAncestor(request, ts.isTryStatement);
+		expect(tried?.catchClause).toBeDefined();
+		expect(declared!.getStart()).toBeLessThan(tried!.getStart());
+	});
+});
+
+describe('the admin page’s user rows, src/routes/admin/+page.svelte', () => {
+	const file = 'src/routes/admin/+page.svelte';
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const from = source.indexOf('</script>');
+	const markup = source.slice(from);
+	const around = (text: string) => {
+		expect(markup.split(text), text).toHaveLength(2);
+		return blocksAround(source, from + markup.indexOf(text));
+	};
+	const RULE = 'mayManageAccount(data.currentUser, u)';
+	const NOT_OWN = 'u.id !== data.currentUser.id';
+
+	it('shows the role select, the invite and the delete only where the rule lets the caller use them, and never on their own row', () => {
+		for (const control of [
+			'onchange={(e) => changeUserRole(u.id, e.currentTarget)}',
+			'onclick={() => resendInvite(u.id)}',
+			'() => deleteUser(u.id))}'
+		]) {
+			const blocks = around(control);
+			expect(blocks.some((block) => block.condition === RULE && !block.inElse), control).toBe(true);
+			expect(blocks.some((block) => block.condition === NOT_OWN && !block.inElse), control).toBe(true);
+		}
+	});
+
+	it('shows 🔑 where the rule lets the caller use it, their own row included, and 🔒 everywhere else', () => {
+		const key = around('onclick={() => openResetDialog(u.id)} title="Reset password">🔑</button>');
+		expect(key.some((block) => block.condition === RULE && !block.inElse)).toBe(true);
+		expect(key.some((block) => block.condition === NOT_OWN)).toBe(false);
+
+		const lock = around('<span class="superadmin-lock"');
+		expect(lock.some((block) => block.condition === RULE && block.inElse)).toBe(true);
+	});
+
+	it('asks the one rule the server asks, which the page and the guard import', () => {
+		expect(scriptOf(file).getText()).toContain("import { mayManageAccount } from '$lib/account-rule';");
+		const guard = readFileSync(join(ROOT, 'src/lib/server/route-guards.ts'), 'utf8');
+		expect(guard).toContain("import { mayManageAccount } from '$lib/account-rule';");
+		expect(guard).toContain('if (!mayManageAccount(caller, target)) {');
+		// The admin page's load asks it too, for which rows get a count of keys.
+		expect(readFileSync(join(ROOT, 'src/routes/admin/+page.server.ts'), 'utf8')).toContain(
+			'const mayReset = (target: { id: number; role: string }) => target.id !== caller.id && mayManageAccount(caller, target);'
+		);
+	});
+});
+
+describe('whose account a caller may manage, src/lib/account-rule.ts', () => {
+	beforeEach(() => {
+		resetDb();
+	});
+
+	const SAYS = { superadmin: 'refused: the superadmin’s', admin: 'refused: an administrator’s' };
+
+	/** What `requireManagedAccount` answered, the account or the refusal's status and words. */
+	function guard(caller: Parameters<typeof requireManagedAccount>[0], userId: number): string {
+		try {
+			return `account ${requireManagedAccount(caller, userId, SAYS).id}`;
+		} catch (e) {
+			const refusal = e as { status: number; body: { message: string } };
+			return `${refusal.status} ${refusal.body.message}`;
+		}
+	}
+
+	it('is the rule the guard refuses by, for every caller and every account, the caller’s own included', () => {
+		const user = makeUser({ role: 'user' });
+		const otherUser = makeUser({ role: 'user' });
+		const admin = makeUser({ role: 'admin' });
+		const otherAdmin = makeUser({ role: 'admin' });
+		const superadmin = makeUser({ role: 'superadmin' });
+		const otherSuperadmin = makeUser({ role: 'superadmin' });
+
+		// The guard's answers as they were before it asked the rule, written out.
+		const cases: [string, typeof user, typeof user, string][] = [
+			['a user, another user', user, otherUser, '403 Forbidden'],
+			['a user, their own', user, user, '403 Forbidden'],
+			['a user, an administrator', user, admin, '403 Forbidden'],
+			['an administrator, a user', admin, user, `account ${user.id}`],
+			['an administrator, their own', admin, admin, `account ${admin.id}`],
+			['an administrator, another administrator', admin, otherAdmin, `403 ${SAYS.admin}`],
+			['an administrator, the superadmin', admin, superadmin, `403 ${SAYS.superadmin}`],
+			['the superadmin, a user', superadmin, user, `account ${user.id}`],
+			['the superadmin, an administrator', superadmin, admin, `account ${admin.id}`],
+			['the superadmin, their own', superadmin, superadmin, `account ${superadmin.id}`],
+			['the superadmin, another superadmin', superadmin, otherSuperadmin, `403 ${SAYS.superadmin}`]
+		];
+
+		for (const [who, caller, target, answered] of cases) {
+			expect({ who, answered: guard(caller, target.id) }).toEqual({ who, answered });
+			expect({ who, may: mayManageAccount(caller, target) }).toEqual({ who, may: answered.startsWith('account') });
+		}
+		// An account that is not there is a 404 before the rule is asked.
+		expect(guard(admin, 999_999)).toBe('404 User not found');
+		expect(guard(null, user.id)).toBe('401 Not authenticated');
+	});
+});
+
+describe('the check itself', () => {
+	const script = (code: string) => scriptOf('example.svelte', `<script lang="ts">\n${code}\n</script>\n<p>x</p>\n`);
+
+	it('finds the blocks a place in the markup is inside, and which side of each', () => {
+		const svelte = '<p>a</p>{#if one}<p>b</p>{#if two}<p>c</p>{:else}<p>d</p>{/if}{:else if three}<p>e</p>{/if}<p>f</p>';
+		const around = (text: string) => blocksAround(svelte, svelte.indexOf(text));
+
+		expect(around('<p>a</p>')).toEqual([]);
+		expect(around('<p>b</p>')).toEqual([{ condition: 'one', inElse: false }]);
+		expect(around('<p>c</p>')).toEqual([{ condition: 'one', inElse: false }, { condition: 'two', inElse: false }]);
+		expect(around('<p>d</p>')).toEqual([{ condition: 'one', inElse: false }, { condition: 'two', inElse: true }]);
+		expect(around('<p>e</p>')).toEqual([{ condition: 'one', inElse: true }]);
+		expect(around('<p>f</p>')).toEqual([]);
+	});
+
+	it('finds a finally, and what it does', () => {
+		const tree = script('async function f() {\n\ttry { await a(); } finally { busy = false; }\n\ttry { b(); } catch { c(); }\n}');
+
+		expect(finallyBlocks(functionNamed(tree, 'f'))).toEqual(['{ busy = false; }']);
+	});
+
+	// The reports page as it was: both shapes are found.
+	it('finds a failure read as JSON with no catch, in the branch for it or before the branch', () => {
+		const inBranch = script(
+			"async function generateReport() {\n\tconst res = await fetch('/x');\n" +
+				"\tif (!res.ok) {\n\t\tconst err = await res.json();\n\t\tgenError = err.message || 'Failed';\n\t} else {\n\t\tblob = await res.blob();\n\t}\n}"
+		);
+		const before = script(
+			"async function sendReportEmail() {\n\tconst res = await fetch('/x');\n\tconst data = await res.json();\n" +
+				"\tif (res.ok) {\n\t\tresult = data.message;\n\t} else {\n\t\tresult = data.message || 'Failed';\n\t}\n}"
+		);
+
+		expect(branches(inBranch, 'generateReport', 'res.json')).toEqual(['failed']);
+		expect(branches(inBranch, 'generateReport', 'failureMessage')).toEqual([]);
+		expect(branches(before, 'sendReportEmail', 'res.json')).toEqual([null]);
+	});
+
+	// The modal as it was: a message, and no second read.
+	it('finds no second read where a refused removal only sets a message', () => {
+		const was = script(
+			"async function removeDependency() {\n\tconst res = await fetch('/x');\n" +
+				"\tif (res.ok) {\n\t\tblockedBy = (await res.json()).blockedBy;\n\t} else {\n" +
+				"\t\tconst err = await res.json().catch(() => ({}));\n\t\tdepError = err.message || 'Could not remove that dependency';\n\t}\n}"
+		);
+
+		expect(branches(was, 'removeDependency', 'loadDependencies')).toEqual([]);
+	});
+
+	it('tells the branch for a success from the branch for a failure, either way round', () => {
+		const both = script(
+			'async function f() {\n\tif (res.ok) { a(); } else { b(); }\n\tif (!res.ok) { c(); } else { d(); }\n\te();\n}'
+		);
+
+		expect(['a', 'b', 'c', 'd', 'e'].map((callee) => branches(both, 'f', callee))).toEqual([
+			['ok'],
+			['failed'],
+			['failed'],
+			['ok'],
+			[null]
+		]);
+	});
+
+	it('tells which side of the answer a statement is on, after an early return and in a catch too', () => {
+		const tree = script(
+			'async function f() {\n\tbefore();\n\ttry { res = await fetch(x); } catch { gone(); return; }\n' +
+				'\tif (!res.ok) { refused(); return; }\n\tdone();\n}\n' +
+				'async function g() {\n\tconst failure = await deleteFailure(send);\n\tif (failure) { said(); return; }\n\tif (other) { inner(); }\n}\n' +
+				"async function h() {\n\tif (!(await sent(send, 'x'))) return;\n\tafter();\n\tif (!res.ok) { kept(); }\n\tstill();\n}"
+		);
+		const side = (name: string, callee: string) => callsOf(functionNamed(tree, name), callee).map(sideOf);
+
+		expect(side('f', 'before')).toEqual([null]);
+		expect(side('f', 'gone')).toEqual(['failed']);
+		expect(side('f', 'refused')).toEqual(['failed']);
+		expect(side('f', 'done')).toEqual(['ok']);
+		expect(side('g', 'said')).toEqual(['failed']);
+		expect(side('g', 'inner')).toEqual(['ok']);
+		expect(side('h', 'after')).toEqual(['ok']);
+		expect(side('h', 'kept')).toEqual(['failed']);
+		// A failure branch that does not return leaves what follows it to the one before.
+		expect(side('h', 'still')).toEqual(['ok']);
+		// A request's own call is in neither.
+		expect(callsOf(functionNamed(tree, 'h'), 'sent').map(sideOf)).toEqual([null]);
+	});
+
+	it('finds a write whose answer is thrown away, in a script and in the markup, and no other', () => {
+		const page =
+			'<script lang="ts">\n' +
+			"async function lost() {\n\tawait fetch('/api/x', { method: 'DELETE' });\n\tfetch('/api/y', { method: 'POST' });\n\tawait api.updateCard(1, {});\n}\n" +
+			"async function kept() {\n\tconst res = await fetch('/api/x', { method: 'PUT' });\n\tif (!res.ok) said();\n\tawait fetch('/api/read');\n\tawait api.loadActivities(1);\n}\n" +
+			"const arrow = async () => { await api.createCard({}); };\n" +
+			'</script>\n' +
+			"<button onclick={async () => { await fetch(`/api/${id}`, { method: 'PATCH', body: JSON.stringify({ a: { b: 1 } }) }); }}>x</button>\n" +
+			'<Thing onSave={(card) => api.updateCard(card.id, {})} />\n' +
+			'<style>.x { color: red; }</style>\n';
+
+		expect(discardedIn('x.svelte', page, ['updateCard', 'createCard'])).toEqual([
+			'x.svelte › lost › fetch DELETE',
+			'x.svelte › lost › fetch POST',
+			'x.svelte › lost › api.updateCard',
+			'x.svelte › arrow › api.createCard',
+			'x.svelte › markup onclick › fetch PATCH',
+			// An arrow without braces gives its answer to the handler's caller, which drops it.
+			'x.svelte › markup onSave › api.updateCard'
+		]);
+		// A module is read whole.
+		expect(discardedIn('x.ts', "export async function f() {\n\tawait api.updateCard(1, {});\n}", ['updateCard'])).toEqual(['x.ts › f › api.updateCard']);
+	});
+
+	it('finds an answer thrown away by void, .then, .catch, an arrow without braces, and a variable never read', () => {
+		const module =
+			'export async function lost(ids: number[]) {\n' +
+			"\tvoid fetch('/api/a', { method: 'POST' });\n" +
+			"\tfetch('/api/b', { method: 'PUT' }).then(() => done());\n" +
+			"\tawait fetch('/api/c', { method: 'DELETE' }).catch(() => {});\n" +
+			"\tawait Promise.all(ids.map(id => fetch(`/api/d/${id}`, { method: 'POST' })));\n" +
+			"\tconst res = await fetch('/api/e', { method: 'PATCH' });\n" +
+			'\tawait api.updateCard(1, {}).then(() => {});\n' +
+			'}\n' +
+			'export async function kept(ids: number[]) {\n' +
+			"\tconst res = await fetch('/api/a', { method: 'POST' });\n" +
+			'\tif (!res.ok) said();\n' +
+			"\tconst failure = await deleteFailure(() => fetch('/api/b', { method: 'DELETE' }), 'card');\n" +
+			"\tconst answer = await sent(() => fetch('/api/c', { method: 'PUT' }), 'x');\n" +
+			"\tconst answers = await Promise.all(ids.map(async (id) => { const r = await fetch(`/api/d/${id}`, { method: 'POST' }); return r.ok; }));\n" +
+			"\treturn fetch('/api/e', { method: 'PATCH' });\n" +
+			'}\n';
+
+		expect(discardedIn('x.ts', module, ['updateCard'])).toEqual([
+			'x.ts › lost › fetch POST',
+			'x.ts › lost › fetch PUT',
+			'x.ts › lost › fetch DELETE',
+			'x.ts › lost › fetch POST',
+			'x.ts › lost › fetch PATCH',
+			'x.ts › lost › api.updateCard'
+		]);
+	});
+});

@@ -2,6 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { systemLogs } from '$lib/server/db/schema';
 import { eq, desc, and, gte, lte, like } from 'drizzle-orm';
+import { readLimit, readOffset } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
@@ -9,6 +10,10 @@ import type { RequestHandler } from './$types';
  *
  * Filters: ?level=INFO &context=AUTH &q=text (LIKE on message)
  *          &from=ISO &to=ISO &limit=N (default 200, max 1000) &offset=N
+ *
+ * `limit` is a whole number held between 1 and 1000, so -1 is 1 and not the
+ * whole log, and `offset` one of 0 or more; text is the default (card 2117,
+ * decision 17).
  *
  * Requires admin or superadmin role.
  */
@@ -23,8 +28,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const q = url.searchParams.get('q');
 	const from = url.searchParams.get('from');
 	const to = url.searchParams.get('to');
-	const limit = Math.min(Number(url.searchParams.get('limit')) || 200, 1000);
-	const offset = Number(url.searchParams.get('offset')) || 0;
+	const limit = readLimit(url.searchParams.get('limit'), { max: 1000, fallback: 200 });
+	const offset = readOffset(url.searchParams.get('offset'));
 
 	const conditions = [];
 	if (level) conditions.push(eq(systemLogs.level, level.toUpperCase()));

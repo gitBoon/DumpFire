@@ -9,6 +9,9 @@
 	import { invalidateAll } from '$app/navigation';
 	import { theme } from '$lib/stores/theme';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import Toast from '$lib/components/Toast.svelte';
+	import { toasts } from '$lib/stores/toast';
+	import { PURGE_WARNING, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
 
 	let { data }: { data: PageData } = $props();
 
@@ -62,22 +65,39 @@
 	}
 
 	async function restoreCard(cardId: number) {
-		await fetch(`/api/cards/${cardId}/restore`, { method: 'POST' });
+		// A refusal is said, and the card stays in the list: it used to go
+		// quietly, as if it had been restored.
+		const started = toasts.navigation();
+		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/restore`, { method: 'POST' }), 'card', 'restored');
+		if (failure) {
+			toasts.add(failure, 'error', started);
+			return;
+		}
+		toasts.add('Card restored');
 		await invalidateAll();
 	}
 
 	async function permanentlyDeleteCard(cardId: number, cardTitle: string) {
 		showConfirm(
 			'Delete Permanently',
-			`Permanently delete "${cardTitle}"? This cannot be undone. All subtasks, labels, and assignees will be removed.`,
+			cardDeleteWarning(cardTitle),
 			'Delete Forever',
 			async () => {
-				await fetch(`/api/cards/${cardId}?permanent=true`, {
-					method: 'DELETE',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({})
-				});
 				confirmState.show = false;
+				const started = toasts.navigation();
+				const failure = await deleteFailure(
+					() =>
+						fetch(`/api/cards/${cardId}?permanent=true`, {
+							method: 'DELETE',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({})
+						}),
+					'card'
+				);
+				if (failure) {
+					toasts.add(failure, 'error', started);
+					return;
+				}
 				await invalidateAll();
 			}
 		);
@@ -86,13 +106,24 @@
 	async function purgeAll() {
 		showConfirm(
 			'Purge All Archived Cards',
-			`Permanently delete ALL ${data.archivedCards.length} archived card${data.archivedCards.length !== 1 ? 's' : ''}? This removes all their subtasks, labels, and assignees. This cannot be undone.`,
+			PURGE_WARNING,
 			'Purge All',
 			async () => {
 				purging = true;
 				confirmState.show = false;
+				const started = toasts.navigation();
 				try {
-					await fetch('/api/admin/purge-archived', { method: 'POST' });
+					let res: Response;
+					try {
+						res = await fetch('/api/admin/purge-archived', { method: 'POST' });
+					} catch {
+						toasts.add('No answer from the server. The archived cards may not have been purged.', 'error', started);
+						return;
+					}
+					if (!res.ok) {
+						toasts.add(await failureMessage(res, 'The archived cards were not purged.'), 'error', started);
+						return;
+					}
 					await invalidateAll();
 				} finally {
 					purging = false;
@@ -146,7 +177,7 @@
 			<div class="empty-state glass">
 				<span class="empty-icon">📦</span>
 				<h3>No archived cards</h3>
-				<p>Deleted cards will appear here for recovery</p>
+				<p>Archived cards appear here and can be restored</p>
 			</div>
 		{:else if filteredCards.length === 0}
 			<div class="empty-state glass">
@@ -184,6 +215,8 @@
 		{/if}
 	</div>
 </div>
+
+<Toast />
 
 <!-- Confirm Modal -->
 {#if confirmState.show}

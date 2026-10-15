@@ -18,6 +18,8 @@ Built with SvelteKit 5 (Runes), Drizzle ORM, and better-sqlite3.
 - Markdown rendering in card descriptions
 - Card duplication and right-click context menus
 - Labels and categories with configurable colours per board
+- File attachments on cards, up to 25 MB each. PNG, JPEG, GIF and WebP images show as thumbnails on the card and open in the browser; every other attachment, PDFs included, is saved to disk
+- Archive and restore: an archived card comes back whole. A permanent delete takes the card's subtasks, comments, dependency links and sub-boards with it, and its attachment files are kept in a trash for 30 days
 
 ### Multi-User & Access Control
 - User registration with bcrypt-hashed passwords and session-based auth (30-day sliding window)
@@ -54,6 +56,7 @@ Built with SvelteKit 5 (Runes), Drizzle ORM, and better-sqlite3.
   - **Google Drive** — service account or OAuth
   - **OneDrive** — via Microsoft Graph API
 - Configurable retention policies with automatic cleanup of old backups
+- A backup holds the database only. Files attached to cards are kept in the `uploads` folder beside the database and need a backup of their own; see [docs/deployment.md](docs/deployment.md#attachment-files)
 - Backup history log with success/failure tracking
 - Email alerts on backup failure (when SMTP is configured)
 - Manual backup trigger and connection testing from the admin panel
@@ -163,6 +166,7 @@ docker run -d \
 | **`ORIGIN`** | **Public URL for CSRF protection — must exactly match how users access the app (including protocol and port).** If this is wrong, all form submissions will fail with 403. | `http://localhost:3000` |
 | `PORT` | Port the server listens on | `3000` |
 | `COOKIE_SECURE` | Set to `false` to allow session cookies over plain HTTP (see [HTTPS & Reverse Proxies](#https--reverse-proxies)) | `true` in production |
+| `BODY_SIZE_LIMIT` | The largest upload the server accepts: a database backup, on import. Bytes, or a number followed by `K`, `M` or `G`; `512MB` is not accepted and stops the server starting. The app narrows it again for every other route | `512M` in the image |
 
 ---
 
@@ -185,6 +189,8 @@ That's it — Cloudflare handles the TLS certificate automatically.
 ```bash
 cloudflared tunnel --url http://localhost:3000
 ```
+
+`cloudflared` passes a request's body on in chunks, with no length, and DumpFire reads such a body and holds it to the same size limits as any other. For large uploads, setting `disableChunkedEncoding: true` under the tunnel's `originRequest` passes the length on as well, so that an upload that is too large is refused before any of it is read. It is a saving, not a requirement. Cloudflare itself refuses an upload over 100 MB on its Free and Pro plans: see [How Large an Import Can Be](docs/deployment.md#how-large-an-import-can-be).
 
 #### Caddy (automatic HTTPS)
 
@@ -247,16 +253,32 @@ server {
     ssl_certificate     /etc/letsencrypt/live/kanban.yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/kanban.yourdomain.com/privkey.pem;
 
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host  $host;
+
     location / {
         proxy_pass http://dumpfire:3000;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host  $host;
+    }
+
+    # Import Backup: a whole database. nginx refuses any upload over 1 MB
+    # unless it is told otherwise.
+    location = /api/admin/import {
+        client_max_body_size 512m;
+        proxy_pass http://dumpfire:3000;
+    }
+
+    # An attachment: a file of up to 25 MB.
+    location ~ ^/api/cards/[0-9]+/attachments$ {
+        client_max_body_size 26m;
+        proxy_pass http://dumpfire:3000;
     }
 }
 ```
+
+The two `client_max_body_size` lines matter: without them a backup or an attachment over 1 MB is refused by nginx before it reaches DumpFire. See [Upload Size Limits](docs/deployment.md#upload-size-limits).
 
 Use Certbot to obtain the initial certificate:
 
@@ -327,10 +349,10 @@ docker run -d \
 ```
 
 > **Why does this preserve my data?**
-> The `-v dumpfire-data:/app/data` flag mounts a named Docker volume. Removing the container with `docker rm` does **not** remove its volumes. As long as you re-use the same volume name when starting the new container, your database file carries over exactly as it was.
+> The `-v dumpfire-data:/app/data` flag mounts a named Docker volume. Removing the container with `docker rm` does **not** remove its volumes. As long as you re-use the same volume name when starting the new container, your database file carries over exactly as it was. Attachment files are in the `uploads` folder beside the database, so with `DB_PATH=/app/data/dumpfire.db` they are on the same volume and carry over with it.
 
 > **What about migrations?**
-> Migrations are tracked in a `__drizzle_migrations` table inside your database. On startup, the app reads every `.sql` file in the `drizzle/` directory, checks which ones have already been applied, and runs only the new ones. Statements that would conflict (e.g. adding a column that already exists) are caught and skipped gracefully, so re-running a migration is always safe.
+> Migrations are tracked in a `__drizzle_migrations` table inside your database. On startup, the app reads every `.sql` file in the `drizzle/` directory, checks which ones have already been applied, and runs only the new ones. Each new file runs in its own transaction and is recorded by its file name, so it is applied in full or not at all and is never run twice. If a file fails, nothing after it runs and the server stops before it starts listening (exit code 1); the log line marked `[CRITICAL] [DB]` names the file and the reason. See [docs/deployment.md](docs/deployment.md#updating-a-running-installation) for updating and going back, and [docs/data-model.md](docs/data-model.md#migrations-and-schema-reconciliation) for how the runner works.
 
 ---
 
@@ -342,21 +364,24 @@ src/
 │   ├── components/
 │   │   ├── board/                  # Board-specific UI components
 │   │   ├── CardModal.svelte        # Card editor with subtasks, labels, comments
+│   │   ├── LabelPicker.svelte      # A card's labels: put on, made, renamed, deleted
 │   │   ├── SubtaskModal.svelte     # Subtask create/edit
 │   │   ├── ConfirmModal.svelte     # Reusable confirmation dialog
 │   │   ├── ShareModal.svelte       # Board sharing and permissions
 │   │   ├── CategoryManager.svelte  # Board category CRUD
 │   │   ├── ThemePicker.svelte      # Theme selection dropdown
 │   │   ├── EmojiPicker.svelte      # Emoji avatar picker
-│   │   ├── Toast.svelte            # Toast notifications
-│   │   └── UserSetup.svelte        # First-run user creation
+│   │   └── Toast.svelte            # Toast notifications
 │   ├── server/
 │   │   ├── db/
 │   │   │   ├── schema.ts           # Drizzle schema (all tables)
 │   │   │   ├── index.ts            # DB connection and WAL setup
-│   │   │   └── migrate.ts          # Auto-migration runner
+│   │   │   ├── migrate.ts          # Auto-migration runner
+│   │   │   └── transaction.ts      # inTransaction / afterCommit: all-or-nothing writes
 │   │   ├── auth.ts                 # Session and password management
 │   │   ├── board-access.ts         # Role-based board access control
+│   │   ├── deletes.ts              # What goes with a deleted card, column, board or user
+│   │   ├── uploads.ts              # Attachment files, the 30-day trash, how files are served
 │   │   ├── backup.ts               # Scheduled backup orchestrator
 │   │   ├── backup-destinations.ts  # SFTP, S3, Google Drive, OneDrive providers
 │   │   ├── email.ts                # SMTP transport and configuration

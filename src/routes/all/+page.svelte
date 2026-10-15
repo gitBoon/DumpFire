@@ -14,12 +14,18 @@
 	import { invalidateAll } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import CardModal from '$lib/components/CardModal.svelte';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import Toast from '$lib/components/Toast.svelte';
+	import { toasts } from '$lib/stores/toast';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import FireworksCelebration from '$lib/components/board/FireworksCelebration.svelte';
 	import type { CardType, ColumnType, CategoryType, SortOption } from '$lib/types';
 	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
 	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC, isNew } from '$lib/utils/date-utils';
 	import { subtaskProgress, sortCards, getSortLabel } from '$lib/utils/card-utils';
+	import { isCompleteColumnTitle } from '$lib/column-role';
+	import { cardArchiveWarning, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
+	import { keepStreamOpen } from '$lib/live-stream';
 	import { playMoveSound, playCompleteSound, playCreateSound, playNotifySound } from '$lib/utils/sounds';
 
 	let { data }: { data: PageData } = $props();
@@ -38,11 +44,10 @@
 	let tickInterval: ReturnType<typeof setInterval> | null = null;
 
 	// ─── SSE Live Updates ─────────────────────────────────────────────────
-	let eventSource: EventSource | null = null;
-	let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-	// Whether a stream has been established before. The first open is this page
-	// loading its own data; every later one follows a gap that missed events.
-	let hasConnectedSSE = false;
+	// Opening the stream again after a failure, and how long to wait first, is
+	// $lib/live-stream.ts's: it backs off, and does not open again a stream
+	// that was refused because the session has ended.
+	let closeStream: (() => void) | null = null;
 
 	// ─── Fireworks Celebration ────────────────────────────────────────────
 	let showFireworks = $state(false);
@@ -100,17 +105,8 @@
 		}, 5000);
 	}
 
-	function connectGlobalSSE() {
-		eventSource = new EventSource('/api/events');
-
-		// A dropped stream misses every event sent while it was down and nothing
-		// replays them, so re-read on the way back up rather than waiting for the
-		// next change. Without this a figure recorded during the gap stays stale.
-		eventSource.onopen = () => {
-			if (hasConnectedSSE) invalidateAll();
-			hasConnectedSSE = true;
-		};
-
+	/** The page's listeners, put on each stream as it is opened. */
+	function listenToGlobalSSE(eventSource: EventSource) {
 		eventSource.addEventListener('update', (e) => {
 			try {
 				const d = JSON.parse(e.data);
@@ -147,11 +143,6 @@
 				// Ignore parse errors
 			}
 		});
-
-		eventSource.onerror = () => {
-			if (eventSource) eventSource.close();
-			reconnectTimeout = setTimeout(connectGlobalSSE, 3000);
-		};
 	}
 
 	/**
@@ -167,7 +158,11 @@
 	onMount(() => {
 		tickInterval = setInterval(() => { tick++; }, 15000);
 		if (browser) {
-			connectGlobalSSE();
+			// A dropped stream misses every event sent while it was down and
+			// nothing replays them, so every open after the first re-reads,
+			// rather than waiting for the next change. Without this a figure
+			// recorded during the gap stays stale.
+			closeStream = keepStreamOpen('/api/events', listenToGlobalSSE, () => invalidateAll());
 			document.addEventListener('visibilitychange', onVisibilityChange);
 		}
 	});
@@ -175,11 +170,8 @@
 	onDestroy(() => {
 		if (browser) document.removeEventListener('visibilitychange', onVisibilityChange);
 		if (tickInterval) clearInterval(tickInterval);
-		if (reconnectTimeout) clearTimeout(reconnectTimeout);
-		if (eventSource) {
-			eventSource.close();
-			eventSource = null;
-		}
+		closeStream?.();
+		closeStream = null;
 	});
 
 	let searchQuery = $state('');
@@ -191,7 +183,7 @@
 	 * every board this user can see. Absent means nothing is blocking the card.
 	 */
 	const dependencyBlockers = $derived(
-		(data.blockedState ?? {}) as Record<number, { id: number; title: string; columnTitle: string; boardName: string; boardId: number }[]>
+		(data.blockedState ?? {}) as Record<number, { id: number; title: string; columnTitle: string; boardName: string; boardId: number | null; withheld: boolean }[]>
 	);
 	const milestoneNames = $derived((data.milestoneNames ?? {}) as Record<number, string>);
 
@@ -202,13 +194,15 @@
 	/**
 	 * Tooltip for the Blocked chip. Every blocker is listed with the column it is
 	 * sitting in, and its board — on a cross-board view the board is always worth
-	 * showing, because the blocker is usually somewhere else entirely.
+	 * showing, because the blocker is usually somewhere else entirely. A blocker
+	 * on a board the viewer cannot open is its number and the text in place of
+	 * its title, with no board or column (card 2129).
 	 */
 	function blockerTooltip(cardId: number): string {
 		const open = blockersFor(cardId);
 		if (open.length === 0) return '';
 		return ['Blocked by']
-			.concat(open.map((b) => `#${b.id} ${b.title} — ${b.boardName} / ${b.columnTitle}`))
+			.concat(open.map((b) => (b.withheld ? `#${b.id} ${b.title}` : `#${b.id} ${b.title} — ${b.boardName} / ${b.columnTitle}`)))
 			.join('\n');
 	}
 
@@ -298,13 +292,27 @@
 
 		// Check if moving to a "complete" column for sound effect
 		const targetCol = data.columns.find((c: any) => c.id === moveColumnId);
-		const isCompletingMove = targetCol && ['complete', 'done'].includes(targetCol.title.toLowerCase().trim());
+		const isCompletingMove = targetCol && isCompleteColumnTitle(targetCol.title);
 
-		await fetch(`/api/cards/${moveCard.id}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ columnId: moveColumnId, boardId: moveBoardId })
-		});
+		// A refusal, such as a card with open subtasks moved to Complete, is
+		// said in the server's words, and the window stays open. It used to
+		// close as if the card had moved.
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = await fetch(`/api/cards/${moveCard.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ columnId: moveColumnId, boardId: moveBoardId })
+			});
+		} catch {
+			toasts.add('No answer from the server. The card may not have been moved.', 'error', started);
+			return;
+		}
+		if (!res.ok) {
+			toasts.add(await failureMessage(res, 'The card was not moved.'), 'error', started);
+			return;
+		}
 
 		// Play appropriate sound
 		if (isCompletingMove) {
@@ -320,31 +328,78 @@
 
 	async function saveCard(cardData: any) {
 		if (!editingCard) return;
-		await fetch(`/api/cards/${editingCard.id}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				title: cardData.title, description: cardData.description,
-				priority: cardData.priority, categoryId: cardData.categoryId,
-				dueDate: cardData.dueDate, onHoldNote: cardData.onHoldNote || '',
-				businessValue: cardData.businessValue || '', boardId: editingBoardId
-			})
-		});
+		// The window closes only when the server says the card is saved. A
+		// refused save used to close it all the same, and the edits in it were
+		// lost.
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = await fetch(`/api/cards/${editingCard.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					title: cardData.title, description: cardData.description,
+					priority: cardData.priority, categoryId: cardData.categoryId,
+					dueDate: cardData.dueDate, onHoldNote: cardData.onHoldNote || '',
+					businessValue: cardData.businessValue || '', boardId: editingBoardId
+				})
+			});
+		} catch {
+			toasts.add('No answer from the server. The card may not have been saved.', 'error', started);
+			return;
+		}
+		if (!res.ok) {
+			toasts.add(await failureMessage(res, 'The card was not saved.'), 'error', started);
+			return;
+		}
+		toasts.add('Card updated');
 		showCardModal = false;
 		editingCard = null;
 		await invalidateAll();
 	}
 
-	async function deleteCard() {
+	// ─── Confirmations ────────────────────────────────────────────────────
+	let confirmState = $state<{ show: boolean; title: string; message: string; confirmText: string; onConfirm: () => void }>({
+		show: false, title: '', message: '', confirmText: '', onConfirm: () => {}
+	});
+
+	function showConfirm(title: string, message: string, confirmText: string, onConfirm: () => void) {
+		confirmState = { show: true, title, message, confirmText, onConfirm };
+	}
+
+	/**
+	 * Archive the open card, once it is confirmed, as the board page does: a
+	 * DELETE with no `permanent` archives, and it can be restored. It used to
+	 * act at once, with no question first and no word after.
+	 */
+	function deleteCard() {
 		if (!editingCard) return;
-		await fetch(`/api/cards/${editingCard.id}`, {
-			method: 'DELETE',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ boardId: editingBoardId })
+		const cardId = editingCard.id;
+		const boardId = editingBoardId;
+		showConfirm('Archive Card', cardArchiveWarning(editingCard.title), 'Archive Card', async () => {
+			// The card is closed only when the server says it is archived.
+			const started = toasts.navigation();
+			const failure = await deleteFailure(
+				() =>
+					fetch(`/api/cards/${cardId}`, {
+						method: 'DELETE',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ boardId })
+					}),
+				'card',
+				'archived'
+			);
+			confirmState.show = false;
+			if (failure) {
+				// The card is still where it was, so its window stays open.
+				toasts.add(failure, 'error', started);
+				return;
+			}
+			toasts.add('Card archived. Restore it from Archived Cards.', 'info');
+			showCardModal = false;
+			editingCard = null;
+			await invalidateAll();
 		});
-		showCardModal = false;
-		editingCard = null;
-		await invalidateAll();
 	}
 
 	function getBoardColumns(boardId: number) {
@@ -411,19 +466,38 @@
 	}
 
 	async function restoreArchivedCard(cardId: number) {
-		await fetch(`/api/cards/${cardId}/restore`, { method: 'POST' });
+		// The card leaves the list only when the server says it is restored.
+		const started = toasts.navigation();
+		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/restore`, { method: 'POST' }), 'card', 'restored');
+		if (failure) {
+			toasts.add(failure, 'error', started);
+			return;
+		}
 		archivedCards = archivedCards.filter(c => c.id !== cardId);
+		toasts.add('Card restored');
 		await invalidateAll();
 	}
 
-	async function permanentlyDeleteArchivedCard(cardId: number, cardTitle: string) {
-		if (!window.confirm(`Permanently delete "${cardTitle}"? This cannot be undone.`)) return;
-		await fetch(`/api/cards/${cardId}?permanent=true`, {
-			method: 'DELETE',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({})
+	function permanentlyDeleteArchivedCard(cardId: number, cardTitle: string) {
+		showConfirm('Delete Permanently', cardDeleteWarning(cardTitle), 'Delete Forever', async () => {
+			// The card leaves the list only when the server says it is gone.
+			const started = toasts.navigation();
+			const failure = await deleteFailure(
+				() =>
+					fetch(`/api/cards/${cardId}?permanent=true`, {
+						method: 'DELETE',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({})
+					}),
+				'card'
+			);
+			if (failure) {
+				toasts.add(failure, 'error', started);
+				return;
+			}
+			archivedCards = archivedCards.filter(c => c.id !== cardId);
+			toasts.add('Card permanently deleted', 'info');
 		});
-		archivedCards = archivedCards.filter(c => c.id !== cardId);
 	}
 
 	async function fetchActivity(initial = false) {
@@ -478,17 +552,28 @@
 		const labels: Record<string, string> = {
 			'api:card_updated': 'Updated card',
 			'api:card_archived': 'Archived card',
+			'api:card_restored': 'Restored card',
 			'api:card_deleted': 'Deleted card',
+			'api:column_deleted': 'Deleted column',
 			'api:card_moved': 'Moved card',
 			'api:assignee_added': 'Assigned user',
 			'api:assignee_removed': 'Unassigned user',
 			'api:comment_added': 'Added comment',
 			'api:subtask_created': 'Created subtask',
+			'api:subtask_completed': 'Completed subtask',
+			'api:subtask_deleted': 'Deleted subtask',
 			'api:board_created': 'Created board',
 			'card_created': 'Created card',
 			'card_moved': 'Moved card',
 			'card_completed': 'Completed card',
+			'card_archived': 'Archived card',
+			'card_restored': 'Restored card',
+			'card_deleted': 'Deleted card',
+			'column_deleted': 'Deleted column',
+			'cards_purged': 'Purged archived cards',
+			'cards_cleared': 'Cleared cards',
 			'subtask_toggled': 'Updated subtask',
+			'subtask_deleted': 'Deleted subtask',
 			'comment_added': 'Added comment'
 		};
 		return labels[action] || action.replace(/_/g, ' ');
@@ -802,7 +887,7 @@
 			Activity
 		</h3>
 		<div style="display:flex;gap:4px;">
-			<button class="activity-refresh-btn" onclick={fetchActivity} title="Refresh">
+			<button class="activity-refresh-btn" onclick={() => fetchActivity()} title="Refresh">
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7a4.5 4.5 0 0 1 8.5-2M11.5 7a4.5 4.5 0 0 1-8.5 2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11 2v3h-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 12V9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
 			</button>
 			<button class="activity-refresh-btn" onclick={toggleActivity} title="Close">
@@ -906,7 +991,7 @@
 {#if showCardModal && editingCard}
 	<CardModal
 		card={editingCard}
-		categories={data.categories.filter((c: any) => c.boardId === editingBoardId) as any}
+		categories={data.categories.filter((c: any) => c.boardId === editingBoardId || c.boardId === null) as any}
 		labels={data.labels.filter((l: any) => l.boardId === editingBoardId) as any}
 		boardId={editingBoardId}
 		boardUsers={data.allUsers}
@@ -915,6 +1000,19 @@
 		onClose={() => { showCardModal = false; editingCard = null; }}
 	/>
 {/if}
+
+<!-- Confirm Modal: archiving the open card, and deleting an archived one for good -->
+{#if confirmState.show}
+	<ConfirmModal
+		title={confirmState.title}
+		message={confirmState.message}
+		confirmText={confirmState.confirmText}
+		onConfirm={() => { confirmState.show = false; confirmState.onConfirm(); }}
+		onCancel={() => (confirmState.show = false)}
+	/>
+{/if}
+
+<Toast />
 
 <!-- Move Card Modal -->
 {#if showMoveModal && moveCard}

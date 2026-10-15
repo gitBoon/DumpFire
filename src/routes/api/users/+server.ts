@@ -1,26 +1,26 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { users, sessions, inviteTokens } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { inTransaction } from '$lib/server/db/transaction';
+import { users } from '$lib/server/db/schema';
 import { hashPassword } from '$lib/server/auth';
-import { isSmtpConfigured, resolveBaseUrl } from '$lib/server/email';
+import { issueInvite } from '$lib/server/invites';
+import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
+import { readBody } from '$lib/server/request-body';
+import { listUsersFor } from '$lib/server/list-access';
+import { NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl } from '$lib/server/email';
 import { sendInviteEmail } from '$lib/server/notifications';
 import type { RequestHandler } from './$types';
 
-/** GET — List all users (any authenticated user — for sharing/team dropdowns). */
+/**
+ * GET — every user, for the share dialog's picker: `id`, `username` and
+ * `emoji` to anyone signed in, and `email`, `role` and `createdAt` to an
+ * administrator as well (card 2128, `listUsersFor`). Every address and role
+ * was given to every signed-in caller.
+ */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const allUsers = db.select({
-		id: users.id,
-		username: users.username,
-		email: users.email,
-		emoji: users.emoji,
-		role: users.role,
-		createdAt: users.createdAt
-	}).from(users).all();
-
-	return json(allUsers);
+	return json(listUsersFor(locals.user));
 };
 
 /** POST — Create a new user (admin only). Password optional if SMTP configured. */
@@ -29,15 +29,13 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 		throw error(403, 'Forbidden');
 	}
 
-	const { username, email, password, emoji, role } = await request.json();
+	const actor = locals.user;
 
-	if (!username?.trim() || username.trim().length < 2) {
-		throw error(400, 'Username must be at least 2 characters');
-	}
-
-	if (!email?.trim() || !email.includes('@')) {
-		throw error(400, 'Valid email required');
-	}
+	// Each text field that was sent is a string, and the username and email
+	// are there and held to their rules, or this is a 400: see
+	// account-fields.ts. `role` is looked at below, where it always was.
+	const body = await readBody(request);
+	const { username, email, password, emoji } = readAccountFields(body);
 
 	const smtpReady = isSmtpConfigured();
 
@@ -50,59 +48,77 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 		throw error(400, 'Password must be at least 8 characters');
 	}
 
-	// Only superadmin can create admin users
-	const finalRole = role || 'user';
-	if (finalRole === 'admin' && locals.user.role !== 'superadmin') {
-		throw error(403, 'Only superadmin can create admin users');
-	}
+	// A role is exactly `user` or `admin`, and only the superadmin makes an
+	// administrator. What passes is what is written: it used to be compared as
+	// it was sent and then bound, and `["superadmin"]` is bound as `superadmin`.
+	const finalRole =
+		requireAssignableRole(actor, body, {
+			superadmin: 'Cannot create additional superadmin accounts',
+			promote: 'Only superadmin can create admin users'
+		}) ?? 'user';
 
-	if (finalRole === 'superadmin') {
-		throw error(400, 'Cannot create additional superadmin accounts');
-	}
+	// Check uniqueness: one rule, shared with PUT /api/users/[id].
+	const requireUnused = () => requireUnusedAccountFields({ username, email });
 
-	// Check uniqueness
-	const existingUsername = db.select().from(users).where(eq(users.username, username.trim())).get();
-	if (existingUsername) {
-		throw error(409, 'Username already taken');
-	}
-
-	const existingEmail = db.select().from(users).where(eq(users.email, email.trim().toLowerCase())).get();
-	if (existingEmail) {
-		throw error(409, 'Email already in use');
-	}
+	// Hashing takes about a quarter of a second, and nothing else can write
+	// while a transaction is open, so the hash is made out here, before it. The
+	// name and address are looked at first so that a request that will be
+	// refused is not hashed for, and are read again in the transaction.
+	requireUnused();
 
 	// If password provided, hash and create fully. Otherwise create with placeholder and invite.
 	const passwordHash = password
 		? hashPassword(password)
 		: hashPassword(crypto.randomUUID()); // Random placeholder — user must set via invite
 
-	const user = db.insert(users)
-		.values({
-			username: username.trim(),
-			email: email.trim().toLowerCase(),
-			passwordHash,
-			emoji: emoji || '👤',
-			role: finalRole
-		})
-		.returning({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt })
-		.get();
+	// One transaction: the name and address are checked as unused in the one
+	// that creates the user, and the user and their invite are made together.
+	// A failure between the two used to leave a user with a password nobody
+	// knows and no invite to set one. The mail is sent once it is committed.
+	const created = inTransaction(() => {
+		requireUnused();
 
-	let invited = false;
+		// Read again in here, as the name and address are: with no password and
+		// no mail there is no invite, and the user could never sign in.
+		if (!password && !isSmtpConfigured()) {
+			throw error(400, 'Password must be at least 8 characters (SMTP not configured for invite emails)');
+		}
 
-	// If no password was provided and SMTP is ready, send invite
-	if (!password && smtpReady) {
-		const token = crypto.randomUUID();
-		const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+		// An invite is a link, and the address it begins with is this server's
+		// configuration and never what the request says: see linkBaseUrl. With
+		// none there is no invite to send, and the user is not made: they would
+		// have a password nobody knows and no way to set one.
+		const inviteFrom = password ? null : linkBaseUrl(url);
+		if (!password && inviteFrom === null) {
+			throw error(503, NO_LINK_ADDRESS);
+		}
 
-		db.insert(inviteTokens)
-			.values({ token, userId: user.id, expiresAt })
-			.run();
+		const user = db.insert(users)
+			.values({
+				username,
+				email: email.toLowerCase(),
+				passwordHash,
+				emoji: emoji ?? '👤',
+				role: finalRole
+			})
+			.returning({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt })
+			.get();
 
-		const baseUrl = resolveBaseUrl(request, url);
-		sendInviteEmail(user.email, user.username, token, baseUrl);
-		invited = true;
-	}
+		let invited = false;
 
-	return json({ ...user, invited }, { status: 201 });
+		// If no password was provided and SMTP is ready, send invite. A new user
+		// has no earlier invite to end, but an invite is issued one way, in
+		// invites.ts, so its lifetime and its rule are written once.
+		if (inviteFrom !== null) {
+			const token = issueInvite(user.id);
+
+			sendInviteEmail(user.email, user.username, token, inviteFrom);
+			invited = true;
+		}
+
+		return { ...user, invited };
+	});
+
+	return json(created, { status: 201 });
 };
 

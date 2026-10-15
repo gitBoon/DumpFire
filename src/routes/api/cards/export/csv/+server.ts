@@ -1,6 +1,8 @@
 import { db } from '$lib/server/db';
 import { boards, columns, cards, categories, labels, cardLabels, cardAssignees, users, subtasks, boardMembers, boardTeams, teamMembers } from '$lib/server/db/schema';
 import { eq, and, isNull, inArray, asc } from 'drizzle-orm';
+import { readQueryId } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /** Escape a value for CSV: wrap in quotes if it contains commas, quotes, or newlines. */
@@ -15,9 +17,12 @@ function csvEscape(val: string | null | undefined): string {
 
 /** GET — Export all cards across all accessible boards as CSV */
 export const GET: RequestHandler = async ({ locals, url }) => {
-	const user = locals.user!;
+	// A caller who is not signed in is 401, where `locals.user!` threw and only
+	// the gate stood in front of it; `boardId` is an id, where `2.5` and `5abc`
+	// were read as another board or as none (card 2117).
+	const user = requireUser(locals.user);
 	const isAdmin = user.role === 'admin' || user.role === 'superadmin';
-	const boardFilterParam = url.searchParams.get('boardId');
+	const boardFilter = readQueryId(url.searchParams.get('boardId'), 'board', 'Invalid boardId');
 
 	// Get accessible boards
 	let accessibleBoardIds: number[];
@@ -59,10 +64,9 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	}
 
 	// Apply board filter if provided
-	if (boardFilterParam) {
-		const filterId = Number(boardFilterParam);
-		if (accessibleBoardIds.includes(filterId)) {
-			accessibleBoardIds = [filterId];
+	if (boardFilter !== undefined) {
+		if (accessibleBoardIds.includes(boardFilter)) {
+			accessibleBoardIds = [boardFilter];
 		} else {
 			return new Response('Board,Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks\n', {
 				headers: {

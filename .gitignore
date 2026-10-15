@@ -30,6 +30,11 @@ vite.config.ts.timestamp-*
 # Backup/restore temp files
 .pre-restore-safety.json
 .restore-temp.*
+# A backup's two copies, left beside the database by a crash (backup.ts:
+# <db>.backup-temp and <db>.backup-temp-cleared, with any -journal, -wal or
+# -shm beside either). The first holds live sessions. Anywhere in the tree.
+*.backup-temp
+*.backup-temp-*
 
 # Debug/log files
 check-errors.txt
@@ -44,3 +49,9 @@ uploads/
 
 # Agent workflows (local only)
 .agent/
+
+# Claude Code settings, agents and skills (local only)
+.claude/
+
+# Card planning documents (local only; synced to the shared drive and Merview)
+docs/planning/

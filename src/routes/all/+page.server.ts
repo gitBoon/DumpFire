@@ -1,10 +1,12 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, categories, subtasks, labels, cardLabels, cardAssignees, users, boardCategories, taskRequests } from '$lib/server/db/schema';
+import { boards, columns, cards, subtasks, labels, cardLabels, cardAssignees, users, taskRequests } from '$lib/server/db/schema';
 import { asc, inArray, eq, isNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { boardCategoriesFor, cardCategoriesFor } from '$lib/server/list-access';
 import { getBlockedStateForCards } from '$lib/server/planning';
 import { milestoneNamesForCards } from '$lib/server/milestones';
 import { getCardTokenTotals } from '$lib/server/tokens';
+import { columnRole } from '$lib/column-role';
 import type { PageServerLoad } from './$types';
 
 const DEFAULT_COMPLETED_LIMIT = 50;
@@ -51,14 +53,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const allUsers = db.select({ id: users.id, username: users.username, emoji: users.emoji }).from(users).all();
 	const userMap = new Map(allUsers.map(u => [u.id, u]));
 
-	const allCategories = db.select().from(categories).orderBy(asc(categories.name)).all();
+	// The categories of the boards the caller can open and the shared ones, and
+	// any other a card here carries, marked `carried` (card 2128).
+	const allCategories = cardCategoriesFor(user, allCards);
 
-	// Get request origins for cards created from accepted task requests
+	// Get request origins for cards created from accepted task requests, by the
+	// requester's name and not their address, which no screen reads (card 2128's review).
 	const requestOrigins = cardIds.length > 0
 		? db.select({
 			resolvedCardId: taskRequests.resolvedCardId,
 			requesterName: taskRequests.requesterName,
-			requesterEmail: taskRequests.requesterEmail,
 			title: taskRequests.title
 		}).from(taskRequests).where(inArray(taskRequests.resolvedCardId, cardIds)).all()
 		: [];
@@ -74,8 +78,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		columnMap.set(col.id, { title: col.title, boardId: col.boardId });
 	}
 
-	// Load board categories and build a lookup map
-	const allBoardCategories = db.select().from(boardCategories).all();
+	// The groupings the caller is listed (card 2128), and a lookup map. Every
+	// board here is one they can open, so its grouping is among them.
+	const allBoardCategories = boardCategoriesFor(user);
 	const boardCatMap = new Map(allBoardCategories.map(bc => [bc.id, bc]));
 
 	const boardMap = new Map<number, { name: string; emoji: string; categoryId: number | null }>();
@@ -86,9 +91,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// Normalize column titles into buckets
 	function getBucket(colTitle: string): string {
 		const t = colTitle.toLowerCase().trim();
-		if (t === 'complete' || t === 'done') return 'Complete';
+		const role = columnRole(colTitle);
+		if (role === 'complete') return 'Complete';
 		if (t === 'in progress' || t === 'in-progress' || t === 'doing') return 'In Progress';
-		if (t === 'on hold' || t === 'blocked' || t === 'waiting') return 'On Hold';
+		if (role === 'hold') return 'On Hold';
 		if (t === 'to do' || t === 'todo') return 'To Do';
 		// Title case for consistent merging of custom columns
 		return t.replace(/\b\w/g, c => c.toUpperCase());
@@ -109,7 +115,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			subtasks: allSubtasks.filter(st => st.cardId === card.id),
 			labelIds: allCardLabels.filter(cl => cl.cardId === card.id).map(cl => cl.labelId),
 			assignees,
-			requestOrigin: ro ? { requesterName: ro.requesterName, requesterEmail: ro.requesterEmail || undefined, requestTitle: ro.title } : null,
+			requestOrigin: ro ? { requesterName: ro.requesterName, requestTitle: ro.title } : null,
 			boardName: boardInfo?.name || 'Unknown',
 			boardEmoji: boardInfo?.emoji || '📋',
 			boardId: colInfo?.boardId || 0,
@@ -188,7 +194,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// Blocked state and milestone names for every card on the page, in one pass
 	// each. /all spans every accessible board and can run to thousands of cards,
 	// so a per-card lookup is not an option — these take the ids already loaded.
-	const blockedState = getBlockedStateForCards(cardIds);
+	// A blocker on a board the caller cannot open is withheld (card 2129).
+	const blockedState = getBlockedStateForCards(cardIds, user);
 	const milestoneNames = milestoneNamesForCards(cardIds);
 
 	// Cost per card across every board in scope, in one query. Cards with nothing

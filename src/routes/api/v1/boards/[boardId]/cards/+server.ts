@@ -1,23 +1,33 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { cards, columns, subtasks, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
+import { inTransaction } from '$lib/server/db/transaction';
+import { cards, columns, subtasks } from '$lib/server/db/schema';
 import { eq, asc, and, isNull, sql } from 'drizzle-orm';
-import { canViewBoard, canEditBoard } from '$lib/server/board-access';
-import { emit } from '$lib/server/events';
-import { logActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
-import { normaliseReportingFields, ReportingFieldError } from '$lib/server/reporting-fields';
+import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
+import { linkBaseUrl } from '$lib/server/email';
+import { normaliseReportingFields } from '$lib/server/reporting-fields';
+import { PRIORITIES, requireCardCategory } from '$lib/server/card-fields';
+import {
+	pathId,
+	readBody,
+	readChoice,
+	readColour,
+	readDate,
+	readId,
+	readNumber,
+	readQueryId,
+	readText
+} from '$lib/server/request-body';
+import { requireBoard, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards/:boardId/cards — List all cards on a board. */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const boardId = pathId(params.boardId, 'board');
+	// A board that is not there is 404 to everyone, then one the caller cannot open 403.
+	requireBoard(locals.user, boardId, 'view');
 
-	const boardId = Number(params.boardId);
-	if (isNaN(boardId)) throw error(400, 'Invalid board ID');
-
-	if (!canViewBoard(locals.user, boardId)) {
-		throw error(403, 'No access to this board');
-	}
+	const columnFilter = readQueryId(url.searchParams.get('columnId'), 'column');
 
 	// Get all columns for this board
 	const boardColumns = db.select()
@@ -29,12 +39,11 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 		return json([]);
 	}
 
-	const columnFilter = url.searchParams.get('columnId');
 	const includeArchived = url.searchParams.get('archived') === 'true';
 
 	let allCards: (typeof cards.$inferSelect)[] = [];
 	for (const col of boardColumns) {
-		if (columnFilter && col.id !== Number(columnFilter)) continue;
+		if (columnFilter !== undefined && col.id !== columnFilter) continue;
 
 		let colCards;
 		if (includeArchived) {
@@ -87,69 +96,78 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	return json(enriched);
 };
 
-/** POST /api/v1/boards/:boardId/cards — Create a new card on a board. */
-export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+/**
+ * POST /api/v1/boards/:boardId/cards — Create a new card on a board.
+ *
+ * The board is looked for and the caller checked first (404, then 403), then
+ * every field is read (400), then the column and the category the body names
+ * are looked for. A card's category is one of its board's, or one that
+ * belongs to no board: `404 Category not found on this board` otherwise.
+ *
+ * A card created in a Complete column is completed as it is created, as a
+ * card moved into one is (card 2134): see `$lib/server/card-create`. The
+ * answer is the card as written, with its `completedAt`.
+ */
+export const POST: RequestHandler = async ({ params, request, locals, url }) => {
+	const user = requireUser(locals.user);
+	const boardId = pathId(params.boardId, 'board');
+	const body = await readBody(request);
+	const baseUrl = linkBaseUrl(url);
 
-	const boardId = Number(params.boardId);
-	if (isNaN(boardId)) throw error(400, 'Invalid board ID');
+	// One transaction: the caller is checked and the column read in the one
+	// that creates the card and writes its entries. A failure between the
+	// writes used to leave a card that nobody was recorded as having raised.
+	const card = inTransaction(() => {
+		requireBoard(user, boardId, 'edit');
 
-	if (!canEditBoard(locals.user, boardId)) {
-		throw error(403, 'No edit access to this board');
-	}
+		const columnId = readId(body, 'columnId', { required: true, says: { missing: 'columnId is required' } });
+		const title = readText(body, 'title', {
+			required: true,
+			trim: true,
+			min: 1,
+			max: 500,
+			says: { missing: 'title is required', empty: 'title is required', invalid: 'Title too long (max 500 chars)' }
+		});
+		const description = readText(body, 'description', { max: 50000, says: { invalid: 'Description too long (max 50000 chars)' } });
+		const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true });
+		const colorTag = readColour(body, 'colorTag', { allowEmpty: true });
+		const categoryId = readId(body, 'categoryId', { nullable: true });
+		const dueDate = readDate(body, 'dueDate', { nullable: true });
+		const businessValue = readText(body, 'businessValue', { max: 10000 });
+		const position = readNumber(body, 'position', {});
+		// The five reporting fields, each in its own vocabulary, with its own 400.
+		const reporting = normaliseReportingFields(body);
 
-	const body = await request.json();
-	const { columnId, title, description, priority, colorTag, categoryId, dueDate, businessValue, position } = body;
+		// Verify the column belongs to this board
+		const col = db.select().from(columns).where(eq(columns.id, columnId)).get();
+		if (!col || col.boardId !== boardId) {
+			throw error(400, 'Column does not belong to this board');
+		}
+		if (categoryId != null) requireCardCategory(categoryId, boardId);
 
-	let reporting;
-	try {
-		reporting = normaliseReportingFields(body);
-	} catch (e) {
-		if (e instanceof ReportingFieldError) throw error(400, e.message);
-		throw e;
-	}
+		const card = db.insert(cards)
+			.values({
+				columnId,
+				categoryId: categoryId ?? null,
+				title,
+				description: description ?? '',
+				position: position ?? 0,
+				priority: priority ?? 'medium',
+				colorTag: colorTag ?? '',
+				dueDate: dueDate ?? null,
+				businessValue: businessValue ?? '',
+				createdBy: user.id,
+				...reporting
+			})
+			.returning()
+			.get();
 
-	if (!columnId) throw error(400, 'columnId is required');
-	if (!title || !title.trim()) throw error(400, 'title is required');
-	if (title.length > 500) throw error(400, 'Title too long (max 500 chars)');
-	if (description && description.length > 50000) throw error(400, 'Description too long (max 50000 chars)');
-
-	// Verify the column belongs to this board
-	const col = db.select().from(columns).where(eq(columns.id, columnId)).get();
-	if (!col || col.boardId !== boardId) {
-		throw error(400, 'Column does not belong to this board');
-	}
-
-	const card = db.insert(cards)
-		.values({
-			columnId,
-			categoryId: categoryId || null,
-			title: title.trim(),
-			description: description || '',
-			position: position ?? 0,
-			priority: priority || 'medium',
-			colorTag: colorTag || '',
-			dueDate: dueDate || null,
-			businessValue: businessValue || '',
-			createdBy: locals.user.id,
-			...reporting
-		})
-		.returning()
-		.get();
-
-	// The creation event that never existed. Without it there was no way to find
-	// work that had been raised but not yet started, and no record of who raised
-	// it — `createdBy` answers the second half.
-	logActivity({
-		boardId,
-		cardId: card.id,
-		action: ACTIONS.cardCreated,
-		detail: card.title,
-		source: 'api',
-		...actorOf(locals.user)
+		// The `card_created` entry and, in a Complete column, the completion; then
+		// the live update and, for a completion, the celebration, after the commit.
+		const creation = recordCardCreated({ card, column: col, actor: user, source: 'api' });
+		announceCardCreated(creation, user, baseUrl);
+		return creation.card;
 	});
-
-	emit(boardId, 'update', { type: 'card', action: 'created', cardTitle: card.title, userName: locals.user.username, userEmoji: locals.user.emoji || '\ud83d\udc64' });
 
 	return json(card, { status: 201 });
 };

@@ -1,7 +1,9 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
+import { inTransaction } from '$lib/server/db/transaction';
 import { categories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ params, locals }) => {
@@ -9,7 +11,12 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 		throw error(403, 'Forbidden');
 	}
 
-	const boardId = Number(params.id);
-	db.delete(categories).where(eq(categories.boardId, boardId)).run();
+	const boardId = pathId(params.id, 'board');
+	// One statement, which takes every category of the board, and with each the
+	// category of every card that had it: the key on `cards.category_id` sets
+	// it to NULL. In a transaction so that it is all of that or none of it.
+	inTransaction(() => {
+		db.delete(categories).where(eq(categories.boardId, boardId)).run();
+	});
 	return json({ success: true });
 };

@@ -8,6 +8,12 @@
 	let submitting = $state(false);
 	let clientError = $state('');
 	let isOriginError = $state(false);
+
+	/**
+	 * How many API keys the account holds. Setting a password with an invite
+	 * ends every one of them, and the page says so before the form is sent.
+	 */
+	let apiKeys = $derived(data.apiKeys ?? 0);
 </script>
 
 <svelte:head>
@@ -22,12 +28,19 @@
 				<h1>Welcome, {data.username}!</h1>
 				<p class="invite-subtitle">Set your password to get started with DumpFire.</p>
 			{:else}
-				<h1>Invite Expired</h1>
-				<p class="invite-subtitle">This invite link is invalid or has already been used.</p>
+				<!-- The same words as the form's failure, in +page.server.ts: one answer for every dead link. -->
+				<h1>Invite Unavailable</h1>
+				<p class="invite-subtitle">This invite link no longer works. It has expired, it has already been used, or it was cancelled when a newer invite was sent or the account's password, email address or role was changed. Ask an administrator to send you a new one.</p>
 			{/if}
 		</div>
 
 		{#if data.valid}
+			{#if apiKeys > 0}
+				<div class="keys-notice">
+					<p>Setting a password here ends this account's {apiKeys} API key{apiKeys === 1 ? '' : 's'} and signs it out everywhere else.</p>
+				</div>
+			{/if}
+
 			{#if form?.error || clientError}
 				<div class="error-banner" class:origin-error={isOriginError}>
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5v4M8 10.5v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -171,6 +184,20 @@
 	}
 
 	.error-banner p {
+		margin: 0;
+	}
+
+	.keys-notice {
+		padding: var(--space-md) var(--space-lg);
+		background: rgba(245, 158, 11, 0.1);
+		border: 1px solid rgba(245, 158, 11, 0.4);
+		border-radius: var(--radius-md);
+		color: var(--accent-amber);
+		font-size: 0.85rem; font-weight: 500;
+		margin-bottom: var(--space-xl);
+	}
+
+	.keys-notice p {
 		margin: 0;
 	}
 

@@ -11,58 +11,54 @@ import { boards, boardCategories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import {
 	generateBoardReport, generateCategoryReport, generateAllBoardsReport,
-	generateReportPdf, parseStatusFilter
+	generateReportPdf, readReportAssignee, readReportWindow,
+	REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS
 } from '$lib/server/reports';
+import { readBody, readChoice, readId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
+
+const MISSING = 'Missing required fields: scope, periodStart, periodEnd';
+const SCOPE = 'Invalid scope. Must be: board, category, or all';
 
 export const POST: RequestHandler = async ({ locals, request }) => {
 	const user = locals.user;
-	if (!user) return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+	if (!user) throw error(401, 'Unauthorized');
 
-	const body = await request.json();
-	const { scope, scopeId, periodStart, periodEnd, detailLevel: rawDetailLevel, statusFilter: rawStatusFilter } = body;
-	const detailLevel: 'summary' | 'detailed' = rawDetailLevel === 'summary' ? 'summary' : 'detailed';
-	const statusFilter = parseStatusFilter(rawStatusFilter);
+	// Each field by its rule (card 2117). A detail level, a status filter or a
+	// scope it did not know was read as another, and a period that was not
+	// text, or a scopeId that was not an id, was a 500.
+	const body = await readBody(request);
+	const scope = readChoice(body, 'scope', { required: true, from: REPORT_SCOPES, says: { missing: MISSING, type: SCOPE, invalid: SCOPE } });
+	// Each end a date or a timestamp, and the start not after the end.
+	const { periodStart, periodEnd } = readReportWindow(body, MISSING);
+	const scopeId = readId(body, 'scopeId', { nullable: true }) ?? null;
+	const detailLevel = readChoice(body, 'detailLevel', { from: REPORT_DETAIL_LEVELS }) ?? 'detailed';
+	const statusFilter = readChoice(body, 'statusFilter', { from: REPORT_STATUS_FILTERS }) ?? 'all';
 	// Optional: narrow the whole report to one person's assigned work.
-	const rawAssignee = body.assigneeUserId ?? body.userId ?? null;
-	const assigneeUserId =
-		rawAssignee === null || rawAssignee === '' || rawAssignee === 'all'
-			? null
-			: Number(rawAssignee);
-	if (assigneeUserId !== null && !Number.isInteger(assigneeUserId)) {
-		throw error(400, 'assigneeUserId must be a user id');
-	}
-
-	if (!scope || !periodStart || !periodEnd) {
-		return new Response(JSON.stringify({ error: 'Missing required fields: scope, periodStart, periodEnd' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-	}
-
-	if (!['board', 'category', 'all'].includes(scope)) {
-		return new Response(JSON.stringify({ error: 'Invalid scope. Must be: board, category, or all' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-	}
+	const assigneeUserId = readReportAssignee(body);
 
 	if (scope === 'all' && user.role !== 'admin' && user.role !== 'superadmin') {
-		return new Response(JSON.stringify({ error: 'Only admins can generate all-boards reports' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+		throw error(403, 'Only admins can generate all-boards reports');
 	}
 
 	let reportData;
 	let filename = 'dumpfire-report';
 
 	if (scope === 'board') {
-		if (!scopeId) return new Response(JSON.stringify({ error: 'scopeId required for board scope' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+		if (scopeId === null) throw error(400, 'scopeId required for board scope');
 		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId);
-		if (!reportData) return new Response(JSON.stringify({ error: 'Board not found or no access' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+		if (!reportData) throw error(403, 'Board not found or no access');
 		const board = db.select().from(boards).where(eq(boards.id, scopeId)).get();
 		filename = `dumpfire-report-${(board?.name || 'board').toLowerCase().replace(/\s+/g, '-')}`;
 	} else if (scope === 'category') {
-		if (!scopeId) return new Response(JSON.stringify({ error: 'scopeId required for category scope' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+		if (scopeId === null) throw error(400, 'scopeId required for category scope');
 		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId);
-		if (!reportData) return new Response(JSON.stringify({ error: 'Category not found or no accessible boards' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+		if (!reportData) throw error(403, 'Category not found or no accessible boards');
 		const cat = db.select().from(boardCategories).where(eq(boardCategories.id, scopeId)).get();
 		filename = `dumpfire-report-${(cat?.name || 'category').toLowerCase().replace(/\s+/g, '-')}`;
 	} else {
 		reportData = generateAllBoardsReport(periodStart, periodEnd, user, statusFilter, assigneeUserId);
-		if (!reportData) return new Response(JSON.stringify({ error: 'Failed to generate report' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+		if (!reportData) throw error(500, 'Failed to generate report');
 		filename = 'dumpfire-report-all-boards';
 	}
 

@@ -15,6 +15,8 @@
 
 import { EventEmitter } from 'node:events';
 import { sqlite } from './db';
+// uploads.ts imports nothing that imports this module, and has to stay so.
+import { emptyTrash } from './uploads';
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'CRITICAL';
 
@@ -68,8 +70,15 @@ export function subscribeToLogs(listener: (entry: LogEntry) => void): () => void
 // Self-healing: the logger may fire before migration 0039 has been applied
 // (e.g. during the migration run itself), so it creates its own table.
 let dbReady = false;
-function ensureTable(): boolean {
-	if (dbReady) return true;
+
+/**
+ * Create `system_logs` now if it is not there.
+ *
+ * The migration runner calls this before its first transaction. Left to the
+ * first log entry, the table could be created inside a migration's transaction
+ * and then rolled back with it, leaving `dbReady` true and no table behind.
+ */
+export function ensureSystemLogsTable(): boolean {
 	try {
 		sqlite.exec(`CREATE TABLE IF NOT EXISTS system_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -88,7 +97,11 @@ function ensureTable(): boolean {
 	return dbReady;
 }
 
-function persist(entry: LogEntry): void {
+function ensureTable(): boolean {
+	return dbReady || ensureSystemLogsTable();
+}
+
+function writeRow(entry: LogEntry): void {
 	if (!ensureTable()) return;
 	try {
 		sqlite.prepare(
@@ -98,6 +111,65 @@ function persist(entry: LogEntry): void {
 		// Never let logging break the request path — console is the fallback
 		console.error(`[LOGGER] Failed to persist log entry: ${(err as Error)?.message}`);
 	}
+}
+
+// Rows logged while a transaction is open on the connection, oldest first.
+//
+// The logger writes on the application's only connection, so a row written
+// inside a transaction is rolled back with it, and the line that explains why
+// a write failed is the one that vanishes. Such a row is kept here and written
+// once the transaction is over, whichever way it ended. The console and the
+// live feed have had it at once either way.
+const pendingRows: LogEntry[] = [];
+
+// A transaction that is never closed must not grow this for ever. Past the
+// cap the oldest rows go, and the flush says how many.
+const MAX_PENDING_ROWS = 2000;
+let pendingRowsDropped = 0;
+
+function persist(entry: LogEntry): void {
+	if (sqlite.inTransaction) {
+		pendingRows.push(entry);
+		if (pendingRows.length > MAX_PENDING_ROWS) {
+			pendingRows.shift();
+			pendingRowsDropped++;
+		}
+		return;
+	}
+	// Rows held during a transaction that `inTransaction` did not open (a
+	// migration, a restore) have nobody to flush them, so they go in here,
+	// ahead of this one.
+	flushPendingLogs();
+	writeRow(entry);
+}
+
+/**
+ * Write the rows that were logged while a transaction was open, in the order
+ * they were logged and with the time they were logged at.
+ *
+ * `inTransaction` calls this when its outermost transaction ends, committed or
+ * rolled back. Does nothing while a transaction is still open.
+ */
+export function flushPendingLogs(): void {
+	if (sqlite.inTransaction) return;
+	if (pendingRows.length === 0 && pendingRowsDropped === 0) return;
+
+	const rows = pendingRows.splice(0);
+	if (pendingRowsDropped > 0) {
+		const dropped = pendingRowsDropped;
+		pendingRowsDropped = 0;
+		writeRow({
+			id: 0,
+			timestamp: rows[0]?.timestamp ?? new Date().toISOString(),
+			level: 'WARN',
+			context: 'LOGGER',
+			message: `${dropped} earlier log line(s) written inside one transaction were printed but not stored: more than ${MAX_PENDING_ROWS} were waiting for it to end`,
+			meta: null,
+			userId: null,
+			ip: null
+		});
+	}
+	for (const row of rows) writeRow(row);
 }
 
 // ─── Retention ──────────────────────────────────────────────────────────────
@@ -120,11 +192,45 @@ export function cleanOldSystemLogs(): void {
 	}
 }
 
-/** Start periodic retention cleanup (idempotent). Called once from hooks. */
+/**
+ * Empty the uploads trash of what has been in it for 30 days (`emptyTrash`,
+ * in uploads.ts, which says what the trash is). It reaches nothing outside
+ * the trash folder, and a failure is logged and goes no further.
+ */
+export function emptyOldTrash(): void {
+	try {
+		const { removed, failed } = emptyTrash();
+		if (removed > 0) {
+			info('UPLOADS', `The trash was emptied of the attachment files of ${removed} card(s), deleted 30 days ago or more`);
+		}
+		if (failed.length > 0) {
+			warn('UPLOADS', `${failed.length} folder(s) of the uploads trash were due to be removed and could not be`, {
+				folders: failed.slice(0, 10)
+			});
+		}
+	} catch (err) {
+		warn('UPLOADS', `The uploads trash was not emptied: ${(err as Error)?.message}`);
+	}
+}
+
+/**
+ * Start periodic retention cleanup (idempotent). Called once from hooks.
+ *
+ * The log is pruned now and then every six hours. The uploads trash is
+ * emptied ten minutes from now and then every six hours, and not now: nothing
+ * is removed from the disk as the server starts. Without the run at ten
+ * minutes, a server restarted more often than every six hours never emptied
+ * its trash. That one timer does not keep the process alive, and a second
+ * call starts neither it nor the interval again.
+ */
 export function initLogMaintenance(): void {
 	cleanOldSystemLogs();
 	if (maintenanceTimer) return;
-	maintenanceTimer = setInterval(cleanOldSystemLogs, 6 * 60 * 60 * 1000);
+	maintenanceTimer = setInterval(() => {
+		cleanOldSystemLogs();
+		emptyOldTrash();
+	}, 6 * 60 * 60 * 1000);
+	setTimeout(emptyOldTrash, 10 * 60 * 1000).unref();
 }
 
 // ─── Core emit ──────────────────────────────────────────────────────────────

@@ -1,52 +1,139 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { users, sessions } from '$lib/server/db/schema';
+import { afterCommit, inTransaction } from '$lib/server/db/transaction';
+import { deleteUser } from '$lib/server/deletes';
+import { users, sessions, type User } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
+import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
+import { pathId, readBody } from '$lib/server/request-body';
+import { requireManagedAccount } from '$lib/server/route-guards';
+import { endUnusedInvites } from '$lib/server/invites';
+import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
-/** PUT — Update user role/details (admin only). */
+const log = createLogger('AUTH');
+
+/**
+ * PUT — Update user role/details (admin only).
+ *
+ * An invite is addressed to the account as it was when it was sent: to its
+ * email address, and with the role it had. So when the email address or the
+ * role actually changes, every invite of the account not yet used ends, in
+ * the transaction that writes the change, and the answer says how many
+ * (`invitesEnded`). A change of username or emoji ends nothing, and no change
+ * here ends a session or an API key.
+ *
+ * Nobody changes their own role here (card 2117, decision 13): sending `role`
+ * for your own account is a 403 whatever it holds, and nothing else sent with
+ * it is saved. The superadmin's request to give up their role was answered
+ * 200 and ignored, and an administrator's to make themselves a user was
+ * answered 200 and done.
+ */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
 		throw error(403, 'Forbidden');
 	}
 
-	const userId = Number(params.id);
-	const data = await request.json();
+	const actor = locals.user;
+	const userId = pathId(params.id, 'user');
+	const body = await readBody(request);
 
-	const target = db.select().from(users).where(eq(users.id, userId)).get();
-	if (!target) throw error(404, 'User not found');
+	// One transaction: the user is read and the caller checked in the one that
+	// changes the account, so the role that was checked is the role of the row
+	// that is changed. Its fields are read after (card 2117, R1).
+	const answer = inTransaction(() => {
+		// The superadmin's account is theirs alone, and only the superadmin
+		// changes an administrator's: the rule is the one for setting a password
+		// and deleting an account, in route-guards.ts.
+		const target = requireManagedAccount(actor, userId, {
+			superadmin: 'Cannot modify superadmin account',
+			admin: 'Only superadmin can modify admin users'
+		});
 
-	// Protect superadmin from demotion
-	if (target.role === 'superadmin' && locals.user.id !== target.id) {
-		throw error(403, 'Cannot modify superadmin account');
-	}
+		// Nobody changes their own email here, an administrator included. This
+		// route asks for no password, and an email is where an invite to set a
+		// new one is sent. PUT /api/account/email asks for the password they
+		// have. Refused for sending it at all, whatever else came with it.
+		if (target.id === actor.id && body.email !== undefined) {
+			throw error(403, 'Change your own email on the Account page, which asks for your current password');
+		}
 
-	// Only superadmin can promote to admin
-	if (data.role === 'admin' && locals.user.role !== 'superadmin') {
-		throw error(403, 'Only superadmin can assign admin role');
-	}
+		// Nor their own role, the superadmin included, and whatever it is: the
+		// role they have, sent back, is refused too (R16). The superadmin's is
+		// nobody's to change; an administrator's is the superadmin's to change.
+		if (target.id === actor.id && body.role !== undefined) {
+			throw error(
+				403,
+				target.role === 'superadmin'
+					? "The superadmin's role cannot be changed"
+					: 'Your own role is not changed here: the superadmin can change it'
+			);
+		}
 
-	if (data.role === 'superadmin') {
-		throw error(400, 'Cannot assign superadmin role');
-	}
+		// Each text field by its rule, a value the account already holds kept
+		// as it is: see account-fields.ts.
+		const fields = readAccountFields(body, target);
 
-	const updates: Record<string, unknown> = {};
-	if (data.emoji) updates.emoji = data.emoji;
-	if (data.role && target.role !== 'superadmin') updates.role = data.role;
-	if (data.username) updates.username = data.username;
-	if (data.email) updates.email = data.email.toLowerCase();
+		// A role is exactly `user` or `admin`, and only the superadmin gives
+		// `admin`. What passes is what is written: it used to be compared as it
+		// was sent and then bound, and `["superadmin"]` is bound as `superadmin`.
+		const role = requireAssignableRole(actor, body, {
+			superadmin: 'Cannot assign superadmin role',
+			promote: 'Only superadmin can assign admin role'
+		});
 
-	if (Object.keys(updates).length === 0) {
-		return json(target);
-	}
+		// A username or an email another account has is a 409, where it was a
+		// 500 from the database (decision 14).
+		requireUnusedAccountFields(fields, target.id);
 
-	const updated = db.update(users)
-		.set(updates)
-		.where(eq(users.id, userId))
-		.returning({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt })
-		.get();
+		const updates: Partial<Pick<User, 'emoji' | 'role' | 'username' | 'email'>> = {};
+		if (fields.emoji !== undefined) updates.emoji = fields.emoji;
+		// Never the superadmin's: that is the caller's own account, refused above.
+		if (role !== undefined) updates.role = role;
+		if (fields.username !== undefined) updates.username = fields.username;
+		if (fields.email !== undefined) updates.email = fields.email.toLowerCase();
 
-	return json(updated);
+		// What actually changes: an email is compared in lower case, as it is
+		// stored, and a role sent as the one the account has is no change. The
+		// invites end before the account is written.
+		const changed = [
+			...(updates.email !== undefined && updates.email !== target.email.toLowerCase() ? ['email address'] : []),
+			...(updates.role !== undefined && updates.role !== target.role ? ['role'] : [])
+		];
+		const invitesEnded = changed.length > 0 ? endUnusedInvites(target.id) : 0;
+		if (changed.length > 0) {
+			afterCommit(() =>
+				log.info(
+					`User ${actor.id} changed the ${changed.join(' and ')} of user ${target.id} — ended ${invitesEnded} unused invite(s)`,
+					{ targetUserId: target.id, changed, ...(changed.includes('role') ? { role: updates.role } : {}), invitesEnded },
+					{ userId: actor.id }
+				)
+			);
+		}
+
+		if (Object.keys(updates).length === 0) {
+			// The same columns an update answers, and no others. This used to
+			// answer the row as it was read, password hash included.
+			return {
+				id: target.id,
+				username: target.username,
+				email: target.email,
+				emoji: target.emoji,
+				role: target.role,
+				createdAt: target.createdAt,
+				invitesEnded
+			};
+		}
+
+		const row = db.update(users)
+			.set(updates)
+			.where(eq(users.id, userId))
+			.returning({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt })
+			.get();
+		return { ...row, invitesEnded };
+	});
+
+	return json(answer);
 };
 
 /** DELETE — Delete a user (admin only). */
@@ -55,28 +142,29 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		throw error(403, 'Forbidden');
 	}
 
-	const userId = Number(params.id);
+	const actor = locals.user;
+	const userId = pathId(params.id, 'user');
 
 	// Can't delete yourself
-	if (userId === locals.user.id) {
+	if (userId === actor.id) {
 		throw error(400, 'Cannot delete your own account');
 	}
 
-	const target = db.select().from(users).where(eq(users.id, userId)).get();
-	if (!target) throw error(404, 'User not found');
+	// One transaction: the user is read, checked and deleted together, so the
+	// role that was checked is the role of the row that goes.
+	inTransaction(() => {
+		// Nobody deletes the superadmin, and only the superadmin deletes an
+		// administrator: the rule is the one for setting a password and
+		// changing an account, in route-guards.ts.
+		requireManagedAccount(actor, userId, {
+			superadmin: 'Cannot delete superadmin account',
+			admin: 'Only superadmin can delete admin users'
+		});
 
-	// Can't delete superadmin
-	if (target.role === 'superadmin') {
-		throw error(403, 'Cannot delete superadmin account');
-	}
-
-	// Only superadmin can delete admins
-	if (target.role === 'admin' && locals.user.role !== 'superadmin') {
-		throw error(403, 'Only superadmin can delete admin users');
-	}
-
-	// Delete user (sessions cascade)
-	db.delete(users).where(eq(users.id, userId)).run();
+		// What named the user with no key to clear it is cleared first; the
+		// delete used to fail on it. See $lib/server/deletes.ts.
+		deleteUser(userId, actor);
+	});
 
 	return json({ success: true });
 };

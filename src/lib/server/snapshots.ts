@@ -7,7 +7,8 @@
  * not recorded anywhere else.
  *
  * Captures per-column card counts for every board once per day.
- * Called from a setInterval timer in hooks.server.ts.
+ * Called from a setInterval timer, which `startSchedulers` in schedulers.ts
+ * starts as the server loads, unless the schedulers are off.
  */
 
 import { db } from './db';

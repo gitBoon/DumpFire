@@ -1,3 +1,25 @@
+-- Corrected 2026-10-12 (card 2006). Two statements near the end of this file.
+--
+-- What changed:
+--   boards.parent_card_id  was a bare integer. It now references cards(id)
+--                          ON DELETE CASCADE.
+--   boards.created_by      referenced users(id) with no ON DELETE action. It is
+--                          now ON DELETE SET NULL.
+--
+-- Why: on a new database this file sorts ahead of the hand-written migrations
+-- that add the same two columns (0010_add_sub_boards and
+-- 0011_add_user_management), so its versions were the ones kept and theirs were
+-- skipped as duplicates. Production, which is older than this file, has the
+-- hand-written versions. A new database therefore left sub-boards behind when
+-- their card was deleted, and refused to delete a user who had created a board.
+-- These two statements now say what 0010 and 0011 say, which is what production
+-- has and what the model (src/lib/server/db/schema.ts) declares.
+--
+-- No existing database runs this file again: the runner records a migration by
+-- file name and skips every name it has recorded. A database that already ran
+-- the earlier form of this file has its `boards` table rebuilt in this shape by
+-- the runner itself, at start-up (reconcileSchema in
+-- src/lib/server/db/migrate.ts).
 CREATE TABLE `activity_log` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`board_id` integer NOT NULL,
@@ -129,9 +151,9 @@ CREATE TABLE `users` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `users_username_unique` ON `users` (`username`);--> statement-breakpoint
 CREATE UNIQUE INDEX `users_email_unique` ON `users` (`email`);--> statement-breakpoint
-ALTER TABLE `boards` ADD `parent_card_id` integer;--> statement-breakpoint
+ALTER TABLE `boards` ADD `parent_card_id` integer REFERENCES cards(id) ON DELETE CASCADE;--> statement-breakpoint
 ALTER TABLE `boards` ADD `is_public` integer DEFAULT false NOT NULL;--> statement-breakpoint
-ALTER TABLE `boards` ADD `created_by` integer REFERENCES users(id);--> statement-breakpoint
+ALTER TABLE `boards` ADD `created_by` integer REFERENCES users(id) ON DELETE SET NULL;--> statement-breakpoint
 ALTER TABLE `cards` ADD `category_id` integer REFERENCES categories(id);--> statement-breakpoint
 ALTER TABLE `cards` ADD `due_date` text;--> statement-breakpoint
 ALTER TABLE `cards` ADD `on_hold_note` text DEFAULT '';--> statement-breakpoint

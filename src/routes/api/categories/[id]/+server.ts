@@ -3,36 +3,41 @@ import { db } from '$lib/server/db';
 import { categories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
+import { inTransaction } from '$lib/server/db/transaction';
+import { pathId, readBody, readText } from '$lib/server/request-body';
+import { requireCategoryEdit, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const id = pathId(params.id, 'category');
+	const body = await readBody(request);
 
-	const id = Number(params.id);
-	const data = await request.json();
-	const { boardId, ...rawData } = data;
+	const updated = inTransaction(() => {
+		// Checked against the board the category belongs to, read from its row,
+		// in the transaction that changes it.
+		const category = requireCategoryEdit(user, id);
 
-	// Whitelist allowed fields
-	const updateData: Record<string, unknown> = {};
-	if ('name' in rawData) updateData.name = rawData.name;
-	if ('color' in rawData) updateData.color = rawData.color;
+		const updates: Partial<typeof categories.$inferInsert> = {};
+		const name = readText(body, 'name', { trim: true, min: 1, max: 200, keep: category.name });
+		if (name !== undefined) updates.name = name;
+		const color = readText(body, 'color', { min: 1, max: 32, keep: category.color });
+		if (color !== undefined) updates.color = color;
+		if (Object.keys(updates).length === 0) throw error(400, 'No valid fields to update');
 
-	const updated = db.update(categories).set(updateData).where(eq(categories.id, id)).returning().get();
-	if (!updated) throw error(404, 'Category not found');
-	if (boardId) emit(boardId, 'update', { type: 'category' });
+		const row = db.update(categories).set(updates).where(eq(categories.id, id)).returning().get();
+		if (category.boardId) emit(category.boardId, 'update', { type: 'category' });
+		return row;
+	});
 	return json(updated);
 };
 
-export const DELETE: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+export const DELETE: RequestHandler = async ({ params, locals }) => {
+	const id = pathId(params.id, 'category');
 
-	const id = Number(params.id);
-	let boardId: number | undefined;
-	try {
-		const data = await request.json();
-		boardId = data.boardId;
-	} catch {}
+	const category = requireCategoryEdit(locals.user, id);
+
 	db.delete(categories).where(eq(categories.id, id)).run();
-	if (boardId) emit(boardId, 'update', { type: 'category' });
+	if (category.boardId) emit(category.boardId, 'update', { type: 'category' });
 	return json({ success: true });
 };

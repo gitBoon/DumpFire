@@ -49,6 +49,8 @@
 	let minLevel = $state('DEBUG');
 	let contextFilter = $state('');
 	let connected = $state(false);
+	// The browser has given up on the stream for good, and will not reconnect.
+	let disconnected = $state(false);
 	let consoleEl: HTMLDivElement | undefined = $state();
 	let stickToBottom = true;
 
@@ -77,11 +79,26 @@
 
 	onMount(() => {
 		const es = new EventSource('/api/logs/stream');
+		// The last entry shown. On reconnecting, the stream sends its last 100
+		// entries again before the new ones, and those already shown are
+		// skipped: each has an id at or below this one's. The ids count from 1
+		// again when the server restarts, so an entry later than this one is
+		// shown whatever its id.
+		let last: { id: number; timestamp: string } | null = null;
 		es.onopen = () => (connected = true);
-		es.onerror = () => (connected = false);
+		es.onerror = () => {
+			connected = false;
+			// The browser tries again after a dropped connection, and gives up
+			// for good on an answer that is not a stream: a 401 once the
+			// session has ended, a 403 once the account is no longer an
+			// administrator. Then it is CLOSED, and nothing will reopen it.
+			disconnected = es.readyState === EventSource.CLOSED;
+		};
 		es.onmessage = (e) => {
 			try {
 				const entry: LogEntry = JSON.parse(e.data);
+				if (last && entry.id <= last.id && entry.timestamp <= last.timestamp) return;
+				last = { id: entry.id, timestamp: entry.timestamp };
 				entries = [...entries.slice(-999), entry];
 			} catch { /* malformed frame — skip */ }
 		};
@@ -119,6 +136,9 @@
 	let fBoardId = $state('');
 	let fUserId = $state('');
 	let fAction = $state('');
+	// Where the action was done: '' for both, 'ui' for the web application, 'api' for the API.
+	// The Action filter finds an action however it was done (card 2127).
+	let fSource = $state('');
 	let fFrom = $state('');
 	let fTo = $state('');
 
@@ -129,6 +149,7 @@
 			if (fBoardId) params.set('boardId', fBoardId);
 			if (fUserId) params.set('userId', fUserId);
 			if (fAction.trim()) params.set('action', fAction.trim());
+			if (fSource) params.set('source', fSource);
 			if (fFrom) params.set('from', fFrom);
 			if (fTo) params.set('to', fTo + 'T23:59:59');
 			params.set('limit', String(AUDIT_PAGE));
@@ -240,7 +261,7 @@
 				</label>
 				<div class="ct-spacer"></div>
 				<span class="ct-status" class:live={connected}>
-					{connected ? '● live' : '○ reconnecting…'}
+					{connected ? '● live' : disconnected ? '○ disconnected: reload the page' : '○ reconnecting…'}
 				</span>
 				<button class="ct-btn" class:warn={paused} onclick={() => { paused = !paused; if (!paused) { stickToBottom = true; scrollToBottom(); } }}>
 					{paused ? '▶ Resume' : '⏸ Pause'}
@@ -322,7 +343,15 @@
 				</label>
 				<label class="ct-field">
 					<span>Action</span>
-					<input type="text" placeholder="e.g. card_moved or api:*" bind:value={fAction} />
+					<input type="text" placeholder="e.g. card_moved, card_* or api:*" bind:value={fAction} />
+				</label>
+				<label class="ct-field">
+					<span>Source</span>
+					<select bind:value={fSource}>
+						<option value="">All</option>
+						<option value="ui">Web application</option>
+						<option value="api">API</option>
+					</select>
 				</label>
 				<label class="ct-field">
 					<span>From</span>
