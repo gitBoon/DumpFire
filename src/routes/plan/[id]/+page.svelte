@@ -846,8 +846,9 @@
 					<span class="stat-label">blocked</span>
 				</div>
 				<div class="stat">
-					<span class="stat-value">{summary.progress.openSubtasks}</span>
-					<span class="stat-label">open subtasks</span>
+					<!-- Open against all, in the cards tile's form; no subtasks reads 0/0 (card 2225). -->
+					<span class="stat-value">{summary.progress.openSubtasks}/{summary.progress.totalSubtasks}</span>
+					<span class="stat-label">open subtasks / all</span>
 				</div>
 			</div>
 

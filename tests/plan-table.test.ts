@@ -460,6 +460,12 @@ describe('the page, as source', () => {
 		expect(button('expander')).toContain('aria-expanded=');
 	});
 
+	it('reads open subtasks against all of them, as it reads cards complete (card 2225)', () => {
+		expect(source).toMatch(
+			/<span class="stat-value">\{summary\.progress\.openSubtasks\}\/\{summary\.progress\.totalSubtasks\}<\/span>\s*<span class="stat-label">open subtasks \/ all<\/span>/
+		);
+	});
+
 	it('touches localStorage only inside a try', () => {
 		const uses = all(script, (n) => ts.isIdentifier(n) && n.text === 'localStorage');
 		expect(uses.length).toBeGreaterThanOrEqual(2);

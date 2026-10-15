@@ -176,6 +176,8 @@ export interface MilestoneSummary {
 		percent: number;
 		byColumn: { columnTitle: string; count: number }[];
 		openSubtasks: number;
+		/** Every subtask of the same cards, ticked or not: what `openSubtasks` is judged against. */
+		totalSubtasks: number;
 		/**
 		 * The boards the cards are on. The cards on boards the viewer cannot
 		 * open are counted in one entry, `id` null and `WITHHELD_BOARD_NAME`.
@@ -1042,16 +1044,20 @@ export function getMilestoneSummary(milestoneId: number, viewer: Actor): Milesto
 		boardMap.set(n.boardId, entry);
 	}
 
+	// Every subtask of those cards, ticked or not, read once: the open ones are
+	// counted from the same rows, so the two figures always cover the same cards.
 	const liveMemberIds = memberCardNodes.map((n) => n.id);
-	const openSubtasks = liveMemberIds.length
+	const memberSubtasks = liveMemberIds.length
 		? chunked(liveMemberIds, (ids) =>
 				db
-					.select({ id: subtasks.id })
+					.select({ completed: subtasks.completed })
 					.from(subtasks)
-					.where(and(inArray(subtasks.cardId, ids), eq(subtasks.completed, false)))
+					.where(inArray(subtasks.cardId, ids))
 					.all()
-			).length
-		: 0;
+			)
+		: [];
+	const totalSubtasks = memberSubtasks.length;
+	const openSubtasks = memberSubtasks.filter((s) => !s.completed).length;
 
 	const done = memberCardNodes.filter((n) => n.isComplete).length;
 
@@ -1065,6 +1071,7 @@ export function getMilestoneSummary(milestoneId: number, viewer: Actor): Milesto
 			percent: completionPercent(done, memberCardNodes.length),
 			byColumn: [...byColumnMap.entries()].map(([columnTitle, count]) => ({ columnTitle, count })),
 			openSubtasks,
+			totalSubtasks,
 			boards: [...boardMap.values()].sort((a, b) => b.cardCount - a.cardCount)
 		},
 		graph: {

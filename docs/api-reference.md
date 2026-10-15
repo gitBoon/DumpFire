@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.39
+version: 1.40
 status: As-Built
 date: 2026-10-15
 tags:
@@ -670,6 +670,11 @@ new; these answers and fields are:
   `daysLate` included, which still compare the pooled date. Across several boards the
   burndown page, its chart and the milestone panel now show no forecast date, and the
   target's verdict comes from `delivery`: see [Burndown Charts](burndown-charts.md#the-forecast).
+- **`GET /milestones/:milestoneId/summary` counts every subtask beside the open ones**
+  (card 2225). `progress.totalSubtasks` is every subtask, ticked or not, of the cards
+  `progress.openSubtasks` counts, so the open figure has a total to be read against.
+  Every other field is as it was. The milestone page's progress panel reads `open/all`,
+  and the milestone PDF's "Open steps" reads `<open> of <all>`.
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:

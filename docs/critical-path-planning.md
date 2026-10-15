@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.13
+version: 1.14
 status: As-Built
 date: 2026-10-15
 tags:
@@ -111,7 +111,10 @@ would swamp the graph, and most carry no ordering at all.
 
 **Progress still counts cards.** Adding an ordering to a subtask must not
 silently change how big a goal looks, so `progress.total` covers the milestone's
-cards and subtasks stay in `openSubtasks` as before.
+cards and subtasks stay in `openSubtasks` as before. Beside it, `totalSubtasks` counts
+every subtask of the same cards, ticked or not (card 2225), so the open figure has a total
+to be read against: the Progress panel shows them as `open/all`, "open subtasks / all",
+in the form of its "cards complete" tile, and the PDF's "Open steps" as `open of all`.
 
 ## Data model
 
@@ -212,7 +215,7 @@ flowchart TD
     J --> L["Open blockers remain<br/>→ blocked"]
     K --> W["Withhold, once, every node on a board<br/>the viewer cannot open: title, board,<br/>column, priority replaced,<br/>withheld: true"]
     L --> W
-    W --> M["Progress: by column, done/total,<br/>open subtasks, boards<br/>(from the withheld nodes)"]
+    W --> M["Progress: by column, done/total,<br/>open/all subtasks, boards<br/>(from the withheld nodes)"]
     M --> N["MilestoneSummary"]
 ```
 
@@ -506,7 +509,7 @@ they answer a real question:
 
 | Block | Question it answers |
 |-------|---------------------|
-| Progress | How far along is this goal |
+| Progress | How far along is this goal: cards complete of all, startable now, blocked, and open subtasks of all |
 | Burndown | Will it land by its date |
 | Critical path | Which chain cannot slip |
 | The work | What is in the goal, what can I start today, and what is waiting on what |
