@@ -313,6 +313,7 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. No opera
 - **An archived card on a sub-board holds nothing back** (card 2205). A move to Complete, by `PUT /cards/:cardId/move`, `PUT /api/cards/{id}` or `PUT /api/cards/reorder`, is no longer refused `409` for archived cards on the card's sub-boards: only cards that are not archived and not in a Complete column count, and the refusal's count is of those alone, in the same words. A card held back only by archived cards now completes. The board page's sub-board figures (`subBoards[].done` and `total` on each card) leave archived cards out, as the card context and the dashboard already did, and so does `hiddenOpenCount`. A card already complete stays complete when an archived card under it is restored.
 - **A cost is priced at the Claude 5.5 models' own rates** (card 2014). `costUsd` on the token answers prices `claude-opus-5-5` at $4 / $20 per million, cache reads at $0.20, where it was priced as `claude-opus-5` at about twice that, and prices `claude-sonnet-5-5` and `claude-haiku-5-5`, the last at its rate for prompts of 100K tokens or fewer, where Haiku 5.5 was unpriced. A listed id followed by a version DumpFire does not list (`claude-opus-5-6`) is unpriced and counted in `unpricedTokens`, where it was priced as the shorter id. Cost is worked out when it is read, so past entries are re-priced: see [Token Usage](#get-what-a-card-has-cost). The totals `POST /api/v1/tokens/bulk` answers for each card price each entry as the card's own `GET` does, where a model with a measured entry and an entry with no breakdown was priced as a whole at the 90/10 blend, several times its cost.
 - **`GET /api/v1/burndown` says when its forecast spans several boards** (card 1968). `forecast.spansBoards` is `true` when the cards that pass the filters sit on more than one board, and each row of `groups` carries its own, judged on that row's cards alone; it is the test `delivery` splits by board on. The forecast's `projectedDate` and `projectedDateNoNewScope` are then pooled across boards, as if a card finished on one board cleared another's, and are not when the work finishes: `delivery` dates it board by board, as before. Every other field and value is as it was, `target.onTrack` and `daysLate` included, which still compare the pooled date. Across several boards the burndown page, its chart and the milestone panel now show no forecast date, and the target's verdict comes from `delivery`: see [Burndown](#burndown).
+- **`GET /api/v1/milestones/{milestoneId}/summary` counts every subtask beside the open ones** (card 2225). `progress.totalSubtasks` is every subtask, ticked or not, of the cards `progress.openSubtasks` counts, so the open figure has a total to be read against. Every other field is as it was. The milestone page's progress panel reads `open/all`, and the milestone PDF's "Open steps" reads `<open> of <all>`.
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but reach the keys every caller uses:
 
@@ -1521,7 +1522,7 @@ returns the whole plan in one payload, so nothing has to be re-derived per sessi
 | Field | Description |
 |-------|-------------|
 | `milestone` | The milestone record |
-| `progress` | `total`, `done`, `percent`, `byColumn[]`, `openSubtasks`, `boards[]` |
+| `progress` | `total`, `done`, `percent`, `byColumn[]`, `openSubtasks`, `totalSubtasks` (every subtask of those cards, ticked or not), `boards[]` |
 | `graph` | `nodes[]`, `edges[]`, `layers[][]` (topological, left to right), `unordered[]` |
 | `criticalPath` | Ordered card ids — the longest chain of **open** dependencies |
 | `nextActionable` | Startable today, sorted by `downstreamCount` then priority |
@@ -1540,7 +1541,7 @@ returns the whole plan in one payload, so nothing has to be re-derived per sessi
   "progress": {
     "total": 9, "done": 1, "percent": 11,
     "byColumn": [{ "columnTitle": "To Do", "count": 7 }],
-    "openSubtasks": 0,
+    "openSubtasks": 0, "totalSubtasks": 0,
     "boards": [{ "id": 1, "name": "VectorOMS", "cardCount": 9 }]
   },
   "criticalPath": [1686, 1559, 1444, 1201],

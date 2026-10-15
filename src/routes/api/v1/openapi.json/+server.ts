@@ -100,6 +100,7 @@ const spec = {
 			'the totals POST /api/v1/tokens/bulk answers for each card price each entry as GET /api/v1/cards/{cardId}/tokens does, where a model with a measured entry and an entry with no breakdown was priced as a whole at the 90/10 blend, several times its cost; ' +
 			'(48) GET /api/v1/burndown answers forecast.spansBoards, true when the cards that pass the filters sit on more than one board, and each breakdown row\'s forecast carries its own; ' +
 			'the forecast\'s dates are then pooled across boards and are not when the work finishes, which delivery dates board by board; every other field and value is as before. ' +
+			'(49) GET /api/v1/milestones/{id}/summary answers progress.totalSubtasks, every subtask of the cards progress.openSubtasks counts, ticked or not, so the open figure has a total to be read against; every other field is as before. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -1374,7 +1375,7 @@ const spec = {
 					milestone: { $ref: '#/components/schemas/Milestone' },
 					progress: {
 						type: 'object',
-						description: 'Counts of the milestone\'s own cards. Subtasks are counted only in `openSubtasks`.',
+						description: 'Counts of the milestone\'s own cards. Subtasks are counted only in `openSubtasks` and `totalSubtasks`.',
 						properties: {
 							total: { type: 'integer', description: 'Cards in the milestone' },
 							done: { type: 'integer', description: 'Of which in a Complete column' },
@@ -1389,6 +1390,7 @@ const spec = {
 								}
 							},
 							openSubtasks: { type: 'integer', description: 'Subtasks of those cards that are not ticked' },
+							totalSubtasks: { type: 'integer', description: 'Every subtask of those cards, ticked or not: what openSubtasks is out of' },
 							boards: {
 								type: 'array',
 								description:
@@ -1401,7 +1403,7 @@ const spec = {
 								}
 							}
 						},
-						required: ['total', 'done', 'percent', 'byColumn', 'openSubtasks', 'boards']
+						required: ['total', 'done', 'percent', 'byColumn', 'openSubtasks', 'totalSubtasks', 'boards']
 					},
 					graph: {
 						type: 'object',

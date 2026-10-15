@@ -112,7 +112,7 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 			{ label: 'Complete %', value: `${p.percent}%`, bg: C.emeraldLight, fg: C.emerald },
 			{ label: 'Can start now', value: summary.nextActionable.length, bg: C.blueLight, fg: C.blue },
 			{ label: 'Waiting', value: summary.blocked.length, bg: C.amberLight, fg: C.amber },
-			{ label: 'Open steps', value: p.openSubtasks, bg: C.blueLight, fg: C.blue }
+			{ label: 'Open steps', value: `${p.openSubtasks} of ${p.totalSubtasks}`, bg: C.blueLight, fg: C.blue }
 		];
 		const gap = 8;
 		const cw = (pw - (metrics.length - 1) * gap) / metrics.length;
@@ -120,8 +120,14 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 			const mt = metrics[i];
 			const cx = mx + i * (cw + gap);
 			doc.roundedRect(cx, y, cw, 44, 4).fill(mt.bg);
-			doc.font('Helvetica-Bold').fontSize(17).fillColor(mt.fg)
-				.text(String(mt.value), cx, y + 7, { width: cw, align: 'center' });
+			// A value too wide for its box at 17pt (open steps "193 of 412") is set
+			// smaller rather than wrapped onto the label beneath it.
+			const value = String(mt.value);
+			let size = 17;
+			doc.font('Helvetica-Bold').fontSize(size);
+			while (size > 8 && doc.widthOfString(value) > cw - 6) doc.fontSize(--size);
+			doc.fillColor(mt.fg)
+				.text(value, cx, y + 7 + (17 - size) / 2, { width: cw, align: 'center' });
 			doc.font('Helvetica').fontSize(5.6).fillColor(mt.fg)
 				.text(mt.label.toUpperCase(), cx, y + 31, { width: cw, align: 'center' });
 		}
@@ -130,7 +136,7 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 		doc.font('Helvetica').fontSize(6.5).fillColor(C.textLight).text(
 			`Items of work = the ${p.total} cards in this goal. ` +
 				`Can start now = nothing is blocking them. Waiting = something must finish first. ` +
-				`Open steps = ${p.openSubtasks} unticked subtasks across those cards.`,
+				`Open steps = ${p.openSubtasks} unticked subtasks of the ${p.totalSubtasks} across those cards.`,
 			mx, y, { width: pw }
 		);
 		y = (doc as any).y + 12;

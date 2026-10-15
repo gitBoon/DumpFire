@@ -1954,6 +1954,38 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(sorted(schema.required)).toEqual(all.filter((key) => key !== 'graph' && key !== 'cardTitles' && key !== 'subtaskTitles'));
 	});
 
+	// The progress panel read "193 open subtasks" with nothing to judge it against
+	// (card 2225): the summary gives every subtask of the same cards beside it.
+	it('GET /milestones/{milestoneId}/summary counts every subtask of its cards beside the open ones', async () => {
+		const { admin, cols, first, second } = fixture();
+		const archived = makeCard(cols['To Do']);
+		const outside = makeCard(cols['To Do']);
+		makeSubtask(first, { completed: true });
+		makeSubtask(first, { completed: true });
+		makeSubtask(first);
+		makeSubtask(second);
+		// Neither an archived member's subtasks nor those of a card outside the milestone that one of its cards waits on.
+		makeSubtask(archived);
+		makeSubtask(archived, { completed: true });
+		makeSubtask(outside);
+		makeSubtask(outside, { completed: true });
+		const milestone = makeMilestone({ createdBy: admin, cards: [first, second, archived] });
+		makeDependency({ blocked: first, blocker: outside });
+		db.update(cards).set({ archivedAt: new Date().toISOString() }).where(eq(cards.id, archived.id)).run();
+		const empty = makeMilestone({ createdBy: admin, cards: [makeCard(cols['To Do'])] });
+
+		const schema = answerSchema('GET /api/v1/milestones/{milestoneId}/summary', 200);
+		expect(schema.properties.progress.required).toContain('totalSubtasks');
+		for (const compact of ['', '?compact=true']) {
+			const res = await api('GET', `/api/v1/milestones/${milestone.id}/summary${compact}`, { user: admin });
+			expect(res.status).toBe(200);
+			expect(res.body.progress).toMatchObject({ total: 2, openSubtasks: 2, totalSubtasks: 4 });
+			expect(typeFaults(schema, res.body, `summary${compact}`)).toEqual([]);
+		}
+		const none = await api('GET', `/api/v1/milestones/${empty.id}/summary`, { user: admin });
+		expect(none.body.progress).toMatchObject({ total: 1, openSubtasks: 0, totalSubtasks: 0 });
+	});
+
 	// The checks above read an administrator's answers, in which nothing is
 	// withheld, and compare keys. A caller who cannot open a board is given its
 	// work with nulls in it (card 2129): this holds each value to its type.
