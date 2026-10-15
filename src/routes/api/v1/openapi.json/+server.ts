@@ -97,7 +97,9 @@ const spec = {
 			'(47) costUsd on the token answers prices claude-opus-5-5 at its own rate, $4 / $20 per million with cache reads at $0.20, where it was priced as claude-opus-5 at about twice that, ' +
 			'and prices claude-sonnet-5-5 and claude-haiku-5-5 (at its rate for prompts of 100K tokens or fewer), where Haiku 5.5 was unpriced; a model id that is a listed one followed by a version ' +
 			'DumpFire does not list (claude-opus-5-6) is unpriced and counted in unpricedTokens, where it was priced as the shorter id; cost is worked out when it is read, so these re-price past entries; ' +
-			'the totals POST /api/v1/tokens/bulk answers for each card price each entry as GET /api/v1/cards/{cardId}/tokens does, where a model with a measured entry and an entry with no breakdown was priced as a whole at the 90/10 blend, several times its cost. ' +
+			'the totals POST /api/v1/tokens/bulk answers for each card price each entry as GET /api/v1/cards/{cardId}/tokens does, where a model with a measured entry and an entry with no breakdown was priced as a whole at the 90/10 blend, several times its cost; ' +
+			'(48) GET /api/v1/burndown answers forecast.spansBoards, true when the cards that pass the filters sit on more than one board, and each breakdown row\'s forecast carries its own; ' +
+			'the forecast\'s dates are then pooled across boards and are not when the work finishes, which delivery dates board by board; every other field and value is as before. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -660,10 +662,24 @@ const spec = {
 					completionRate: { type: 'number', description: 'Cards completed per day' },
 					scopeRate: { type: 'number', description: 'Net scope change per day (added - dropped)' },
 					netBurnRate: { type: 'number', description: 'completionRate - scopeRate' },
-					projectedDate: { type: ['string', 'null'], format: 'date', description: 'Remaining reaches zero at the net rate' },
-					projectedDateNoNewScope: { type: ['string', 'null'], format: 'date', description: 'Remaining reaches zero if nothing more is added' }
+					projectedDate: {
+						type: ['string', 'null'],
+						format: 'date',
+						description:
+							'Remaining reaches zero at the net rate. When spansBoards is true this is pooled across boards, as if a card finished on one board cleared another\'s, and is not when the work finishes: use delivery.'
+					},
+					projectedDateNoNewScope: {
+						type: ['string', 'null'],
+						format: 'date',
+						description: 'Remaining reaches zero if nothing more is added. Pooled across boards when spansBoards is true, as projectedDate is: use delivery.'
+					},
+					spansBoards: {
+						type: 'boolean',
+						description:
+							'The cards that pass the filters sit on more than one board (for a breakdown row, that row\'s cards): the test delivery splits by board on. The rates still describe the pile as a whole; the dates are pooled, and the web application shows none.'
+					}
 				},
-				required: ['status', 'basisDays', 'asOf', 'completionRate', 'scopeRate', 'netBurnRate', 'projectedDate', 'projectedDateNoNewScope']
+				required: ['status', 'basisDays', 'asOf', 'completionRate', 'scopeRate', 'netBurnRate', 'projectedDate', 'projectedDateNoNewScope', 'spansBoards']
 			},
 			DeliveryEstimate: {
 				type: 'object',
@@ -749,8 +765,15 @@ const spec = {
 						properties: { date: { type: 'string', format: 'date' }, remaining: { type: 'integer' } },
 						required: ['date', 'remaining']
 					},
-					onTrack: { type: ['boolean', 'null'] },
-					daysLate: { type: ['integer', 'null'], description: 'Negative means the forecast lands early' }
+					onTrack: {
+						type: ['boolean', 'null'],
+						description:
+							'The forecast\'s projectedDate lands on or before date. When forecast.spansBoards is true that date is pooled across boards, so this compares a date that is not when the work finishes: delivery.chanceByTarget is the measure to read.'
+					},
+					daysLate: {
+						type: ['integer', 'null'],
+						description: 'Days projectedDate lands after date; negative means early. Pooled across boards when forecast.spansBoards is true, as onTrack is.'
+					}
 				},
 				required: ['date', 'source', 'idealStart', 'onTrack', 'daysLate']
 			},

@@ -241,7 +241,7 @@
 	// ─── Figures ─────────────────────────────────────────────────────────────
 
 	const change = $derived(r ? r.summary.remainingNow - r.summary.remainingStart : 0);
-	const pace = $derived(r ? paceText(r.forecast) : null);
+	const pace = $derived(r ? paceText(r.forecast, r.delivery) : null);
 	const eta = $derived(r ? deliveryText(r.delivery) : null);
 	const etaTags = $derived(r ? deliveryTags(r.delivery) : []);
 	/** The pace window's counts, back from its rates, for the worked examples. */
@@ -274,7 +274,11 @@
 			sm.added === 0 && sm.completed === 0 && sm.removed === 0
 				? 'Nothing arrived or was finished over the period'
 				: `Over the period ${fmt(sm.added)} arrived and ${fmt(sm.completed)} ${sm.completed === 1 ? 'was' : 'were'} finished${sm.removed ? ` (${fmt(sm.removed)} dropped)` : ''}`;
-		if (f.status === 'converging' && f.projectedDate) {
+		if (f.status === 'converging' && f.spansBoards) {
+			// Across boards the pooled date is not when the work finishes (card 1968);
+			// the next sentence dates it board by board.
+			out.push(`${flow}; at the recent pace the pile is shrinking by about ${perWeek(f.netBurnRate)} a week.`);
+		} else if (f.status === 'converging' && f.projectedDate) {
 			out.push(`${flow}; at the recent pace the pile clears by ${formatDay(f.projectedDate, true)}.`);
 		} else if (f.status === 'not-converging' && f.completionRate === 0) {
 			out.push(`${flow}. Nothing has been finished in the last ${plural(f.basisDays, 'day')}, so the pile is not moving.`);
@@ -654,7 +658,9 @@
 										= <b>{perWeek(Math.abs(r.forecast.netBurnRate))}</b> a week {r.forecast.netBurnRate > 0 ? 'off' : r.forecast.netBurnRate < 0 ? 'onto' : 'on or off'} the pile
 									</div>
 								{/if}
-								{#if r.forecast.status === 'converging' && r.forecast.projectedDate}
+								{#if r.forecast.status === 'converging' && r.forecast.spansBoards}
+									<p>Across several boards this gives no date: a card finished on one board does not clear another's. <strong>Time to deliver</strong> dates the work board by board.</p>
+								{:else if r.forecast.status === 'converging' && r.forecast.projectedDate}
 									<p>{fmt(r.summary.remainingNow)} open ÷ {perWeek(r.forecast.netBurnRate)} a week → clear around <strong>{formatDay(r.forecast.projectedDate, true)}</strong>.</p>
 								{:else if r.forecast.status === 'not-converging'}
 									<p>While at least as much arrives as is finished, the pile never reaches zero. <strong>Time to deliver</strong> answers the other question: how long the work open now would take on its own.</p>
@@ -752,7 +758,7 @@
 										finish by {formatDay(r.target!.date, true)}
 									</div>
 								{/if}
-								{#if r.target!.daysLate !== null && r.forecast.projectedDate}
+								{#if r.target!.daysLate !== null && r.forecast.projectedDate && !r.forecast.spansBoards}
 									<p>At the recent net pace the pile clears on {formatDay(r.forecast.projectedDate, true)}, {plural(Math.abs(r.target!.daysLate), 'day')} {r.target!.daysLate > 0 ? 'after' : 'before'} the target.</p>
 								{:else if r.forecast.status === 'not-converging'}
 									<p>Counting new work still arriving, the pile is not shrinking at the recent pace, so the more that arrives, the further the date slips.</p>
@@ -780,7 +786,7 @@
 										gap between the two lines is what got finished.
 									</p>
 								{/if}
-								<p>The dotted line continues at the recent pace; the dashed line, if there is a target, is the ideal path to it. Hover anywhere on the chart for that day's figures, or use the arrow keys.</p>
+								<p>On a single board the dotted line continues at the recent pace; across several boards there is none, because one board's pace does not clear another's. The dashed line, if there is a target, is the ideal path to it. Hover anywhere on the chart for that day's figures, or use the arrow keys.</p>
 								<p class="muted">Every card that has ever existed ({fmt(r.summary.scopeNow)}) is not plotted — years of finished work would flatten the chart — but it is in the hover and the table.</p>
 							{/snippet}
 						</InfoTip>
@@ -887,7 +893,7 @@
 								{#each r.groups as g (g.key)}
 									{@const delta = g.summary.remainingNow - g.summary.remainingStart}
 									{@const gEta = deliveryText(g.delivery)}
-									{@const gPace = paceText(g.forecast)}
+									{@const gPace = paceText(g.forecast, g.delivery)}
 									<tr>
 										<td class="name">
 											<button class="row-link" onclick={() => drill(g)} title="Chart just this">

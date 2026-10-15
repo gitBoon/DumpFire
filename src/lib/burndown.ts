@@ -90,6 +90,14 @@ export interface BurndownForecast {
 	projectedDate: Day | null;
 	/** When it would reach zero if nothing more were added. */
 	projectedDateNoNewScope: Day | null;
+	/**
+	 * The cards sit on more than one board. The rates still describe the pile
+	 * as a whole, but the two dates are then pooled: they treat a card finished
+	 * on one board as clearing another's backlog, so they are not when the work
+	 * finishes. The delivery estimate dates it board by board, and the page
+	 * shows no forecast date at all for such a scope.
+	 */
+	spansBoards: boolean;
 }
 
 /** Trailing window the forecast is measured over. */
@@ -288,8 +296,11 @@ export function finishedSinceStart(series: BurndownPoint[]): number[] {
  * nothing more is added. A board where work arrives as fast as it is finished
  * has no net date at all, and saying so is the honest answer — it is the
  * question a burndown exists to raise.
+ *
+ * `spansBoards` only marks the answer (see the field); every figure is worked
+ * the same way either way, so an API consumer reading the dates sees no change.
  */
-export function forecast(basis: BurndownPoint[]): BurndownForecast {
+export function forecast(basis: BurndownPoint[], opts: { spansBoards?: boolean } = {}): BurndownForecast {
 	const last = basis[basis.length - 1];
 	const asOf = last?.date ?? '';
 	const basisDays = basis.length;
@@ -316,7 +327,8 @@ export function forecast(basis: BurndownPoint[]): BurndownForecast {
 		scopeRate: round3(scopeRate),
 		netBurnRate: round3(netBurnRate),
 		projectedDate: null,
-		projectedDateNoNewScope: null
+		projectedDateNoNewScope: null,
+		spansBoards: opts.spansBoards ?? false
 	};
 
 	// Nothing in scope is not the same as everything finished.
@@ -431,7 +443,7 @@ export const DELIVERY_TRIALS = 2000;
 /** Below this many finished cards a pace is closer to a guess, and the page says so. */
 export const LOW_EVIDENCE_FINISHED = 5;
 /** Beyond two years an estimate is not something anyone can plan around. */
-const DELIVERY_HORIZON_DAYS = 730;
+export const DELIVERY_HORIZON_DAYS = 730;
 
 /** One scope's simulation: its status, and the sorted finish day of every trial. */
 interface Simulation {
@@ -694,9 +706,13 @@ export interface BurndownTarget {
 	source: 'milestone' | 'query';
 	/** The ideal line runs from here to zero on `date`. */
 	idealStart: { date: Day; remaining: number };
-	/** Forecast lands on or before the target. Null when there is no forecast. */
+	/**
+	 * Forecast lands on or before the target. Null when there is no forecast.
+	 * Compares the forecast's net date, which is pooled when the forecast
+	 * `spansBoards`; the page then words the target from the delivery estimate.
+	 */
 	onTrack: boolean | null;
-	/** Days the forecast lands after the target; negative means early. */
+	/** Days the forecast lands after the target; negative means early. Pooled likewise. */
 	daysLate: number | null;
 }
 

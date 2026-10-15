@@ -312,6 +312,7 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. No opera
 - **A move out of an On Hold column clears the card's `onHoldNote`** (card 2208), on `PUT /cards/:cardId/move` and on every move in the web application: a move from a column titled On Hold, Hold, Blocked, Parked or Waiting to one that is not. The note was kept by every route, and only a drag on the board page cleared it, with a second request that wrote `card_updated` naming `onHoldNote` and delivered `card.updated`. The move's own entry and events are the record now. On the web application's `PUT /api/cards/{id}`, which takes a `columnId` with other fields, an `onHoldNote` sent back equal to the note the move cleared is not written back; a different note sent with the move is written. See [Move a Card](#move-a-card-to-a-different-column).
 - **An archived card on a sub-board holds nothing back** (card 2205). A move to Complete, by `PUT /cards/:cardId/move`, `PUT /api/cards/{id}` or `PUT /api/cards/reorder`, is no longer refused `409` for archived cards on the card's sub-boards: only cards that are not archived and not in a Complete column count, and the refusal's count is of those alone, in the same words. A card held back only by archived cards now completes. The board page's sub-board figures (`subBoards[].done` and `total` on each card) leave archived cards out, as the card context and the dashboard already did, and so does `hiddenOpenCount`. A card already complete stays complete when an archived card under it is restored.
 - **A cost is priced at the Claude 5.5 models' own rates** (card 2014). `costUsd` on the token answers prices `claude-opus-5-5` at $4 / $20 per million, cache reads at $0.20, where it was priced as `claude-opus-5` at about twice that, and prices `claude-sonnet-5-5` and `claude-haiku-5-5`, the last at its rate for prompts of 100K tokens or fewer, where Haiku 5.5 was unpriced. A listed id followed by a version DumpFire does not list (`claude-opus-5-6`) is unpriced and counted in `unpricedTokens`, where it was priced as the shorter id. Cost is worked out when it is read, so past entries are re-priced: see [Token Usage](#get-what-a-card-has-cost). The totals `POST /api/v1/tokens/bulk` answers for each card price each entry as the card's own `GET` does, where a model with a measured entry and an entry with no breakdown was priced as a whole at the 90/10 blend, several times its cost.
+- **`GET /api/v1/burndown` says when its forecast spans several boards** (card 1968). `forecast.spansBoards` is `true` when the cards that pass the filters sit on more than one board, and each row of `groups` carries its own, judged on that row's cards alone; it is the test `delivery` splits by board on. The forecast's `projectedDate` and `projectedDateNoNewScope` are then pooled across boards, as if a card finished on one board cleared another's, and are not when the work finishes: `delivery` dates it board by board, as before. Every other field and value is as it was, `target.onTrack` and `daysLate` included, which still compare the pooled date. Across several boards the burndown page, its chart and the milestone panel now show no forecast date, and the target's verdict comes from `delivery`: see [Burndown](#burndown).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but reach the keys every caller uses:
 
@@ -1998,7 +1999,7 @@ over any window (up to 730 days). Days are UTC.
   "summary": { "remainingStart": 0, "remainingNow": 27, "added": 32, "completed": 5, "removed": 0 },
   "forecast": {
     "status": "not-converging", "basisDays": 19, "completionRate": 0, "scopeRate": 0,
-    "projectedDate": null, "projectedDateNoNewScope": null
+    "projectedDate": null, "projectedDateNoNewScope": null, "spansBoards": false
   },
   "delivery": {
     "status": "no-pace", "remaining": 27, "basisDays": 19, "throughputPerWeek": 0,
@@ -2024,6 +2025,13 @@ over any window (up to 730 days). Days are UTC.
   trailing 28 days; a scope younger than that is measured from the day after it
   began, so a milestone carded in one burst is not read as scope growth.
   `projectedDateNoNewScope` is the date if nothing more were added.
+- **`forecast.spansBoards`** is `true` when the cards that pass the filters sit
+  on more than one board, the same test `delivery` splits by board on; each row
+  of `groups` is judged on its own cards. The rates still describe the pile as a
+  whole, but the two dates are then pooled: they treat a card finished on one
+  board as clearing another's backlog, so they are not when the work finishes.
+  Read `delivery` for that. The web application shows no forecast date for such
+  a scope. The field is new in 1.2.0; no other value changed with it.
 - **`delivery`** answers "how long will the work open now take to finish?" as a
   range. It is a Monte Carlo simulation: 2,000 trials each replay randomly chosen
   days of the basis (their real completion counts) until the open work runs out.
@@ -2050,8 +2058,12 @@ over any window (up to 730 days). Days are UTC.
     "chanceByTarget": 0.785 }
   ```
 - **`target.onTrack`** compares the net forecast with the target date; `daysLate`
-  is negative when early. The page's verdict leads with `delivery.chanceByTarget`
-  instead (85%+ on track, 50–85% tight, under 50% behind).
+  is negative when early. When `forecast.spansBoards` is `true` that date is
+  pooled, so both compare a date that is not when the work finishes. The page's
+  verdict leads with `delivery.chanceByTarget` instead (85%+ on track, 50–85%
+  tight, under 50% behind); with no chance to quote, a single board falls back to
+  the net date, and several boards to `delivery` (slowest board over two years
+  is behind, no recent pace on any board with open work is at risk).
 - **`groups`** carry `remaining[]` and `scope[]` aligned to `series`, plus their
   own `forecast` and `delivery` (500 trials). A card with several labels or
   assignees counts in each of their groups.

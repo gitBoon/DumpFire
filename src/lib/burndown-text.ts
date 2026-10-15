@@ -6,7 +6,7 @@
  * figure never reads one way on the board and another on the page.
  */
 
-import { LOW_EVIDENCE_FINISHED, type BurndownForecast, type DeliveryEstimate, type DeliveryPart, type Day } from './burndown';
+import { DELIVERY_HORIZON_DAYS, LOW_EVIDENCE_FINISHED, daysBetween, type BurndownForecast, type DeliveryEstimate, type DeliveryPart, type Day } from './burndown';
 
 export function formatDay(day: Day, year = false): string {
 	return new Date(`${day}T00:00:00Z`).toLocaleDateString('en-GB', {
@@ -51,8 +51,18 @@ export type Tone = 'good' | 'bad' | 'neutral';
 /**
  * Where the open pile is heading at the recent pace — the plain-English
  * replacement for "converging" / "not converging".
+ *
+ * Across several boards a shrinking pile gives its direction and rate but no
+ * date: the pooled date treats a card finished on one board as clearing
+ * another's backlog, and Time to deliver already dates the work board by
+ * board (card 1968). When no board with open work has finished anything
+ * lately, the pile is shrinking only because work elsewhere is finished or
+ * dropped, so it is not worded as good news.
  */
-export function paceText(f: BurndownForecast): { value: string; sub: string; tone: Tone } {
+export function paceText(
+	f: BurndownForecast,
+	delivery?: Pick<DeliveryEstimate, 'status'>
+): { value: string; sub: string; tone: Tone } {
 	const days = plural(f.basisDays, 'day');
 	switch (f.status) {
 		case 'done':
@@ -60,6 +70,13 @@ export function paceText(f: BurndownForecast): { value: string; sub: string; ton
 		case 'insufficient-data':
 			return { value: 'Too early', sub: `Needs a week of history — has ${days}`, tone: 'neutral' };
 		case 'converging':
+			if (f.spansBoards) {
+				return {
+					value: 'Shrinking',
+					sub: `About ${perWeek(f.netBurnRate)} more a week get finished than arrive`,
+					tone: delivery?.status === 'no-pace' ? 'neutral' : 'good'
+				};
+			}
 			return {
 				value: `Clears ${formatDay(f.projectedDate!)}`,
 				sub: `Shrinking by about ${perWeek(f.netBurnRate)} a week`,
@@ -125,13 +142,25 @@ export interface TargetVerdict {
  * risk" beside "79% chance" for the same date. So the net view only qualifies
  * the verdict: when the pile is growing, the chance is stated as holding only
  * if nothing new is added.
+ *
+ * With no chance to quote, a single board falls back to its net date. Across
+ * several boards there is no such date to fall back on (see paceText), so the
+ * verdict comes from the delivery estimate instead: a slowest board beyond two
+ * years is behind when the target falls inside those two years and too early
+ * to say when it falls beyond them (the estimate cannot see that far), and no
+ * board with open work having a pace is at risk.
+ *
+ * A target more than a year from the estimate's day is written with its year,
+ * so "31 Dec" is never read as this December.
  */
 export function targetVerdict(
 	target: { date: Day; daysLate: number | null },
 	delivery: DeliveryEstimate,
 	f: BurndownForecast
 ): TargetVerdict {
-	const date = formatDay(target.date);
+	const asOf = delivery.asOf || f.asOf;
+	const away = asOf ? daysBetween(asOf, target.date) : 0;
+	const date = formatDay(target.date, Math.abs(away) > 365);
 	if (delivery.status === 'done' || f.status === 'done') {
 		return { tone: 'good', icon: '✓', value: 'Done', detail: 'Everything is finished' };
 	}
@@ -146,7 +175,17 @@ export function targetVerdict(
 		if (c >= 0.5) return { tone: 'warn', icon: '~', value: 'Tight', detail };
 		return { tone: 'bad', icon: '!', value: 'Behind', detail };
 	}
-	if (f.status === 'converging' && target.daysLate !== null) {
+	if (f.spansBoards && delivery.status === 'beyond-horizon') {
+		const who = delivery.bottleneck ? `${delivery.bottleneck.name} alone` : 'The slowest board';
+		const detail = `${who} would take over two years; target ${date}`;
+		return away <= DELIVERY_HORIZON_DAYS
+			? { tone: 'bad', icon: '!', value: 'Behind', detail }
+			: { tone: 'neutral', icon: '?', value: 'Too early to say', detail };
+	}
+	if (f.spansBoards && delivery.status === 'no-pace') {
+		return { tone: 'bad', icon: '!', value: 'At risk', detail: `Nothing finished lately on the boards with open work; target ${date}` };
+	}
+	if (f.status === 'converging' && target.daysLate !== null && !f.spansBoards) {
 		return target.daysLate <= 0
 			? { tone: 'good', icon: '✓', value: 'On track', detail: `Clears ${formatDay(f.projectedDate!)}, before ${date}` }
 			: { tone: 'bad', icon: '!', value: `${plural(target.daysLate, 'day')} late`, detail: `Clears ${formatDay(f.projectedDate!)}, after ${date}` };

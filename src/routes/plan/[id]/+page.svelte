@@ -138,7 +138,7 @@
 			const v = targetVerdict(burndown.target, burndown.delivery, f);
 			return { tone: v.tone, icon: v.icon, text: `${v.value} — ${v.detail}` };
 		}
-		const p = paceText(f);
+		const p = paceText(f, burndown.delivery);
 		const icon = p.tone === 'good' ? '→' : p.tone === 'bad' ? '!' : '?';
 		return { tone: p.tone === 'good' ? 'neutral' : p.tone, icon, text: `${p.value} — ${p.sub.charAt(0).toLowerCase()}${p.sub.slice(1)}` };
 	});
@@ -877,10 +877,19 @@
 						</span>
 						{#snippet tip()}
 							<p>
-								Compares where the goal's open work is heading, at the pace of the last
-								{burndown?.forecast.basisDays} days, with its target date. <strong>On track</strong> means it clears
-								in time; <strong>behind</strong> means it clears after the date; <strong>at risk</strong> means
-								work is arriving at least as fast as it is finished, so it is not clearing at all.
+								The chance of finishing the work open now by the target date, from futures simulated at the pace
+								of the last {burndown?.forecast.basisDays} days: <strong>on track</strong> at 85% or more,
+								<strong>tight</strong> from 50%, <strong>behind</strong> below that. A goal whose cards sit on
+								several boards is dated by its slowest board, because one board's pace does not clear another's.
+							</p>
+							<p>
+								With no chance to quote, a goal on one board is judged by the date its pile clears at the recent
+								pace: <strong>on track</strong> when that is by the target, <strong>so many days late</strong> when
+								it is after. Across several boards, a board that would need over two years makes the goal
+								<strong>behind</strong> when the target is inside two years, and <strong>too early to say</strong>
+								when it is further out. <strong>At risk</strong> means work is arriving at least as fast as it is
+								finished, or nothing has been finished lately. Without a target date this shows where the open work
+								is heading at the recent pace.
 							</p>
 							<p class="muted">The dashed line on the chart is the ideal: a steady path from the start down to zero on the target date.</p>
 						{/snippet}
