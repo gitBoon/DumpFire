@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.37
+version: 1.38
 status: As-Built
 date: 2026-10-15
 tags:
@@ -640,6 +640,15 @@ new; these answers and fields are:
   wrote `card_updated` naming `onHoldNote` and delivered `card.updated`. The move's own
   entry and events are the record now. On the web application's `PUT /api/cards/{id}`, which takes a `columnId` with other fields, an `onHoldNote` sent back equal to the note the move cleared is not written back; a different note sent with the move is written. See
   [`PUT /api/v1/cards/:cardId/move`](#put-apiv1cardscardidmove).
+- **An archived card on a sub-board holds nothing back** (card 2205). A move to Complete,
+  by `PUT /cards/:cardId/move`, `PUT /api/cards/{id}` or `PUT /api/cards/reorder`, is no
+  longer refused `409` for archived cards on the card's sub-boards: only cards that are
+  not archived and not in a Complete column count, and the refusal's count is of those
+  alone, in the same words. A card held back only by archived cards now completes. The
+  board page's sub-board figures (`subBoards[].done` and `total` on each card) leave
+  archived cards out, as the card context and the dashboard already did, and so does
+  `hiddenOpenCount`. A card already complete stays complete when an archived card under it
+  is restored.
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -1042,8 +1051,8 @@ API:
   an administrator, and an empty list to an administrator.
 - **The board page stops a drop onto Complete that the server would refuse, and says so
   when the server refuses one** (card 2130's review). Each card of the board page carries
-  `hiddenOpenCount`, the number of cards not complete on sub-boards under it that the
-  caller cannot open, with no name, and the page counts them before the drop as it counts
+  `hiddenOpenCount`, the number of cards not complete and not archived (card 2205) on
+  sub-boards under it that the caller cannot open, with no name, and the page counts them before the drop as it counts
   the ones it shows; when only those hold the card back it offers no sub-board to open.
   A move that `PUT /api/cards/reorder` refuses is put back, with the server's words in a
   toast, where the card stayed in Complete, with its sound, until the next reload.

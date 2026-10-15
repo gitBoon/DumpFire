@@ -3,6 +3,7 @@ import { boards, columns, cards, cardAssignees, taskRequests, teamMembers, users
 import { desc, eq, inArray, isNull, and, gte, sql } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { boardCategoriesFor, recentActivityFor, subBoardsFor } from '$lib/server/list-access';
+import { subBoardProgress } from '$lib/server/card-completion';
 import { completionPercent } from '$lib/progress';
 import { getBoardTokenTotals, getUserSpendByPeriod } from '$lib/server/tokens';
 import { completeColumnIds, holdColumnIds, isCompleteColumnTitle } from '$lib/column-role';
@@ -42,6 +43,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		list.push(sb);
 		subBoardsByCard.set(sb.parentCardId, list);
 	}
+	// Each one's progress, in one query: non-archived cards only, the rule of
+	// the parent board, the reports and the completion check (card 2205).
+	const subBoardFigures = subBoardProgress(allSubBoards.map(sb => sb.id));
 
 	// The groupings the caller is listed, to group boards and to file one under:
 	// those holding a board they can open, and the empty ones (card 2128).
@@ -81,16 +85,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			const subs = subBoardsByCard.get(card.id);
 			if (!subs) continue;
 			for (const sb of subs) {
-				const sbCols = db.select().from(columns).where(eq(columns.boardId, sb.id)).all();
-				const sbColIds = sbCols.map(c => c.id);
-				let done = 0, total = 0;
-				if (sbColIds.length > 0) {
-					// Non-archived only, the same rule as the parent board and the reports
-					const sbCards = db.select().from(cards).where(and(inArray(cards.columnId, sbColIds), isNull(cards.archivedAt))).all();
-					total = sbCards.length;
-					const sbCompleteColIds = completeColumnIds(sbCols);
-					done = sbCards.filter(c => sbCompleteColIds.has(c.columnId)).length;
-				}
+				const { done, total } = subBoardFigures.get(sb.id)!;
 				subBoardsForBoard.push({
 					id: sb.id,
 					name: sb.name,

@@ -92,7 +92,8 @@ const spec = {
 			'and accepting a task request with an assignee writes assignee_added, so GET /api/v1/audit-log, GET /api/v1/reports/activity and recentActivity on GET /api/v1/me/stats hold them, where the web application wrote none; ' +
 			'and POST /api/v1/boards with a parentCardId sends the board that card is on a live update, so that the sub-board shows on its card on the pages open there, where it sent none; its answer is unchanged; ' +
 			'(44) PUT /api/v1/cards/{cardId} records only what it changes: a field sent with the value the card already holds is not a change, null and empty text being the same value when comparing (description, onHoldNote and businessValue still take text only, and empty text clears them), so a request that changes nothing writes nothing, records no activity entry, sends no card.updated and answers 200 with the card as it is, and api:card_updated names only the fields that changed, where every field sent was written and named; ' +
-			'(45) a move out of an On Hold column (one titled On Hold, Hold, Blocked, Parked or Waiting) to one that is not clears the card\'s onHoldNote, by PUT /api/v1/cards/{cardId}/move and by every move in the web application, with no entry beside the move\'s own, where only a drag on the board page cleared it. ' +
+			'(45) a move out of an On Hold column (one titled On Hold, Hold, Blocked, Parked or Waiting) to one that is not clears the card\'s onHoldNote, by PUT /api/v1/cards/{cardId}/move and by every move in the web application, with no entry beside the move\'s own, where only a drag on the board page cleared it; ' +
+			'(46) an archived card on a sub-board holds nothing back: PUT /api/v1/cards/{cardId}/move to a Complete column is still refused 409 for open subtasks, and the sub-board part of the check counts only cards on the card\'s sub-boards that are not archived and not in a Complete column, and the refusal counts those alone, in the same words, where an archived card held the card back and was counted, so a card held back only by archived cards could not be completed. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2818,7 +2819,8 @@ const spec = {
 					'Moves a card between columns, including across different boards. The target column can belong to any board the user has edit access to. For cross-board moves, board-scoped data (categoryId, labels) is automatically cleaned up. Moving to "Complete" or "Done" awards XP and fires a celebration event. The move will be rejected with 409 if the card has incomplete subtasks or sub-boards, or if the target column is on a board beneath the card, one of its own sub-boards at any depth: a card\'s sub-boards go with it, so they would hang beneath themselves. ' +
 					'A move that completes the card mails its assignees who can open the board it is now on "Card moved: <title> → <column>", each as their own card-moved setting says, as a move made in the web application does; a move through the API that does not complete the card mails nobody. ' +
 					'Whoever made the move is never mailed about it. Until 2026-10-14 no move through the API mailed an assignee. ' +
-					'Moving a card out of an On Hold column (any column titled On Hold, Hold, Blocked, Parked or Waiting) to one that is not clears its onHoldNote.',
+					'Moving a card out of an On Hold column (any column titled On Hold, Hold, Blocked, Parked or Waiting) to one that is not clears its onHoldNote. ' +
+					'An archived card on a sub-board is not counted: a sub-board holds the card back while it has a card that is not archived and not in a Complete column. Until 2026-10-14 an archived card held it back.',
 				operationId: 'moveCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -2874,7 +2876,7 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
 					},
 					'409': {
-						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete, as `Card has 3 incomplete subtasks that must be completed first`, or the target column is on a board beneath the card, one of its own sub-boards at any depth: `Card "<title>" cannot go onto "<board>", which hangs beneath it`. Nothing was moved.',
+						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete, as `Card has 3 incomplete subtasks that must be completed first` (an archived card on a sub-board is not counted), or the target column is on a board beneath the card, one of its own sub-boards at any depth: `Card "<title>" cannot go onto "<board>", which hangs beneath it`. Nothing was moved.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },

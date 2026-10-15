@@ -1,13 +1,59 @@
 import { db } from '$lib/server/db';
 import { cards, columns, subtasks, boards, type Column } from '$lib/server/db/schema';
-import { count, eq, inArray } from 'drizzle-orm';
-import { completeColumnIds, isCompleteColumnTitle, isHoldColumnTitle } from '$lib/column-role';
+import { and, count, eq, inArray, isNull } from 'drizzle-orm';
+import { isCompleteColumnTitle, isHoldColumnTitle } from '$lib/column-role';
+
+/** How far a sub-board is: `total` live cards, `done` of them in a Complete column. */
+export type SubBoardProgress = { done: number; total: number };
+
+/**
+ * The progress of each board in `boardIds`, by id: every board asked has an
+ * entry, `{ done: 0, total: 0 }` for one with no columns or no cards.
+ *
+ * The one rule for a sub-board's progress (card 2205): an archived card is not
+ * live work. `total` is the cards on the board's own columns that are not
+ * archived, and `done` those of them in a Complete column. The completion
+ * check reads this, so does the count of open cards on the sub-boards a caller
+ * cannot open, and so do the board page, the card context and the dashboard,
+ * so that every page shows the figures the server refuses a completion on.
+ * The completion check counted archived cards and the board page counted them
+ * in its figures, so a card whose sub-board held only an archived card in To
+ * Do could never be completed, while the dashboard and the sub-board's own
+ * page showed nothing left to finish.
+ *
+ * `completionRoleRefusal`, below, still counts archived cards, and should: it
+ * asks what a rename does to the cards a restore would put back in the column,
+ * which is a different question.
+ *
+ * One query for every board, grouped by column.
+ */
+export function subBoardProgress(boardIds: number[]): Map<number, SubBoardProgress> {
+	const progress = new Map<number, SubBoardProgress>();
+	for (const id of boardIds) progress.set(id, { done: 0, total: 0 });
+	if (progress.size === 0) return progress;
+
+	const held = db
+		.select({ boardId: columns.boardId, title: columns.title, cards: count(cards.id) })
+		.from(columns)
+		.innerJoin(cards, and(eq(cards.columnId, columns.id), isNull(cards.archivedAt)))
+		.where(inArray(columns.boardId, [...progress.keys()]))
+		.groupBy(columns.id)
+		.all();
+	for (const column of held) {
+		const board = progress.get(column.boardId)!;
+		board.total += column.cards;
+		if (isCompleteColumnTitle(column.title)) board.done += column.cards;
+	}
+	return progress;
+}
 
 /**
  * Checks whether a card has incomplete subtasks or incomplete sub-boards.
  *
- * A sub-board is considered incomplete if it has any cards NOT in a column
- * whose title is "complete" or "done" (case-insensitive).
+ * A sub-board is considered incomplete while it has a card that is not
+ * archived and not in a column whose title is "complete" or "done"
+ * (case-insensitive), as `subBoardProgress` counts it. An archived card holds
+ * nothing back (card 2205).
  *
  * Returns `null` if the card is ready to complete, or an error message string
  * describing what's still incomplete.
@@ -29,24 +75,13 @@ export function getCompletionBlocker(cardId: number): string | null {
 	const subBoards = db.select().from(boards)
 		.where(eq(boards.parentCardId, cardId))
 		.all();
+	const progress = subBoardProgress(subBoards.map(sb => sb.id));
 
 	for (const sb of subBoards) {
-		const sbCols = db.select().from(columns)
-			.where(eq(columns.boardId, sb.id))
-			.all();
-		const sbColIds = sbCols.map(c => c.id);
-		if (sbColIds.length === 0) continue;
-
-		const sbCards = db.select().from(cards)
-			.where(inArray(cards.columnId, sbColIds))
-			.all();
-		if (sbCards.length === 0) continue;
-
-		const completeColIds = completeColumnIds(sbCols);
-
-		const incompleteCards = sbCards.filter(c => !completeColIds.has(c.columnId));
-		if (incompleteCards.length > 0) {
-			return `Sub-board "${sb.name}" has ${incompleteCards.length} incomplete card${incompleteCards.length > 1 ? 's' : ''} that must be completed first`;
+		const { done, total } = progress.get(sb.id)!;
+		const open = total - done;
+		if (open > 0) {
+			return `Sub-board "${sb.name}" has ${open} incomplete card${open > 1 ? 's' : ''} that must be completed first`;
 		}
 	}
 

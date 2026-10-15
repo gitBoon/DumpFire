@@ -21,11 +21,11 @@ import {
 	boardTeams,
 	teamMembers
 } from '$lib/server/db/schema';
-import { eq, asc, inArray, isNull, and } from 'drizzle-orm';
+import { eq, asc, inArray } from 'drizzle-orm';
 import { canViewBoard } from '$lib/server/board-access';
 import { milestonesForBoard } from '$lib/server/milestones';
 import { cardCategoriesFor, subBoardsFor } from '$lib/server/list-access';
-import { completeColumnIds } from '$lib/column-role';
+import { subBoardProgress } from '$lib/server/card-completion';
 import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
@@ -70,25 +70,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	// Sub-boards hanging off this card, with their progress — the modal shows
 	// them and the plan view should not silently drop them. Those the caller
 	// can open (card 2130): one they were never given was named to them here.
+	// The progress as the completion check counts it, archived cards left out
+	// (card 2205), so the board page and this agree.
 	const subBoards = subBoardsFor(locals.user, [cardId]);
+	const progress = subBoardProgress(subBoards.map((sb) => sb.id));
 	const subBoardsWithProgress = subBoards.map((sb) => {
-		const cols = db.select().from(columns).where(eq(columns.boardId, sb.id)).all();
-		const colIds = cols.map((c) => c.id);
-		const sbCards = colIds.length
-			? db
-					.select({ columnId: cards.columnId })
-					.from(cards)
-					.where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt)))
-					.all()
-			: [];
-		const doneCols = completeColumnIds(cols);
-		return {
-			id: sb.id,
-			name: sb.name,
-			emoji: sb.emoji || '📋',
-			total: sbCards.length,
-			done: sbCards.filter((c) => doneCols.has(c.columnId)).length
-		};
+		const { done, total } = progress.get(sb.id)!;
+		return { id: sb.id, name: sb.name, emoji: sb.emoji || '📋', total, done };
 	});
 
 	// ── Board context for the pickers ────────────────────────────────────────
