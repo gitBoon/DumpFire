@@ -162,7 +162,7 @@ docker run -d \
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `DB_PATH` | Path to the SQLite database file inside the container | `/app/data/dumpfire.db` |
+| `DB_PATH` | Path to the SQLite database file inside the container. Keep it on the volume mounted at `/app/data`: the uploads are in the folder `uploads` beside it. The examples give it although the image sets it, so that they are right for an image built before it did. At the image's path, a server that finds no database there while it can see one at `/app/dumpfire.db` or elsewhere in `/app/data` refuses to start rather than create an empty one: see [docs/deployment.md](docs/deployment.md#start-up-sequence) | `/app/data/dumpfire.db` in the image; `dumpfire.db` in the working directory for a server started any other way |
 | **`ORIGIN`** | **Public URL for CSRF protection — must exactly match how users access the app (including protocol and port).** If this is wrong, all form submissions will fail with 403. | `http://localhost:3000` |
 | `PORT` | Port the server listens on | `3000` |
 | `COOKIE_SECURE` | Set to `false` to allow session cookies over plain HTTP (see [HTTPS & Reverse Proxies](#https--reverse-proxies)) | `true` in production |
@@ -209,6 +209,7 @@ services:
   dumpfire:
     build: .
     environment:
+      - DB_PATH=/app/data/dumpfire.db
       - ORIGIN=https://kanban.yourdomain.com
     volumes:
       - dumpfire-data:/app/data
@@ -293,6 +294,7 @@ If you're running on a **trusted local network** and don't need HTTPS (e.g. home
 ```yaml
 # docker-compose.yml
 environment:
+  - DB_PATH=/app/data/dumpfire.db
   - ORIGIN=http://192.168.1.50:3000
   - COOKIE_SECURE=false
 ```
@@ -300,7 +302,7 @@ environment:
 Or with `docker run`:
 
 ```bash
-docker run -e ORIGIN=http://192.168.1.50:3000 -e COOKIE_SECURE=false ...
+docker run -v dumpfire-data:/app/data -e DB_PATH=/app/data/dumpfire.db -e ORIGIN=http://192.168.1.50:3000 -e COOKIE_SECURE=false ...
 ```
 
 > **⚠️ Warning:** With `COOKIE_SECURE=false`, session cookies are sent in the clear. Only use this on networks you trust.
@@ -311,11 +313,21 @@ Your data lives in a Docker volume (`dumpfire-data`) that is independent of the 
 
 Database migrations run automatically on every startup. Only new migrations are applied; existing data is preserved.
 
+> **⚠️ Check first that the database is on the volume.** That is so only when the container was started with the volume at `/app/data` and the database inside it. An installation made from an older copy of this README, or from an image that set no `DB_PATH`, may keep its database inside the container, and replacing the container discards it. With the container running:
+>
+> ```bash
+> docker exec dumpfire printenv DB_PATH
+> docker inspect --format '{{range .Mounts}}{{.Destination}}{{println}}{{end}}' dumpfire
+> ```
+>
+> If the first prints nothing, the database is `/app/dumpfire.db`, inside the container. If it prints a path, the folder that holds it (normally `/app/data`) must be listed by the second, or be inside a folder it lists; if it is not, the database is inside the container. In either case do not run `down` or `docker rm`: move the database onto the volume first, as [docs/deployment.md](docs/deployment.md#moving-the-database-onto-the-volume) says. (With compose, the container's name is the one `docker ps` shows.)
+
 ### With Docker Compose
 
 ```bash
 cd DumpFire
 git pull
+# The check above first.
 docker compose down --remove-orphans
 docker compose build
 docker compose up -d
@@ -323,7 +335,7 @@ docker compose up -d
 
 > **Why `--remove-orphans`?** If you've ever changed your `docker-compose.yml` (e.g. added or removed a reverse proxy service), Docker may leave old containers behind that it no longer recognises. The `--remove-orphans` flag cleans those up, preventing "container name already in use" errors on the next `up`.
 
-That's it. The new container starts, detects any pending migrations, applies them against your existing database, and serves the updated app. Named volumes (`dumpfire-data`) are **never** removed by `docker compose down` — your data is always preserved.
+That's it. The new container starts, detects any pending migrations, applies them against your existing database, and serves the updated app. Named volumes (`dumpfire-data`) are **never** removed by `docker compose down`, so your data is preserved as long as it is on the volume, which the check above confirms.
 
 ### With Docker Run
 
@@ -334,7 +346,8 @@ git pull
 # Rebuild the image
 docker build -t dumpfire .
 
-# Stop and remove the old container (the volume is NOT removed)
+# Stop and remove the old container (the volume is NOT removed),
+# only once the check above has shown the database is on the volume
 docker stop dumpfire && docker rm dumpfire
 
 # Start a new container with the same volume

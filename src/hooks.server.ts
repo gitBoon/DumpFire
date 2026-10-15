@@ -16,7 +16,7 @@ import { bodyLimit, heldToLimit, refuseBody, type Caller } from '$lib/server/bod
 import { addressOf, UNKNOWN_ADDRESS } from '$lib/server/client-address';
 import { isNavigation, notSignedIn, secured, sendTo, whereSent } from '$lib/server/gate-answers';
 import { pathToLog } from '$lib/server/secret-paths';
-import { maskLiveLog, reportInstallation } from '$lib/server/startup-checks';
+import { maskLiveLog, refuseUserlessBesideAnother, reportInstallation } from '$lib/server/startup-checks';
 
 const log = createLogger('HTTP');
 
@@ -31,6 +31,12 @@ const log = createLogger('HTTP');
 // module fails to load, and every request fails until the cause is fixed and
 // the server is restarted.
 runMigrations();
+
+// Stop here too, the same way, when the database in use has no users while
+// another database is beside it (card 2083): set-up would be open to whoever
+// comes first while the real database sits unused. A bare call: its throw is
+// what stops the server before it listens. See $lib/server/startup-checks.ts.
+refuseUserlessBesideAnother();
 
 // Clean expired sessions periodically (on startup)
 cleanExpiredSessions();
@@ -55,8 +61,10 @@ startSchedulers();
 
 // Say in the system log, once, what about this installation nothing else
 // would say: that there are users and no superadmin among them, that ORIGIN
-// is still the address the image is built with, or that a board hangs beneath
-// one of its own cards. It reads and it logs, and it cannot throw. See
+// is still the address the image is built with, that a board hangs beneath
+// one of its own cards, or, of the database, that it was new at this start,
+// that it is not on a mounted volume, or that another is beside it (card
+// 2083). It reads and it logs, and it cannot throw. See
 // $lib/server/startup-checks.ts.
 reportInstallation();
 

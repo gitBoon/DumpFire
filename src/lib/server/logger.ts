@@ -44,6 +44,11 @@ function currentThreshold(): number {
 	return LEVEL_RANK[configured] ?? LEVEL_RANK.INFO;
 }
 
+/** Whether an entry at `level` is kept and written under the LOG_LEVEL set now. */
+export function isLogged(level: LogLevel): boolean {
+	return LEVEL_RANK[level] >= currentThreshold();
+}
+
 // ─── Live feed (ring buffer + emitter) ──────────────────────────────────────
 
 const RING_BUFFER_SIZE = 300;
