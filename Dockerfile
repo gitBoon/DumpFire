@@ -49,6 +49,14 @@ COPY --from=builder /app/drizzle        ./drizzle
 # Mount a volume here for data persistence
 RUN mkdir -p /app/data
 
+# The database, on the volume mounted at /app/data. Before this was set, a
+# container started without DB_PATH kept its database at /app/dumpfire.db, in
+# the container's own file system. A variable given at `docker run -e` or in
+# compose's `environment:` still wins. The server refuses to start rather than
+# create an empty database here while one it can see is at /app/dumpfire.db
+# or elsewhere in /app/data (src/lib/server/db/location.ts).
+ENV DB_PATH=/app/data/dumpfire.db
+
 ENV NODE_ENV=production
 ENV PORT=3000
 # IMPORTANT: Set ORIGIN to your actual public URL at runtime, e.g.:

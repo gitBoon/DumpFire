@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.27
+version: 1.28
 status: As-Built
 date: 2026-10-15
 tags:
@@ -556,8 +556,10 @@ Each line carries a timestamp and its level before the module name:
 
 | Environment | Path |
 |-------------|------|
-| Development | `./dumpfire.db` in project root |
-| Docker | `/app/data/dumpfire.db` |
+| Development | `./dumpfire.db` in project root, unless `DB_PATH` names another file |
+| Docker | `/app/data/dumpfire.db`, the image's `DB_PATH`, on the volume mounted at `/app/data` |
+
+The attachment files are in the folder `uploads` beside the database. An image built before card 2083 set no `DB_PATH`, and a container from it started without one kept its database at `/app/dumpfire.db`, inside the container, where it is lost when the container is replaced. A newer image refuses to start rather than create an empty database at `/app/data/dumpfire.db` while it can see one at `/app/dumpfire.db` or elsewhere in `/app/data`; refuses as well to create one at any other path, such as an empty or mistyped `DB_PATH`, while `/app/data/dumpfire.db` has data, or when it cannot read what it needed to look at; refuses a database with no user accounts while one is at `/app/dumpfire.db` beside it; and says at every start when the database is not on a mounted volume. Each refusal names the files with their sizes and when each was last written. See [Start-Up Sequence](deployment.md#start-up-sequence) for the whole rule. See [Moving the Database onto the Volume](deployment.md#moving-the-database-onto-the-volume) in the deployment guide.
 
 ### Activity Log
 

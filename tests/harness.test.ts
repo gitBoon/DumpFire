@@ -71,6 +71,7 @@ const TEST_FILES = [
 	'card-window.test.ts',
 	'check-at-the-write.test.ts',
 	'columns.test.ts',
+	'database-location.test.ts',
 	'deletes-no-parent-key.test.ts',
 	'deletes.test.ts',
 	'dependency-refusals.test.ts',
