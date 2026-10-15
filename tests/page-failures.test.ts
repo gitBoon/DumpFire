@@ -502,7 +502,9 @@ describe('the card an address names, src/routes/board/[id]/+page.svelte (card 21
 	const opening = () => functionNamed(board, 'openCardFromAddress');
 
 	it('is opened after every navigation that keeps the page, and not in onMount', () => {
-		const navigated = callsOf(board, 'afterNavigate');
+		// The other `afterNavigate` is the list view's (card 2079), which opens no card.
+		expect(callsOf(board, 'afterNavigate')).toHaveLength(2);
+		const navigated = callsOf(board, 'afterNavigate').filter((call) => call.getText().includes('openCardFromAddress'));
 		expect(navigated).toHaveLength(1);
 		const callback = navigated[0].arguments[0] as ts.ArrowFunction;
 		expect(callback.parameters.map((parameter) => parameter.getText())).toEqual(['{ from, to }']);
@@ -528,7 +530,8 @@ describe('the card an address names, src/routes/board/[id]/+page.svelte (card 21
 		expect(board.getText()).toMatch(/import \{[^}]*\btick as nextTick\b[^}]*\} from 'svelte';/);
 		// SvelteKit's, and nowhere else: the browser's lost SvelteKit's state.
 		expect([...callsOf(board, 'window.history.replaceState'), ...callsOf(board, 'history.replaceState')]).toEqual([]);
-		expect(callsOf(board, 'replaceState').map((call) => ts.findAncestor(call, ts.isFunctionDeclaration)?.name?.text)).toEqual(['openCardFromAddress']);
+		// And `setBoardView`, which puts the list view in the address (card 2079).
+		expect(callsOf(board, 'replaceState').map((call) => ts.findAncestor(call, ts.isFunctionDeclaration)?.name?.text)).toEqual(['openCardFromAddress', 'setBoardView']);
 
 		const steps = opening().body!.statements.map((statement) => statement.getText());
 		const waited = steps.indexOf('await nextTick();');

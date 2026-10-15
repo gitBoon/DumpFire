@@ -15,7 +15,7 @@
 	import type { PageData } from './$types';
 	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
 	// Svelte's `tick` under another name: the page has a `tick` of its own, the live timestamps' counter.
-	import { onMount, onDestroy, tick as nextTick } from 'svelte';
+	import { onMount, onDestroy, tick as nextTick, untrack } from 'svelte';
 	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
 	import { dndzone } from 'svelte-dnd-action';
@@ -43,6 +43,7 @@
 	import * as bulkOps from '$lib/board/bulk-actions';
 	import { getLevel, getXpProgress, loadXp as fetchXpData } from '$lib/board/xp-utils';
 	import { connectSSE } from '$lib/board/sse';
+	import { openingView, readBoardView, resolveListColumn, viewFromUrl, withViewParams, writeBoardView, type BoardViewChoice } from '$lib/board/board-view';
 
 	// Components
 	import CardModal from '$lib/components/CardModal.svelte';
@@ -60,6 +61,8 @@
 	import CategoryModal from '$lib/components/board/CategoryModal.svelte';
 	import OnHoldModal from '$lib/components/board/OnHoldModal.svelte';
 	import CompletionPromptModal from '$lib/components/board/CompletionPromptModal.svelte';
+	import BoardViewSwitch from '$lib/components/board/BoardViewSwitch.svelte';
+	import ColumnListView from '$lib/components/board/ColumnListView.svelte';
 
 	// ─── Props & Core State ──────────────────────────────────────────────────
 
@@ -134,7 +137,7 @@
 	let selectionMode = $state(false);
 	let selectedCards = $state<Set<number>>(new Set());
 
-	function toggleSelection(cardId: number, e: MouseEvent) {
+	function toggleSelection(cardId: number, e: Event) {
 		e.stopPropagation();
 		const next = new Set(selectedCards);
 		if (next.has(cardId)) next.delete(cardId); else next.add(cardId);
@@ -629,6 +632,51 @@
 		return !hideBlocked || blockersFor(cardId).length === 0;
 	}
 
+	// ─── List View (card 2079) ───────────────────────────────────────────────
+
+	// Board or list, as the address asks, so a bookmarked list is drawn as a
+	// list from the first paint. What this viewer left the board as is read
+	// from the browser once the page is in it, and an address that asks for
+	// nothing then opens as that, after a first paint as the board.
+	let boardView = $state<BoardViewChoice>(openingView(viewFromUrl($page.url), null));
+	let boardViewRead = false;
+
+	// Registered after the card window's, whose address it then keeps: a
+	// `?card=` link on this board leaves the list shown and in the address.
+	// The address is put right after a tick, as `openCardFromAddress` does.
+	// That order holds only while both callbacks wait the same number of
+	// awaits (one `nextTick`) before `replaceState`: one more here, or one
+	// fewer there, and the card window's address would be written last.
+	// On Back and Forward, `to.url` is the address SvelteKit stored for the
+	// entry, without the view a shallow `replaceState` put in it; the
+	// browser's own address has it.
+	afterNavigate(async ({ to, type }) => {
+		if (!to) return;
+		const remembered = boardViewRead ? boardView : currentUser ? readBoardView(currentUser.id, data.board.id) : null;
+		boardViewRead = true;
+		const choice = openingView(viewFromUrl(type === 'popstate' ? new URL(location.href) : to.url), remembered);
+		await nextTick();
+		if (choice.view === 'list') setBoardView(choice);
+		else boardView = choice;
+	});
+
+	/** Shows the board or the list, remembers it for this viewer and board, and puts it in the address. */
+	function setBoardView(choice: BoardViewChoice) {
+		const columnId = choice.view === 'list' ? resolveListColumn(boardColumns, choice.columnId) : choice.columnId;
+		boardView = { ...choice, columnId };
+		if (currentUser) writeBoardView(currentUser.id, data.board.id, boardView);
+		replaceState(withViewParams(new URL(location.href), boardView), $page.state);
+	}
+
+	// A column deleted while the list shows it (by anyone, live): the list
+	// moves to To Do, and the address and the remembered choice with it, at
+	// once. Not before the view's first navigation, when the router has not
+	// started and that navigation puts the column right in any case.
+	$effect(() => {
+		const columnId = resolveListColumn(boardColumns, boardView.columnId);
+		if (boardViewRead && boardView.view === 'list' && columnId !== boardView.columnId) untrack(() => setBoardView(boardView));
+	});
+
 
 	// ─── Archive Panel ──────────────────────────────────────────────────────────
 
@@ -1055,6 +1103,7 @@
 		</button>
 
 		<div class="board-header-right">
+			<BoardViewSwitch view={boardView.view} onChange={(view) => setBoardView({ ...boardView, view })} />
 			<!-- Scoped to this board: arriving from a board, the question is about
 			     this board's goals, not every goal in the workspace. -->
 			<a href="/plan?board={data.board.id}" class="hdr-control hdr-action" title="Planning — critical path and what is startable for this board">
@@ -1150,6 +1199,25 @@
 		</div>
 	</header>
 
+	<!-- One column at a time, for a portrait monitor (card 2079); the Kanban block below is left as it was. -->
+	{#if boardView.view === 'list'}
+	<ColumnListView
+		columns={boardColumns}
+		categories={boardCategories}
+		filter={{ search: searchQuery, assigneeId: filterAssigneeId, hideBlocked }}
+		blockerCount={(cardId) => blockersFor(cardId).length}
+		{blockerTooltip}
+		{milestoneNameById}
+		{cardTokens}
+		{tick}
+		{selectedCards}
+		{selectionMode}
+		choice={boardView}
+		onOpen={(card, e) => (selectionMode ? toggleSelection(card.id, e) : openCardModal(card))}
+		onContextMenu={openContextMenu}
+		onChange={setBoardView}
+	/>
+	{:else}
 	<!-- Kanban columns -->
 	<div class="kanban-container">
 		<div
@@ -1471,6 +1539,7 @@
 			{/each}
 		</div>
 	</div>
+	{/if}
 </div> <!-- /.board-page -->
 <div class="board-panels-area">
 {#if showActivityPanel}
