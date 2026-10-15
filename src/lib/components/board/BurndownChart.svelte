@@ -12,7 +12,8 @@
   — on a board with history it dwarfs the open work and flattens the chart —
   and appears only in the tooltip. Either way the ideal line appears only when there is a target date —
   a line to zero on the last day of an arbitrary window means nothing — and
-  the forecast continues from today at the pace of the last 28 days.
+  the forecast continues from today at the pace of the last 28 days, for a
+  single board only: across several boards no forecast is drawn.
 
   Colours are the chart's own tokens rather than the theme accent: they were
   run through the dataviz palette validator against the light and dark
@@ -80,10 +81,15 @@
   const lastInPlay = $derived(inPlayValues[n - 1] ?? 0);
   const lastFinished = $derived(finishedValues[n - 1] ?? 0);
 
-  /** A forecast is drawn only when it starts from the chart's last day. */
+  /**
+   * A forecast is drawn only when it starts from the chart's last day, and
+   * only for one board: across several the pooled line would draw a date for
+   * the pile that is not when the work finishes (card 1968).
+   */
   const projecting = $derived(
     !!forecast && !!last &&
     (forecast.status === 'converging' || forecast.status === 'not-converging') &&
+    !forecast.spansBoards &&
     forecast.asOf === last.date
   );
 
@@ -303,8 +309,10 @@
       `${label}, ${formatDay(first.date, true)} to ${formatDay(last.date, true)}.`,
       `${formatCount(s.remainingNow)} remaining, from ${formatCount(s.remainingStart)} at the start; ${formatCount(s.completed)} finished and ${formatCount(s.added)} added in the period.`
     ];
-    if (forecast?.status === 'converging' && forecast.projectedDate) parts.push(`Forecast to finish ${formatDay(forecast.projectedDate, true)}.`);
-    else if (forecast?.status === 'not-converging') parts.push('Not converging at the current pace.');
+    // Across boards there is no forecast line, so none is read out either.
+    const spoken = forecast?.spansBoards ? null : forecast;
+    if (spoken?.status === 'converging' && spoken.projectedDate) parts.push(`Forecast to finish ${formatDay(spoken.projectedDate, true)}.`);
+    else if (spoken?.status === 'not-converging') parts.push('Not converging at the current pace.');
     else if (forecast?.status === 'done') parts.push('All work is done.');
     if (target) parts.push(`Target ${formatDay(target.date, true)}.`);
     return parts.join(' ');

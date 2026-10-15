@@ -535,7 +535,7 @@ export function getBurndown(user: SessionUser, q: BurndownQuery): BurndownResult
 	// One basis for both, so the forecast and the delivery estimate agree on
 	// what "the recent pace" was.
 	const basis = forecastBasis(lifelines, to);
-	const fc = forecast(basis);
+	const fc = forecast(basis, { spansBoards: spansBoards(cards) });
 	const targetDate = q.target === 'none' ? null : (q.target ?? scope.milestone?.targetDate ?? null);
 
 	// Lookups for naming boards, categories, labels and people.
@@ -745,6 +745,16 @@ function keysFor(card: ScopedCard, kind: Exclude<BurndownGroupBy, 'none'>): (num
 }
 
 /**
+ * More than one board among these cards: the cards that pass the filters,
+ * never the whole scope. The delivery estimate splits by board on it and the
+ * forecast is marked by it, so the two can never disagree about it (card 1968).
+ */
+function spansBoards(cards: ScopedCard[]): boolean {
+	const first = cards[0]?.boardId;
+	return cards.some((c) => c.boardId !== first);
+}
+
+/**
  * The delivery estimate for a set of cards. One board: one pile, because a
  * team shares its effort within a board. Several boards: each at its own pace,
  * done when the slowest is — see estimateDeliveryByParts. The pooled figure is
@@ -756,13 +766,13 @@ function deliveryFor(
 	opts: { trials?: number; target?: Day | null; nameOf: (boardId: number) => string }
 ): DeliveryEstimate {
 	const pooled = estimateDelivery(forecastBasis(cards.map((c) => c.lifeline), to), opts);
+	if (!spansBoards(cards)) return pooled;
 	const byBoard = new Map<number, CardLifeline[]>();
 	for (const c of cards) {
 		const list = byBoard.get(c.boardId);
 		if (list) list.push(c.lifeline);
 		else byBoard.set(c.boardId, [c.lifeline]);
 	}
-	if (byBoard.size <= 1) return pooled;
 	const parts = [...byBoard].map(([boardId, lifelines]) => ({
 		key: `board:${boardId}`,
 		name: opts.nameOf(boardId),
@@ -811,7 +821,9 @@ function buildGroups(
 			remaining: series.map((p) => p.remaining),
 			scope: series.map((p) => p.scope),
 			summary: summarise(series),
-			forecast: forecast(basis),
+			// A row is judged on its own cards: a board row is one board and
+			// keeps its date; a priority row across boards does not.
+			forecast: forecast(basis, { spansBoards: spansBoards(b.cards) }),
 			// Fewer trials per row: a breakdown can have dozens of groups. A row
 			// that spans several boards (a category, a label) is done when its
 			// slowest board is, exactly like the scope as a whole.

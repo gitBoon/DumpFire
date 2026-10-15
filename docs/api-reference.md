@@ -660,6 +660,16 @@ new; these answers and fields are:
   `POST /api/v1/tokens/bulk` answers for each card price each entry as the card's own
   `GET` does, where a model with a measured entry and an entry with no breakdown was
   priced as a whole at the 90/10 blend, several times its cost.
+- **`GET /api/v1/burndown` says when its forecast spans several boards** (card 1968).
+  `forecast.spansBoards` is `true` when the cards that pass the filters sit on more than
+  one board, and each row of `groups` carries its own, judged on that row's cards alone;
+  it is the test `delivery` splits by board on. The forecast's `projectedDate` and
+  `projectedDateNoNewScope` are then pooled across boards, as if a card finished on one
+  board cleared another's, and are not when the work finishes: `delivery` dates it board
+  by board, as before. Every other field and value is as it was, `target.onTrack` and
+  `daysLate` included, which still compare the pooled date. Across several boards the
+  burndown page, its chart and the milestone panel now show no forecast date, and the
+  target's verdict comes from `delivery`: see [Burndown Charts](burndown-charts.md#the-forecast).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -1488,7 +1498,9 @@ days.
 Returns `series` (per day: `scope`, `done`, `remaining`, `added`, `completed`,
 `removed`), `summary`, `forecast` (`converging` with a `projectedDate`,
 `not-converging`, `done` or `insufficient-data`, measured over the trailing 28
-days), `delivery`, `target` (`onTrack`, `daysLate`) and `groups`.
+days), `delivery`, `target` (`onTrack`, `daysLate`) and `groups`. `forecast.spansBoards`
+is `true` when the cards that pass the filters sit on more than one board: the forecast's
+dates are then pooled across boards and are not when the work finishes; read `delivery`.
 
 `delivery` answers "how long will the work open now take?": a seeded Monte Carlo
 over the scope's own daily completions, giving `p50` (likely), `p85` and `p95`

@@ -65,6 +65,7 @@ const TEST_FILES = [
 	'body-limits.test.ts',
 	'board-tree-loops.test.ts',
 	'bulk-endpoints.test.ts',
+	'burndown.test.ts',
 	'card-completion.test.ts',
 	'card-covers-and-labels.test.ts',
 	'card-updates.test.ts',

@@ -1,9 +1,9 @@
 ---
 title: "Burndown Charts"
 category: Reporting & Analytics
-version: 1.3
+version: 1.4
 status: As-Built
-date: 2026-10-12
+date: 2026-10-15
 tags:
   - burndown
   - burn-up
@@ -64,7 +64,7 @@ they never disagree.
 | **Remaining** | Cards open now: not in Complete, not archived | open at the start + added − finished − dropped |
 | **Finished** | Cards that reached Complete in the period | counted on the day each got there; pace = finished in the basis ÷ days × 7 |
 | **Added** | New cards in the period, and how many open cards were dropped | net arrivals in the basis ÷ days × 7 |
-| **At this pace** | Where the open pile is heading if work keeps arriving and being finished as lately | finishing a week − arriving a week; *Clears 14 Nov*, *Growing*, *Holding steady*, *Stalled* |
+| **At this pace** | Where the open pile is heading if work keeps arriving and being finished as lately | finishing a week − arriving a week; *Clears 14 Nov* on one board, *Shrinking* across several (no date), *Growing*, *Holding steady*, *Stalled* |
 | **Time to deliver** | How long the work open **now** would take if nothing new were added | Monte Carlo over real daily completions: likely, 85% and 95% dates. Across several boards, when the **slowest board** is done |
 | **Target** | Will it land by the date? | the chance of finishing by then, from the same simulation |
 
@@ -244,6 +244,56 @@ flowchart TD
 - **Beyond five years is not a forecast.** A date a decade away suggests a
   precision that is not there, so it is reported as not converging.
 
+### Several boards: a direction, not a date
+
+The pooled rates are true of the pile as a whole ("about 11 more a week are
+finished than arrive"). Turning them into a date is what treats a card finished
+on one board as paying off another's backlog, the fault **Time to deliver**
+already avoids by dating each board at its own pace. Shown together, the pooled
+date could sit weeks before the delivery estimate for the same work (card 1968).
+So when the cards that pass the filters sit on more than one board:
+
+- `forecast.spansBoards` is `true`. It is the same test the delivery estimate
+  splits on (`spansBoards()` in `$lib/server/burndown.ts`), so the two cannot
+  disagree about it. A breakdown row is judged on its own cards: a board row is
+  one board and keeps its date; a priority row across boards does not.
+- **At this pace** reads *Shrinking*, "About N more a week get finished than
+  arrive". *Growing*, *Holding steady*, *Stalled* and *Too early* are unchanged;
+  none of them carries a date. When no board with open work has finished
+  anything lately, *Shrinking* is shown in the neutral colour, not green: the
+  pile is shrinking only because work elsewhere is finished or dropped, and
+  nothing is being delivered.
+- The summary's second sentence gives the rate, not a date; the tile's hover
+  keeps the arithmetic and says why there is no date; the chart draws no dotted
+  line and its screen-reader summary leaves the forecast out.
+- **Time to deliver is the one finish date** the page states for the scope as a
+  whole. With Group by board, each board's row still gives that board's own
+  date, because a row of one board is not multi-board.
+- The API keeps every field and value; `projectedDate` and
+  `projectedDateNoNewScope` are still answered and are documented as pooled.
+
+```mermaid
+flowchart LR
+    Cards["Cards that pass the filters"] --> Q{"More than one board?"}
+    Q -- no --> One["Forecast with its date<br/>At this pace: Clears date<br/>dotted line on the chart"]
+    Q -- yes --> Many["spansBoards true<br/>At this pace: Shrinking, a rate only<br/>no dotted line"]
+    Many --> TTD["Time to deliver<br/>(slowest board) is the finish date"]
+```
+
+A worked example, two boards over the trailing 28 days to 14 Oct 2026:
+
+| Board | Open | Finished | Arrived | Own net pace |
+|---|---|---|---|---|
+| A | 10 | 56 | 28 | 1 a day off the pile |
+| B | 40 | 14 | 0 | 0.5 a day off the pile |
+| Pooled | 50 | 70 | 28 | 1.5 a day off the pile |
+
+The pooled net date is 50 ÷ 1.5, 34 days: 17 Nov. Time to deliver, slowest
+board B, is likely 1 Jan 2027, 85% by 11 Jan. Before this change At this pace
+read "Clears 17 Nov" beside "about 3 months" and the chart drew a line to zero on
+17 Nov; now it reads "Shrinking, about 11 more a week get finished than arrive"
+and there is no line. A single board is unchanged.
+
 ## Time to deliver
 
 "How long will it take to finish?" is a different question from where the pile
@@ -336,7 +386,9 @@ gone, because it meant nothing.
 
 `onTrack` is true when the net forecast lands on or before the target, and false
 when it lands after or is not converging. `daysLate` is negative when the
-forecast is early.
+forecast is early. Across several boards both compare the pooled date, and the
+page does not show that comparison: its Target hover leaves out the "At the
+recent net pace the pile clears on" line.
 
 ### The target verdict
 
@@ -357,6 +409,28 @@ added". With no pace to simulate from, it falls back to the net forecast and
 says *At risk* without quoting a percentage: a 0% there would come from having no
 data, not from an estimate.
 
+Across several boards there is no net date to fall back on, so with no chance to
+quote the verdict comes from the delivery estimate:
+
+| Delivery estimate | Verdict |
+|---|---|
+| Slowest board beyond two years, target within two years of the estimate's day | **Behind**: "Board B alone would take over two years; target 31 Dec 2027" |
+| Slowest board beyond two years, target further out | **Too early to say**: "Board B alone would take over two years; target 30 Jun 2029". The estimate cannot see past two years, so it cannot call a later target missed |
+| No board with open work has a pace | **At risk**: "Nothing finished lately on the boards with open work; target 31 Dec" |
+| The pooled pile is growing, holding steady or stalled | **At risk**, as on one board |
+| Anything else | **Too early to say** |
+
+A target more than a year from the estimate's day is written with its year
+("target 31 Dec 2027", "Clears 15 Jul, before 31 Dec 2027"), in every verdict, so a
+date next year or the year after is never read as this one.
+
+Before card 1968 the beyond-two-years case fell back to the pooled date and could
+say "On track — Clears 15 Jul, before 31 Dec" beside "Over 2 years". A single
+board keeps the net-date fallback: **On track** when the pile clears by the
+target, **N days late** when it clears after it. The milestone panel's verdict
+hover names every one of these cases: the chance bands, the single-board net
+date, the two-year rule across boards, and At risk.
+
 ## The chart
 
 `BurndownChart.svelte` is inline SVG with no charting library, the same approach
@@ -368,7 +442,7 @@ from the 340 px stats panel to the full page.
 | Primary line + wash | Remaining (indigo `#6366f1`) | Finished since start (green `#059669`) |
 | Secondary line | Work in play (amber `#d97706`) | Work in play (amber) |
 | Dashed | Ideal to the target date | — |
-| Dotted | Forecast of remaining | Forecasts of finished and work in play, meeting on the projected date |
+| Dotted | Forecast of remaining (one board only) | Forecasts of finished and work in play, meeting on the projected date (one board only) |
 | Markers | Today, Target | Today, Target |
 
 **All-time scope is not plotted.** It counts every card that has ever existed,
@@ -472,6 +546,7 @@ classDiagram
         +netBurnRate
         +projectedDate
         +projectedDateNoNewScope
+        +spansBoards
     }
     class DeliveryEstimate {
         +status
@@ -602,5 +677,8 @@ caller was the stats panel.
 - Across boards it assumes each board keeps its own people. If effort really
   does move between boards, the truth lies between the slowest-board date and
   the pooled figure, and the page shows both.
+- Across boards the net forecast is the whole pile's direction and rate, never a
+  date. A board that is clearing fast can make the pooled pile shrink while
+  another board's backlog grows; the breakdown by board shows which.
 - Days are UTC, like the snapshots and the activity report. Work completed just
   after midnight BST lands on the previous UTC day.
