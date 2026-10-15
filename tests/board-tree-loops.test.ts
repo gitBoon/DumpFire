@@ -35,6 +35,7 @@ import { getCompletionBlocker } from '$lib/server/card-completion';
 import { generateAllBoardsReport, generateBoardReport } from '$lib/server/reports';
 import { reportBoardLoops, reportInstallation } from '$lib/server/startup-checks';
 import { boardsInLoops } from '$lib/server/sub-boards';
+import { boardPlaces, type LinkedBoard } from '$lib/board-tree';
 import { pageLoad } from './helpers/actions';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
@@ -393,6 +394,21 @@ describe('every other walk of the board tree ends on a loop', () => {
 	it('the dashboard, as an administrator', async () => {
 		const w = world();
 		expect((await withinBudget(() => pageLoad('/', { user: w.admin }))).type).toBe('data');
+	});
+
+	it('All Tasks, which names the boards above each board, each loop once round as the breadcrumbs do (card 1990)', async () => {
+		const w = world();
+
+		const res = await withinBudget(() => pageLoad('/all', { user: w.owner }));
+
+		expect(res.type).toBe('data');
+		// The load sends each board's nearest parent; the page builds the paths from them.
+		const places = boardPlaces(res.type === 'data' ? (res.data.boards as LinkedBoard[]) : []);
+		const paths = new Map<number, (string | undefined)[]>([...places].map(([id, place]) => [id, place.path.map((s) => s?.name)]));
+		expect(paths.get(w.S.board.id)).toEqual(['S']);
+		expect(paths.get(w.A.board.id)).toEqual(['A', 'B']);
+		expect(paths.get(w.W.board.id)).toEqual(['S', 'S', 'Z']);
+		expect(paths.get(w.C2.board.id)).toEqual(['P', 'C1']);
 	});
 
 	it('the completion check of the card S hangs from, which can never pass while the loop is there', async () => {

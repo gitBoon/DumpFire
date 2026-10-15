@@ -6,6 +6,8 @@ import { boardCategoriesFor, cardCategoriesFor } from '$lib/server/list-access';
 import { getBlockedStateForCards } from '$lib/server/planning';
 import { milestoneNamesForCards } from '$lib/server/milestones';
 import { getCardTokenTotals } from '$lib/server/tokens';
+import { boardAncestry } from '$lib/server/board-tree';
+import { placeBoards } from '$lib/board-tree';
 import { columnRole } from '$lib/column-role';
 import type { PageServerLoad } from './$types';
 
@@ -87,6 +89,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	for (const b of allBoards) {
 		boardMap.set(b.id, { name: b.name, emoji: b.emoji || '📋', categoryId: b.categoryId });
 	}
+
+	// Where each board sits in the tree (card 1990): the nearest board above it
+	// that the caller can open, whether boards they cannot open come between,
+	// and the category the filter counts it in, its own or that of the nearest
+	// board above it the caller can open, and none for a category since
+	// deleted. The page builds each board's path from these. Choosing a board
+	// or a category then takes in its sub-boards, and a card's tag names the
+	// boards its board hangs beneath.
+	const places = placeBoards(allBoards, boardAncestry(accessibleBoardIds), allBoardCategories.map((c) => c.id));
 
 	// Normalize column titles into buckets
 	function getBucket(colTitle: string): string {
@@ -218,7 +229,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	return {
 		cardTokens,
 		allTokenSummary,
-		boards: allBoards.map(b => ({ ...b, ...boardMap.get(b.id)! })),
+		// What the page reads of each board and no more: not its parent card,
+		// which is on a board the caller may not be able to open, nor its
+		// maker, category or dates (card 1990's review).
+		boards: allBoards.map(b => {
+			const { name, emoji } = boardMap.get(b.id)!;
+			return { id: b.id, name, emoji, ...places.get(b.id)! };
+		}),
 		buckets: grouped,
 		blockedState,
 		milestoneNames,
