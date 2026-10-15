@@ -1,6 +1,6 @@
 import { error, redirect } from '@sveltejs/kit';
 import { requireMilestone, MilestoneError } from '$lib/server/milestones';
-import { getMilestoneSummary } from '$lib/server/planning';
+import { getMilestoneSummary, planSubtasks } from '$lib/server/planning';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, locals }) => {
@@ -16,12 +16,15 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 		throw e;
 	}
 
-	// The whole plan is computed server-side in one pass. The page draws it and
-	// re-fetches /api/milestones/:id/summary after an edit; it never derives the
-	// critical path or the actionable list itself. Work on a board the caller
-	// cannot open is in it withheld (card 2129).
+	// The whole plan is computed server-side in one pass. The page draws it, and
+	// an edit, or closing the card window, re-runs this load (invalidateAll); it
+	// never derives the critical path or the actionable list itself. Work on a
+	// board the caller cannot open is in it withheld (card 2129).
 	const summary = getMilestoneSummary(id, locals.user);
 	if (!summary) throw error(404, 'Milestone not found');
 
-	return { user: locals.user, summary };
+	// Every subtask of each card the caller can open, for the work table to
+	// open a card to (card 2221). Beside the summary, not in it: the summary
+	// is also what the API answers, and this is only drawn here.
+	return { user: locals.user, summary, subtasks: planSubtasks(summary) };
 };

@@ -35,13 +35,14 @@ import {
 	cardComments,
 	milestones
 } from './db/schema';
-import { eq, and, isNull, inArray } from 'drizzle-orm';
+import { eq, and, isNull, inArray, asc } from 'drizzle-orm';
 import { getAccessibleBoardIds, type Actor } from './board-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { notifyCardUnblocked } from './notifications';
 import { emit } from './events';
 import { createLogger } from './logger';
 import { completionPercent } from '$lib/progress';
+import type { PlanSubtask } from '$lib/plan-table';
 
 const log = createLogger('PLAN');
 
@@ -1077,6 +1078,44 @@ export function getMilestoneSummary(milestoneId: number, viewer: Actor): Milesto
 		nextActionable,
 		blocked: blocked.map((b) => ({ card: nodeByKeyMap.get(refKey(b.card))!, blockers: b.blockers }))
 	};
+}
+
+/**
+ * Every subtask of the milestone's cards that the summary's viewer can open,
+ * by card, each card's in its own order (`position`, then id, as the card
+ * window has them), for the plan page's work table (card 2221).
+ *
+ * From the summary's own member cards: a card on a board the viewer cannot
+ * open is there `withheld` and has no entry, so the withheld rule is the
+ * summary's (card 2129), read once, not a second check of access. A card with
+ * no subtasks has no entry either. One read of `subtasks`, in chunks only past
+ * 500 cards. Not part of `MilestoneSummary`: only the page draws it, and the
+ * summary is what the API answers.
+ */
+export function planSubtasks(summary: MilestoneSummary): Record<number, PlanSubtask[]> {
+	const cardIds = summary.graph.nodes
+		.filter((n) => n.kind === 'card' && !n.external && !n.withheld)
+		.map((n) => n.id);
+	const out: Record<number, PlanSubtask[]> = {};
+	if (cardIds.length === 0) return out;
+
+	const rows = chunked(cardIds, (ids) =>
+		db
+			.select({
+				id: subtasks.id,
+				cardId: subtasks.cardId,
+				title: subtasks.title,
+				priority: subtasks.priority,
+				completed: subtasks.completed
+			})
+			.from(subtasks)
+			.where(inArray(subtasks.cardId, ids))
+			.orderBy(asc(subtasks.cardId), asc(subtasks.position), asc(subtasks.id))
+			.all()
+	);
+	// The card is the record's key, so each subtask is sent without it.
+	for (const { cardId, ...st } of rows) (out[cardId] ??= []).push(st);
+	return out;
 }
 
 /** Every board a milestone's cards live on — used for access checks. */

@@ -8,20 +8,40 @@
 	 * answer a real question:
 	 *
 	 *   1. Progress        — how far along is this goal
-	 *   2. Critical path   — the one chain that cannot slip
-	 *   3. The work        — every card, searchable and sortable
-	 *   4. Dependency graph — the whole shape, laid out left to right
+	 *   2. Burndown        — will it land by its date
+	 *   3. Critical path   — the one chain that cannot slip
+	 *   4. The work        — every card, searchable and sortable, each opening
+	 *                        to its subtasks
+	 *   5. Dependency graph — the whole shape, laid out left to right
 	 *
-	 * Block 3 used to be three stacked lists (actionable / blocked / unordered).
+	 * Block 4 used to be three stacked lists (actionable / blocked / unordered).
 	 * They were the same cards partitioned three ways and stopped being scannable
 	 * at about thirty, so they are one table with a state filter instead — the
 	 * partition is still there, as counts, and a specific card is now findable.
+	 * Its rows are arranged by $lib/plan-table, which the tests call.
 	 *
 	 * Nothing here is computed in the browser. The server hands over a summary
 	 * from $lib/server/planning and this file draws it, so the page and the API
 	 * can never disagree about what the critical path is.
 	 */
 	import { invalidateAll } from '$app/navigation';
+	import {
+		afterExpandAll,
+		afterToggle,
+		burndownKey,
+		cardGroups,
+		expandAllTargets,
+		openCardsKey,
+		openCardsToStore,
+		readOpenCards,
+		stateCounts as countStates,
+		tableRows,
+		type RowState,
+		type SortKey,
+		type StateFilter,
+		type OpenCards,
+		type TableRow
+	} from '$lib/plan-table';
 	import CardModal from '$lib/components/CardModal.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
@@ -64,6 +84,8 @@
 
 	const summary = $derived(data.summary);
 	const milestone = $derived(summary.milestone);
+	/** A number, so what reads it is not re-run by every re-read of the plan. */
+	const milestoneId = $derived(milestone.id);
 
 	// ─── Burndown ────────────────────────────────────────────────────────────
 	//
@@ -89,10 +111,11 @@
 		}
 	}
 
-	// Re-read whenever the plan is: an edit that moves a card moves the burndown too.
+	// Re-read when the work it charts changes (burndownSource, below), not on
+	// every re-read of the plan.
 	$effect(() => {
-		void summary;
-		loadBurndown(milestone.id);
+		void burndownSource;
+		loadBurndown(milestoneId);
 	});
 
 	function formatDay(day: string): string {
@@ -120,6 +143,15 @@
 		return { tone: p.tone === 'good' ? 'neutral' : p.tone, icon, text: `${p.value} — ${p.sub.charAt(0).toLowerCase()}${p.sub.slice(1)}` };
 	});
 	const nodes = $derived(summary.graph.nodes as Node[]);
+
+	/**
+	 * What the burndown is drawn from: the goal, its target date, its cards and
+	 * which are done. Closing the card window re-reads the plan, saved or not,
+	 * which makes a new summary even when nothing changed; a string that is
+	 * equal is not a change, so the burndown is fetched again (and dimmed) only
+	 * when the work it charts did change (card 2221).
+	 */
+	const burndownSource = $derived(burndownKey(milestone, nodes));
 	const nodeByKey = $derived(new Map(nodes.map((n) => [key(n), n])));
 	const criticalKeys = $derived(
 		new Set((summary.criticalPathNodes as WorkRef[]).map(key))
@@ -309,9 +341,15 @@
 		}
 	}
 
-	function closeCard() {
+	/**
+	 * Closing the window re-reads the plan, saved or not: the window writes a
+	 * subtask ticked, added or removed at once, before any Save, and the table
+	 * shows every subtask (card 2221).
+	 */
+	async function closeCard() {
 		modalCard = null;
 		modalContext = null;
+		await invalidateAll();
 	}
 
 	/**
@@ -321,11 +359,11 @@
 	async function saveCardFromPlan(cardData: Parameters<typeof cardActions.saveCard>[4]) {
 		if (!modalCard || !modalContext) return;
 		await cardActions.saveCard(modalCard, null, modalContext.boardId, [], cardData);
-		closeCard();
-		toasts.add('Card updated');
 		// A column change alters what is blocked and what is startable, so the
-		// plan has to be recomputed rather than patched locally.
-		await invalidateAll();
+		// plan has to be recomputed rather than patched locally: closing does it.
+		const reloaded = closeCard();
+		toasts.add('Card updated');
+		await reloaded;
 	}
 
 	function formatDate(d: string | null): string {
@@ -335,92 +373,80 @@
 
 	// ─── The work table ──────────────────────────────────────────────────────
 
-	type RowState = 'done' | 'ready' | 'blocked';
-
-	interface PlanRow {
-		kind: 'card' | 'subtask';
-		id: number;
-		title: string;
-		priority: string | null;
-		boardId: number | null;
-		boardName: string;
-		columnTitle: string;
-		withheld: boolean;
-		downstreamCount: number;
-		onCriticalPath: boolean;
-		state: RowState;
-		blockers: {
-			kind?: 'card' | 'subtask';
-			id: number;
-			title: string;
-			boardName: string;
-			columnTitle: string;
-			boardId: number | null;
-			withheld: boolean;
-		}[];
-		/** 0 for a card, 1 for one of its subtasks. */
-		depth: number;
-		parentCardId?: number;
-	}
-
 	/**
-	 * One row per card in the milestone.
-	 *
-	 * External blockers are deliberately excluded: they are context for the
-	 * graph, not scope of the goal, and listing them as rows would misreport how
-	 * big the milestone is.
+	 * Every card in the milestone, each with all of its subtasks: the ordered
+	 * ones from the graph, the plain ones from the load's `subtasks`. External
+	 * blockers are not rows: they are context for the graph, not scope of the
+	 * goal. Arranged by $lib/plan-table, so the tests can call it.
 	 */
-	const rows = $derived.by<PlanRow[]>(() => {
-		const blockersByKey = new Map(
-			(summary.blocked as { card: WorkRef; blockers: PlanRow['blockers'] }[]).map((b) => [
-				key(b.card),
-				b.blockers
-			])
-		);
+	const groups = $derived(cardGroups(nodes, summary.blocked, data.subtasks));
 
-		const toRow = (n: Node, depth: number): PlanRow => ({
-			kind: n.kind,
-			id: n.id,
-			title: n.title,
-			priority: n.priority,
-			boardId: n.boardId,
-			boardName: n.boardName,
-			columnTitle: n.columnTitle,
-			withheld: n.withheld,
-			downstreamCount: n.downstreamCount,
-			onCriticalPath: n.onCriticalPath,
-			state: (n.isComplete ? 'done' : n.openBlockers.length > 0 ? 'blocked' : 'ready') as RowState,
-			blockers: blockersByKey.get(key(n)) ?? [],
-			depth,
-			parentCardId: n.parentCardId
-		});
-
-		// Cards in id order, each immediately followed by its subtask rows, so an
-		// indented subtask always sits under the card it belongs to regardless of
-		// how the table is sorted afterwards.
-		const out: PlanRow[] = [];
-		for (const n of nodes.filter((x) => !x.external && x.kind === 'card')) {
-			out.push(toRow(n, 0));
-			for (const st of subtasksByCard.get(n.id) ?? []) {
-				if (st.external) continue;
-				out.push(toRow(st, 1));
-			}
-		}
-		return out;
-	});
-
-	const stateCounts = $derived({
-		all: rows.length,
-		ready: rows.filter((r) => r.state === 'ready').length,
-		blocked: rows.filter((r) => r.state === 'blocked').length,
-		done: rows.filter((r) => r.state === 'done').length
-	});
+	/** Cards and ordered subtasks, as before a card could be opened (card 2221). */
+	const stateCounts = $derived(countStates(groups));
 
 	let tableSearch = $state('');
-	let stateFilter = $state<'all' | RowState>('all');
-	let sortKey = $state<'id' | 'title' | 'boardName' | 'columnTitle' | 'downstreamCount' | 'state'>('id');
+	let stateFilter = $state<StateFilter>('all');
+	let sortKey = $state<SortKey>('id');
 	let sortDir = $state<'asc' | 'desc'>('asc');
 	let expandedRow = $state<string | null>(null);
+
+	// ─── Opening a card to its subtasks (card 2221) ──────────────────────────
+	//
+	// Collapsed by default. What the viewer opens is remembered in this browser
+	// for this milestone, as All Tasks remembers its activity panel; a private
+	// window, or site data that is blocked, throws on localStorage itself, and
+	// then nothing is remembered and every card starts collapsed.
+
+	/** The cards the viewer opened with nothing filtered: what is remembered. */
+	let openCards = $state<Set<number>>(new Set());
+	/**
+	 * The cards opened and closed by hand, or by Expand all / Collapse all, while
+	 * a search or the state filter is in force, kept for that search and filter
+	 * only: a new one starts from what is remembered again. None of it is stored.
+	 */
+	let view = $state<{ filter: string; open: Set<number>; shut: Set<number> }>({ filter: '', open: new Set(), shut: new Set() });
+	const filtering = $derived(tableSearch.trim() !== '' || stateFilter !== 'all');
+	const filterKey = $derived(`${stateFilter}|${tableSearch.trim().toLowerCase()}`);
+	const viewNow = $derived(
+		filtering && view.filter === filterKey ? view : { filter: filterKey, open: new Set<number>(), shut: new Set<number>() }
+	);
+
+	// Read once the page is in the browser, and again only for another milestone.
+	$effect(() => {
+		const id = milestoneId;
+		try {
+			openCards = readOpenCards(localStorage.getItem(openCardsKey(id)));
+		} catch {
+			openCards = new Set();
+		}
+	});
+
+	/**
+	 * Take what a toggle or Expand all left. What is remembered comes back as the
+	 * same set unless nothing was filtered (afterToggle, afterExpandAll), and
+	 * only then is it written: a search or filter never changes what is stored.
+	 */
+	function applyOpen(next: OpenCards) {
+		view = { filter: filterKey, open: new Set(next.viewOpen), shut: new Set(next.viewShut) };
+		if (next.stored === openCards) return;
+		openCards = new Set(next.stored);
+		try {
+			localStorage.setItem(openCardsKey(milestone.id), openCardsToStore(next.stored, groups));
+		} catch {
+			// Not remembered; the page works the same.
+		}
+	}
+
+	const openNow = $derived<OpenCards>({ stored: openCards, viewOpen: viewNow.open, viewShut: viewNow.shut });
+
+	function toggleSubtasks(row: TableRow) {
+		applyOpen(afterToggle(openNow, row, filtering));
+	}
+
+	/** Acts on the cards drawn (expandAll, below the rows). */
+	function expandOrCollapseAll() {
+		applyOpen(afterExpandAll(openNow, visibleRows, filtering));
+	}
 
 	function toggleSort(key: typeof sortKey) {
 		if (sortKey === key) {
@@ -432,72 +458,30 @@
 		}
 	}
 
-	/** Blocked before ready before done, so a state sort surfaces problems. */
-	const STATE_ORDER: Record<RowState, number> = { blocked: 0, ready: 1, done: 2 };
+	/**
+	 * The rows drawn: each card that is listed, with its subtasks under it when
+	 * it is open. A search or filter that one of a card's subtasks matches lists
+	 * the card and opens it; the sort orders the cards and never parts a subtask
+	 * from its card. See tableRows in $lib/plan-table.
+	 */
+	const visibleRows = $derived(
+		tableRows(groups, {
+			query: tableSearch,
+			stateFilter,
+			sortKey,
+			sortDir,
+			open: new Set([...openCards, ...viewNow.open]),
+			shut: viewNow.shut
+		})
+	);
 
-	const visibleRows = $derived.by(() => {
-		const q = tableSearch.trim().toLowerCase();
-		// "#123" or a bare number is an exact id match, not a substring one —
-		// same rule as the board and All Tasks search, so the same thing typed in
-		// three places does the same thing.
-		const idMatch = q.match(/^#?(\d+)$/);
+	/**
+	 * Expand all / Collapse all acts on the cards drawn, and its label follows
+	 * them: under a search or filter, the cards listed (expandAllTargets).
+	 */
+	const expandAll = $derived(expandAllTargets(visibleRows));
 
-		let out = rows.filter((r) => {
-			if (stateFilter !== 'all' && r.state !== stateFilter) return false;
-			if (!q) return true;
-			if (idMatch) return r.id === Number(idMatch[1]);
-			return (
-				r.title.toLowerCase().includes(q) ||
-				r.boardName.toLowerCase().includes(q) ||
-				String(r.id).includes(q)
-			);
-		});
-
-		// A subtask that matches on its own is meaningless without the card it
-		// belongs to, so pull that card in for context rather than leaving an
-		// orphaned indented row.
-		if (q || stateFilter !== 'all') {
-			const present = new Set(out.map((r) => `${r.kind}:${r.id}`));
-			const extra: PlanRow[] = [];
-			for (const r of out) {
-				if (r.kind !== 'subtask' || r.parentCardId === undefined) continue;
-				const parentKey = `card:${r.parentCardId}`;
-				if (present.has(parentKey)) continue;
-				const parent = rows.find((x) => x.kind === 'card' && x.id === r.parentCardId);
-				if (parent) {
-					present.add(parentKey);
-					extra.push(parent);
-				}
-			}
-			out = [...out, ...extra];
-		}
-
-		const dir = sortDir === 'asc' ? 1 : -1;
-		out = [...out].sort((a, b) => {
-			let cmp: number;
-			switch (sortKey) {
-				case 'downstreamCount':
-					// Numeric, not lexical — the obvious bug in a table like this.
-					cmp = a.downstreamCount - b.downstreamCount;
-					break;
-				case 'state':
-					cmp = STATE_ORDER[a.state] - STATE_ORDER[b.state];
-					break;
-				case 'id':
-					cmp = a.id - b.id;
-					break;
-				default:
-					cmp = String(a[sortKey]).localeCompare(String(b[sortKey]));
-			}
-			if (cmp !== 0) return cmp * dir;
-			// Ties fall back to id, then to kind, so the order never jitters between
-			// renders now that a card and a subtask can share an id.
-			return a.id - b.id || a.kind.localeCompare(b.kind);
-		});
-		return out;
-	});
-
-	const STATE_LABEL: Record<RowState, string> = { done: 'Done', ready: 'Startable', blocked: 'Blocked' };
+	const STATE_LABEL: Record<RowState, string> = { done: 'Done', ready: 'Startable', blocked: 'Blocked', open: 'Open' };
 
 	// ─── Graph geometry ──────────────────────────────────────────────────────
 	//
@@ -998,7 +982,7 @@
 		<section class="panel">
 			<div class="panel-head">
 				<h2>The work</h2>
-				<span class="panel-note">Every card in this goal — search it, sort it, see what each one is waiting on</span>
+				<span class="panel-note">Every card in this goal — search it, sort it, open it to its subtasks, see what each one is waiting on</span>
 			</div>
 
 			<div class="table-controls">
@@ -1030,9 +1014,15 @@
 						Done <span class="fc">{stateCounts.done}</span>
 					</button>
 				</div>
+
+				{#if expandAll.ids.length > 0}
+					<button class="expand-all" onclick={expandOrCollapseAll}>
+						{expandAll.allOpen ? 'Collapse all' : 'Expand all'}
+					</button>
+				{/if}
 			</div>
 
-			{#if rows.length === 0}
+			{#if groups.length === 0}
 				<p class="muted">No cards in this milestone yet — use “+ Add cards” above.</p>
 			{:else if visibleRows.length === 0}
 				<p class="muted">
@@ -1093,6 +1083,7 @@
 											<button
 												class="expander"
 												class:open={expandedRow === r.kind + ':' + r.id}
+												aria-expanded={expandedRow === r.kind + ':' + r.id}
 												title={expandedRow === r.kind + ':' + r.id ? 'Hide blockers' : `Show the ${r.blockers.length} thing${r.blockers.length === 1 ? '' : 's'} this is waiting on`}
 												onclick={() => (expandedRow = expandedRow === r.kind + ':' + r.id ? null : r.kind + ':' + r.id)}
 											>▸</button>
@@ -1106,11 +1097,27 @@
 										{/if}
 									</td>
 									<td class="col-title" class:indented={r.depth > 0}>
-										<button class="title-link" disabled={r.withheld} onclick={() => openCard(r)} title={r.title}>
-											{#if r.priority}<span class="prio-dot prio-{r.priority}" title="Priority: {r.priority}"></span>{/if}
-											<span class="title-text">{r.title}</span>
-										</button>
-										{#if r.onCriticalPath}<span class="crit-chip">critical path</span>{/if}
+										<div class="title-cell">
+											<button class="title-link" disabled={r.withheld} onclick={() => openCard(r)} title={r.title}>
+												{#if r.priority}<span class="prio-dot prio-{r.priority}" title="Priority: {r.priority}"></span>{/if}
+												<span class="title-text">{r.title}</span>
+											</button>
+											<!-- A withheld card has no subtasks in the page data, so no button (card 2129). -->
+											{#if r.kind === 'card' && r.subtaskTotal > 0 && !r.withheld}
+												<button
+													class="sub-btn"
+													class:open={r.expanded}
+													aria-expanded={r.expanded}
+													onclick={() => toggleSubtasks(r)}
+												>
+													<!-- Its name is its text, "1/4 subtasks of #12", the same open
+													     or closed: aria-expanded says which (card 2221). -->
+													<span class="sub-caret" aria-hidden="true">▸</span>
+													{r.subtaskDone}/{r.subtaskTotal} subtask{r.subtaskTotal === 1 ? '' : 's'}<span class="sr-only"> of #{r.id}</span>
+												</button>
+											{/if}
+											{#if r.onCriticalPath}<span class="crit-chip">critical path</span>{/if}
+										</div>
 									</td>
 									<td class="col-board">
 										{#if r.withheld}
@@ -1686,10 +1693,35 @@
 	.col-id a:hover { color: var(--accent-indigo); }
 
 	.col-title { max-width: 0; width: 45%; }
+	/* The title gives way first: the subtask button and the critical-path chip
+	   keep their size beside it, at every width (card 2221). */
+	.title-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
 	.title-link {
 		display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
 		text-decoration: none; color: var(--text-primary); vertical-align: middle;
+		flex: 0 1 auto; min-width: 0;
 	}
+	.sub-btn {
+		flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;
+		padding: 1px 7px; border-radius: var(--radius-full); cursor: pointer;
+		font: inherit; font-size: 0.64rem; font-weight: 700; white-space: nowrap;
+		font-variant-numeric: tabular-nums;
+		background: rgba(139, 92, 246, 0.1); color: #a78bfa;
+		border: 1px solid rgba(139, 92, 246, 0.25);
+		transition: background var(--duration-fast) var(--ease-out);
+	}
+	.sub-btn:hover, .sub-btn.open { background: rgba(139, 92, 246, 0.2); }
+	.sub-caret { display: inline-block; transition: transform var(--duration-fast) var(--ease-out); }
+	.sub-btn.open .sub-caret { transform: rotate(90deg); }
+
+	.expand-all {
+		flex-shrink: 0; padding: 6px 12px; cursor: pointer; white-space: nowrap;
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-full); color: var(--text-secondary);
+		font-family: var(--font-family); font-size: 0.75rem; font-weight: 600;
+		transition: all var(--duration-fast) var(--ease-out);
+	}
+	.expand-all:hover { background: var(--bg-elevated); color: var(--text-primary); }
 	.title-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.title-link:hover .title-text { color: var(--accent-indigo); }
 
@@ -1721,6 +1753,11 @@
 	.state-done {
 		background: rgba(16, 185, 129, 0.12); color: var(--accent-emerald);
 		border: 1px solid rgba(16, 185, 129, 0.25);
+	}
+	/* A plain subtask not yet ticked: in no plan, so neither startable nor blocked. */
+	.state-open {
+		background: rgba(136, 136, 170, 0.1); color: var(--text-secondary);
+		border: 1px solid rgba(136, 136, 170, 0.25);
 	}
 
 	.expander {
