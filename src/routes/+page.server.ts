@@ -1,9 +1,11 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, cardAssignees, activityLog, taskRequests, teamMembers, boardCategories, users, boardFavourites, subtasks, type Board } from '$lib/server/db/schema';
-import { desc, eq, inArray, isNull, isNotNull, and, gte, sql } from 'drizzle-orm';
+import { boards, columns, cards, cardAssignees, taskRequests, teamMembers, users, boardFavourites, subtasks, type Board } from '$lib/server/db/schema';
+import { desc, eq, inArray, isNull, and, gte, sql } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { boardCategoriesFor, recentActivityFor, subBoardsFor } from '$lib/server/list-access';
 import { completionPercent } from '$lib/progress';
 import { getBoardTokenTotals, getUserSpendByPeriod } from '$lib/server/tokens';
+import { completeColumnIds, holdColumnIds, isCompleteColumnTitle } from '$lib/column-role';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -25,8 +27,12 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.filter(b => accessibleIds.includes(b.id));
 	}
 
-	// Get all sub-boards in one query
-	const allSubBoards = db.select().from(boards).where(isNotNull(boards.parentCardId)).all();
+	// Every sub-board the caller can open, in one query. One they cannot open is
+	// left out of everything below that reads this: the tiles, the sub-board
+	// count, the All Tasks walk, its cost and the spend by person (card 2130). A
+	// sub-board inherits nothing from its parent board, and a member of the
+	// parent was shown the name, progress and cost of one they were never given.
+	const allSubBoards = subBoardsFor(user);
 
 	// Map: cardId -> sub-board
 	const subBoardsByCard = new Map<number, typeof allSubBoards>();
@@ -37,8 +43,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		subBoardsByCard.set(sb.parentCardId, list);
 	}
 
-	// Fetch all categories for board grouping
-	const allCategories = db.select().from(boardCategories).all();
+	// The groupings the caller is listed, to group boards and to file one under:
+	// those holding a board they can open, and the empty ones (card 2128).
+	const allCategories = boardCategoriesFor(user);
 
 	// What each board has cost. A board absent from this map has nothing
 	// recorded, which surfaces as null and renders as "—" — deliberately not 0,
@@ -60,8 +67,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		}
 
 		const boardCards = db.select().from(cards).where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt))).all();
-		const completeCols = boardCols.filter(c => c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done');
-		const completeColIds = new Set(completeCols.map(c => c.id));
+		const completeColIds = completeColumnIds(boardCols);
 		const completedCards = boardCards.filter(c => completeColIds.has(c.columnId)).length;
 
 		let lastActivity = board.updatedAt;
@@ -82,8 +88,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 					// Non-archived only, the same rule as the parent board and the reports
 					const sbCards = db.select().from(cards).where(and(inArray(cards.columnId, sbColIds), isNull(cards.archivedAt))).all();
 					total = sbCards.length;
-					const sbCompleteCols = sbCols.filter(c => c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done');
-					const sbCompleteColIds = new Set(sbCompleteCols.map(c => c.id));
+					const sbCompleteColIds = completeColumnIds(sbCols);
 					done = sbCards.filter(c => sbCompleteColIds.has(c.columnId)).length;
 				}
 				subBoardsForBoard.push({
@@ -124,12 +129,18 @@ export const load: PageServerLoad = async ({ locals }) => {
 	});
 
 	// ─── All Tasks totals ───────────────────────────────────────────────────
-	// The All Tasks row must quote the same figures as the All Boards report and
-	// the /all page, both of which walk into sub-boards. Start from the accessible
+	// The All Tasks row quotes the figures of the All Boards report and the /all
+	// page, both of which take in sub-boards. Start from the accessible
 	// top-level boards and follow board → cards → sub-boards to any depth — the
 	// same walk the report engine does. Cards: non-archived only. Tasks: cards
 	// plus the subtasks hanging off them.
-	const isDoneTitle = (t: string) => { const l = t.toLowerCase().trim(); return l === 'complete' || l === 'done'; };
+	//
+	// The walk follows only the sub-boards the caller can open (card 2130), so
+	// the three can differ. It cannot reach one shared with the caller under a
+	// card of a board they cannot open, which /all counts, since /all lists
+	// every board they can open. And the report still walks into every
+	// sub-board, opened or not, until card 2150 is done.
+	const isDoneTitle = isCompleteColumnTitle;
 	const walkedBoardIds = new Set<number>(allBoards.map(b => b.id));
 	const countedCardIds = new Set<number>();
 	let allTasksCards = 0;
@@ -193,7 +204,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	// ─── Personal Analytics ──────────────────────────────────────────────────
 
-	// All non-archived cards assigned to this user
+	// All non-archived cards assigned to this user, on boards they can open
+	// (card 2130), as My Tasks counts them. Being assigned a card does not
+	// outlive access to its board: someone taken off a board went on seeing its
+	// cards here, their titles in Upcoming Deadlines. Every figure below comes
+	// from these: assigned, active, overdue, due soon, the trends and on hold.
 	const myAssignments = db.select({ cardId: cardAssignees.cardId })
 		.from(cardAssignees)
 		.where(eq(cardAssignees.userId, user.id))
@@ -202,7 +217,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	let myCards: typeof cards.$inferSelect[] = [];
 	if (myCardIds.length > 0) {
-		myCards = db.select().from(cards).where(and(inArray(cards.id, myCardIds), isNull(cards.archivedAt))).all();
+		const opens = accessibleIds === null ? null : new Set(accessibleIds);
+		myCards = db.select({ card: cards, boardId: columns.boardId })
+			.from(cards)
+			.innerJoin(columns, eq(cards.columnId, columns.id))
+			.where(and(inArray(cards.id, myCardIds), isNull(cards.archivedAt)))
+			.all()
+			.filter(row => opens === null || opens.has(row.boardId))
+			.map(row => row.card);
 	}
 
 	// Determine which of my cards are in "done" columns
@@ -213,10 +235,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.from(columns)
 			.where(inArray(columns.id, allColumnIds))
 			.all();
-		doneColumnIds = new Set(
-			cols.filter(c => c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done')
-				.map(c => c.id)
-		);
+		doneColumnIds = completeColumnIds(cols);
 	}
 
 	const myCompletedCards = myCards.filter(c => doneColumnIds.has(c.columnId));
@@ -245,13 +264,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const monthAgoStr = monthAgo.toISOString();
 	const completedThisMonth = myCompletedCards.filter(c => c.completedAt && c.completedAt >= monthAgoStr).length;
 
-	// Recent activity (last 10 entries for this user)
-	const recentActivity = db.select()
-		.from(activityLog)
-		.where(eq(activityLog.userId, user.id))
-		.orderBy(desc(activityLog.createdAt))
-		.limit(10)
-		.all();
+	// Recent activity: the last 10 entries of this user's, on boards they can
+	// open (card 2126). A board they were taken off went on showing here.
+	const recentActivity = recentActivityFor(user, 10);
 
 	// Pending inbox requests
 	const userTeamRows = db.select({ teamId: teamMembers.teamId })
@@ -283,7 +298,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		weeklyActivity.push({ day: dayLabel, count });
 	}
 
-	// Total sub-boards count
+	// The sub-boards the caller can open (card 2130): every one in the
+	// installation was counted.
 	const totalSubBoards = allSubBoards.length;
 
 	// Board health: top boards sorted by completion % for sidebar overview
@@ -359,7 +375,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, row.cardId)).get();
 		if (card) {
 			const col = db.select({ title: columns.title }).from(columns).where(eq(columns.id, card.columnId)).get();
-			const isDone = col && (col.title.toLowerCase() === 'complete' || col.title.toLowerCase() === 'done');
+			const isDone = col && isCompleteColumnTitle(col.title);
 			if (isDone) leaderMap.get(row.userId)!.completed++;
 			else leaderMap.get(row.userId)!.active++;
 		}
@@ -409,8 +425,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.from(columns)
 			.where(inArray(columns.id, allColumnIds))
 			.all();
-		cols.filter(c => c.title.toLowerCase() === 'on hold' || c.title.toLowerCase() === 'blocked' || c.title.toLowerCase() === 'waiting')
-			.forEach(c => onHoldColumnIds.add(c.id));
+		for (const id of holdColumnIds(cols)) onHoldColumnIds.add(id);
 	}
 	const onHoldCount = myCards.filter(c => onHoldColumnIds.has(c.columnId)).length;
 

@@ -1,77 +1,73 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { cardAttachments, cards, columns } from '$lib/server/db/schema';
+import { inTransaction } from '$lib/server/db/transaction';
+import { cardAttachments } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { readFile, unlink } from 'fs/promises';
-import { join, dirname } from 'path';
-import { canViewBoard, canEditBoard } from '$lib/server/board-access';
+import { readFile } from 'fs/promises';
+import { requireCard } from '$lib/server/route-guards';
+import { trashAfterCommit } from '$lib/server/deletes';
+import { attachmentHeaders, attachmentPath } from '$lib/server/uploads';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
-const DB_PATH = process.env.DB_PATH || 'dumpfire.db';
-const UPLOADS_DIR = join(dirname(DB_PATH), 'uploads');
-
-/** Resolve the boardId for a given card. */
-function getCardBoardId(cardId: number): number | null {
-	const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, cardId)).get();
-	if (!card) return null;
-	const col = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, card.columnId)).get();
-	return col?.boardId ?? null;
-}
 
 /** GET — download/serve a file */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const attachmentId = Number(params.attachmentId);
+	const attachmentId = pathId(params.attachmentId, 'attachment');
 	const attachment = db.select().from(cardAttachments)
 		.where(eq(cardAttachments.id, attachmentId))
 		.get();
 	if (!attachment) throw error(404, 'Attachment not found');
 
-	// Verify board access
-	const boardId = getCardBoardId(attachment.cardId);
-	if (boardId && !canViewBoard(locals.user, boardId)) {
-		throw error(403, 'No access to this board');
-	}
+	// The board is the one the attachment's own card is on. A card that could
+	// not be resolved used to skip the check instead of failing it.
+	requireCard(locals.user, attachment.cardId, 'view');
 
-	const filePath = join(UPLOADS_DIR, String(attachment.cardId), attachment.filename);
-
+	let filePath: string;
 	try {
-		const data = await readFile(filePath);
-		return new Response(data, {
-			headers: {
-				'Content-Type': attachment.mimeType,
-				'Content-Disposition': `inline; filename="${attachment.originalName}"`,
-				'Content-Length': String(data.length)
-			}
-		});
+		// A stored name that is not a file in the card's own folder is refused
+		// here, and answered like a file that is not there.
+		filePath = attachmentPath(attachment.cardId, attachment.filename);
 	} catch {
 		throw error(404, 'File not found on disk');
 	}
+	const data = await readFile(filePath).catch(() => null);
+	if (!data) throw error(404, 'File not found on disk');
+
+	// A download unless it is one of a few types that can run nothing, and
+	// sandboxed either way. See attachmentHeaders.
+	return new Response(data, {
+		headers: {
+			...attachmentHeaders(attachment),
+			'Content-Length': String(data.length)
+		}
+	});
 };
 
 /** DELETE — remove an attachment */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = locals.user;
 
-	const attachmentId = Number(params.attachmentId);
-	const attachment = db.select().from(cardAttachments)
-		.where(eq(cardAttachments.id, attachmentId))
-		.get();
-	if (!attachment) throw error(404, 'Attachment not found');
+	const attachmentId = pathId(params.attachmentId, 'attachment');
 
-	// Verify board edit access
-	const boardId = getCardBoardId(attachment.cardId);
-	if (boardId && !canEditBoard(locals.user, boardId)) {
-		throw error(403, 'No edit access to this board');
-	}
+	// The row in a transaction, with the check that the caller may remove it.
+	// The file is moved to the trash once that is committed, and not before:
+	// it used to be removed first, so a failed delete left a row whose file
+	// had gone.
+	inTransaction(() => {
+		const attachment = db.select().from(cardAttachments)
+			.where(eq(cardAttachments.id, attachmentId))
+			.get();
+		if (!attachment) throw error(404, 'Attachment not found');
 
-	// Delete file from disk
-	const filePath = join(UPLOADS_DIR, String(attachment.cardId), attachment.filename);
-	try { await unlink(filePath); } catch { /* file may already be gone */ }
+		requireCard(user, attachment.cardId, 'edit');
 
-	// Delete DB record
-	db.delete(cardAttachments).where(eq(cardAttachments.id, attachmentId)).run();
+		db.delete(cardAttachments).where(eq(cardAttachments.id, attachmentId)).run();
+		trashAfterCommit([{ cardId: attachment.cardId, filename: attachment.filename }]);
+	});
 
 	return new Response(JSON.stringify({ success: true }), {
 		headers: { 'Content-Type': 'application/json' }

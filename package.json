@@ -5,11 +5,17 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
+		"prebuild": "node scripts/generate-expected-schema.mjs --check && npm run check",
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"verify": "vitest run --allowOnly=false",
+		"rehearse": "node scripts/rehearse.mjs",
+		"schema:expected": "node scripts/generate-expected-schema.mjs"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.0",
@@ -25,7 +31,8 @@
 		"svelte": "^5.55.0",
 		"svelte-check": "^4.4.8",
 		"typescript": "^5.9.3",
-		"vite": "^8.0.13"
+		"vite": "^8.0.13",
+		"vitest": "^5.0.4"
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.1047.0",
@@ -54,4 +61,3 @@
 		}
 	}
 }
-

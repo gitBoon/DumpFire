@@ -7,9 +7,11 @@ export const POST: RequestHandler = async ({ locals }) => {
 		throw error(403, 'Forbidden');
 	}
 
-	// Reset auto-increment counters
-	sqlite.exec('DELETE FROM sqlite_sequence');
-	// VACUUM must run outside WAL mode on same connection
+	// The id counters (`sqlite_sequence`) are left alone. They used to be
+	// deleted here, so the next card got an id a deleted card had had, and
+	// whatever still named the old one by id was taken to name the new one.
+	//
+	// VACUUM cannot run inside a transaction, so this is not in one.
 	// This reclaims space and optimises the database
 	sqlite.exec('VACUUM');
 	return json({ success: true });

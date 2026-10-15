@@ -393,7 +393,7 @@
 
 			<div class="modal-field">
 				<label>Reason <span style="color: var(--text-tertiary); font-weight: 400">(optional)</span></label>
-				<textarea bind:value={rejectModal.reason} class="modal-textarea" rows="3" placeholder="Why are you rejecting this request?"></textarea>
+				<textarea bind:value={rejectModal.reason} class="modal-textarea" rows="3" maxlength="10000" placeholder="Why are you rejecting this request?"></textarea>
 			</div>
 
 			<div class="modal-actions">

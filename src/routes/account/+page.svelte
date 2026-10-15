@@ -6,6 +6,7 @@
 	import { theme } from '$lib/stores/theme';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
+	import { answerBody, failureMessage } from '$lib/api';
 	import { onMount } from 'svelte';
 
 	let { data }: { data: PageData } = $props();
@@ -44,6 +45,17 @@
 	let changingPassword = $state(false);
 	let passwordMessage = $state('');
 	let passwordError = $state(false);
+	/**
+	 * Whether the change ends this account's API keys too. Not ticked unless
+	 * the holder ticks it: a routine change is not about an intruder, and
+	 * ending keys stops every script that uses them. Offered only when the key
+	 * list has loaded with a key in it, so a list that failed to load keeps
+	 * the keys, which is the safe side.
+	 */
+	let endApiKeysToo = $state(false);
+
+	/** `1 API key`, `2 API keys`. */
+	const keysInWords = (n: number) => `${n} API key${n === 1 ? '' : 's'}`;
 
 	async function changeEmail() {
 		if (!newEmail?.trim() || !emailPassword) return;
@@ -95,24 +107,43 @@
 		passwordMessage = '';
 		passwordError = false;
 
-		const res = await fetch('/api/account/password', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ currentPassword, newPassword })
-		});
+		// Only when the box was there to tick: it is not, with no keys.
+		const endApiKeys = endApiKeysToo && apiKeys.length > 0;
+		try {
+			const res = await fetch('/api/account/password', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ currentPassword, newPassword, endApiKeys })
+			});
 
-		if (res.ok) {
-			passwordMessage = 'Password changed successfully!';
-			passwordError = false;
-			currentPassword = '';
-			newPassword = '';
-			confirmPassword = '';
-		} else {
-			const errData = await res.json().catch(() => ({ message: 'Failed to change password' }));
-			passwordMessage = errData.message || 'Failed to change password';
+			if (res.ok) {
+				// How many keys the server ended, from its answer.
+				const ended = (await answerBody(res))?.apiKeysEnded;
+				const keysEnded = typeof ended === 'number' ? ended : 0;
+				passwordMessage =
+					'Password changed. Your other sessions were signed out' +
+					(keysEnded > 0 ? `, and your ${keysInWords(keysEnded)} ${keysEnded === 1 ? 'was' : 'were'} ended.` : '.');
+				passwordError = false;
+				currentPassword = '';
+				newPassword = '';
+				confirmPassword = '';
+				endApiKeysToo = false;
+				if (endApiKeys) {
+					// A key made a moment ago went with the others: its panel goes too.
+					newlyCreatedKey = '';
+					// The list is read again, so that it no longer shows keys that have gone.
+					await loadApiKeys();
+				}
+			} else {
+				passwordMessage = await failureMessage(res, 'Failed to change password');
+				passwordError = true;
+			}
+		} catch {
+			passwordMessage = 'No answer from the server. Reload the page: if it asks you to sign in, the password was changed.';
 			passwordError = true;
+		} finally {
+			changingPassword = false;
 		}
-		changingPassword = false;
 	}
 
 	function getRoleBadge(role: string) {
@@ -153,11 +184,21 @@
 	let apiKeys = $state<ApiKeyInfo[]>([]);
 	let apiKeysLoading = $state(true);
 	let newKeyName = $state('');
+	/** The current password, which making a key asks for. Cleared after each attempt. */
+	let newKeyPassword = $state('');
+	/** Why the last Generate Key was refused, in the server's words. */
+	let apiKeyError = $state('');
 	let generatingKey = $state(false);
 	let newlyCreatedKey = $state('');
 	let keyCopied = $state(false);
 	let deletingKeyId = $state<number | null>(null);
 	let confirmDeleteId = $state<number | null>(null);
+
+	// The box to end the keys goes when the last key does, and takes its tick
+	// with it, so that it cannot come back ticked beside a key made later.
+	$effect(() => {
+		if (apiKeys.length === 0) endApiKeysToo = false;
+	});
 
 	async function loadApiKeys() {
 		try {
@@ -168,24 +209,37 @@
 	}
 
 	async function generateApiKey() {
-		if (!newKeyName.trim() || generatingKey) return;
+		if (!newKeyName.trim() || !newKeyPassword || generatingKey) return;
 		generatingKey = true;
 		newlyCreatedKey = '';
 		keyCopied = false;
+		apiKeyError = '';
 
-		const res = await fetch('/api/account/api-keys', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: newKeyName.trim() })
-		});
+		// Making a key asks for the current password: a key outlives a password
+		// change the holder makes, so a session alone is not enough to make one.
+		const password = newKeyPassword;
+		newKeyPassword = '';
+		try {
+			const res = await fetch('/api/account/api-keys', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: newKeyName.trim(), password })
+			});
 
-		if (res.ok) {
-			const result = await res.json();
-			newlyCreatedKey = result.key;
-			newKeyName = '';
-			await loadApiKeys();
+			if (res.ok) {
+				const result = await res.json();
+				newlyCreatedKey = result.key;
+				newKeyName = '';
+				await loadApiKeys();
+			} else {
+				// A wrong password, the ten-key limit, a name that is too long.
+				apiKeyError = await failureMessage(res, 'Failed to generate the key');
+			}
+		} catch {
+			apiKeyError = 'No answer from the server. Reload the page to see whether the key was made.';
+		} finally {
+			generatingKey = false;
 		}
-		generatingKey = false;
 	}
 
 	async function copyKey() {
@@ -393,6 +447,17 @@
 					</div>
 				</div>
 
+				{#if apiKeys.length > 0}
+					<!-- The holder's own change keeps their API keys unless they ask. -->
+					<div class="end-keys">
+						<p class="end-keys-note">You have {keysInWords(apiKeys.length)}. {apiKeys.length === 1 ? 'It keeps' : 'They keep'} working after a password change unless you tick the box.</p>
+						<label class="end-keys-check">
+							<input type="checkbox" bind:checked={endApiKeysToo} />
+							<span>End my {keysInWords(apiKeys.length)} too. Do this if anyone else may have used your account. Anything that uses {apiKeys.length === 1 ? 'it' : 'them'} stops working until it is given a new key.</span>
+						</label>
+					</div>
+				{/if}
+
 				<div class="password-actions">
 					<label class="show-password-check">
 						<input type="checkbox" bind:checked={showPasswords} />
@@ -451,10 +516,13 @@
 		<!-- API Keys section -->
 		<section class="account-card glass fade-in-up" style="animation-delay: 0.4s">
 			<h2>🔑 API Keys</h2>
-			<p class="notif-desc">Generate API keys for automation and external integrations. See <a href="/DUMPFIRE_API.md" target="_blank">API documentation</a> for usage.</p>
+			<p class="notif-desc">Generate API keys for automation and external integrations. Generating a key asks for your password. See <a href="/docs" target="_blank">API documentation</a> for usage.</p>
 
 			<!-- New key creation -->
 			<div class="apikey-create">
+				{#if apiKeyError}
+					<div class="password-msg error" role="alert">{apiKeyError}</div>
+				{/if}
 				<div class="apikey-create-row">
 					<input
 						id="apikey-name"
@@ -464,11 +532,20 @@
 						maxlength="100"
 						onkeydown={(e) => e.key === 'Enter' && generateApiKey()}
 					/>
+					<input
+						id="apikey-password"
+						type="password"
+						bind:value={newKeyPassword}
+						placeholder="Your current password"
+						aria-label="Your current password"
+						autocomplete="current-password"
+						onkeydown={(e) => e.key === 'Enter' && generateApiKey()}
+					/>
 					<button
 						id="apikey-generate-btn"
 						class="btn-primary"
 						onclick={generateApiKey}
-						disabled={!newKeyName.trim() || generatingKey}
+						disabled={!newKeyName.trim() || !newKeyPassword || generatingKey}
 					>
 						{generatingKey ? 'Generating...' : 'Generate Key'}
 					</button>
@@ -634,6 +711,20 @@
 	}
 	.show-password-check input { cursor: pointer; }
 
+	/* Ending the API keys with a password change */
+	.end-keys {
+		display: flex; flex-direction: column; gap: var(--space-sm);
+		padding: var(--space-md);
+		background: var(--bg-surface); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-md);
+	}
+	.end-keys-note { font-size: 0.82rem; color: var(--text-secondary); margin: 0; }
+	.end-keys-check {
+		display: flex; align-items: flex-start; gap: var(--space-sm);
+		font-size: 0.8rem; color: var(--text-primary); cursor: pointer; line-height: 1.4;
+	}
+	.end-keys-check input { width: auto; flex-shrink: 0; margin-top: 3px; cursor: pointer; }
+
 	/* Notification preferences */
 	.notif-desc { font-size: 0.82rem; color: var(--text-secondary); margin-bottom: var(--space-md); }
 	.notif-loading, .notif-saving { font-size: 0.78rem; color: var(--text-tertiary); }
@@ -672,9 +763,9 @@
 	/* API Keys */
 	.apikey-create { margin-bottom: var(--space-xl); }
 	.apikey-create-row {
-		display: flex; gap: var(--space-sm); align-items: stretch;
+		display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: stretch;
 	}
-	.apikey-create-row input { flex: 1; }
+	.apikey-create-row input { flex: 1 1 160px; }
 	.apikey-create-row button { white-space: nowrap; }
 
 	.apikey-reveal {

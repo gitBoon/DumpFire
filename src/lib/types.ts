@@ -27,6 +27,12 @@ export type CategoryType = {
 	boardId: number;
 	name: string;
 	color: string;
+	/**
+	 * Listed only because a card on the page carries it, from a board the
+	 * caller cannot open (card 2128): named on that card's chip, and offered
+	 * to no card and in no list of the board's categories.
+	 */
+	carried?: true;
 };
 
 /** Summary info for a sub-board linked to a card. Includes progress counts. */
@@ -57,6 +63,13 @@ export type CardType = {
 	onHoldNote: string;
 	businessValue: string | null;
 	subBoards: SubBoardType[];
+	/**
+	 * Cards not complete on the sub-boards under this card that the caller
+	 * cannot open, which `subBoards` leaves out: counted, not named. The server
+	 * refuses to complete the card while there are any. Given by the board
+	 * page; absent elsewhere.
+	 */
+	hiddenOpenCount?: number;
 	assignees: { id: number; username: string; emoji: string }[];
 	archivedAt: string | null;
 	coverUrl: string | null;
@@ -78,19 +91,34 @@ export type CardType = {
 	closeReason?: string | null;
 	/** built | on UAT | live */
 	releaseState?: string | null;
-	requestOrigin?: { requesterName: string; requesterEmail?: string; requestTitle: string } | null;
+	/** The request the card was made from, by the requester's name: not their address. */
+	requestOrigin?: { requesterName: string; requestTitle: string } | null;
 };
 
 /** One end of a card dependency, as the board and card modal need it. */
 export type DependencyRefType = {
+	/** What the end is. `cardId` is its own id: a subtask's for a subtask. */
+	kind: 'card' | 'subtask';
 	cardId: number;
+	/** The card a subtask end belongs to; null for a card, and for a withheld end. */
+	parentCardId: number | null;
+	/** Text in place of the title for a withheld end. */
 	title: string;
-	boardId: number;
+	/** null for a withheld end. */
+	boardId: number | null;
 	boardName: string;
+	/** "" for a withheld end. */
 	columnName: string;
-	priority: string;
+	/** null for a withheld end. */
+	priority: string | null;
 	/** True when this end sits in a Complete column, so it no longer blocks. */
 	resolved: boolean;
+	/**
+	 * True when the end is on a board the caller cannot open: only its id, kind
+	 * and whether it is finished are told, and it is drawn with no link and no
+	 * board or column (card 2129).
+	 */
+	withheld: boolean;
 };
 
 /** A milestone as the board and card modal need it (no derived planning data). */
@@ -147,21 +175,18 @@ export type XpEntry = {
 	emoji: string;
 };
 
-/** Confirm modal state used for destructive actions. */
-export type ConfirmState = {
-	show: boolean;
-	title: string;
-	message: string;
-	confirmText: string;
-	onConfirm: () => void;
-};
-
 /** State for the "blocked by subtasks/sub-board" modal. */
 export type BlockedState = {
 	show: boolean;
 	card: CardType | null;
 	incomplete: number;
 	reason: 'subtasks' | 'subboard';
+	/**
+	 * A sub-board of the card, with open cards, that the caller can open: the
+	 * one the modal offers to open. null when only sub-boards they cannot open
+	 * hold the card back, which are counted and not named.
+	 */
+	subBoardId: number | null;
 };
 
 /** State for the "On Hold" note prompt modal. */
@@ -172,13 +197,4 @@ export type OnHoldState = {
 	note: string;
 	pendingUpdates: { id: number; columnId: number; position: number }[];
 	pendingColumnId: number;
-};
-
-/** Context menu state for right-click card actions. */
-export type ContextMenuState = {
-	show: boolean;
-	x: number;
-	y: number;
-	card: CardType | null;
-	columnId: number;
 };

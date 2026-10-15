@@ -2,14 +2,15 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { apiKeys } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /** DELETE — Revoke an API key by ID (must belong to the current user). */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const id = Number(params.id);
-	if (isNaN(id)) throw error(400, 'Invalid key ID');
+	// An id, as every id in a path is read (card 2117): `1.5` and `0` were looked for.
+	const id = pathId(params.id, 'key');
 
 	const key = db.select()
 		.from(apiKeys)

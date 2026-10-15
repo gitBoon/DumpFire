@@ -1,9 +1,9 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.5
+version: 1.12
 status: As-Built
-date: 2026-09-11
+date: 2026-10-15
 tags:
   - planning
   - dependencies
@@ -11,6 +11,7 @@ tags:
   - critical-path
   - graph
   - scheduling
+  - errors
 description: "How DumpFire derives critical path, next-actionable work and blocked state from two recorded facts, and where the planning view sits relative to the Kanban board"
 ---
 
@@ -31,7 +32,7 @@ in markdown plans that go stale.
 **Record only facts that are cheap to keep true.** DumpFire stores exactly two planning
 facts by hand:
 
-1. **Which card blocks which** — `card_dependencies`
+1. **Which card or subtask blocks which** — `work_dependencies`
 2. **Which milestone a card belongs to** — `cards.milestone_id`
 
 Everything else — the critical path, what is startable today, what is blocked and by what,
@@ -60,7 +61,7 @@ flowchart LR
         plan["Planning view<br/><i>/plan, /plan/id</i><br/>In what order, what can I start"]
         api["v1 API<br/><i>milestones/:id/summary</i><br/>The whole plan as JSON"]
         engine["Planning engine<br/><i>lib/server/planning.ts</i><br/>Derives everything on read"]
-        db[("SQLite<br/>card_dependencies<br/>milestones, cards")]
+        db[("SQLite<br/>work_dependencies<br/>milestones, cards")]
     end
 
     dev --> board
@@ -90,8 +91,13 @@ tables for card→card, subtask→subtask and the two mixed directions. The plan
 engine then walks a single graph regardless of node type; three tables would
 mean three near-identical traversals that can drift apart, which is exactly what
 this feature exists to prevent. The cost is losing foreign keys on the
-polymorphic ids, so deleting a card or subtask clears its edges explicitly via
-`removeWorkNodeEdges` — nothing cascades.
+polymorphic ids, so nothing cascades and the edges are cleared explicitly. Deleting
+a subtask clears its own with `removeWorkNodeEdges`. Permanently deleting a card, a
+column or a board clears every edge that has one of the deleted cards or subtasks at
+either end, sub-boards included, in the transaction that deletes them
+(`src/lib/server/deletes.ts`). Archiving a card clears nothing: an archived card
+keeps its edges and has them when it is restored. See
+[Data Model](data-model.md#what-a-delete-removes).
 
 **Done means different things.** A card is complete when it reaches a Complete
 column; a subtask when it is ticked. Both resolve through the same `isComplete`
@@ -192,7 +198,7 @@ would be exactly the drift this feature exists to remove.
 
 ```mermaid
 flowchart TD
-    A["getMilestoneSummary(id)"] --> B["Load milestone cards<br/>(archived excluded)"]
+    A["getMilestoneSummary(id, viewer)"] --> B["Load milestone cards<br/>(archived excluded)"]
     B --> C["Load ALL dependency edges<br/>in one query"]
     C --> D["Add direct external blockers<br/>as nodes, flagged external"]
     D --> E["Keep edges with both ends<br/>in the node set"]
@@ -204,10 +210,14 @@ flowchart TD
     I --> J["Longest path over OPEN cards<br/>→ criticalPath"]
     J --> K["Zero open blockers<br/>→ nextActionable<br/>sort: downstream, priority, id"]
     J --> L["Open blockers remain<br/>→ blocked"]
-    K --> M["Progress: by column, done/total,<br/>open subtasks, boards"]
-    L --> M
+    K --> W["Withhold, once, every node on a board<br/>the viewer cannot open: title, board,<br/>column, priority replaced,<br/>withheld: true"]
+    L --> W
+    W --> M["Progress: by column, done/total,<br/>open subtasks, boards<br/>(from the withheld nodes)"]
     M --> N["MilestoneSummary"]
 ```
+
+Everything above the withholding step works on the real nodes, so the plan is the same
+whoever asks; only what is shown of each node differs (card 2129, below).
 
 ### Design decisions inside that flow
 
@@ -217,6 +227,32 @@ whose only blocker sits on another board would appear startable when it is not �
 the mistake the feature exists to prevent. Direct blockers only: one level is exactly what
 "can I start this" depends on. External nodes are never offered in `nextActionable`; they
 are context, not scope.
+
+**Work on a board the viewer cannot open is withheld, not left out** (card 2129). An
+external blocker can sit on a board the person reading the plan was never given, and a card
+of the milestone moved onto such a board keeps the milestone (card 2155 is to take it out). Leaving such a node out would make a blocked card look startable, so it
+stays, with its id, its kind, whether it is finished and its place in the plan (`external`,
+its layer, its edges, `openBlockers`, `downstreamCount`, `onCriticalPath`). What is
+withheld: its title reads "A card on a board you cannot open" or "A subtask on a board you
+cannot open", its board name "A board you cannot open", its column title is empty, and its
+board id, column id, priority and milestone are null; a withheld subtask has no
+`parentCardId`. `withheld: true` says so, and every node carries the flag. Every reader of
+the planning engine passes the viewer, and the argument is required, so the type check
+finds a caller that forgets: `getWorkDependencies(ref, viewer)`,
+`getCardDependencies(id, viewer)`, `getBlockedStateForCards(ids, viewer)`,
+`getBoardBlockedState(boardId, viewer)` and `getMilestoneSummary(id, viewer)`. Which boards
+the viewer can open is read once per call (`getAccessibleBoardIds`), not once per node. An
+administrator is never given a withheld node. The engine's own uses (`recordUnblocked`, the
+cycle check, `loadPlanNodes`) read the real nodes and are unchanged.
+
+In the summary the withholding is done once, after the plan is worked out: the layers, the
+reach, the critical path, the `criticalPath` ids (a subtask on the chain stands for its real
+parent card) and the order of `nextActionable` come from the real nodes, so a null priority
+or a missing parent cannot change which chain is critical for one reader and not another.
+Then `nodes`, `criticalPathNodes`, `blocked[].blockers`, `nextActionable` and `progress` are
+all built from the withheld nodes. `progress.boards` counts the cards on boards the viewer
+cannot open in one entry, `{ id: null, name: "A board you cannot open" }`, and
+`progress.byColumn` under an empty column title.
 
 **The critical path covers open work only.** It is the longest chain of dependencies among
 cards that are not yet complete. A finished prerequisite adds no risk, so it drops out and
@@ -238,55 +274,180 @@ boards and one for the edge table.
 
 ### Cycle detection
 
-Adding "blocker B blocks card A" closes a loop exactly when B is already reachable
-*downstream* of A. `findDependencyCycle(blockedId, blockerId)` walks forward from A over
-blocker → blocked edges looking for B, and returns the offending chain as card ids rather
-than a boolean — so the API can name the cycle it rejected:
+Adding "A waits on B" closes a loop exactly when B is already reachable *downstream* of A.
+`validateDependencyBatch()` in `planning.ts` walks forward from A over blocker → blocked
+edges looking for B, and returns the offending chain rather than a boolean, each entry the
+`kind` and `id` of a card or a subtask — so the API can name the cycle it rejected:
 
 ```json
-{ "error": "That dependency would create a cycle",
-  "cycle": [1559, 1686, 1198],
-  "message": "Cycle: #1559 → #1686 → #1198 → #1559" }
+{ "message": "#1559 waiting on #1198 would create a cycle: #1559 → #1686 → #1198 → #1559",
+  "cycle": [ { "kind": "card", "id": 1559 },
+             { "kind": "card", "id": 1686 },
+             { "kind": "card", "id": 1198 } ] }
 ```
 
 "Rejected" on its own is not useful when the loop runs through five cards on three boards.
+In a message, `#1559` is a card and `subtask #42` is a subtask.
+
+One link and a batch go through the same function, so they cannot disagree about what is
+allowed. A batch is checked link by link against the stored graph and the links accepted so
+far, which is how a loop between two links of the same batch is caught.
+
+### How a refused link is answered
+
+Four routes add and remove a single link: the card route and the subtask route, each under
+`/api/v1/` for an API key and under `/api/` for the session the pages use. All four hand the
+link to `src/lib/server/dependency-refusals.ts`, which is the one place that turns what the
+validator found into an answer, and the one place that writes the link or takes it away,
+with its activity entry (`addDependencyLink()`, `removeDependencyLink()`). Each route reads
+its body first, then runs one transaction: its own checks, the shared function, the entry,
+and the live events queued for the commit. A refused request writes nothing.
+
+| Refusal | Answer |
+|---------|--------|
+| An end waits on itself | `400` `{ message }` |
+| An end is archived | `400` `{ message }` |
+| The link is already recorded | `409` `{ message }` |
+| The link would close a loop | `409` `{ message, cycle }` |
+| Removing a link that is not there | `404` `{ message }` |
+
+A duplicate and a cycle are both `409`. A cycle is the one with `cycle` in it.
+
+```mermaid
+flowchart TD
+    Post["POST on one of the four routes"] --> Body["pathId(), then readBody():<br/>400 for an id that is no id, or a body that cannot be read"]
+    Body --> Own{"In one transaction:<br/>the route's own checks"}
+    Own -->|"the card or subtask in the path<br/>does not exist, or no edit access"| E404a["404 or 403 message"]
+    Own -->|"no end named, more than one,<br/>or an id in the body that is no id"| E400a["400 message"]
+    Own --> Add["addDependencyLink(blocked, blocker)"]
+    Add -->|"the other end does not exist,<br/>or no edit access to its board"| E403["404 or 403 message"]
+    Add --> Check["checkDependencyLink(blocked, blocker):<br/>validateDependencyBatch() on the one link"]
+    Check -->|"already recorded"| E409a["409 message"]
+    Check -->|"an end waits on itself,<br/>or is archived"| E400b["400 message"]
+    Check -->|"would close a loop"| E409b["cycleAnswer():<br/>409 message, cycle"]
+    Check -->|"accepted"| Write["createDependencyBatch(),<br/>dependency_added entry, events queued"]
+    Write --> Created["201"]
+
+    Delete["DELETE on one of the four routes"] --> Body2["pathId(), then readBody()"]
+    Body2 --> Own2{"In one transaction:<br/>the route's own checks"}
+    Own2 --> Remove["removeDependencyLink(blocked, blocker)"]
+    Remove -->|"the end that waits does not exist,<br/>or no edit access to its board"| E403b["404 or 403 message"]
+    Remove -->|"no such link"| E404b["404 message: Dependency not found"]
+    Remove -->|"removed"| Removed["dependency_removed entry,<br/>events queued, 200"]
+```
+
+- **The route's own checks come first.** For a `POST`: the card or subtask in the path and
+  the caller's edit access to its board, then that the body names exactly one end, by an id.
+  The other end, and the caller's edit access to its board, are `addDependencyLink()`'s. A
+  `DELETE` checks the card or subtask in the path and the caller's view access to its
+  board, and the body; who may remove the link is `removeDependencyLink()`'s.
+- **Every link added or removed is recorded**, by all four routes (card 2114). Until then
+  only the v1 card route wrote an entry, so a dependency changed in the card window or
+  through the v1 subtask route was missing from the activity feed and the Audit page:
+
+  | | Addition | Removal |
+  |---|---|---|
+  | Action | `dependency_added` | `dependency_removed` |
+  | Source | `ui` from the two routes under `/api/`, `api` from the two under `/api/v1/`, stored `api:` | the same |
+  | Board | The board of the card in the address, or of the subtask's card | The board of the end that waits |
+  | Card | The card in the address, or the subtask's card | That card where it is on that board, otherwise the card that waits |
+  | Detail | `#12 now waits on subtask #45` | `#12 no longer waits on subtask #45` |
+
+  No webhook is sent for either. The graph the link is checked against is read in the
+  transaction that writes it, so a link written by another writer cannot close a loop
+  between the check and the write.
+- **A cycle is returned, not thrown.** `checkDependencyLink()` throws the `400` and the
+  duplicate's `409` with `error()`, which sends a text alone. A cycle carries its chain
+  beside the text, so it is handed back to the route, which answers it with
+  `cycleAnswer()`. On the v1 card route that happens once the transaction is over.
+- **What a success answers differs by route.** The v1 card route answers `201` with
+  `{ blocked, blocker, isBlocked }` and its `DELETE` answers `{ success, removed }`. The
+  session card route and both subtask routes answer the dependencies as they then are.
+- **The bulk endpoint does not use this.** `POST /api/v1/dependencies/bulk` answers a
+  rejected batch as a whole: `409` with `message` and every link at fault in `rejected` and
+  `forbidden`, and nothing written.
+
+Covered by `tests/dependency-refusals.test.ts`, which asks each refusal of each of the four
+routes, and `tests/atomic-dependencies.test.ts`, which fails each write in turn, holds the
+entries, and shows every read inside the transaction.
+
+**The card window** lists a card's links in two lists, "Blocked by" and "Blocks", and each
+row is a card or a subtask: the session card route answers each with its `kind`, its own id
+as `cardId`, and for a subtask `parentCardId`. `dependencyEndBody()` in `src/lib/api.ts`
+builds the body that names a row's end from its kind (`dependsOnSubtaskId` for a subtask
+this card waits on), and `dependencyRow()` labels it, "#12" for a card and "subtask #45 of
+#12" for a subtask, whose link opens card 12. Until card 2138 the remove button sent every
+row's id as a card's, so removing a subtask row removed nothing, or the link to the card
+with the subtask's number, and the row's link opened that card.
 
 ## Unblock notification
 
-When a card reaches a Complete column, anything that was waiting only on it becomes
-startable. Three code paths complete a card, so the reaction lives in one helper,
-`applyUnblockEffects()`, and each of them calls it in one line.
+When a card reaches a Complete column, or a subtask is ticked, anything that was waiting
+only on it becomes startable. Three routes complete a card and two complete a subtask, so
+the reaction lives in `planning.ts`, in two halves:
+
+| Half | Function | What it does | Where it runs |
+|------|----------|--------------|---------------|
+| The rows | `recordUnblocked(completed, actorUserId)` | Writes an "Unblocked" system comment on every card that was waiting on one of the completed pieces of work and now has nothing open blocking it. Returns what it wrote | Inside the request's transaction, once, as its last write. It throws if no transaction is open |
+| The telling | `announceUnblocked(unblocked, actor, baseUrl)` | For each notice written: emails the assignees and refreshes the board the unblocked work is on | Queued until the transaction commits. Nothing is sent if it rolls back |
+
+The card routes reach them through `recordUnblockedByMoves()` and `announceCardMoves()` in
+`card-moves.ts`, which pass on the cards a request completed. The two subtask routes call
+the halves directly.
+
+A request writes one notice for each piece of work it unblocks, however many of that work's
+blockers it completed. The notice names the last of those blockers to be completed in the
+request, and the assignees are mailed once for it.
 
 ```mermaid
 sequenceDiagram
     actor User
-    participant Route as "Move path<br/>(reorder | card PUT | v1 move)"
+    participant Route as "Completing route<br/>(reorder | card PUT | v1 move | subtask PUT, both trees)"
     participant Plan as "planning.ts"
     participant DB as SQLite
     participant Notify as "notifications.ts"
     participant SSE as "events.ts"
 
     User->>Route: Move card #1686 to Complete
-    Route->>DB: Update column, set completedAt
-    Route->>Plan: applyUnblockEffects(1686, actor, baseUrl)
-    Plan->>DB: Load dependency edges
-    Plan->>Plan: Find dependents of #1686
-    loop each dependent
-        Plan->>Plan: Any other blocker still open?
-        alt all blockers complete
-            Plan->>DB: Insert system comment<br/>"Unblocked: #1686 … completed"
-            Plan->>Notify: notifyCardUnblocked(...)
-            Notify-->>User: Email the assignees
-            Plan->>SSE: emit(boardId, 'update')
-        else still blocked
-            Plan->>Plan: Skip — not unblocked yet
+    Route->>DB: BEGIN IMMEDIATE
+    Route->>DB: Every move of the request:<br/>column, completedAt, XP, activity entry
+    Route->>Plan: recordUnblocked([1686, ...], actorUserId)
+    loop each piece of work the request completed
+        Plan->>DB: Load dependency edges
+        Plan->>Plan: Find its dependents
+        loop each dependent
+            Plan->>Plan: Complete already, or another blocker still open?
+            alt open, and every blocker complete
+                Plan->>DB: Insert system comment<br/>"Unblocked: #1686 … completed"
+            else
+                Plan->>Plan: Skip
+            end
         end
     end
+    Plan-->>Route: the notices written
+    Route->>Plan: announceUnblocked(notices, actor, baseUrl)
+    Plan->>Notify: notifyCardUnblocked(...)
+    Plan->>SSE: emit(boardId, 'update')
+    Note over Notify,SSE: Both are held until the commit
+    Route->>DB: COMMIT
+    Notify-->>User: Email the assignees
+    SSE-->>User: Refresh the board the unblocked work is on
     Route-->>User: 200 OK
 ```
 
-The helper swallows its own errors. A card that has genuinely been completed must not fail
-to move because an email bounced.
+Three things follow from the notice being a write of the completion's own transaction:
+
+- **The notice is saved with the completion or not at all.** If a notice cannot be written,
+  the completion fails with it and the card or subtask is where it was. A completion is never
+  saved without the notice that tells the next person it is their turn.
+- **One request, one pass.** `recordUnblocked` runs after the last move and reads the state
+  the whole request has made. A card that one move of a drop unblocked and a later move of
+  the same drop completed gets no notice, because by then it is complete.
+- **A subtask ticked twice writes one notice.** The subtask is read inside the transaction,
+  so the second request finds it already complete and writes nothing.
+
+An email is a different matter from a notice. It is sent after the commit, and one that
+fails is logged and fails nothing: the completion is saved and the caller is told so.
 
 The email reuses the existing `email_moved` preference rather than introducing a new
 toggle: being unblocked is a column change on somebody else's card, and a user who muted
@@ -380,6 +541,7 @@ graph does not have.
 | Blocked | Amber |
 | Startable | Indigo |
 | Outside the milestone | Dashed grey border |
+| Withheld: on a board the reader cannot open | "A card on a board you cannot open", with no board or column line and no priority dot, and it does not open: there is no card the reader may see behind it |
 
 Cards with no dependencies recorded in either direction appear in a **Parallel / unordered**
 group beneath the graph, so a card is never invisible just because nobody sequenced it.
@@ -389,15 +551,21 @@ group beneath the graph, so a card is never invisible just because nobody sequen
 The board picks up exactly three things:
 
 - A **Blocked** chip on the card face when any blocker is not in a Complete column, with a
-  tooltip listing each blocker, its column, and its board when it lives on another one.
-  Amber, not red — On Hold already owns red, and *waiting* must stay distinguishable from
-  *stopped*.
+  tooltip listing each blocker, its column, and its board when it lives on another one. A
+  blocker on a board the reader cannot open is listed by its number and "A card on a board
+  you cannot open" (card 2129): the card is still blocked, and nothing of the other board is
+  shown. Amber, not red — On Hold already owns red, and *waiting* must stay distinguishable
+  from *stopped*.
 - A **milestone** chip linking through to the planning view.
 - A **Hide blocked** filter, which also adjusts the per-column counts so a filtered column
   reads `3/12` rather than silently under-reporting.
 
-Blocked state is computed once per board by `getBoardBlockedState()` and shipped with the
-page payload — one query for the whole board rather than one request per card face.
+Blocked state is computed once per board by `getBoardBlockedState(boardId, viewer)` and
+shipped with the page payload — one query for the whole board rather than one request per
+card face. All Tasks does the same over every card it shows with
+`getBlockedStateForCards(ids, viewer)`. The card window's dependency rows draw a withheld
+end with no link and no board or column line; its ✕ still removes the link, by the other
+end's id.
 
 Moving a blocked card to In Progress **stays allowed**; it raises a warning toast naming the
 outstanding blockers rather than a modal. A dialog that interrupts the drag would make the
@@ -408,7 +576,15 @@ stop people recording dependencies at all.
 
 `GET /api/v1/milestones/:id/summary` returns the whole plan in one payload, and is the call
 to make to answer *"what should I work on next for milestone X"*. Add `?compact=true` to
-drop the graph (the bulky part, only needed for drawing) and get a `cardTitles` map instead.
+drop the graph (the bulky part, only needed for drawing) and get two maps instead:
+`cardTitles`, card id to title, and `subtaskTitles`, subtask id to title. Until 2026-10-14
+both were in `cardTitles` by the bare id, so card 32 and subtask 32 took one key between them.
+
+A key whose user cannot open a board is given its work withheld, as the screens are, with
+`withheld: true` on each such node and the replacement text in `cardTitles` and
+`subtaskTitles`; so are the dependency routes and `GET /api/v1/cards/:id`. The DumpFire
+wrapper prints that text for such an end. Until 2026-10-14 the title, board, column and
+priority of an external blocker were given to anyone who could read the plan.
 
 ### Recording a plan
 
@@ -434,7 +610,8 @@ A subtask end is written `s<id>` (or `subtask:<id>`); a bare number stays a card
 ```
 
 A batch is validated as a whole and written all-or-nothing, reporting every problem at once
-rather than one per attempt. Two details matter:
+rather than one per attempt. The checks and the writes are one transaction, so a write that
+fails part of the way through leaves nothing of the batch behind either. Two details matter:
 
 - **Duplicates are skipped rather than rejected**, so a batch can live in a file and be
   replayed as the plan changes.
@@ -471,7 +648,11 @@ unassigned — minus whoever created it, who already knows. It respects an `emai
 preference and, like every other notification, no-ops entirely when SMTP is unconfigured.
 
 The email carries the goal, who created it, how many cards and which boards, how much is
-startable versus waiting, and the critical path if one exists. It is wrapped in a `try` that
+startable versus waiting, and the critical path if one exists. The plan in it is read as the
+person who attached the cards would read it, so work on a board they cannot open is
+withheld (card 2129). Its recipients are not asked about each board in turn: an assignee who
+cannot open a board the attacher can is still sent that board's titles, which is card
+2152's, with the "Unblocked" comment. It is wrapped in a `try` that
 swallows its own failures: the cards are attached either way, and a notification must never
 fail the write it is reporting on.
 
@@ -502,6 +683,7 @@ cannot disagree about what the critical path is.
 | `drizzle/0043_add_work_dependencies.sql` | Polymorphic `work_dependencies`; carries every card dependency across |
 | `src/lib/server/work-access.ts` | Which board a piece of work lives on |
 | `src/lib/server/subtask-dependencies.ts` | Shared handler body for both subtask dependency routes |
+| `src/lib/server/dependency-refusals.ts` | How one link that cannot be made or removed is answered, and the link written or taken away with its activity entry, for all four single-link routes |
 | `src/lib/server/planning.ts` | Every derived planning fact — graph, cycles, critical path, actionable, unblock hook |
 | `src/lib/server/milestones.ts` | Milestone CRUD, card assignment, access rules |
 | `src/routes/api/v1/milestones/**` | Bearer-token API |
@@ -509,6 +691,7 @@ cannot disagree about what the critical path is.
 | `src/routes/plan/**` | The planning view |
 | `src/lib/server/milestone-report.ts` | The plan as a PDF, in the board-report house style |
 | `src/lib/components/CardModal.svelte` | Dependency editor and milestone picker |
+| `src/lib/api.ts` | `dependencyEndBody()` and `dependencyRow()`: the body that names a row's end by its kind, and how a row reads and which card it opens, for the card window |
 
 ## Out of scope
 

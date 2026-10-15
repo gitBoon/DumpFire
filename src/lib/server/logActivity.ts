@@ -20,8 +20,10 @@
  *    indistinguishable from a recorded one.
  */
 
+import { inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from './db';
 import { activityLog } from './db/schema';
+import { afterCommit } from './db/transaction';
 import { dispatchWebhook, type WebhookEvent } from './webhooks';
 
 /** Where an action originated. */
@@ -43,7 +45,11 @@ export const ACTIONS = {
 	cardCompleted: 'card_completed',
 	cardReopened: 'card_reopened',
 	cardDeleted: 'card_deleted',
+	cardArchived: 'card_archived',
 	cardRestored: 'card_restored',
+	cardsPurged: 'cards_purged',
+	cardsCleared: 'cards_cleared',
+	columnDeleted: 'column_deleted',
 	subtaskCreated: 'subtask_created',
 	subtaskUpdated: 'subtask_updated',
 	subtaskCompleted: 'subtask_completed',
@@ -63,6 +69,13 @@ export interface ActivityEntry {
 	/** The board the card was on **at the time of the action**. */
 	boardId: number;
 	cardId?: number | null;
+	/**
+	 * The card the webhook names, for an entry stored with no `cardId`.
+	 *
+	 * A deleted card's entry cannot be stored with its id: the row it would
+	 * refer to is gone. The delivery still has to say which card went.
+	 */
+	webhookCardId?: number;
 	userId?: number | null;
 	/**
 	 * Canonical action name, e.g. `card_moved`. May also be passed already
@@ -83,6 +96,39 @@ export interface ActivityEntry {
 /** Strip the historic `api:` prefix to get the canonical action name. */
 export function canonicalAction(action: string): string {
 	return action.startsWith('api:') ? action.slice(4) : action;
+}
+
+/**
+ * Every spelling the given canonical actions are stored under.
+ *
+ * An action done in the web UI is stored bare (`card_completed`) and the same
+ * action done through the API keeps its historic prefix (`api:card_completed`).
+ * A query that compares the column to the bare name counts only half of what
+ * happened — which is how cycle time and personal stats came to ignore every
+ * card moved or completed through the API. Query with this instead:
+ *
+ *     inArray(activityLog.action, storedActions(ACTIONS.cardCompleted))
+ */
+export function storedActions(...canonical: string[]): string[] {
+	return canonical.flatMap((action) => [action, `api:${action}`]);
+}
+
+/**
+ * The SQL condition for a filter by action, which finds the action however it
+ * was done: `card_completed` matches `card_completed` and `api:card_completed`.
+ * A prefix of `api:` on what was asked for is dropped, so it asks the same
+ * question; a caller who means "done through the API" filters by source too.
+ *
+ * A trailing `*` is a prefix match, and nothing else is a wildcard. The stem
+ * goes to LIKE with its `\`, `%` and `_` escaped: `_` is LIKE's one-character
+ * wildcard, so `card_*` unescaped also found `cards_purged` and `cards_cleared`.
+ * Both audit logs ask here (card 2127).
+ */
+export function actionCondition(action: string): SQL {
+	const canonical = canonicalAction(action);
+	if (!canonical.endsWith('*')) return inArray(activityLog.action, storedActions(canonical));
+	const stem = canonical.slice(0, -1).replace(/[\\%_]/g, (c) => `\\${c}`);
+	return sql`(${activityLog.action} LIKE ${`${stem}%`} ESCAPE '\\' OR ${activityLog.action} LIKE ${`api:${stem}%`} ESCAPE '\\')`;
 }
 
 /**
@@ -131,15 +177,23 @@ export function logActivity(entry: ActivityEntry): void {
 	// Webhooks fire off the canonical name, so a UI move and an API move deliver
 	// the same event. They did not before: only the `api:` spellings were mapped,
 	// so a card completed in the UI notified nobody.
+	//
+	// The row above is written where this is called, inside the caller's
+	// transaction if it has one. The delivery waits for that transaction to
+	// commit and is dropped if it rolls back: it used to be sent from inside
+	// it, so a drop of several cards that failed on the last had already
+	// announced the others.
 	const event = ACTION_TO_EVENT[canonical];
 	if (event) {
-		dispatchWebhook(entry.boardId, event, {
-			cardId: entry.cardId ?? null,
+		const payload = {
+			cardId: entry.cardId ?? entry.webhookCardId ?? null,
 			action: canonical,
 			source,
 			detail: entry.detail || '',
 			user: entry.userName || ''
-		});
+		};
+		const boardId = entry.boardId;
+		afterCommit(() => dispatchWebhook(boardId, event, payload));
 	}
 }
 

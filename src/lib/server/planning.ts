@@ -25,6 +25,7 @@
  */
 
 import { db, sqlite } from './db';
+import { inTransaction } from './db/transaction';
 import {
 	cards,
 	columns,
@@ -35,6 +36,7 @@ import {
 	milestones
 } from './db/schema';
 import { eq, and, isNull, inArray } from 'drizzle-orm';
+import { getAccessibleBoardIds, type Actor } from './board-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { notifyCardUnblocked } from './notifications';
 import { emit } from './events';
@@ -75,8 +77,12 @@ export function toRef(value: number | WorkRef): WorkRef {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-/** A piece of work as the planning view needs it: identity, place, done-ness. */
-export interface PlanNode extends WorkRef {
+/**
+ * A piece of work as it is stored: identity, place, done-ness. What the
+ * working out reads, and what is never given to a caller as it is: the read
+ * functions below give a `PlanNode`, made for the one who asked.
+ */
+interface WorkNode extends WorkRef {
 	title: string;
 	priority: string;
 	columnId: number;
@@ -87,9 +93,47 @@ export interface PlanNode extends WorkRef {
 	milestoneId: number | null;
 	/** Set on subtasks: the card they belong to. */
 	parentCardId?: number;
+}
+
+/**
+ * A piece of work as the planning view needs it, for one viewer.
+ *
+ * Work on a board the viewer cannot open is still listed, because its being
+ * there is what makes "blocked" and "startable" true; but only what it is,
+ * its id and whether it is finished are told. Its title and its place are
+ * replaced, `withheld` is true, and a subtask has no `parentCardId`, as a
+ * card has none (card 2129).
+ */
+export interface PlanNode extends WorkRef {
+	/** For withheld work, `WITHHELD_CARD_TITLE` or `WITHHELD_SUBTASK_TITLE`. */
+	title: string;
+	/** null when withheld. */
+	priority: string | null;
+	/** null when withheld. */
+	columnId: number | null;
+	/** "" when withheld. */
+	columnTitle: string;
+	/** null when withheld. */
+	boardId: number | null;
+	/** `WITHHELD_BOARD_NAME` when withheld. */
+	boardName: string;
+	isComplete: boolean;
+	/** null when withheld. */
+	milestoneId: number | null;
+	/** Set on subtasks: the card they belong to. Not on a withheld subtask. */
+	parentCardId?: number;
 	/** True when the node is not in this milestone but blocks something that is. */
 	external?: boolean;
+	/** True when the work is on a board the viewer cannot open. */
+	withheld: boolean;
 }
+
+/** In place of the title of a card on a board the viewer cannot open. */
+export const WITHHELD_CARD_TITLE = 'A card on a board you cannot open';
+/** In place of the title of a subtask on a board the viewer cannot open. */
+export const WITHHELD_SUBTASK_TITLE = 'A subtask on a board you cannot open';
+/** In place of the name of a board the viewer cannot open. */
+export const WITHHELD_BOARD_NAME = 'A board you cannot open';
 
 /** Retained name — a card is just a node whose `kind` is 'card'. */
 export type PlanCard = PlanNode;
@@ -131,7 +175,11 @@ export interface MilestoneSummary {
 		percent: number;
 		byColumn: { columnTitle: string; count: number }[];
 		openSubtasks: number;
-		boards: { id: number; name: string; cardCount: number }[];
+		/**
+		 * The boards the cards are on. The cards on boards the viewer cannot
+		 * open are counted in one entry, `id` null and `WITHHELD_BOARD_NAME`.
+		 */
+		boards: { id: number | null; name: string; cardCount: number }[];
 	};
 	graph: {
 		nodes: MilestoneNode[];
@@ -165,14 +213,15 @@ function chunked<T>(ids: number[], run: (chunk: number[]) => T[]): T[] {
 }
 
 /**
- * Load cards and subtasks as PlanNodes.
+ * Load cards and subtasks as they are stored, for working out with. A caller
+ * is given them through `withhold`.
  *
  * Batched by type rather than one query per node — the milestone view asks for
  * dozens at once. Archived cards are dropped, and so are subtasks whose parent
  * card is archived: neither is live work.
  */
-function loadPlanNodes(keys: Iterable<NodeKey>): Map<NodeKey, PlanNode> {
-	const out = new Map<NodeKey, PlanNode>();
+function loadPlanNodes(keys: Iterable<NodeKey>): Map<NodeKey, WorkNode> {
+	const out = new Map<NodeKey, WorkNode>();
 	const refs = [...new Set(keys)].map(parseNodeKey);
 	const cardIds = refs.filter((r) => r.kind === 'card').map((r) => r.id);
 	const subtaskIds = refs.filter((r) => r.kind === 'subtask').map((r) => r.id);
@@ -280,12 +329,44 @@ function loadPlanNodes(keys: Iterable<NodeKey>): Map<NodeKey, PlanNode> {
 	return out;
 }
 
-/** Cards only, keyed by id — for callers that never deal in subtasks. */
-function loadPlanCards(cardIds: number[]): Map<number, PlanNode> {
-	const byKey = loadPlanNodes(cardIds.map((id) => nodeKey('card', id)));
-	const out = new Map<number, PlanNode>();
-	for (const node of byKey.values()) if (node.kind === 'card') out.set(node.id, node);
-	return out;
+// ─── What a viewer is told ───────────────────────────────────────────────────
+
+/**
+ * The boards `viewer` can open, as a test: every board for an administrator.
+ * Asked once for a whole answer, rather than per node, which on the board page
+ * and All Tasks would be a query for every blocker.
+ */
+export function boardsOpenTo(viewer: Actor): (boardId: number) => boolean {
+	const ids = getAccessibleBoardIds(viewer);
+	if (ids === null) return () => true;
+	const open = new Set(ids);
+	return (boardId) => open.has(boardId);
+}
+
+/**
+ * A node as the viewer is given it. On a board they can open, as it is. On
+ * one they cannot, it keeps what it is, its id and whether it is finished, and
+ * nothing else of it: its title and board name are replaced by text, so that a
+ * client that prints or sorts them still works, and its column, board,
+ * priority, milestone and parent card are left blank. What the working out
+ * found (its place in a plan, whether it blocks) is added by the caller from
+ * the real node, never from this one.
+ */
+function withhold(node: WorkNode, opens: (boardId: number) => boolean): PlanNode {
+	if (opens(node.boardId)) return { ...node, withheld: false };
+	return {
+		kind: node.kind,
+		id: node.id,
+		title: node.kind === 'card' ? WITHHELD_CARD_TITLE : WITHHELD_SUBTASK_TITLE,
+		priority: null,
+		columnId: null,
+		columnTitle: '',
+		boardId: null,
+		boardName: WITHHELD_BOARD_NAME,
+		isComplete: node.isComplete,
+		milestoneId: null,
+		withheld: true
+	};
 }
 
 // ─── Dependency graph ────────────────────────────────────────────────────────
@@ -349,57 +430,24 @@ function loadDependencyGraph(): DependencyGraph {
 }
 
 /**
- * Would adding "blocker blocks blocked" close a loop?
- *
- * A cycle appears exactly when the proposed blocker is already reachable
- * downstream of the work it would block. Returns that chain so the API can name
- * the cycle it rejected, or null when the edge is safe.
+ * Blocked-by and blocks for one piece of work, each end resolved, as `viewer`
+ * is given them: an end on a board they cannot open is there, withheld (see
+ * `withhold`). Whether the work is blocked is worked out from every end.
  */
-export function findDependencyCycle(
-	blocked: number | WorkRef,
-	blocker: number | WorkRef
-): WorkRef[] | null {
-	const from = refKey(toRef(blocked));
-	const to = refKey(toRef(blocker));
-	if (from === to) return [toRef(blocked), toRef(blocker)];
-
-	const { blocks } = loadDependencyGraph();
-	const seen = new Set<NodeKey>([from]);
-	const path: NodeKey[] = [from];
-
-	function walk(current: NodeKey): boolean {
-		for (const edge of blocks.get(current) ?? []) {
-			const next = edge.blocked;
-			if (next === to) {
-				path.push(next);
-				return true;
-			}
-			if (seen.has(next)) continue;
-			seen.add(next);
-			path.push(next);
-			if (walk(next)) return true;
-			path.pop();
-		}
-		return false;
-	}
-
-	return walk(from) ? path.map(parseNodeKey) : null;
-}
-
-/** Blocked-by and blocks for one piece of work, each end resolved. */
-export function getWorkDependencies(ref: number | WorkRef): WorkDependencyState {
+export function getWorkDependencies(ref: number | WorkRef, viewer: Actor): WorkDependencyState {
 	const key = refKey(toRef(ref));
 	const { blockedBy, blocks } = loadDependencyGraph();
 	const inEdges = blockedBy.get(key) ?? [];
 	const outEdges = blocks.get(key) ?? [];
 
 	const byKey = loadPlanNodes([...inEdges.map((e) => e.blocker), ...outEdges.map((e) => e.blocked)]);
+	const opens = boardsOpenTo(viewer);
 
 	const toDepRef = (edge: DepEdge, otherKey: NodeKey): DependencyRef | null => {
 		const node = byKey.get(otherKey);
 		if (!node) return null; // archived or deleted — not a live dependency
 		return {
-			...node,
+			...withhold(node, opens),
 			dependencyId: edge.id,
 			createdByUserId: edge.createdByUserId,
 			createdAt: edge.createdAt
@@ -425,12 +473,13 @@ export function getWorkDependencies(ref: number | WorkRef): WorkDependencyState 
 }
 
 /** Card-shaped alias, for callers that predate subtask support. */
-export function getCardDependencies(cardId: number): WorkDependencyState {
-	return getWorkDependencies({ kind: 'card', id: cardId });
+export function getCardDependencies(cardId: number, viewer: Actor): WorkDependencyState {
+	return getWorkDependencies({ kind: 'card', id: cardId }, viewer);
 }
 
 /**
- * Open blockers for a set of cards, in one pass.
+ * Open blockers for a set of cards, in one pass, as `viewer` is given them: a
+ * blocker on a board they cannot open is there, withheld.
  *
  * A view renders hundreds of card faces — the board a board's worth, All Tasks
  * every board at once — and asking per card would be hundreds of round trips.
@@ -441,7 +490,7 @@ export function getCardDependencies(cardId: number): WorkDependencyState {
  * A card can be blocked by a subtask, so blockers come back as full nodes with
  * their `kind`.
  */
-export function getBlockedStateForCards(cardIds: number[]): Record<number, PlanNode[]> {
+export function getBlockedStateForCards(cardIds: number[], viewer: Actor): Record<number, PlanNode[]> {
 	if (cardIds.length === 0) return {};
 
 	const { blockedBy } = loadDependencyGraph();
@@ -455,19 +504,21 @@ export function getBlockedStateForCards(cardIds: number[]): Record<number, PlanN
 	if (blockerKeys.size === 0) return {};
 
 	const blockerNodes = loadPlanNodes(blockerKeys);
+	const opens = boardsOpenTo(viewer);
 
 	const out: Record<number, PlanNode[]> = {};
 	for (const cardId of cardIds) {
 		const open = (blockedBy.get(nodeKey('card', cardId)) ?? [])
 			.map((e) => blockerNodes.get(e.blocker))
-			.filter((n): n is PlanNode => !!n && !n.isComplete);
+			.filter((n): n is WorkNode => !!n && !n.isComplete)
+			.map((n) => withhold(n, opens));
 		if (open.length > 0) out[cardId] = open;
 	}
 	return out;
 }
 
-/** Open blockers for every live card on one board. */
-export function getBoardBlockedState(boardId: number): Record<number, PlanNode[]> {
+/** Open blockers for every live card on one board, as `viewer` is given them. */
+export function getBoardBlockedState(boardId: number, viewer: Actor): Record<number, PlanNode[]> {
 	const boardColumns = db
 		.select({ id: columns.id })
 		.from(columns)
@@ -483,7 +534,7 @@ export function getBoardBlockedState(boardId: number): Record<number, PlanNode[]
 		.all()
 		.map((c) => c.id);
 
-	return getBlockedStateForCards(boardCardIds);
+	return getBlockedStateForCards(boardCardIds, viewer);
 }
 
 // ─── Batch validation ────────────────────────────────────────────────────────
@@ -532,8 +583,8 @@ const describe = (r: WorkRef) => (r.kind === 'subtask' ? `subtask #${r.id}` : `#
 /**
  * Validate a whole batch of proposed dependencies before any of it is written.
  *
- * Cycle detection is the reason this exists rather than a loop over
- * `findDependencyCycle`. Two links can each be perfectly safe against the
+ * Cycle detection is the reason links are checked as a batch here, and never
+ * one at a time. Two links can each be perfectly safe against the
  * *stored* graph and still close a loop between themselves — check them
  * independently and both get written, leaving the milestone view with the
  * stranded nodes its own layering code warns about. So the proposed edges are
@@ -671,16 +722,14 @@ export function createDependencyBatch(links: DependencyLink[], userId: number): 
 		 (blocked_type, blocked_id, blocker_type, blocker_id, created_by_user_id)
 		 VALUES (?, ?, ?, ?, ?)`
 	);
-	const writeAll = sqlite.transaction((batch: DependencyLink[]) => {
+	return inTransaction(() => {
 		let n = 0;
-		for (const l of batch) {
+		for (const l of links) {
 			n += insert.run(l.blockedType ?? 'card', l.blocked, l.blockerType ?? 'card', l.blocker, userId)
 				.changes;
 		}
 		return n;
 	});
-
-	return writeAll(links) as number;
 }
 
 /** Turn an ordered list of work into the links of a linear chain. */
@@ -734,8 +783,16 @@ function weightOf(priority: string): number {
  *     marked `external`. Those have to be here: work whose only blocker sits on
  *     another board is not actionable, and a view that hid the blocker would
  *     quietly claim that it was.
+ *
+ * Made for `viewer`. The layers, the reach, the critical path, its card ids
+ * and the order of what is startable are worked out from the work as it is,
+ * so that they are the same for everyone. Then each node is withheld once, if
+ * its board is one the viewer cannot open, and everything given is built from
+ * those: the nodes, the chain, the blockers and the progress. A member card can
+ * be on such a board too: a card moved to another board keeps a board's
+ * milestone (card 2129, R4).
  */
-export function getMilestoneSummary(milestoneId: number): MilestoneSummary | null {
+export function getMilestoneSummary(milestoneId: number, viewer: Actor): MilestoneSummary | null {
 	const milestone = db.select().from(milestones).where(eq(milestones.id, milestoneId)).get();
 	if (!milestone) return null;
 
@@ -902,12 +959,28 @@ export function getMilestoneSummary(milestoneId: number): MilestoneSummary | nul
 	// highlighting — it is just the next thing to do, and it shows up there.
 	const criticalSet = new Set(criticalKeys.length > 1 ? criticalKeys : []);
 
+	// Card ids on the path, in order, with a subtask standing in for its parent
+	// card so the long-standing `number[]` shape still means something. From the
+	// real nodes: a withheld subtask has no parent card to stand in for it.
+	const pathKeys = criticalKeys.length > 1 ? criticalKeys : [];
+	const criticalPath: number[] = [];
+	for (const k of pathKeys) {
+		const n = byKey.get(k)!;
+		const cardId = n.kind === 'card' ? n.id : (n.parentCardId ?? n.id);
+		if (criticalPath[criticalPath.length - 1] !== cardId) criticalPath.push(cardId);
+	}
+
+	// ── What the viewer is given. Everything above was worked out from the
+	//    work as it is; each node is withheld here, once, and everything below
+	//    is built from these, so no title or board name is given by another way.
+	const opens = boardsOpenTo(viewer);
+	const shown = new Map<NodeKey, PlanNode>(nodeKeys.map((k) => [k, withhold(byKey.get(k)!, opens)]));
+
 	// ── Assemble nodes.
 	const nodes: MilestoneNode[] = nodeKeys.map((k) => {
-		const node = byKey.get(k)!;
 		const openBlockers = (blockedByKeys.get(k) ?? []).filter((b) => !byKey.get(b)!.isComplete);
 		return {
-			...node,
+			...shown.get(k)!,
 			external: !memberKeys.has(k),
 			layer: layerOf.get(k) ?? 0,
 			blockedBy: (blockedByKeys.get(k) ?? []).map(parseNodeKey),
@@ -921,13 +994,15 @@ export function getMilestoneSummary(milestoneId: number): MilestoneSummary | nul
 
 	// ── Next actionable: in the milestone, not done, nothing open blocking it.
 	//    Sorted by how much it unblocks, because on a one- or two-person team the
-	//    work that frees the most downstream work is worth starting first.
+	//    work that frees the most downstream work is worth starting first. By the
+	//    real priority, so that the order is the same whoever asks.
+	const realWeight = (n: WorkRef) => weightOf(byKey.get(refKey(n))!.priority);
 	const nextActionable = nodes
 		.filter((n) => !n.external && !n.isComplete && n.openBlockers.length === 0)
 		.sort(
 			(a, b) =>
 				b.downstreamCount - a.downstreamCount ||
-				weightOf(b.priority) - weightOf(a.priority) ||
+				realWeight(b) - realWeight(a) ||
 				a.id - b.id
 		);
 
@@ -936,7 +1011,7 @@ export function getMilestoneSummary(milestoneId: number): MilestoneSummary | nul
 		.sort((a, b) => a.openBlockers.length - b.openBlockers.length || a.id - b.id)
 		.map((n) => ({
 			card: n,
-			blockers: n.openBlockers.map((r) => byKey.get(refKey(r))!).filter(Boolean)
+			blockers: n.openBlockers.map((r) => shown.get(refKey(r))!).filter(Boolean)
 		}));
 
 	// Milestone cards with no ordering recorded at all — surfaced as a parallel
@@ -950,14 +1025,16 @@ export function getMilestoneSummary(milestoneId: number): MilestoneSummary | nul
 	// ── Progress. Counts cover the milestone's own CARDS; subtasks are counted
 	//    separately as open subtasks, exactly as they were before they could
 	//    carry dependencies — otherwise recording an ordering on a subtask would
-	//    silently change how big the goal looks.
+	//    silently change how big the goal looks. From the withheld nodes: a card
+	//    on a board the viewer cannot open is counted under "" in `byColumn`, and
+	//    in one entry of `boards` with no id, whichever board it is on.
 	const memberCardNodes = nodes.filter((n) => !n.external && n.kind === 'card');
 	const byColumnMap = new Map<string, number>();
 	for (const n of memberCardNodes) {
 		byColumnMap.set(n.columnTitle, (byColumnMap.get(n.columnTitle) ?? 0) + 1);
 	}
 
-	const boardMap = new Map<number, { id: number; name: string; cardCount: number }>();
+	const boardMap = new Map<number | null, { id: number | null; name: string; cardCount: number }>();
 	for (const n of memberCardNodes) {
 		const entry = boardMap.get(n.boardId) ?? { id: n.boardId, name: n.boardName, cardCount: 0 };
 		entry.cardCount++;
@@ -977,14 +1054,7 @@ export function getMilestoneSummary(milestoneId: number): MilestoneSummary | nul
 
 	const done = memberCardNodes.filter((n) => n.isComplete).length;
 
-	// Card ids on the path, in order, with a subtask standing in for its parent
-	// card so the long-standing `number[]` shape still means something.
-	const criticalPathNodes = criticalKeys.length > 1 ? criticalKeys.map((k) => byKey.get(k)!) : [];
-	const criticalPath: number[] = [];
-	for (const n of criticalPathNodes) {
-		const cardId = n.kind === 'card' ? n.id : (n.parentCardId ?? n.id);
-		if (criticalPath[criticalPath.length - 1] !== cardId) criticalPath.push(cardId);
-	}
+	const criticalPathNodes = pathKeys.map((k) => shown.get(k)!);
 
 	return {
 		milestone,
@@ -1029,125 +1099,169 @@ export interface UnblockedWork {
 	cardId: number;
 	title: string;
 	boardId: number;
+	/**
+	 * The work whose completion left this with nothing open blocking it. Where
+	 * one request completed several of its blockers, the last of them.
+	 */
+	completed: { kind: WorkKind; id: number; title: string };
 }
 
 /** Retained name for callers that only ever dealt in cards. */
 export type UnblockedCard = UnblockedWork;
 
 /**
- * Called after a piece of work is finished.
+ * The notices for one piece of finished work.
  *
- * Finds whatever was waiting on it and now has nothing open blocking it, drops
- * a system comment on the affected card and hands the list back so the caller
- * can notify assignees. Never throws into the calling handler — a failed
- * comment must not fail a completion.
+ * Finds whatever was waiting on it and now has nothing open blocking it, and
+ * drops a system comment on each affected card. `unblockedByThis` is asked
+ * about each thing that was waiting on it, and what it refuses is passed
+ * over: the same request completed another of that work's blockers after this
+ * one, and the notice is that one's to write. Not caught: see
+ * `recordUnblocked`.
  */
-export function onWorkCompleted(completed: number | WorkRef, actorUserId: number): UnblockedWork[] {
-	try {
-		const ref = toRef(completed);
-		const key = refKey(ref);
-		const { blockedBy, blocks } = loadDependencyGraph();
-		const dependents = (blocks.get(key) ?? []).map((e) => e.blocked);
-		if (dependents.length === 0) return [];
+function writeUnblockNotices(
+	completedNode: WorkNode,
+	actorUserId: number,
+	{ blockedBy, blocks }: DependencyGraph,
+	unblockedByThis: (waiting: NodeKey) => boolean
+): UnblockedWork[] {
+	const key = refKey(completedNode);
+	const dependents = (blocks.get(key) ?? []).map((e) => e.blocked).filter(unblockedByThis);
+	if (dependents.length === 0) return [];
 
-		const completedNode = loadPlanNodes([key]).get(key);
-		if (!completedNode) return [];
-
-		// One load covering the dependents and all of their blockers.
-		const needed = new Set<NodeKey>(dependents);
-		for (const k of dependents) {
-			for (const e of blockedBy.get(k) ?? []) needed.add(e.blocker);
-		}
-		const byKey = loadPlanNodes(needed);
-
-		const unblocked: UnblockedWork[] = [];
-
-		for (const k of dependents) {
-			const node = byKey.get(k);
-			if (!node || node.isComplete) continue;
-
-			const stillOpen = (blockedBy.get(k) ?? []).filter((e) => {
-				const blocker = byKey.get(e.blocker);
-				return blocker && !blocker.isComplete;
-			});
-			if (stillOpen.length > 0) continue;
-
-			// Comments live on cards, so a subtask's notice goes on its parent card
-			// and names the subtask.
-			const cardId = node.kind === 'card' ? node.id : (node.parentCardId ?? node.id);
-			const what = node.kind === 'card' ? 'this card' : `subtask "${node.title}"`;
-			const by =
-				completedNode.kind === 'card'
-					? `#${completedNode.id} "${completedNode.title}"`
-					: `subtask "${completedNode.title}"`;
-
-			db.insert(cardComments)
-				.values({
-					cardId,
-					userId: actorUserId,
-					content: `Unblocked: ${by} completed — nothing is blocking ${what} now.`
-				})
-				.run();
-
-			unblocked.push({
-				kind: node.kind,
-				id: node.id,
-				cardId,
-				title: node.title,
-				boardId: node.boardId
-			});
-		}
-
-		return unblocked;
-	} catch (err) {
-		log.error(`Unblock hook failed for ${JSON.stringify(completed)}`, err);
-		return [];
+	// One load covering the dependents and all of their blockers.
+	const needed = new Set<NodeKey>(dependents);
+	for (const k of dependents) {
+		for (const e of blockedBy.get(k) ?? []) needed.add(e.blocker);
 	}
-}
+	const byKey = loadPlanNodes(needed);
 
-/** Retained name — a bare card id is the shape the move handlers pass. */
-export function onCardCompleted(completedCardId: number, actorUserId: number): UnblockedWork[] {
-	return onWorkCompleted({ kind: 'card', id: completedCardId }, actorUserId);
+	const unblocked: UnblockedWork[] = [];
+
+	for (const k of dependents) {
+		const node = byKey.get(k);
+		if (!node || node.isComplete) continue;
+
+		const stillOpen = (blockedBy.get(k) ?? []).filter((e) => {
+			const blocker = byKey.get(e.blocker);
+			return blocker && !blocker.isComplete;
+		});
+		if (stillOpen.length > 0) continue;
+
+		// Comments live on cards, so a subtask's notice goes on its parent card
+		// and names the subtask.
+		const cardId = node.kind === 'card' ? node.id : (node.parentCardId ?? node.id);
+		const what = node.kind === 'card' ? 'this card' : `subtask "${node.title}"`;
+		const by =
+			completedNode.kind === 'card'
+				? `#${completedNode.id} "${completedNode.title}"`
+				: `subtask "${completedNode.title}"`;
+
+		db.insert(cardComments)
+			.values({
+				cardId,
+				userId: actorUserId,
+				content: `Unblocked: ${by} completed — nothing is blocking ${what} now.`
+			})
+			.run();
+
+		unblocked.push({
+			kind: node.kind,
+			id: node.id,
+			cardId,
+			title: node.title,
+			boardId: node.boardId,
+			completed: { kind: completedNode.kind, id: completedNode.id, title: completedNode.title }
+		});
+	}
+
+	return unblocked;
 }
 
 /**
- * The full unblock reaction: system comment, assignee email, board refresh.
+ * The first half of the unblock reaction: the rows.
  *
- * Several code paths finish work — drag-and-drop, the card PUT, the API move,
- * and ticking a subtask — so the reaction lives here and each of them calls it
- * in one line. Swallows its own errors: work that has genuinely been completed
- * must not fail to save because an email bounced.
+ * Writes an "Unblocked" notice on every card that was waiting on one of the
+ * pieces of work in `completed` and now has nothing open blocking it, and
+ * returns what it wrote, for `announceUnblocked`.
+ *
+ * Call it once per request, inside the request's transaction and as the last
+ * thing its body does, with everything the request completed, in the order it
+ * completed them. It reads the state the transaction has made, so a card that
+ * one move of a drop unblocked and a later move of the same drop completed
+ * gets no notice: by now it is complete. Called per completion, as this used
+ * to be, it would get one.
+ *
+ * Work gets one notice from one call, however many of its blockers the
+ * request completed. Each of them is judged against the same final state, so
+ * each used to find the work unblocked and write a notice of its own, and its
+ * assignees were mailed once for each. The notice names the last of them in
+ * `completed`: until that one was done the work was still blocked, so that is
+ * the completion that unblocked it. The dependencies are read once, for all of
+ * them.
+ *
+ * It throws if no transaction is open, and a failure to write a notice is not
+ * caught. The notice is part of the completion and fails with it; the rule
+ * here used to be the opposite, that a failed comment must not fail a
+ * completion, and a completion could then be saved without the notice that
+ * tells the next person it is their turn.
  */
-export function applyUnblockEffects(
-	completed: number | WorkRef,
-	actor: { id: number; username: string },
-	baseUrl: string
-): UnblockedWork[] {
-	try {
-		const ref = toRef(completed);
-		const unblocked = onWorkCompleted(ref, actor.id);
-		if (unblocked.length === 0) return [];
+export function recordUnblocked(completed: (number | WorkRef)[], actorUserId: number): UnblockedWork[] {
+	if (!sqlite.inTransaction) {
+		throw new Error(
+			'recordUnblocked must be called inside the transaction that completes the work: wrap the completion ' +
+				'and this call in inTransaction.'
+		);
+	}
+	const graph = loadDependencyGraph();
+	const keys = completed.map((work) => refKey(toRef(work)));
+	const waitedOn = keys.filter((key) => graph.blocks.has(key));
+	if (waitedOn.length === 0) return [];
 
-		const completedNode = loadPlanNodes([refKey(ref)]).get(refKey(ref));
+	// Archived work is not among these, and writes no notice.
+	const finished = loadPlanNodes(waitedOn);
 
-		for (const u of unblocked) {
-			notifyCardUnblocked(
-				u.boardId,
-				u.cardId,
-				u.kind === 'card' ? u.title : `${u.title} (subtask)`,
-				ref.id,
-				completedNode?.title ?? '',
-				actor.username,
-				baseUrl
-			);
-			// The unblocked work may well be on another board; refresh that one too
-			// so its "Blocked" chip clears without a reload.
-			emit(u.boardId, 'update', { type: 'card' });
-		}
+	// For each thing that was waiting, where in `completed` the last of its
+	// blockers is. A later one replaces an earlier one.
+	const lastBlocker = new Map<NodeKey, number>();
+	keys.forEach((key, i) => {
+		if (!finished.has(key)) return;
+		for (const e of graph.blocks.get(key) ?? []) lastBlocker.set(e.blocked, i);
+	});
 
-		return unblocked;
-	} catch (err) {
-		log.error(`Unblock effects failed for ${JSON.stringify(completed)}`, err);
-		return [];
+	return keys.flatMap((key, i) => {
+		const node = finished.get(key);
+		if (!node) return [];
+		return writeUnblockNotices(node, actorUserId, graph, (waiting) => lastBlocker.get(waiting) === i);
+	});
+}
+
+/**
+ * The second half of the unblock reaction: the assignee email and the board
+ * refresh, for the notices `recordUnblocked` wrote.
+ *
+ * Nothing is sent until the transaction that wrote them has committed, and
+ * nothing at all if it rolls back: both go through `afterCommit`. So it can be
+ * called inside that transaction or after it. A mail that fails is logged and
+ * fails nothing.
+ */
+export function announceUnblocked(
+	unblocked: UnblockedWork[],
+	actor: { username: string },
+	baseUrl: string | null
+): void {
+	for (const u of unblocked) {
+		notifyCardUnblocked(
+			u.boardId,
+			u.cardId,
+			u.kind === 'card' ? u.title : `${u.title} (subtask)`,
+			u.completed.id,
+			u.completed.title,
+			actor.username,
+			baseUrl
+		);
+		// The unblocked work may well be on another board; refresh that one too
+		// so its "Blocked" chip clears without a reload.
+		emit(u.boardId, 'update', { type: 'card' });
 	}
 }

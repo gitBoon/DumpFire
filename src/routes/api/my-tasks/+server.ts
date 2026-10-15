@@ -1,12 +1,14 @@
-import { json } from '@sveltejs/kit';
+import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { boards, columns, cards, cardAssignees } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
+import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { completeColumnIds } from '$lib/column-role';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals }) => {
 	const user = locals.user;
-	if (!user) return json([], { status: 401 });
+	if (!user) throw error(401, 'Not authenticated');
 
 	// Get all card IDs assigned to this user
 	const assignments = db.select({ cardId: cardAssignees.cardId })
@@ -34,10 +36,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 	}).from(columns).where(inArray(columns.id, colIds)).all();
 
 	// Identify "done" columns
-	const doneColIds = new Set(
-		cols.filter(c => c.title.toLowerCase() === 'complete' || c.title.toLowerCase() === 'done')
-			.map(c => c.id)
-	);
+	const doneColIds = completeColumnIds(cols);
 
 	// Filter to only active (non-done) cards
 	const activeCards = myCards.filter(c => !doneColIds.has(c.columnId));
@@ -73,9 +72,14 @@ export const GET: RequestHandler = async ({ locals }) => {
 		}[];
 	}>();
 
+	// Being assigned to a card does not outlive access to its board: someone
+	// taken off a board should stop seeing its card titles here.
+	const accessible = getAccessibleBoardIds(user);
+
 	for (const card of activeCards) {
 		const col = colLookup.get(card.columnId);
 		if (!col) continue;
+		if (accessible !== null && !accessible.includes(col.boardId)) continue;
 		const board = boardLookup.get(col.boardId);
 		if (!board) continue;
 

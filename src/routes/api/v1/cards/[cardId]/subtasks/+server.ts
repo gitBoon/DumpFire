@@ -1,10 +1,14 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
+import { inTransaction } from '$lib/server/db/transaction';
 import { cards, columns, subtasks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
+import { PRIORITIES } from '$lib/server/card-fields';
+import { pathId, readBody, readChoice, readColour, readDate, readNumber, readText } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -19,8 +23,7 @@ function getCardBoardId(cardId: number): number | null {
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const cardId = Number(params.cardId);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	const cardId = pathId(params.cardId, 'card');
 
 	const boardId = getCardBoardId(cardId);
 	if (!boardId) throw error(404, 'Card not found');
@@ -37,50 +40,67 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	return json(cardSubtasks);
 };
 
-/** POST /api/v1/cards/:cardId/subtasks — Create a new subtask on a card. */
+/**
+ * POST /api/v1/cards/:cardId/subtasks — Create a new subtask on a card.
+ *
+ * The card is looked for and the caller checked (404, then 403) before any
+ * field is read (400).
+ */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const cardId = pathId(params.cardId, 'card');
+	const body = await readBody(request);
 
-	const cardId = Number(params.cardId);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	// One transaction: the card is read and the caller checked in the one that
+	// creates the subtask and writes its entry.
+	const subtask = inTransaction(() => {
+		const boardId = getCardBoardId(cardId);
+		if (!boardId) throw error(404, 'Card not found');
 
-	const boardId = getCardBoardId(cardId);
-	if (!boardId) throw error(404, 'Card not found');
+		if (!canEditBoard(user, boardId)) {
+			throw error(403, 'No edit access to this card\'s board');
+		}
 
-	if (!canEditBoard(locals.user, boardId)) {
-		throw error(403, 'No edit access to this card\'s board');
-	}
+		const title = readText(body, 'title', {
+			required: true,
+			trim: true,
+			min: 1,
+			max: 500,
+			says: { missing: 'title is required', empty: 'title is required', invalid: 'Title too long (max 500 chars)' }
+		});
+		const description = readText(body, 'description', { max: 50000 });
+		const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true });
+		const colorTag = readColour(body, 'colorTag', { allowEmpty: true });
+		const dueDate = readDate(body, 'dueDate', { nullable: true });
+		const position = readNumber(body, 'position', {});
 
-	const body = await request.json();
-	const { title, description, priority, colorTag, dueDate, position } = body;
+		const subtask = db.insert(subtasks)
+			.values({
+				cardId,
+				title,
+				description: description ?? '',
+				priority: priority ?? 'medium',
+				colorTag: colorTag ?? '',
+				dueDate: dueDate ?? null,
+				position: position ?? 0
+			})
+			.returning()
+			.get();
 
-	if (!title || !title.trim()) throw error(400, 'title is required');
-	if (title.length > 500) throw error(400, 'Title too long (max 500 chars)');
+		emit(boardId, 'update', { type: 'card' });
 
-	const subtask = db.insert(subtasks)
-		.values({
+		const card = db.select({ title: cards.title }).from(cards).where(eq(cards.id, cardId)).get();
+		logActivity({
+			boardId,
 			cardId,
-			title: title.trim(),
-			description: description || '',
-			priority: priority || 'medium',
-			colorTag: colorTag || '',
-			dueDate: dueDate || null,
-			position: position ?? 0
-		})
-		.returning()
-		.get();
+			userId: user.id,
+			action: 'api:subtask_created',
+			detail: `Created subtask "${title}" on "${card?.title || 'Unknown'}"`,
+			userName: user.username,
+			userEmoji: user.emoji || '👤'
+		});
 
-	emit(boardId, 'update', { type: 'card' });
-
-	const card = db.select({ title: cards.title }).from(cards).where(eq(cards.id, cardId)).get();
-	logActivity({
-		boardId,
-		cardId,
-		userId: locals.user.id,
-		action: 'api:subtask_created',
-		detail: `Created subtask "${title.trim()}" on "${card?.title || 'Unknown'}"`,
-		userName: locals.user.username,
-		userEmoji: locals.user.emoji || '👤'
+		return subtask;
 	});
 
 	return json(subtask, { status: 201 });

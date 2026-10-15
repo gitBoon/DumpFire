@@ -31,7 +31,7 @@
 import { sqlite } from './db';
 import { canViewBoard } from './board-access';
 import { isCompleteColumnTitle, isHoldColumnTitle } from './card-completion';
-import { readSource } from './logActivity';
+import { ACTIONS, readSource, storedActions } from './logActivity';
 import type { SessionUser } from './auth';
 
 /**
@@ -217,6 +217,21 @@ interface CardRow {
 }
 
 /**
+ * Activity entries that are not work on the card they name, as SQL text.
+ *
+ * A dependency added or removed is recorded on the card it is made from, and
+ * since card 2114 the card window and the subtask routes record theirs too:
+ * many more of them than before. Counted, linking a blocker would put a card
+ * no one worked on into the window, and put it down to whoever linked it. The
+ * bulk entry names no card and so never matched, and is listed so that it
+ * never does. Each in both spellings (`storedActions`). Fixed text, made here,
+ * so it is written into the query and not bound.
+ */
+const NOT_WORK_ON_THE_CARD = storedActions(ACTIONS.dependencyAdded, ACTIONS.dependencyRemoved, 'dependencies_bulk_added')
+	.map((action) => `'${action}'`)
+	.join(', ');
+
+/**
  * Build the report.
  *
  * One query gathers every candidate card with its board, column, author,
@@ -242,13 +257,15 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 	// A card is in the window if anything about it moved: it completed, it was
 	// raised, it was edited, someone logged an action against it, or someone
 	// commented. The union matters — relying on the audit log alone is what made
-	// the hand-built report miss 30% of completions.
+	// the hand-built report miss 30% of completions. A dependency added or
+	// removed is not work on the card, and does not count (`NOT_WORK_ON_THE_CARD`).
 	const touched = `(
 		   (c.completed_at IS NOT NULL AND ${TS('c.completed_at')} BETWEEN @from AND @to)
 		OR (${TS('c.created_at')} BETWEEN @from AND @to)
 		OR (${TS('c.updated_at')} BETWEEN @from AND @to)
 		OR EXISTS (SELECT 1 FROM activity_log al
-		            WHERE al.card_id = c.id AND ${TS('al.created_at')} BETWEEN @from AND @to)
+		            WHERE al.card_id = c.id AND al.action NOT IN (${NOT_WORK_ON_THE_CARD})
+		              AND ${TS('al.created_at')} BETWEEN @from AND @to)
 		OR EXISTS (SELECT 1 FROM card_comments cc
 		            WHERE cc.card_id = c.id AND ${TS('cc.created_at')} BETWEEN @from AND @to)
 	)`;
@@ -262,6 +279,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 		? `AND (
 			   EXISTS (SELECT 1 FROM activity_log al2
 			            WHERE al2.card_id = c.id AND al2.user_id = @userId
+			              AND al2.action NOT IN (${NOT_WORK_ON_THE_CARD})
 			              AND ${TS('al2.created_at')} BETWEEN @from AND @to)
 			OR EXISTS (SELECT 1 FROM card_comments cc2
 			            WHERE cc2.card_id = c.id AND cc2.user_id = @userId
@@ -380,14 +398,19 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 				.map((s: any) => ({ id: s.id, title: s.title, completed: !!s.completed }));
 		}
 
-		if (includeComments && commentLimit > 0) {
-			card.comments = sqlite
-				.prepare(
-					`SELECT cc.id, cc.content, cc.created_at AS createdAt, u.username
-					 FROM card_comments cc JOIN users u ON u.id = cc.user_id
-					 WHERE cc.card_id = ? ORDER BY cc.created_at DESC LIMIT ?`
-				)
-				.all(r.id, commentLimit) as ReportCard['comments'];
+		// Asked for with a limit of 0, a card has an empty list: the key was
+		// left out, which reads as comments not asked for.
+		if (includeComments) {
+			card.comments =
+				commentLimit > 0
+					? (sqlite
+							.prepare(
+								`SELECT cc.id, cc.content, cc.created_at AS createdAt, u.username
+								 FROM card_comments cc JOIN users u ON u.id = cc.user_id
+								 WHERE cc.card_id = ? ORDER BY cc.created_at DESC LIMIT ?`
+							)
+							.all(r.id, commentLimit) as ReportCard['comments'])
+					: [];
 		}
 
 		let board = boardMap.get(r.boardId);
@@ -429,7 +452,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 			generatedAt: new Date().toISOString(),
 			completionBasis: 'completedAt',
 			attribution: userId
-				? 'Cards where this user logged an action or commented in the window, raised the card, or is currently assigned to it. Current assignment stands in for historic assignment, which is not recorded.'
+				? 'Cards where this user logged an action other than adding or removing a dependency, or commented, in the window, raised the card, or is currently assigned to it. Current assignment stands in for historic assignment, which is not recorded.'
 				: 'All users.',
 			closeReasonAssumedCount,
 			missingSummaryCount,

@@ -4,14 +4,16 @@ import { labels } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
+import { inTransaction } from '$lib/server/db/transaction';
+import { pathId, readBody, readText } from '$lib/server/request-body';
+import { requireLabel, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/labels/:labelId — Get a single label. */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const labelId = Number(params.labelId);
-	if (isNaN(labelId)) throw error(400, 'Invalid label ID');
+	const labelId = pathId(params.labelId, 'label');
 
 	const label = db.select().from(labels).where(eq(labels.id, labelId)).get();
 	if (!label) throw error(404, 'Label not found');
@@ -25,41 +27,42 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 /** PUT /api/v1/labels/:labelId — Update a label. */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const labelId = pathId(params.labelId, 'label');
+	const body = await readBody(request);
 
-	const labelId = Number(params.labelId);
-	if (isNaN(labelId)) throw error(400, 'Invalid label ID');
+	// The label is read and the caller checked in the transaction that changes
+	// it, once the body has arrived: someone taken off the board while the
+	// body was arriving is refused, and a label deleted meanwhile is 404, where
+	// the update found nothing and answered 200 with no body.
+	const updated = inTransaction(() => {
+		const { label, boardId } = requireLabel(user, labelId, 'edit');
 
-	const label = db.select().from(labels).where(eq(labels.id, labelId)).get();
-	if (!label) throw error(404, 'Label not found');
+		const updates: Partial<typeof labels.$inferInsert> = {};
+		const name = readText(body, 'name', {
+			trim: true,
+			min: 1,
+			max: 200,
+			keep: label.name,
+			says: { empty: 'name cannot be empty', invalid: 'Label name too long (max 200 chars)' }
+		});
+		if (name !== undefined) updates.name = name;
+		const color = readText(body, 'color', { min: 1, max: 32, keep: label.color });
+		if (color !== undefined) updates.color = color;
 
-	if (!canEditBoard(locals.user, label.boardId)) {
-		throw error(403, 'No edit access to this board');
-	}
+		if (Object.keys(updates).length === 0) {
+			throw error(400, 'No valid fields to update');
+		}
 
-	const body = await request.json();
-	const updates: Record<string, unknown> = {};
+		const row = db.update(labels)
+			.set(updates)
+			.where(eq(labels.id, labelId))
+			.returning()
+			.get();
 
-	if ('name' in body) {
-		if (!body.name || !String(body.name).trim()) throw error(400, 'name cannot be empty');
-		if (String(body.name).length > 200) throw error(400, 'Label name too long (max 200 chars)');
-		updates.name = String(body.name).trim();
-	}
-	if ('color' in body) {
-		updates.color = body.color;
-	}
-
-	if (Object.keys(updates).length === 0) {
-		throw error(400, 'No valid fields to update');
-	}
-
-	const updated = db.update(labels)
-		.set(updates)
-		.where(eq(labels.id, labelId))
-		.returning()
-		.get();
-
-	emit(label.boardId, 'update', { type: 'label' });
+		emit(boardId, 'update', { type: 'label' });
+		return row;
+	});
 
 	return json(updated);
 };
@@ -68,8 +71,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const labelId = Number(params.labelId);
-	if (isNaN(labelId)) throw error(400, 'Invalid label ID');
+	const labelId = pathId(params.labelId, 'label');
 
 	const label = db.select().from(labels).where(eq(labels.id, labelId)).get();
 	if (!label) throw error(404, 'Label not found');

@@ -2,6 +2,7 @@ import type { PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { teams, teamMembers, users } from '$lib/server/db/schema';
 import { eq, inArray } from 'drizzle-orm';
+import { listUsersFor } from '$lib/server/list-access';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const user = locals.user!;
@@ -37,14 +38,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 		return { ...team, members };
 	});
 
-	// All users for the "add member" dropdown (available to team owners / admins)
-	const allUsers = db.select({
-		id: users.id,
-		username: users.username,
-		email: users.email,
-		emoji: users.emoji,
-		role: users.role
-	}).from(users).all();
+	// All users for the "add member" dropdown (available to team owners / admins),
+	// as GET /api/users lists them: no address or role but to an administrator
+	// (card 2128). Every user's went to every signed-in caller.
+	const allUsers = listUsersFor(user);
 
 	return {
 		teams: teamsWithMembers,

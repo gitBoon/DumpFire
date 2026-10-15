@@ -5,22 +5,29 @@
  * There are two of them for the same reason as everywhere else in this codebase:
  * the UI runs on a session cookie, the API on a bearer token. The rules are
  * identical, so they live here and the routes are auth-and-shape wrappers.
+ * What differs is where the request came from, `source`, which the activity
+ * entry records.
  */
 
 import { error } from '@sveltejs/kit';
-import { sqlite } from './db';
 import { canViewBoard, canEditBoard } from './board-access';
+import { inTransaction } from './db/transaction';
+import { getWorkDependencies, type WorkKind, type WorkRef } from './planning';
 import {
-	getWorkDependencies,
-	validateDependencyBatch,
-	createDependencyBatch,
-	type WorkKind,
-	type WorkRef
-} from './planning';
-import { getWorkBoardId, getSubtaskCardId, describeWork } from './work-access';
-import { emit } from './events';
+	addDependencyLink,
+	removeDependencyLink,
+	type CycleRefusal,
+	type LinkRequest
+} from './dependency-refusals';
+import { readId, type RequestBody } from './request-body';
+import { getWorkBoardId, getSubtaskCardId } from './work-access';
 import type { SessionUser } from './auth';
 
+/**
+ * The ends of a subtask's links as both routes answer them. An end on a board
+ * the caller cannot open comes withheld from planning.ts: its id, kind and
+ * whether it is finished, and text in place of its title and board (card 2129).
+ */
 export function shapeEnds(refs: ReturnType<typeof getWorkDependencies>['blockedBy']) {
 	return refs.map((r) => ({
 		kind: r.kind,
@@ -31,7 +38,8 @@ export function shapeEnds(refs: ReturnType<typeof getWorkDependencies>['blockedB
 		boardName: r.boardName,
 		columnName: r.columnTitle,
 		priority: r.priority,
-		resolved: r.isComplete
+		resolved: r.isComplete,
+		withheld: r.withheld
 	}));
 }
 
@@ -49,7 +57,7 @@ function requireSubtask(user: SessionUser, subtaskId: number, forEdit: boolean) 
 
 export function readSubtaskDependencies(user: SessionUser, subtaskId: number) {
 	const { cardId } = requireSubtask(user, subtaskId, false);
-	const state = getWorkDependencies({ kind: 'subtask', id: subtaskId });
+	const state = getWorkDependencies({ kind: 'subtask', id: subtaskId }, user);
 	return {
 		subtaskId,
 		cardId,
@@ -63,16 +71,18 @@ export function readSubtaskDependencies(user: SessionUser, subtaskId: number) {
  * The two ends from the body.
  *
  * Mirrors the card route's spellings so the same four field names mean the same
- * thing whichever end you are editing from.
+ * thing whichever end you are editing from. Each is read as an id: a whole
+ * number of 1 or more, or the same written as text. `null` is the same as not
+ * sent.
  */
-function resolveEnds(subtaskId: number, body: Record<string, unknown>): { blocked: WorkRef; blocker: WorkRef } {
+function resolveEnds(subtaskId: number, body: RequestBody): { blocked: WorkRef; blocker: WorkRef } {
 	const self: WorkRef = { kind: 'subtask', id: subtaskId };
 	const given = [
-		{ field: 'dependsOnCardId', kind: 'card' as WorkKind, waits: true },
-		{ field: 'dependsOnSubtaskId', kind: 'subtask' as WorkKind, waits: true },
-		{ field: 'blocksCardId', kind: 'card' as WorkKind, waits: false },
-		{ field: 'blocksSubtaskId', kind: 'subtask' as WorkKind, waits: false }
-	].filter((g) => body[g.field] !== undefined && body[g.field] !== null);
+		{ id: readId(body, 'dependsOnCardId', { nullable: true }), kind: 'card' as WorkKind, waits: true },
+		{ id: readId(body, 'dependsOnSubtaskId', { nullable: true }), kind: 'subtask' as WorkKind, waits: true },
+		{ id: readId(body, 'blocksCardId', { nullable: true }), kind: 'card' as WorkKind, waits: false },
+		{ id: readId(body, 'blocksSubtaskId', { nullable: true }), kind: 'subtask' as WorkKind, waits: false }
+	].filter((g): g is { id: number; kind: WorkKind; waits: boolean } => typeof g.id === 'number');
 
 	if (given.length === 0) {
 		throw error(
@@ -83,51 +93,66 @@ function resolveEnds(subtaskId: number, body: Record<string, unknown>): { blocke
 	if (given.length > 1) throw error(400, 'Provide only one end');
 
 	const g = given[0];
-	const otherId = Number(body[g.field]);
-	if (isNaN(otherId)) throw error(400, `${g.field} must be an id`);
-	const other: WorkRef = { kind: g.kind, id: otherId };
+	const other: WorkRef = { kind: g.kind, id: g.id };
 
 	return g.waits ? { blocked: self, blocker: other } : { blocked: other, blocker: self };
 }
 
-export function addSubtaskDependency(user: SessionUser, subtaskId: number, body: Record<string, unknown>) {
-	const { boardId } = requireSubtask(user, subtaskId, true);
-	const { blocked, blocker } = resolveEnds(subtaskId, body);
+/**
+ * Record the link, and return the subtask's dependencies as they then are.
+ *
+ * One transaction, in this order: the subtask in the path (404, then 403 for a
+ * caller who may not edit its board), the ends in the body (400), then what
+ * `addDependencyLink` does for all four routes: the other end, the check, the
+ * link, the `dependency_added` entry from `source`, and the live events. The
+ * answer's list is read in it too.
+ *
+ * A link that would close a loop is not thrown: it is returned, with its
+ * chain, for the route to answer with `cycleAnswer`. Every other refusal is
+ * thrown, with the statuses dependency-refusals.ts gives all four routes.
+ */
+export function addSubtaskDependency(
+	user: SessionUser,
+	subtaskId: number,
+	body: RequestBody,
+	source: LinkRequest['source']
+): CycleRefusal | { rejected: false; state: ReturnType<typeof readSubtaskDependencies> } {
+	return inTransaction(() => {
+		requireSubtask(user, subtaskId, true);
+		const { blocked, blocker } = resolveEnds(subtaskId, body);
 
-	const other = blocked.kind === 'subtask' && blocked.id === subtaskId ? blocker : blocked;
-	const otherBoardId = getWorkBoardId(other);
-	if (otherBoardId === null) throw error(404, `${describeWork(other)} not found`);
-	if (!canEditBoard(user, otherBoardId)) {
-		throw error(403, `No edit access to the board holding ${describeWork(other)}`);
-	}
+		const added = addDependencyLink(user, blocked, blocker, { at: { kind: 'subtask', id: subtaskId }, source });
+		if (added.rejected) return added;
 
-	// Same validation as the card route and the bulk endpoint — one definition of
-	// what is allowed, so they cannot drift.
-	const v = validateDependencyBatch([
-		{ blocked: blocked.id, blockedType: blocked.kind, blocker: blocker.id, blockerType: blocker.kind }
-	]);
-	if (v.duplicates.length > 0) throw error(409, 'That dependency already exists');
-	if (v.rejected.length > 0) throw error(409, v.rejected[0].message);
-
-	createDependencyBatch(v.valid, user.id);
-
-	emit(boardId, 'update', { type: 'card' });
-	if (otherBoardId !== boardId) emit(otherBoardId, 'update', { type: 'card' });
-
-	return readSubtaskDependencies(user, subtaskId);
+		return { rejected: false as const, state: readSubtaskDependencies(user, subtaskId) };
+	});
 }
 
-export function removeSubtaskDependency(user: SessionUser, subtaskId: number, body: Record<string, unknown>) {
-	const { boardId } = requireSubtask(user, subtaskId, true);
-	const { blocked, blocker } = resolveEnds(subtaskId, body);
+/**
+ * Remove the link, and return the subtask's dependencies as they then are.
+ *
+ * The subtask in the path is whichever end the caller is looking at, and they
+ * are answered with its links, so they must be able to read it. Whether they
+ * may remove the link is not asked of this subtask's board: it is asked of the
+ * board of the end that waits, in removeDependencyLink, as it is for a card.
+ * One transaction, from the subtask to the answer's list.
+ */
+export function removeSubtaskDependency(
+	user: SessionUser,
+	subtaskId: number,
+	body: RequestBody,
+	source: LinkRequest['source']
+) {
+	return inTransaction(() => {
+		requireSubtask(user, subtaskId, false);
+		const { blocked, blocker } = resolveEnds(subtaskId, body);
 
-	sqlite
-		.prepare(
-			`DELETE FROM work_dependencies
-			 WHERE blocked_type = ? AND blocked_id = ? AND blocker_type = ? AND blocker_id = ?`
-		)
-		.run(blocked.kind, blocked.id, blocker.kind, blocker.id);
+		// Throws 403 for a caller who may not edit the board of the end that
+		// waits, and then 404 for a link that is not there. It writes the
+		// `dependency_removed` entry, and sends the live event to both ends'
+		// boards: the subtask in the path may be on either.
+		removeDependencyLink(user, blocked, blocker, { at: { kind: 'subtask', id: subtaskId }, source });
 
-	emit(boardId, 'update', { type: 'card' });
-	return readSubtaskDependencies(user, subtaskId);
+		return readSubtaskDependencies(user, subtaskId);
+	});
 }

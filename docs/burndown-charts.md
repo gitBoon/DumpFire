@@ -1,9 +1,9 @@
 ---
 title: "Burndown Charts"
 category: Reporting & Analytics
-version: 1.2
+version: 1.3
 status: As-Built
-date: 2026-09-30
+date: 2026-10-12
 tags:
   - burndown
   - burn-up
@@ -170,7 +170,7 @@ stateDiagram-v2
 | Rule | Why |
 |---|---|
 | A card **enters scope** on the UTC day of `created_at` | The day the work existed. |
-| It is **done** on the day of `completed_at`, but only while it sits in a Complete/Done column | `completed_at` is stamped on every move into Complete and **never cleared** on the way out. A stamp on a card elsewhere means the card was reopened. |
+| It is **done** on the day of `completed_at`, but only while it sits in a Complete/Done column | `completed_at` is stamped on every move into Complete. Since October 2026 it is cleared when the card leaves; before that it was **never cleared**, so an older card can carry a stamp while sitting elsewhere. Either way a card that has been completed (`first_completed_at`) and is not in a Complete column now was reopened. |
 | A **reopened** card is charted as open for its whole life | When it was reopened is not recorded, so a guessed interval would be invented data. Counted in `meta.reopenedCards`. |
 | A card **in Complete with no stamp** uses its last update as its completion day | Such cards predate the stamping fixes. Counted in `meta.inferredCompletionDates`. |
 | **Open work that is archived** leaves scope that day | Archive is the soft delete, so this is work dropped without being done. |

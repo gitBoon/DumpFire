@@ -13,9 +13,15 @@
 	import { theme } from '$lib/stores/theme';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { completionPercent } from '$lib/progress';
+	import { firstOpenColumn } from '$lib/column-role';
 	import { formatTokens } from '$lib/tokens';
 	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	// The shared toast, for a delete that failed. Renamed here: this page has
+	// `toasts` of its own, which are the new-request notices.
+	import FailureToast from '$lib/components/Toast.svelte';
+	import { toasts as failureToasts } from '$lib/stores/toast';
+	import { boardDeleteWarning, deleteFailure } from '$lib/api';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import CategoryManager from '$lib/components/CategoryManager.svelte';
@@ -244,9 +250,16 @@
 	async function deleteBoard(id: number) {
 		deleting = id;
 		confirmState.show = false;
-		await fetch(`/api/boards/${id}`, { method: 'DELETE' });
-		await invalidateAll();
-		deleting = null;
+		try {
+			const failure = await deleteFailure(() => fetch(`/api/boards/${id}`, { method: 'DELETE' }), 'board');
+			if (failure) {
+				failureToasts.add(failure, 'error');
+				return;
+			}
+			await invalidateAll();
+		} finally {
+			deleting = null;
+		}
 	}
 
 	function toggleExpand(boardId: number) {
@@ -421,9 +434,11 @@
 		try {
 			let parentCardId: number | null = subBoardParent === 'new' ? null : subBoardParent;
 
-			// Default path: create a card named after the sub-board in the first column
+			// Default path: create a card named after the sub-board in the first
+			// column that is not a Complete column, or the first of all when every
+			// one is. A card created in a Complete column is completed (card 2134).
 			if (parentCardId === null) {
-				const firstCol = subBoardColumns[0];
+				const firstCol = firstOpenColumn(subBoardColumns) ?? subBoardColumns[0];
 				if (!firstCol) {
 					subBoardError = 'This board has no columns to hold a parent card';
 					return;
@@ -1248,7 +1263,7 @@
 				</div>
 			{:else if showSubBoardForm}
 				<div class="ctx-new-cat">
-					<input type="text" class="ctx-cat-input" placeholder="Sub-board name..." bind:value={subBoardName} onkeydown={(e) => e.key === 'Enter' && createSubBoardInline()} autofocus />
+					<input type="text" class="ctx-cat-input" placeholder="Sub-board name..." maxlength="200" bind:value={subBoardName} onkeydown={(e) => e.key === 'Enter' && createSubBoardInline()} autofocus />
 					<label class="ctx-field-label" for="sub-board-parent">Attach to card</label>
 					<select id="sub-board-parent" class="ctx-cat-input" bind:value={subBoardParent} disabled={subBoardLoading}>
 						<option value="new">＋ New card{subBoardName.trim() ? ` "${subBoardName.trim()}"` : ''}</option>
@@ -1295,12 +1310,14 @@
 {#if confirmState.show}
 	<ConfirmModal
 		title="Delete Board"
-		message={`Are you sure you want to delete "${confirmState.boardName}"? All columns, cards and subtasks will be permanently deleted.`}
+		message={boardDeleteWarning(confirmState.boardName)}
 		confirmText="Delete Board"
 		onConfirm={() => deleteBoard(confirmState.boardId)}
 		onCancel={() => (confirmState.show = false)}
 	/>
 {/if}
+
+<FailureToast />
 
 {#if showActiveTasksModal}
 	<div class="modal-overlay" role="dialog" aria-modal="true" onclick={() => showActiveTasksModal = false}>

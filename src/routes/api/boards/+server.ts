@@ -1,8 +1,11 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
+import { inTransaction } from '$lib/server/db/transaction';
 import { boards, columns, boardMembers } from '$lib/server/db/schema';
 import { desc, inArray } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { readBody, readId, readText } from '$lib/server/request-body';
+import { requireBoardCategory, requireParentCard, requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -26,38 +29,74 @@ export const GET: RequestHandler = async ({ locals }) => {
 	return json(allBoards);
 };
 
+/**
+ * POST /api/boards — make a board, with its four columns and its owner.
+ *
+ * A new board has no row to guard, so its fields are read first (card 2117,
+ * R1): `name` text, trimmed, of 1 to 200 characters; `emoji` text of 1 to
+ * 32; `parentCardId` an id, or null for none; `categoryId`, the dashboard
+ * grouping, an id or null. `{}` made "Untitled Board", and a grouping that
+ * was not there was stored as sent: `boards.category_id` has no foreign key.
+ */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const body = await readBody(request);
+	const userId = user.id;
 
-	const { name, emoji, parentCardId, categoryId } = await request.json();
-	const userId = locals.user.id;
+	const name = readText(body, 'name', {
+		required: true,
+		trim: true,
+		min: 1,
+		max: 200,
+		says: { missing: 'name is required', empty: 'name is required', invalid: 'Board name too long (max 200 chars)' }
+	});
+	const emoji = readText(body, 'emoji', { min: 1, max: 32 });
+	const parentCardId = readId(body, 'parentCardId', { nullable: true });
+	const categoryId = readId(body, 'categoryId', { nullable: true });
 
-	const board = db
-		.insert(boards)
-		.values({
-			name: name || 'Untitled Board',
-			emoji: emoji || '📋',
-			parentCardId: parentCardId || null,
-			categoryId: categoryId || null,
-			createdBy: userId
-		})
-		.returning()
-		.get();
+	// One transaction: the board, its columns and its owner are made together.
+	// A failure after the first used to leave a board with no columns, or one
+	// that nobody owned. The parent card is read and the caller checked in it.
+	const board = inTransaction(() => {
+		// A sub-board hangs under a card, and is shown on it to everybody who
+		// can open that card's board. The id used to be written as it was sent,
+		// so anyone could hang a board under a card of a board they cannot open.
+		const parent = parentCardId != null ? requireParentCard(user, parentCardId) : null;
 
-	// Always create default columns
-	db.insert(columns)
-		.values([
-			{ boardId: board.id, title: 'To Do', position: 0, color: '#6366f1' },
-			{ boardId: board.id, title: 'On Hold', position: 1, color: '#ef4444' },
-			{ boardId: board.id, title: 'In Progress', position: 2, color: '#f59e0b' },
-			{ boardId: board.id, title: 'Complete', position: 3, color: '#10b981' }
-		])
-		.run();
+		// A grouping the caller is listed (card 2128, R2): 404 for none, and 403
+		// for one all of whose boards they cannot open, which filing a board
+		// under would put in their lists.
+		if (categoryId != null) requireBoardCategory(user, categoryId);
 
-	// Auto-add the creator as board owner
-	db.insert(boardMembers)
-		.values({ boardId: board.id, userId, role: 'owner' })
-		.run();
+		const board = db
+			.insert(boards)
+			.values({
+				name,
+				emoji: emoji ?? '📋',
+				parentCardId: parent?.id ?? null,
+				categoryId: categoryId ?? null,
+				createdBy: userId
+			})
+			.returning()
+			.get();
+
+		// Always create default columns
+		db.insert(columns)
+			.values([
+				{ boardId: board.id, title: 'To Do', position: 0, color: '#6366f1' },
+				{ boardId: board.id, title: 'On Hold', position: 1, color: '#ef4444' },
+				{ boardId: board.id, title: 'In Progress', position: 2, color: '#f59e0b' },
+				{ boardId: board.id, title: 'Complete', position: 3, color: '#10b981' }
+			])
+			.run();
+
+		// Auto-add the creator as board owner
+		db.insert(boardMembers)
+			.values({ boardId: board.id, userId, role: 'owner' })
+			.run();
+
+		return board;
+	});
 
 	return json(board, { status: 201 });
 };

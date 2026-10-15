@@ -18,12 +18,13 @@
  */
 
 import { db, sqlite } from './db';
-import { tokenUsage, subtasks, cards, columns } from './db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { inTransaction } from './db/transaction';
+import { tokenUsage } from './db/schema';
+import { eq } from 'drizzle-orm';
 import { canEditBoard } from './board-access';
 import { getCardBoardId, getSubtaskCardId } from './work-access';
 import type { SessionUser } from './auth';
-import { costOf, breakdownTotal, type TokenBreakdown } from '$lib/pricing';
+import { costOf } from '$lib/pricing';
 
 /**
  * A backstop against a fat-fingered paste, not a plausibility test.
@@ -287,7 +288,7 @@ export interface RecordResult {
 export function recordTokenUsage(
 	user: SessionUser,
 	target: TokenTarget,
-	tokens: number,
+	tokens: unknown,
 	model?: unknown,
 	note?: unknown,
 	breakdown?: BreakdownInput
@@ -400,7 +401,7 @@ export function recordTokenUsageBatch(
 
 	if (problems.length > 0) return { written: 0, problems, boardIds: [], cardIds: [] };
 
-	sqlite.transaction(() => {
+	inTransaction(() => {
 		for (const p of prepared) {
 			db.insert(tokenUsage)
 				.values({
@@ -419,7 +420,7 @@ export function recordTokenUsageBatch(
 				})
 				.run();
 		}
-	})();
+	});
 
 	return {
 		written: prepared.length,
@@ -957,26 +958,6 @@ export function getUserSpendByPeriod(
 		out[period] = list.sort((a, b) => b.tokens - a.tokens);
 	}
 	return out;
-}
-
-/** Total across one milestone's cards, for the planning view. */
-export function getMilestoneTokenTotal(milestoneId: number): { total: number; entries: number } {
-	const memberIds = db
-		.select({ id: cards.id })
-		.from(cards)
-		.where(eq(cards.milestoneId, milestoneId))
-		.all()
-		.map((c) => c.id);
-
-	if (memberIds.length === 0) return { total: 0, entries: 0 };
-
-	let total = 0;
-	let entries = 0;
-	for (const t of getCardTokenTotals(memberIds).values()) {
-		total += t.total;
-		entries += t.entries;
-	}
-	return { total, entries };
 }
 
 // Formatting lives in `$lib/tokens` so the browser can use it too — the boards

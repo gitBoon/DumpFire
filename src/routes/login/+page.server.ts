@@ -3,6 +3,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { getUserByUsername, getUserByEmail, verifyPassword, createSession, setSessionCookie } from '$lib/server/auth';
 import { checkRateLimit, resetRateLimit } from '$lib/server/rate-limit';
 import { createLogger } from '$lib/server/logger';
+import { addressOf, addressToCount } from '$lib/server/client-address';
 
 const log = createLogger('AUTH');
 
@@ -27,8 +28,10 @@ export const actions: Actions = {
 			return fail(400, { error: 'Please enter your password', identity });
 		}
 
-		// Rate limit by IP address — 10 attempts per 15 minutes
-		const clientIp = getClientAddress();
+		// Rate limit by IP address — 10 attempts per 15 minutes. An address that
+		// cannot be read is counted as 'unknown', with every other such request:
+		// asked unguarded, it was a 500 for everybody signing in that way.
+		const clientIp = addressToCount({ getClientAddress });
 		const { limited, retryAfterSecs } = checkRateLimit(`login:${clientIp}`, 10, 15 * 60 * 1000);
 		if (limited) {
 			log.warn(`Rate limit hit for IP ${clientIp} (login attempts)`);
@@ -56,9 +59,11 @@ export const actions: Actions = {
 		// Successful login — reset rate limit for this IP
 		resetRateLimit(`login:${clientIp}`);
 
+		// The line's address is null where there is none, as the gate writes it;
+		// 'unknown' is the rate limit's name for that, not an address.
 		log.info(`User "${user.username}" logged in`, {
 			identityType: identity.includes('@') ? 'email' : 'username'
-		}, { userId: user.id, ip: clientIp });
+		}, { userId: user.id, ip: addressOf({ getClientAddress }) });
 
 		// Create session and set cookie
 		const token = createSession(user.id);

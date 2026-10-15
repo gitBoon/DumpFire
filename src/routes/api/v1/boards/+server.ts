@@ -1,9 +1,12 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { boards, columns, boardMembers, cards } from '$lib/server/db/schema';
+import { inTransaction } from '$lib/server/db/transaction';
+import { boards, columns, boardMembers } from '$lib/server/db/schema';
 import { desc, inArray, eq } from 'drizzle-orm';
-import { getAccessibleBoardIds, canEditBoard } from '$lib/server/board-access';
+import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { logActivity } from '$lib/server/logActivity';
+import { requireParentCard, requireUser } from '$lib/server/route-guards';
+import { readBody, readId, readText } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards — List all boards accessible to the API key's user. */
@@ -39,66 +42,74 @@ export const GET: RequestHandler = async ({ locals }) => {
  *
  * Default columns (To Do, On Hold, In Progress, Complete) are
  * created automatically. The API key's user is added as board owner.
+ *
+ * A new board has no row to guard, so its fields are read first (card 2117,
+ * R1): `name` text, trimmed, of 1 to 200 characters; `emoji` text of 1 to 32;
+ * `parentCardId` an id, or null for none. The parent card is looked for after.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = requireUser(locals.user);
+	const body = await readBody(request);
 
-	const body = await request.json();
-	const { name, emoji, parentCardId } = body;
+	const name = readText(body, 'name', {
+		required: true,
+		trim: true,
+		min: 1,
+		max: 200,
+		says: { missing: 'name is required', empty: 'name is required', invalid: 'Board name too long (max 200 chars)' }
+	});
+	const emoji = readText(body, 'emoji', { min: 1, max: 32 });
+	const parentCardId = readId(body, 'parentCardId', { nullable: true });
 
-	if (!name || !name.trim()) throw error(400, 'name is required');
-	if (name.length > 200) throw error(400, 'Board name too long (max 200 chars)');
+	// One transaction: the parent card is read and the caller checked in the
+	// one that makes the board, its columns, its owner and its activity entry.
+	// A failure after the first used to leave a board with no columns, or one
+	// that nobody owned.
+	const created = inTransaction(() => {
+		// If linking to a parent card, verify access to that card's board. The
+		// check is the one POST /api/boards makes, so that the two cannot differ.
+		const parent = parentCardId != null ? requireParentCard(user, parentCardId) : null;
 
-	// If linking to a parent card, verify access to that card's board
-	if (parentCardId) {
-		const parentCard = db.select().from(cards).where(eq(cards.id, parentCardId)).get();
-		if (!parentCard) throw error(404, 'Parent card not found');
+		const board = db
+			.insert(boards)
+			.values({
+				name,
+				emoji: emoji ?? '📋',
+				parentCardId: parent?.id ?? null,
+				createdBy: user.id
+			})
+			.returning()
+			.get();
 
-		const parentCol = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, parentCard.columnId)).get();
-		if (!parentCol) throw error(404, 'Parent card column not found');
+		// Create default columns
+		db.insert(columns)
+			.values([
+				{ boardId: board.id, title: 'To Do', position: 0, color: '#6366f1' },
+				{ boardId: board.id, title: 'On Hold', position: 1, color: '#ef4444' },
+				{ boardId: board.id, title: 'In Progress', position: 2, color: '#f59e0b' },
+				{ boardId: board.id, title: 'Complete', position: 3, color: '#10b981' }
+			])
+			.run();
 
-		if (!canEditBoard(locals.user, parentCol.boardId)) {
-			throw error(403, 'No edit access to the parent card\'s board');
-		}
-	}
+		// Auto-add creator as board owner
+		db.insert(boardMembers)
+			.values({ boardId: board.id, userId: user.id, role: 'owner' })
+			.run();
 
-	const board = db
-		.insert(boards)
-		.values({
-			name: name.trim(),
-			emoji: emoji || '📋',
-			parentCardId: parentCardId || null,
-			createdBy: locals.user.id
-		})
-		.returning()
-		.get();
+		logActivity({
+			boardId: board.id,
+			userId: user.id,
+			action: 'api:board_created',
+			detail: `Created board "${board.name}"`,
+			userName: user.username,
+			userEmoji: user.emoji || '👤'
+		});
 
-	// Create default columns
-	db.insert(columns)
-		.values([
-			{ boardId: board.id, title: 'To Do', position: 0, color: '#6366f1' },
-			{ boardId: board.id, title: 'On Hold', position: 1, color: '#ef4444' },
-			{ boardId: board.id, title: 'In Progress', position: 2, color: '#f59e0b' },
-			{ boardId: board.id, title: 'Complete', position: 3, color: '#10b981' }
-		])
-		.run();
+		// Return the board with its columns
+		const boardColumns = db.select().from(columns).where(eq(columns.boardId, board.id)).all();
 
-	// Auto-add creator as board owner
-	db.insert(boardMembers)
-		.values({ boardId: board.id, userId: locals.user.id, role: 'owner' })
-		.run();
-
-	logActivity({
-		boardId: board.id,
-		userId: locals.user.id,
-		action: 'api:board_created',
-		detail: `Created board "${board.name}"`,
-		userName: locals.user.username,
-		userEmoji: locals.user.emoji || '👤'
+		return { ...board, columns: boardColumns };
 	});
 
-	// Return the board with its columns
-	const boardColumns = db.select().from(columns).where(eq(columns.boardId, board.id)).all();
-
-	return json({ ...board, columns: boardColumns }, { status: 201 });
+	return json(created, { status: 201 });
 };

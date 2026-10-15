@@ -12,12 +12,33 @@ import type { SessionUser } from './auth';
 
 export type BoardRole = 'owner' | 'editor' | 'viewer';
 
+/** The roles a member row can give. Any other text stored in one counts as `viewer`. */
+const BOARD_ROLES: readonly BoardRole[] = ['owner', 'editor', 'viewer'];
+
+/**
+ * All an access decision needs to know about the caller. Narrower than
+ * `SessionUser` so a plain user row can be checked too — when deciding whether
+ * someone else may be assigned a card, say.
+ */
+export type Actor = Pick<SessionUser, 'id' | 'role'>;
+
+/**
+ * True for both administrator roles.
+ *
+ * Use this rather than comparing `role` to `'admin'`: a bare comparison locks
+ * superadmin out of whatever it guards, which is how the most privileged
+ * account ended up unable to read the audit log.
+ */
+export function isAdmin(user: Pick<SessionUser, 'role'> | null | undefined): boolean {
+	return user?.role === 'admin' || user?.role === 'superadmin';
+}
+
 /**
  * Get the effective role a user has on a board.
  * Returns null if no access.
  * Priority: admin/superadmin → direct member → team member → public (viewer)
  */
-export function getBoardRole(user: SessionUser, boardId: number): BoardRole | 'admin' | null {
+export function getBoardRole(user: Actor, boardId: number): BoardRole | 'admin' | null {
 	// Admins/superadmins always have full access
 	if (user.role === 'admin' || user.role === 'superadmin') {
 		return 'admin';
@@ -38,7 +59,10 @@ export function getBoardRole(user: SessionUser, boardId: number): BoardRole | 'a
 		.get();
 
 	if (directMember) {
-		return directMember.role as BoardRole;
+		// The share routes stored any text as a role until card 2117 read it:
+		// `admin` among them, which a bare cast handed on as the administrator's
+		// role. A role that is not one of the three is read as the least.
+		return BOARD_ROLES.includes(directMember.role as BoardRole) ? (directMember.role as BoardRole) : 'viewer';
 	}
 
 	// Check team-based access
@@ -78,7 +102,7 @@ export function getBoardRole(user: SessionUser, boardId: number): BoardRole | 'a
  * For regular users: owned boards + direct member + team member boards + public boards.
  * For admins: all boards (returns null to indicate "no filter needed").
  */
-export function getAccessibleBoardIds(user: SessionUser): number[] | null {
+export function getAccessibleBoardIds(user: Actor): number[] | null {
 	if (user.role === 'admin' || user.role === 'superadmin') {
 		return null; // No filter — sees everything
 	}
@@ -127,7 +151,7 @@ export function getAccessibleBoardIds(user: SessionUser): number[] | null {
 /**
  * Check if user can edit a board (owner, editor, or admin).
  */
-export function canEditBoard(user: SessionUser, boardId: number): boolean {
+export function canEditBoard(user: Actor, boardId: number): boolean {
 	const role = getBoardRole(user, boardId);
 	return role === 'admin' || role === 'owner' || role === 'editor';
 }
@@ -135,6 +159,6 @@ export function canEditBoard(user: SessionUser, boardId: number): boolean {
 /**
  * Check if user can view a board.
  */
-export function canViewBoard(user: SessionUser, boardId: number): boolean {
+export function canViewBoard(user: Actor, boardId: number): boolean {
 	return getBoardRole(user, boardId) !== null;
 }

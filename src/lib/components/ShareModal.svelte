@@ -6,10 +6,14 @@
 	 * or teams, set permission levels, manage existing access,
 	 * and toggle public visibility.
 	 */
+	import { failureMessage } from '$lib/api';
+	import { toasts } from '$lib/stores/toast';
 
-	type ShareMember = { userId: number; username: string; email: string; emoji: string; role: string };
+	// An address and a role come to the board's owner and an administrator only
+	// (card 2128): the lists name everyone else without them.
+	type ShareMember = { userId: number; username: string; email?: string; emoji: string; role: string };
 	type ShareTeam = { teamId: number; teamName: string; teamEmoji: string; role: string };
-	type AvailableUser = { id: number; username: string; email: string; emoji: string; role: string };
+	type AvailableUser = { id: number; username: string; email?: string; emoji: string; role?: string };
 	type AvailableTeam = { id: number; name: string; emoji: string };
 
 	let {
@@ -122,13 +126,40 @@
 		}
 	}
 
-	async function updateRole(type: 'user' | 'team', targetId: number, newRole: string) {
-		await fetch(`/api/boards/${boardId}/share`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ type, targetId, role: newRole })
-		});
-		await loadData();
+	/**
+	 * Change the role of a person or a team the board is shared with, to what
+	 * `select` now shows. A refusal is said in the server's words, in the
+	 * shared toast, and the select is put back to the role that is stored:
+	 * reading the list again would not redraw a select whose value has not
+	 * changed, so it would go on showing the role that was refused.
+	 */
+	async function updateRole(type: 'user' | 'team', targetId: number, select: HTMLSelectElement) {
+		const stored =
+			type === 'user'
+				? members.find(m => m.userId === targetId)?.role
+				: teamAccess.find(t => t.teamId === targetId)?.role;
+		const putBack = () => {
+			if (stored !== undefined) select.value = stored;
+		};
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = await fetch(`/api/boards/${boardId}/share`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ type, targetId, role: select.value })
+			});
+		} catch {
+			putBack();
+			toasts.add('No answer from the server. The role may not have been changed.', 'error', started);
+			return;
+		}
+		if (res.ok) {
+			await loadData();
+		} else {
+			putBack();
+			toasts.add(await failureMessage(res, 'The role was not changed.'), 'error', started);
+		}
 	}
 
 	async function removeAccess(type: 'user' | 'team', targetId: number) {
@@ -200,7 +231,7 @@
 							<select bind:value={selectedUserId} class="share-select">
 								<option value={null}>Select a user...</option>
 								{#each availableUsers as u}
-									<option value={u.id}>{u.emoji} {u.username} ({u.email})</option>
+									<option value={u.id}>{u.emoji} {u.username}{u.email ? ` (${u.email})` : ''}</option>
 								{/each}
 							</select>
 						{:else}
@@ -238,17 +269,20 @@
 								<span class="share-item-emoji">{member.emoji}</span>
 								<div class="share-item-info">
 									<span class="share-item-name">{member.username}</span>
-									<span class="share-item-email">{member.email}</span>
+									{#if member.email}<span class="share-item-email">{member.email}</span>{/if}
 								</div>
 								{#if canManage}
+									<!-- No share makes anyone an owner. Owner is shown only on a row stored as one, so that it reads true. -->
 									<select
 										value={member.role}
-										onchange={(e) => updateRole('user', member.userId, (e.target as HTMLSelectElement).value)}
+										onchange={(e) => updateRole('user', member.userId, e.currentTarget)}
 										class="share-role-badge"
 									>
 										<option value="viewer">Viewer</option>
 										<option value="editor">Editor</option>
-										<option value="owner">Owner</option>
+										{#if member.role === 'owner'}
+											<option value="owner">Owner</option>
+										{/if}
 									</select>
 									<button class="share-remove-btn" onclick={() => removeAccess('user', member.userId)} title="Remove access">
 										<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -276,7 +310,7 @@
 								{#if canManage}
 									<select
 										value={team.role}
-										onchange={(e) => updateRole('team', team.teamId, (e.target as HTMLSelectElement).value)}
+										onchange={(e) => updateRole('team', team.teamId, e.currentTarget)}
 										class="share-role-badge"
 									>
 										<option value="viewer">Viewer</option>

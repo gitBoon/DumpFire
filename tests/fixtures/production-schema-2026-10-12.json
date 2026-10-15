@@ -1,0 +1,393 @@
+{
+	"capturedAt": "2026-10-12",
+	"note": "The schema of the production DumpFire database, as reported by sqlite_master, and the migration files it had recorded. Structure only: no rows, counts or sequence values. Captured for card 2006 so that tests can build a database in the shape production really has, which differs from the shape the migrations give a new database.",
+	"schema": [
+		{
+			"type": "index",
+			"name": "api_keys_key_hash_unique",
+			"tbl_name": "api_keys",
+			"sql": "CREATE UNIQUE INDEX `api_keys_key_hash_unique` ON `api_keys` (`key_hash`)"
+		},
+		{
+			"type": "index",
+			"name": "idx_activity_log_board_created",
+			"tbl_name": "activity_log",
+			"sql": "CREATE INDEX idx_activity_log_board_created ON activity_log(board_id, created_at)"
+		},
+		{
+			"type": "index",
+			"name": "idx_activity_log_card",
+			"tbl_name": "activity_log",
+			"sql": "CREATE INDEX idx_activity_log_card ON activity_log(card_id)"
+		},
+		{
+			"type": "index",
+			"name": "idx_activity_log_created_at",
+			"tbl_name": "activity_log",
+			"sql": "CREATE INDEX idx_activity_log_created_at ON activity_log(created_at)"
+		},
+		{
+			"type": "index",
+			"name": "idx_card_dep_blocker",
+			"tbl_name": "card_dependencies",
+			"sql": "CREATE INDEX idx_card_dep_blocker\n\tON card_dependencies(depends_on_card_id)"
+		},
+		{
+			"type": "index",
+			"name": "idx_card_dep_pair",
+			"tbl_name": "card_dependencies",
+			"sql": "CREATE UNIQUE INDEX idx_card_dep_pair\n\tON card_dependencies(card_id, depends_on_card_id)"
+		},
+		{
+			"type": "index",
+			"name": "idx_cards_completed_at",
+			"tbl_name": "cards",
+			"sql": "CREATE INDEX idx_cards_completed_at ON cards(completed_at)"
+		},
+		{
+			"type": "index",
+			"name": "idx_cards_milestone",
+			"tbl_name": "cards",
+			"sql": "CREATE INDEX idx_cards_milestone ON cards(milestone_id)"
+		},
+		{
+			"type": "index",
+			"name": "idx_daily_snapshots_board_date",
+			"tbl_name": "daily_snapshots",
+			"sql": "CREATE INDEX `idx_daily_snapshots_board_date` ON `daily_snapshots` (`board_id`, `date`)"
+		},
+		{
+			"type": "index",
+			"name": "idx_system_logs_level",
+			"tbl_name": "system_logs",
+			"sql": "CREATE INDEX `idx_system_logs_level` ON `system_logs` (`level`)"
+		},
+		{
+			"type": "index",
+			"name": "idx_system_logs_timestamp",
+			"tbl_name": "system_logs",
+			"sql": "CREATE INDEX `idx_system_logs_timestamp` ON `system_logs` (`timestamp`)"
+		},
+		{
+			"type": "index",
+			"name": "idx_token_usage_card",
+			"tbl_name": "token_usage",
+			"sql": "CREATE INDEX idx_token_usage_card ON token_usage(card_id)"
+		},
+		{
+			"type": "index",
+			"name": "idx_token_usage_subtask",
+			"tbl_name": "token_usage",
+			"sql": "CREATE INDEX idx_token_usage_subtask ON token_usage(subtask_id)"
+		},
+		{
+			"type": "index",
+			"name": "idx_work_dep_blocked",
+			"tbl_name": "work_dependencies",
+			"sql": "CREATE INDEX idx_work_dep_blocked\n\tON work_dependencies(blocked_type, blocked_id)"
+		},
+		{
+			"type": "index",
+			"name": "idx_work_dep_blocker",
+			"tbl_name": "work_dependencies",
+			"sql": "CREATE INDEX idx_work_dep_blocker\n\tON work_dependencies(blocker_type, blocker_id)"
+		},
+		{
+			"type": "index",
+			"name": "idx_work_dep_pair",
+			"tbl_name": "work_dependencies",
+			"sql": "CREATE UNIQUE INDEX idx_work_dep_pair\n\tON work_dependencies(blocked_type, blocked_id, blocker_type, blocker_id)"
+		},
+		{
+			"type": "index",
+			"name": "users_email_unique",
+			"tbl_name": "users",
+			"sql": "CREATE UNIQUE INDEX `users_email_unique` ON `users` (`email`)"
+		},
+		{
+			"type": "index",
+			"name": "users_username_unique",
+			"tbl_name": "users",
+			"sql": "CREATE UNIQUE INDEX `users_username_unique` ON `users` (`username`)"
+		},
+		{
+			"type": "table",
+			"name": "__drizzle_migrations",
+			"tbl_name": "__drizzle_migrations",
+			"sql": "CREATE TABLE __drizzle_migrations (\n\t\t\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\thash TEXT NOT NULL UNIQUE,\n\t\t\tcreated_at TEXT DEFAULT (datetime('now'))\n\t\t)"
+		},
+		{
+			"type": "table",
+			"name": "activity_log",
+			"tbl_name": "activity_log",
+			"sql": "CREATE TABLE `activity_log` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`board_id` integer NOT NULL,\n\t`card_id` integer,\n\t`user_id` integer,\n\t`action` text NOT NULL,\n\t`detail` text DEFAULT '',\n\t`user_name` text DEFAULT '',\n\t`user_emoji` text DEFAULT '👤',\n\t`created_at` text DEFAULT (datetime('now')) NOT NULL, source TEXT,\n\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`card_id`) REFERENCES `cards`(`id`) ON UPDATE no action ON DELETE set null,\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null\n)"
+		},
+		{
+			"type": "table",
+			"name": "api_keys",
+			"tbl_name": "api_keys",
+			"sql": "CREATE TABLE `api_keys` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`key_hash` text NOT NULL,\n\t`key_prefix` text NOT NULL,\n\t`name` text NOT NULL,\n\t`user_id` integer NOT NULL REFERENCES `users`(`id`) ON DELETE CASCADE,\n\t`last_used_at` text,\n\t`expires_at` text,\n\t`created_at` text DEFAULT (datetime('now')) NOT NULL\n)"
+		},
+		{
+			"type": "table",
+			"name": "backup_log",
+			"tbl_name": "backup_log",
+			"sql": "CREATE TABLE `backup_log` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`destination_type` text NOT NULL,\n\t`destination_name` text NOT NULL,\n\t`filename` text NOT NULL,\n\t`size_bytes` integer,\n\t`status` text NOT NULL,\n\t`error` text,\n\t`duration_ms` integer,\n\t`created_at` text DEFAULT (datetime('now')) NOT NULL\n)"
+		},
+		{
+			"type": "table",
+			"name": "board_categories",
+			"tbl_name": "board_categories",
+			"sql": "CREATE TABLE `board_categories` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`name` text NOT NULL,\n\t`color` text DEFAULT '#6366f1' NOT NULL\n)"
+		},
+		{
+			"type": "table",
+			"name": "board_favourites",
+			"tbl_name": "board_favourites",
+			"sql": "CREATE TABLE board_favourites (\n\tuser_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n\tboard_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now')),\n\tPRIMARY KEY (user_id, board_id)\n)"
+		},
+		{
+			"type": "table",
+			"name": "board_members",
+			"tbl_name": "board_members",
+			"sql": "CREATE TABLE `board_members` (\n\t`board_id` integer NOT NULL,\n\t`user_id` integer NOT NULL,\n\t`role` text DEFAULT 'viewer' NOT NULL,\n\tPRIMARY KEY(`board_id`, `user_id`),\n\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade\n)"
+		},
+		{
+			"type": "table",
+			"name": "board_teams",
+			"tbl_name": "board_teams",
+			"sql": "CREATE TABLE `board_teams` (\n\t`board_id` integer NOT NULL,\n\t`team_id` integer NOT NULL,\n\t`role` text DEFAULT 'viewer' NOT NULL,\n\tPRIMARY KEY(`board_id`, `team_id`),\n\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`team_id`) REFERENCES `teams`(`id`) ON UPDATE no action ON DELETE cascade\n)"
+		},
+		{
+			"type": "table",
+			"name": "boards",
+			"tbl_name": "boards",
+			"sql": "CREATE TABLE `boards` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`name` text NOT NULL,\n\t`emoji` text DEFAULT '📋',\n\t`created_at` text DEFAULT (datetime('now')) NOT NULL,\n\t`updated_at` text DEFAULT (datetime('now')) NOT NULL\n, `category_id` integer, parent_card_id INTEGER REFERENCES cards(id) ON DELETE CASCADE, `created_by` integer REFERENCES `users`(`id`) ON DELETE SET NULL, is_public INTEGER NOT NULL DEFAULT 0)"
+		},
+		{
+			"type": "table",
+			"name": "card_assignees",
+			"tbl_name": "card_assignees",
+			"sql": "CREATE TABLE `card_assignees` (\n\t`card_id` integer NOT NULL,\n\t`user_id` integer NOT NULL,\n\tPRIMARY KEY(`card_id`, `user_id`),\n\tFOREIGN KEY (`card_id`) REFERENCES `cards`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade\n)"
+		},
+		{
+			"type": "table",
+			"name": "card_attachments",
+			"tbl_name": "card_attachments",
+			"sql": "CREATE TABLE card_attachments (\n\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\tcard_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,\n\tfilename TEXT NOT NULL,\n\toriginal_name TEXT NOT NULL,\n\tmime_type TEXT NOT NULL DEFAULT 'application/octet-stream',\n\tsize_bytes INTEGER NOT NULL DEFAULT 0,\n\tuploaded_by INTEGER REFERENCES users(id),\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+		},
+		{
+			"type": "table",
+			"name": "card_comments",
+			"tbl_name": "card_comments",
+			"sql": "CREATE TABLE `card_comments` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`card_id` integer NOT NULL,\n\t`user_id` integer NOT NULL,\n\t`content` text NOT NULL,\n\t`created_at` text DEFAULT (datetime('now')) NOT NULL,\n\t`updated_at` text DEFAULT (datetime('now')) NOT NULL,\n\tFOREIGN KEY (`card_id`) REFERENCES `cards`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade\n)"
+		},
+		{
+			"type": "table",
+			"name": "card_dependencies",
+			"tbl_name": "card_dependencies",
+			"sql": "CREATE TABLE \"card_dependencies\" (\n\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\tcard_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,\n\tdepends_on_card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now'))\n, created_by_user_id INTEGER REFERENCES users(id))"
+		},
+		{
+			"type": "table",
+			"name": "card_labels",
+			"tbl_name": "card_labels",
+			"sql": "CREATE TABLE `card_labels` (\n\t`card_id` integer NOT NULL,\n\t`label_id` integer NOT NULL,\n\tFOREIGN KEY (`card_id`) REFERENCES `cards`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`label_id`) REFERENCES `labels`(`id`) ON UPDATE no action ON DELETE cascade\n)"
+		},
+		{
+			"type": "table",
+			"name": "card_templates",
+			"tbl_name": "card_templates",
+			"sql": "CREATE TABLE card_templates (\n\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\tboard_id INTEGER REFERENCES boards(id) ON DELETE CASCADE,\n\tname TEXT NOT NULL,\n\ttitle TEXT NOT NULL DEFAULT '',\n\tdescription TEXT DEFAULT '',\n\tpriority TEXT NOT NULL DEFAULT 'medium',\n\tsubtasks_json TEXT DEFAULT '[]',\n\tlabels_json TEXT DEFAULT '[]',\n\tcreated_by INTEGER REFERENCES users(id),\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+		},
+		{
+			"type": "table",
+			"name": "cards",
+			"tbl_name": "cards",
+			"sql": "CREATE TABLE `cards` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`column_id` integer NOT NULL,\n\t`title` text NOT NULL,\n\t`description` text DEFAULT '',\n\t`position` real DEFAULT 0 NOT NULL,\n\t`priority` text DEFAULT 'medium' NOT NULL,\n\t`color_tag` text DEFAULT '',\n\t`created_at` text DEFAULT (datetime('now')) NOT NULL,\n\t`updated_at` text DEFAULT (datetime('now')) NOT NULL, `category_id` integer REFERENCES `categories`(`id`) ON DELETE SET NULL, `due_date` text, on_hold_note TEXT DEFAULT '', completed_at TEXT DEFAULT NULL, pinned INTEGER NOT NULL DEFAULT 0, `business_value` TEXT DEFAULT '', archived_at TEXT, cover_url TEXT, recurrence_rule TEXT, next_recurrence TEXT, milestone_id INTEGER, created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, summary TEXT, theme TEXT, customer_impact TEXT, close_reason TEXT, release_state TEXT,\n\tFOREIGN KEY (`column_id`) REFERENCES `columns`(`id`) ON UPDATE no action ON DELETE cascade\n)"
+		},
+		{
+			"type": "table",
+			"name": "categories",
+			"tbl_name": "categories",
+			"sql": "CREATE TABLE `categories` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`board_id` integer NOT NULL,\n\t`name` text NOT NULL,\n\t`color` text DEFAULT '#6366f1' NOT NULL,\n\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade\n)"
+		},
+		{
+			"type": "table",
+			"name": "columns",
+			"tbl_name": "columns",
+			"sql": "CREATE TABLE `columns` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`board_id` integer NOT NULL,\n\t`title` text NOT NULL,\n\t`position` real DEFAULT 0 NOT NULL,\n\t`color` text DEFAULT '#6366f1' NOT NULL, `show_add_card` integer DEFAULT false NOT NULL, wip_limit INTEGER DEFAULT 0,\n\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade\n)"
+		},
+		{
+			"type": "table",
+			"name": "daily_snapshots",
+			"tbl_name": "daily_snapshots",
+			"sql": "CREATE TABLE `daily_snapshots` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`board_id` integer NOT NULL,\n\t`column_id` integer NOT NULL,\n\t`date` text NOT NULL,\n\t`card_count` integer DEFAULT 0 NOT NULL,\n\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`column_id`) REFERENCES `columns`(`id`) ON UPDATE no action ON DELETE cascade\n)"
+		},
+		{
+			"type": "table",
+			"name": "invite_tokens",
+			"tbl_name": "invite_tokens",
+			"sql": "CREATE TABLE invite_tokens (\n    token TEXT PRIMARY KEY,\n    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n    expires_at TEXT NOT NULL,\n    used INTEGER NOT NULL DEFAULT 0,\n    created_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+		},
+		{
+			"type": "table",
+			"name": "labels",
+			"tbl_name": "labels",
+			"sql": "CREATE TABLE labels (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,\n  name TEXT NOT NULL,\n  color TEXT NOT NULL DEFAULT '#6366f1'\n)"
+		},
+		{
+			"type": "table",
+			"name": "milestones",
+			"tbl_name": "milestones",
+			"sql": "CREATE TABLE milestones (\n\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\tboard_id INTEGER REFERENCES boards(id) ON DELETE CASCADE,\n\tname TEXT NOT NULL,\n\tdescription TEXT NOT NULL DEFAULT '',\n\ttarget_date TEXT,\n\tstatus TEXT NOT NULL DEFAULT 'open',\n\tcreated_by INTEGER REFERENCES users(id),\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now')),\n\tupdated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+		},
+		{
+			"type": "table",
+			"name": "report_schedules",
+			"tbl_name": "report_schedules",
+			"sql": "CREATE TABLE report_schedules (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n  name TEXT NOT NULL,\n  scope TEXT NOT NULL DEFAULT 'board',  -- 'board' | 'category' | 'all'\n  scope_id INTEGER,                     -- boardId or categoryId, NULL for 'all'\n  frequency TEXT NOT NULL DEFAULT 'weekly',  -- 'weekly' | 'monthly'\n  day_of_week INTEGER NOT NULL DEFAULT 1,   -- 0-6 (Sunday-Saturday), used for weekly\n  day_of_month INTEGER NOT NULL DEFAULT 1,  -- 1-28, used for monthly\n  time_of_day TEXT NOT NULL DEFAULT '09:00', -- HH:MM (24h format)\n  enabled INTEGER NOT NULL DEFAULT 1,\n  last_run_at TEXT,\n  next_run_at TEXT,\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n, recipients TEXT NOT NULL DEFAULT '', period_days INTEGER NOT NULL DEFAULT 7, detail_level TEXT NOT NULL DEFAULT 'detailed', status_filter TEXT NOT NULL DEFAULT 'all')"
+		},
+		{
+			"type": "table",
+			"name": "request_messages",
+			"tbl_name": "request_messages",
+			"sql": "CREATE TABLE request_messages (\n\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\trequest_id INTEGER NOT NULL REFERENCES task_requests(id) ON DELETE CASCADE,\n\tsender_type TEXT NOT NULL DEFAULT 'admin',\n\tsender_name TEXT NOT NULL,\n\tmessage TEXT NOT NULL,\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+		},
+		{
+			"type": "table",
+			"name": "sessions",
+			"tbl_name": "sessions",
+			"sql": "CREATE TABLE `sessions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` integer NOT NULL REFERENCES `users`(`id`) ON DELETE CASCADE,\n\t`expires_at` text NOT NULL,\n\t`created_at` text NOT NULL DEFAULT (datetime('now'))\n)"
+		},
+		{
+			"type": "table",
+			"name": "settings",
+			"tbl_name": "settings",
+			"sql": "CREATE TABLE settings (\n    key TEXT PRIMARY KEY,\n    value TEXT NOT NULL\n)"
+		},
+		{
+			"type": "table",
+			"name": "subtasks",
+			"tbl_name": "subtasks",
+			"sql": "CREATE TABLE `subtasks` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`card_id` integer NOT NULL,\n\t`title` text NOT NULL,\n\t`completed` integer DEFAULT false NOT NULL,\n\t`position` real DEFAULT 0 NOT NULL, `description` text DEFAULT '', `priority` text DEFAULT 'medium' NOT NULL, `color_tag` text DEFAULT '', `due_date` text,\n\tFOREIGN KEY (`card_id`) REFERENCES `cards`(`id`) ON UPDATE no action ON DELETE cascade\n)"
+		},
+		{
+			"type": "table",
+			"name": "system_logs",
+			"tbl_name": "system_logs",
+			"sql": "CREATE TABLE `system_logs` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`timestamp` text NOT NULL,\n\t`level` text NOT NULL,\n\t`context` text NOT NULL,\n\t`message` text NOT NULL,\n\t`meta` text,\n\t`user_id` integer,\n\t`ip` text\n)"
+		},
+		{
+			"type": "table",
+			"name": "task_requests",
+			"tbl_name": "task_requests",
+			"sql": "CREATE TABLE task_requests (\n\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\ttarget_type TEXT NOT NULL DEFAULT 'team',\n\ttarget_id INTEGER NOT NULL,\n\trequester_name TEXT NOT NULL DEFAULT 'Anonymous',\n\trequester_email TEXT,\n\trequester_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,\n\ttitle TEXT NOT NULL,\n\tdescription TEXT DEFAULT '',\n\tpriority TEXT NOT NULL DEFAULT 'medium',\n\tstatus TEXT NOT NULL DEFAULT 'pending',\n\tresolved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,\n\tresolved_card_id INTEGER REFERENCES cards(id) ON DELETE SET NULL,\n\treject_reason TEXT,\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now')),\n\tresolved_at TEXT\n, `business_value` TEXT DEFAULT '', desired_board_id INTEGER REFERENCES boards(id) ON DELETE SET NULL)"
+		},
+		{
+			"type": "table",
+			"name": "team_members",
+			"tbl_name": "team_members",
+			"sql": "CREATE TABLE `team_members` (\n\t`team_id` integer NOT NULL REFERENCES `teams`(`id`) ON DELETE CASCADE,\n\t`user_id` integer NOT NULL REFERENCES `users`(`id`) ON DELETE CASCADE,\n\t`role` text NOT NULL DEFAULT 'member',\n\tPRIMARY KEY (`team_id`, `user_id`)\n)"
+		},
+		{
+			"type": "table",
+			"name": "teams",
+			"tbl_name": "teams",
+			"sql": "CREATE TABLE `teams` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`name` text NOT NULL,\n\t`emoji` text DEFAULT '🏢',\n\t`created_at` text NOT NULL DEFAULT (datetime('now'))\n)"
+		},
+		{
+			"type": "table",
+			"name": "time_entries",
+			"tbl_name": "time_entries",
+			"sql": "CREATE TABLE time_entries (\n\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\tcard_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,\n\tuser_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,\n\tstarted_at TEXT NOT NULL DEFAULT (datetime('now')),\n\tstopped_at TEXT,\n\tduration_ms INTEGER NOT NULL DEFAULT 0,\n\tnote TEXT DEFAULT '',\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+		},
+		{
+			"type": "table",
+			"name": "token_usage",
+			"tbl_name": "token_usage",
+			"sql": "CREATE TABLE token_usage (\n\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\n\t-- Exactly one of these is set. An entry belongs either to a card directly\n\t-- (work not broken out into a subtask) or to one specific subtask. A card's\n\t-- reported total is its own entries plus those of all its subtasks.\n\tcard_id INTEGER REFERENCES cards(id) ON DELETE CASCADE,\n\tsubtask_id INTEGER REFERENCES subtasks(id) ON DELETE CASCADE,\n\n\t-- Signed on purpose: a correction is a negative entry, which keeps the\n\t-- original report in the history instead of quietly rewriting it.\n\ttokens INTEGER NOT NULL,\n\n\t-- Which model spent them. Nullable because a caller may genuinely not know,\n\t-- but worth capturing: 80k Opus tokens and 80k Haiku tokens are the same\n\t-- number and very different money, so a total without a model cannot be\n\t-- turned into cost or compared fairly between cards.\n\tmodel TEXT,\n\n\t-- What this entry covers (\"applied the fix across 9 sites\"). Free text.\n\tnote TEXT,\n\n\treported_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now')), input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_5m_tokens INTEGER, cache_write_1h_tokens INTEGER, api_calls INTEGER,\n\n\t-- Exactly one owner, never both and never neither.\n\tCHECK ((card_id IS NULL) <> (subtask_id IS NULL))\n)"
+		},
+		{
+			"type": "table",
+			"name": "user_xp",
+			"tbl_name": "user_xp",
+			"sql": "CREATE TABLE user_xp (\n    name TEXT PRIMARY KEY,\n    xp INTEGER NOT NULL DEFAULT 0,\n    emoji TEXT DEFAULT '👤'\n)"
+		},
+		{
+			"type": "table",
+			"name": "users",
+			"tbl_name": "users",
+			"sql": "CREATE TABLE `users` (\n\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,\n\t`username` text NOT NULL,\n\t`email` text NOT NULL,\n\t`password_hash` text NOT NULL,\n\t`emoji` text DEFAULT '👤',\n\t`role` text NOT NULL DEFAULT 'user',\n\t`created_at` text NOT NULL DEFAULT (datetime('now'))\n, notification_prefs TEXT DEFAULT '{}')"
+		},
+		{
+			"type": "table",
+			"name": "webhooks",
+			"tbl_name": "webhooks",
+			"sql": "CREATE TABLE webhooks (\n\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\tboard_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,\n\turl TEXT NOT NULL,\n\tsecret TEXT NOT NULL DEFAULT '',\n\tevents TEXT NOT NULL DEFAULT '[]',\n\tactive INTEGER NOT NULL DEFAULT 1,\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+		},
+		{
+			"type": "table",
+			"name": "work_dependencies",
+			"tbl_name": "work_dependencies",
+			"sql": "CREATE TABLE work_dependencies (\n\tid INTEGER PRIMARY KEY AUTOINCREMENT,\n\tblocked_type TEXT NOT NULL DEFAULT 'card',\n\tblocked_id INTEGER NOT NULL,\n\tblocker_type TEXT NOT NULL DEFAULT 'card',\n\tblocker_id INTEGER NOT NULL,\n\tcreated_by_user_id INTEGER REFERENCES users(id),\n\tcreated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+		}
+	],
+	"recorded": [
+		"0000_light_tenebrous.sql",
+		"0001_add_categories.sql",
+		"0002_add_subtasks.sql",
+		"0003_add_detail_fields.sql",
+		"0004_add_user_xp.sql",
+		"0005_add_on_hold_note.sql",
+		"0006_add_completed_at.sql",
+		"0007_add_activity_log.sql",
+		"0008_add_labels.sql",
+		"0009_add_pinned_field.sql",
+		"0010_add_sub_boards.sql",
+		"0011_add_user_management.sql",
+		"0012_add_public_boards.sql",
+		"0013_add_settings.sql",
+		"0014_add_card_assignees.sql",
+		"0015_add_invite_tokens.sql",
+		"0016_add_task_requests.sql",
+		"0001_dear_pandemic.sql",
+		"0002_abandoned_sally_floyd.sql",
+		"0017_add_board_categories.sql",
+		"0018_add_card_comments.sql",
+		"0003_big_scrambler.sql",
+		"0019_add_request_business_value.sql",
+		"0020_add_request_messages.sql",
+		"0021_add_card_business_value.sql",
+		"0022_add_notification_prefs.sql",
+		"0023_add_wip_limits.sql",
+		"0024_add_board_favourites.sql",
+		"0025_add_card_archive.sql",
+		"0026_add_card_covers.sql",
+		"0027_add_card_templates.sql",
+		"0028_add_time_entries.sql",
+		"0029_add_card_dependencies.sql",
+		"0030_add_card_attachments.sql",
+		"0031_add_card_recurrence.sql",
+		"0032_add_api_keys.sql",
+		"0033_add_reports.sql",
+		"0034_reports_email.sql",
+		"0035_add_report_period_days.sql",
+		"0004_dizzy_maggott.sql",
+		"0036_add_webhooks_and_deps.sql",
+		"0005_shallow_excalibur.sql",
+		"0037_add_report_detail_level.sql",
+		"0038_add_request_desired_board.sql",
+		"0039_add_system_logs.sql",
+		"0040_ensure_daily_snapshots.sql",
+		"0041_add_report_status_filter.sql",
+		"0042_add_milestones_and_planning.sql",
+		"0043_add_work_dependencies.sql",
+		"0044_add_token_usage.sql",
+		"0045_add_token_split.sql",
+		"0046_add_token_breakdown.sql",
+		"0047_add_api_calls.sql",
+		"0048_add_audit_completeness.sql",
+		"0049_add_card_reporting_fields.sql"
+	]
+}

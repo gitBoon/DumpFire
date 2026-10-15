@@ -14,13 +14,16 @@ import { db } from '$lib/server/db';
 import { cards, columns, boards, subtasks } from '$lib/server/db/schema';
 import { eq, like, isNull, and, inArray } from 'drizzle-orm';
 import { canViewBoard } from '$lib/server/board-access';
+import { readQueryId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const q = (url.searchParams.get('q') ?? '').trim();
-	const excludeId = Number(url.searchParams.get('exclude') ?? '0');
+	// An id, as an id in the path is read (card 2117): `Number()` read `2.5`
+	// and `5abc` as something else. Not sent is no card to leave out.
+	const excludeId = readQueryId(url.searchParams.get('exclude'), 'card') ?? 0;
 	const kinds = (url.searchParams.get('kinds') ?? 'card').split(',').map((k) => k.trim());
 	if (q.length === 0) return json([]);
 

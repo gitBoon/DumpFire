@@ -1,7 +1,6 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
-import { cards, subtasks, columns } from '$lib/server/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { clearBoardCards } from '$lib/server/deletes';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ params, locals }) => {
@@ -9,17 +8,13 @@ export const POST: RequestHandler = async ({ params, locals }) => {
 		throw error(403, 'Forbidden');
 	}
 
-	const boardId = Number(params.id);
-	// Get all column IDs for this board
-	const boardCols = db.select({ id: columns.id }).from(columns).where(eq(columns.boardId, boardId)).all();
-	const colIds = boardCols.map((c) => c.id);
+	const boardId = pathId(params.id, 'board');
 
-	if (colIds.length > 0) {
-		// Delete all cards in those columns (subtasks cascade)
-		for (const colId of colIds) {
-			db.delete(cards).where(eq(cards.columnId, colId)).run();
-		}
-	}
+	// One transaction, in which the board's cards are found and deleted with
+	// their dependency links, their sub-boards and everything on those. The
+	// files of their attachments go to the trash once it is committed. See
+	// $lib/server/deletes.ts.
+	clearBoardCards(boardId, locals.user);
 
 	return json({ success: true });
 };

@@ -1,9 +1,9 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.0
+version: 1.3
 status: As-Built
-date: 2026-09-14
+date: 2026-10-14
 tags:
   - reporting
   - audit-log
@@ -118,6 +118,13 @@ raised, it was edited, an audit event names it, or someone commented on it. The
 union matters — relying on the audit log alone is what made the hand-built report
 miss 30% of completions.
 
+A dependency added or removed is not work on the card it is recorded on, and is
+not counted: `dependency_added`, `dependency_removed` and `dependencies_bulk_added`,
+in either spelling, neither put a card in the window nor make it the work of
+whoever wrote them. Since 14 October 2026 the card window records every link it
+adds or removes, and counted, linking a blocker would have read as work on the
+card.
+
 ## The five reporting fields
 
 Stored on `cards`, all nullable, none backfilled.
@@ -188,11 +195,29 @@ Webhooks now fire off the canonical name, so a card completed in the UI notifies
 subscribers. Previously only the `api:` spellings were mapped and it notified
 nobody.
 
+The entry is written inside the transaction of the action it records, so an
+action and its entry are saved together or not at all: the log cannot hold an
+entry for a move that was rolled back, or lack one for a move that was saved.
+The webhook in the diagram is queued when the entry is written and sent once
+that transaction has committed.
+
+Deletes are in the same vocabulary: `card_archived`, `card_deleted`,
+`column_deleted` (one entry for a column and every card in it), `cards_purged`
+and `cards_cleared`. A `card_deleted` entry has no `cardId`, because the card it
+would point to is gone; a deleted board leaves no entry, because its log is
+deleted with it.
+
 ### Paging
 
 Responses carry `total` and `hasMore` alongside `limit`/`offset`/`count`. The
 default page of 100 was undocumented and a full page looked exactly like a
 complete result — which is how a 2,500-entry scan quietly became a 100-entry one.
+
+`limit` and `offset` are never refused (card 2117): each is rounded down, `limit` is
+held between 1 and 500 and `offset` is 0 or more, and text that is not a number is the
+default. `limit=-1` used to answer the whole log, and `limit=2.5` was a `500`. `boardId`,
+`userId` and `cardId` are read as an id in a path is: `400` for one that is not a whole
+number of 1 or more.
 
 ## Board attribution
 

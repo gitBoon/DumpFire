@@ -23,7 +23,13 @@
 	};
 
 	let requestId = $derived(Number($page.params.id));
-	let email = $derived($page.url.searchParams.get('email') || '');
+	/**
+	 * The key to this thread, from the link in the email. Links used to carry
+	 * the requester's email address instead; those no longer open anything.
+	 */
+	let token = $derived($page.url.searchParams.get('token') || '');
+
+	const LINK_NOT_VALID = 'This link is no longer valid. Use the link in the most recent email about your request.';
 
 	let request = $state<RequestInfo | null>(null);
 	let messages = $state<Message[]>([]);
@@ -46,7 +52,7 @@
 
 	async function pollMessages() {
 		try {
-			const msgRes = await fetch(`/api/requests/${requestId}/messages?email=${encodeURIComponent(email)}`);
+			const msgRes = await fetch(`/api/requests/${requestId}/messages?token=${encodeURIComponent(token)}`);
 			if (msgRes.ok) {
 				const fresh: Message[] = await msgRes.json();
 				if (fresh.length !== messages.length) {
@@ -66,14 +72,19 @@
 	async function loadData() {
 		loading = true;
 		try {
-			// Load request info (public endpoint — supports email token auth)
-			const reqRes = await fetch(`/api/requests/${requestId}?email=${encodeURIComponent(email)}`);
+			// Load request info (public endpoint — opened by the token in the link)
+			const reqRes = await fetch(`/api/requests/${requestId}?token=${encodeURIComponent(token)}`);
 			if (reqRes.ok) {
 				request = await reqRes.json();
+			} else {
+				// Any failure reads as a link that does not work. A link that is
+				// wrong and a request that is not there are both answered 404
+				// (card 2132); a wrong link was 403, and only that was read so.
+				errorMsg = LINK_NOT_VALID;
 			}
 
 			// Load messages
-			const msgRes = await fetch(`/api/requests/${requestId}/messages?email=${encodeURIComponent(email)}`);
+			const msgRes = await fetch(`/api/requests/${requestId}/messages?token=${encodeURIComponent(token)}`);
 			if (msgRes.ok) {
 				messages = await msgRes.json();
 				scrollToBottom();
@@ -85,7 +96,7 @@
 	}
 
 	async function sendReply() {
-		if (!newMessage.trim() || !email) return;
+		if (!newMessage.trim() || !token) return;
 		sending = true;
 		errorMsg = '';
 
@@ -95,7 +106,7 @@
 			body: JSON.stringify({
 				message: newMessage.trim(),
 				senderType: 'requester',
-				email
+				token
 			})
 		});
 
@@ -103,6 +114,8 @@
 		if (res.ok) {
 			newMessage = '';
 			await loadData();
+		} else if (res.status === 404) {
+			errorMsg = LINK_NOT_VALID;
 		} else {
 			const data = await res.json().catch(() => ({}));
 			errorMsg = data.message || 'Failed to send message';
@@ -142,7 +155,7 @@
 		{:else if !request}
 			<div class="error-state">
 				<span>❌</span>
-				<p>Request not found or you don't have access.</p>
+				<p>{errorMsg || "Request not found or you don't have access."}</p>
 			</div>
 		{:else}
 			<!-- Request summary -->
@@ -150,7 +163,7 @@
 				<div class="summary-top">
 					<span class="priority-badge priority-{request.priority}">{priorityLabels[request.priority] || request.priority}</span>
 					<span class="status-badge" class:status-pending={request.status === 'pending'} class:status-accepted={request.status === 'accepted'} class:status-rejected={request.status === 'rejected'}>
-						{request.status === 'pending' ? '⏳ Pending' : request.status === 'accepted' ? '✅ Accepted' : '❌ Rejected'}
+						{request.status === 'pending' ? '⏳ Pending' : request.status === 'accepted' ? '✅ Accepted' : request.status === 'unverified' ? '📧 Awaiting your confirmation' : '❌ Rejected'}
 					</span>
 				</div>
 				<h2 class="summary-title">{request.title}</h2>
@@ -196,6 +209,12 @@
 							{sending ? 'Sending...' : '📨 Send Reply'}
 						</button>
 					</div>
+				</div>
+			{:else if request.status === 'unverified'}
+				<div class="resolved-notice">
+					This request has not been passed to the team yet.
+					<a href={`/request/${requestId}/confirm?token=${encodeURIComponent(token)}`}>Confirm it</a>
+					and they will be told about it.
 				</div>
 			{:else}
 				<div class="resolved-notice">

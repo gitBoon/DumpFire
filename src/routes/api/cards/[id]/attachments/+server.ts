@@ -1,33 +1,25 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { cardAttachments, cards, columns } from '$lib/server/db/schema';
+import { inTransaction } from '$lib/server/db/transaction';
+import { cardAttachments } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir, unlink, rmdir } from 'fs/promises';
 import { randomUUID } from 'crypto';
-import { join, dirname } from 'path';
-import { canViewBoard, canEditBoard } from '$lib/server/board-access';
+import { requireCard } from '$lib/server/route-guards';
+import { attachmentPath, cardDir } from '$lib/server/uploads';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
-const DB_PATH = process.env.DB_PATH || 'dumpfire.db';
-const UPLOADS_DIR = join(dirname(DB_PATH), 'uploads');
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 
-/** Resolve the boardId for a given card. */
-function getCardBoardId(cardId: number): number | null {
-	const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, cardId)).get();
-	if (!card) return null;
-	const col = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, card.columnId)).get();
-	return col?.boardId ?? null;
-}
 
 /** GET — list attachments for a card */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const cardId = Number(params.id);
-	const boardId = getCardBoardId(cardId);
-	if (!boardId) throw error(404, 'Card not found');
-	if (!canViewBoard(locals.user, boardId)) throw error(403, 'No access to this board');
+	const cardId = pathId(params.id, 'card');
+	requireCard(locals.user, cardId, 'view');
+
 
 	const attachments = db.select().from(cardAttachments)
 		.where(eq(cardAttachments.cardId, cardId))
@@ -38,11 +30,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 /** POST — upload file attachment */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
+	const user = locals.user;
 
-	const cardId = Number(params.id);
-	const boardId = getCardBoardId(cardId);
-	if (!boardId) throw error(404, 'Card not found');
-	if (!canEditBoard(locals.user, boardId)) throw error(403, 'No edit access to this board');
+	const cardId = pathId(params.id, 'card');
+	// Before the upload is read, so that a caller with no access is not sent
+	// 25 MB first. It is asked again below, with the row.
+	requireCard(user, cardId, 'edit');
+
 
 	const formData = await request.formData();
 	const file = formData.get('file') as File | null;
@@ -52,20 +46,38 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const uuid = randomUUID();
 	const safeOriginalName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
 	const filename = `${uuid}-${safeOriginalName}`;
-	const cardDir = join(UPLOADS_DIR, String(cardId));
-
-	await mkdir(cardDir, { recursive: true });
+	const filePath = attachmentPath(cardId, filename);
 	const buffer = Buffer.from(await file.arrayBuffer());
-	await writeFile(join(cardDir, filename), buffer);
 
-	const attachment = db.insert(cardAttachments).values({
-		cardId,
-		filename,
-		originalName: file.name,
-		mimeType: file.type || 'application/octet-stream',
-		sizeBytes: file.size,
-		uploadedBy: locals.user.id
-	}).returning().get();
+	// The file first, and then its row. A row is never left naming a file that
+	// was not written; and if the row cannot be written, because the card was
+	// deleted while the upload was being read or for any other reason, the
+	// file is removed again, and the folder if this request made it.
+	let madeDir = false;
+	try {
+		madeDir = (await mkdir(cardDir(cardId), { recursive: true })) !== undefined;
+		await writeFile(filePath, buffer);
 
-	return json(attachment);
+		const attachment = inTransaction(() => {
+			// The card may have gone, or the caller's access to it, since the
+			// check above: the body was awaited in between.
+			requireCard(user, cardId, 'edit');
+
+			return db.insert(cardAttachments).values({
+				cardId,
+				filename,
+				originalName: file.name,
+				mimeType: file.type || 'application/octet-stream',
+				sizeBytes: file.size,
+				uploadedBy: user.id
+			}).returning().get();
+		});
+
+		return json(attachment);
+	} catch (err) {
+		try { await unlink(filePath); } catch { /* it was never written */ }
+		// Not recursive: a folder with another upload in it stays.
+		if (madeDir) { try { await rmdir(cardDir(cardId)); } catch { /* not empty, or gone */ } }
+		throw err;
+	}
 };

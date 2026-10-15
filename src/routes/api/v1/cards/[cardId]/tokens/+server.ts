@@ -8,6 +8,7 @@ import {
 import { getCardBoardId } from '$lib/server/work-access';
 import { canViewBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
+import { pathId, readBody } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 function handle(e: unknown): never {
@@ -25,8 +26,7 @@ function handle(e: unknown): never {
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const cardId = Number(params.cardId);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	const cardId = pathId(params.cardId, 'card');
 
 	const boardId = getCardBoardId(cardId);
 	if (boardId === null) throw error(404, 'Card not found');
@@ -55,10 +55,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const cardId = Number(params.cardId);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	const cardId = pathId(params.cardId, 'card');
 
-	const body = await request.json();
+	// The fields are held to tokens.ts's own rules, which recordTokenUsage
+	// reads, and to nothing stricter (card 2117, R10).
+	const body = await readBody(request);
 	try {
 		const result = recordTokenUsage(
 			locals.user,

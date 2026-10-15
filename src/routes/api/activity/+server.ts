@@ -2,7 +2,9 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { activityLog, boards } from '$lib/server/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
-import { canViewBoard, canEditBoard, getAccessibleBoardIds } from '$lib/server/board-access';
+import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { readQueryId } from '$lib/server/request-body';
+import { requireBoard } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /**
@@ -15,14 +17,16 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const boardIdParam = url.searchParams.get('boardId');
+	// An id, as an id in the path is read (card 2117): `2.5` and `5abc` were
+	// read as another board or as none, and `0` was an empty list.
+	const boardId = readQueryId(url.searchParams.get('boardId'), 'board', 'Invalid boardId');
 
-	if (boardIdParam) {
-		// Single-board mode (existing behaviour)
-		const boardId = Number(boardIdParam);
-		if (!boardId) return json([]);
-
-		if (!canViewBoard(locals.user, boardId)) throw error(403, 'No access to this board');
+	if (boardId !== undefined) {
+		// Single-board mode (existing behaviour). A board that is not there is
+		// 404 to everyone, and then one the caller cannot see 403: everyone but
+		// an administrator was answered 403, and an administrator an empty list
+		// (card 2117, decision 10).
+		requireBoard(locals.user, boardId, 'view');
 
 		const activities = db
 			.select()
@@ -86,25 +90,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	return json(activities);
 };
 
-export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-
-	const { boardId, cardId, action, detail } = await request.json();
-
-	if (!canEditBoard(locals.user, boardId)) throw error(403, 'No edit access to this board');
-
-	// Use authenticated user identity — never trust client-supplied userName
-	const entry = db
-		.insert(activityLog)
-		.values({
-			boardId,
-			cardId: cardId || null,
-			action,
-			detail: detail || '',
-			userName: locals.user.username,
-			userEmoji: locals.user.emoji || '👤'
-		})
-		.returning()
-		.get();
-	return json(entry, { status: 201 });
-};
+// There is no POST. The browser used to write its own activity entries here,
+// alongside the ones the server already writes for the same change — so every
+// move was logged twice, the second time with no user id and no source. The
+// server-side entry is the record; see `$lib/server/logActivity`.

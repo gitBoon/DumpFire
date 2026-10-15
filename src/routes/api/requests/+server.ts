@@ -1,11 +1,18 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
+import { inTransaction } from '$lib/server/db/transaction';
 import { taskRequests, users, teams, teamMembers, cards, columns, boards } from '$lib/server/db/schema';
-import { eq, and, inArray, or, desc } from 'drizzle-orm';
-import { notifyTaskRequest } from '$lib/server/notifications';
-import { resolveBaseUrl } from '$lib/server/email';
+import { eq, and, inArray, or, desc, ne, lt } from 'drizzle-orm';
+import { notifyTaskRequest, notifyRequesterConfirm } from '$lib/server/notifications';
+import { NO_LINK_ADDRESS, linkBaseUrl, isSmtpConfigured } from '$lib/server/email';
+import { newRequestToken, publicRequest, requestConfirmUrl, verifyFormToken } from '$lib/server/request-tokens';
 import { checkRateLimit } from '$lib/server/rate-limit';
+import { addressToCount } from '$lib/server/client-address';
+import { readBody, readChoice, readEmail, readId, readText } from '$lib/server/request-body';
+import { requireBoard } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
+
+const PRIORITIES = ['low', 'medium', 'high', 'critical'] as const;
 
 /** GET — Returns requests targeted at the current user or their teams. */
 export const GET: RequestHandler = async ({ locals }) => {
@@ -28,9 +35,11 @@ export const GET: RequestHandler = async ({ locals }) => {
 		);
 	}
 
-	// All users (including admins) only see requests targeted at them or their teams
+	// All users (including admins) only see requests targeted at them or their teams.
+	// A request nobody has confirmed yet is not shown: it may not be from who it
+	// says it is, and showing it would make the inbox the spam channel instead.
 	const rows = db.select().from(taskRequests)
-		.where(or(...conditions))
+		.where(and(or(...conditions), ne(taskRequests.status, 'unverified')))
 		.orderBy(desc(taskRequests.createdAt))
 		.all();
 
@@ -67,69 +76,162 @@ export const GET: RequestHandler = async ({ locals }) => {
 			}
 		}
 
-		return { ...r, targetName, targetEmoji, resolvedBoardId, desiredBoardName, desiredBoardEmoji };
+		return { ...publicRequest(r), targetName, targetEmoji, resolvedBoardId, desiredBoardName, desiredBoardEmoji };
 	});
 
 	return json(enriched);
 };
 
-/** POST — Create a new task request. Works authed or unauthed. */
+/** Refuse with 429 once `key` has been used more than `max` times in the window. */
+function limit(key: string, max: number, windowMs: number): void {
+	const { limited, retryAfterSecs } = checkRateLimit(key, max, windowMs);
+	if (limited) {
+		throw error(429, `Too many requests. Try again in ${Math.ceil(retryAfterSecs / 60)} minute(s).`);
+	}
+}
+
+const MINUTE = 60 * 1000;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** How long a request may sit unconfirmed before it is cleared away. */
+const UNVERIFIED_LIFETIME_DAYS = 7;
+
+/**
+ * POST — Create a new task request. Works signed in or not.
+ *
+ * Signed in, the request goes straight to the team: we know who is asking.
+ *
+ * Not signed in, anyone on the internet is asking, and every request used to
+ * email the whole team at once. So:
+ *
+ * - the caller must hold a token issued with the form, so this cannot be
+ *   called cold by a script;
+ * - submissions are limited per address, per email given, and in total;
+ * - the request is held as 'unverified' and the only email sent is one to the
+ *   requester, asking them to confirm. The team hears nothing until they do.
+ *
+ * With no SMTP configured there is no email to protect the team from and no way
+ * to ask for confirmation, so the request is accepted as 'pending' — the rate
+ * limits are then the only brake.
+ */
 export const POST: RequestHandler = async ({ request, locals, url, getClientAddress }) => {
-	// Rate limit unauthenticated submissions — 5 per 15 minutes per IP
-	if (!locals.user) {
-		const clientIp = getClientAddress();
-		const { limited, retryAfterSecs } = checkRateLimit(`request:${clientIp}`, 5, 15 * 60 * 1000);
-		if (limited) {
-			throw error(429, `Too many requests. Try again in ${Math.ceil(retryAfterSecs / 60)} minute(s).`);
+	const anonymous = !locals.user;
+
+	if (anonymous) {
+		if (!verifyFormToken(request.headers.get('x-form-token'))) {
+			throw error(403, 'This form has expired. Reload the page and try again.');
 		}
+		// Guarded: an address that cannot be read is counted as 'unknown'.
+		limit(`request:${addressToCount({ getClientAddress })}`, 5, 15 * MINUTE);
+		// However many addresses they come from, the team's inbox is one place.
+		limit('request:anonymous-total', 30, 60 * MINUTE);
 	}
 
-	const body = await request.json();
-	const { targetType, targetId, title, description, priority, requesterName, requesterEmail, businessValue, desiredBoardId } = body;
+	// Each field by its rule (card 2117), in the words the form shows. A field
+	// that was not text was a 500, and a priority it did not know was medium.
+	const body = await readBody(request);
+	const title = readText(body, 'title', {
+		required: true,
+		trim: true,
+		min: 1,
+		max: 500,
+		says: { missing: 'Title is required', empty: 'Title is required', invalid: 'Title too long (max 500 chars)' }
+	});
+	const targetType =
+		readChoice(body, 'targetType', { nullable: true, from: ['user', 'team'], says: { type: 'Invalid target type', invalid: 'Invalid target type' } }) ??
+		error(400, 'Target is required');
+	const targetId = readId(body, 'targetId', { nullable: true }) ?? error(400, 'Target is required');
+	// The board the card is wanted on, which nothing needs: whoever accepts the
+	// request picks the board (card 2128, decision 6). From a caller with no
+	// session it is not read at all, so that the form cannot be used to find
+	// which boards there are; signed in, it is optional, and one they can open.
+	const desiredBoardId = locals.user ? (readId(body, 'desiredBoardId', { nullable: true }) ?? null) : null;
+	const description = readText(body, 'description', { max: 10000, says: { invalid: 'Description too long (max 10000 chars)' } }) ?? '';
+	const businessValue = readText(body, 'businessValue', { max: 5000, says: { invalid: 'Business value too long (max 5000 chars)' } }) ?? '';
+	const safePriority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true }) ?? 'medium';
+	const requesterName = readText(body, 'requesterName', { trim: true, max: 200 });
 
-	if (!title?.trim()) throw error(400, 'Title is required');
-	if (!targetType || !targetId) throw error(400, 'Target is required');
-	if (!['user', 'team'].includes(targetType)) throw error(400, 'Invalid target type');
-	if (!desiredBoardId) throw error(400, 'A target board/project is required');
+	// One transaction: who the request is for, the board and the mail settings
+	// are read in the one that clears the old unconfirmed requests and creates
+	// this one. The mail is worked out in here and sent once it is committed.
+	const answer = inTransaction(() => {
+		// Validate target exists
+		if (targetType === 'team') {
+			const team = db.select({ id: teams.id }).from(teams).where(eq(teams.id, targetId)).get();
+			if (!team) throw error(404, 'Team not found');
+		} else {
+			const user = db.select({ id: users.id }).from(users).where(eq(users.id, targetId)).get();
+			if (!user) throw error(404, 'User not found');
+		}
 
-	// Input length limits
-	if (title.length > 500) throw error(400, 'Title too long (max 500 chars)');
-	if (description && description.length > 10000) throw error(400, 'Description too long (max 10000 chars)');
-	if (businessValue && businessValue.length > 5000) throw error(400, 'Business value too long (max 5000 chars)');
+		// A board the caller names is one they can open: 404 for none, 403 for one
+		// they cannot. Any board was taken, and named to whoever the request is for.
+		if (desiredBoardId !== null) requireBoard(locals.user, desiredBoardId, 'view');
 
-	// Validate priority
-	const validPriorities = ['low', 'medium', 'high', 'critical'];
-	const safePriority = validPriorities.includes(priority) ? priority : 'medium';
+		const name = locals.user ? locals.user.username : (requesterName || 'Anonymous');
 
-	// Validate target exists
-	if (targetType === 'team') {
-		const team = db.select({ id: teams.id }).from(teams).where(eq(teams.id, targetId)).get();
-		if (!team) throw error(404, 'Team not found');
-	} else {
-		const user = db.select({ id: users.id }).from(users).where(eq(users.id, targetId)).get();
-		if (!user) throw error(404, 'User not found');
-	}
+		// Without an account the address is how we reach the requester, and how they
+		// prove the request is theirs.
+		const mustVerify = anonymous && isSmtpConfigured();
 
-	// Validate desired board exists
-	const desiredBoard = db.select({ id: boards.id }).from(boards).where(eq(boards.id, desiredBoardId)).get();
-	if (!desiredBoard) throw error(404, 'Board not found');
+		// The address a mailed link begins with is this server's configuration
+		// and never what the request says: see linkBaseUrl. A request that has
+		// to be confirmed is nothing without its link, so with no address to
+		// make one from it is refused here, before anything is cleared or saved.
+		const baseUrl = linkBaseUrl(url);
+		const confirmFrom = mustVerify ? baseUrl : null;
+		if (mustVerify && confirmFrom === null) {
+			throw error(503, NO_LINK_ADDRESS);
+		}
 
-	const result = db.insert(taskRequests).values({
-		targetType,
-		targetId,
-		desiredBoardId,
-		title: title.trim(),
-		description: description || '',
-		priority: safePriority,
-		businessValue: businessValue || '',
-		requesterName: locals.user ? locals.user.username : (requesterName?.trim() || 'Anonymous'),
-		requesterEmail: locals.user ? locals.user.email : (requesterEmail?.trim() || null),
-		requesterUserId: locals.user?.id || null
-	}).returning().get();
+		// Read once who it is for and where it goes have been looked up. A
+		// signed-in caller's own address is the one used, and theirs is not read.
+		let email: string | null = locals.user ? locals.user.email : null;
+		if (anonymous) {
+			// An address by the readers' rule (none of `, ; < > " ( )`, which
+			// the mailer reads as more than one), with a dot after the @.
+			email = readEmail(body, 'requesterEmail', { required: true, says: 'A valid email address is required' });
+			if (!EMAIL_PATTERN.test(email)) {
+				throw error(400, 'A valid email address is required');
+			}
+			// One address cannot be used to send itself a stream of confirmation emails.
+			// Counted whether or not what follows is saved: it is the attempt that is limited.
+			limit(`request-email:${email.toLowerCase()}`, 3, 60 * MINUTE);
 
-	const name = locals.user ? locals.user.username : (requesterName?.trim() || 'Anonymous');
-	const baseUrl = resolveBaseUrl(request, url);
-	notifyTaskRequest(targetType, targetId, title.trim(), name, safePriority, baseUrl);
+			// Requests nobody confirmed are dead weight; clear the old ones as we go.
+			const cutoff = new Date(Date.now() - UNVERIFIED_LIFETIME_DAYS * 24 * 60 * MINUTE)
+				.toISOString()
+				.replace('T', ' ')
+				.slice(0, 19);
+			db.delete(taskRequests)
+				.where(and(eq(taskRequests.status, 'unverified'), lt(taskRequests.createdAt, cutoff)))
+				.run();
+		}
 
-	return json(result, { status: 201 });
+		const created = db.insert(taskRequests).values({
+			targetType,
+			targetId,
+			desiredBoardId,
+			title,
+			description,
+			priority: safePriority,
+			businessValue,
+			requesterName: name,
+			requesterEmail: email,
+			requesterUserId: locals.user?.id || null,
+			status: mustVerify ? 'unverified' : 'pending',
+			accessToken: newRequestToken()
+		}).returning().get();
+
+		if (confirmFrom !== null) {
+			notifyRequesterConfirm(email!, created.title, requestConfirmUrl(confirmFrom, created));
+		} else {
+			notifyTaskRequest(targetType, targetId, created.title, name, safePriority, baseUrl);
+		}
+
+		// Never the row itself: it carries the token, which only ever travels in
+		// the email link.
+		return { ...publicRequest(created), verificationRequired: mustVerify };
+	});
+
+	return json(answer, { status: 201 });
 };

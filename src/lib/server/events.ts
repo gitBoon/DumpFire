@@ -1,4 +1,6 @@
 // Simple event emitter for SSE-based live updates
+import { afterCommit } from './db/transaction';
+
 type Listener = (event: string, data: unknown) => void;
 
 const boardListeners = new Map<number, Set<Listener>>();
@@ -30,7 +32,19 @@ export function subscribeGlobal(listener: Listener) {
 	};
 }
 
+/**
+ * Tell everyone watching a board that something on it changed.
+ *
+ * Called inside a transaction, the event is held until that transaction has
+ * committed and is dropped if it rolls back: a page told to refresh must find
+ * the change there, and must not be told of one that was undone. Outside a
+ * transaction it is delivered at once.
+ */
 export function emit(boardId: number, event: string, data?: unknown) {
+	afterCommit(() => deliver(boardId, event, data));
+}
+
+function deliver(boardId: number, event: string, data?: unknown) {
 	const listeners = boardListeners.get(boardId);
 	if (listeners) {
 		for (const listener of listeners) {

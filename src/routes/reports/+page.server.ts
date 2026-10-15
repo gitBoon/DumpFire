@@ -1,7 +1,8 @@
 import { db } from '$lib/server/db';
-import { boards, boardCategories, reportSchedules, users, cardAssignees, cards, columns } from '$lib/server/db/schema';
+import { boards, reportSchedules, users, cardAssignees, cards, columns } from '$lib/server/db/schema';
 import { eq, desc, isNull, inArray, and } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { boardCategoriesFor } from '$lib/server/list-access';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -21,8 +22,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.filter(b => accessibleIds.includes(b.id));
 	}
 
-	// Get board categories
-	const allCategories = db.select().from(boardCategories).all();
+	// The groupings the caller is listed: those holding a board they can open,
+	// and the empty ones (card 2128). A report of any other is refused.
+	const allCategories = boardCategoriesFor(user);
 
 	// Get user's schedules
 	const userSchedules = db.select().from(reportSchedules)

@@ -12,9 +12,11 @@
  *
  *   start    the day of `created_at`.
  *   done     the day of `completed_at`, but only while the card sits in a
- *            Complete/Done column. `completed_at` is stamped on every move
- *            into Complete and never cleared on the way out, so a stamp on a
- *            card elsewhere is a reopened card, charted as open. A card in
+ *            Complete/Done column. A card that has been completed at some
+ *            point (`first_completed_at`) and is elsewhere now is a reopened
+ *            card, charted as open. Reopening clears `completed_at`; it did
+ *            not before October 2026, so an older reopened card still carries
+ *            a stale stamp and is recognised by that instead. A card in
  *            Complete with no stamp predates the stamping fixes; its last
  *            update stands in and is counted so the page can say so.
  *   removed  the day of `archived_at` for open work. Archive is the soft
@@ -28,6 +30,7 @@
 
 import { sqlite } from './db';
 import { canViewBoard, getAccessibleBoardIds } from './board-access';
+import { boardCategoryRule } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { requireMilestone, MilestoneError } from './milestones';
 import type { SessionUser } from './auth';
@@ -213,6 +216,7 @@ interface CardRow {
 	priority: string;
 	createdAt: string;
 	completedAt: string | null;
+	firstCompletedAt: string | null;
 	updatedAt: string;
 	archivedAt: string | null;
 	columnTitle: string;
@@ -249,6 +253,7 @@ function loadCardRows(boardIds: number[] | null, milestoneId: number | null): Ca
 		.prepare(
 			`SELECT c.id, col.board_id AS boardId, c.category_id AS categoryId, c.priority,
 			        c.created_at AS createdAt, c.completed_at AS completedAt,
+			        c.first_completed_at AS firstCompletedAt,
 			        c.updated_at AS updatedAt, c.archived_at AS archivedAt,
 			        col.title AS columnTitle
 			   FROM cards c
@@ -274,7 +279,7 @@ function toScopedCard(r: CardRow): ScopedCard {
 			removed: !inComplete && r.archivedAt ? toDay(r.archivedAt) : null
 		},
 		inferredDone: inComplete && !r.completedAt,
-		reopened: !inComplete && !!r.completedAt,
+		reopened: !inComplete && !!(r.completedAt || r.firstCompletedAt),
 		archivedDone: inComplete && !!r.archivedAt
 	};
 }
@@ -358,6 +363,12 @@ interface ResolvedScope {
 	kind: BurndownScopeKind;
 	/** Boards whose cards are loaded; null means every board. */
 	boardIds: number[] | null;
+	/**
+	 * For a milestone with no boards named, the boards the caller can open:
+	 * its cards on any other are left out. null for an administrator, and for
+	 * every other scope, whose `boardIds` say it.
+	 */
+	openBoardIds: number[] | null;
 	boardCategory: BurndownResult['scope']['boardCategory'];
 	milestone: BurndownResult['scope']['milestone'];
 	notes: string[];
@@ -366,6 +377,7 @@ interface ResolvedScope {
 function resolveScope(user: SessionUser, q: BurndownQuery): ResolvedScope {
 	const notes: string[] = [];
 	let boardIds: number[] | null = null;
+	let openBoardIds: number[] | null = null;
 	let boardCategory: ResolvedScope['boardCategory'] = null;
 	let milestone: ResolvedScope['milestone'] = null;
 
@@ -385,6 +397,12 @@ function resolveScope(user: SessionUser, q: BurndownQuery): ResolvedScope {
 			.prepare('SELECT id, name, color FROM board_categories WHERE id = ?')
 			.get(q.boardCategoryId) as { id: number; name: string; color: string } | undefined;
 		if (!cat) throw new BurndownError(404, `Board category ${q.boardCategoryId} not found`);
+		// One that holds boards, none of them the caller's, is another team's:
+		// it was charted empty, with its name and colour (card 2128). Refused as
+		// reports and report schedules refuse it, and as reading it is.
+		if (!boardCategoryRule(user)(cat.id)) {
+			throw new BurndownError(403, `No access to board category ${q.boardCategoryId}`);
+		}
 		boardCategory = cat;
 
 		const inCategory = (
@@ -421,6 +439,29 @@ function resolveScope(user: SessionUser, q: BurndownQuery): ResolvedScope {
 			if (e instanceof MilestoneError) throw new BurndownError(e.status, e.message);
 			throw e;
 		}
+
+		// Its cards on the boards the caller can open. A card moved off a board
+		// keeps that board's milestone, so a goal can hold a card of a board its
+		// viewer was never given: it was charted, and its board named
+		// (card 2129's review). Left out, and said so, as for a board category.
+		if (boardIds === null) {
+			openBoardIds = getAccessibleBoardIds(user);
+			if (openBoardIds !== null) {
+				const elsewhere = (
+					sqlite
+						.prepare(
+							`SELECT COUNT(*) AS n FROM cards c JOIN columns col ON col.id = c.column_id
+							  WHERE c.milestone_id = ?${openBoardIds.length ? ` AND col.board_id NOT IN (${inList(openBoardIds)})` : ''}`
+						)
+						.get(q.milestoneId) as { n: number }
+				).n;
+				if (elsewhere > 0) {
+					notes.push(
+						`${elsewhere} card${elsewhere === 1 ? '' : 's'} in this milestone ${elsewhere === 1 ? 'is' : 'are'} on a board not visible to you and ${elsewhere === 1 ? 'is' : 'are'} left out.`
+					);
+				}
+			}
+		}
 	}
 
 	const kind: BurndownScopeKind = milestone
@@ -431,7 +472,7 @@ function resolveScope(user: SessionUser, q: BurndownQuery): ResolvedScope {
 				? 'boards'
 				: 'workspace';
 
-	return { kind, boardIds, boardCategory, milestone, notes };
+	return { kind, boardIds, openBoardIds, boardCategory, milestone, notes };
 }
 
 function resolveRange(q: BurndownQuery, milestone: ResolvedScope['milestone'], notes: string[]) {
@@ -480,7 +521,7 @@ export function getBurndown(user: SessionUser, q: BurndownQuery): BurndownResult
 	const needLabels = q.labelIds.length > 0 || q.groupBy === 'label' || q.options;
 	const needAssignees = q.assigneeIds.length > 0 || q.groupBy === 'assignee' || q.options;
 
-	const all = loadCardRows(scope.boardIds, scope.milestone?.id ?? null).map(toScopedCard);
+	const all = loadCardRows(scope.boardIds ?? scope.openBoardIds, scope.milestone?.id ?? null).map(toScopedCard);
 	// Only cards that exist in the window at all: they are what the chart,
 	// the counts, the notes and the filter options are about.
 	const windowed = all.filter((c) => inWindow(c.lifeline, from, to));

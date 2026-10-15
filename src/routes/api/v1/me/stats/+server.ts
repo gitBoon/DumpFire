@@ -1,7 +1,9 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { activityLog, cards, columns } from '$lib/server/db/schema';
-import { eq, and, desc, count, sql, gte } from 'drizzle-orm';
+import { eq, and, count, sql, gte, inArray } from 'drizzle-orm';
+import { ACTIONS, storedActions } from '$lib/server/logActivity';
+import { recentActivityFor } from '$lib/server/list-access';
 import type { RequestHandler } from './$types';
 
 /**
@@ -11,8 +13,15 @@ import type { RequestHandler } from './$types';
  * - cardsCompleted (total + last 7/30 days)
  * - avgCycleTime (days, based on created→completed)
  * - streak (consecutive days with at least one completion)
- * - recentActivity (last 20 actions)
+ * - recentActivity (last 20 actions, on boards the caller can open)
  */
+/**
+ * A completion is stored as `card_completed` from the web UI and
+ * `api:card_completed` from the API. Comparing to the bare name counted only
+ * the UI ones, so someone who completes their cards through the API saw zero.
+ */
+const COMPLETED = storedActions(ACTIONS.cardCompleted);
+
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
@@ -26,14 +35,14 @@ export const GET: RequestHandler = async ({ locals }) => {
 		.from(activityLog)
 		.where(and(
 			eq(activityLog.userId, userId),
-			eq(activityLog.action, 'card_completed')
+			inArray(activityLog.action, COMPLETED)
 		)).get();
 
 	const completed7d = db.select({ cnt: count() })
 		.from(activityLog)
 		.where(and(
 			eq(activityLog.userId, userId),
-			eq(activityLog.action, 'card_completed'),
+			inArray(activityLog.action, COMPLETED),
 			gte(activityLog.createdAt, d7)
 		)).get();
 
@@ -41,7 +50,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 		.from(activityLog)
 		.where(and(
 			eq(activityLog.userId, userId),
-			eq(activityLog.action, 'card_completed'),
+			inArray(activityLog.action, COMPLETED),
 			gte(activityLog.createdAt, d30)
 		)).get();
 
@@ -53,16 +62,17 @@ export const GET: RequestHandler = async ({ locals }) => {
 		WHERE ca.user_id = ${userId}
 			AND c.completed_at IS NOT NULL
 	`) as { avg_days: number | null }[];
-	const avgCycleTime = cycleResult[0]?.avg_days
-		? Math.round(cycleResult[0].avg_days * 10) / 10
-		: null;
+	// Null when no card has been completed; an average of 0, cards completed
+	// the moment they were raised, is 0. It was answered as null.
+	const avgDays = cycleResult[0]?.avg_days ?? null;
+	const avgCycleTime = avgDays === null ? null : Math.round(avgDays * 10) / 10;
 
 	// Activity streak — consecutive days with completions
 	const completionDays = db.all(sql`
 		SELECT DISTINCT date(created_at) as day
 		FROM activity_log
 		WHERE user_id = ${userId}
-			AND action = 'card_completed'
+			AND action IN (${sql.join(COMPLETED.map((a) => sql`${a}`), sql`, `)})
 		ORDER BY day DESC
 		LIMIT 365
 	`) as { day: string }[];
@@ -88,19 +98,16 @@ export const GET: RequestHandler = async ({ locals }) => {
 		}
 	}
 
-	// Recent activity
-	const recentActivity = db.select({
-		id: activityLog.id,
-		action: activityLog.action,
-		detail: activityLog.detail,
-		boardId: activityLog.boardId,
-		createdAt: activityLog.createdAt
-	})
-	.from(activityLog)
-	.where(eq(activityLog.userId, userId))
-	.orderBy(desc(activityLog.createdAt))
-	.limit(20)
-	.all();
+	// Recent activity, on the boards the caller can open (card 2126): every
+	// entry of theirs was listed, so a board they were taken off went on
+	// showing here, card titles included.
+	const recentActivity = recentActivityFor(locals.user, 20).map(({ id, action, detail, boardId, createdAt }) => ({
+		id,
+		action,
+		detail,
+		boardId,
+		createdAt
+	}));
 
 	// Cards currently assigned
 	const assignedCards = db.all(sql`

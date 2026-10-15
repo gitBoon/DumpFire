@@ -1,25 +1,29 @@
 import { json, error } from '@sveltejs/kit';
-import { setCardMilestone, requireMilestone, MilestoneError } from '$lib/server/milestones';
+import { setCardMilestone, requireMilestone, takeCardOutOfMilestone, MilestoneError } from '$lib/server/milestones';
 import { emit } from '$lib/server/events';
+import { pathId, readBody, readId } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /**
  * POST /api/v1/milestones/:milestoneId/cards — put a card in this milestone.
  *
  * Body: `{ cardId }`. A card belongs to at most one milestone, so this replaces
- * whatever it was in before rather than erroring.
+ * whatever it was in before rather than erroring. An archived card is refused,
+ * as the batch refuses one.
+ *
+ * The milestone is looked for and the caller checked (404, then 403), then
+ * `cardId` is read (400), then the card is looked for.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-
-	const milestoneId = Number(params.milestoneId);
-	if (isNaN(milestoneId)) throw error(400, 'Invalid milestone ID');
-
-	const { cardId } = await request.json();
-	if (!cardId) throw error(400, 'cardId is required');
+	const user = requireUser(locals.user);
+	const milestoneId = pathId(params.milestoneId, 'milestone');
+	const body = await readBody(request);
 
 	try {
-		const result = setCardMilestone(locals.user, Number(cardId), milestoneId);
+		requireMilestone(user, milestoneId, true);
+		const cardId = readId(body, 'cardId', { required: true, says: { missing: 'cardId is required' } });
+		const result = setCardMilestone(user, cardId, milestoneId);
 		emit(result.boardId, 'update', { type: 'card' });
 		return json(result);
 	} catch (e) {
@@ -31,21 +35,20 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 /**
  * DELETE /api/v1/milestones/:milestoneId/cards — take a card out of this milestone.
  *
- * Body: `{ cardId }`. The card itself is untouched.
+ * Body: `{ cardId }`. The card itself is untouched. The milestone must be
+ * there and the caller able to change it, and the card must be in it:
+ * `404 Card is not in this milestone`. A card in another milestone used to be
+ * taken out of that one.
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-
-	const milestoneId = Number(params.milestoneId);
-	if (isNaN(milestoneId)) throw error(400, 'Invalid milestone ID');
-
-	const { cardId } = await request.json();
-	if (!cardId) throw error(400, 'cardId is required');
+	const user = requireUser(locals.user);
+	const milestoneId = pathId(params.milestoneId, 'milestone');
+	const body = await readBody(request);
 
 	try {
-		// Checked so removing a card still proves you could see the goal it was in.
-		requireMilestone(locals.user, milestoneId, true);
-		const result = setCardMilestone(locals.user, Number(cardId), null);
+		requireMilestone(user, milestoneId, true);
+		const cardId = readId(body, 'cardId', { required: true, says: { missing: 'cardId is required' } });
+		const result = takeCardOutOfMilestone(user, cardId, milestoneId);
 		emit(result.boardId, 'update', { type: 'card' });
 		return json(result);
 	} catch (e) {

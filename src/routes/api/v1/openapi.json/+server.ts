@@ -5,9 +5,141 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.0.0',
+		version: '1.2.0',
 		description:
-			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.',
+			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
+			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
+			'{"message": "Card not found"}, whatever Accept header the request sent. That includes a path that is no route ' +
+			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
+			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
+			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-10-14 (version 1.2.0).** New answers and fields: (1) a 413 for a body over the size limit carries `limitBytes`, ' +
+			'the limit as a number, beside its `message`; (2) a 413 for a body that declares more than the limit in Content-Length is answered ' +
+			'before the key is looked at, so a request with no key, or a wrong one, can be answered 413 where it was 401; (3) a request with no key ' +
+			'DumpFire accepts, a missing Authorization header included, is counted against the address it came from, 60 a minute, and the ' +
+			'61st is answered 429 with `retryAfterSecs` and Retry-After where it was 401; (4) a body sent with no Content-Length, in chunks, is ' +
+			'held to the same limit as it is read, and answered 413 with `limitBytes` once it passes it; (5) a body that is a JSON array, `[]` ' +
+			'included, is answered 400, {"message": "The request body must be a JSON object"}, before the operation reads a field of it, where ' +
+			'it was passed to the operation, which refused it in its own words as a body without the fields it needs; (6) the operations that create a column, ' +
+			'a label and a category on a board answer 404, {"message": "Board not found"}, for a board that does not exist, to every caller, where everyone but ' +
+			'an administrator was answered 403 and an administrator 500; (7) every operation that reads a body reads it before it looks for the resource or ' +
+			'checks the key\'s user, so a body that is missing, is not valid JSON or is not an object is answered 400 to a caller who would be refused, ' +
+			'where some were answered 403 or 404; what a field holds is still looked at after the 404 and the 403; (8) the operations that create or change a ' +
+			'column, a label, a category or a webhook, that change a board category, and that put a label on a card or take it off, answer 400 naming the field for a ' +
+			'field of the wrong type or one it may not hold, where it was stored as sent or was a 500: a name or a title is text, trimmed, of 1 to 200 ' +
+			'characters, a colour text of 1 to 32, a position a number, showAddCard and active true or false, a webhook\'s url an http or https address of at ' +
+			'most 2048 characters, its secret at most 256 characters and its events names among the six, each trimmed, and an id in the path or the body a ' +
+			'whole number of 1 or more; a value the row already holds, sent back unchanged, is accepted as it is; (9) taking a label off a card that does ' +
+			'not have it is answered 404 where it was 200, and a label, column, category, board category or webhook deleted while its update was arriving ' +
+			'is answered 404 where it was 200 with no body, or for a webhook 500; (10) the four operations that add or remove one dependency, on a card ' +
+			'and on a subtask, read their ids as ids: one in the path of 0, 1.5 or -1 is answered 400, "Invalid card ID" or "Invalid subtask ID", ' +
+			'where it was 404, and 1e3, which was read as the id 1000, is answered 400 too; one in the body of 0, -1, 1.5, "" or false is answered 400, "<field> must be an id", where it was 404, as are true ' +
+			'and a list, which were read as card 1 and as the id in the list; and the subtask\'s two record an api:dependency_added and an ' +
+			'api:dependency_removed activity entry, as the card\'s do; (11) adding a comment to a card answers 400 for content that is not text, ' +
+			'"content must be text", where it was a 500, and for content over 50000 characters once trimmed, "content must be at most 50000 characters", ' +
+			'where any length was stored: an edit was already held to 50000; (12) the activity report does not count a dependency added or removed ' +
+			'(dependency_added, dependency_removed, dependencies_bulk_added, in either spelling) as an action on a card, so a card whose only activity in ' +
+			'the window was one is not in the report, and a report on one user does not take a card to be theirs for one; (13) a member of a board stored ' +
+			'with a role other than owner, editor or viewer, which the web application\'s sharing stored as sent until this date, has a viewer\'s access: ' +
+			'one stored as admin had an administrator\'s access to that board; ' +
+			'(14) every operation reads an id in its path as an id: one that is not a whole number of 1 or more written in digits, 1.5, abc and 1e3 among them, is answered 400 "Invalid <thing> ID", where some were read as another id and answered 404 or 403; ' +
+			'(15) a board that does not exist is answered 404 "Board not found", to every caller, by GET, PUT and DELETE on /api/v1/boards/{boardId} and by the lists of its cards, columns, labels and categories, where everyone but an administrator was answered 403, and an administrator an empty list; ' +
+			'(16) the operations that create or change a board, a board category, a card, a subtask or a milestone, that move a card, assign and remove an assignee, edit a comment and put a card into a milestone or take it out, read their fields by type and range, and answer 400 naming the field where a value was stored as sent or was a 500: a name is text of 1 to 200 characters once trimmed and a title of 1 to 500, an emoji 1 to 32, a description and an on-hold note at most 50000, a businessValue at most 10000, a coverUrl a colour written #rrggbb, one of the preset gradients or null (item 41), a priority one of low, medium, high and critical in any case, stored in lower case, a dueDate or a targetDate a day of the calendar written YYYY-MM-DD, empty text or null clearing it, a colorTag a colour written #rrggbb or empty, a board category\'s color a colour written #rrggbb, a position a number or one written as text, pinned and completed true or false, a status open or closed, and an id in the body a whole number of 1 or more; a value the row already holds, sent back unchanged, is accepted as it is; and each of them looks for what its path names, and checks the caller, before it reads a field, so a caller who would be refused is answered 404 or 403 whatever the body holds, where editing a comment and the two operations on /api/v1/milestones/{milestoneId}/cards answered a field first; ' +
+			'(17) archivedAt on PUT /api/v1/cards/{cardId} may only be null, which restores the card: another value, which was stored, is answered 400; archivedAt null sent with a milestoneId restores the card before it is put in the milestone, where the card was refused as archived, and a milestone refused leaves it archived; ' +
+			'(18) a card\'s categoryId must name a category of the card\'s board or one that belongs to no board, and is answered 404 "Category not found on this board" otherwise, where another board\'s was stored and one that did not exist was a 500; ' +
+			'(19) removing an assignee who is not on the card is answered 404 "User is not assigned to this card", where it was 200 with an activity entry; ' +
+			'(20) DELETE /api/v1/milestones/{milestoneId}/cards answers 404 "Card is not in this milestone" for a card that is not in it, where a card in another milestone was taken out of that one; taking a card out of a milestone, there or with milestoneId null on PUT /api/v1/cards/{cardId}, needs the right to change the milestone it is in, 403 "No edit access to this milestone", or "No access to this milestone" for one with cards on a board the key\'s user cannot open; ' +
+			'putting a card that is in another milestone into this one takes it out of that one, and needs the right to change that one too: POST /api/v1/milestones/{milestoneId}/cards and milestoneId on PUT /api/v1/cards/{cardId} answer 403, and POST /api/v1/milestones/{milestoneId}/cards/bulk lists the card in its 409, "No edit access to milestone #<id>, which holds card #<n>", where each moved the card; and putting an archived card into a milestone is answered 400 "Card does not exist or is archived", as the bulk operation refuses one, where it was put in; ' +
+			'(21) in a batch, an entry of links or of entries that is not an object is answered 400 "links[<n>] must be an object", where it was a 500, an entry of cardIds that is not an id "cardIds[<n>] must be an id", where null was read as card 0, and a blockedType or blockerType other than card or subtask is answered 400, where it was a 409; ' +
+			'(22) GET /api/v1/audit-log reads limit and offset as whole numbers, a limit held between 1 and 500, 0 being the default of 100 as it was, and an offset of 0 or more, where -1 gave every entry, 2.5 was a 500 and a negative offset was echoed, and its boardId, userId and cardId as ids; ' +
+			'(23) GET /api/v1/reports/activity answers 400 "from is not a date" for a from or to that is neither a date nor a timestamp, where it was taken as the window, reads a timestamp with an offset or no zone in UTC, gives each card an empty comments list for commentLimit=0, where 0 was read as 3, answers 400 for a negative commentLimit, where comments were left out, and reads each of boardIds as an id, where one that was not was left out; ' +
+			'(24) GET /api/v1/me/stats answers an average cycle time of 0 as 0, where it was null; ' +
+			'(25) the compact milestone summary has the titles of cards in cardTitles and of subtasks in subtaskTitles, where both were in cardTitles under the bare id; ' +
+			'(26) adding a comment to a card looks for the card, and checks the key\'s user, before it reads the content, so a card that is not there is answered 404 and a user who may not edit its board 403 whatever the content, where an empty one was answered 400 first; ' +
+			'(27) POST /api/v1/dependencies/bulk reads each end of a link and each entry of chain as an id, and answers 400 "<entry> must be a card id, \\"subtask:<id>\\", or {kind, id}", naming the entry, for one that is not a whole number of 1 or more, a list, or an object whose kind is not card or subtask, where 1.5 and "1e3" were taken as ids and reported in the 409, a list was read as the id in it and another kind as a card; ' +
+			'(28) GET /api/v1/reports/activity reads a bare-date to as the end of that day when it checks that from is not after it, where from=2026-10-14T09:00:00Z&to=2026-10-14 was answered 400; ' +
+			'(29) a webhook\'s url is answered, as its secret is, only to the board\'s owner and an administrator and in the answer to the request that created it: the two reads and the answer to an update leave the key out for anyone else, where every caller who could view the board was given it; ' +
+			'(30) recentActivity on GET /api/v1/me/stats lists only entries on boards the key\'s user can open, the 20 counted after that, where an entry on a board they had been taken off was listed with the card title in its detail; ' +
+			'(31) GET /api/v1/board-categories lists the board categories that hold a board the key\'s user can open, and those that hold no board, where every one was listed; GET /api/v1/board-categories/{categoryId} answers 403 "No access to this board category" for any other, where it was given; ' +
+			'GET /api/v1/burndown with the boardCategoryId of one answers 403 "No access to board category <id>", where it was charted empty with the category\'s name; and PUT /api/v1/boards/{boardId} answers 403 "No access to this board category" for a categoryId that names one, where the board was filed under it; ' +
+			'(32) GET /api/v1/categories/{categoryId} answers 403 "No access to this category" for a category of a board the key\'s user cannot open, where any key was given any category; ' +
+			'(33) work on a board the key\'s user cannot open, at the other end of a dependency or in a milestone\'s plan, is listed withheld, with withheld true: ' +
+			'its id, kind and whether it is finished, "A card on a board you cannot open" or "A subtask on a board you cannot open" for its title, "A board you cannot open" ' +
+			'for its board name, an empty column title, and null for its board id, column id, priority and milestone, with no parentCardId on a withheld subtask of a plan, ' +
+			'where its title, board, column and priority were given: by GET /api/v1/cards/{cardId}, GET /api/v1/cards/{cardId}/dependencies, the three operations on ' +
+			'/api/v1/subtasks/{subtaskId}/dependencies, and GET /api/v1/milestones/{milestoneId}/summary, whole and compact, and its PDF; every dependency end and plan node ' +
+			'carries withheld; and the summary\'s progress counts the cards on such boards under one entry of boards with id null and an empty column title, where it named each board, ' +
+			'while its criticalPath, worked out from the real work, gives the id of the card a withheld subtask on the chain belongs to, as for any subtask; ' +
+			'(34) GET /api/v1/milestones/{milestoneId} lists a card on a board the key\'s user cannot open withheld, as the summary lists its node, with withheld on every card, ' +
+			'where a card moved off the milestone\'s board, which keeps the milestone, was listed with its title and board; GET /api/v1/burndown with a milestoneId charts only ' +
+			'the milestone\'s cards on boards the key\'s user can open and says in meta.notes how many it leaves out, where such a card was charted and its board named; and ' +
+			'DELETE /api/v1/boards/{boardId} deletes the board\'s card categories, and those of every sub-board deleted with it, so that a card on another board that carried one has none, ' +
+			'where they were kept as categories of no board, which every key is given; ' +
+			'(35) PUT /api/v1/columns/{columnId} answers 409 for a title that would make the column a Complete column (one called Complete or Done), or stop it being one, ' +
+			'while it holds any card, archived ones included, and writes nothing, where the title was saved and every card in the column became finished, or open, by its new title alone; ' +
+			'(36) POST /api/v1/boards/{boardId}/cards completes a card created in a Complete column as a move into one does: completedAt and firstCompletedAt are set, the key\'s user is given the XP for its priority, ' +
+			'and api:card_created and then api:card_completed are written, which deliver card.created and card.completed, where the card was created with no completion date, no XP and no api:card_completed; ' +
+			'(37) PUT /api/v1/cards/{cardId}/move mails the card\'s assignees who can open its board "Card moved" for a move that completes it, where no move through the API mailed them, and no move mails the user who made it; ' +
+			'(38) archivedAt null on PUT /api/v1/cards/{cardId} is recorded as api:card_restored, and api:card_updated is written only for the other fields sent, so a restore alone no longer delivers card.updated; ' +
+			'(39) completing a subtask with PUT /api/v1/subtasks/{subtaskId} writes api:subtask_completed and mails whoever asked for the card, and DELETE /api/v1/subtasks/{subtaskId} writes api:subtask_deleted, where neither wrote an entry; ' +
+			'(40) in the action of GET /api/v1/audit-log only a trailing * is a wildcard, so card_* no longer finds cards_purged and cards_cleared; ' +
+			'(41) coverUrl on PUT /api/v1/cards/{cardId} is a colour written #rrggbb, one of the eight preset gradients the updateCard body lists, empty text or null, and anything else is answered 400 ' +
+			'"coverUrl must be a colour written #rrggbb, one of the preset gradients, or null", where any value was stored, an address or a style included; a cover is drawn on every viewer\'s page, as a strip across the top of the card on the board; ' +
+			'a cover the card already holds, sent back unchanged, is accepted as it is; and recurrenceRule and nextRecurrence, which every card answer still carries, are described as not used: nothing sets or acts on them; ' +
+			'(42) PUT /api/v1/cards/{cardId}/move answers 409 `Card "<title>" cannot go onto "<board>", which hangs beneath it` for a move onto one of the card\'s own sub-boards, ' +
+			'or onto a board beneath one at any depth, and moves nothing, where it was answered 200 and the sub-board then hung beneath itself, on no dashboard; it is asked only of a move to another board, and a move of the card such a loop already hangs from onto a board outside the loop is not refused for it. ' +
+			'The rate limit of a key is counted once ' +
+			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
+			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
+			'X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy and X-XSS-Protection: 0.\n\n' +
+			'**Changed on 2026-10-13 (version 1.1.0).** The key is `message` on every failure. Until then the 401, the 429 and the 409 of a rejected ' +
+			'batch carried their text as `error`, and the 409 of a dependency cycle on a card carried a fixed text as `error` beside the ' +
+			'`message` it still has. A caller that read `error` on those reads `message` now; their other ' +
+			'fields are unchanged. On the same day a body that is not valid JSON became a 400 where it was a 500, a body over the size limit ' +
+			'became a 413 where a deployed server answered 500, and an unknown path and a wrong method became JSON where they were a page ' +
+			'and plain text. Two answers about a subtask\'s dependencies changed their status on that day too: a link between a subtask and ' +
+			'itself, or with an end that is archived, is answered 400 where it was 409, and removing a link that is not there is answered ' +
+			'404 where it was 200.\n\n' +
+			'**Timestamps.** Every timestamp DumpFire writes is UTC. Some are written `YYYY-MM-DD HH:MM:SS` and some as ISO 8601 with a `T` ' +
+			'and a `Z`, `2026-10-13T09:41:07.123Z`, and the same field can hold either: a new card\'s `updatedAt` is in the first form and is ' +
+			'in the second after the card is updated. So a value with no zone is UTC, and must be read as UTC.\n\n' +
+			'**The request body.** A body that is missing, is not valid JSON, or is JSON and not an object is answered 400 when the ' +
+			'operation reads it. The size limit is 512 KB on every operation here. A body that declares more than that in Content-Length is ' +
+			'answered 413 before the operation is reached, and before the key is looked at: its `message` says how large it is and what the ' +
+			'limit is, and `limitBytes` is the limit as a number. A body sent in chunks, with no Content-Length, is held to the same limit as it ' +
+			'is read: once it passes it, it is answered 413 with a `message` that says the limit, and `limitBytes`, and no more of it is read. A body ' +
+			'that runs past the length it declared is answered 413, {"message": "Payload Too Large"}. Every operation that reads a body reads it before it looks ' +
+			'for the resource, so a body that is not a JSON object sent to a card that does not exist is answered 400 where an object is answered 404 or 403. ' +
+			'The fields of an object are read after that: what the path names is looked for (404, to everyone), the caller is checked (403), and then ' +
+			'each field is read (400, naming the field), so a caller who would be refused is answered 404 or 403 whatever the fields hold. An ' +
+			'operation with nothing in its path to look for, the token operations and the dependency and token batches read their fields first. ' +
+			'The two milestone batches look for the milestone, and check the caller, before they read cardIds.\n\n' +
+			'**Writes are all or nothing.** A request that changes several things saves all of them or none. ' +
+			'A 500 is DumpFire failing, not the request being wrong: its body is {"message": "Internal Error"}, and a 500 that DumpFire itself ' +
+			'answers to a write means nothing was written, so the same request can be sent again without anything being written twice. ' +
+			'Every field is read by its type and range before anything is written, so a field the operation cannot use is a 400, never a 500. ' +
+			'A 502, 503 or 504 is not an answer from DumpFire: it comes from a proxy in front of it, and the write may or may not ' +
+			'have happened, so read the resource before sending a POST again. ' +
+			'A 429 means the request was turned away and nothing was written: send it again, unchanged, after the Retry-After seconds. ' +
+			'Any other 4xx answer means the request was refused and nothing was written. ' +
+			'A 2xx answer means the change is committed: webhooks, live board updates and emails are sent after the commit, ' +
+			'and one that fails does not undo the change or alter the answer.\n\n' +
+			'**Deletes.** Archiving a card touches nothing but the card. A permanent delete of a card, a column or a board ' +
+			'removes everything under it, sub-boards at every depth included, and every dependency link that has a deleted ' +
+			'card or subtask at either end. Attachment files of deleted cards are kept on the server for 30 days. Ids are never reused.\n\n' +
+			'**Attachments** are not part of this API. In the web application an attachment opened by its address is shown in ' +
+			'the browser only if it is a PNG, JPEG, GIF, WebP or .txt file whose stored type and extension agree; every other ' +
+			'attachment, a PDF, an HTML or an SVG file among them, is a download. Every answer carries ' +
+			'Content-Security-Policy: sandbox and X-Content-Type-Options: nosniff.\n\n' +
+			'**Three answers that are not JSON.** Each is made by SvelteKit before DumpFire\'s gate is given the request, so the gate ' +
+			'cannot answer them as it answers everything else. (1) A POST, PUT, PATCH or DELETE whose Content-Type is that of a form or text/plain, sent with no Origin header ' +
+			'matching the server, is answered 403 in plain text, with one exception: when the request\'s Accept header is exactly ' +
+			'application/json, the same 403 is JSON, {"message": "Cross-site POST form submissions are forbidden"}, with the method that ' +
+			'was sent in place of POST. Only a deployed server makes this check. It is what `curl -d` sends when no ' +
+			'Content-Type is given: send Content-Type: application/json. (2) A path with a trailing slash is answered 308, to the same path ' +
+			'without it: leave the slash off. (3) A URL that is not validly encoded is answered 400 in plain text. /api/v1 with nothing ' +
+			'after it is not under /api/v1/: every operation is, and DumpFire\'s gate takes /api/v1 itself for a path of the web ' +
+			'application\'s own, which a key does not open. It is answered 401, {"message": "Not authenticated"}.',
 		contact: { name: 'DumpFire' }
 	},
 	servers: [{ url: '/', description: 'Current instance' }],
@@ -24,10 +156,25 @@ const spec = {
 		schemas: {
 			Error: {
 				type: 'object',
+				description:
+					'How every failure is answered. Some failures carry more beside the message: see RateLimitError, DependencyConflict, and for a batch that was refused ' +
+					'DependencyBatchRejected, MilestoneCardsRejected, MilestoneCardsDetachRejected and TokenBatchRejected.',
 				properties: {
-					error: { type: 'string', description: 'Human-readable error message' }
+					message: { type: 'string', description: 'Why the request failed, in words' }
 				},
-				required: ['error']
+				required: ['message']
+			},
+			RateLimitError: {
+				type: 'object',
+				description: 'The body of a 429.',
+				properties: {
+					message: { type: 'string', description: 'Always "Rate limit exceeded"' },
+					retryAfterSecs: {
+						type: 'integer',
+						description: 'Seconds until the request can be sent again. The Retry-After header carries the same number.'
+					}
+				},
+				required: ['message', 'retryAfterSecs']
 			},
 			User: {
 				type: 'object',
@@ -37,56 +184,236 @@ const spec = {
 					email: { type: 'string', format: 'email' },
 					emoji: { type: 'string' },
 					role: { type: 'string', enum: ['user', 'admin', 'superadmin'] }
-				}
+				},
+				required: ['id', 'username', 'email', 'emoji', 'role']
 			},
 			Board: {
 				type: 'object',
 				properties: {
 					id: { type: 'integer' },
 					name: { type: 'string' },
-					emoji: { type: 'string' },
-					parentCardId: { type: ['integer', 'null'] },
-					categoryId: { type: ['integer', 'null'] },
+					emoji: { type: ['string', 'null'] },
+					parentCardId: { type: ['integer', 'null'], description: 'The card this board is a sub-board of, or null' },
+					categoryId: { type: ['integer', 'null'], description: 'The board category it is filed under on the dashboard, or null' },
 					isPublic: { type: 'boolean' },
-					createdBy: { type: 'integer' },
+					createdBy: { type: ['integer', 'null'], description: 'The user who created it. null once that user has been deleted.' },
 					createdAt: { type: 'string' },
 					updatedAt: { type: 'string' }
-				}
+				},
+				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'createdBy', 'createdAt', 'updatedAt']
 			},
 			Column: {
 				type: 'object',
 				properties: {
 					id: { type: 'integer' },
+					boardId: { type: 'integer' },
 					title: { type: 'string' },
-					position: { type: 'integer' },
+					position: { type: 'number', description: 'Order on the board, lowest first. Not always a whole number.' },
 					color: { type: 'string', description: 'Hex colour code' },
-					wipLimit: { type: ['integer', 'null'], description: 'Work-in-progress limit' },
+					wipLimit: { type: 'integer', minimum: 0, description: 'Work-in-progress limit. 0 means no limit. Never null.' },
 					showAddCard: { type: 'boolean' }
-				}
+				},
+				required: ['id', 'boardId', 'title', 'position', 'color', 'wipLimit', 'showAddCard']
 			},
 			BoardDetail: {
 				type: 'object',
+				description: 'A board with its columns. Every property of Board, described there, and `columns`.',
 				properties: {
 					id: { type: 'integer' },
 					name: { type: 'string' },
-					emoji: { type: 'string' },
+					emoji: { type: ['string', 'null'] },
+					parentCardId: { type: ['integer', 'null'] },
+					categoryId: { type: ['integer', 'null'] },
+					isPublic: { type: 'boolean' },
+					createdBy: { type: ['integer', 'null'] },
+					createdAt: { type: 'string' },
+					updatedAt: { type: 'string' },
 					columns: { type: 'array', items: { $ref: '#/components/schemas/Column' } }
-				}
+				},
+				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'createdBy', 'createdAt', 'updatedAt', 'columns']
 			},
 			Card: {
 				type: 'object',
+				description:
+					'A card as it is stored, which is what creating and updating one answer. The list, the move and the single read each answer ' +
+					'this and something beside it: see CardListItem, MovedCard and CardDetail.',
 				properties: {
 					id: { type: 'integer' },
 					columnId: { type: 'integer' },
+					categoryId: { type: ['integer', 'null'], description: 'Card category, or null' },
 					title: { type: 'string' },
-					description: { type: 'string' },
+					description: { type: ['string', 'null'] },
+					position: { type: 'number', description: 'Order within the column, lowest first. Not always a whole number.' },
 					priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
-					position: { type: 'integer' },
+					colorTag: { type: ['string', 'null'], description: 'Hex colour, or an empty string for none' },
 					dueDate: { type: ['string', 'null'] },
-					columnTitle: { type: 'string' },
+					onHoldNote: { type: ['string', 'null'], description: 'Why the card is on hold' },
+					businessValue: { type: ['string', 'null'] },
+					pinned: { type: 'boolean' },
+					completedAt: {
+						type: ['string', 'null'],
+						description: 'When the card was moved into, or created in, a Complete column. null while it is not in one: reopening a card clears it.'
+					},
+					firstCompletedAt: {
+						type: ['string', 'null'],
+						description: 'When the card was first completed. Kept when it is reopened.'
+					},
+					archivedAt: { type: ['string', 'null'], description: 'When the card was archived, or null' },
+					coverUrl: {
+						type: ['string', 'null'],
+						description:
+							'The card\'s cover, drawn as a strip of colour across the top of the card on the board: a colour written #rrggbb or one of the eight preset gradients that updateCard lists. ' +
+							'It holds a colour, not an address, whatever its name says. null for none. A page draws only a colour or a preset, so another value stored before covers were checked is kept and not drawn.'
+					},
+					recurrenceRule: {
+						type: ['string', 'null'],
+						description: 'Not used: nothing sets or acts on it. null unless it was set before recurrence was retired.'
+					},
+					nextRecurrence: {
+						type: ['string', 'null'],
+						description: 'Not used: nothing sets or acts on it. null unless it was set before recurrence was retired.'
+					},
+					milestoneId: { type: ['integer', 'null'], description: 'The milestone the card belongs to, or null' },
+					createdBy: {
+						type: ['integer', 'null'],
+						description: 'The user who created it. null for a card made before this was recorded, or whose creator has been deleted.'
+					},
+					summary: {
+						type: ['string', 'null'],
+						description: 'Reporting field: the card in plain English, 200 characters at most. null when not recorded.'
+					},
+					theme: {
+						type: ['string', 'null'],
+						description: 'Reporting field: new capability, customer issue, security & compliance or maintenance. null when not recorded.'
+					},
+					customerImpact: {
+						type: ['string', 'null'],
+						description:
+							'Reporting field: none, internal or live customers, which may be followed by a colon and detail ("live customers: Quickline"). null when not recorded.'
+					},
+					closeReason: {
+						type: ['string', 'null'],
+						description: 'Reporting field: delivered, not needed, superseded or parked. null when not recorded.'
+					},
+					releaseState: {
+						type: ['string', 'null'],
+						description: 'Reporting field: built, on UAT or live. null when not recorded.'
+					},
 					createdAt: { type: 'string' },
 					updatedAt: { type: 'string' }
-				}
+				},
+				required: [
+					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
+					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
+					'milestoneId', 'createdBy', 'summary', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'createdAt', 'updatedAt'
+				]
+			},
+			CardListItem: {
+				type: 'object',
+				description:
+					'A card as the list of a board\'s cards gives it. Every property of Card, described there, and three more: `columnTitle`, `subtaskCount` and `subtaskCompleted`.',
+				properties: {
+					id: { type: 'integer' },
+					columnId: { type: 'integer' },
+					categoryId: { type: ['integer', 'null'] },
+					title: { type: 'string' },
+					description: { type: ['string', 'null'] },
+					position: { type: 'number' },
+					priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+					colorTag: { type: ['string', 'null'] },
+					dueDate: { type: ['string', 'null'] },
+					onHoldNote: { type: ['string', 'null'] },
+					businessValue: { type: ['string', 'null'] },
+					pinned: { type: 'boolean' },
+					completedAt: { type: ['string', 'null'] },
+					firstCompletedAt: { type: ['string', 'null'] },
+					archivedAt: { type: ['string', 'null'] },
+					coverUrl: {
+						type: ['string', 'null'],
+						description:
+							'The card\'s cover, drawn as a strip of colour across the top of the card on the board: a colour written #rrggbb or one of the eight preset gradients that updateCard lists. ' +
+							'It holds a colour, not an address, whatever its name says. null for none. A page draws only a colour or a preset, so another value stored before covers were checked is kept and not drawn.'
+					},
+					recurrenceRule: {
+						type: ['string', 'null'],
+						description: 'Not used: nothing sets or acts on it. null unless it was set before recurrence was retired.'
+					},
+					nextRecurrence: {
+						type: ['string', 'null'],
+						description: 'Not used: nothing sets or acts on it. null unless it was set before recurrence was retired.'
+					},
+					milestoneId: { type: ['integer', 'null'] },
+					createdBy: { type: ['integer', 'null'] },
+					summary: { type: ['string', 'null'] },
+					theme: { type: ['string', 'null'] },
+					customerImpact: { type: ['string', 'null'] },
+					closeReason: { type: ['string', 'null'] },
+					releaseState: { type: ['string', 'null'] },
+					createdAt: { type: 'string' },
+					updatedAt: { type: 'string' },
+					columnTitle: { type: 'string', description: 'Title of the column the card is in' },
+					subtaskCount: { type: 'integer', description: 'How many subtasks the card has' },
+					subtaskCompleted: { type: 'integer', description: 'How many of them are completed' }
+				},
+				required: [
+					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
+					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
+					'milestoneId', 'createdBy', 'summary', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'createdAt', 'updatedAt',
+					'columnTitle', 'subtaskCount', 'subtaskCompleted'
+				]
+			},
+			MovedCard: {
+				type: 'object',
+				description:
+					'A card as a move answers it. Every property of Card, described there, as they are after the move, and two more: `columnTitle` and `boardId`.',
+				properties: {
+					id: { type: 'integer' },
+					columnId: { type: 'integer' },
+					categoryId: { type: ['integer', 'null'] },
+					title: { type: 'string' },
+					description: { type: ['string', 'null'] },
+					position: { type: 'number' },
+					priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+					colorTag: { type: ['string', 'null'] },
+					dueDate: { type: ['string', 'null'] },
+					onHoldNote: { type: ['string', 'null'] },
+					businessValue: { type: ['string', 'null'] },
+					pinned: { type: 'boolean' },
+					completedAt: { type: ['string', 'null'] },
+					firstCompletedAt: { type: ['string', 'null'] },
+					archivedAt: { type: ['string', 'null'] },
+					coverUrl: {
+						type: ['string', 'null'],
+						description:
+							'The card\'s cover, drawn as a strip of colour across the top of the card on the board: a colour written #rrggbb or one of the eight preset gradients that updateCard lists. ' +
+							'It holds a colour, not an address, whatever its name says. null for none. A page draws only a colour or a preset, so another value stored before covers were checked is kept and not drawn.'
+					},
+					recurrenceRule: {
+						type: ['string', 'null'],
+						description: 'Not used: nothing sets or acts on it. null unless it was set before recurrence was retired.'
+					},
+					nextRecurrence: {
+						type: ['string', 'null'],
+						description: 'Not used: nothing sets or acts on it. null unless it was set before recurrence was retired.'
+					},
+					milestoneId: { type: ['integer', 'null'] },
+					createdBy: { type: ['integer', 'null'] },
+					summary: { type: ['string', 'null'] },
+					theme: { type: ['string', 'null'] },
+					customerImpact: { type: ['string', 'null'] },
+					closeReason: { type: ['string', 'null'] },
+					releaseState: { type: ['string', 'null'] },
+					createdAt: { type: 'string' },
+					updatedAt: { type: 'string' },
+					columnTitle: { type: 'string', description: 'Title of the column the card is now in' },
+					boardId: { type: 'integer', description: 'The board the card is now on: another board after a move across boards' }
+				},
+				required: [
+					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
+					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
+					'milestoneId', 'createdBy', 'summary', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'createdAt', 'updatedAt',
+					'columnTitle', 'boardId'
+				]
 			},
 			Assignee: {
 				type: 'object',
@@ -94,7 +421,8 @@ const spec = {
 					id: { type: 'integer' },
 					username: { type: 'string' },
 					emoji: { type: 'string' }
-				}
+				},
+				required: ['id', 'username', 'emoji']
 			},
 			Subtask: {
 				type: 'object',
@@ -102,11 +430,14 @@ const spec = {
 					id: { type: 'integer' },
 					cardId: { type: 'integer' },
 					title: { type: 'string' },
-					description: { type: 'string' },
+					description: { type: ['string', 'null'] },
 					priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+					colorTag: { type: ['string', 'null'], description: 'Hex colour, or an empty string for none' },
+					dueDate: { type: ['string', 'null'] },
 					completed: { type: 'boolean' },
-					position: { type: 'integer' }
-				}
+					position: { type: 'number', description: 'Order within the card, lowest first. Not always a whole number.' }
+				},
+				required: ['id', 'cardId', 'title', 'description', 'priority', 'colorTag', 'dueDate', 'completed', 'position']
 			},
 			Category: {
 				type: 'object',
@@ -115,7 +446,8 @@ const spec = {
 					boardId: { type: ['integer', 'null'], description: 'Board this category belongs to' },
 					name: { type: 'string' },
 					color: { type: 'string', description: 'Hex colour code' }
-				}
+				},
+				required: ['id', 'boardId', 'name', 'color']
 			},
 			BoardCategory: {
 				type: 'object',
@@ -124,7 +456,8 @@ const spec = {
 					id: { type: 'integer' },
 					name: { type: 'string' },
 					color: { type: 'string', description: 'Hex colour code' }
-				}
+				},
+				required: ['id', 'name', 'color']
 			},
 			Label: {
 				type: 'object',
@@ -133,28 +466,149 @@ const spec = {
 					boardId: { type: 'integer' },
 					name: { type: 'string' },
 					color: { type: 'string', description: 'Hex colour code' }
-				}
+				},
+				required: ['id', 'boardId', 'name', 'color']
 			},
 			Webhook: {
 				type: 'object',
 				properties: {
 					id: { type: 'integer' },
 					boardId: { type: 'integer' },
-					url: { type: 'string', format: 'uri' },
-					secret: { type: 'string' },
+					url: {
+						type: 'string',
+						format: 'uri',
+						description:
+							'The delivery address. Present only when the caller is the board owner or an administrator, and in the response to the request that created the webhook, as the secret is. Omitted for every other caller, including board editors and viewers, and in the answer to an editor\'s own update: an address can name a server inside a network or carry credentials. Until 2026-10-14 it was given to every caller who could view the board.'
+					},
+					hasSecret: {
+						type: 'boolean',
+						description: 'Whether a signing secret is set. Always present.'
+					},
+					secret: {
+						type: 'string',
+						description:
+							'The signing secret. Present only when the caller is the board owner or an administrator, and in the response to the request that created the webhook. Omitted for every other caller, including board editors and viewers.'
+					},
 					events: { type: 'array', items: { type: 'string' } },
 					active: { type: 'boolean' },
 					createdAt: { type: 'string' }
-				}
+				},
+				required: ['id', 'boardId', 'hasSecret', 'events', 'active', 'createdAt']
 			},
 			Dependency: {
 				type: 'object',
+				description:
+					'The work at the other end of one dependency link, with the link itself: in `blockedBy` it is what the card waits on, in `blocks` it is what waits on the card. It is a card or a subtask, and `kind` says which. ' +
+					'Work on a board the key\'s user cannot open is listed, because it still blocks, but withheld: see `withheld`.',
+				properties: {
+					id: { type: 'integer', description: 'Id of the dependency link' },
+					kind: {
+						type: 'string',
+						enum: ['card', 'subtask'],
+						description: 'What `cardId` is the id of. Card 32 and subtask 32 are different things.'
+					},
+					cardId: { type: 'integer', description: 'Id of the card, or of the subtask when `kind` is subtask' },
+					parentCardId: {
+						type: ['integer', 'null'],
+						description: 'For a subtask, the card it belongs to. null for a card, and for withheld work.'
+					},
+					title: {
+						type: 'string',
+						description: 'For withheld work, "A card on a board you cannot open" or "A subtask on a board you cannot open"'
+					},
+					boardId: { type: ['integer', 'null'], description: 'The board it is on, which may be another board. null for withheld work.' },
+					boardName: { type: 'string', description: 'For withheld work, "A board you cannot open"' },
+					columnName: {
+						type: 'string',
+						description: 'Title of the column it is in. For a subtask, its card\'s column. Empty for withheld work.'
+					},
+					priority: {
+						type: ['string', 'null'],
+						enum: ['low', 'medium', 'high', 'critical', null],
+						description: 'null for withheld work'
+					},
+					resolved: { type: 'boolean', description: 'true once that work is finished, so that it no longer blocks' },
+					withheld: {
+						type: 'boolean',
+						description:
+							'true when the work is on a board the key\'s user cannot open. Then only what it is, its id and whether it is finished are told: ' +
+							'its title and board name are replaced by the texts above, its column is empty, and its board, parent card and priority are null. ' +
+							'Until 2026-10-14 they were given.'
+					},
+					createdByUserId: { type: ['integer', 'null'], description: 'Who recorded the link, where that is known' },
+					createdAt: { type: 'string', description: 'When the link was recorded' }
+				},
+				required: [
+					'id', 'kind', 'cardId', 'parentCardId', 'title', 'boardId', 'boardName', 'columnName', 'priority', 'resolved',
+					'withheld', 'createdByUserId', 'createdAt'
+				]
+			},
+			DependencyEnd: {
+				type: 'object',
+				description: 'One end of a dependency link: a card or a subtask, by its id.',
+				properties: {
+					kind: { type: 'string', enum: ['card', 'subtask'] },
+					id: { type: 'integer' }
+				},
+				required: ['kind', 'id']
+			},
+			CardDependencies: {
+				type: 'object',
+				description: 'What a card waits on and what waits on it.',
 				properties: {
 					cardId: { type: 'integer' },
-					dependsOnCardId: { type: 'integer' },
-					dependsOnTitle: { type: 'string' },
-					dependsOnCompleted: { type: 'boolean' }
-				}
+					isBlocked: { type: 'boolean', description: 'true when at least one thing the card waits on is not finished' },
+					blockedBy: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/Dependency' },
+						description: 'What this card waits on. Left out when `direction=blocks`.'
+					},
+					blocks: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/Dependency' },
+						description: 'What waits on this card. Left out when `direction=blocked-by`.'
+					}
+				},
+				required: ['cardId', 'isBlocked']
+			},
+			DependencyConflict: {
+				type: 'object',
+				description:
+					'The body of a 409 for a dependency that cannot be added. There are two, and `cycle` tells them apart: a link that is already ' +
+					'recorded is answered with the message alone, and a link that would close a loop with the loop as well.',
+				properties: {
+					message: {
+						type: 'string',
+						description: '"That dependency already exists", or the loop in words: "#10 waiting on #42 would create a cycle: #10 → #42 → #10"'
+					},
+					cycle: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/DependencyEnd' },
+						description: 'Only for a link that would close a loop: the chain it would close, in order'
+					}
+				},
+				required: ['message']
+			},
+			LinkedWork: {
+				type: 'object',
+				description:
+					'A card or subtask at the other end of a dependency link, as the single read of a card lists it. The dependencies operation gives the same work with the link beside it: see Dependency, ' +
+					'which also says what is given of work on a board the key\'s user cannot open.',
+				properties: {
+					kind: { type: 'string', enum: ['card', 'subtask'], description: 'What `cardId` is the id of' },
+					cardId: { type: 'integer', description: 'Id of the card, or of the subtask when `kind` is subtask' },
+					parentCardId: {
+						type: ['integer', 'null'],
+						description: 'For a subtask, the card it belongs to. null for a card, and for withheld work.'
+					},
+					title: { type: 'string', description: 'For withheld work, "A card on a board you cannot open" or "A subtask on a board you cannot open"' },
+					boardId: { type: ['integer', 'null'], description: 'null for withheld work' },
+					boardName: { type: 'string', description: 'For withheld work, "A board you cannot open"' },
+					columnName: { type: 'string', description: 'Empty for withheld work' },
+					resolved: { type: 'boolean', description: 'true once that work is finished' },
+					withheld: { type: 'boolean', description: 'true when the work is on a board the key\'s user cannot open, as on Dependency' }
+				},
+				required: ['kind', 'cardId', 'parentCardId', 'title', 'boardId', 'boardName', 'columnName', 'resolved', 'withheld']
 			},
 			BurndownPoint: {
 				type: 'object',
@@ -167,7 +621,8 @@ const spec = {
 					added: { type: 'integer', description: 'Cards that arrived this day' },
 					completed: { type: 'integer', description: 'Cards completed this day' },
 					removed: { type: 'integer', description: 'Open cards dropped (archived) this day' }
-				}
+				},
+				required: ['date', 'scope', 'done', 'remaining', 'added', 'completed', 'removed']
 			},
 			BurndownSummary: {
 				type: 'object',
@@ -182,7 +637,8 @@ const spec = {
 					added: { type: 'integer' },
 					completed: { type: 'integer' },
 					removed: { type: 'integer' }
-				}
+				},
+				required: ['scopeStart', 'scopeNow', 'doneStart', 'doneNow', 'remainingStart', 'remainingNow', 'added', 'completed', 'removed']
 			},
 			BurndownForecast: {
 				type: 'object',
@@ -196,7 +652,8 @@ const spec = {
 					netBurnRate: { type: 'number', description: 'completionRate - scopeRate' },
 					projectedDate: { type: ['string', 'null'], format: 'date', description: 'Remaining reaches zero at the net rate' },
 					projectedDateNoNewScope: { type: ['string', 'null'], format: 'date', description: 'Remaining reaches zero if nothing more is added' }
-				}
+				},
+				required: ['status', 'basisDays', 'asOf', 'completionRate', 'scopeRate', 'netBurnRate', 'projectedDate', 'projectedDateNoNewScope']
 			},
 			DeliveryEstimate: {
 				type: 'object',
@@ -216,7 +673,20 @@ const spec = {
 					p85: { $ref: '#/components/schemas/DeliveryPoint' },
 					p95: { $ref: '#/components/schemas/DeliveryPoint' },
 					chanceByTarget: { type: ['number', 'null'], description: 'Share of trials finished by the target date (0-1), when there is a target' },
-					bottleneck: { oneOf: [{ $ref: '#/components/schemas/DeliveryPart' }, { type: 'null' }], description: 'slowest-board only: the board most likely to finish last' },
+					bottleneck: {
+						type: ['object', 'null'],
+						description: 'slowest-board only: the board most likely to finish last, with the properties of a DeliveryPart. null otherwise.',
+						properties: {
+							key: { type: 'string', example: 'board:10' },
+							name: { type: 'string' },
+							remaining: { type: 'integer' },
+							status: { type: 'string', enum: ['estimated', 'done', 'no-pace', 'beyond-horizon', 'insufficient-data'] },
+							basisFinished: { type: 'integer' },
+							p50: { $ref: '#/components/schemas/DeliveryPoint' },
+							p85: { $ref: '#/components/schemas/DeliveryPoint' }
+						},
+						required: ['key', 'name', 'remaining', 'status', 'basisFinished', 'p50', 'p85']
+					},
 					parts: { type: 'array', items: { $ref: '#/components/schemas/DeliveryPart' }, description: 'slowest-board only: every board with open work, slowest first; boards with no recent pace last' },
 					pooled: {
 						type: ['object', 'null'],
@@ -225,9 +695,14 @@ const spec = {
 							status: { type: 'string' },
 							p50: { $ref: '#/components/schemas/DeliveryPoint' },
 							p85: { $ref: '#/components/schemas/DeliveryPoint' }
-						}
+						},
+						required: ['status', 'p50', 'p85']
 					}
-				}
+				},
+				required: [
+					'status', 'method', 'remaining', 'basisFinished', 'asOf', 'basisDays', 'throughputPerWeek', 'arrivalPerWeek', 'trials',
+					'p50', 'p85', 'p95', 'chanceByTarget', 'bottleneck', 'parts', 'pooled'
+				]
 			},
 			DeliveryPart: {
 				type: 'object',
@@ -240,7 +715,8 @@ const spec = {
 					basisFinished: { type: 'integer' },
 					p50: { $ref: '#/components/schemas/DeliveryPoint' },
 					p85: { $ref: '#/components/schemas/DeliveryPoint' }
-				}
+				},
+				required: ['key', 'name', 'remaining', 'status', 'basisFinished', 'p50', 'p85']
 			},
 			DeliveryPoint: {
 				type: ['object', 'null'],
@@ -248,21 +724,25 @@ const spec = {
 				properties: {
 					days: { type: 'integer', description: 'Days after asOf' },
 					date: { type: 'string', format: 'date' }
-				}
+				},
+				required: ['days', 'date']
 			},
 			BurndownTarget: {
-				type: 'object',
+				type: ['object', 'null'],
+				description: 'The day the scope is meant to reach zero, and how the forecast compares with it. null when there is no target.',
 				properties: {
 					date: { type: 'string', format: 'date' },
 					source: { type: 'string', enum: ['milestone', 'query'] },
 					idealStart: {
 						type: 'object',
 						description: 'The ideal line runs from here to zero on date: the start of the window, or the first day with work if the window opens before any existed',
-						properties: { date: { type: 'string', format: 'date' }, remaining: { type: 'integer' } }
+						properties: { date: { type: 'string', format: 'date' }, remaining: { type: 'integer' } },
+						required: ['date', 'remaining']
 					},
 					onTrack: { type: ['boolean', 'null'] },
 					daysLate: { type: ['integer', 'null'], description: 'Negative means the forecast lands early' }
-				}
+				},
+				required: ['date', 'source', 'idealStart', 'onTrack', 'daysLate']
 			},
 			BurndownResult: {
 				type: 'object',
@@ -274,22 +754,28 @@ const spec = {
 							label: { type: 'string' },
 							boards: {
 								type: 'array',
-								items: { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' }, emoji: { type: 'string' } } }
+								items: {
+									type: 'object',
+									properties: { id: { type: 'integer' }, name: { type: 'string' }, emoji: { type: 'string' } },
+									required: ['id', 'name', 'emoji']
+								}
 							},
 							boardCategory: { type: ['object', 'null'] },
 							milestone: { type: ['object', 'null'] }
-						}
+						},
+						required: ['kind', 'label', 'boards', 'boardCategory', 'milestone']
 					},
 					filters: { type: 'object', description: 'The filters applied, normalised ("me" resolved to your user id)' },
 					range: {
 						type: 'object',
-						properties: { from: { type: 'string', format: 'date' }, to: { type: 'string', format: 'date' }, days: { type: 'integer' } }
+						properties: { from: { type: 'string', format: 'date' }, to: { type: 'string', format: 'date' }, days: { type: 'integer' } },
+						required: ['from', 'to', 'days']
 					},
 					series: { type: 'array', items: { $ref: '#/components/schemas/BurndownPoint' } },
 					summary: { $ref: '#/components/schemas/BurndownSummary' },
 					forecast: { $ref: '#/components/schemas/BurndownForecast' },
 					delivery: { $ref: '#/components/schemas/DeliveryEstimate' },
-					target: { oneOf: [{ $ref: '#/components/schemas/BurndownTarget' }, { type: 'null' }] },
+					target: { $ref: '#/components/schemas/BurndownTarget' },
 					groupBy: { type: 'string', enum: ['none', 'board', 'category', 'label', 'assignee', 'priority'] },
 					groups: {
 						type: 'array',
@@ -308,7 +794,8 @@ const spec = {
 								summary: { $ref: '#/components/schemas/BurndownSummary' },
 								forecast: { $ref: '#/components/schemas/BurndownForecast' },
 								delivery: { $ref: '#/components/schemas/DeliveryEstimate' }
-							}
+							},
+							required: ['key', 'kind', 'id', 'name', 'color', 'cardCount', 'remaining', 'scope', 'summary', 'forecast', 'delivery']
 						}
 					},
 					options: {
@@ -328,50 +815,138 @@ const spec = {
 							archivedDoneCards: { type: 'integer', description: 'Completed and since archived; still counted as done' },
 							notes: { type: 'array', items: { type: 'string' } },
 							generatedAt: { type: 'string', format: 'date-time' }
-						}
+						},
+						required: [
+							'basis', 'timezone', 'cardCount', 'inferredCompletionDates', 'inferredInWindow', 'reopenedCards', 'archivedDoneCards',
+							'notes', 'generatedAt'
+						]
 					}
-				}
+				},
+				required: ['scope', 'filters', 'range', 'series', 'summary', 'forecast', 'delivery', 'target', 'groupBy', 'groups', 'meta']
 			},
 			AuditLogEntry: {
 				type: 'object',
 				properties: {
 					id: { type: 'integer' },
-					boardId: { type: 'integer' },
-					cardId: { type: ['integer', 'null'] },
-					userId: { type: 'integer' },
-					action: { type: 'string' },
-					detail: { type: 'string' },
-					userName: { type: 'string' },
-					userEmoji: { type: 'string' },
-					createdAt: { type: 'string' }
-				}
+					boardId: { type: 'integer', description: 'The board the entry was written against' },
+					cardId: { type: ['integer', 'null'], description: 'The card it is about. null for an entry about no card, or whose card has since been deleted.' },
+					userId: { type: ['integer', 'null'], description: 'Who did it. null once that user has been deleted.' },
+					action: {
+						type: 'string',
+						description: 'The canonical action name, the same whether it was done in the web application or through the API: card_moved. Filter and group on this.'
+					},
+					rawAction: { type: 'string', description: 'The action as stored: an action done through the API has the prefix api:' },
+					detail: { type: ['string', 'null'] },
+					userName: { type: ['string', 'null'], description: 'The user\'s name as it was when the entry was written' },
+					userEmoji: { type: ['string', 'null'] },
+					source: { type: 'string', enum: ['ui', 'api'], description: 'Where the action came from. Never null.' },
+					createdAt: { type: 'string' },
+					boardName: { type: 'string', description: 'Name of the board, or "Unknown"' }
+				},
+				required: [
+					'id', 'boardId', 'cardId', 'userId', 'action', 'rawAction', 'detail', 'userName', 'userEmoji', 'source', 'createdAt', 'boardName'
+				]
 			},
 			UserStats: {
 				type: 'object',
 				properties: {
-					totalCards: { type: 'integer' },
-					completedCards: { type: 'integer' },
-					activeCards: { type: 'integer' },
-					totalSubtasks: { type: 'integer' },
-					completedSubtasks: { type: 'integer' },
-					xp: { type: 'integer' },
-					boardCount: { type: 'integer' }
-				}
+					cardsCompleted: {
+						type: 'object',
+						description: 'How many cards the user has completed, counted from the completions the activity log records as theirs',
+						properties: {
+							total: { type: 'integer' },
+							last7Days: { type: 'integer' },
+							last30Days: { type: 'integer' }
+						},
+						required: ['total', 'last7Days', 'last30Days']
+					},
+					avgCycleTimeDays: {
+						type: ['number', 'null'],
+						description:
+							'Mean days from creation to completion, to one decimal place, over the completed cards the user is assigned to. null when there is none. An average of 0 is 0: until 2026-10-14 it was null.'
+					},
+					streak: {
+						type: 'integer',
+						description: 'Consecutive UTC days with at least one completion, counted back from today, or from yesterday if there is none today'
+					},
+					activeCards: { type: 'integer', description: 'Cards the user is assigned to that are neither completed nor archived' },
+					recentActivity: {
+						type: 'array',
+						description:
+							'The user\'s last 20 activity entries on boards they can open, newest first. An entry on a board the key\'s user can no longer open is left out before the 20 are counted: until 2026-10-14 it was listed, with the card title in its detail.',
+						items: {
+							type: 'object',
+							properties: {
+								id: { type: 'integer' },
+								action: { type: 'string', description: 'The action as stored: an action done through the API has the prefix api:' },
+								detail: { type: ['string', 'null'] },
+								boardId: { type: 'integer' },
+								createdAt: { type: 'string' }
+							},
+							required: ['id', 'action', 'detail', 'boardId', 'createdAt']
+						}
+					}
+				},
+				required: ['cardsCompleted', 'avgCycleTimeDays', 'streak', 'activeCards', 'recentActivity']
 			},
 			CardDetail: {
 				type: 'object',
+				description:
+					'A card as the single read gives it. Every property of Card, described there, and with it the board and column it is on, its subtasks, labels and assignees, and what it waits on and what waits on it.',
 				properties: {
 					id: { type: 'integer' },
 					columnId: { type: 'integer' },
-					boardId: { type: 'integer' },
-					columnTitle: { type: 'string' },
+					categoryId: { type: ['integer', 'null'] },
 					title: { type: 'string' },
-					description: { type: 'string' },
+					description: { type: ['string', 'null'] },
+					position: { type: 'number' },
 					priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+					colorTag: { type: ['string', 'null'] },
+					dueDate: { type: ['string', 'null'] },
+					onHoldNote: { type: ['string', 'null'] },
+					businessValue: { type: ['string', 'null'] },
+					pinned: { type: 'boolean' },
+					completedAt: { type: ['string', 'null'] },
+					firstCompletedAt: { type: ['string', 'null'] },
+					archivedAt: { type: ['string', 'null'] },
+					coverUrl: {
+						type: ['string', 'null'],
+						description:
+							'The card\'s cover, drawn as a strip of colour across the top of the card on the board: a colour written #rrggbb or one of the eight preset gradients that updateCard lists. ' +
+							'It holds a colour, not an address, whatever its name says. null for none. A page draws only a colour or a preset, so another value stored before covers were checked is kept and not drawn.'
+					},
+					recurrenceRule: {
+						type: ['string', 'null'],
+						description: 'Not used: nothing sets or acts on it. null unless it was set before recurrence was retired.'
+					},
+					nextRecurrence: {
+						type: ['string', 'null'],
+						description: 'Not used: nothing sets or acts on it. null unless it was set before recurrence was retired.'
+					},
+					milestoneId: { type: ['integer', 'null'] },
+					createdBy: { type: ['integer', 'null'] },
+					summary: { type: ['string', 'null'] },
+					theme: { type: ['string', 'null'] },
+					customerImpact: { type: ['string', 'null'] },
+					closeReason: { type: ['string', 'null'] },
+					releaseState: { type: ['string', 'null'] },
+					createdAt: { type: 'string' },
+					updatedAt: { type: 'string' },
+					boardId: { type: 'integer', description: 'The board the card is on' },
+					columnTitle: { type: 'string', description: 'Title of the column the card is in' },
 					subtasks: { type: 'array', items: { $ref: '#/components/schemas/Subtask' } },
 					labelIds: { type: 'array', items: { type: 'integer' } },
-					assignees: { type: 'array', items: { $ref: '#/components/schemas/Assignee' } }
-				}
+					assignees: { type: 'array', items: { $ref: '#/components/schemas/Assignee' } },
+					isBlocked: { type: 'boolean', description: 'true when at least one thing the card waits on is not finished' },
+					blockedBy: { type: 'array', items: { $ref: '#/components/schemas/LinkedWork' }, description: 'What the card waits on' },
+					blocks: { type: 'array', items: { $ref: '#/components/schemas/LinkedWork' }, description: 'What waits on the card' }
+				},
+				required: [
+					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
+					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
+					'milestoneId', 'createdBy', 'summary', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'createdAt', 'updatedAt',
+					'boardId', 'columnTitle', 'subtasks', 'labelIds', 'assignees', 'isBlocked', 'blockedBy', 'blocks'
+				]
 			},
 			Comment: {
 				type: 'object',
@@ -384,7 +959,879 @@ const spec = {
 					updatedAt: { type: 'string' },
 					username: { type: 'string' },
 					userEmoji: { type: 'string' }
-				}
+				},
+				required: ['id', 'cardId', 'userId', 'content', 'createdAt', 'updatedAt', 'username', 'userEmoji']
+			},
+			SubtaskLinkedWork: {
+				type: 'object',
+				description:
+					'A card or subtask at the other end of one of a subtask\'s dependency links. The properties of LinkedWork, described there, and `priority`. ' +
+					'The link has no id here: it is removed by naming the other end. Work on a board the key\'s user cannot open is withheld, as on Dependency.',
+				properties: {
+					kind: { type: 'string', enum: ['card', 'subtask'], description: 'What `cardId` is the id of' },
+					cardId: { type: 'integer', description: 'Id of the card, or of the subtask when `kind` is subtask' },
+					parentCardId: {
+						type: ['integer', 'null'],
+						description: 'For a subtask, the card it belongs to. null for a card, and for withheld work.'
+					},
+					title: { type: 'string', description: 'For withheld work, "A card on a board you cannot open" or "A subtask on a board you cannot open"' },
+					boardId: { type: ['integer', 'null'], description: 'The board it is on, which may be another board. null for withheld work.' },
+					boardName: { type: 'string', description: 'For withheld work, "A board you cannot open"' },
+					columnName: {
+						type: 'string',
+						description: 'Title of the column it is in. For a subtask, its card\'s column. Empty for withheld work.'
+					},
+					priority: {
+						type: ['string', 'null'],
+						enum: ['low', 'medium', 'high', 'critical', null],
+						description: 'null for withheld work'
+					},
+					resolved: { type: 'boolean', description: 'true once that work is finished, so that it no longer blocks' },
+					withheld: { type: 'boolean', description: 'true when the work is on a board the key\'s user cannot open, as on Dependency' }
+				},
+				required: ['kind', 'cardId', 'parentCardId', 'title', 'boardId', 'boardName', 'columnName', 'priority', 'resolved', 'withheld']
+			},
+			SubtaskDependencies: {
+				type: 'object',
+				description:
+					'What a subtask waits on and what waits on it. Both lists are always present. Work that has been archived or deleted is not listed.',
+				properties: {
+					subtaskId: { type: 'integer' },
+					cardId: { type: 'integer', description: 'The card the subtask belongs to' },
+					isBlocked: { type: 'boolean', description: 'true when at least one thing the subtask waits on is not finished' },
+					blockedBy: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/SubtaskLinkedWork' },
+						description: 'What this subtask waits on'
+					},
+					blocks: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/SubtaskLinkedWork' },
+						description: 'What waits on this subtask'
+					}
+				},
+				required: ['subtaskId', 'cardId', 'isBlocked', 'blockedBy', 'blocks']
+			},
+			DependencyLink: {
+				type: 'object',
+				description: 'One link of a batch, as DumpFire read it: `blocked` waits on `blocker`.',
+				properties: {
+					blocked: { type: 'integer', description: 'Id of the end that waits' },
+					blockedType: { type: 'string', enum: ['card', 'subtask'], description: 'What `blocked` is the id of' },
+					blocker: { type: 'integer', description: 'Id of the end it waits on' },
+					blockerType: { type: 'string', enum: ['card', 'subtask'], description: 'What `blocker` is the id of' }
+				},
+				required: ['blocked', 'blockedType', 'blocker', 'blockerType']
+			},
+			DependencyBatchCreated: {
+				type: 'object',
+				description: 'What a batch of dependencies recorded.',
+				properties: {
+					created: { type: 'integer', description: 'Links written by this request. 0 when every link was already recorded.' },
+					skippedAsDuplicate: { type: 'integer', description: 'Links of the batch that were already recorded, and were left as they are' },
+					boardsTouched: { type: 'array', items: { type: 'integer' }, description: 'Ids of the boards the new links have an end on' },
+					links: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/DependencyLink' },
+						description: 'The new links. The ones skipped as already recorded are not in it.'
+					}
+				},
+				required: ['created', 'skippedAsDuplicate', 'boardsTouched', 'links']
+			},
+			DependencyBatchRejected: {
+				type: 'object',
+				description:
+					'The body of the 409 for a batch of dependencies of which at least one link cannot be recorded. Nothing was written, the links that ' +
+					'were acceptable included, and every link at fault is listed: in `rejected` if the link itself is wrong, in `forbidden` if the key\'s user may not make it.',
+				properties: {
+					message: { type: 'string', description: 'Always "Batch rejected — nothing was written"' },
+					written: { type: 'integer', description: 'Always 0' },
+					rejected: {
+						type: 'array',
+						description: 'The links that are wrong in themselves, each with why',
+						items: {
+							type: 'object',
+							properties: {
+								link: { $ref: '#/components/schemas/DependencyLink' },
+								reason: {
+									type: 'string',
+									enum: ['self', 'missing-blocked', 'missing-blocker', 'cycle', 'duplicate-in-batch'],
+									description:
+										'self: an end waits on itself. missing-blocked and missing-blocker: that end does not exist or is archived. ' +
+										'cycle: the link would close a loop, with the stored links or with earlier links of this batch. ' +
+										'duplicate-in-batch: the batch has the same link twice.'
+								},
+								cycle: {
+									type: 'array',
+									items: { $ref: '#/components/schemas/DependencyEnd' },
+									description: 'Only when `reason` is cycle: the chain the link would close, in order'
+								},
+								message: { type: 'string', description: 'The reason in words' }
+							},
+							required: ['link', 'reason', 'message']
+						}
+					},
+					forbidden: {
+						type: 'array',
+						description:
+							'The links that are right in themselves and have an end on a board the key\'s user cannot edit. A link in `rejected` is not checked for this.',
+						items: {
+							type: 'object',
+							properties: {
+								link: { $ref: '#/components/schemas/DependencyLink' },
+								message: { type: 'string' }
+							},
+							required: ['link', 'message']
+						}
+					},
+					wouldSkipAsDuplicate: { type: 'integer', description: 'Links of the batch that are already recorded' },
+					wouldCreate: { type: 'integer', description: 'Links that would have been written had the others not been at fault' }
+				},
+				required: ['message', 'written', 'rejected', 'forbidden', 'wouldSkipAsDuplicate', 'wouldCreate']
+			},
+			Milestone: {
+				type: 'object',
+				description:
+					'A milestone as it is stored: a goal that cards belong to. A card belongs to one milestone at most, and says which in its `milestoneId`. ' +
+					'The list and the single read each answer this and something beside it: see MilestoneListItem and MilestoneDetail.',
+				properties: {
+					id: { type: 'integer' },
+					boardId: {
+						type: ['integer', 'null'],
+						description: 'The board the milestone belongs to, which is then the only board its cards may be on. null for a milestone that spans boards.'
+					},
+					name: { type: 'string' },
+					description: { type: 'string', description: 'An empty string when none was given. Never null.' },
+					targetDate: { type: ['string', 'null'], description: 'The day the milestone is meant to be reached, as it was sent, or null' },
+					status: { type: 'string', enum: ['open', 'closed'] },
+					createdBy: { type: ['integer', 'null'], description: 'The user who created it' },
+					createdAt: { type: 'string' },
+					updatedAt: { type: 'string' }
+				},
+				required: ['id', 'boardId', 'name', 'description', 'targetDate', 'status', 'createdBy', 'createdAt', 'updatedAt']
+			},
+			MilestoneListItem: {
+				type: 'object',
+				description:
+					'A milestone as the list gives it. Every property of Milestone, described there, and four more: `boardName`, `cardCount`, `doneCount` and `boardIds`. Archived cards are not counted.',
+				properties: {
+					id: { type: 'integer' },
+					boardId: { type: ['integer', 'null'] },
+					name: { type: 'string' },
+					description: { type: 'string' },
+					targetDate: { type: ['string', 'null'] },
+					status: { type: 'string', enum: ['open', 'closed'] },
+					createdBy: { type: ['integer', 'null'] },
+					createdAt: { type: 'string' },
+					updatedAt: { type: 'string' },
+					boardName: { type: ['string', 'null'], description: 'Name of the board the milestone belongs to. null for a milestone that spans boards.' },
+					cardCount: { type: 'integer', description: 'How many cards are in the milestone' },
+					doneCount: { type: 'integer', description: 'How many of them are in a Complete column' },
+					boardIds: { type: 'array', items: { type: 'integer' }, description: 'Ids of the boards its cards are on' }
+				},
+				required: [
+					'id', 'boardId', 'name', 'description', 'targetDate', 'status', 'createdBy', 'createdAt', 'updatedAt',
+					'boardName', 'cardCount', 'doneCount', 'boardIds'
+				]
+			},
+			MilestoneDetail: {
+				type: 'object',
+				description: 'A milestone as the single read gives it. Every property of Milestone, described there, and `cards`.',
+				properties: {
+					id: { type: 'integer' },
+					boardId: { type: ['integer', 'null'] },
+					name: { type: 'string' },
+					description: { type: 'string' },
+					targetDate: { type: ['string', 'null'] },
+					status: { type: 'string', enum: ['open', 'closed'] },
+					createdBy: { type: ['integer', 'null'] },
+					createdAt: { type: 'string' },
+					updatedAt: { type: 'string' },
+					cards: {
+						type: 'array',
+						description:
+							'The cards in the milestone. Archived cards are left out. A card on a board the key\'s user cannot open, which a card moved off the milestone\'s board can be, ' +
+							'is listed withheld, as a plan node is: its id, `withheld` true, "A card on a board you cannot open" for its title, an empty column title, and null for its priority, column and board.',
+						items: {
+							type: 'object',
+							properties: {
+								id: { type: 'integer' },
+								title: { type: 'string', description: 'For a withheld card, "A card on a board you cannot open".' },
+								priority: { type: ['string', 'null'], enum: ['low', 'medium', 'high', 'critical', null], description: 'null when withheld.' },
+								columnId: { type: ['integer', 'null'], description: 'null when withheld.' },
+								columnTitle: { type: 'string', description: 'Empty when withheld.' },
+								boardId: { type: ['integer', 'null'], description: 'null when withheld.' },
+								withheld: { type: 'boolean', description: 'True when the card is on a board the key\'s user cannot open.' }
+							},
+							required: ['id', 'title', 'priority', 'columnId', 'columnTitle', 'boardId', 'withheld']
+						}
+					}
+				},
+				required: ['id', 'boardId', 'name', 'description', 'targetDate', 'status', 'createdBy', 'createdAt', 'updatedAt', 'cards']
+			},
+			CardMilestoneChange: {
+				type: 'object',
+				description: 'Which milestone a card is in after it was put into one or taken out.',
+				properties: {
+					cardId: { type: 'integer' },
+					milestoneId: { type: ['integer', 'null'], description: 'The milestone the card is in now. null after it was taken out.' },
+					boardId: { type: 'integer', description: 'The board the card is on' }
+				},
+				required: ['cardId', 'milestoneId', 'boardId']
+			},
+			MilestoneCardsAttached: {
+				type: 'object',
+				description: 'What a batch of cards put into a milestone did.',
+				properties: {
+					milestoneId: { type: 'integer' },
+					attached: { type: 'integer', description: 'Cards put into the milestone by this request' },
+					skippedAlreadyIn: { type: 'integer', description: 'Cards of the batch that were already in it' },
+					movedFromOtherGoal: {
+						type: 'array',
+						description: 'The cards among those attached that were in another milestone, and are in this one now',
+						items: {
+							type: 'object',
+							properties: {
+								cardId: { type: 'integer' },
+								title: { type: 'string' },
+								fromMilestoneId: { type: 'integer', description: 'The milestone the card was in' }
+							},
+							required: ['cardId', 'title', 'fromMilestoneId']
+						}
+					},
+					boardsTouched: { type: 'array', items: { type: 'integer' }, description: 'Ids of the boards the attached cards are on' }
+				},
+				required: ['milestoneId', 'attached', 'skippedAlreadyIn', 'movedFromOtherGoal', 'boardsTouched']
+			},
+			MilestoneCardsRejected: {
+				type: 'object',
+				description:
+					'The body of the 409 for a batch of cards of which at least one cannot be put into the milestone. No card was attached, and every card at fault is listed.',
+				properties: {
+					message: { type: 'string', description: 'Always "Batch rejected — nothing was written"' },
+					attached: { type: 'integer', description: 'Always 0' },
+					problems: {
+						type: 'array',
+						description: 'One entry for each card that cannot be attached',
+						items: {
+							type: 'object',
+							properties: {
+								cardId: { type: 'integer' },
+								reason: {
+									type: 'string',
+									description:
+										'In words: the card does not exist or is archived, the key\'s user cannot edit its board, or the milestone belongs to one board and the card is on another'
+								}
+							},
+							required: ['cardId', 'reason']
+						}
+					},
+					wouldAttach: { type: 'integer', description: 'Cards that would have been attached had the others not been at fault' },
+					wouldSkipAlreadyIn: { type: 'integer', description: 'Cards of the batch that are already in the milestone' }
+				},
+				required: ['message', 'attached', 'problems', 'wouldAttach', 'wouldSkipAlreadyIn']
+			},
+			MilestoneCardsDetached: {
+				type: 'object',
+				description: 'What a batch of cards taken out of a milestone did.',
+				properties: {
+					milestoneId: { type: 'integer' },
+					detached: { type: 'integer', description: 'Cards taken out of the milestone by this request' },
+					skippedNotInMilestone: { type: 'integer', description: 'Cards of the batch that were not in it, and were left as they are' },
+					boardsTouched: { type: 'array', items: { type: 'integer' }, description: 'Ids of the boards the detached cards are on' }
+				},
+				required: ['milestoneId', 'detached', 'skippedNotInMilestone', 'boardsTouched']
+			},
+			MilestoneCardsDetachRejected: {
+				type: 'object',
+				description:
+					'The body of the 409 for a batch of cards of which at least one cannot be taken out of the milestone. No card was detached, and every card at fault is listed.',
+				properties: {
+					message: { type: 'string', description: 'Always "Batch rejected — nothing was written"' },
+					detached: { type: 'integer', description: 'Always 0' },
+					problems: {
+						type: 'array',
+						description: 'One entry for each card at fault',
+						items: {
+							type: 'object',
+							properties: {
+								cardId: { type: 'integer' },
+								reason: { type: 'string', description: 'In words: the card does not exist or is archived, or the key\'s user cannot edit its board' }
+							},
+							required: ['cardId', 'reason']
+						}
+					}
+				},
+				required: ['message', 'detached', 'problems']
+			},
+			PlanNode: {
+				type: 'object',
+				description:
+					'A card or a subtask as a milestone\'s plan sees it: what it is, where it is and whether it is finished. ' +
+					'Work on a board the key\'s user cannot open is in the plan, because it still blocks or is still part of the goal, but withheld: see `withheld`.',
+				properties: {
+					kind: { type: 'string', enum: ['card', 'subtask'], description: 'What `id` is the id of. Card 32 and subtask 32 are different things.' },
+					id: { type: 'integer' },
+					title: { type: 'string', description: 'For withheld work, "A card on a board you cannot open" or "A subtask on a board you cannot open"' },
+					priority: {
+						type: ['string', 'null'],
+						enum: ['low', 'medium', 'high', 'critical', null],
+						description: 'null for withheld work'
+					},
+					columnId: { type: ['integer', 'null'], description: 'The column it is in. For a subtask, its card\'s column. null for withheld work.' },
+					columnTitle: { type: 'string', description: 'Empty for withheld work' },
+					boardId: { type: ['integer', 'null'], description: 'null for withheld work' },
+					boardName: { type: 'string', description: 'For withheld work, "A board you cannot open"' },
+					isComplete: { type: 'boolean', description: 'A card is complete in a Complete column. A subtask is complete when it is ticked, wherever its card is.' },
+					milestoneId: {
+						type: ['integer', 'null'],
+						description: 'The milestone it is in. For a subtask, its card\'s milestone. null for withheld work.'
+					},
+					parentCardId: { type: 'integer', description: 'Only on a subtask: the card it belongs to. Left out of a withheld subtask, as of a card.' },
+					withheld: {
+						type: 'boolean',
+						description:
+							'true when the work is on a board the key\'s user cannot open. Then only what it is, its id and whether it is finished are told, ' +
+							'with its place in the plan: its title and board name are replaced by the texts above, its column title is empty, and its column, ' +
+							'board, priority and milestone are null. Until 2026-10-14 they were given.'
+					}
+				},
+				required: ['kind', 'id', 'title', 'priority', 'columnId', 'columnTitle', 'boardId', 'boardName', 'isComplete', 'milestoneId', 'withheld']
+			},
+			MilestoneNode: {
+				type: 'object',
+				description:
+					'A card or a subtask in a milestone\'s plan, with its place in the order of work. Every property of PlanNode, described there, and seven more. ' +
+					'Withheld work keeps its place in the plan: only what PlanNode says is replaced.',
+				properties: {
+					kind: { type: 'string', enum: ['card', 'subtask'] },
+					id: { type: 'integer' },
+					title: { type: 'string' },
+					priority: { type: ['string', 'null'], enum: ['low', 'medium', 'high', 'critical', null] },
+					columnId: { type: ['integer', 'null'] },
+					columnTitle: { type: 'string' },
+					boardId: { type: ['integer', 'null'] },
+					boardName: { type: 'string' },
+					isComplete: { type: 'boolean' },
+					milestoneId: { type: ['integer', 'null'] },
+					parentCardId: { type: 'integer', description: 'Only on a subtask: the card it belongs to. Left out of a withheld subtask, as of a card.' },
+					withheld: { type: 'boolean', description: 'true when the work is on a board the key\'s user cannot open, as on PlanNode' },
+					external: {
+						type: 'boolean',
+						description: 'true for work that is not in the milestone and is listed because something in the milestone waits on it'
+					},
+					layer: { type: 'integer', description: 'Its place in the order of work, from 0: everything it waits on is in a lower layer' },
+					blockedBy: { type: 'array', items: { $ref: '#/components/schemas/DependencyEnd' }, description: 'What it waits on, among the nodes of this plan' },
+					blocks: { type: 'array', items: { $ref: '#/components/schemas/DependencyEnd' }, description: 'What waits on it, among the nodes of this plan' },
+					openBlockers: { type: 'array', items: { $ref: '#/components/schemas/DependencyEnd' }, description: 'Of what it waits on, what is not finished' },
+					downstreamCount: { type: 'integer', description: 'How much unfinished work waits on it, directly or through other work' },
+					onCriticalPath: { type: 'boolean' }
+				},
+				required: [
+					'kind', 'id', 'title', 'priority', 'columnId', 'columnTitle', 'boardId', 'boardName', 'isComplete', 'milestoneId',
+					'withheld', 'external', 'layer', 'blockedBy', 'blocks', 'openBlockers', 'downstreamCount', 'onCriticalPath'
+				]
+			},
+			MilestoneSummary: {
+				type: 'object',
+				description:
+					'The whole plan of a milestone: how far it has got, the order its work must be done in, the longest chain of unfinished work, what can be started now and what is waiting. ' +
+					'Archived cards are not part of it. With `compact=true` the answer has `cardTitles` and `subtaskTitles` and no `graph`; without it, `graph` and neither of the two.',
+				properties: {
+					milestone: { $ref: '#/components/schemas/Milestone' },
+					progress: {
+						type: 'object',
+						description: 'Counts of the milestone\'s own cards. Subtasks are counted only in `openSubtasks`.',
+						properties: {
+							total: { type: 'integer', description: 'Cards in the milestone' },
+							done: { type: 'integer', description: 'Of which in a Complete column' },
+							percent: { type: 'integer', description: 'done as a percentage of total. 100 only when every card is done, and 0 only when none is.' },
+							byColumn: {
+								type: 'array',
+								description: 'The cards by the title of the column they are in. Cards on boards the key\'s user cannot open are counted under an empty title.',
+								items: {
+									type: 'object',
+									properties: { columnTitle: { type: 'string' }, count: { type: 'integer' } },
+									required: ['columnTitle', 'count']
+								}
+							},
+							openSubtasks: { type: 'integer', description: 'Subtasks of those cards that are not ticked' },
+							boards: {
+								type: 'array',
+								description:
+									'The boards the cards are on, the one with most cards first. Cards on boards the key\'s user cannot open, which a card moved off ' +
+									'the milestone\'s board can be, are counted in one entry, with id null and the name "A board you cannot open". Until 2026-10-14 each such board was named.',
+								items: {
+									type: 'object',
+									properties: { id: { type: ['integer', 'null'] }, name: { type: 'string' }, cardCount: { type: 'integer' } },
+									required: ['id', 'name', 'cardCount']
+								}
+							}
+						},
+						required: ['total', 'done', 'percent', 'byColumn', 'openSubtasks', 'boards']
+					},
+					graph: {
+						type: 'object',
+						description:
+							'The plan as a graph, for drawing it. Left out with `compact=true`. Its nodes are the milestone\'s cards, those of their subtasks that have a dependency link, ' +
+							'and any work outside the milestone that something in it waits on directly, which is marked `external`.',
+						properties: {
+							nodes: { type: 'array', items: { $ref: '#/components/schemas/MilestoneNode' } },
+							edges: {
+								type: 'array',
+								description: 'One for each dependency link between two nodes: `to` waits on `from`',
+								items: {
+									type: 'object',
+									properties: {
+										from: { $ref: '#/components/schemas/DependencyEnd' },
+										to: { $ref: '#/components/schemas/DependencyEnd' }
+									},
+									required: ['from', 'to']
+								}
+							},
+							layers: {
+								type: 'array',
+								description: 'The nodes in the order of work: one array for each layer, the first holding what waits on nothing',
+								items: { type: 'array', items: { $ref: '#/components/schemas/DependencyEnd' } }
+							},
+							unordered: {
+								type: 'array',
+								items: { type: 'integer' },
+								description: 'Ids of the milestone\'s cards that have no dependency link either way among the nodes'
+							}
+						},
+						required: ['nodes', 'edges', 'layers', 'unordered']
+					},
+					cardTitles: {
+						type: 'object',
+						description:
+							'Only with `compact=true`: the title of each card of the plan, keyed by its id, so that the ids in the rest of the answer can be read. ' +
+							'A card on a board the key\'s user cannot open has the text the nodes give in place of its title. ' +
+							'A subtask\'s title is in `subtaskTitles`. Until 2026-10-14 both were here, keyed by the bare id, and a card and a subtask with the same id took one key between them.',
+						additionalProperties: { type: 'string' }
+					},
+					subtaskTitles: {
+						type: 'object',
+						description: 'Only with `compact=true`: the title of each subtask of the plan, keyed by its id',
+						additionalProperties: { type: 'string' }
+					},
+					criticalPath: {
+						type: 'array',
+						items: { type: 'integer' },
+						description:
+							'Card ids of the longest chain of unfinished work in which each waits on the one before, in the order to do them. ' +
+							'Where the chain runs through a subtask its card stands in for it. That is so for a withheld subtask too: the id of its card, on a board the key\'s user cannot open, is given here, ' +
+							'though the node has no parentCardId, so that the chain is the same whoever asks. Nothing else of that card is given. Empty when no unfinished work waits on other unfinished work.'
+					},
+					criticalPathNodes: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/PlanNode' },
+						description: 'The same chain exactly, subtasks included'
+					},
+					nextActionable: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/MilestoneNode' },
+						description: 'Work in the milestone that is not finished and waits on nothing unfinished: what can be started now. The work that most other work waits on is first.'
+					},
+					blocked: {
+						type: 'array',
+						description: 'Work in the milestone that is not finished and waits on something unfinished',
+						items: {
+							type: 'object',
+							properties: {
+								card: { $ref: '#/components/schemas/MilestoneNode' },
+								blockers: { type: 'array', items: { $ref: '#/components/schemas/PlanNode' }, description: 'The unfinished work it waits on' }
+							},
+							required: ['card', 'blockers']
+						}
+					}
+				},
+				required: ['milestone', 'progress', 'criticalPath', 'criticalPathNodes', 'nextActionable', 'blocked']
+			},
+			TokenEntry: {
+				type: 'object',
+				description:
+					'One entry of the record of what work cost in tokens. An entry is on a card or on a subtask, never on both. Entries are added, not replaced: a mistake is corrected by a negative entry.',
+				properties: {
+					id: { type: 'integer' },
+					cardId: { type: ['integer', 'null'], description: 'The card the entry is on. null for an entry on a subtask.' },
+					subtaskId: { type: ['integer', 'null'], description: 'The subtask the entry is on. null for an entry on a card.' },
+					subtaskTitle: { type: ['string', 'null'], description: 'Title of that subtask. null for an entry on a card.' },
+					tokens: { type: 'integer', format: 'int64', description: 'How many tokens. Negative for a correction.' },
+					model: { type: ['string', 'null'], description: 'The model that spent them, as it was sent' },
+					inputTokens: {
+						type: ['integer', 'null'],
+						format: 'int64',
+						description: 'Of the tokens, fresh input. null when no breakdown was sent, as are the four that follow.'
+					},
+					outputTokens: { type: ['integer', 'null'], format: 'int64' },
+					cacheReadTokens: { type: ['integer', 'null'], format: 'int64' },
+					cacheWrite5mTokens: { type: ['integer', 'null'], format: 'int64' },
+					cacheWrite1hTokens: { type: ['integer', 'null'], format: 'int64' },
+					apiCalls: { type: ['integer', 'null'], description: 'How many calls of the model the entry covers, where that was sent' },
+					note: { type: ['string', 'null'] },
+					createdAt: { type: 'string' }
+				},
+				required: [
+					'id', 'cardId', 'subtaskId', 'subtaskTitle', 'tokens', 'model', 'inputTokens', 'outputTokens', 'cacheReadTokens',
+					'cacheWrite5mTokens', 'cacheWrite1hTokens', 'apiCalls', 'note', 'createdAt'
+				]
+			},
+			CardTokens: {
+				type: 'object',
+				description:
+					'What a card has cost in tokens, its subtasks included, with every entry behind the figure. ' +
+					'A card nobody has reported on has `recorded` false and `entries` 0: that is "not recorded", which is not a cost of zero.',
+				properties: {
+					cardId: { type: 'integer' },
+					recorded: { type: 'boolean', description: 'true when there is at least one entry. When false the figures mean nothing and should be shown as unknown.' },
+					total: { type: 'integer', format: 'int64', description: 'Sum of every entry, on the card and on its subtasks' },
+					direct: { type: 'integer', format: 'int64', description: 'Of which on the card itself' },
+					fromSubtasks: { type: 'integer', format: 'int64', description: 'Of which on its subtasks' },
+					entries: { type: 'integer', description: 'How many entries make up the total' },
+					byModel: {
+						type: 'array',
+						description: 'The total by model, largest first. Entries that named no model are under "unspecified".',
+						items: {
+							type: 'object',
+							properties: { model: { type: 'string' }, tokens: { type: 'integer', format: 'int64' } },
+							required: ['model', 'tokens']
+						}
+					},
+					costUsd: {
+						type: ['number', 'null'],
+						description: 'Estimated cost in US dollars. null when no entry named a model DumpFire has a price for.'
+					},
+					costExact: { type: 'boolean', description: 'true only when every priced entry carried a breakdown, so that nothing in the cost is an assumption' },
+					unpricedTokens: { type: 'integer', format: 'int64', description: 'Tokens left out of the cost because their model is unknown' },
+					apiCalls: { type: ['integer', 'null'], description: 'Calls of the model behind the total. null unless every entry said how many.' },
+					entryList: { type: 'array', items: { $ref: '#/components/schemas/TokenEntry' }, description: 'Every entry, newest first' }
+				},
+				required: [
+					'cardId', 'recorded', 'total', 'direct', 'fromSubtasks', 'entries', 'byModel', 'costUsd', 'costExact', 'unpricedTokens',
+					'apiCalls', 'entryList'
+				]
+			},
+			TokenRecorded: {
+				type: 'object',
+				description:
+					'The answer to an entry added to a card: the id of the new entry, and the card\'s totals with it counted. The totals are those of CardTokens, described there.',
+				properties: {
+					entryId: { type: 'integer', description: 'Id of the new entry: what DELETE /api/v1/tokens/{entryId} takes' },
+					cardId: { type: 'integer' },
+					recorded: { type: 'boolean' },
+					total: { type: 'integer', format: 'int64' },
+					direct: { type: 'integer', format: 'int64' },
+					fromSubtasks: { type: 'integer', format: 'int64' },
+					entries: { type: 'integer' },
+					byModel: {
+						type: 'array',
+						items: {
+							type: 'object',
+							properties: { model: { type: 'string' }, tokens: { type: 'integer', format: 'int64' } },
+							required: ['model', 'tokens']
+						}
+					},
+					costUsd: { type: ['number', 'null'] },
+					costExact: { type: 'boolean' },
+					unpricedTokens: { type: 'integer', format: 'int64' },
+					apiCalls: { type: ['integer', 'null'] }
+				},
+				required: [
+					'entryId', 'cardId', 'recorded', 'total', 'direct', 'fromSubtasks', 'entries', 'byModel', 'costUsd', 'costExact',
+					'unpricedTokens', 'apiCalls'
+				]
+			},
+			TokenEntryDeleted: {
+				type: 'object',
+				description:
+					'The answer to an entry removed: its id, and the totals of the card it counted towards without it. The totals are those of CardTokens, described there.',
+				properties: {
+					deleted: { type: 'integer', description: 'Id of the entry that was removed' },
+					cardId: { type: 'integer', description: 'The card it counted towards: its own, or its subtask\'s' },
+					recorded: { type: 'boolean', description: 'false when that was the card\'s last entry' },
+					total: { type: 'integer', format: 'int64' },
+					direct: { type: 'integer', format: 'int64' },
+					fromSubtasks: { type: 'integer', format: 'int64' },
+					entries: { type: 'integer' },
+					byModel: {
+						type: 'array',
+						items: {
+							type: 'object',
+							properties: { model: { type: 'string' }, tokens: { type: 'integer', format: 'int64' } },
+							required: ['model', 'tokens']
+						}
+					},
+					costUsd: { type: ['number', 'null'] },
+					costExact: { type: 'boolean' },
+					unpricedTokens: { type: 'integer', format: 'int64' },
+					apiCalls: { type: ['integer', 'null'] }
+				},
+				required: [
+					'deleted', 'cardId', 'recorded', 'total', 'direct', 'fromSubtasks', 'entries', 'byModel', 'costUsd', 'costExact',
+					'unpricedTokens', 'apiCalls'
+				]
+			},
+			TokenBatchRecorded: {
+				type: 'object',
+				description: 'What a batch of token entries recorded.',
+				properties: {
+					written: { type: 'integer', description: 'Entries written: all of the batch' },
+					boardsTouched: { type: 'array', items: { type: 'integer' }, description: 'Ids of the boards the entries\' cards are on' },
+					cardTotals: {
+						type: 'array',
+						description: 'One for each card the batch added to, an entry on a subtask counting towards its card',
+						items: {
+							type: 'object',
+							properties: {
+								cardId: { type: 'integer' },
+								total: { type: 'integer', format: 'int64', description: 'The card\'s total now, its subtasks included' },
+								entries: { type: 'integer', description: 'How many entries make up that total' }
+							},
+							required: ['cardId', 'total', 'entries']
+						}
+					}
+				},
+				required: ['written', 'boardsTouched', 'cardTotals']
+			},
+			TokenBatchRejected: {
+				type: 'object',
+				description:
+					'The body of the 409 for a batch of token entries of which at least one cannot be recorded. No entry was written, and every entry at fault is listed.',
+				properties: {
+					message: { type: 'string', description: 'Always "Batch rejected — nothing was written"' },
+					written: { type: 'integer', description: 'Always 0' },
+					problems: {
+						type: 'array',
+						description: 'One for each entry at fault',
+						items: {
+							type: 'object',
+							properties: {
+								index: { type: 'integer', description: 'Where the entry is in `entries`, from 0' },
+								reason: {
+									type: 'string',
+									description:
+										'In words: what a single entry sent to the card or the subtask would have been refused for. A card or subtask that does not exist, ' +
+										'and one on a board the key\'s user cannot edit, are reasons here and not a 404 or a 403.'
+								}
+							},
+							required: ['index', 'reason']
+						}
+					}
+				},
+				required: ['message', 'written', 'problems']
+			},
+			CardBoardHistory: {
+				type: 'object',
+				description: 'Which board a card was on, and when.',
+				properties: {
+					cardId: { type: 'integer' },
+					history: {
+						type: 'array',
+						description: 'One span for each stay on a board, oldest first. The last is the board the card is on now.',
+						items: {
+							type: 'object',
+							properties: {
+								boardId: { type: 'integer' },
+								boardName: { type: 'string', description: 'Name of the board, or "Board not visible to you" for one the key\'s user cannot see' },
+								from: { type: 'string', description: 'When the card arrived on the board' },
+								to: { type: ['string', 'null'], description: 'When it left. null on the span it is in now.' },
+								current: { type: 'boolean', description: 'true on the span it is in now' }
+							},
+							required: ['boardId', 'boardName', 'from', 'to', 'current']
+						}
+					}
+				},
+				required: ['cardId', 'history']
+			},
+			ActivityReportCard: {
+				type: 'object',
+				description: 'One card of an activity report. Nothing is made up to fill a gap: a reporting field nobody recorded is null.',
+				properties: {
+					id: { type: 'integer' },
+					title: { type: 'string' },
+					summary: { type: ['string', 'null'], description: 'Reporting field: the card in plain English. null when not recorded.' },
+					businessValue: { type: ['string', 'null'] },
+					theme: { type: ['string', 'null'] },
+					customerImpact: { type: ['string', 'null'] },
+					closeReason: { type: ['string', 'null'] },
+					releaseState: { type: ['string', 'null'] },
+					bucket: {
+						type: 'string',
+						enum: ['completed', 'closed', 'progressed', 'on hold', 'created'],
+						description:
+							'What happened to the card in the window. completed: its completion date is in the window. closed: likewise, and its close reason is not needed or superseded, so nothing was built. ' +
+							'on hold: it is in a column titled On Hold, Hold, Blocked, Parked or Waiting, or has an on-hold note. created: it was raised in the window and has not been touched or moved since. ' +
+							'progressed: anything else, a card that sits in a Complete column and was completed outside the window included.'
+					},
+					priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+					columnTitle: { type: 'string' },
+					boardId: { type: 'integer' },
+					createdAt: { type: 'string' },
+					createdBy: { type: ['integer', 'null'] },
+					createdByName: { type: ['string', 'null'] },
+					completedAt: { type: ['string', 'null'] },
+					milestoneId: { type: ['integer', 'null'] },
+					milestoneName: { type: ['string', 'null'] },
+					subtasks: {
+						type: 'object',
+						properties: {
+							total: { type: 'integer' },
+							completed: { type: 'integer' },
+							items: {
+								type: 'array',
+								description: 'Only with `include=subtasks`, and only on a card that has subtasks',
+								items: {
+									type: 'object',
+									properties: { id: { type: 'integer' }, title: { type: 'string' }, completed: { type: 'boolean' } },
+									required: ['id', 'title', 'completed']
+								}
+							}
+						},
+						required: ['total', 'completed']
+					},
+					comments: {
+						type: 'array',
+						description:
+							'Only with `include=comments`: the card\'s most recent comments, newest first, `commentLimit` of them at most, and none with `commentLimit=0`',
+						items: {
+							type: 'object',
+							properties: {
+								id: { type: 'integer' },
+								content: { type: 'string' },
+								createdAt: { type: 'string' },
+								username: { type: 'string' }
+							},
+							required: ['id', 'content', 'createdAt', 'username']
+						}
+					},
+					closeReasonAssumed: {
+						type: 'boolean',
+						description: 'true when the card was completed in the window with no close reason recorded, so that it is counted as delivered on an assumption'
+					}
+				},
+				required: [
+					'id', 'title', 'summary', 'businessValue', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'bucket', 'priority',
+					'columnTitle', 'boardId', 'createdAt', 'createdBy', 'createdByName', 'completedAt', 'milestoneId', 'milestoneName',
+					'subtasks', 'closeReasonAssumed'
+				]
+			},
+			ActivityReportBoard: {
+				type: 'object',
+				description: 'One board of an activity report, with its cards.',
+				properties: {
+					boardId: { type: 'integer' },
+					name: { type: 'string' },
+					emoji: { type: ['string', 'null'] },
+					parentCardId: { type: ['integer', 'null'], description: 'The card this board is a sub-board of, or null' },
+					totals: {
+						type: 'object',
+						description: 'How many of the board\'s cards are in each bucket',
+						properties: {
+							completed: { type: 'integer' },
+							closed: { type: 'integer' },
+							progressed: { type: 'integer' },
+							'on hold': { type: 'integer' },
+							created: { type: 'integer' }
+						},
+						required: ['completed', 'closed', 'progressed', 'on hold', 'created']
+					},
+					cards: { type: 'array', items: { $ref: '#/components/schemas/ActivityReportCard' } }
+				},
+				required: ['boardId', 'name', 'emoji', 'parentCardId', 'totals', 'cards']
+			},
+			ActivityReport: {
+				type: 'object',
+				description:
+					'What happened in a window of time, on the boards the key\'s user can see. A card is in the report if anything about it moved in the window: ' +
+					'it was completed, raised or edited, an action was logged against it, or someone commented on it. Archived cards are left out. Read `meta` before quoting a figure.',
+				properties: {
+					period: {
+						type: 'object',
+						properties: {
+							from: { type: 'string', description: 'Start of the window, UTC, as "YYYY-MM-DD HH:MM:SS"' },
+							to: { type: 'string', description: 'End of the window, in the same form' },
+							days: { type: 'integer' }
+						},
+						required: ['from', 'to', 'days']
+					},
+					user: {
+						type: ['object', 'null'],
+						description: 'Whose activity the report is of. null for a report on everyone, and when there is no user with the id asked for.',
+						properties: {
+							id: { type: 'integer' },
+							username: { type: 'string' },
+							emoji: { type: ['string', 'null'] }
+						},
+						required: ['id', 'username', 'emoji']
+					},
+					totals: {
+						type: 'object',
+						description: 'How many cards are in each bucket, over every board of the report',
+						properties: {
+							completed: { type: 'integer' },
+							closed: { type: 'integer' },
+							progressed: { type: 'integer' },
+							'on hold': { type: 'integer' },
+							created: { type: 'integer' },
+							boards: { type: 'integer', description: 'Boards in the report' },
+							cards: { type: 'integer', description: 'Cards in the report' }
+						},
+						required: ['completed', 'closed', 'progressed', 'on hold', 'created', 'boards', 'cards']
+					},
+					boards: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/ActivityReportBoard' },
+						description: 'The boards with a card in the report, the one with most completed and closed cards first'
+					},
+					milestones: {
+						type: 'array',
+						description:
+							'The milestones of the report\'s cards in which more cards were complete at the end of the window than at its start. ' +
+							'Their counts are of every card in the milestone that is not archived, by its completion date.',
+						items: {
+							type: 'object',
+							properties: {
+								id: { type: 'integer' },
+								name: { type: 'string' },
+								boardId: { type: ['integer', 'null'] },
+								targetDate: { type: ['string', 'null'] },
+								status: { type: 'string', enum: ['open', 'closed'] },
+								totalCards: { type: 'integer' },
+								completedAtStart: { type: 'integer', description: 'Cards completed before the window' },
+								completedAtEnd: { type: 'integer', description: 'Cards completed by the end of it' },
+								percentAtStart: { type: 'integer' },
+								percentAtEnd: { type: 'integer' },
+								hasTargetDate: { type: 'boolean', description: 'false when the milestone has no target date, so that nothing can be said about its being on time' }
+							},
+							required: [
+								'id', 'name', 'boardId', 'targetDate', 'status', 'totalCards', 'completedAtStart', 'completedAtEnd',
+								'percentAtStart', 'percentAtEnd', 'hasTargetDate'
+							]
+						}
+					},
+					meta: {
+						type: 'object',
+						description: 'What the figures rest on, and what they leave out.',
+						properties: {
+							generatedAt: { type: 'string', format: 'date-time' },
+							completionBasis: { type: 'string', enum: ['completedAt'], description: 'A card is completed in the window by its completion date, not by the activity log' },
+							attribution: { type: 'string', description: 'How a card was taken to be a user\'s, in words. "All users." for a report on everyone.' },
+							closeReasonAssumedCount: { type: 'integer', description: 'Cards counted as delivered with no close reason recorded' },
+							missingSummaryCount: { type: 'integer', description: 'Cards in the report with no summary recorded' },
+							completedOutsideWindow: {
+								type: 'integer',
+								description: 'Cards in a Complete column that were not completed in the window. They are in the report as progressed.'
+							},
+							boardsExcludedForAccess: { type: 'integer', description: 'Boards with activity that were left out because the key\'s user cannot see them' }
+						},
+						required: [
+							'generatedAt', 'completionBasis', 'attribution', 'closeReasonAssumedCount', 'missingSummaryCount',
+							'completedOutsideWindow', 'boardsExcludedForAccess'
+						]
+					}
+				},
+				required: ['period', 'user', 'totals', 'boards', 'milestones', 'meta']
 			}
 		},
 		parameters: {
@@ -392,83 +1839,145 @@ const spec = {
 				name: 'boardId',
 				in: 'path',
 				required: true,
-				schema: { type: 'integer' },
-				description: 'Board ID'
+				schema: { type: 'integer', minimum: 1 },
+				description: 'Board ID: a whole number of 1 or more, written in digits. Anything else, 1.5, abc and 1e3 among them, is 400 Invalid board ID.'
 			},
 			cardId: {
 				name: 'cardId',
 				in: 'path',
 				required: true,
-				schema: { type: 'integer' },
-				description: 'Card ID'
+				schema: { type: 'integer', minimum: 1 },
+				description: 'Card ID: a whole number of 1 or more, written in digits. Anything else, 1.5, abc and 1e3 among them, is 400 Invalid card ID.'
 			},
 			subtaskId: {
 				name: 'subtaskId',
 				in: 'path',
 				required: true,
-				schema: { type: 'integer' },
-				description: 'Subtask ID'
+				schema: { type: 'integer', minimum: 1 },
+				description: 'Subtask ID: a whole number of 1 or more, written in digits. Anything else, 1.5, abc and 1e3 among them, is 400 Invalid subtask ID.'
 			},
 			categoryId: {
 				name: 'categoryId',
 				in: 'path',
 				required: true,
-				schema: { type: 'integer' },
-				description: 'Category ID'
+				schema: { type: 'integer', minimum: 1 },
+				description: 'Category ID: a whole number of 1 or more, written in digits. Anything else, 1.5, abc and 1e3 among them, is 400 Invalid category ID.'
 			},
 			columnId: {
 				name: 'columnId',
 				in: 'path',
 				required: true,
-				schema: { type: 'integer' },
-				description: 'Column ID'
+				schema: { type: 'integer', minimum: 1 },
+				description: 'Column ID: a whole number of 1 or more, written in digits. Anything else, 1.5, abc and 1e3 among them, is 400 Invalid column ID.'
 			},
 			labelId: {
 				name: 'labelId',
 				in: 'path',
 				required: true,
-				schema: { type: 'integer' },
-				description: 'Label ID'
+				schema: { type: 'integer', minimum: 1 },
+				description: 'Label ID: a whole number of 1 or more, written in digits. Anything else, 1.5, abc and 1e3 among them, is 400 Invalid label ID.'
 			},
 			webhookId: {
 				name: 'webhookId',
 				in: 'path',
 				required: true,
-				schema: { type: 'integer' },
-				description: 'Webhook ID'
+				schema: { type: 'integer', minimum: 1 },
+				description: 'Webhook ID: a whole number of 1 or more, written in digits. Anything else, 1.5, abc and 1e3 among them, is 400 Invalid webhook ID.'
+			},
+			milestoneId: {
+				name: 'milestoneId',
+				in: 'path',
+				required: true,
+				schema: { type: 'integer', minimum: 1 },
+				description: 'Milestone ID: a whole number of 1 or more, written in digits. Anything else, 1.5, abc and 1e3 among them, is 400 Invalid milestone ID.'
+			},
+			entryId: {
+				name: 'entryId',
+				in: 'path',
+				required: true,
+				schema: { type: 'integer', minimum: 1 },
+				description: 'ID of one token entry, as `id` in a card\'s `entryList` and as `entryId` in the answer that recorded it'
 			}
 		},
 		responses: {
-			Unauthorized: {
-				description: 'Missing or invalid API key',
+			BadRequest: {
+				description:
+					'The request is not one the operation accepts, and the message says why: an id in the path that is not a whole number of 1 or more; a body that is ' +
+					'missing, is not valid JSON, or is JSON and not an object; or a field of the body that is missing, of the wrong type, empty, too long or not allowed. ' +
+					'Nothing was written.',
 				content: {
 					'application/json': {
 						schema: { $ref: '#/components/schemas/Error' },
-						example: { error: 'Invalid or expired API key' }
+						example: { message: 'The request body is missing or is not valid JSON' }
+					}
+				}
+			},
+			Unauthorized: {
+				description: 'No Authorization header, one that is not "Bearer <key>", or a key that is unknown, revoked or expired',
+				content: {
+					'application/json': {
+						schema: { $ref: '#/components/schemas/Error' },
+						example: { message: 'Invalid or expired API key' }
+					}
+				}
+			},
+			Forbidden: {
+				description:
+					'The key\'s user may not do this: no access to the board the resource is on, or view access where edit access is needed. Nothing was written.',
+				content: {
+					'application/json': {
+						schema: { $ref: '#/components/schemas/Error' },
+						example: { message: 'No edit access to this board' }
 					}
 				}
 			},
 			NotFound: {
-				description: 'Resource not found',
+				description: 'The resource the path names does not exist. The message says what was not found.',
 				content: {
 					'application/json': {
 						schema: { $ref: '#/components/schemas/Error' },
-						example: { error: 'Not found' }
+						example: { message: 'Card not found' }
+					}
+				}
+			},
+			PayloadTooLarge: {
+				description:
+					'The request body is over the size limit, which is 512 KB on every operation of this API. Nothing was written. ' +
+					'A request that declares more than the limit in Content-Length is answered before its body is read: the message says how large it is and ' +
+					'what the limit is, and `limitBytes` is the limit as a number of bytes. A body sent in chunks, with no Content-Length, is answered the ' +
+					'same once it has been read past the limit, with the limit and `limitBytes`; its size is not said, because it was not read to its end. ' +
+					'A body that runs past the Content-Length it declared is answered as in the example, with no `limitBytes`.',
+				content: {
+					'application/json': {
+						schema: { $ref: '#/components/schemas/Error' },
+						example: { message: 'Payload Too Large' }
 					}
 				}
 			},
 			RateLimited: {
-				description: 'Rate limit exceeded (60 req/min)',
+				description:
+					'More than 60 requests in a minute with this key, counted once the key is checked; or, with no key DumpFire accepts, more than 60 in a minute from this address. The request was turned away and nothing was written: send it again, unchanged, after the Retry-After seconds.',
+				headers: {
+					'Retry-After': {
+						description: 'Seconds until the request can be sent again. The same number as `retryAfterSecs` in the body.',
+						schema: { type: 'integer' }
+					}
+				},
 				content: {
 					'application/json': {
-						schema: {
-							type: 'object',
-							properties: {
-								error: { type: 'string' },
-								retryAfterSecs: { type: 'integer' }
-							}
-						},
-						example: { error: 'Rate limit exceeded', retryAfterSecs: 42 }
+						schema: { $ref: '#/components/schemas/RateLimitError' },
+						example: { message: 'Rate limit exceeded', retryAfterSecs: 42 }
+					}
+				}
+			},
+			InternalError: {
+				description:
+					'DumpFire failed, and not the request: a field the operation cannot use is a 400. For a write nothing was written, so the same ' +
+					'request can be sent again.',
+				content: {
+					'application/json': {
+						schema: { $ref: '#/components/schemas/Error' },
+						example: { message: 'Internal Error' }
 					}
 				}
 			}
@@ -498,7 +2007,9 @@ const spec = {
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -507,18 +2018,31 @@ const spec = {
 			get: {
 				tags: ['User'],
 				summary: 'Get personal stats',
-				description: 'Returns aggregated statistics for the authenticated user: card counts, subtask counts, XP, and board count.',
+				description:
+					'How the key\'s user is doing: cards completed in all, in the last 7 days and in the last 30, the average days from a card\'s creation to its completion, ' +
+					'the current streak of days with a completion, how many cards are assigned and open, and the last 20 activity entries on boards the key\'s user can open.',
 				operationId: 'getMeStats',
 				responses: {
 					'200': {
 						description: 'Personal statistics',
 						content: {
 							'application/json': {
-								schema: { $ref: '#/components/schemas/UserStats' }
+								schema: { $ref: '#/components/schemas/UserStats' },
+								example: {
+									cardsCompleted: { total: 41, last7Days: 3, last30Days: 12 },
+									avgCycleTimeDays: 4.2,
+									streak: 2,
+									activeCards: 5,
+									recentActivity: [
+										{ id: 9120, action: 'api:card_updated', detail: 'Updated fields: priority on "Deploy v2.1"', boardId: 1, createdAt: '2026-10-13 09:41:07' }
+									]
+								}
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -539,7 +2063,9 @@ const spec = {
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
@@ -555,9 +2081,9 @@ const spec = {
 								type: 'object',
 								required: ['name'],
 								properties: {
-									name: { type: 'string', maxLength: 200, description: 'Board name' },
-									emoji: { type: 'string', description: 'Board emoji icon (default: 📋)' },
-									parentCardId: { type: 'integer', nullable: true, description: 'ID of a card to link this board to as a sub-board' }
+									name: { type: 'string', minLength: 1, maxLength: 200, description: 'Board name: text, trimmed, of 1 to 200 characters' },
+									emoji: { type: 'string', minLength: 1, maxLength: 32, description: 'Board emoji icon, 1 to 32 characters (default: 📋)' },
+									parentCardId: { type: ['integer', 'null'], minimum: 1, description: 'ID of a card to link this board to as a sub-board. null, or left out, for none.' }
 								}
 							},
 							examples: {
@@ -582,10 +2108,22 @@ const spec = {
 							}
 						}
 					},
-					'400': { description: 'Invalid input (missing name or name too long)' },
+					'400': {
+						description: 'No name, a name that is empty or over 200 characters, an emoji that is empty or over 32, a field of the wrong type (`name must be text`; `parentCardId must be an id`), or a body that is missing, is not valid JSON or is not an object. The fields are read before the parent card is looked for. Nothing was created.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'name is required' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to parent card\'s board (sub-board only)' },
-					'404': { description: 'Parent card not found (sub-board only)' }
+					'403': {
+						description: 'Sub-board only: no edit access to the board the parent card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the parent card\'s board' } } }
+					},
+					'404': {
+						description: 'Sub-board only: there is no card with the id given as parentCardId',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Parent card not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -606,14 +2144,30 @@ const spec = {
 							}
 						}
 					},
+					'400': {
+						description: 'boardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No access to this board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			put: {
 				tags: ['Boards'],
 				summary: 'Update a board',
-				description: 'Updates board properties. Updatable fields: name, emoji, categoryId.',
+				description:
+					'Updates the fields sent. Updatable fields: name, emoji, categoryId, isPublic. At least one of them must be sent.\n\n' +
+					'Edit access to the board is enough for name, emoji and categoryId. `isPublic` decides who can see the board, and is accepted only from the board\'s owner or an administrator: ' +
+					'sent by anyone else, the whole request is answered 403 and none of its fields is saved. An editor leaves it out.',
 				operationId: 'updateBoard',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
 				requestBody: {
@@ -623,9 +2177,10 @@ const spec = {
 							schema: {
 								type: 'object',
 								properties: {
-									name: { type: 'string', maxLength: 200 },
-									emoji: { type: 'string' },
-									categoryId: { type: 'integer', nullable: true }
+									name: { type: 'string', minLength: 1, maxLength: 200, description: 'Trimmed' },
+									emoji: { type: 'string', minLength: 1, maxLength: 32 },
+									categoryId: { type: ['integer', 'null'], minimum: 1, description: 'The board category to file the board under on the dashboard. null files it under none. One that does not exist is 404, and one that holds boards, none of which the key\'s user can open, is 403: until 2026-10-14 the board was filed under it.' },
+									isPublic: { type: 'boolean', description: 'Whether everyone who is signed in can view the board. Only its owner or an administrator may send it.' }
 								}
 							},
 							example: { name: 'Sprint 44', emoji: '🚀' }
@@ -641,28 +2196,65 @@ const spec = {
 							}
 						}
 					},
-					'400': { description: 'No valid fields or validation error' },
+					'400': {
+						description: 'None of the four fields was sent, the name is empty or over 200 characters, the emoji empty or over 32, a field of the wrong type (`name must be text`, `categoryId must be an id`), `isPublic` is not `true` or `false` (`isPublic must be true or false`, answered to the board\'s owner or an administrator: anyone else who sends it is answered 403 whatever its value), boardId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description:
+							'No edit access to this board. ' +
+							'Or `isPublic` was sent by a caller who can edit the board and is neither its owner nor an administrator, which is the example. ' +
+							'Or categoryId names a board category that holds boards, none of which the key\'s user can open: `No access to this board category`. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only board owners and admins can change visibility' } } }
+					},
+					'404': {
+						description: 'There is no such board, whoever asks: it is looked for before access is checked, and until 2026-10-14 everyone but an administrator was answered 403. Or the board category sent as categoryId does not exist: `Board category not found`, where it was stored. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
 				tags: ['Boards'],
 				summary: 'Delete a board',
-				description: 'Permanently deletes the board and all its contents. Requires owner or admin role.',
+				description:
+					'Permanently deletes the board and all its contents. Requires owner or admin role.\n\n' +
+					'Goes with it: its columns, cards, labels, milestones, webhooks and card categories; every sub-board under any of its cards, at every depth, with its categories; ' +
+					'every dependency link that has a deleted card or subtask at either end; and the report schedules that name the board. ' +
+					'Kept: cards on other boards that were in one of its milestones, which are then in no milestone, and any that carried one of its categories, which then has none. ' +
+					'Until 2026-10-14 its categories were kept, as categories of no board, which every key is given. Attachment files are kept on the server for 30 days.\n\n' +
+					'No activity entry is written, because the board\'s log is deleted with it, and no webhook is sent. ' +
+					'The delete is one transaction: all of it happens or none of it.',
 				operationId: 'deleteBoard',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
 				responses: {
 					'200': {
-						description: 'Deleted',
+						description: 'Deleted, with everything listed above',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+								example: { success: true }
+							}
 						}
 					},
+					'400': {
+						description: 'boardId is not a whole number of 1 or more. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'Requires owner or admin role' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'Only the board\'s owner or an administrator may delete it. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only board owners and admins can delete boards' } } }
+					},
+					'404': {
+						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -672,6 +2264,7 @@ const spec = {
 			get: {
 				tags: ['Columns'],
 				summary: 'List columns on a board',
+				description: 'Returns the board\'s columns in order of position.',
 				operationId: 'listColumns',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
 				responses: {
@@ -683,7 +2276,21 @@ const spec = {
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': {
+						description: 'boardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to this board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
@@ -700,8 +2307,8 @@ const spec = {
 								required: ['title'],
 								properties: {
 									title: { type: 'string', maxLength: 200 },
-									color: { type: 'string', description: 'Hex colour code' },
-									position: { type: 'integer' }
+									color: { type: 'string', minLength: 1, maxLength: 32, description: 'Hex colour code (default: #6366f1)' },
+									position: { type: 'number', description: 'Order on the board, lowest first. Default: after the last column.' }
 								}
 							},
 							example: { title: 'Review', color: '#f59e0b', position: 3 }
@@ -715,9 +2322,19 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Column' } }
 						}
 					},
-					'400': { description: 'Validation error' },
+					'400': { $ref: '#/components/responses/BadRequest' },
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' }
+					'403': {
+						description: 'No edit access to this board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such board. Every caller is told so; until 2026-10-14 everyone but an administrator was answered 403, and an administrator 500.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -735,8 +2352,21 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Column' } }
 						}
 					},
+					'400': {
+						description: 'columnId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid column ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No access to the board the column is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such column',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			put: {
@@ -752,9 +2382,13 @@ const spec = {
 								type: 'object',
 								properties: {
 									title: { type: 'string', maxLength: 200 },
-									color: { type: 'string' },
-									position: { type: 'integer' },
-									wipLimit: { type: 'integer', nullable: true, description: 'Work-in-progress limit' },
+									color: { type: 'string', minLength: 1, maxLength: 32 },
+									position: { type: 'number' },
+									wipLimit: {
+										type: ['integer', 'null'],
+										description:
+											'Work-in-progress limit: a whole number, 0 meaning no limit. null is accepted and stored as 0, which is how a limit is cleared; so is a negative number, or a value that is not a number. A fraction loses its fractional part. The column returned always has an integer here.'
+									},
 									showAddCard: { type: 'boolean' }
 								}
 							},
@@ -769,28 +2403,70 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Column' } }
 						}
 					},
-					'400': { description: 'No valid fields or validation error' },
+					'400': {
+						description: 'None of the five fields was sent, a field of the wrong type (a title or colour that is not text, a position that is not a number, showAddCard that is not true or false), the title is empty or over 200 characters, the colour over 32, columnId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': { $ref: '#/components/responses/Forbidden' },
+					'404': {
+						description: 'There is no such column',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
+					},
+					'409': {
+						description:
+							'The title would make the column a Complete column, one called Complete or Done, or stop it being one, while the column holds any card, archived ones included. ' +
+							'A card is finished because of the column it is in, so the rename would mark its cards finished without anyone finishing them, or turn finished work back into open work. ' +
+							'The message says how many cards the column holds and, when any are, how many of them are archived. Nothing was written. An empty column is renamed freely, and so is one whose new title keeps its role, such as Complete to Done.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: {
+									message:
+										'This column holds 3 cards, 1 of them archived. They count as finished because the column is called Complete or Done, and renaming it to "Shipped" would turn them back into open work. Keep it called Complete or Done.'
+								}
+							}
+						}
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
 				tags: ['Columns'],
 				summary: 'Delete a column',
-				description: 'Permanently deletes the column. Cards in this column will be orphaned.',
+				description:
+					'Permanently deletes the column and every card in it, archived or not. The cards are deleted for good, not archived: ' +
+					'each goes with its subtasks, comments and attachments, with every sub-board under it, and with every dependency link ' +
+					'that has a deleted card or subtask at either end. Move the cards to another column first if they are to be kept. ' +
+					'Attachment files are kept on the server for 30 days.\n\n' +
+					'One `column_deleted` entry is written to the board\'s activity log and appears in the audit log, naming the column and how many cards went with it. ' +
+					'No `card.deleted` webhook is sent for the cards. The delete is one transaction: all of it happens or none of it.',
 				operationId: 'deleteColumn',
 				parameters: [{ $ref: '#/components/parameters/columnId' }],
 				responses: {
 					'200': {
-						description: 'Deleted',
+						description: 'The column and its cards are deleted',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+								example: { success: true }
+							}
 						}
 					},
+					'400': {
+						description: 'columnId is not a whole number of 1 or more. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid column ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': { $ref: '#/components/responses/Forbidden' },
+					'404': {
+						description: 'There is no such column',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -800,14 +2476,17 @@ const spec = {
 			get: {
 				tags: ['Cards'],
 				summary: 'List cards on a board',
+				description:
+					'Returns the board\'s cards, column by column and in order of position within each. Each card comes with the title of its column and a count of its subtasks. ' +
+					'Archived cards are left out unless `archived=true`.',
 				operationId: 'listCards',
 				parameters: [
 					{ $ref: '#/components/parameters/boardId' },
 					{
 						name: 'columnId',
 						in: 'query',
-						schema: { type: 'integer' },
-						description: 'Filter cards to a specific column'
+						schema: { type: 'integer', minimum: 1 },
+						description: 'Filter cards to a specific column. An id: anything else is 400 Invalid column ID.'
 					},
 					{
 						name: 'archived',
@@ -821,16 +2500,35 @@ const spec = {
 						description: 'List of cards',
 						content: {
 							'application/json': {
-								schema: { type: 'array', items: { $ref: '#/components/schemas/Card' } }
+								schema: { type: 'array', items: { $ref: '#/components/schemas/CardListItem' } }
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': {
+						description: 'boardId is not a whole number of 1 or more, or columnId is not one (`Invalid column ID`)',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to this board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
 				tags: ['Cards'],
 				summary: 'Create a card',
+				description:
+					'Creates a card in a column of this board. A card created in a Complete column, one called Complete or Done, is completed as it is created, as a card moved into one is: ' +
+					'its completedAt and firstCompletedAt are the moment it was created, the key\'s user is given the XP for its priority, an api:card_created and then an api:card_completed activity entry are written, ' +
+					'and the board\'s webhooks are sent card.created and card.completed. The check for open subtasks and sub-boards is not made: a new card has neither. ' +
+					'The answer is the card as it was written, with its completedAt. Until 2026-10-14 such a card was left in the column with no completion date, no XP and no api:card_completed entry.',
 				operationId: 'createCard',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
 				requestBody: {
@@ -841,19 +2539,38 @@ const spec = {
 								type: 'object',
 								required: ['columnId', 'title'],
 								properties: {
-									columnId: { type: 'integer', description: 'Target column ID' },
-									title: { type: 'string', maxLength: 500 },
+									columnId: { type: 'integer', minimum: 1, description: 'Target column ID: a column of this board' },
+									title: { type: 'string', minLength: 1, maxLength: 500, description: 'Trimmed' },
 									description: { type: 'string', maxLength: 50000 },
 									priority: {
 										type: 'string',
 										enum: ['low', 'medium', 'high', 'critical'],
-										default: 'medium'
+										default: 'medium',
+										description: 'Read in any case, and stored in lower case'
 									},
-									colorTag: { type: 'string', description: 'Hex colour for visual tagging' },
-									categoryId: { type: 'integer' },
-									dueDate: { type: 'string', format: 'date', description: 'ISO date' },
-									businessValue: { type: 'string' },
-									position: { type: 'integer', default: 0 }
+									colorTag: { type: 'string', pattern: '^(#[0-9a-fA-F]{6})?$', description: 'A colour for visual tagging, written #rrggbb and trimmed, or empty for none' },
+									categoryId: {
+										type: ['integer', 'null'],
+										minimum: 1,
+										description: 'A category of this board, or one that belongs to no board. Any other is 404 Category not found on this board.'
+									},
+									dueDate: { type: ['string', 'null'], format: 'date', description: 'A day of the calendar written YYYY-MM-DD. null, or empty text, for none.' },
+									businessValue: { type: 'string', maxLength: 10000 },
+									position: { type: 'number', default: 0, description: 'A number, or a number written as text' },
+									summary: { type: ['string', 'null'], maxLength: 200, description: 'Reporting field: the card in plain English' },
+									theme: {
+										type: ['string', 'null'],
+										description: 'Reporting field. One of: new capability, customer issue, security & compliance, maintenance. Case is ignored.'
+									},
+									customerImpact: {
+										type: ['string', 'null'],
+										description: 'Reporting field. One of: none, internal, live customers; detail may follow a colon ("live customers: Quickline").'
+									},
+									closeReason: {
+										type: ['string', 'null'],
+										description: 'Reporting field. One of: delivered, not needed, superseded, parked.'
+									},
+									releaseState: { type: ['string', 'null'], description: 'Reporting field. One of: built, on UAT, live.' }
 								}
 							},
 							example: {
@@ -874,12 +2591,27 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'Validation error',
-						content: {
-							'application/json': { schema: { $ref: '#/components/schemas/Error' } }
-						}
+						description:
+							'No columnId or title, a field of the wrong type (`title must be text`, `position must be a number`, `columnId must be an id`), a title that is empty or over 500 characters, ' +
+							'a description over 50000, a businessValue over 10000, a priority that is not one of the four, a colorTag not written #rrggbb, a dueDate that is not a day written YYYY-MM-DD, ' +
+							'a reporting field outside its list, a column that is not on this board, boardId is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. ' +
+							'The fields are read once the board is found and the caller may edit it. Nothing was created.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column does not belong to this board' } } }
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to this board. Nothing was created.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this board' } } }
+					},
+					'404': {
+						description:
+							'There is no such board, whoever asks: until 2026-10-14 everyone but an administrator was answered 403. Or categoryId names a category that is neither this board\'s ' +
+							'nor one of no board: `Category not found on this board`, where another board\'s was stored and one that did not exist was a 500. Nothing was created.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -888,7 +2620,9 @@ const spec = {
 			get: {
 				tags: ['Cards'],
 				summary: 'Get a single card',
-				description: 'Returns the card with its subtasks, label IDs, and assignees.',
+				description:
+					'Returns the card with the board and column it is on, its subtasks, label IDs and assignees, and what it waits on and what waits on it, ' +
+					'so that whether it can be started is known without a second request. An archived card is returned like any other.',
 				operationId: 'getCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				responses: {
@@ -900,13 +2634,27 @@ const spec = {
 							}
 						}
 					},
+					'400': {
+						description: 'cardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No access to the board the card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this card\'s board' } } }
+					},
+					'404': { $ref: '#/components/responses/NotFound' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			put: {
 				tags: ['Cards'],
 				summary: 'Update a card',
+				description:
+					'Updates the fields sent. The body is validated before anything is written, and the update is one transaction: ' +
+					'a request that is refused leaves every field as it was, the milestone included. The card is looked for and access checked first, then every field is read. ' +
+					'A value the card already holds, sent back unchanged, is accepted as it is, even one these rules would refuse.',
 				operationId: 'updateCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -916,29 +2664,62 @@ const spec = {
 							schema: {
 								type: 'object',
 								properties: {
-									title: { type: 'string' },
-									description: { type: 'string' },
-									priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
-									colorTag: { type: 'string' },
-									categoryId: { type: 'integer' },
-									dueDate: { type: 'string' },
-									onHoldNote: { type: 'string' },
-									businessValue: { type: 'string' },
+									title: { type: 'string', minLength: 1, maxLength: 500, description: 'Trimmed' },
+									description: { type: 'string', maxLength: 50000 },
+									priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Read in any case, and stored in lower case' },
+									colorTag: { type: 'string', pattern: '^(#[0-9a-fA-F]{6})?$', description: 'A colour written #rrggbb and trimmed, or empty for none' },
+									categoryId: {
+										type: ['integer', 'null'],
+										minimum: 1,
+										description: 'A category of the card\'s board, or one that belongs to no board; null for none. Any other is 404 Category not found on this board, unless it is the one the card already has.'
+									},
+									dueDate: { type: ['string', 'null'], format: 'date', description: 'A day of the calendar written YYYY-MM-DD. null, or empty text, clears it.' },
+									onHoldNote: { type: 'string', maxLength: 50000 },
+									businessValue: { type: 'string', maxLength: 10000 },
 									pinned: { type: 'boolean' },
-									coverUrl: { type: 'string' },
-									archivedAt: { type: 'string', nullable: true, description: 'Set to null to restore an archived card' }
+									coverUrl: {
+										type: ['string', 'null'],
+										description:
+											'The card\'s cover, drawn as a strip across the top of the card on the board: a colour written #rrggbb, or one of these eight gradients exactly as written here: ' +
+											'linear-gradient(135deg, #667eea 0%, #764ba2 100%); linear-gradient(135deg, #f093fb 0%, #f5576c 100%); linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); ' +
+											'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); linear-gradient(135deg, #fa709a 0%, #fee140 100%); linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%); ' +
+											'linear-gradient(135deg, #fccb90 0%, #d57eeb 100%); linear-gradient(135deg, #e0c3fc 0%, #8ec5fc 100%). ' +
+											'null, or empty text, clears it. Anything else is 400 (`coverUrl must be a colour written #rrggbb, one of the preset gradients, or null`), ' +
+											'unless it is the cover the card already holds. Until 2026-10-14 any value was stored, an address or a style included.'
+									},
+									archivedAt: {
+										type: ['string', 'null'],
+										description:
+											'null restores an archived card: { "archivedAt": null }. It is the only value taken: another is 400, unless it is the stamp the card already holds. ' +
+											'Archive a card with DELETE /cards/{cardId}. Until 2026-10-14 any value was stored. ' +
+											'A restore is recorded as an api:card_restored activity entry, with the card\'s title, as a restore in the web application is. The api:card_updated entry, and so the card.updated webhook, ' +
+											'is written only for the other fields sent, so a restore alone delivers no card.updated: until 2026-10-14 it was recorded as api:card_updated naming archivedAt. ' +
+											'An archivedAt that changes nothing, null on a card that is not archived or the stamp the card holds, is named in the api:card_updated entry as before.'
+									},
+									milestoneId: {
+										type: ['integer', 'null'],
+										description:
+											'The milestone to put the card in, or null to take it out of its milestone. Putting it in needs edit access to that milestone, and a milestone that belongs to one board takes only that board\'s cards; ' +
+											'an archived card is refused. Taking it out, or putting it in another milestone, which takes it out of this one, needs edit access to the milestone it is in. The milestone it is already in, sent back, changes nothing. ' +
+											'With archivedAt null in the same body, the card is restored first.'
+									},
+									summary: { type: ['string', 'null'], maxLength: 200, description: 'Reporting field: the card in plain English. null clears it.' },
+									theme: {
+										type: ['string', 'null'],
+										description: 'Reporting field. One of: new capability, customer issue, security & compliance, maintenance. null clears it.'
+									},
+									customerImpact: {
+										type: ['string', 'null'],
+										description: 'Reporting field. One of: none, internal, live customers; detail may follow a colon ("live customers: Quickline"). null clears it.'
+									},
+									closeReason: {
+										type: ['string', 'null'],
+										description: 'Reporting field. One of: delivered, not needed, superseded, parked. null clears it.'
+									},
+									releaseState: { type: ['string', 'null'], description: 'Reporting field. One of: built, on UAT, live. null clears it.' }
 								}
 							},
-							examples: {
-								update: {
-									summary: 'Update priority and due date',
-									value: { priority: 'critical', dueDate: '2026-04-12' }
-								},
-								restore: {
-									summary: 'Restore an archived card',
-									value: { archivedAt: null }
-								}
-							}
+							example: { priority: 'critical', dueDate: '2026-04-12' }
 						}
 					}
 				},
@@ -949,15 +2730,40 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Card' } }
 						}
 					},
+					'400': {
+						description:
+							'No valid fields, a field of the wrong type (`pinned must be true or false`, `milestoneId must be an id`), a title that is empty or over 500 characters, a description or an onHoldNote over 50000 characters, ' +
+							'a businessValue over 10000, a coverUrl that is not a colour written #rrggbb, one of the preset gradients or null (`coverUrl must be a colour written #rrggbb, one of the preset gradients, or null`), a priority that is not one of the four, a colorTag not written #rrggbb, a dueDate that is not a day written YYYY-MM-DD, ' +
+							'an archivedAt other than null (`archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}`), ' +
+							'an invalid reporting field, a milestone that belongs to another board, an archived card put into a milestone (`Card does not exist or is archived`), ' +
+							'cardId is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No edit access to this card\'s board, to the milestone it is to join, or to the milestone it is in, which it leaves with milestoneId null or another milestone. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this card\'s board' } } }
+					},
+					'404': {
+						description: 'There is no such card, no milestone with the id given as milestoneId, or categoryId names a category neither of the card\'s board nor of no board (`Category not found on this board`). Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
 				tags: ['Cards'],
 				summary: 'Delete a card',
 				description:
-					'Archives the card by default (soft-delete). Add `?permanent=true` to permanently delete.',
+					'Archives the card by default (soft-delete). Add `?permanent=true` to permanently delete. Both answer 200.\n\n' +
+					'**Archive** sets `archivedAt` and writes a `card_archived` activity entry. Nothing else is touched: the card keeps its subtasks, ' +
+					'comments, attachments, dependency links and sub-boards, and has them all when it is restored. No webhook is sent.\n\n' +
+					'**Permanent delete** removes the card with its subtasks, comments, assignees and attachments, every sub-board under it at every depth ' +
+					'with everything on it, and every dependency link that has a deleted card or subtask at either end. Attachment files are kept on the server for 30 days. ' +
+					'One `card_deleted` activity entry is written, with a null card id because the card is gone, and one `card.deleted` webhook is sent ' +
+					'whose `data.cardId` is the id of the deleted card.',
 				operationId: 'deleteCard',
 				parameters: [
 					{ $ref: '#/components/parameters/cardId' },
@@ -970,19 +2776,30 @@ const spec = {
 				],
 				responses: {
 					'200': {
-						description: 'Deleted',
+						description: 'Archived, or with `?permanent=true` deleted for good',
 						content: {
 							'application/json': {
 								schema: {
 									type: 'object',
-									properties: { success: { type: 'boolean' } }
+									properties: { success: { type: 'boolean' } },
+									required: ['success']
 								},
 								example: { success: true }
 							}
 						}
 					},
+					'400': {
+						description: 'cardId is not a whole number of 1 or more. Nothing was archived or deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No edit access to this card\'s board. Nothing was archived or deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this card\'s board' } } }
+					},
+					'404': { $ref: '#/components/responses/NotFound' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -992,7 +2809,9 @@ const spec = {
 				tags: ['Cards'],
 				summary: 'Move a card',
 				description:
-					'Moves a card between columns, including across different boards. The target column can belong to any board the user has edit access to. For cross-board moves, board-scoped data (categoryId, labels) is automatically cleaned up. Moving to "Complete" or "Done" awards XP and fires a celebration event. The move will be rejected with 409 if the card has incomplete subtasks or sub-boards.',
+					'Moves a card between columns, including across different boards. The target column can belong to any board the user has edit access to. For cross-board moves, board-scoped data (categoryId, labels) is automatically cleaned up. Moving to "Complete" or "Done" awards XP and fires a celebration event. The move will be rejected with 409 if the card has incomplete subtasks or sub-boards, or if the target column is on a board beneath the card, one of its own sub-boards at any depth: a card\'s sub-boards go with it, so they would hang beneath themselves. ' +
+					'A move that completes the card mails its assignees who can open the board it is now on "Card moved: <title> → <column>", each as their own card-moved setting says, as a move made in the web application does; a move through the API that does not complete the card mails nobody. ' +
+					'Whoever made the move is never mailed about it. Until 2026-10-14 no move through the API mailed an assignee.',
 				operationId: 'moveCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -1003,8 +2822,8 @@ const spec = {
 								type: 'object',
 								required: ['columnId'],
 								properties: {
-									columnId: { type: 'integer', description: 'Target column ID (can be on a different board for cross-board moves)' },
-									position: { type: 'integer', description: 'Position within column' }
+									columnId: { type: 'integer', minimum: 1, description: 'Target column ID (can be on a different board for cross-board moves)' },
+									position: { type: 'number', description: 'Position within the column: a number, or a number written as text. Default: the position the card has. Until 2026-10-14 a value that was not a number was ignored.' }
 								}
 							},
 							examples: {
@@ -1025,36 +2844,40 @@ const spec = {
 						description: 'Card moved. The boardId in the response reflects the card\'s new board (may differ from original for cross-board moves).',
 						content: {
 							'application/json': {
-								example: {
-									id: 10,
-									columnId: 4,
-									columnTitle: 'Complete',
-									boardId: 1,
-									completedAt: '2026-04-09T10:45:00.000Z'
-								}
+								schema: { $ref: '#/components/schemas/MovedCard' }
 							}
 						}
+					},
+					'400': {
+						description: 'No columnId, a cardId or columnId that is not a whole number of 1 or more, a position that is not a number, or a body that is missing, is not valid JSON or is not an object. A body that is not a JSON object is answered 400 whatever the card; the card is looked for, and the caller checked, before a field is read. Nothing was moved.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'columnId is required' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'No edit access to the source or target board',
+						description: 'No edit access to the board the card is on, or to the board the target column is on. Nothing was moved.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
-								example: { error: 'No edit access to the target board' }
+								example: { message: 'No edit access to this board' }
 							}
 						}
 					},
-					'404': { $ref: '#/components/responses/NotFound' },
+					'404': {
+						description: 'There is no such card, or no column with the id given as columnId',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
+					},
 					'409': {
-						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete',
+						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete, as `Card has 3 incomplete subtasks that must be completed first`, or the target column is on a board beneath the card, one of its own sub-boards at any depth: `Card "<title>" cannot go onto "<board>", which hangs beneath it`. Nothing was moved.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
-								example: { error: 'Card has 3 incomplete subtasks that must be completed first' }
+								example: { message: 'Card "Design work" cannot go onto "Design", which hangs beneath it' }
 							}
 						}
-					}
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1064,6 +2887,7 @@ const spec = {
 			get: {
 				tags: ['Assignees'],
 				summary: 'List assignees',
+				description: 'Lists who the card is assigned to. Needs view access to the board the card is on, as reading the card does.',
 				operationId: 'listAssignees',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				responses: {
@@ -1078,12 +2902,26 @@ const spec = {
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': {
+						description: 'cardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to the board the card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this card\'s board' } } }
+					},
+					'404': { $ref: '#/components/responses/NotFound' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
 				tags: ['Assignees'],
 				summary: 'Assign a user',
+				description:
+					'Assigns a user to the card, who is then notified by email. The user must themselves have access to the card\'s board. ' +
+					'Assigning a user who is already assigned assigns nobody and notifies nobody, and is answered 200 all the same; the message says which happened.',
 				operationId: 'assignUser',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -1093,26 +2931,51 @@ const spec = {
 							schema: {
 								type: 'object',
 								required: ['userId'],
-								properties: { userId: { type: 'integer' } }
-							}
+								properties: { userId: { type: 'integer', minimum: 1 } }
+							},
+							example: { userId: 2 }
 						}
 					}
 				},
 				responses: {
 					'200': {
-						description: 'User assigned',
+						description: 'The user is assigned, or already was',
 						content: {
 							'application/json': {
+								schema: {
+									type: 'object',
+									properties: {
+										success: { type: 'boolean' },
+										message: { type: 'string', enum: ['User assigned', 'User already assigned'] }
+									},
+									required: ['success', 'message']
+								},
 								example: { success: true, message: 'User assigned' }
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': {
+						description: 'No userId, one that is not an id (`userId must be an id`), a user who has no access to the card\'s board, cardId is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'User does not have access to this board' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to the board the card is on. Nobody was assigned.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this card\'s board' } } }
+					},
+					'404': {
+						description: 'There is no such card, or no user with the id given as userId',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'User not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
 				tags: ['Assignees'],
 				summary: 'Remove an assignee',
+				description: 'Takes a user off the card. Removing a user who is not assigned to it is 404, `User is not assigned to this card`, with no activity entry written and no live update sent: until 2026-10-14 it was answered 200, with an activity entry that said they had been removed.',
 				operationId: 'removeAssignee',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -1122,8 +2985,9 @@ const spec = {
 							schema: {
 								type: 'object',
 								required: ['userId'],
-								properties: { userId: { type: 'integer' } }
-							}
+								properties: { userId: { type: 'integer', minimum: 1 } }
+							},
+							example: { userId: 2 }
 						}
 					}
 				},
@@ -1131,10 +2995,25 @@ const spec = {
 					'200': {
 						description: 'Assignee removed',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+								example: { success: true }
+							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': { $ref: '#/components/responses/BadRequest' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to the board the card is on. Nobody was removed.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access' } } }
+					},
+					'404': {
+						description: 'There is no such card (`Card not found`), or the user is not assigned to it. Nobody was removed.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'User is not assigned to this card' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1158,7 +3037,18 @@ const spec = {
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': {
+						description: 'cardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to the board the card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this card\'s board' } } }
+					},
+					'404': { $ref: '#/components/responses/NotFound' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
@@ -1174,17 +3064,19 @@ const spec = {
 								type: 'object',
 								required: ['title'],
 								properties: {
-									title: { type: 'string', maxLength: 500 },
-									description: { type: 'string' },
+									title: { type: 'string', minLength: 1, maxLength: 500, description: 'Trimmed' },
+									description: { type: 'string', maxLength: 50000 },
 									priority: {
 										type: 'string',
-										enum: ['low', 'medium', 'high', 'critical']
+										enum: ['low', 'medium', 'high', 'critical'],
+										description: 'Read in any case, and stored in lower case'
 									},
-									colorTag: { type: 'string' },
-									dueDate: { type: 'string', format: 'date' },
-									position: { type: 'integer' }
+									colorTag: { type: 'string', pattern: '^(#[0-9a-fA-F]{6})?$', description: 'A colour written #rrggbb and trimmed, or empty for none' },
+									dueDate: { type: ['string', 'null'], format: 'date', description: 'A day of the calendar written YYYY-MM-DD. null, or empty text, for none.' },
+									position: { type: 'number', default: 0 }
 								}
-							}
+							},
+							example: { title: 'Write the migration', priority: 'high' }
 						}
 					}
 				},
@@ -1197,7 +3089,16 @@ const spec = {
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': { $ref: '#/components/responses/BadRequest' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to the board the card is on. Nothing was created.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this card\'s board' } } }
+					},
+					'404': { $ref: '#/components/responses/NotFound' },
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1206,6 +3107,10 @@ const spec = {
 			put: {
 				tags: ['Subtasks'],
 				summary: 'Update a subtask',
+				description:
+					'Updates the fields sent; at least one must be. A value the subtask already holds, sent back unchanged, is accepted as it is. Completing a subtask that was the last thing another card or subtask was waiting on records and sends the "Unblocked" notices with it. ' +
+					'Completing a subtask writes an api:subtask_completed activity entry, "<subtask> (on <card>)", and mails whoever asked for the card, when it was made from a task request, "Subtask completed on your request", as ticking it in the web application does. ' +
+					'Until 2026-10-14 it wrote neither. A subtask already complete, sent completed true again, writes neither.',
 				operationId: 'updateSubtask',
 				parameters: [{ $ref: '#/components/parameters/subtaskId' }],
 				requestBody: {
@@ -1215,16 +3120,17 @@ const spec = {
 							schema: {
 								type: 'object',
 								properties: {
-									title: { type: 'string' },
-									description: { type: 'string' },
+									title: { type: 'string', minLength: 1, maxLength: 500, description: 'Trimmed' },
+									description: { type: 'string', maxLength: 50000 },
 									priority: {
 										type: 'string',
-										enum: ['low', 'medium', 'high', 'critical']
+										enum: ['low', 'medium', 'high', 'critical'],
+										description: 'Read in any case, and stored in lower case'
 									},
-									colorTag: { type: 'string' },
-									dueDate: { type: 'string' },
+									colorTag: { type: 'string', pattern: '^(#[0-9a-fA-F]{6})?$', description: 'A colour written #rrggbb and trimmed, or empty for none' },
+									dueDate: { type: ['string', 'null'], format: 'date', description: 'A day of the calendar written YYYY-MM-DD. null, or empty text, clears it.' },
 									completed: { type: 'boolean' },
-									position: { type: 'integer' }
+									position: { type: 'number' }
 								}
 							},
 							example: { completed: true }
@@ -1240,25 +3146,57 @@ const spec = {
 							}
 						}
 					},
+					'400': {
+						description: 'None of the seven fields was sent, a field of the wrong type (`completed must be true or false`, `position must be a number`), a title that is empty or over 500 characters, a description over 50000, a priority that is not one of the four, a colorTag not written #rrggbb, a dueDate that is not a day written YYYY-MM-DD, subtaskId is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No edit access to the board the subtask\'s card is on. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this subtask\'s board' } } }
+					},
+					'404': {
+						description: 'There is no such subtask',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Subtask not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
 				tags: ['Subtasks'],
 				summary: 'Delete a subtask',
-				description: 'Permanently deletes the subtask.',
+				description:
+					'Permanently deletes the subtask, together with every dependency link that has it at either end. The subtask and its links go together or not at all, with an api:subtask_deleted activity entry naming the subtask, ' +
+					'as deleting one in the web application writes subtask_deleted. Until 2026-10-14 no entry was written.',
 				operationId: 'deleteSubtask',
 				parameters: [{ $ref: '#/components/parameters/subtaskId' }],
 				responses: {
 					'200': {
 						description: 'Deleted',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+								example: { success: true }
+							}
 						}
 					},
+					'400': {
+						description: 'subtaskId is not a whole number of 1 or more. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid subtask ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No edit access to the board the subtask\'s card is on. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this subtask\'s board' } } }
+					},
+					'404': {
+						description: 'There is no such subtask',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Subtask not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1283,14 +3221,27 @@ const spec = {
 							}
 						}
 					},
+					'400': {
+						description: 'cardId is not a whole number of 1 or more. Until 2026-10-14 it was answered 404.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No access to the board the card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such card',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
 				tags: ['Comments'],
 				summary: 'Add a comment',
-				description: 'Posts a comment on a card. Notifies board members via email.',
+				description: 'Posts a comment on a card. Notifies board members via email. Needs edit access to the card\'s board: a viewer can read comments and cannot add one.',
 				operationId: 'createComment',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -1301,7 +3252,7 @@ const spec = {
 								type: 'object',
 								required: ['content'],
 								properties: {
-									content: { type: 'string', description: 'Comment text (markdown supported)' }
+									content: { type: 'string', maxLength: 50000, description: 'Comment text (markdown supported). Trimmed, and 1 to 50000 characters once trimmed, as an edit is.' }
 								}
 							},
 							example: { content: 'Investigated the issue — root cause was a missing null check in the auth middleware.' }
@@ -1318,13 +3269,23 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'Comment cannot be empty',
+						description: 'No content, content that is empty, is not text or is over 50000 characters, or a body that is missing, is not valid JSON or is not an object. A cardId that is not a whole number of 1 or more is answered 400 too (`Invalid card ID`), where it was 404. A body that is not a JSON object is answered 400 whatever the card; the card is looked for, and the caller checked, before the content is read. Nothing was written. Until 2026-10-14 a new comment had no limit, and content that was not text was answered 500.',
 						content: {
-							'application/json': { schema: { $ref: '#/components/schemas/Error' } }
+							'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Comment cannot be empty' } }
 						}
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No access to the card\'s board, or view access only. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access' } } }
+					},
+					'404': {
+						description: 'There is no such card',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1334,7 +3295,7 @@ const spec = {
 				summary: 'Get a comment',
 				description: 'Returns a single comment with its author. Requires view access to the card\'s board.',
 				operationId: 'getComment',
-				parameters: [{ name: 'commentId', in: 'path', required: true, schema: { type: 'integer' }, description: 'Comment ID' }],
+				parameters: [{ name: 'commentId', in: 'path', required: true, schema: { type: 'integer', minimum: 1 }, description: 'Comment ID: a whole number of 1 or more. Anything else is 400 Invalid comment ID.' }],
 				responses: {
 					'200': {
 						description: 'Comment',
@@ -1344,16 +3305,29 @@ const spec = {
 							}
 						}
 					},
+					'400': {
+						description: 'commentId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid comment ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No access to the board the comment\'s card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such comment',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Comment not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			put: {
 				tags: ['Comments'],
 				summary: 'Edit a comment',
-				description: 'Replaces the comment text. Only the comment\'s author or an admin may edit — the same rule as the web UI. Sets updatedAt, logs api:comment_edited to the activity feed and emits a live board update. The text is stored exactly as sent (no tag prefixing).',
+				description: 'Replaces the comment text. Only the comment\'s author or an admin may edit, and the author only while they can still edit the board the comment is on, which is what posting a comment asks for: having written a comment is not access to its board, and an author who has been made a viewer can read it and not change it. Sets updatedAt, logs api:comment_edited to the activity feed and emits a live board update. The text is stored trimmed (no tag prefixing). The comment is looked for and access checked before the text is read.',
 				operationId: 'updateComment',
-				parameters: [{ name: 'commentId', in: 'path', required: true, schema: { type: 'integer' }, description: 'Comment ID' }],
+				parameters: [{ name: 'commentId', in: 'path', required: true, schema: { type: 'integer', minimum: 1 }, description: 'Comment ID: a whole number of 1 or more. Anything else is 400 Invalid comment ID.' }],
 				requestBody: {
 					required: true,
 					content: {
@@ -1362,7 +3336,7 @@ const spec = {
 								type: 'object',
 								required: ['content'],
 								properties: {
-									content: { type: 'string', description: 'Replacement comment text (markdown supported)' }
+									content: { type: 'string', minLength: 1, maxLength: 50000, description: 'Replacement comment text (markdown supported), counted and stored trimmed' }
 								}
 							},
 							example: { content: 'Root cause was a missing null check — fixed in the auth middleware.' }
@@ -1379,19 +3353,27 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'Comment cannot be empty',
+						description: 'Content that is not text, is empty or is over 50000 characters, commentId is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. The comment is looked for and the caller checked first: a comment that is not there is 404, and a caller who may not edit it 403, whatever was sent (until 2026-10-14 the content was looked at first). Nothing was written.',
 						content: {
-							'application/json': { schema: { $ref: '#/components/schemas/Error' } }
+							'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Comment cannot be empty' } }
 						}
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'Not the comment author and not an admin',
+						description:
+							'No edit access to the board the comment is on, which its author is answered too once they have lost the board or can only view it (`No edit access to this board`). ' +
+							'Or not the comment author and not an admin, which is the example. Nothing was written.',
 						content: {
-							'application/json': { schema: { $ref: '#/components/schemas/Error' } }
+							'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'You can only edit your own comments' } }
 						}
 					},
-					'404': { $ref: '#/components/responses/NotFound' }
+					'404': {
+						description: 'There is no such comment',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Comment not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1412,7 +3394,21 @@ const spec = {
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': {
+						description: 'boardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to this board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
@@ -1429,7 +3425,7 @@ const spec = {
 								required: ['name'],
 								properties: {
 									name: { type: 'string', maxLength: 200 },
-									color: { type: 'string', description: 'Hex colour code (default: #6366f1)' }
+									color: { type: 'string', minLength: 1, maxLength: 32, description: 'Hex colour code (default: #6366f1)' }
 								}
 							},
 							example: { name: 'Frontend', color: '#3b82f6' }
@@ -1443,9 +3439,19 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Label' } }
 						}
 					},
-					'400': { description: 'Validation error' },
+					'400': { $ref: '#/components/responses/BadRequest' },
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' }
+					'403': {
+						description: 'No edit access to this board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such board. Every caller is told so; until 2026-10-14 everyone but an administrator was answered 403, and an administrator 500.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1463,8 +3469,21 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Label' } }
 						}
 					},
+					'400': {
+						description: 'labelId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid label ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No access to the board the label belongs to',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such label',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Label not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			put: {
@@ -1480,7 +3499,7 @@ const spec = {
 								type: 'object',
 								properties: {
 									name: { type: 'string', maxLength: 200 },
-									color: { type: 'string' }
+									color: { type: 'string', minLength: 1, maxLength: 32 }
 								}
 							},
 							example: { name: 'Backend', color: '#10b981' }
@@ -1494,10 +3513,19 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Label' } }
 						}
 					},
-					'400': { description: 'No valid fields or validation error' },
+					'400': {
+						description: 'Neither name nor color was sent, either is not text, the name is empty or over 200 characters, the colour over 32, labelId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': { $ref: '#/components/responses/Forbidden' },
+					'404': {
+						description: 'There is no such label',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Label not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
@@ -1510,12 +3538,24 @@ const spec = {
 					'200': {
 						description: 'Deleted',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+								example: { success: true }
+							}
 						}
 					},
+					'400': {
+						description: 'labelId is not a whole number of 1 or more. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid label ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': { $ref: '#/components/responses/Forbidden' },
+					'404': {
+						description: 'There is no such label',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Label not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1536,12 +3576,26 @@ const spec = {
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': {
+						description: 'cardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to the board the card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': { $ref: '#/components/responses/NotFound' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
 				tags: ['Card Labels'],
 				summary: 'Assign a label to a card',
+				description:
+					'Puts one of the board\'s labels on the card. The answer says which of two things happened: 201 with the pair when the label was put on, ' +
+					'and 200 with a message when the card had it already and nothing changed.',
 				operationId: 'assignLabel',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -1551,24 +3605,54 @@ const spec = {
 							schema: {
 								type: 'object',
 								required: ['labelId'],
-								properties: { labelId: { type: 'integer' } }
-							}
+								properties: { labelId: { type: 'integer', description: 'A label of the board the card is on' } }
+							},
+							example: { labelId: 3 }
 						}
 					}
 				},
 				responses: {
 					'200': {
-						description: 'Label assigned',
+						description: 'The card had the label already. Nothing changed.',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'] },
+								example: { message: 'Label already assigned' }
+							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'201': {
+						description: 'Label assigned',
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									properties: { cardId: { type: 'integer' }, labelId: { type: 'integer' } },
+									required: ['cardId', 'labelId']
+								},
+								example: { cardId: 10, labelId: 3 }
+							}
+						}
+					},
+					'400': {
+						description: 'No labelId, a labelId that is not a whole number of 1 or more, a label that belongs to another board, cardId not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Label does not belong to this card\'s board' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { $ref: '#/components/responses/Forbidden' },
+					'404': {
+						description: 'There is no such card, or no label with the id given as labelId',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Label not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
 				tags: ['Card Labels'],
 				summary: 'Remove a label from a card',
+				description: 'Takes a label off the card. A label the card does not have is answered 404, and nothing is written: until 2026-10-14 it was answered 200.',
 				operationId: 'removeCardLabel',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -1579,7 +3663,8 @@ const spec = {
 								type: 'object',
 								required: ['labelId'],
 								properties: { labelId: { type: 'integer' } }
-							}
+							},
+							example: { labelId: 3 }
 						}
 					}
 				},
@@ -1587,10 +3672,22 @@ const spec = {
 					'200': {
 						description: 'Label removed',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+								example: { success: true }
+							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': { $ref: '#/components/responses/BadRequest' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': { $ref: '#/components/responses/Forbidden' },
+					'404': {
+						description: 'There is no such card, or the card does not have the label',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Label not found on this card' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1600,25 +3697,71 @@ const spec = {
 			get: {
 				tags: ['Dependencies'],
 				summary: 'List card dependencies',
-				description: 'Returns all cards that this card depends on.',
+				description:
+					'Returns what this card waits on (`blockedBy`) and what waits on it (`blocks`), with whether it is blocked now. Either can be a card or a subtask, on this board or another. ' +
+					'Work that has been archived or deleted is not listed.',
 				operationId: 'listDependencies',
-				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				parameters: [
+					{ $ref: '#/components/parameters/cardId' },
+					{
+						name: 'direction',
+						in: 'query',
+						schema: { type: 'string', enum: ['both', 'blocked-by', 'blocks'], default: 'both' },
+						description: 'Which of the two lists to return. With `blocked-by` the answer has no `blocks`, and with `blocks` no `blockedBy`.'
+					}
+				],
 				responses: {
 					'200': {
-						description: 'Dependency list',
+						description: 'The card\'s dependencies',
 						content: {
 							'application/json': {
-								schema: { type: 'array', items: { $ref: '#/components/schemas/Dependency' } }
+								schema: { $ref: '#/components/schemas/CardDependencies' },
+								example: {
+									cardId: 10,
+									isBlocked: true,
+									blockedBy: [
+										{
+											id: 7,
+											kind: 'card',
+											cardId: 42,
+											parentCardId: null,
+											title: 'Run the migration',
+											boardId: 1,
+											boardName: 'Sprint 43',
+											columnName: 'In Progress',
+											priority: 'high',
+											resolved: false,
+											createdByUserId: 2,
+											createdAt: '2026-10-13 09:41:07'
+										}
+									],
+									blocks: []
+								}
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': {
+						description: 'cardId is not a whole number of 1 or more, or direction is not one of both, blocked-by and blocks',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'direction must be one of: blocked-by, blocks, both' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to the board the card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this card\'s board' } } }
+					},
+					'404': { $ref: '#/components/responses/NotFound' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
 				tags: ['Dependencies'],
 				summary: 'Add a dependency',
-				description: 'Makes this card depend on another card. Blocks completion if the dependency is incomplete.',
+				description:
+					'Records that this card waits on a card or a subtask, or that one of those waits on this card. Send exactly one of the four fields. ' +
+					'A card that waits on unfinished work is blocked. The other end may be on another board, and edit access is needed to the boards at both ends.\n\n' +
+					'Two refusals are answered 409: a link that is already recorded, and a link that would close a loop, which is the one with `cycle` in its body. ' +
+					'An end that waits on itself, and an end that is archived, are answered 400. Nothing is written by a request that is refused.',
 				operationId: 'addDependency',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -1627,27 +3770,81 @@ const spec = {
 						'application/json': {
 							schema: {
 								type: 'object',
-								required: ['dependsOnCardId'],
-								properties: { dependsOnCardId: { type: 'integer', description: 'ID of card this card depends on' } }
+								description: 'Exactly one of the four.',
+								properties: {
+									dependsOnCardId: { type: 'integer', description: 'This card waits on that card' },
+									dependsOnSubtaskId: { type: 'integer', description: 'This card waits on that subtask' },
+									blocksCardId: { type: 'integer', description: 'That card waits on this card' },
+									blocksSubtaskId: { type: 'integer', description: 'That subtask waits on this card' }
+								}
 							},
 							example: { dependsOnCardId: 42 }
 						}
 					}
 				},
 				responses: {
-					'200': {
-						description: 'Dependency added',
+					'201': {
+						description: 'The link is recorded. `blocked` is the end that waits and `blocker` the end it waits on.',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: {
+									type: 'object',
+									properties: {
+										blocked: { $ref: '#/components/schemas/DependencyEnd' },
+										blocker: { $ref: '#/components/schemas/DependencyEnd' },
+										isBlocked: { type: 'boolean', description: 'Whether the card in the path is blocked now' }
+									},
+									required: ['blocked', 'blocker', 'isBlocked']
+								},
+								example: { blocked: { kind: 'card', id: 10 }, blocker: { kind: 'card', id: 42 }, isBlocked: true }
+							}
 						}
 					},
+					'400': {
+						description:
+							'None of the four fields, more than one of them, an id in the path or the body that is not a whole number of 1 or more, an end that waits on itself, an end that is archived, ' +
+							'or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Provide only one of the dependsOn*/blocks* fields' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No edit access to this card\'s board, or to the board the other end is on. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the board holding #42' } } }
+					},
+					'404': {
+						description: 'There is no such card, or the card or subtask named in the body does not exist',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: '#42 not found' } } }
+					},
+					'409': {
+						description:
+							'The link is already recorded, or it would close a loop. The loop is the one with `cycle` in its body: the chain the link would close, in order. Nothing was written.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/DependencyConflict' },
+								example: {
+									message: '#10 waiting on #42 would create a cycle: #10 → #42 → #10',
+									cycle: [
+										{ kind: 'card', id: 10 },
+										{ kind: 'card', id: 42 }
+									]
+								}
+							}
+						}
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
 				tags: ['Dependencies'],
 				summary: 'Remove a dependency',
+				description:
+					'Removes one link. The body names the other end exactly as the request that added the link did, with one of the same four fields.\n\n' +
+					'A link is removed by whoever may edit the board of the end that waits, whichever end the request is addressed to; an administrator always. ' +
+					'Edit access to the board of the end that is waited on is not asked for and is not enough: adding a link needs both boards, and removing one needs the waiting end\'s. ' +
+					'The card in the path must be one the caller can view. ' +
+					'A caller who may not remove the link is answered 403 before the link is looked for, so the answer does not say whether it exists.',
 				operationId: 'removeDependency',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -1656,9 +3853,15 @@ const spec = {
 						'application/json': {
 							schema: {
 								type: 'object',
-								required: ['dependsOnCardId'],
-								properties: { dependsOnCardId: { type: 'integer' } }
-							}
+								description: 'Exactly one of the four.',
+								properties: {
+									dependsOnCardId: { type: 'integer', description: 'This card waits on that card' },
+									dependsOnSubtaskId: { type: 'integer', description: 'This card waits on that subtask' },
+									blocksCardId: { type: 'integer', description: 'That card waits on this card' },
+									blocksSubtaskId: { type: 'integer', description: 'That subtask waits on this card' }
+								}
+							},
+							example: { dependsOnCardId: 42 }
 						}
 					}
 				},
@@ -1666,10 +3869,390 @@ const spec = {
 					'200': {
 						description: 'Dependency removed',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: {
+									type: 'object',
+									properties: {
+										success: { type: 'boolean' },
+										removed: { type: 'integer', description: 'How many links were removed: 1' }
+									},
+									required: ['success', 'removed']
+								},
+								example: { success: true, removed: 1 }
+							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': {
+						description: 'None of the four fields, more than one of them, an id in the path or the body that is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was removed.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Provide only one of the dependsOn*/blocks* fields' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description:
+							'No edit access to the board of the end that waits, which is the example, or no access at all to the board the card in the path is on (`No access to this card\'s board`). ' +
+							'Answered before the link is looked for. Nothing was removed.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the board holding #10, the end that waits' } } }
+					},
+					'404': {
+						description:
+							'There is no such card, the card or subtask named in the body as the end that waits does not exist, or there is no link between this card and the end named in the body. ' +
+							'The last is answered only to a caller who may edit the board of the end that waits.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Dependency not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/subtasks/{subtaskId}/dependencies': {
+			get: {
+				tags: ['Dependencies'],
+				summary: 'List subtask dependencies',
+				description:
+					'Returns what this subtask waits on (`blockedBy`) and what waits on it (`blocks`), with whether it is blocked now. Either can be a card or a subtask, on this board or another. ' +
+					'Both lists are always there: this operation has no `direction`. Work that has been archived or deleted is not listed. ' +
+					'An entry does not carry the id of its link, which the card\'s list does: a link is removed by naming its other end.',
+				operationId: 'listSubtaskDependencies',
+				parameters: [{ $ref: '#/components/parameters/subtaskId' }],
+				responses: {
+					'200': {
+						description: 'The subtask\'s dependencies',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/SubtaskDependencies' },
+								example: {
+									subtaskId: 3471,
+									cardId: 10,
+									isBlocked: true,
+									blockedBy: [
+										{
+											kind: 'card',
+											cardId: 42,
+											parentCardId: null,
+											title: 'Run the migration',
+											boardId: 1,
+											boardName: 'Sprint 43',
+											columnName: 'In Progress',
+											priority: 'high',
+											resolved: false
+										}
+									],
+									blocks: []
+								}
+							}
+						}
+					},
+					'400': {
+						description: 'subtaskId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid subtask ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to the board the subtask\'s card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access' } } }
+					},
+					'404': {
+						description: 'There is no such subtask',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Subtask not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			},
+			post: {
+				tags: ['Dependencies'],
+				summary: 'Add a dependency to a subtask',
+				description:
+					'Records that this subtask waits on a card or a subtask, or that one of those waits on this subtask. Send exactly one of the four fields, which mean what they mean on a card. ' +
+					'A subtask that waits on unfinished work is blocked. The other end may be on another board, and edit access is needed to the boards at both ends. ' +
+					'The answer is the subtask\'s dependencies as they then are.\n\n' +
+					'The refusals are those of a card. Two are answered 409: a link that is already recorded, and a link that would close a loop, which is the one with `cycle` in its body. ' +
+					'An end that waits on itself, and an end that is archived, are answered 400. Nothing is written by a request that is refused.\n\n' +
+					'The link is recorded with an `api:dependency_added` activity entry on the board of the subtask\'s card, as a card\'s is: until 2026-10-14 this wrote none.',
+				operationId: 'addSubtaskDependency',
+				parameters: [{ $ref: '#/components/parameters/subtaskId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								description: 'Exactly one of the four.',
+								properties: {
+									dependsOnCardId: { type: 'integer', description: 'This subtask waits on that card' },
+									dependsOnSubtaskId: { type: 'integer', description: 'This subtask waits on that subtask' },
+									blocksCardId: { type: 'integer', description: 'That card waits on this subtask' },
+									blocksSubtaskId: { type: 'integer', description: 'That subtask waits on this subtask' }
+								}
+							},
+							example: { dependsOnCardId: 42 }
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'The link is recorded. The subtask\'s dependencies, with it among them.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/SubtaskDependencies' },
+								example: {
+									subtaskId: 3471,
+									cardId: 10,
+									isBlocked: true,
+									blockedBy: [
+										{
+											kind: 'card',
+											cardId: 42,
+											parentCardId: null,
+											title: 'Run the migration',
+											boardId: 1,
+											boardName: 'Sprint 43',
+											columnName: 'In Progress',
+											priority: 'high',
+											resolved: false
+										}
+									],
+									blocks: []
+								}
+							}
+						}
+					},
+					'400': {
+						description:
+							'None of the four fields, more than one of them, an id in the path or the body that is not a whole number of 1 or more, an end that waits on itself, an end that is archived, ' +
+							'or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Provide only one end' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to the board this subtask\'s card is on, or to the board the other end is on. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the board holding #42' } } }
+					},
+					'404': {
+						description: 'There is no such subtask, or the card or subtask named in the body does not exist',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: '#42 not found' } } }
+					},
+					'409': {
+						description:
+							'The link is already recorded, or it would close a loop. The loop is the one with `cycle` in its body: the chain the link would close, in order. Nothing was written.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/DependencyConflict' },
+								example: {
+									message: 'subtask #3471 waiting on #42 would create a cycle: subtask #3471 → #42 → subtask #3471',
+									cycle: [
+										{ kind: 'subtask', id: 3471 },
+										{ kind: 'card', id: 42 }
+									]
+								}
+							}
+						}
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			},
+			delete: {
+				tags: ['Dependencies'],
+				summary: 'Remove a dependency from a subtask',
+				description:
+					'Removes one link. The body names the other end exactly as the request that added the link did, with one of the same four fields. ' +
+					'The answer is the subtask\'s dependencies as they then are.\n\n' +
+					'The rule is a card\'s: a link is removed by whoever may edit the board of the end that waits, whichever end the request is addressed to; an administrator always. ' +
+					'Edit access to the board of the end that is waited on is not asked for and is not enough. The subtask in the path must be one the caller can view. ' +
+					'A caller who may not remove the link is answered 403 before the link is looked for, so the answer does not say whether it exists.\n\n' +
+					'The removal is recorded with an `api:dependency_removed` activity entry on the board of the end that waits, as a card\'s is: until 2026-10-14 this wrote none.',
+				operationId: 'removeSubtaskDependency',
+				parameters: [{ $ref: '#/components/parameters/subtaskId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								description: 'Exactly one of the four.',
+								properties: {
+									dependsOnCardId: { type: 'integer', description: 'This subtask waits on that card' },
+									dependsOnSubtaskId: { type: 'integer', description: 'This subtask waits on that subtask' },
+									blocksCardId: { type: 'integer', description: 'That card waits on this subtask' },
+									blocksSubtaskId: { type: 'integer', description: 'That subtask waits on this subtask' }
+								}
+							},
+							example: { dependsOnCardId: 42 }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'The link is removed. The subtask\'s dependencies, without it.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/SubtaskDependencies' },
+								example: { subtaskId: 3471, cardId: 10, isBlocked: false, blockedBy: [], blocks: [] }
+							}
+						}
+					},
+					'400': {
+						description: 'None of the four fields, more than one of them, an id in the path or the body that is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was removed.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Provide only one end' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description:
+							'No edit access to the board of the end that waits, which is the example, or no access at all to the board this subtask\'s card is on (`No access`). ' +
+							'Answered before the link is looked for. Nothing was removed.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the board holding subtask #3471, the end that waits' } } }
+					},
+					'404': {
+						description:
+							'There is no such subtask, the card or subtask named in the body as the end that waits does not exist, or there is no link between this subtask and the end named in the body. ' +
+							'The last is answered only to a caller who may edit the board of the end that waits.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Dependency not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/dependencies/bulk': {
+			post: {
+				tags: ['Dependencies'],
+				summary: 'Add many dependencies',
+				description:
+					'Records many dependency links in one request. Send `links`, each of which says that `blocked` waits on `blocker`, or send `chain`, in which each entry waits on the one before it: ' +
+					'{"chain": [1686, 1559, 1444]} says that 1559 waits on 1686 and 1444 waits on 1559. Not both.\n\n' +
+					'An end may be a card or a subtask, and is written in one of four ways: a number, which is a card id; a number as text, "42", which is a card id too; ' +
+					'the text "subtask:42" or "card:42"; or an object {"kind": "subtask", "id": 42}, which is a card unless its `kind` is "subtask". ' +
+					'In `links` each end has two names: `blocked` or `cardId` for the end that waits, and `blocker` or `dependsOnCardId` for the end it waits on. ' +
+					'The ends may be on any boards, and edit access is needed to the board of every end.\n\n' +
+					'**All or nothing.** The whole batch is checked before anything is written, loops between the links of the batch included. ' +
+					'If one link is refused nothing is written, the links that were acceptable included, and the answer is a 409 that lists every link at fault, so that a long list is put right in one go. ' +
+					'A link to an end that does not exist, and a link the key\'s user may not make, are reasons in that 409: this operation answers no 404 and no 403.\n\n' +
+					'A link that is already recorded is not a fault. It is skipped and counted, so the same batch can be sent twice.',
+				operationId: 'addDependencies',
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								description: 'Exactly one of the two.',
+								properties: {
+									links: {
+										type: 'array',
+										minItems: 1,
+										maxItems: 500,
+										description: 'The links to record, 500 at most',
+										items: {
+											type: 'object',
+											description:
+												'`blocked` waits on `blocker`. Both ends are needed, each under either of its names. A link written with the field names of the single-card operation is read too: ' +
+												'`cardId` as `blocked` and `dependsOnCardId` as `blocker`.',
+											properties: {
+												blocked: {
+													type: ['integer', 'string', 'object'],
+													description: 'The end that waits: a card id, a card id as text, "card:<id>", "subtask:<id>", or {kind, id}'
+												},
+												blocker: {
+													type: ['integer', 'string', 'object'],
+													description: 'The end it waits on, written in the same way'
+												},
+												cardId: {
+													type: ['integer', 'string', 'object'],
+													description: 'Another name for `blocked`, written in the same way. Read only when `blocked` is not sent or is null.'
+												},
+												dependsOnCardId: {
+													type: ['integer', 'string', 'object'],
+													description: 'Another name for `blocker`, written in the same way. Read only when `blocker` is not sent or is null.'
+												},
+												blockedType: {
+													type: 'string',
+													enum: ['card', 'subtask'],
+													description: 'What `blocked` is the id of, for a caller who would rather say it here. Read before the kind in `blocked` itself. Any other word is 400, where it was a 409.'
+												},
+												blockerType: { type: 'string', enum: ['card', 'subtask'], description: 'The same, for `blocker`' }
+											}
+										}
+									},
+									chain: {
+										type: 'array',
+										minItems: 2,
+										description: 'At least two ends, in the order the work is done: each waits on the one before it. 500 links at most, which is 501 ends.',
+										items: { type: ['integer', 'string', 'object'], description: 'A card id, a card id as text, "card:<id>", "subtask:<id>", or {kind, id}' }
+									}
+								}
+							},
+							example: {
+								links: [
+									{ blocked: 1559, blocker: 1686 },
+									{ blocked: 'subtask:3471', blocker: 1559 }
+								]
+							}
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description:
+							'Every link of the batch is recorded, or was already. Also the answer when all of them were already recorded: `created` is then 0.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/DependencyBatchCreated' },
+								example: {
+									created: 2,
+									skippedAsDuplicate: 0,
+									boardsTouched: [1],
+									links: [
+										{ blocked: 1559, blockedType: 'card', blocker: 1686, blockerType: 'card' },
+										{ blocked: 3471, blockedType: 'subtask', blocker: 1559, blockerType: 'card' }
+									]
+								}
+							}
+						}
+					},
+					'400': {
+						description:
+							'The batch cannot be read: both `links` and `chain`, neither, `links` empty, a `chain` of fewer than two, a link with no `blocked` or no `blocker`, ' +
+							'an end written in none of the three ways, an entry of `links` that is not an object (`links[<n>] must be an object`, which was a 500), a `blockedType` or `blockerType` that is neither card nor subtask ' +
+							'(`links[<n>].blockedType must be one of: card, subtask`), more than 500 links, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Provide either links or chain, not both' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'409': {
+						description: 'At least one link cannot be recorded. Nothing was written, and every link at fault is listed with the reason.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/DependencyBatchRejected' },
+								example: {
+									message: 'Batch rejected — nothing was written',
+									written: 0,
+									rejected: [
+										{
+											link: { blocked: 1444, blockedType: 'card', blocker: 1559, blockerType: 'card' },
+											reason: 'cycle',
+											cycle: [
+												{ kind: 'card', id: 1444 },
+												{ kind: 'card', id: 1686 },
+												{ kind: 'card', id: 1559 }
+											],
+											message: '#1444 waiting on #1559 would create a cycle: #1444 → #1686 → #1559 → #1444'
+										}
+									],
+									forbidden: [],
+									wouldSkipAsDuplicate: 0,
+									wouldCreate: 1
+								}
+							}
+						}
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1691,8 +4274,21 @@ const spec = {
 							}
 						}
 					},
+					'400': {
+						description: 'boardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No access to this board' }
+					'403': {
+						description: 'No access to this board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
@@ -1710,7 +4306,7 @@ const spec = {
 								required: ['name'],
 								properties: {
 									name: { type: 'string', maxLength: 200, description: 'Category name' },
-									color: { type: 'string', description: 'Hex colour code (default: #6366f1)' }
+									color: { type: 'string', minLength: 1, maxLength: 32, description: 'Hex colour code (default: #6366f1)' }
 								}
 							},
 							example: { name: 'Bug', color: '#ef4444' }
@@ -1724,9 +4320,19 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Category' } }
 						}
 					},
-					'400': { description: 'Validation error' },
+					'400': { $ref: '#/components/responses/BadRequest' },
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' }
+					'403': {
+						description: 'No edit access to this board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such board. Every caller is told so; until 2026-10-14 everyone but an administrator was answered 403, and an administrator 500.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1735,6 +4341,8 @@ const spec = {
 			get: {
 				tags: ['Categories'],
 				summary: 'Get a category',
+				description:
+					'Returns one card category: one that belongs to no board, or one of a board the key\'s user can open. Until 2026-10-14 any key could read any category.',
 				operationId: 'getCategory',
 				parameters: [{ $ref: '#/components/parameters/categoryId' }],
 				responses: {
@@ -1744,13 +4352,28 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Category' } }
 						}
 					},
+					'400': {
+						description: 'categoryId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid category ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'The category belongs to a board the key\'s user cannot open',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this category' } } }
+					},
+					'404': {
+						description: 'There is no such category',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Category not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			put: {
 				tags: ['Categories'],
 				summary: 'Update a category',
+				description:
+					'Changes the name or the colour. Needs edit access to the board the category belongs to; a category that belongs to no board can be changed only by an administrator.',
 				operationId: 'updateCategory',
 				parameters: [{ $ref: '#/components/parameters/categoryId' }],
 				requestBody: {
@@ -1761,7 +4384,7 @@ const spec = {
 								type: 'object',
 								properties: {
 									name: { type: 'string', maxLength: 200 },
-									color: { type: 'string' }
+									color: { type: 'string', minLength: 1, maxLength: 32 }
 								}
 							},
 							example: { name: 'Feature', color: '#10b981' }
@@ -1775,28 +4398,57 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Category' } }
 						}
 					},
-					'400': { description: 'No valid fields or validation error' },
+					'400': {
+						description: 'Neither name nor color was sent, either is not text, the name is empty or over 200 characters, the colour over 32, categoryId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No edit access to the board the category belongs to, or the category belongs to no board and the key\'s user is not an administrator. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only an administrator can change a category that belongs to no board' } } }
+					},
+					'404': {
+						description: 'There is no such category',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Category not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
 				tags: ['Categories'],
 				summary: 'Delete a category',
-				description: 'Permanently deletes the card category. Cards using this category will have their categoryId set to null.',
+				description:
+					'Permanently deletes the card category. Cards using this category will have their categoryId set to null. ' +
+					'Needs edit access to the board the category belongs to; a category that belongs to no board can be deleted only by an administrator.',
 				operationId: 'deleteCategory',
 				parameters: [{ $ref: '#/components/parameters/categoryId' }],
 				responses: {
 					'200': {
 						description: 'Deleted',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+								example: { success: true }
+							}
 						}
 					},
+					'400': {
+						description: 'categoryId is not a whole number of 1 or more. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid category ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No edit access to the board the category belongs to, or the category belongs to no board and the key\'s user is not an administrator. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only an administrator can change a category that belongs to no board' } } }
+					},
+					'404': {
+						description: 'There is no such category',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Category not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1806,7 +4458,8 @@ const spec = {
 			get: {
 				tags: ['Board Categories'],
 				summary: 'List board categories',
-				description: 'Returns all board categories used for grouping boards on the dashboard.',
+				description:
+					'Returns the board categories, used for grouping boards on the dashboard, that hold a board the key\'s user can open, and those that hold no board yet. A board category all of whose boards they cannot open is left out; an administrator is given every one. Until 2026-10-14 every one was listed to every key.',
 				operationId: 'listBoardCategories',
 				responses: {
 					'200': {
@@ -1817,7 +4470,9 @@ const spec = {
 							}
 						}
 					},
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
@@ -1833,8 +4488,8 @@ const spec = {
 								type: 'object',
 								required: ['name'],
 								properties: {
-									name: { type: 'string', maxLength: 200, description: 'Category name' },
-									color: { type: 'string', description: 'Hex colour code (default: #6366f1)' }
+									name: { type: 'string', minLength: 1, maxLength: 200, description: 'Category name, trimmed' },
+									color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'A colour written #rrggbb, trimmed (default: #6366f1). Anything else is 400 color must be a colour written #rrggbb.' }
 								}
 							},
 							example: { name: 'Development', color: '#6366f1' }
@@ -1848,8 +4503,11 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/BoardCategory' } }
 						}
 					},
-					'400': { description: 'Validation error' },
-					'401': { $ref: '#/components/responses/Unauthorized' }
+					'400': { $ref: '#/components/responses/BadRequest' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1858,6 +4516,8 @@ const spec = {
 			get: {
 				tags: ['Board Categories'],
 				summary: 'Get a board category',
+				description:
+					'Returns one board category, if it holds a board the key\'s user can open or holds no board, as the list gives them. Until 2026-10-14 any key was given any board category by its id.',
 				operationId: 'getBoardCategory',
 				parameters: [{ $ref: '#/components/parameters/categoryId' }],
 				responses: {
@@ -1867,13 +4527,28 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/BoardCategory' } }
 						}
 					},
+					'400': {
+						description: 'categoryId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid category ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'The board category holds boards, and the key\'s user can open none of them',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board category' } } }
+					},
+					'404': {
+						description: 'There is no such board category',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board category not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			put: {
 				tags: ['Board Categories'],
 				summary: 'Update a board category',
+				description:
+					'Changes the name or the colour. A board category changes how every board filed under it is shown, so the key\'s user must be able to edit each of those boards. One with no boards under it may be changed by anyone.',
 				operationId: 'updateBoardCategory',
 				parameters: [{ $ref: '#/components/parameters/categoryId' }],
 				requestBody: {
@@ -1884,7 +4559,7 @@ const spec = {
 								type: 'object',
 								properties: {
 									name: { type: 'string', maxLength: 200 },
-									color: { type: 'string' }
+									color: { type: 'string', minLength: 1, maxLength: 32 }
 								}
 							},
 							example: { name: 'Infrastructure', color: '#f59e0b' }
@@ -1898,26 +4573,57 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/BoardCategory' } }
 						}
 					},
-					'400': { description: 'No valid fields or validation error' },
+					'400': {
+						description: 'Neither name nor color was sent, either is not text, the name is empty or over 200 characters, the colour over 32, categoryId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'A board filed under this category is one the key\'s user cannot edit. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This category groups boards you cannot edit' } } }
+					},
+					'404': {
+						description: 'There is no such board category',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board category not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
 				tags: ['Board Categories'],
 				summary: 'Delete a board category',
-				description: 'Permanently deletes the board category. Boards using this category will have their categoryId unchanged (you may want to clear them first).',
+				description:
+					'Permanently deletes the board category. Boards using this category will have their categoryId unchanged (you may want to clear them first). ' +
+					'The key\'s user must be able to edit every board filed under it.',
 				operationId: 'deleteBoardCategory',
 				parameters: [{ $ref: '#/components/parameters/categoryId' }],
 				responses: {
 					'200': {
 						description: 'Deleted',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+								example: { success: true }
+							}
 						}
 					},
+					'400': {
+						description: 'categoryId is not a whole number of 1 or more. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid category ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'A board filed under this category is one the key\'s user cannot edit. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This category groups boards you cannot edit' } } }
+					},
+					'404': {
+						description: 'There is no such board category',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board category not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1938,8 +4644,21 @@ const spec = {
 							}
 						}
 					},
+					'400': {
+						description: 'boardId is not a whole number',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No access to this board' }
+					'403': {
+						description: 'No access to this board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			post: {
@@ -1955,9 +4674,9 @@ const spec = {
 								type: 'object',
 								required: ['url'],
 								properties: {
-									url: { type: 'string', format: 'uri', description: 'Webhook delivery URL' },
-									secret: { type: 'string', description: 'Shared secret for HMAC verification' },
-									events: { type: 'array', items: { type: 'string' }, description: 'Event types to subscribe to (default: all events)' }
+									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'Webhook delivery URL: an http or https address' },
+									secret: { type: 'string', maxLength: 256, description: 'Shared secret for HMAC verification' },
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end. An empty list, or none, is every event.' }
 								}
 							},
 							example: { url: 'https://example.com/webhook', secret: 'my-secret', events: ['card.created', 'card.moved'] }
@@ -1966,14 +4685,24 @@ const spec = {
 				},
 				responses: {
 					'201': {
-						description: 'Webhook created',
+						description: 'Webhook created. The secret is in this answer, to the caller who has just sent it.',
 						content: {
 							'application/json': { schema: { $ref: '#/components/schemas/Webhook' } }
 						}
 					},
-					'400': { description: 'Validation error' },
+					'400': {
+						description: 'No url, a url that is not an http or https address, a secret over 256 characters, an event that is not one of the six, boardId not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was created.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'URL is required' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No edit access to this board' }
+					'403': { $ref: '#/components/responses/Forbidden' },
+					'404': {
+						description: 'There is no such board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -1991,8 +4720,21 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Webhook' } }
 						}
 					},
+					'400': {
+						description: 'webhookId is not a whole number',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid webhook ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No access to the board the webhook belongs to',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such webhook',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Webhook not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			put: {
@@ -2007,9 +4749,9 @@ const spec = {
 							schema: {
 								type: 'object',
 								properties: {
-									url: { type: 'string', format: 'uri' },
-									secret: { type: 'string' },
-									events: { type: 'array', items: { type: 'string' } },
+									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'An http or https address' },
+									secret: { type: 'string', maxLength: 256 },
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added'] }, description: 'Each trimmed of spaces at either end. An empty list is every event.' },
 									active: { type: 'boolean' }
 								}
 							},
@@ -2024,9 +4766,19 @@ const spec = {
 							'application/json': { schema: { $ref: '#/components/schemas/Webhook' } }
 						}
 					},
-					'400': { description: 'No valid fields or validation error' },
+					'400': {
+						description: 'None of the four fields was sent, a field that is not what it may hold (a url that is not an http or https address, a secret over 256 characters, an event that is not one of the six, active that is not true or false), webhookId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No fields to update' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': { $ref: '#/components/responses/Forbidden' },
+					'404': {
+						description: 'There is no such webhook',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Webhook not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			},
 			delete: {
@@ -2038,11 +4790,24 @@ const spec = {
 					'200': {
 						description: 'Deleted',
 						content: {
-							'application/json': { example: { success: true } }
+							'application/json': {
+								schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+								example: { success: true }
+							}
 						}
 					},
+					'400': {
+						description: 'webhookId is not a whole number. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid webhook ID' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': { $ref: '#/components/responses/Forbidden' },
+					'404': {
+						description: 'There is no such webhook',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Webhook not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -2057,8 +4822,8 @@ const spec = {
 				operationId: 'getBurndown',
 				parameters: [
 					{ name: 'boardIds', in: 'query', schema: { type: 'string' }, description: 'Comma-separated board ids. View access to each is required.' },
-					{ name: 'boardCategoryId', in: 'query', schema: { type: 'integer' }, description: 'Every board in this board category that you can see. Not with boardIds.' },
-					{ name: 'milestoneId', in: 'query', schema: { type: 'integer' }, description: 'The milestone\'s cards, wherever they live. Combines with boardIds to narrow.' },
+					{ name: 'boardCategoryId', in: 'query', schema: { type: 'integer' }, description: 'Every board in this board category that you can see. Not with boardIds. One that holds boards, none of which you can see, is refused 403: until 2026-10-14 it was charted empty, with its name.' },
+					{ name: 'milestoneId', in: 'query', schema: { type: 'integer' }, description: 'The milestone\'s cards, on whichever boards you can see: one on a board you cannot see is left out, and meta.notes says how many. Combines with boardIds to narrow. Until 2026-10-14 a card moved to a board you cannot see was charted, and its board named.' },
 					{ name: 'categoryIds', in: 'query', schema: { type: 'string' }, description: 'Card category ids; "none" = uncategorised.' },
 					{ name: 'labelIds', in: 'query', schema: { type: 'string' }, description: 'Label ids; a card matches if it carries any of them.' },
 					{ name: 'assigneeIds', in: 'query', schema: { type: 'string' }, description: 'User ids; "me" = you, "none" = unassigned.' },
@@ -2075,10 +4840,21 @@ const spec = {
 						description: 'Burndown for the requested scope',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/BurndownResult' } } }
 					},
-					'400': { description: 'A parameter is invalid; the message names it' },
+					'400': {
+						description: 'A parameter is invalid; the message names it',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Use boardIds or boardCategoryId, not both' } } }
+					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'No access to a requested board or milestone' },
-					'404': { $ref: '#/components/responses/NotFound' }
+					'403': {
+						description: 'No access to a requested board or milestone, or a board category that holds boards, none of which you can see (`No access to board category 3`)',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to board 7' } } }
+					},
+					'404': {
+						description: 'A requested board, board category or milestone does not exist',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board 7 not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		},
@@ -2087,33 +4863,1329 @@ const spec = {
 			get: {
 				tags: ['Audit'],
 				summary: 'Get audit log',
-				description: 'Returns activity log entries. Filter by boardId and/or userId. Admin only.',
+				description:
+					'Returns activity log entries from every board, newest first, a page at a time. Administrators only. ' +
+					'The filters all apply together. A page holds 100 entries unless `limit` says otherwise, and 500 at most: ' +
+					'read `pagination.hasMore`, and ask for the next page with `offset`, before taking a page for the whole answer.',
 				operationId: 'getAuditLog',
 				parameters: [
 					{
 						name: 'boardId',
 						in: 'query',
-						schema: { type: 'integer' },
-						description: 'Filter by board ID'
+						schema: { type: 'integer', minimum: 1 },
+						description: 'Filter by board ID. An id: anything else is 400 Invalid board ID.'
 					},
 					{
 						name: 'userId',
 						in: 'query',
-						schema: { type: 'integer' },
-						description: 'Filter by user ID'
+						schema: { type: 'integer', minimum: 1 },
+						description: 'Filter by user ID. An id: anything else is 400 Invalid user ID.'
+					},
+					{
+						name: 'cardId',
+						in: 'query',
+						schema: { type: 'integer', minimum: 1 },
+						description: 'Filter by card ID. An id: anything else is 400 Invalid card ID.'
+					},
+					{
+						name: 'action',
+						in: 'query',
+						schema: { type: 'string' },
+						description:
+							'Filter by action, by its canonical name: `card_moved` finds moves made in the web application and through the API alike. A trailing * matches a prefix: `card_*`. ' +
+							'Nothing else is a wildcard, so `card_*` finds card_moved and card_completed and not cards_purged or cards_cleared: until 2026-10-14 the _ of a prefix matched any one character, and it found those too.'
+					},
+					{
+						name: 'source',
+						in: 'query',
+						schema: { type: 'string', enum: ['ui', 'api'] },
+						description: 'Filter by where the action came from: the web application or the API'
+					},
+					{
+						name: 'from',
+						in: 'query',
+						schema: { type: 'string' },
+						description: 'Entries created at or after this time. Compared as text with the stored time, which is UTC as "YYYY-MM-DD HH:MM:SS".'
+					},
+					{
+						name: 'to',
+						in: 'query',
+						schema: { type: 'string' },
+						description: 'Entries created at or before this time, compared in the same way'
+					},
+					{
+						name: 'limit',
+						in: 'query',
+						schema: { type: 'integer', default: 100, minimum: 1, maximum: 500 },
+						description: 'Entries in a page, rounded down. More than 500 is read as 500, and less than 1 as 1, but 0, which is the default, as it always was; text that is not a number is the default too. Until 2026-10-14 -1 gave every entry and 2.5 was a 500.'
+					},
+					{
+						name: 'offset',
+						in: 'query',
+						schema: { type: 'integer', default: 0, minimum: 0 },
+						description: 'Entries to skip, for the pages after the first: rounded down, and less than 0 is read as 0. A negative offset was echoed until 2026-10-14.'
 					}
 				],
 				responses: {
 					'200': {
-						description: 'Audit log entries',
+						description: 'A page of audit log entries, and where the page lies in the whole',
 						content: {
 							'application/json': {
-								schema: { type: 'array', items: { $ref: '#/components/schemas/AuditLogEntry' } }
+								schema: {
+									type: 'object',
+									properties: {
+										data: { type: 'array', items: { $ref: '#/components/schemas/AuditLogEntry' } },
+										pagination: {
+											type: 'object',
+											properties: {
+												limit: { type: 'integer', description: 'The page size that was applied' },
+												offset: { type: 'integer' },
+												count: { type: 'integer', description: 'Entries in this page' },
+												total: { type: 'integer', description: 'Entries that match the filters, in all' },
+												hasMore: { type: 'boolean', description: 'true when entries that match lie beyond this page' },
+												defaultLimit: { type: 'integer', description: 'The page size when no limit is sent: 100' },
+												maxLimit: { type: 'integer', description: 'The largest page size: 500' }
+											},
+											required: ['limit', 'offset', 'count', 'total', 'hasMore', 'defaultLimit', 'maxLimit']
+										}
+									},
+									required: ['data', 'pagination']
+								}
+							}
+						}
+					},
+					'400': {
+						description: 'source is neither ui nor api, or boardId, userId or cardId is not a whole number of 1 or more (`Invalid board ID`)',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'source must be "ui" or "api"' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The key\'s user is not an administrator',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Admin access required' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		// ─── Milestones ─────────────────────────────────────────────────────
+		'/api/v1/milestones': {
+			get: {
+				tags: ['Milestones'],
+				summary: 'List milestones',
+				description:
+					'Returns the milestones the key\'s user can see, each with how many cards it has and how many of them are done. ' +
+					'A milestone that belongs to a board is seen by whoever can see that board. One that spans boards is seen by whoever can see every board its cards are on, ' +
+					'and while it has no cards by its creator alone. An administrator sees them all.\n\n' +
+					'Open milestones come first, then the earlier target date, with those that have none last, then the newer milestone.',
+				operationId: 'listMilestones',
+				parameters: [
+					{
+						name: 'boardId',
+						in: 'query',
+						schema: { type: 'integer', minimum: 1 },
+						description:
+							'Only the milestones that belong to this board, which is an id: anything else is 400 Invalid boardId. A milestone that spans boards is not among them, even when it has cards on the board.'
+					},
+					{
+						name: 'status',
+						in: 'query',
+						schema: { type: 'string', enum: ['open', 'closed'] },
+						description: 'Only the milestones with this status'
+					}
+				],
+				responses: {
+					'200': {
+						description: 'The milestones. An empty list when there is none to see.',
+						content: {
+							'application/json': {
+								schema: { type: 'array', items: { $ref: '#/components/schemas/MilestoneListItem' } },
+								example: [
+									{
+										id: 17,
+										boardId: null,
+										name: 'Security hardening',
+										description: 'Everything the audit of September raised',
+										targetDate: '2026-12-01',
+										status: 'open',
+										createdBy: 2,
+										createdAt: '2026-10-01 08:15:00',
+										updatedAt: '2026-10-01 08:15:00',
+										boardName: null,
+										cardCount: 12,
+										doneCount: 5,
+										boardIds: [1, 4]
+									}
+								]
+							}
+						}
+					},
+					'400': {
+						description: 'status is neither open nor closed, or boardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'status must be open or closed' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			},
+			post: {
+				tags: ['Milestones'],
+				summary: 'Create a milestone',
+				description:
+					'Creates a milestone with no cards in it: cards are put into it afterwards. With `boardId` the milestone belongs to that board, ' +
+					'needs edit access to it, and takes cards of that board only. Without one, or with null, it spans boards, and may be changed afterwards by its creator and by an administrator.',
+				operationId: 'createMilestone',
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['name'],
+								properties: {
+									name: { type: 'string', minLength: 1, maxLength: 200, description: 'Milestone name: text, trimmed, of 1 to 200 characters' },
+									boardId: { type: ['integer', 'null'], minimum: 1, description: 'The board the milestone belongs to. Leave out, or send null, for one that spans boards.' },
+									description: { type: 'string', maxLength: 50000, description: 'Default: an empty string' },
+									targetDate: {
+										type: ['string', 'null'],
+										format: 'date',
+										description: 'The day the milestone is meant to be reached: a day of the calendar written YYYY-MM-DD. null, or empty text, for none. Until 2026-10-14 any text was stored.'
+									}
+								}
+							},
+							example: { name: 'Security hardening', description: 'Everything the audit of September raised', targetDate: '2026-12-01' }
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'The milestone, as it was created',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Milestone' },
+								example: {
+									id: 17,
+									boardId: null,
+									name: 'Security hardening',
+									description: 'Everything the audit of September raised',
+									targetDate: '2026-12-01',
+									status: 'open',
+									createdBy: 2,
+									createdAt: '2026-10-01 08:15:00',
+									updatedAt: '2026-10-01 08:15:00'
+								}
+							}
+						}
+					},
+					'400': {
+						description: 'No name, a name that is empty or over 200 characters, a description over 50000, a targetDate that is not a day written YYYY-MM-DD, a field of the wrong type (`name must be text`, `boardId must be an id`), or a body that is missing, is not valid JSON or is not an object. With boardId, the board is looked for and access checked before the other fields are read. Nothing was created.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'name is required' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'With boardId only: no edit access to that board. Nothing was created.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to that board' } } }
+					},
+					'404': {
+						description: 'With boardId only: there is no such board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/milestones/{milestoneId}': {
+			get: {
+				tags: ['Milestones'],
+				summary: 'Get a milestone',
+				description:
+					'Returns one milestone with the cards in it, archived cards left out. A card on a board the key\'s user cannot open is listed withheld, with `withheld` true. ' +
+					'For the order the work must be done in, what can be started and what is waiting, ask for its summary.',
+				operationId: 'getMilestone',
+				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
+				responses: {
+					'200': {
+						description: 'The milestone and its cards',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/MilestoneDetail' },
+								example: {
+									id: 17,
+									boardId: null,
+									name: 'Security hardening',
+									description: 'Everything the audit of September raised',
+									targetDate: '2026-12-01',
+									status: 'open',
+									createdBy: 2,
+									createdAt: '2026-10-01 08:15:00',
+									updatedAt: '2026-10-01 08:15:00',
+									cards: [{ id: 1686, title: 'Rotate the signing keys', priority: 'high', columnId: 3, columnTitle: 'In Progress', boardId: 1, withheld: false }]
+								}
+							}
+						}
+					},
+					'400': {
+						description: 'milestoneId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid milestone ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The key\'s user cannot see this milestone: the board it belongs to, or for one that spans boards a board one of its cards is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this milestone' } } }
+					},
+					'404': {
+						description: 'There is no such milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			},
+			patch: {
+				tags: ['Milestones'],
+				summary: 'Update a milestone',
+				description:
+					'Changes the fields that are sent and leaves the rest: at least one of the five. The milestone is looked for and access checked before a field is read, and a value it already holds, sent back unchanged, is accepted as it is. A milestone that belongs to a board is changed by whoever can edit that board; ' +
+					'one that spans boards by its creator and by an administrator.\n\n' +
+					'`status` closes a milestone and opens it again, and does nothing to its cards. `boardId` gives the milestone to a board, which needs edit access to that board, ' +
+					'or with null makes it span boards. The cards already in it stay in it, whichever board they are on.',
+				operationId: 'updateMilestone',
+				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								properties: {
+									name: { type: 'string', minLength: 1, maxLength: 200, description: 'Text, trimmed, and not empty' },
+									description: { type: 'string', maxLength: 50000 },
+									targetDate: { type: ['string', 'null'], format: 'date', description: 'A day of the calendar written YYYY-MM-DD. null or an empty string clears it. Until 2026-10-14 any text was stored.' },
+									status: { type: 'string', enum: ['open', 'closed'] },
+									boardId: { type: ['integer', 'null'], minimum: 1, description: 'The board the milestone belongs to, or null for one that spans boards. An id: anything else is 400 boardId must be an id.' }
+								}
+							},
+							example: { status: 'closed' }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'The milestone, as it is after the change',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Milestone' },
+								example: {
+									id: 17,
+									boardId: null,
+									name: 'Security hardening',
+									description: 'Everything the audit of September raised',
+									targetDate: '2026-12-01',
+									status: 'closed',
+									createdBy: 2,
+									createdAt: '2026-10-01 08:15:00',
+									updatedAt: '2026-10-13T09:41:07.000Z'
+								}
+							}
+						}
+					},
+					'400': {
+						description:
+							'None of the five fields was sent, a field of the wrong type (`name must be text`, `boardId must be an id`), the name is empty or over 200 characters, a description over 50000, ' +
+							'a targetDate that is not a day written YYYY-MM-DD, status is neither open nor closed, milestoneId is not a whole number of 1 or more, ' +
+							'or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The key\'s user cannot see or cannot change this milestone, or cannot edit the board sent as boardId. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
+					},
+					'404': {
+						description: 'There is no such milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			},
+			delete: {
+				tags: ['Milestones'],
+				summary: 'Delete a milestone',
+				description:
+					'Permanently deletes the milestone and keeps the work. Every card in it, archived cards included, is left with no milestone, and none is deleted or changed in any other way. ' +
+					'The answer says how many cards were released. The milestone goes and its cards are released together, or neither happens.',
+				operationId: 'deleteMilestone',
+				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
+				responses: {
+					'200': {
+						description: 'Deleted, and its cards released',
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									properties: {
+										success: { type: 'boolean' },
+										cardsReleased: { type: 'integer', description: 'How many cards were in the milestone and now have none' }
+									},
+									required: ['success', 'cardsReleased']
+								},
+								example: { success: true, cardsReleased: 12 }
+							}
+						}
+					},
+					'400': {
+						description: 'milestoneId is not a whole number of 1 or more. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid milestone ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The key\'s user cannot see or cannot change this milestone. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
+					},
+					'404': {
+						description: 'There is no such milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/milestones/{milestoneId}/cards': {
+			post: {
+				tags: ['Milestones'],
+				summary: 'Put a card into a milestone',
+				description:
+					'Puts one card into the milestone. A card is in one milestone at most, so a card that is in another is moved into this one and is not refused. ' +
+					'Needs edit access to the card\'s board, and the right to change the milestone, and the right to change the milestone the card leaves, if it is in another: until 2026-10-14 it was moved whoever asked. ' +
+					'A milestone that belongs to a board takes cards of that board only. ' +
+					'An archived card is refused, `Card does not exist or is archived`, as the bulk operation refuses one: until 2026-10-14 it was put in.\n\n' +
+					'The same can be done by sending `milestoneId` when updating the card. For several cards at once use the bulk operation.',
+				operationId: 'addCardToMilestone',
+				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['cardId'],
+								properties: {
+									cardId: { type: 'integer', minimum: 1, description: 'The card to put into the milestone' }
+								}
+							},
+							example: { cardId: 1686 }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'The card is in the milestone',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/CardMilestoneChange' },
+								example: { cardId: 1686, milestoneId: 17, boardId: 1 }
+							}
+						}
+					},
+					'400': {
+						description:
+							'No cardId, one that is not an id (`cardId must be an id`), a milestone that belongs to one board and a card that is on another, an archived card (`Card does not exist or is archived`), milestoneId is not a whole number of 1 or more, ' +
+							'or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { message: 'That milestone belongs to a single board. Make it cross-board first, or move the card.' }
 							}
 						}
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { description: 'Admin access required' }
+					'403': {
+						description: 'No edit access to the card\'s board, or the key\'s user cannot see or cannot change this milestone, or the one the card is in. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this card\'s board' } } }
+					},
+					'404': {
+						description: 'There is no such card, or no such milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			},
+			delete: {
+				tags: ['Milestones'],
+				summary: 'Take a card out of a milestone',
+				description:
+					'Leaves one card with no milestone. The card is not changed in any other way. Needs the right to change this milestone, and edit access to the card\'s board.\n\n' +
+					'The card must be in this milestone: a card in another, or in none, is 404 `Card is not in this milestone`. Until 2026-10-14 a card in another milestone was taken out of that one, ' +
+					'and a card in none was answered as a success. The same rule holds for `milestoneId: null` on PUT /cards/{cardId}: taking a card out needs the right to change the milestone it is in.',
+				operationId: 'removeCardFromMilestone',
+				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['cardId'],
+								properties: {
+									cardId: { type: 'integer', minimum: 1, description: 'The card to take out' }
+								}
+							},
+							example: { cardId: 1686 }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'The card has no milestone',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/CardMilestoneChange' },
+								example: { cardId: 1686, milestoneId: null, boardId: 1 }
+							}
+						}
+					},
+					'400': {
+						description: 'No cardId, one that is not an id (`cardId must be an id`), milestoneId is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'cardId is required' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The key\'s user cannot see this milestone (`No access to this milestone`, as for one with cards on a board they cannot open) or cannot change it (`No edit access to this milestone`), or has no edit access to the card\'s board. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
+					},
+					'404': {
+						description: 'There is no such milestone, or no such card, or the card is not in this milestone (`Card is not in this milestone`). Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card not found' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/milestones/{milestoneId}/cards/bulk': {
+			post: {
+				tags: ['Milestones'],
+				summary: 'Put many cards into a milestone',
+				description:
+					'Puts up to 500 cards into the milestone in one request. Needs the right to change the milestone, and edit access to the board of every card. ' +
+					'A milestone that belongs to a board takes cards of that board only.\n\n' +
+					'**All or nothing.** Every card is checked before any is attached. If one is refused none is attached, the cards that were acceptable included, ' +
+					'and the answer is a 409 that lists every card at fault. A card that does not exist, and a card on a board the key\'s user cannot edit, are reasons in that 409 and not a 404 or a 403. ' +
+					'An archived card is refused, here as by the single-card operation.\n\n' +
+					'A card that is already in the milestone is not a fault: it is skipped and counted, so the same batch can be sent twice. ' +
+					'A card that is in another milestone is moved, and the answer names each one that was. Moving it takes it out of that milestone, so it needs the right to change that one too: ' +
+					'a card in one the key\'s user cannot change is a reason in the 409, `No edit access to milestone #<id>, which holds card #<n>`. An id sent twice is counted once.\n\n' +
+					'When the batch puts the first cards into a milestone that had none, and email is set up, the people assigned to those cards and the administrators are told by email that a plan was created. ' +
+					'A failure to send it changes neither the cards nor the answer.',
+				operationId: 'addCardsToMilestone',
+				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['cardIds'],
+								properties: {
+									cardIds: { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 500, description: 'The cards to put into the milestone' }
+								}
+							},
+							example: { cardIds: [1686, 1559, 1444] }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Every card of the batch is in the milestone',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/MilestoneCardsAttached' },
+								example: {
+									milestoneId: 17,
+									attached: 3,
+									skippedAlreadyIn: 0,
+									movedFromOtherGoal: [{ cardId: 1444, title: 'Rotate the signing keys', fromMilestoneId: 12 }],
+									boardsTouched: [1, 4]
+								}
+							}
+						}
+					},
+					'400': {
+						description:
+							'cardIds is not an array, is empty, has more than 500 entries or has an entry that is not an id (`cardIds[<n>] must be an id`, where null was read as card 0); milestoneId is not a whole number of 1 or more; ' +
+							'or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'cardIds must be an array of card ids' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The key\'s user cannot see or cannot change this milestone. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
+					},
+					'404': {
+						description: 'There is no such milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
+					},
+					'409': {
+						description: 'At least one card cannot be put into the milestone. No card was attached, and every card at fault is listed with the reason.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/MilestoneCardsRejected' },
+								example: {
+									message: 'Batch rejected — nothing was written',
+									attached: 0,
+									problems: [{ cardId: 1444, reason: 'Card does not exist or is archived' }],
+									wouldAttach: 2,
+									wouldSkipAlreadyIn: 0
+								}
+							}
+						}
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			},
+			delete: {
+				tags: ['Milestones'],
+				summary: 'Take many cards out of a milestone',
+				description:
+					'Leaves up to 500 cards with no milestone in one request. The cards are not changed in any other way. ' +
+					'Needs the right to change the milestone, and edit access to the board of every card.\n\n' +
+					'**All or nothing.** Every card is checked before any is taken out. If one is refused none is taken out, and the answer is a 409 that lists every card at fault: ' +
+					'one that does not exist or is archived, and one on a board the key\'s user cannot edit.\n\n' +
+					'A card that is not in this milestone is not a fault: it is skipped and counted, and stays in whatever milestone it is in.',
+				operationId: 'removeCardsFromMilestone',
+				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['cardIds'],
+								properties: {
+									cardIds: { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 500, description: 'The cards to take out of the milestone' }
+								}
+							},
+							example: { cardIds: [1686, 1559, 1444] }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'No card of the batch is in the milestone',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/MilestoneCardsDetached' },
+								example: { milestoneId: 17, detached: 2, skippedNotInMilestone: 1, boardsTouched: [1] }
+							}
+						}
+					},
+					'400': {
+						description:
+							'cardIds is not an array, is empty, has more than 500 entries or has an entry that is not an id (`cardIds[<n>] must be an id`, where null was read as card 0); milestoneId is not a whole number of 1 or more; ' +
+							'or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'cardIds must be an array of card ids' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The key\'s user cannot see or cannot change this milestone. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
+					},
+					'404': {
+						description: 'There is no such milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
+					},
+					'409': {
+						description: 'At least one card cannot be taken out. No card was detached, and every card at fault is listed with the reason.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/MilestoneCardsDetachRejected' },
+								example: {
+									message: 'Batch rejected — nothing was written',
+									detached: 0,
+									problems: [{ cardId: 1444, reason: 'No edit access to the board holding card #1444' }]
+								}
+							}
+						}
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/milestones/{milestoneId}/summary': {
+			get: {
+				tags: ['Milestones'],
+				summary: 'Get a milestone\'s plan',
+				description:
+					'The whole plan of a milestone in one answer, which is what to ask for when the question is what to work on next: how far the milestone has got, ' +
+					'the order its work must be done in, the critical path, what can be started now and what is waiting, and on what. ' +
+					'It is worked out from the dependency links between the milestone\'s cards and their subtasks. Work outside the milestone that something in it waits on is shown too, marked `external`.\n\n' +
+					'`compact=true` leaves out `graph`, which is the bulk of the answer and is needed only to draw the plan, and gives `cardTitles` and `subtaskTitles` in its place.',
+				operationId: 'getMilestoneSummary',
+				parameters: [
+					{ $ref: '#/components/parameters/milestoneId' },
+					{
+						name: 'compact',
+						in: 'query',
+						schema: { type: 'boolean', default: false },
+						description: 'true leaves out `graph` and adds `cardTitles` and `subtaskTitles`. Anything but the text true is read as false.'
+					}
+				],
+				responses: {
+					'200': {
+						description: 'The milestone\'s plan',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/MilestoneSummary' } }
+						}
+					},
+					'400': {
+						description: 'milestoneId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid milestone ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The key\'s user cannot see this milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this milestone' } } }
+					},
+					'404': {
+						description: 'There is no such milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/milestones/{milestoneId}/pdf': {
+			get: {
+				tags: ['Milestones'],
+				summary: 'Get a milestone\'s plan as a PDF',
+				description:
+					'The milestone\'s plan as a PDF file: the document the planning view\'s download button produces, made from the same summary. ' +
+					'The answer is the file itself and not JSON, sent as a download named plan-<name>-<date>.pdf. A failure is answered as JSON, as everywhere else.',
+				operationId: 'getMilestonePdf',
+				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
+				responses: {
+					'200': {
+						description: 'The PDF file',
+						headers: {
+							'Content-Disposition': {
+								description: 'attachment, with the file name: plan-<the milestone\'s name>-<today, YYYY-MM-DD>.pdf',
+								schema: { type: 'string' }
+							}
+						},
+						content: {
+							'application/pdf': { schema: { type: 'string', format: 'binary' } }
+						}
+					},
+					'400': {
+						description: 'milestoneId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid milestone ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The key\'s user cannot see this milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this milestone' } } }
+					},
+					'404': {
+						description: 'There is no such milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		// ─── Tokens ─────────────────────────────────────────────────────────
+		'/api/v1/cards/{cardId}/tokens': {
+			get: {
+				tags: ['Tokens'],
+				summary: 'Get what a card has cost',
+				description:
+					'Returns what the card has cost in tokens so far, the entries on its subtasks counted in, with every entry behind the figure. ' +
+					'A card nobody has reported on is answered with `recorded` false and `entries` 0. That means not recorded, which is not a cost of zero: show it as unknown.',
+				operationId: 'getCardTokens',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				responses: {
+					'200': {
+						description: 'The card\'s totals and entries',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/CardTokens' },
+								example: {
+									cardId: 1713,
+									recorded: true,
+									total: 62000,
+									direct: 52900,
+									fromSubtasks: 9100,
+									entries: 2,
+									byModel: [
+										{ model: 'claude-opus-5', tokens: 52900 },
+										{ model: 'claude-sonnet-5', tokens: 9100 }
+									],
+									costUsd: 0.09548,
+									costExact: false,
+									unpricedTokens: 0,
+									apiCalls: null,
+									entryList: [
+										{
+											id: 312,
+											cardId: null,
+											subtaskId: 3471,
+											subtaskTitle: 'Verify on UAT',
+											tokens: 9100,
+											model: 'claude-sonnet-5',
+											inputTokens: null,
+											outputTokens: null,
+											cacheReadTokens: null,
+											cacheWrite5mTokens: null,
+											cacheWrite1hTokens: null,
+											apiCalls: null,
+											note: 'verification',
+											createdAt: '2026-10-13 10:02:31'
+										},
+										{
+											id: 311,
+											cardId: 1713,
+											subtaskId: null,
+											subtaskTitle: null,
+											tokens: 52900,
+											model: 'claude-opus-5',
+											inputTokens: 1200,
+											outputTokens: 900,
+											cacheReadTokens: 48000,
+											cacheWrite5mTokens: 2800,
+											cacheWrite1hTokens: 0,
+											apiCalls: 14,
+											note: 'applied the fix',
+											createdAt: '2026-10-13 09:41:07'
+										}
+									]
+								}
+							}
+						}
+					},
+					'400': {
+						description: 'cardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to the board the card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': { $ref: '#/components/responses/NotFound' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			},
+			post: {
+				tags: ['Tokens'],
+				summary: 'Add to what a card has cost',
+				description:
+					'Adds one entry to the card\'s record of what it cost. It adds and never replaces: report as the work goes and the total climbs, ' +
+					'and two callers on the same card can each report their own without knowing what the other spent. ' +
+					'To correct an over-report send a negative `tokens`, which leaves the first entry to be seen. Sending the same request twice adds the tokens twice.\n\n' +
+					'**The breakdown.** `inputTokens`, `outputTokens` and the three cache fields say what the tokens were. They are priced very differently, so the cost is exact only with them. ' +
+					'If any of the five is sent, `inputTokens` and `outputTokens` must both be, and those sent must add up to `tokens`: a cache field left out counts as 0. ' +
+					'For a negative entry they are sent as positive numbers that add up to its size.\n\n' +
+					'**Limits.** `tokens` is a whole number and not 0, sent as a number and not as text, and 10,000,000,000 at most either way. ' +
+					'With `apiCalls`, no more than 1,200,000 tokens to a call: more means a running total was sent, and it is refused.\n\n' +
+					'Needs edit access to the card\'s board. An archived card can still be reported on. The body is checked before the card is looked for, ' +
+					'so a body at fault sent to a card that does not exist is answered 400.',
+				operationId: 'addCardTokens',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['tokens'],
+								properties: {
+									tokens: { type: 'integer', format: 'int64', description: 'How many tokens this entry adds. Negative to correct an earlier entry. Not 0.' },
+									model: { type: 'string', maxLength: 80, description: 'The model that spent them, by its id. Without it the entry cannot be priced.' },
+									note: { type: 'string', maxLength: 500, description: 'What the entry covers' },
+									apiCalls: { type: 'integer', minimum: 0, description: 'How many calls of the model the entry covers' },
+									inputTokens: { type: 'integer', format: 'int64', minimum: 0, description: 'Of the tokens, fresh input' },
+									outputTokens: { type: 'integer', format: 'int64', minimum: 0, description: 'Of the tokens, output' },
+									cacheReadTokens: { type: 'integer', format: 'int64', minimum: 0, description: 'Of the tokens, read from the cache' },
+									cacheWrite5mTokens: { type: 'integer', format: 'int64', minimum: 0, description: 'Of the tokens, written to the 5-minute cache' },
+									cacheWrite1hTokens: { type: 'integer', format: 'int64', minimum: 0, description: 'Of the tokens, written to the 1-hour cache' }
+								}
+							},
+							example: {
+								tokens: 52900,
+								model: 'claude-opus-5',
+								note: 'applied the fix',
+								apiCalls: 14,
+								inputTokens: 1200,
+								outputTokens: 900,
+								cacheReadTokens: 48000,
+								cacheWrite5mTokens: 2800,
+								cacheWrite1hTokens: 0
+							}
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'The entry is recorded. Its id, and the card\'s totals with it counted.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/TokenRecorded' },
+								example: {
+									entryId: 311,
+									cardId: 1713,
+									recorded: true,
+									total: 52900,
+									direct: 52900,
+									fromSubtasks: 0,
+									entries: 1,
+									byModel: [{ model: 'claude-opus-5', tokens: 52900 }],
+									costUsd: 0.07,
+									costExact: true,
+									unpricedTokens: 0,
+									apiCalls: 14
+								}
+							}
+						}
+					},
+					'400': {
+						description:
+							'`tokens` is missing, is not a number, is not whole, is 0 or is beyond a limit; `model` or `note` is not text or is too long; `apiCalls` or a field of the breakdown is not a whole number or is negative; ' +
+							'the breakdown lacks `inputTokens` or `outputTokens`, or does not add up to `tokens`; cardId is not a whole number of 1 or more; or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { message: 'The breakdown sums to 50100 but tokens is 52900. Every component must be included and they must add up.' }
+							}
+						}
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to the card\'s board. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the board holding card #1713' } } }
+					},
+					'404': {
+						description: 'There is no such card',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card #1713 does not exist' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/subtasks/{subtaskId}/tokens': {
+			post: {
+				tags: ['Tokens'],
+				summary: 'Add to what a subtask has cost',
+				description:
+					'Adds one entry to what a subtask cost. A subtask is one step of a card, so this is where to report a step as it is ticked off. ' +
+					'An entry on a subtask counts towards its card, so a card whose work is all in subtasks needs no entry of its own. ' +
+					'The answer gives the card\'s total, not the subtask\'s.\n\n' +
+					'The body, its breakdown, its limits and its refusals are those of an entry added to a card. Needs edit access to the board the subtask\'s card is on.',
+				operationId: 'addSubtaskTokens',
+				parameters: [{ $ref: '#/components/parameters/subtaskId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['tokens'],
+								properties: {
+									tokens: { type: 'integer', format: 'int64', description: 'How many tokens this entry adds. Negative to correct an earlier entry. Not 0.' },
+									model: { type: 'string', maxLength: 80, description: 'The model that spent them, by its id. Without it the entry cannot be priced.' },
+									note: { type: 'string', maxLength: 500, description: 'What the entry covers' },
+									apiCalls: { type: 'integer', minimum: 0, description: 'How many calls of the model the entry covers' },
+									inputTokens: { type: 'integer', format: 'int64', minimum: 0, description: 'Of the tokens, fresh input' },
+									outputTokens: { type: 'integer', format: 'int64', minimum: 0, description: 'Of the tokens, output' },
+									cacheReadTokens: { type: 'integer', format: 'int64', minimum: 0, description: 'Of the tokens, read from the cache' },
+									cacheWrite5mTokens: { type: 'integer', format: 'int64', minimum: 0, description: 'Of the tokens, written to the 5-minute cache' },
+									cacheWrite1hTokens: { type: 'integer', format: 'int64', minimum: 0, description: 'Of the tokens, written to the 1-hour cache' }
+								}
+							},
+							example: { tokens: 9100, model: 'claude-sonnet-5', note: 'verification' }
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'The entry is recorded',
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									properties: {
+										entryId: { type: 'integer', description: 'Id of the new entry: what DELETE /api/v1/tokens/{entryId} takes' },
+										subtaskId: { type: 'integer' },
+										cardId: { type: 'integer', description: 'The card the subtask belongs to' },
+										cardTotal: {
+											type: 'integer',
+											format: 'int64',
+											description: 'That card\'s total now, this entry and those of its other subtasks included'
+										},
+										recorded: { type: 'boolean' },
+										entries: { type: 'integer', description: 'How many entries make up the card\'s total' }
+									},
+									required: ['entryId', 'subtaskId', 'cardId', 'cardTotal', 'recorded', 'entries']
+								},
+								example: { entryId: 312, subtaskId: 3471, cardId: 1713, cardTotal: 62000, recorded: true, entries: 2 }
+							}
+						}
+					},
+					'400': {
+						description:
+							'As for an entry added to a card: `tokens`, `model`, `note`, `apiCalls` or the breakdown is at fault, subtaskId is not a whole number of 1 or more, ' +
+							'or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'tokens must not be zero — omit the call instead' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to the board the subtask\'s card is on. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the board holding subtask #3471' } } }
+					},
+					'404': {
+						description: 'There is no such subtask',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Subtask #3471 does not exist' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/tokens/{entryId}': {
+			delete: {
+				tags: ['Tokens'],
+				summary: 'Delete a token entry',
+				description:
+					'Removes one entry outright, as if it had never been made. It is for an entry that should not exist, one reported against the wrong card for instance. ' +
+					'For an over-report a negative entry is the better correction, because it leaves the first to be seen. ' +
+					'Needs edit access to the board of the card the entry counts towards. The answer gives that card\'s totals without the entry.',
+				operationId: 'deleteTokenEntry',
+				parameters: [{ $ref: '#/components/parameters/entryId' }],
+				responses: {
+					'200': {
+						description: 'The entry is removed',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/TokenEntryDeleted' },
+								example: {
+									deleted: 312,
+									cardId: 1713,
+									recorded: true,
+									total: 52900,
+									direct: 52900,
+									fromSubtasks: 0,
+									entries: 1,
+									byModel: [{ model: 'claude-opus-5', tokens: 52900 }],
+									costUsd: 0.07,
+									costExact: true,
+									unpricedTokens: 0,
+									apiCalls: 14
+								}
+							}
+						}
+					},
+					'400': {
+						description: 'entryId is not a whole number of 1 or more. Nothing was removed.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid entry ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to the board of the card the entry counts towards. Nothing was removed.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the board holding card #1713' } } }
+					},
+					'404': {
+						description: 'There is no such entry',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Token entry #312 does not exist' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/tokens/bulk': {
+			post: {
+				tags: ['Tokens'],
+				summary: 'Add many token entries',
+				description:
+					'Records up to 200 entries in one request, each on a card or on a subtask: an entry names exactly one of `cardId` and `subtaskId`, and is otherwise the body of a single entry. ' +
+					'A card\'s whole cost, step by step, is then one request and not one for each subtask.\n\n' +
+					'**All or nothing.** Every entry is checked before any is written. If one is refused none is written, the entries that were acceptable included, ' +
+					'and the answer is a 409 that lists every entry at fault by its place in the list. A card or subtask that does not exist, and one on a board the key\'s user cannot edit, ' +
+					'are reasons in that 409: this operation answers no 404 and no 403.\n\n' +
+					'**Not safe to send twice.** Entries add up, so the same batch sent again adds the tokens again. Report each step once.',
+				operationId: 'addTokenEntries',
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['entries'],
+								properties: {
+									entries: {
+										type: 'array',
+										minItems: 1,
+										maxItems: 200,
+										items: {
+											type: 'object',
+											description: 'Exactly one of `cardId` and `subtaskId`, and `tokens`. The rest are as for a single entry.',
+											required: ['tokens'],
+											properties: {
+												cardId: { type: 'integer', description: 'The card the entry is on' },
+												subtaskId: { type: 'integer', description: 'The subtask the entry is on' },
+												tokens: { type: 'integer', format: 'int64', description: 'How many tokens this entry adds. Negative to correct an earlier entry. Not 0.' },
+												model: { type: 'string', maxLength: 80 },
+												note: { type: 'string', maxLength: 500 },
+												apiCalls: { type: 'integer', minimum: 0 },
+												inputTokens: { type: 'integer', format: 'int64', minimum: 0 },
+												outputTokens: { type: 'integer', format: 'int64', minimum: 0 },
+												cacheReadTokens: { type: 'integer', format: 'int64', minimum: 0 },
+												cacheWrite5mTokens: { type: 'integer', format: 'int64', minimum: 0 },
+												cacheWrite1hTokens: { type: 'integer', format: 'int64', minimum: 0 }
+											}
+										}
+									}
+								}
+							},
+							example: {
+								entries: [
+									{ cardId: 1713, tokens: 18400, model: 'claude-opus-5', note: 'planning' },
+									{ subtaskId: 3471, tokens: 9100, model: 'claude-sonnet-5' }
+								]
+							}
+						}
+					}
+				},
+				responses: {
+					'201': {
+						description: 'Every entry of the batch is recorded',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/TokenBatchRecorded' },
+								example: { written: 2, boardsTouched: [1], cardTotals: [{ cardId: 1713, total: 27500, entries: 2 }] }
+							}
+						}
+					},
+					'400': {
+						description: '`entries` is not an array, is empty, has more than 200 entries or has an entry that is not an object (`entries[<n>] must be an object`, which was a 500), or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'entries must be an array' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'409': {
+						description: 'At least one entry cannot be recorded. No entry was written, and every entry at fault is listed with the reason.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/TokenBatchRejected' },
+								example: {
+									message: 'Batch rejected — nothing was written',
+									written: 0,
+									problems: [{ index: 1, reason: 'Subtask #3471 does not exist' }]
+								}
+							}
+						}
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		// ─── Reports ────────────────────────────────────────────────────────
+		'/api/v1/reports/activity': {
+			get: {
+				tags: ['Reports'],
+				summary: 'Get an activity report',
+				description:
+					'Everything a management report of a period needs, in one answer: the cards that were completed, closed with nothing built, moved on, put on hold or raised in the window, ' +
+					'board by board, each with its reporting fields, and the milestones that moved. With no parameters it is the last 30 days, for everyone, on every board the key\'s user can see.\n\n' +
+					'A card is completed in the window by its own completion date, not by the activity log. Boards the key\'s user cannot see are left out, and `meta.boardsExcludedForAccess` says how many were. ' +
+					'A report on one user holds the cards that user logged an action on or commented on in the window, raised, or is assigned to now. ' +
+					'A dependency added or removed is not counted as an action on a card, for the window or for a user: until 2026-10-14 the entries the API wrote for one were. ' +
+					'Anyone may ask for their own or for everyone\'s; a report on another user needs an administrator.',
+				operationId: 'getActivityReport',
+				parameters: [
+					{
+						name: 'userId',
+						in: 'query',
+						schema: { type: 'integer', minimum: 1 },
+						description: 'Report on this user\'s activity. Left out, the report is on everyone\'s.'
+					},
+					{
+						name: 'from',
+						in: 'query',
+						schema: { type: 'string' },
+						description:
+							'Start of the window, UTC: a date as YYYY-MM-DD, which is from the start of that day, or a full ISO time; a time with an offset, or with no zone, is read in UTC. ' +
+							'Default: 30 days before now. Anything else is 400 `from is not a date`: until 2026-10-14 it was not checked.'
+					},
+					{
+						name: 'to',
+						in: 'query',
+						schema: { type: 'string' },
+						description:
+							'End of the window, UTC: a date as YYYY-MM-DD, which is to the end of that day, or a full ISO time, read as `from` is. Default: now. Anything else is 400 `to is not a date`.'
+					},
+					{
+						name: 'boardIds',
+						in: 'query',
+						schema: { type: 'string' },
+						description: 'Comma-separated board ids, to report on those boards only. Left out, every board the key\'s user can see. Each is an id: one that is not is 400, where it was left out.'
+					},
+					{
+						name: 'include',
+						in: 'query',
+						schema: { type: 'string' },
+						description: 'More about each card: subtasks, comments, or both as subtasks,comments. Left out, a card has its subtask counts and neither list.'
+					},
+					{
+						name: 'commentLimit',
+						in: 'query',
+						schema: { type: 'integer', default: 3, minimum: 0, maximum: 20 },
+						description:
+							'With include=comments, how many of each card\'s most recent comments: a whole number. More than 20 is read as 20, and 0 gives each card an empty `comments` list. ' +
+							'A negative number, or one that is not whole, is 400. Until 2026-10-14 0 was read as 3, and a negative number left the key out.'
+					}
+				],
+				responses: {
+					'200': {
+						description: 'The report',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/ActivityReport' } }
+						}
+					},
+					'400': {
+						description: 'userId is not a whole number of 1 or more, from or to is not a date or a timestamp, from is after to, boardIds holds no id or an entry that is not one, or commentLimit is negative or not whole',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: '`from` is after `to`' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'userId is another user, and the key\'s user is not an administrator',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only an admin can report on another user' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/cards/{cardId}/board-history': {
+			get: {
+				tags: ['Reports'],
+				summary: 'Get the boards a card has been on',
+				description:
+					'Returns which board the card was on and when, oldest first, read back from the moves the activity log records. ' +
+					'A card that changes board appears in the audit log under both boards, and this is what says which it was on at the time of an entry.\n\n' +
+					'Needs view access to the board the card is on now. An earlier board the key\'s user cannot see is still listed, with its id and dates, and with "Board not visible to you" for its name.',
+				operationId: 'getCardBoardHistory',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				responses: {
+					'200': {
+						description: 'The card\'s stays on boards',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/CardBoardHistory' },
+								example: {
+									cardId: 1713,
+									history: [
+										{ boardId: 4, boardName: 'Backlog', from: '2026-09-02 11:20:45', to: '2026-09-18 14:03:10', current: false },
+										{ boardId: 1, boardName: 'Sprint 43', from: '2026-09-18 14:03:10', to: null, current: true }
+									]
+								}
+							}
+						}
+					},
+					'400': {
+						description: 'cardId is not a whole number',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to the board the card is on now',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this card\'s board' } } }
+					},
+					'404': { $ref: '#/components/responses/NotFound' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		// ─── This document ──────────────────────────────────────────────────
+		'/api/v1/openapi.json': {
+			get: {
+				tags: ['OpenAPI'],
+				summary: 'Get this document',
+				description:
+					'Returns the OpenAPI 3.1 description of this API, which is this document and what the /docs page is drawn from. ' +
+					'It is the one operation that needs no key: it is answered without an Authorization header, is counted against no rate limit, and so is never answered 401 or 429. ' +
+					'It may be read from a page of any origin, and may be kept for ten seconds by whatever fetches it.',
+				operationId: 'getOpenApiDocument',
+				security: [],
+				responses: {
+					'200': {
+						description: 'The document',
+						headers: {
+							'Cache-Control': { description: 'public, max-age=10', schema: { type: 'string' } },
+							'Access-Control-Allow-Origin': { description: '*', schema: { type: 'string' } }
+						},
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									description: 'An OpenAPI 3.1 document',
+									properties: {
+										openapi: { type: 'string', description: 'The version of OpenAPI the document is written in: 3.1.0' },
+										info: {
+											type: 'object',
+											properties: {
+												title: { type: 'string' },
+												version: { type: 'string', description: 'The version of this document, which changes when what it describes does' },
+												description: { type: 'string' },
+												contact: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] }
+											},
+											required: ['title', 'version', 'description', 'contact']
+										},
+										servers: { type: 'array', items: { type: 'object' } },
+										security: { type: 'array', items: { type: 'object' }, description: 'What every operation needs unless it says otherwise: a key' },
+										components: { type: 'object', description: 'The schemas, parameters and responses the operations refer to, and how a key is sent' },
+										paths: { type: 'object', description: 'Every operation, by path and method' },
+										tags: { type: 'array', items: { type: 'object' }, description: 'The groups the operations are listed under' }
+									},
+									required: ['openapi', 'info', 'servers', 'security', 'components', 'paths', 'tags']
+								}
+							}
+						}
+					},
+					'500': { $ref: '#/components/responses/InternalError' }
 				}
 			}
 		}
@@ -2128,12 +6200,24 @@ const spec = {
 		{ name: 'Comments', description: 'Card discussion comments' },
 		{ name: 'Labels', description: 'Board labels for tagging cards' },
 		{ name: 'Card Labels', description: 'Label assignments on cards' },
-		{ name: 'Dependencies', description: 'Card-to-card dependencies' },
+		{
+			name: 'Dependencies',
+			description:
+				'What a card or a subtask waits on and what waits on it. Either end of a link can be a card or a subtask, on any board. One link at a time from the card or the subtask, or many in one request.'
+		},
+		{
+			name: 'Milestones',
+			description:
+				'Goals that cards belong to, on one board or across several, and the plan of each: the order of its work, its critical path, what can be started and what is waiting'
+		},
+		{ name: 'Tokens', description: 'What work cost in tokens, recorded entry by entry on a card or a subtask and added up on the card' },
 		{ name: 'Categories', description: 'Card categories (per-board tags for cards)' },
 		{ name: 'Board Categories', description: 'Dashboard categories for grouping boards' },
 		{ name: 'Webhooks', description: 'Webhook subscriptions for board events' },
 		{ name: 'Burndown', description: 'Remaining work over time, with a forecast, for any board, group, milestone or filter' },
-		{ name: 'Audit', description: 'Activity audit log' }
+		{ name: 'Audit', description: 'Activity audit log' },
+		{ name: 'Reports', description: 'The activity report for a period, and which board a card was on when' },
+		{ name: 'OpenAPI', description: 'This document, which the /docs page is drawn from. Needs no key.' }
 	]
 };
 

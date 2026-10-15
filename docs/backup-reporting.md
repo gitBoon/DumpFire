@@ -1,9 +1,9 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.2
+version: 1.11
 status: As-Built
-date: 2026-09-30
+date: 2026-10-15
 tags:
   - backup
   - reports
@@ -48,6 +48,18 @@ flowchart TD
     LogResult -->|"Failed"| NotifyEmail["Send failure email\nif configured"]
 ```
 
+### What a Backup Holds
+
+A backup is the database file and nothing else. Files attached to cards are stored on
+disk, in the `uploads` folder beside the database, and are in no backup this system makes.
+They have to be backed up separately: see
+[Deployment](deployment.md#attachment-files).
+
+So that a restored database is not left without its files, the attachment files of a
+deleted card are not removed with it. They are moved to a trash folder inside `uploads`
+and kept for 30 days, and Import Backup puts back any file in the trash that a restored
+attachment names.
+
 ### Schedule Options
 
 | Schedule | Mechanism | Description |
@@ -75,26 +87,64 @@ Stored as JSON in the `settings` table under key `backup_config`:
 }
 ```
 
+`PUT /api/admin/backup` writes what it is sent over this and keeps the rest, and `{}` is
+`400 No valid fields to update` (card 2117). A save of part of the settings used to write
+the defaults over the rest, and `{}` switched the schedule off and deleted every
+destination. Each field is read by its rule: `schedule` one of the six above,
+`scheduleTime` `HH:MM` (empty is 02:00), `scheduleDay` 0 to 6, `retention` 1 to 100,
+`notifyOnFailure` `true` or `false`, `notifyEmail` one address or more, separated by
+commas, semicolons or lines and stored separated by commas, or empty. Each destination is
+a text `name`, a `type` of `sftp`, `s3`, `gdrive` or `onedrive`, and the fields of its
+type (`readDestination()` in `src/lib/server/backup-destinations.ts`); any other field is
+not kept, and a secret sent back masked is the one stored under that name. An SFTP `port`
+is a whole number from 1 to 65535, or `null`, which connects to 22.
+
 ### Backup Data Generation
 
-Uses SQLite's `VACUUM INTO` command to create a self-contained snapshot:
+`generateBackupData()` in `src/lib/server/backup.ts` makes the one copy that both a
+scheduled backup and "Export Backup" send. It uses SQLite's `VACUUM INTO` twice: once to
+take a self-contained snapshot of the running database, and once to write out again a copy
+that has been cleared of what signs somebody in (`withoutSignIns()`):
 
 ```mermaid
 sequenceDiagram
-    participant Scheduler
-    participant SQLite
+    participant Backup as generateBackupData
+    participant Live as Running database
+    participant Copy as Copy (no journal)
     participant FS as Filesystem
 
-    Scheduler->>FS: Remove stale temp file
-    Scheduler->>SQLite: VACUUM INTO 'path.backup-temp'
-    Note over SQLite: Creates complete copy\nincluding WAL data
-    Scheduler->>FS: readFileSync temp file
-    FS-->>Scheduler: Buffer
-    Scheduler->>FS: Delete temp file
-    Scheduler-->>Scheduler: Return Buffer
+    Backup->>FS: Remove stale temp files
+    Backup->>Live: VACUUM INTO '<db>.backup-temp'
+    Note over Live: Complete copy,<br/>including WAL data
+    Backup->>Copy: Open '<db>.backup-temp'
+    Copy->>Copy: Mask tokens in system_logs (maskSecretsInLog)
+    Copy->>Copy: DELETE FROM sessions
+    Copy->>Copy: DELETE FROM invite_tokens WHERE used = 0
+    Backup->>Copy: VACUUM INTO '<db>.backup-temp-cleared'
+    Note over Copy: Written out again, so nothing<br/>deleted is left in the file
+    Backup->>FS: readFileSync '<db>.backup-temp-cleared'
+    FS-->>Backup: Buffer
+    Backup->>FS: Delete both temp files (and any -journal, -wal, -shm)
+    Backup-->>Backup: Return Buffer
 ```
 
-This approach ensures the backup includes all WAL data — a raw file copy would miss unflushed writes.
+- **The snapshot includes all WAL data.** A raw file copy would miss unflushed writes.
+- **No session and no unused invite is in the file**, and its system log is masked: every
+  invite's address written as `/invite/[token]`, the token of every unused invite replaced
+  wherever a line holds it, and a request link's `token=` masked. The running database is
+  not touched by a backup. Deleting the rows alone is not enough, because the pages they
+  were on stay in the file until it is written again; hence the second `VACUUM INTO`.
+- **The server answers nothing while it runs.** Every step is synchronous, from the first
+  `VACUUM INTO` to the read: see "How long the server stops answering" under
+  [Backup Destinations](deployment.md#backup-destinations) in the deployment guide for the
+  figures, which are an estimate from parts.
+- **The two temporary files are beside the database**, on the volume, and are deleted
+  whether or not the backup succeeds. A database in memory has nothing beside it, so they
+  go to a folder of their own under the temp folder. A crash can leave them behind; the
+  first holds live sessions, which is why `.gitignore` and `.dockerignore` keep both out.
+
+See [What a Backup Holds](authentication-security.md#what-a-backup-holds-and-what-a-restore-brings-in)
+for why, and what a restore brings in.
 
 ### Destination Types
 
@@ -130,7 +180,7 @@ After each successful upload, the system:
 
 ### Failure Notifications
 
-If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details.
+If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details. The destination's name and type and the error text, which is whatever the destination's server answered, are escaped where they are put into the mail, so markup in them is shown as text and never drawn (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
 
 ---
 
@@ -174,6 +224,28 @@ flowchart TD
 
 Every scope walks into sub-boards recursively (`collectSubBoardIds`), so a board report includes the cards on its sub-boards and an all-boards report counts every card in the system.
 
+A report emailed by hand carries the board's or grouping's name and the sender's username, and a scheduled report the schedule's name. Each is escaped where it is put into the mail's HTML, so a name with markup in it reads as typed and draws nothing; the subject keeps the name as typed, because a subject is plain text (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
+
+A report asked for by hand (`POST /api/reports`, and `POST /api/reports/email` for the
+emailed one) reads its fields as a schedule does (card 2117): `scope` is `board`,
+`category` or `all`, where the emailed one read any other word as every board the sender
+can see; `periodStart` and `periodEnd` are a date or a timestamp, and `periodStart` is not
+after `periodEnd` (`periodStart is after periodEnd`; a bare date is the whole day, so a
+date to the same date is that day), where a period that ended before it began was drawn as
+a report of nothing; `scopeId` is an id;
+`detailLevel` and `statusFilter` are among their values, where another was read as
+`detailed` or `all`; and `assigneeUserId` is a user's id or `null` for everyone, where
+`"all"` and `''` were taken for everyone. Each of the emailed report's `recipients` is an
+address, `recipients[1] must be an email address`: one that was not used to be dropped
+without a word and the report sent to the rest.
+
+The emailed report's answer says what was sent (card 2113): `503` with no mail set up,
+before the PDF is built; `200` when every recipient was sent it; `200` naming the addresses
+not reached when some were; `502` when none was; each but the `503` with every recipient's
+result. The Reports page keeps the dialog open for a report not sent to everyone, with only
+the addresses not reached left in it. See
+[A Report Emailed on Demand](notifications-email.md#a-report-emailed-on-demand).
+
 ### Status Filter
 
 Every report (one-off, emailed and scheduled) carries a `statusFilter` that decides which slice of the scope is listed. Summary metrics always describe the whole scope — the filter only changes the task listings and the priority breakdown.
@@ -196,7 +268,7 @@ flowchart LR
     Todo -->|no| InProgress["in_progress"]
 ```
 
-A board with no recognisable To Do column still gets one: its left-most column that is not Done is treated as To Do. Unknown filter values fall back to `all` (`parseStatusFilter`), so existing schedules and hand-written API calls keep working.
+A board with no recognisable To Do column still gets one: its left-most column that is not Done is treated as To Do. A stored filter value it does not know falls back to `all` (`parseStatusFilter`), so an existing schedule keeps working. A request that sends one is refused, `400 statusFilter must be one of: all, completed, in_progress, todo`: until card 2117 it was read as `all`.
 
 When a filter other than `all` is active the PDF header carries the filter label and a **SHOWING** banner under the metric tiles states how many cards are in that slice.
 
@@ -252,37 +324,100 @@ Configured per-user via the Reports page:
 | `scopeId` | number | Board or category ID |
 | `frequency` | weekly/monthly | How often |
 | `dayOfWeek` | 0-6 | Day for weekly reports |
-| `dayOfMonth` | 1-31 | Day for monthly reports |
-| `timeOfDay` | HH:MM | When to generate |
-| `recipients` | comma-separated emails | Where to send |
-| `periodDays` | number | Lookback period in days |
+| `dayOfMonth` | 1-28 | Day for monthly reports |
+| `timeOfDay` | HH:MM, 00:00 to 23:59; empty is 09:00 | When to generate |
+| `recipients` | emails, each an address, sent separated by commas, semicolons or lines and stored separated by commas | Where to send |
+| `periodDays` | 1-366 | Lookback period in days |
 | `detailLevel` | summary/detailed | Metrics and listings only, or full descriptions, business value and subtasks |
 | `statusFilter` | all/completed/in_progress/todo | Which slice to list (see Status Filter); stored in `report_schedules.status_filter`, migration `0041` |
 | `enabled` | boolean | Active toggle |
 
 ### Schedule Execution
 
+Every minute the timer of `initReportScheduler()` calls `runDueReportSchedulesOnce(now)` in
+`src/lib/server/reports.ts`, with the time it is then, and that calls
+`runDueReportSchedules(now)` unless the last minute's run is still going. Both are exported
+so that the tests can call them with a time of their own; under test the timer is off
+(`SCHEDULERS=off`). A run takes each enabled schedule whose `nextRunAt` has come, as its
+owner: the report is built with the owner's access, as if they had asked for it.
+
+**One run at a time.** A run can take longer than the minute between ticks: about 35 seconds
+for each address a slow mail server holds up, and the PDF before that. A schedule's next run
+is written only once its mail has gone, so a tick that started while the last run was still
+sending found the same schedule due and sent its report a second time. A module flag now
+marks a run in progress: a tick that finds it set does nothing and answers `false`, and the
+flag is cleared in a `finally`, so a run that throws does not stop the scheduler. A schedule
+that came due during a run is still due at the next tick that runs.
+
 ```mermaid
 sequenceDiagram
     participant Timer as Scheduler Timer
+    participant Once as runDueReportSchedulesOnce(now)
+    participant Run as runDueReportSchedules(now)
     participant DB
     participant Engine as Report Engine
     participant SMTP
+    participant Log as System log (REPORTS)
 
-    Timer->>DB: Query due schedules\nwhere nextRunAt <= now
-    DB-->>Timer: Matching schedules
-    
-    loop Each schedule
-        Timer->>Engine: generateReport by scope + statusFilter
-        Engine->>DB: Query boards, cards, assignees
-        DB-->>Engine: Raw data
-        Engine->>Engine: Build ReportData
-        Engine->>Engine: Render PDF via PDFKit
-        Engine-->>Timer: PDF Buffer
-        Timer->>SMTP: Send to each recipient\nwith PDF attachment
-        Timer->>DB: Update lastRunAt, nextRunAt
+    Timer->>Once: every 60 s, with new Date()
+    alt the last tick's run is still going
+        Once-->>Timer: false, and nothing is run
+    else no run is going: the flag is set
+        Once->>Run: run
+        Run->>DB: Enabled schedules whose nextRunAt <= now
+        DB-->>Run: Matching schedules
+
+        loop Each schedule
+            Run->>Engine: generateReport by scope + statusFilter, as the owner
+            alt no report: none named, gone, or none the owner can read
+                Run->>Log: WARN produced no report, so nothing was sent: why
+            else a report
+                Engine->>DB: Query boards, cards, assignees
+                Engine->>Engine: Build ReportData, render the PDF via PDFKit
+                Engine-->>Run: PDF Buffer
+                loop Each recipient
+                    Run->>SMTP: sendEmailWithAttachment()
+                    SMTP-->>Run: true (sent) or false (not sent)
+                end
+                alt every recipient sent it
+                    Run->>Log: WARN emailed to N of N recipient(s)
+                else any not sent
+                    Run->>Log: ERROR not emailed to the addresses named,<br/>S of N reached, and why
+                end
+            end
+            Run->>DB: lastRunAt = now, nextRunAt = the next run
+        end
+        Run-->>Once: done
+        Once-->>Timer: true, the flag cleared (finally)
     end
 ```
+
+What the system log says, under the context `REPORTS` (card 2113). Each send's result is
+counted; it used to say "emailed to N recipient(s)" whatever the mail server answered, and
+nothing at all for a schedule that produced no report.
+
+| What happened | Level | Line |
+|---------------|-------|------|
+| Every recipient was sent it | `WARN` | `Scheduled report emailed: "<name>" to 3 of 3 recipient(s)` |
+| One or more were not | `ERROR` | `Scheduled report "<name>" was not emailed to b@example.com (2 of 3 recipient(s) reached). The mail server did not accept it: its reason is in the EMAIL line logged for each address. It is not sent again before its next run.` |
+| None could be, mail not being set up | `ERROR` | The same line, with `Mail is not set up on this server` as the reason. `email.ts` logs nothing of its own then |
+| No report: its board is gone, or its owner can no longer read it | `WARN` | `Scheduled report "<name>" produced no report, so nothing was sent: the board it covers (id 7) is gone, or the schedule's owner can no longer read it` |
+| No report: its grouping is gone, holds no board, or holds none its owner can read | `WARN` | `... produced no report, so nothing was sent: the grouping it covers (id 7) is gone, holds no board, or holds none the schedule's owner can read` |
+| No report: a board or grouping schedule that names none (`scopeId` empty) | `WARN` | `... produced no report, so nothing was sent: the schedule has no board` (`the schedule has no grouping` for a grouping) |
+| No report: a report on every board, and its owner is not an administrator | `WARN` | `... produced no report, so nothing was sent: a report on every board is for an administrator, and the schedule's owner is not one` |
+| No recipients | `WARN` | `Scheduled report generated but no recipients configured: "<name>"` |
+
+- **A schedule moves on to its next run whatever was sent.** `lastRunAt` and `nextRunAt` are
+  written after each of the cases above, and nothing is sent again before the next run: a
+  retry would mail the report a second time to everyone it did reach. A schedule with no
+  report also moves on, and goes on logging its `WARN` line at each run until it is mended
+  or deleted.
+- **A schedule whose report throws is tried again at the next minute.** An error while the
+  report or its PDF is made is logged at `ERROR`, `Failed to run scheduled report "<name>"`,
+  and the schedule is left as it was, so it is still due a minute later, and fails again.
+  Card 2144 is to settle it.
+- **The `WARN` lines are kept at the default level, `INFO`.** A server started with
+  `LOG_LEVEL=ERROR` keeps the `ERROR` lines only.
 
 ### Card Reports
 
@@ -299,5 +434,6 @@ Individual card reports can be generated for completion notifications. These inc
 |------|-------|---------|
 | `src/lib/server/backup.ts` | 374 | Backup scheduling, data generation, upload orchestration |
 | `src/lib/server/backup-destinations.ts` | ~400 | SFTP, S3, Google Drive, OneDrive destination implementations |
-| `src/lib/server/reports.ts` | ~1,430 | Report data collection, status filter, PDF rendering, schedule management |
+| `src/lib/server/reports.ts` | ~1,600 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()` and the timer's `runDueReportSchedulesOnce()` |
+| `src/routes/api/reports/email/+server.ts` | ~140 | A report emailed on demand, and its answer |
 | `src/lib/server/snapshots.ts` | ~85 | Daily card count snapshots for the CFD (burndowns use card timestamps) |

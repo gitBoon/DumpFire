@@ -8,23 +8,30 @@
 
 import type { CardType, ColumnType, CategoryType, LabelType, SortOption } from '$lib/types';
 import { PRIORITY_ORDER } from './constants';
+import { isHexColour } from '$lib/colours';
+import { isCompleteColumnTitle, isHoldColumnTitle } from '$lib/column-role';
 
 // ─── Column Status Helpers ───────────────────────────────────────────────────
 
 /**
- * Checks if a column is the "Complete" column by title convention.
- * Cards in this column are considered finished and trigger celebrations.
+ * Checks if a column holds finished cards.
+ * Cards in such a column are considered finished and trigger celebrations.
+ *
+ * Asks `$lib/column-role`, the same definition the server uses. This used to
+ * accept only "complete" while the server also accepted "done", so a card
+ * dragged into a "Done" column was completed by the server and not celebrated,
+ * greyed out or logged as a completion by the browser.
  */
-export function isCompleteColumn(col: ColumnType): boolean {
-	return col.title.toLowerCase() === 'complete';
+export function isCompleteColumn(col: Pick<ColumnType, 'title'>): boolean {
+	return isCompleteColumnTitle(col.title);
 }
 
 /**
- * Checks if a column title matches the "On Hold" convention.
- * Cards moved here prompt for a reason note.
+ * Checks if a column holds paused cards.
+ * Cards moved into one prompt for a reason note.
  */
 export function isOnHoldColumn(title: string): boolean {
-	return title.toLowerCase() === 'on hold';
+	return isHoldColumnTitle(title);
 }
 
 // ─── Subtask & Sub-board Progress ────────────────────────────────────────────
@@ -50,14 +57,19 @@ export function hasIncompleteSubtasks(card: CardType): boolean {
 /**
  * Checks if a card has any sub-board with incomplete tasks.
  * Used alongside subtask checks to enforce completion rules.
+ *
+ * Counts the sub-boards the caller cannot open as well, by
+ * `hiddenOpenCount`: the board page leaves them off the card, and the server
+ * refuses to complete it while they have open cards (card 2130's review).
  */
 export function hasIncompleteSubBoard(card: CardType): boolean {
-	return card.subBoards && card.subBoards.some(sb => sb.total > 0 && sb.done < sb.total);
+	return (card.subBoards ?? []).some(sb => sb.total > 0 && sb.done < sb.total) || (card.hiddenOpenCount ?? 0) > 0;
 }
 
 /**
  * Returns true if a card is "blocked" from completion — either by
- * incomplete subtasks or incomplete sub-board tasks.
+ * incomplete subtasks or incomplete sub-board tasks, those on sub-boards the
+ * caller cannot open included.
  */
 export function isCardBlocked(card: CardType): boolean {
 	return hasIncompleteSubtasks(card) || hasIncompleteSubBoard(card);
@@ -71,10 +83,11 @@ export function incompleteCount(card: CardType): number {
 }
 
 /**
- * Counts the total number of incomplete tasks across all sub-boards.
+ * Counts the total number of incomplete tasks across all sub-boards, those on
+ * sub-boards the caller cannot open included (`hiddenOpenCount`).
  */
 export function subBoardIncompleteCount(card: CardType): number {
-	return card.subBoards.reduce((sum, sb) => sum + (sb.total - sb.done), 0);
+	return (card.subBoards ?? []).reduce((sum, sb) => sum + (sb.total - sb.done), 0) + (card.hiddenOpenCount ?? 0);
 }
 
 // ─── Search & Filtering ──────────────────────────────────────────────────────
@@ -178,6 +191,49 @@ export function getLabelById(id: number, labels: LabelType[]): LabelType | null 
 	return labels.find(l => l.id === id) || null;
 }
 
+// ─── What a Copy Carries ─────────────────────────────────────────────────────
+
+// A duplicate, its subtasks and a template saved from a card are made from the
+// card's stored values, and the server checks them as it checks anything new
+// (card 2117, R6). A value stored before its rule would have the copy refused,
+// so each of these hands back what the server takes, or undefined, for the
+// server's default (card 2117's second fix pass).
+
+/** A stored priority, if it is one of the four in any case, as the server reads it. */
+export function priorityToCopy(priority: string | null | undefined): string | undefined {
+	return typeof priority === 'string' && Object.hasOwn(PRIORITY_ORDER, priority.toLowerCase()) ? priority : undefined;
+}
+
+/** A stored colour tag, if it is written `#rrggbb`; empty text, no tag, otherwise. */
+export function colourToCopy(colorTag: string | null | undefined): string {
+	return isHexColour(colorTag) ? colorTag : '';
+}
+
+/**
+ * A stored due date, if it is written `YYYY-MM-DD` and is a day there is, or
+ * the first ten characters of one, if they are (`2026-10-14T09:00:00Z`).
+ */
+export function dueDateToCopy(dueDate: string | null | undefined): string | undefined {
+	const day = typeof dueDate === 'string' ? /^(\d{4})-(\d{2})-(\d{2})/.exec(dueDate) : null;
+	if (!day) return undefined;
+	const [year, month, date] = [Number(day[1]), Number(day[2]), Number(day[3])];
+	const at = new Date(Date.UTC(year, month - 1, date));
+	return at.getUTCFullYear() === year && at.getUTCMonth() === month - 1 && at.getUTCDate() === date ? day[0] : undefined;
+}
+
+/**
+ * A stored category, if a card on board `boardId` may be filed under it: one
+ * of that board's, or a shared one, of no board (card 2117, R3).
+ */
+export function categoryToCopy(
+	categoryId: number | null | undefined,
+	boardId: number,
+	categories: { id: number; boardId: number | null }[]
+): number | undefined {
+	const category = categories.find((c) => c.id === categoryId);
+	return category && (category.boardId === boardId || category.boardId === null) ? category.id : undefined;
+}
+
 // ─── Display Helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -210,27 +266,4 @@ export function getSortLabel(sort: SortOption): string {
 		case 'assignee': return '👤 Assignee';
 		default: return '';
 	}
-}
-
-/**
- * Converts an activity log action key to a human-readable label with emoji.
- * Used in the activity panel sidebar.
- */
-export function getActionLabel(action: string): string {
-	const map: Record<string, string> = {
-		card_created: '➕ Created',
-		card_moved: '📦 Moved',
-		card_completed: '✅ Completed',
-		card_deleted: '🗑️ Deleted',
-		subtask_completed: '☑️ Subtask done'
-	};
-	return map[action] || action;
-}
-
-/**
- * Returns the number of cards visible after search filtering in a column.
- */
-export function getVisibleCount(column: ColumnType, searchQuery: string, categories: CategoryType[]): number {
-	if (!searchQuery.trim()) return column.cards.length;
-	return column.cards.filter(c => matchesSearch(c, searchQuery, categories)).length;
 }

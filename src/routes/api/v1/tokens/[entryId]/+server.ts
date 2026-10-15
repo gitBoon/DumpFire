@@ -1,6 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { deleteTokenEntry, getCardTokenTotal, TokenError } from '$lib/server/tokens';
 import { emit } from '$lib/server/events';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
@@ -14,8 +15,7 @@ import type { RequestHandler } from './$types';
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const entryId = Number(params.entryId);
-	if (isNaN(entryId)) throw error(400, 'Invalid entry ID');
+	const entryId = pathId(params.entryId, 'entry');
 
 	try {
 		const { cardId, boardId } = deleteTokenEntry(locals.user, entryId);

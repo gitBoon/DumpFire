@@ -1,5 +1,20 @@
-import { sqliteTable, text, integer, real, primaryKey } from 'drizzle-orm/sqlite-core';
+import {
+	sqliteTable,
+	text,
+	integer,
+	real,
+	primaryKey,
+	index,
+	uniqueIndex,
+	check,
+	type AnySQLiteColumn
+} from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
+
+// The indexes declared in this file are the ones the migrations in `drizzle/`
+// already create, under the same names. They are declared so that the model
+// describes the database that exists; `tests/migrations.test.ts` compares the
+// two. Declaring one here does not create it anywhere: only a migration does.
 
 // ─── Users & Auth ────────────────────────────────────────────────────────────
 
@@ -56,7 +71,12 @@ export const boards = sqliteTable('boards', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	name: text('name').notNull(),
 	emoji: text('emoji').default('📋'),
-	parentCardId: integer('parent_card_id'),
+	// A sub-board belongs to the card it was opened from and is deleted with it.
+	// `boards` and `cards` refer to each other, so the reference is written as a
+	// callback with its return type stated; without that TypeScript cannot infer
+	// either table's type.
+	parentCardId: integer('parent_card_id')
+		.references((): AnySQLiteColumn => cards.id, { onDelete: 'cascade' }),
 	categoryId: integer('category_id'),
 	isPublic: integer('is_public', { mode: 'boolean' }).notNull().default(false),
 	createdBy: integer('created_by')
@@ -141,7 +161,15 @@ export const cards = sqliteTable('cards', {
 	onHoldNote: text('on_hold_note').default(''),
 	businessValue: text('business_value').default(''),
 	pinned: integer('pinned', { mode: 'boolean' }).notNull().default(false),
+	/** When the card entered a Complete column. Cleared when it is reopened. */
 	completedAt: text('completed_at'),
+	/**
+	 * When the card was completed for the first time. Never cleared.
+	 *
+	 * This is what stops XP being awarded again for moving a card out of Complete
+	 * and back in. `completedAt` cannot say it, because reopening clears that.
+	 */
+	firstCompletedAt: text('first_completed_at'),
 	archivedAt: text('archived_at'),
 	coverUrl: text('cover_url'),
 	recurrenceRule: text('recurrence_rule'),
@@ -175,7 +203,10 @@ export const cards = sqliteTable('cards', {
 	updatedAt: text('updated_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_cards_milestone').on(table.milestoneId),
+	index('idx_cards_completed_at').on(table.completedAt)
+]);
 
 export const subtasks = sqliteTable('subtasks', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
@@ -222,7 +253,11 @@ export const activityLog = sqliteTable('activity_log', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_activity_log_created_at').on(table.createdAt),
+	index('idx_activity_log_board_created').on(table.boardId, table.createdAt),
+	index('idx_activity_log_card').on(table.cardId)
+]);
 
 // ─── Daily Snapshots (for the CFD) ───────────────────────────────────────────
 
@@ -236,7 +271,9 @@ export const dailySnapshots = sqliteTable('daily_snapshots', {
 		.references(() => columns.id, { onDelete: 'cascade' }),
 	date: text('date').notNull(),
 	cardCount: integer('card_count').notNull().default(0)
-});
+}, (table) => [
+	index('idx_daily_snapshots_board_date').on(table.boardId, table.date)
+]);
 
 // ─── Webhooks ────────────────────────────────────────────────────────────────
 
@@ -277,15 +314,32 @@ export const workDependencies = sqliteTable('work_dependencies', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	// One row per ordering decision per direction.
+	uniqueIndex('idx_work_dep_pair').on(
+		table.blockedType,
+		table.blockedId,
+		table.blockerType,
+		table.blockerId
+	),
+	index('idx_work_dep_blocked').on(table.blockedType, table.blockedId),
+	index('idx_work_dep_blocker').on(table.blockerType, table.blockerId)
+]);
 
 export type WorkDependency = typeof workDependencies.$inferSelect;
 
 /**
  * Superseded by `workDependencies` in migration 0043, which carried every row
  * across as a (card, card) pair. Left in place rather than dropped so the
- * ordering decisions recorded before the change are recoverable; nothing reads
- * it any more.
+ * ordering decisions recorded before the change are recoverable. Nothing in the
+ * application writes to it any more, so it holds the dependencies as they were
+ * at 0043 (or as a restored backup had them), less those of cards deleted
+ * since, and no dependency added or removed after that.
+ *
+ * No route reads it. The graph (`src/routes/api/graph/+server.ts`) was the
+ * last that did, and now draws its `depends_on` edges from `workDependencies`.
+ * The restore reads it, to refill `work_dependencies` from a backup taken
+ * before 0043 (`db/restore.ts`).
  */
 export const cardDependencies = sqliteTable('card_dependencies', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
@@ -299,7 +353,10 @@ export const cardDependencies = sqliteTable('card_dependencies', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	uniqueIndex('idx_card_dep_pair').on(table.cardId, table.dependsOnCardId),
+	index('idx_card_dep_blocker').on(table.dependsOnCardId)
+]);
 
 export const labels = sqliteTable('labels', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
@@ -439,9 +496,6 @@ export const milestones = sqliteTable('milestones', {
 export type Milestone = typeof milestones.$inferSelect;
 export type CardDependency = typeof cardDependencies.$inferSelect;
 
-// (the time_entries table exists in the DB from migration 0028 but is not yet
-// used by the application)
-
 // ─── Card Attachments ────────────────────────────────────────────────────────
 
 export const cardAttachments = sqliteTable('card_attachments', {
@@ -493,7 +547,20 @@ export const taskRequests = sqliteTable('task_requests', {
 	title: text('title').notNull(),
 	description: text('description').default(''),
 	priority: text('priority').notNull().default('medium'),
-	status: text('status').notNull().default('pending'), // 'pending' | 'accepted' | 'rejected'
+	/**
+	 * 'unverified' | 'pending' | 'accepted' | 'rejected'.
+	 *
+	 * A request from someone without an account starts 'unverified' and is
+	 * invisible to the team until the requester confirms it from the email sent
+	 * to the address they gave. Only then does it become 'pending'.
+	 */
+	status: text('status').notNull().default('pending'),
+	/**
+	 * The secret in the requester's link. Whoever holds it can read the thread
+	 * and reply as the requester, so it never leaves the server except inside
+	 * that link — see `publicRequest` in request-tokens.ts.
+	 */
+	accessToken: text('access_token'),
 	businessValue: text('business_value').default(''),
 	resolvedBy: integer('resolved_by').references(() => users.id, { onDelete: 'set null' }),
 	resolvedCardId: integer('resolved_card_id').references(() => cards.id, { onDelete: 'set null' }),
@@ -503,7 +570,10 @@ export const taskRequests = sqliteTable('task_requests', {
 		.notNull()
 		.default(sql`(datetime('now'))`),
 	resolvedAt: text('resolved_at')
-});
+}, (table) => [
+	// No two requests share a link. Requests with no token yet are not compared.
+	uniqueIndex('task_requests_access_token_idx').on(table.accessToken)
+]);
 
 export type TaskRequest = typeof taskRequests.$inferSelect;
 export type NewTaskRequest = typeof taskRequests.$inferInsert;
@@ -554,7 +624,10 @@ export const systemLogs = sqliteTable('system_logs', {
 	meta: text('meta'), // JSON string of structured fields
 	userId: integer('user_id'),
 	ip: text('ip')
-});
+}, (table) => [
+	index('idx_system_logs_timestamp').on(table.timestamp),
+	index('idx_system_logs_level').on(table.level)
+]);
 
 export type SystemLog = typeof systemLogs.$inferSelect;
 
@@ -656,7 +729,17 @@ export const tokenUsage = sqliteTable('token_usage', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_token_usage_card').on(table.cardId),
+	index('idx_token_usage_subtask').on(table.subtaskId),
+	// Exactly one owner, never both and never neither. Migration 0044 wrote the
+	// constraint without a name; Drizzle requires one, so the name exists only
+	// here.
+	check(
+		'token_usage_one_owner',
+		sql`(${table.cardId} IS NULL) <> (${table.subtaskId} IS NULL)`
+	)
+]);
 
 export type TokenUsage = typeof tokenUsage.$inferSelect;
 export type NewTokenUsage = typeof tokenUsage.$inferInsert;

@@ -13,15 +13,24 @@
  *    assignees, sub-boards, and dependencies.
  *
  * All queries are bounded. Hard limit: max 500 nodes per request.
+ *
+ * Each mode answers only with what the caller can view: the overview lists
+ * the boards they can open, a board or a column is expanded for a caller who
+ * can view the board it is on, and a card's sub-board is listed only where
+ * the caller can view that sub-board too. A dependency is drawn only where
+ * the caller can view the board of the card that is waited on as well.
  */
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import {
-	boards, columns, cards, cardAssignees, cardDependencies,
+	boards, columns, cards, cardAssignees, workDependencies,
 	users, boardMembers
 } from '$lib/server/db/schema';
 import { eq, and, inArray, isNull } from 'drizzle-orm';
-import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { canViewBoard, getAccessibleBoardIds, type Actor } from '$lib/server/board-access';
+import { requireBoard, requireColumn } from '$lib/server/route-guards';
+import { readQueryId } from '$lib/server/request-body';
+import { getCardBoardId } from '$lib/server/work-access';
 import type { GraphNode, GraphEdge } from '$lib/types/graph-types';
 import type { RequestHandler } from './$types';
 
@@ -107,8 +116,10 @@ function buildOverview(accessibleIds: number[] | null): { nodes: GraphNode[]; ed
 	}
 
 	// ─── Admins: implicit members of ALL boards ──────────────────────────
+	// The superadmin is one of them (card 2117): it was left out, and drawn
+	// with fewer boards than any administrator.
 	const adminUsers = db.select().from(users)
-		.where(eq(users.role, 'admin'))
+		.where(inArray(users.role, ['admin', 'superadmin']))
 		.all();
 
 	const boardIds = allBoards.map(b => `board:${b.id}`);
@@ -175,7 +186,7 @@ function buildBoardExpansion(boardId: number): { nodes: GraphNode[]; edges: Grap
 
 // ─── Column Expand: cards + assignees + sub-boards + dependencies ────────────
 
-function buildColumnExpansion(columnId: number): { nodes: GraphNode[]; edges: GraphEdge[] } {
+function buildColumnExpansion(columnId: number, user: Actor): { nodes: GraphNode[]; edges: GraphEdge[] } {
 	const nodes: GraphNode[] = [];
 	const edges: GraphEdge[] = [];
 	const seenUsers = new Set<number>();
@@ -230,10 +241,13 @@ function buildColumnExpansion(columnId: number): { nodes: GraphNode[]; edges: Gr
 			});
 		}
 
-		// Sub-boards linked to this card
+		// Sub-boards linked to this card. A sub-board is a board of its own,
+		// shared with whoever it is shared with: being able to open the card's
+		// board does not open it, so one the caller cannot view is not named.
 		const subBoards = db.select().from(boards)
 			.where(eq(boards.parentCardId, card.id))
-			.all();
+			.all()
+			.filter((sb) => canViewBoard(user, sb.id));
 
 		for (const sb of subBoards) {
 			if (nodes.length >= MAX_NODES) break;
@@ -251,15 +265,33 @@ function buildColumnExpansion(columnId: number): { nodes: GraphNode[]; edges: Gr
 			});
 		}
 
-		// Card dependencies
-		const deps = db.select().from(cardDependencies)
-			.where(eq(cardDependencies.cardId, card.id))
+		// Card dependencies: the cards this card waits on, from the table the
+		// dependency routes write. These used to be read from
+		// `card_dependencies`, which nothing has written since migration 0043,
+		// so a link made since was never drawn and one removed since still was.
+		//
+		// Card to card only. The graph has no node for a subtask, so a link
+		// with a subtask at either end is not drawn.
+		const deps = db.select({ blockerId: workDependencies.blockerId })
+			.from(workDependencies)
+			.where(and(
+				eq(workDependencies.blockedType, 'card'),
+				eq(workDependencies.blockedId, card.id),
+				eq(workDependencies.blockerType, 'card')
+			))
 			.all();
 
 		for (const dep of deps) {
+			// A link may reach a card of another board. One on a board the
+			// caller cannot view is not drawn: its id would say that this card
+			// waits on something there, and which card it is. Nor is one whose
+			// card is gone.
+			const blockerBoardId = getCardBoardId(dep.blockerId);
+			if (blockerBoardId === null || !canViewBoard(user, blockerBoardId)) continue;
+
 			edges.push({
 				source: `card:${card.id}`,
-				target: `card:${dep.dependsOnCardId}`,
+				target: `card:${dep.blockerId}`,
 				relation: 'depends_on'
 			});
 		}
@@ -276,17 +308,23 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const boardIdParam = url.searchParams.get('boardId');
 	const columnIdParam = url.searchParams.get('columnId');
 
-	if (columnIdParam) {
+	// Each id is read as an id in the path is (card 2117): `parseInt` read
+	// `2.5` as 2 and `5abc` as 5.
+	const columnId = readQueryId(columnIdParam, 'column', 'Invalid columnId');
+	if (columnId !== undefined) {
 		// Column expand — return cards + assignees + sub-boards
-		const columnId = parseInt(columnIdParam, 10);
-		if (isNaN(columnId)) throw error(400, 'Invalid columnId');
-		return json(buildColumnExpansion(columnId));
+		// The column says which board this is: the caller is judged against the
+		// board the column is on, whatever boardId came with it. This used to
+		// answer anyone signed in with the cards of any column.
+		requireColumn(locals.user, columnId, 'view');
+		return json(buildColumnExpansion(columnId, locals.user));
 	}
 
-	if (boardIdParam) {
+	const boardId = readQueryId(boardIdParam, 'board', 'Invalid boardId');
+	if (boardId !== undefined) {
 		// Board expand — return columns only
-		const boardId = parseInt(boardIdParam, 10);
-		if (isNaN(boardId)) throw error(400, 'Invalid boardId');
+		// As above: this used to answer anyone signed in with any board's columns.
+		requireBoard(locals.user, boardId, 'view');
 		return json(buildBoardExpansion(boardId));
 	}
 

@@ -1,6 +1,9 @@
 import { json, error } from '@sveltejs/kit';
+import { inTransaction } from '$lib/server/db/transaction';
 import { recordTokenUsageBatch, getCardTokenTotals, TokenError } from '$lib/server/tokens';
 import { emit } from '$lib/server/events';
+import { readBody, readObjects } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /**
@@ -22,26 +25,39 @@ import type { RequestHandler } from './$types';
  * Unlike those batches this one is **not** idempotent — entries are additive by
  * design, so re-running the same list genuinely does add the tokens twice.
  * Report each step once.
+ *
+ * `entries` is a list of objects: an entry that is not one is
+ * `400 entries[<n>] must be an object` (decision 18), where it was a 500. Each
+ * entry's fields are held to tokens.ts's own rules, and to nothing stricter.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-
-	const body = await request.json();
+	const user = requireUser(locals.user);
+	const body = await readBody(request);
+	const entries = readObjects(body, 'entries', {
+		required: true,
+		says: { missing: 'entries must be an array', type: 'entries must be an array' }
+	});
 	try {
-		const result = recordTokenUsageBatch(locals.user, body.entries);
+		// One transaction around the batch writer, which checks each entry's
+		// card or subtask and the caller's access to it before it writes. With
+		// those reads in the same transaction as the writes, what was checked is
+		// what is written to.
+		const result = inTransaction(() => {
+			const recorded = recordTokenUsageBatch(user, entries);
+			for (const boardId of recorded.boardIds) emit(boardId, 'update', { type: 'card' });
+			return recorded;
+		});
 
 		if (result.problems.length > 0) {
 			return json(
 				{
-					error: 'Batch rejected — nothing was written',
+					message: 'Batch rejected — nothing was written',
 					written: 0,
 					problems: result.problems
 				},
 				{ status: 409 }
 			);
 		}
-
-		for (const boardId of result.boardIds) emit(boardId, 'update', { type: 'card' });
 
 		const totals = getCardTokenTotals(result.cardIds);
 		return json(

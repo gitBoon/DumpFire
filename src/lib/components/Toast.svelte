@@ -1,8 +1,22 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
+	import { afterNavigate, onNavigate } from '$app/navigation';
 	import { toasts } from '$lib/stores/toast';
 
 	let items = $state<{ id: number; message: string; type: string }[]>([]);
 	toasts.subscribe(v => (items = v));
+
+	// A failure stays until it is closed, and never follows the reader to
+	// another page: it is cleared when the page goes, and when the page is
+	// navigated without going. SvelteKit keeps a page when only its route's
+	// parameter changes, as from a board to its sub-board, and nothing is
+	// destroyed then.
+	onDestroy(() => toasts.clearErrors());
+	afterNavigate(() => toasts.clearErrors());
+	// Nor is a failure that arrives after that, from a request the page started
+	// before it was left: each navigation is counted as it begins, and a page
+	// gives a failure the count its request started under (`toasts.navigation()`).
+	onNavigate(() => toasts.navigated());
 </script>
 
 {#if items.length > 0}
@@ -21,7 +35,8 @@
 
 <style>
 	.toast-container {
-		position: fixed; bottom: 24px; right: 24px; z-index: 200;
+		/* Above every dialog: a refusal is shown while the dialog that asked stays open. */
+		position: fixed; bottom: 24px; right: 24px; z-index: 10000;
 		display: flex; flex-direction: column-reverse; gap: 8px;
 		pointer-events: none;
 	}

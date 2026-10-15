@@ -13,7 +13,6 @@ import {
 	columns,
 	boards,
 	subtasks,
-	categories,
 	labels,
 	cardLabels,
 	cardAssignees,
@@ -25,13 +24,15 @@ import {
 import { eq, asc, inArray, isNull, and } from 'drizzle-orm';
 import { canViewBoard } from '$lib/server/board-access';
 import { milestonesForBoard } from '$lib/server/milestones';
+import { cardCategoriesFor, subBoardsFor } from '$lib/server/list-access';
+import { completeColumnIds } from '$lib/column-role';
+import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const cardId = Number(params.id);
-	if (isNaN(cardId)) throw error(400, 'Invalid card ID');
+	const cardId = pathId(params.id, 'card');
 
 	const card = db.select().from(cards).where(eq(cards.id, cardId)).get();
 	if (!card) throw error(404, 'Card not found');
@@ -67,8 +68,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		.map((a) => ({ ...a, emoji: a.emoji || '👤' }));
 
 	// Sub-boards hanging off this card, with their progress — the modal shows
-	// them and the plan view should not silently drop them.
-	const subBoards = db.select().from(boards).where(eq(boards.parentCardId, cardId)).all();
+	// them and the plan view should not silently drop them. Those the caller
+	// can open (card 2130): one they were never given was named to them here.
+	const subBoards = subBoardsFor(locals.user, [cardId]);
 	const subBoardsWithProgress = subBoards.map((sb) => {
 		const cols = db.select().from(columns).where(eq(columns.boardId, sb.id)).all();
 		const colIds = cols.map((c) => c.id);
@@ -79,9 +81,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 					.where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt)))
 					.all()
 			: [];
-		const doneCols = new Set(
-			cols.filter((c) => ['complete', 'done'].includes(c.title.toLowerCase())).map((c) => c.id)
-		);
+		const doneCols = completeColumnIds(cols);
 		return {
 			id: sb.id,
 			name: sb.name,
@@ -93,11 +93,15 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	// ── Board context for the pickers ────────────────────────────────────────
 
-	const boardCategories = db.select().from(categories).orderBy(asc(categories.name)).all();
+	// The categories of the boards the caller can open and the shared ones, and
+	// the card's own if it is another's (card 2128): every board's was listed.
+	const boardCategories = cardCategoriesFor(locals.user, [card]);
 	const boardLabels = db.select().from(labels).where(eq(labels.boardId, boardId)).all();
 
 	// Who can be assigned: creator, direct members, members of shared teams, and
-	// every admin (who can reach any board).
+	// every admin (who can reach any board). By name and emoji: nothing reads an
+	// address here, and every administrator's was given to every viewer (card
+	// 2128, R1).
 	const userIds = new Set<number>();
 	if (board?.createdBy) userIds.add(board.createdBy);
 	for (const m of db.select({ userId: boardMembers.userId }).from(boardMembers).where(eq(boardMembers.boardId, boardId)).all()) {
@@ -118,7 +122,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	}
 	const boardUsers = userIds.size
 		? db
-				.select({ id: users.id, username: users.username, email: users.email, emoji: users.emoji })
+				.select({ id: users.id, username: users.username, emoji: users.emoji })
 				.from(users)
 				.where(inArray(users.id, [...userIds]))
 				.all()

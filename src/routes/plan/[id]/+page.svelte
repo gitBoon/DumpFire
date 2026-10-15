@@ -39,13 +39,18 @@
 
 	type Node = WorkRef & {
 		title: string;
-		priority: string;
+		priority: string | null;
 		columnTitle: string;
-		boardId: number;
+		boardId: number | null;
 		boardName: string;
 		isComplete: boolean;
 		parentCardId?: number;
 		external?: boolean;
+		/**
+		 * On a board the viewer cannot open: the title and board are text put in
+		 * their place, and it is drawn with no link and no board or column (card 2129).
+		 */
+		withheld: boolean;
 		layer: number;
 		blockedBy: WorkRef[];
 		blocks: WorkRef[];
@@ -275,7 +280,10 @@
 	 * The board page has its whole payload to hand; this view spans boards, so it
 	 * fetches the one card's context on demand instead.
 	 */
-	async function openCard(ref: { kind?: string; id: number; parentCardId?: number }) {
+	async function openCard(ref: { kind?: string; id: number; parentCardId?: number; withheld?: boolean }) {
+		// Work on a board the viewer cannot open has nothing to open: its card
+		// would be refused them.
+		if (ref.withheld) return;
 		// A subtask has no card of its own — open the card it belongs to.
 		const cardId = ref.kind === 'subtask' ? ref.parentCardId : ref.id;
 		if (!cardId) return;
@@ -333,14 +341,23 @@
 		kind: 'card' | 'subtask';
 		id: number;
 		title: string;
-		priority: string;
-		boardId: number;
+		priority: string | null;
+		boardId: number | null;
 		boardName: string;
 		columnTitle: string;
+		withheld: boolean;
 		downstreamCount: number;
 		onCriticalPath: boolean;
 		state: RowState;
-		blockers: { kind?: 'card' | 'subtask'; id: number; title: string; boardName: string; columnTitle: string; boardId: number }[];
+		blockers: {
+			kind?: 'card' | 'subtask';
+			id: number;
+			title: string;
+			boardName: string;
+			columnTitle: string;
+			boardId: number | null;
+			withheld: boolean;
+		}[];
 		/** 0 for a card, 1 for one of its subtasks. */
 		depth: number;
 		parentCardId?: number;
@@ -369,6 +386,7 @@
 			boardId: n.boardId,
 			boardName: n.boardName,
 			columnTitle: n.columnTitle,
+			withheld: n.withheld,
 			downstreamCount: n.downstreamCount,
 			onCriticalPath: n.onCriticalPath,
 			state: (n.isComplete ? 'done' : n.openBlockers.length > 0 ? 'blocked' : 'ready') as RowState,
@@ -854,7 +872,12 @@
 					<span class="chip">{c.columnTitle} · {c.count}</span>
 				{/each}
 				{#each summary.progress.boards as b}
-					<a class="chip board-chip" href="/board/{b.id}">{b.name} · {b.cardCount}</a>
+					<!-- The cards on boards the viewer cannot open are one entry with no id, and no link (card 2129). -->
+					{#if b.id === null}
+						<span class="chip">{b.name} · {b.cardCount}</span>
+					{:else}
+						<a class="chip board-chip" href="/board/{b.id}">{b.name} · {b.cardCount}</a>
+					{/if}
 				{/each}
 			</div>
 		</section>
@@ -950,7 +973,7 @@
 						{#if n}
 							<li class="chain-step">
 								<span class="chain-index">{i + 1}</span>
-								<button class="chain-card" onclick={() => openCard(n)}>
+								<button class="chain-card" disabled={n.withheld} onclick={() => openCard(n)}>
 									{#if n.kind === 'subtask'}
 										<span class="kind-tag">subtask</span>
 									{:else}
@@ -959,7 +982,9 @@
 									<span class="card-title">{n.title}</span>
 									<span class="card-where">
 										{#if n.external}<span class="ext-tag">outside this goal</span>{/if}
-										{#if n.kind === 'subtask'}of #{n.parentCardId} · {/if}{n.boardName} / {n.columnTitle}
+										{#if !n.withheld}
+											{#if n.kind === 'subtask'}of #{n.parentCardId} · {/if}{n.boardName} / {n.columnTitle}
+										{/if}
 									</span>
 								</button>
 							</li>
@@ -1075,20 +1100,22 @@
 									</td>
 									<td class="col-id">
 										{#if r.kind === 'card'}
-											<button class="id-link" onclick={() => openCard(r)}>#{r.id}</button>
+											<button class="id-link" disabled={r.withheld} onclick={() => openCard(r)}>#{r.id}</button>
 										{:else}
 											<span class="sub-id" title="Subtask of #{r.parentCardId}">↳</span>
 										{/if}
 									</td>
 									<td class="col-title" class:indented={r.depth > 0}>
-										<button class="title-link" onclick={() => openCard(r)} title={r.title}>
-											<span class="prio-dot prio-{r.priority}" title="Priority: {r.priority}"></span>
+										<button class="title-link" disabled={r.withheld} onclick={() => openCard(r)} title={r.title}>
+											{#if r.priority}<span class="prio-dot prio-{r.priority}" title="Priority: {r.priority}"></span>{/if}
 											<span class="title-text">{r.title}</span>
 										</button>
 										{#if r.onCriticalPath}<span class="crit-chip">critical path</span>{/if}
 									</td>
 									<td class="col-board">
-										{#if r.kind === 'card'}
+										{#if r.withheld}
+											<!-- On a board the viewer cannot open: no board to name or link (card 2129). -->
+										{:else if r.kind === 'card'}
 											<a class="board-link" href="/board/{r.boardId}">{r.boardName}</a>
 										{:else}
 											<span class="kind-tag">subtask</span>
@@ -1117,7 +1144,7 @@
 										<td colspan="7">
 											<div class="blocker-list">
 												{#each r.blockers as blocker}
-													<button class="blocker" onclick={() => openCard(blocker)}>
+													<button class="blocker" disabled={blocker.withheld} onclick={() => openCard(blocker)}>
 														waiting on
 														{#if blocker.kind === 'subtask'}
 															<span class="kind-tag">subtask</span>
@@ -1126,7 +1153,9 @@
 															<span class="card-id">#{blocker.id}</span>
 															<span class="blocker-title">{blocker.title}</span>
 														{/if}
-														<span class="card-where">{blocker.boardName} / {blocker.columnTitle}</span>
+														{#if !blocker.withheld}
+															<span class="card-where">{blocker.boardName} / {blocker.columnTitle}</span>
+														{/if}
 													</button>
 												{/each}
 											</div>
@@ -1214,7 +1243,7 @@
 											<text class="node-title" x={p.x + 11} y={p.y + 37}>{clip(n.title, 26)}</text>
 											<text class="node-sub" x={p.x + 11} y={p.y + 50}>
 												{#if n.external}
-													{clip(n.boardName, 20)} · outside goal
+													{n.withheld ? 'outside goal' : `${clip(n.boardName, 20)} · outside goal`}
 												{:else if n.downstreamCount > 0}
 													unblocks {n.downstreamCount}
 												{:else if n.isComplete}
@@ -1262,11 +1291,11 @@
 						</p>
 						<div class="card-list">
 							{#each unorderedNodes as n}
-								<button class="list-card" onclick={() => openCard(n)}>
-									<span class="prio-dot prio-{n.priority}" title="Priority: {n.priority}"></span>
+								<button class="list-card" disabled={n.withheld} onclick={() => openCard(n)}>
+									{#if n.priority}<span class="prio-dot prio-{n.priority}" title="Priority: {n.priority}"></span>{/if}
 									<span class="card-id">#{n.id}</span>
 									<span class="card-title">{n.title}</span>
-									<span class="card-where">{n.boardName} / {n.columnTitle}</span>
+									{#if !n.withheld}<span class="card-where">{n.boardName} / {n.columnTitle}</span>{/if}
 								</button>
 							{/each}
 						</div>

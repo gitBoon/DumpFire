@@ -63,20 +63,18 @@ export async function addColumn(
 	});
 }
 
-/** Updates arbitrary column properties (title, colour, etc.). */
-export async function updateColumn(colId: number, updates: Record<string, unknown>, boardId: number): Promise<void> {
-	await api.updateColumn(colId, { ...updates, boardId });
+/**
+ * Updates arbitrary column properties (title, colour, etc.). Returns the
+ * answer, for the caller to check: a rename that would change whether the
+ * column is a Complete column is refused while it holds cards (card 2134).
+ */
+export async function updateColumn(colId: number, updates: Record<string, unknown>, boardId: number): Promise<Response> {
+	return api.updateColumn(colId, { ...updates, boardId });
 }
 
-/** Deletes a column via the API. */
-export async function deleteColumn(colId: number, boardId: number): Promise<void> {
-	await api.deleteColumn(colId, boardId);
-}
-
-/** Persists a new column ordering after drag-and-drop. */
-export async function reorderColumns(columns: ColumnType[], boardId: number): Promise<void> {
-	const updates = columns.map((col, i) => ({ id: col.id, position: i }));
-	await api.reorderColumns(updates, boardId);
+/** Deletes a column via the API. Returns the answer, for the caller to check. */
+export async function deleteColumn(colId: number, boardId: number): Promise<Response> {
+	return api.deleteColumn(colId, boardId);
 }
 
 // ─── Categories ──────────────────────────────────────────────────────────────

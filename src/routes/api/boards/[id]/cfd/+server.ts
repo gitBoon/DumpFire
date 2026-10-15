@@ -3,6 +3,8 @@ import { db } from '$lib/server/db';
 import { boards, columns, dailySnapshots } from '$lib/server/db/schema';
 import { eq, and, gte, inArray, asc } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
+import { pathId } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 /**
@@ -12,8 +14,10 @@ import type { RequestHandler } from './$types';
  * Query params: ?days=N (default: 30, max: 365)
  */
 export const GET: RequestHandler = async ({ params, locals, url }) => {
-	const boardId = Number(params.id);
-	const user = locals.user!;
+	// A caller who is not signed in is 401, where `locals.user!` threw and
+	// only the gate stood in front of it (card 2117).
+	const user = requireUser(locals.user);
+	const boardId = pathId(params.id, 'board');
 
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) throw error(404, 'Board not found');

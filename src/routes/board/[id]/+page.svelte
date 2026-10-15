@@ -29,7 +29,8 @@
 	import { COLUMN_COLORS, FLIP_DURATION_MS } from '$lib/utils/constants';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, isStale, isNew } from '$lib/utils/date-utils';
-	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel, getActionLabel, getVisibleCount } from '$lib/utils/card-utils';
+	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel } from '$lib/utils/card-utils';
+	import { isCoverValue } from '$lib/colours';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	// Board-specific modules
@@ -47,10 +48,8 @@
 	import ShareModal from '$lib/components/ShareModal.svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import Toast from '$lib/components/Toast.svelte';
-	import KanbanCard from '$lib/components/board/KanbanCard.svelte';
 	import { formatTokens } from '$lib/tokens';
 	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
-	import ActivityPanel from '$lib/components/board/ActivityPanel.svelte';
 	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
 	import BulkActionBar from '$lib/components/board/BulkActionBar.svelte';
 	import ContextMenu from '$lib/components/board/ContextMenu.svelte';
@@ -154,8 +153,19 @@
 	}
 
 	async function handleBulkDelete() {
-		await bulkOps.bulkDelete(selectedCards, data.board.id);
-		clearSelection();
+		// Each card is archived, not deleted (`api.deleteCard`).
+		const started = toasts.navigation();
+		const { archived, failed } = await bulkOps.bulkDelete(selectedCards, data.board.id);
+		if (archived > 0) {
+			toasts.add(`${archived} ${archived === 1 ? 'card' : 'cards'} archived. Restore from Archived Cards.`, 'info');
+		}
+		if (failed.length > 0) {
+			// What the server did not archive is still on the board, and stays selected.
+			toasts.add(`${failed.length} ${failed.length === 1 ? 'card' : 'cards'} not archived. ${failed[0].message}`, 'error', started);
+			selectedCards = new Set(failed.map((f) => f.cardId));
+		} else {
+			clearSelection();
+		}
 		await invalidateAll();
 	}
 
@@ -175,13 +185,32 @@
 		editColumnTitle = col.title;
 	}
 
+	/**
+	 * Saves a column's new title. The title shown changes only once the server
+	 * has taken it: a rename that would change whether the column is a Complete
+	 * column is refused while it holds cards (card 2134), and the refusal is
+	 * said in the server's words with the old title left in place. Enter and the
+	 * blur that follows it both end the edit, and only the first sends it.
+	 */
 	async function finishEditColumn(colId: number) {
-		if (editColumnTitle.trim()) {
-			await boardActions.updateColumn(colId, { title: editColumnTitle.trim() }, data.board.id);
-			const col = boardColumns.find((c) => c.id === colId);
-			if (col) col.title = editColumnTitle.trim();
-		}
+		if (editingColumn !== colId) return;
 		editingColumn = null;
+		const title = editColumnTitle.trim();
+		if (!title) return;
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = await boardActions.updateColumn(colId, { title }, data.board.id);
+		} catch {
+			toasts.add('No answer from the server. The column may not have been renamed.', 'error', started);
+			return;
+		}
+		if (!res.ok) {
+			toasts.add(await api.failureMessage(res, 'The column was not renamed.'), 'error', started);
+			return;
+		}
+		const col = boardColumns.find((c) => c.id === colId);
+		if (col) col.title = title;
 	}
 
 	// ─── Card Modal ──────────────────────────────────────────────────────────
@@ -221,7 +250,6 @@
 		const result = await cardActions.saveCard(editingCard, cardModalColumnId, data.board.id, boardColumns, cardData);
 		showCardModal = false;
 		if (result.isNew && cardData.title) {
-			logActivity('card_created', cardData.title);
 			toasts.add(`Created "${cardData.title}"`);
 
 			// Assign pending users to the newly created card
@@ -255,17 +283,28 @@
 		await invalidateAll();
 	}
 
+	/**
+	 * Archive a card. The request is a DELETE with no `permanent`, which stamps
+	 * the card as archived and touches nothing else. Restore, in the Archived
+	 * Cards panel, brings it back whole. Deleting it for good is done from that
+	 * panel (`permanentlyDeleteCard`).
+	 */
 	function confirmDeleteCard(cardId: number) {
+		const card = boardColumns.flatMap(c => c.cards).find(c => c.id === cardId);
 		showConfirm(
-			'Delete Card',
-			'Are you sure you want to delete this card and all its subtasks? This cannot be undone.',
-			'Delete Card',
+			'Archive Card',
+			api.cardArchiveWarning(card?.title),
+			'Archive Card',
 			async () => {
-				const card = boardColumns.flatMap(c => c.cards).find(c => c.id === cardId);
-				await cardActions.deleteCard(cardId, data.board.id);
-				if (card) logActivity('card_deleted', card.title, cardId);
-				toasts.add('Card deleted', 'info');
+				const started = toasts.navigation();
+				const failure = await api.deleteFailure(() => cardActions.deleteCard(cardId, data.board.id), 'card', 'archived');
 				confirmState.show = false;
+				if (failure) {
+					// The card is still on the board, so it stays open.
+					toasts.add(failure, 'error', started);
+					return;
+				}
+				toasts.add('Card archived. Restore it from Archived Cards.', 'info');
 				showCardModal = false;
 				editingCard = null;
 				await invalidateAll();
@@ -312,11 +351,16 @@
 	function confirmDeleteColumn(colId: number, colTitle: string) {
 		showConfirm(
 			'Delete Column',
-			`Are you sure you want to delete "${colTitle}" and all its cards? This cannot be undone.`,
+			api.columnDeleteWarning(colTitle),
 			'Delete Column',
 			async () => {
-				await boardActions.deleteColumn(colId, data.board.id);
+				const started = toasts.navigation();
+				const failure = await api.deleteFailure(() => boardActions.deleteColumn(colId, data.board.id), 'column');
 				confirmState.show = false;
+				if (failure) {
+					toasts.add(failure, 'error', started);
+					return;
+				}
 				await invalidateAll();
 			}
 		);
@@ -386,10 +430,15 @@
 	}
 
 	async function duplicateCard(card: CardType) {
-		const title = await cardActions.duplicateCard(card, boardColumns, data.board.id);
-		if (title) {
-			logActivity('card_created', `${title} (Copy)`);
-			toasts.add(`Duplicated "${title}"`);
+		// A copy the server refused is said in its words, and is not "Duplicated".
+		const started = toasts.navigation();
+		const { title, failure, into } = await cardActions.duplicateCard(card, boardColumns, data.board.id, boardCategories);
+		// The copy of a finished card is made in the board's first open column
+		// (card 2134, R1): say which, or the copy seems to have gone nowhere.
+		if (failure) {
+			toasts.add(failure, 'error', started);
+		} else if (title) {
+			toasts.add(into ? `Duplicated "${title} (Copy)" into ${into}` : `Duplicated "${title}"`);
 		}
 		contextMenu = { ...contextMenu, show: false };
 		await invalidateAll();
@@ -409,31 +458,52 @@
 		if (boardId) window.location.href = `/board/${boardId}`;
 	}
 
-	async function linkSubBoard(cardId: number, boardId: number) {
-		await cardActions.linkSubBoard(cardId, boardId);
-		await invalidateAll();
-		toasts.add('Board linked as sub-board');
+	/** Asks first: linking hands the board's deletion to this board's editors. A refusal is said in the server's words. */
+	function linkSubBoard(cardId: number, boardId: number) {
+		const name = data.linkableBoards.find(b => b.id === boardId)?.name ?? 'this board';
+		showConfirm('Link Board', api.subBoardLinkWarning(name), 'Link', async () => {
+			const started = toasts.navigation();
+			let res: Response;
+			try {
+				res = await cardActions.linkSubBoard(cardId, boardId);
+			} catch {
+				toasts.add('No answer from the server. The board may not have been linked.', 'error', started);
+				return;
+			}
+			if (!res.ok) {
+				toasts.add(await api.failureMessage(res, 'The board was not linked.'), 'error', started);
+				return;
+			}
+			await invalidateAll();
+			// The card's window shows its sub-boards from the card as it was read.
+			const open = boardColumns.flatMap(c => c.cards).find(c => c.id === cardId);
+			if (open && editingCard?.id === cardId) editingCard = open;
+			toasts.add('Board linked as sub-board');
+		});
 	}
 
 	function deleteSubBoard(boardId: number) {
 		const sbName = cardActions.findSubBoardName(boardId, boardColumns);
 		showConfirm(
 			'Delete Sub-board',
-			`Delete "${sbName}" and all its cards? This cannot be undone.`,
+			api.boardDeleteWarning(sbName),
 			'Delete',
 			async () => {
-				const ok = await cardActions.deleteSubBoard(boardId);
-				if (ok) {
-					await invalidateAll();
-					if (editingCard) {
-						const cardId = editingCard.id;
-						for (const col of boardColumns) {
-							const found = col.cards.find(c => c.id === cardId);
-							if (found) { editingCard = found; break; }
-						}
-					}
-					toasts.add('Sub-board deleted');
+				const started = toasts.navigation();
+				const failure = await api.deleteFailure(() => cardActions.deleteSubBoard(boardId), 'sub-board');
+				if (failure) {
+					toasts.add(failure, 'error', started);
+					return;
 				}
+				await invalidateAll();
+				if (editingCard) {
+					const cardId = editingCard.id;
+					for (const col of boardColumns) {
+						const found = col.cards.find(c => c.id === cardId);
+						if (found) { editingCard = found; break; }
+					}
+				}
+				toasts.add('Sub-board deleted');
 			}
 		);
 	}
@@ -467,7 +537,7 @@
 	 * different kind of "blocked" (incomplete subtasks, not an unfinished card).
 	 */
 	const dependencyBlockers = $derived(
-		(data.blockedState ?? {}) as Record<number, { id: number; title: string; columnTitle: string; boardName: string; boardId: number }[]>
+		(data.blockedState ?? {}) as Record<number, { id: number; title: string; columnTitle: string; boardName: string; boardId: number | null; withheld: boolean }[]>
 	);
 
 	const milestoneNameById = $derived(
@@ -482,17 +552,19 @@
 	/**
 	 * Tooltip for the Blocked chip. "Blocked" on its own tells you to stop but
 	 * not what to go and do, so every blocker is listed with the column it is
-	 * sitting in, and its board when the blocker lives on a different one.
+	 * sitting in, and its board when the blocker lives on a different one. A
+	 * blocker on a board the viewer cannot open is its number and the text in
+	 * place of its title, with no column or board (card 2129).
 	 */
 	function blockerTooltip(cardId: number): string {
 		const open = blockersFor(cardId);
 		if (open.length === 0) return '';
 		return ['Blocked by']
 			.concat(
-				open.map(
-					(b) =>
-						`#${b.id} ${b.title} — ${b.columnTitle}` +
-						(b.boardId !== data.board.id ? ` (${b.boardName})` : '')
+				open.map((b) =>
+					b.withheld
+						? `#${b.id} ${b.title}`
+						: `#${b.id} ${b.title} — ${b.columnTitle}` + (b.boardId !== data.board.id ? ` (${b.boardName})` : '')
 				)
 			)
 			.join('\n');
@@ -528,22 +600,45 @@
 	}
 
 	async function restoreCard(cardId: number) {
-		await fetch(`/api/boards/${data.board.id}/archive`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ cardId })
-		});
+		// The card leaves the list only when the server says it is restored. A
+		// refusal, a card deleted for good in another tab among them, used to
+		// take the row away and say "Card restored" all the same.
+		const started = toasts.navigation();
+		const failure = await api.deleteFailure(
+			() =>
+				fetch(`/api/boards/${data.board.id}/archive`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ cardId })
+				}),
+			'card',
+			'restored'
+		);
+		if (failure) {
+			toasts.add(failure, 'error', started);
+			return;
+		}
 		archivedCards = archivedCards.filter(c => c.id !== cardId);
 		toasts.add('Card restored');
 		await invalidateAll();
 	}
 
 	async function permanentlyDeleteCard(cardId: number) {
-		await fetch(`/api/cards/${cardId}?permanent=true`, {
-			method: 'DELETE',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ boardId: data.board.id })
-		});
+		// The card leaves the list only when the server says it is gone.
+		const started = toasts.navigation();
+		const failure = await api.deleteFailure(
+			() =>
+				fetch(`/api/cards/${cardId}?permanent=true`, {
+					method: 'DELETE',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ boardId: data.board.id })
+				}),
+			'card'
+		);
+		if (failure) {
+			toasts.add(failure, 'error', started);
+			return;
+		}
 		archivedCards = archivedCards.filter(c => c.id !== cardId);
 		toasts.add('Card permanently deleted', 'info');
 	}
@@ -559,7 +654,8 @@
 	}
 
 	async function saveWipLimit(colId: number) {
-		const limit = Math.max(0, wipLimitInput);
+		// An emptied number input is not a number. That is "no limit", which is 0.
+		const limit = Number.isFinite(wipLimitInput) ? Math.max(0, Math.trunc(wipLimitInput)) : 0;
 		await updateColumn(colId, { wipLimit: limit });
 		const col = boardColumns.find(c => c.id === colId);
 		if (col) col.wipLimit = limit;
@@ -570,7 +666,7 @@
 
 	// ─── Blocked & On Hold Modals ────────────────────────────────────────────
 
-	let blockedState = $state<BlockedState>({ show: false, card: null, incomplete: 0, reason: 'subtasks' });
+	let blockedState = $state<BlockedState>({ show: false, card: null, incomplete: 0, reason: 'subtasks', subBoardId: null });
 	let onHoldState = $state<OnHoldState>({ show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 });
 
 	// ─── Completion prompt ───────────────────────────────────────────────────
@@ -611,7 +707,6 @@
 
 	async function confirmOnHold() {
 		await dndHandlers.confirmOnHold(onHoldState, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
-		logActivity('card_moved', `${onHoldState.cardTitle} → On Hold`, onHoldState.cardId);
 		onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
 	}
 
@@ -674,6 +769,7 @@
 		if (columnSorts[columnId]) {
 			columnSorts = { ...columnSorts, [columnId]: 'none' };
 		}
+		const started = toasts.navigation();
 		const result = await dndHandlers.handleCardDndFinalize(
 			columnId, e.detail.items, boardColumns,
 			data.board.id, currentUser?.username || '', currentUser?.emoji || '👤'
@@ -687,16 +783,20 @@
 				onHoldState = result.onHoldState;
 				boardColumns = result.updatedColumns;
 				break;
+			case 'refused':
+				// Not moved: the columns are put back as the server has them, and
+				// the server's words are said. No sound, no completion prompt.
+				toasts.add(result.message, 'error', started);
+				await invalidateAll();
+				break;
 			case 'committed':
 				boardColumns = result.updatedColumns;
 				for (const entry of result.movedCards) {
 					if (entry.isComplete) {
 						playCompleteSound();
-						logActivity('card_completed', `${entry.card.title} (${entry.fromName} → ${entry.toName})`, entry.card.id);
 						queueCompletionPrompt(entry.card);
 					} else {
 						playMoveSound();
-						logActivity('card_moved', `${entry.card.title} (${entry.fromName} → ${entry.toName})`, entry.card.id);
 					}
 					// Starting something that is still waiting on another card is
 					// allowed — sometimes you know better than the graph — but it
@@ -716,9 +816,9 @@
 
 	// ─── Activity Logging ────────────────────────────────────────────────────
 
-	function logActivity(action: string, detail: string, cardId?: number) {
-		api.logActivity(data.board.id, action, detail, currentUser?.username || '', currentUser?.emoji || '👤', cardId);
-	}
+	// The server writes the activity entry for every change it makes, with the
+	// user's id and where it came from. This page used to write a second one for
+	// each create, move, completion and delete, carrying neither.
 
 	async function loadActivities() {
 		loadingActivities = true;
@@ -792,7 +892,12 @@
 					<a href="/" class="breadcrumb-link breadcrumb-home" title="Dashboard">🔥</a>
 					<span class="breadcrumb-sep">›</span>
 					{#each data.breadcrumbs as crumb}
-						<a href={crumb.href} class="breadcrumb-link">{crumb.emoji} {crumb.label}</a>
+						<!-- A board above this one that the caller cannot open has no name and no link (card 2130). -->
+						{#if crumb.href}
+							<a href={crumb.href} class="breadcrumb-link">{crumb.emoji} {crumb.label}</a>
+						{:else}
+							<span class="breadcrumb-link breadcrumb-withheld">{crumb.emoji} {crumb.label}</span>
+						{/if}
 						<span class="breadcrumb-sep">›</span>
 					{/each}
 				</nav>
@@ -967,9 +1072,14 @@
 							{#if data.breadcrumbs && data.breadcrumbs.length > 0}
 								<button class="more-dropdown-item more-danger" onclick={() => {
 									showMoreMenu = false;
-									showConfirm('Delete Sub-board', `Delete "${boardName}" and all its cards? This cannot be undone.`, 'Delete', async () => {
+									showConfirm('Delete Sub-board', api.boardDeleteWarning(boardName), 'Delete', async () => {
 										const parentHref = data.breadcrumbs[data.breadcrumbs.length - 1]?.href || '/';
-										await fetch(`/api/boards/${data.board.id}`, { method: 'DELETE' });
+										const started = toasts.navigation();
+										const failure = await api.deleteFailure(() => api.deleteBoardApi(data.board.id), 'sub-board');
+										if (failure) {
+											toasts.add(failure, 'error', started);
+											return;
+										}
 										window.location.href = parentHref;
 									});
 								}}>
@@ -1163,6 +1273,8 @@
 								tabindex="0"
 								id="card-{card.id}"
 							>
+								<!-- The cover: a strip across the top, drawn only for a colour or a preset (card 2010). -->
+								{#if isCoverValue(card.coverUrl)}<div class="card-cover-strip" style="background: {card.coverUrl}" aria-hidden="true"></div>{/if}
 								{#if card.pinned}
 									<span class="pin-indicator" title="Pinned">📌</span>
 								{/if}
@@ -1353,7 +1465,7 @@
 				<div class="archive-empty">
 					<span class="archive-empty-icon">📦</span>
 					<p>No archived cards</p>
-					<p class="archive-empty-hint">Deleted cards will appear here for recovery</p>
+					<p class="archive-empty-hint">Archived cards appear here and can be restored</p>
 				</div>
 			{:else}
 				<div class="archive-list">
@@ -1370,7 +1482,7 @@
 									↩️ Restore
 								</button>
 								<button class="btn-ghost small danger" onclick={() => {
-									showConfirm('Delete Permanently', `Permanently delete "${card.title}"? This cannot be undone.`, 'Delete Forever', async () => {
+									showConfirm('Delete Permanently', api.cardDeleteWarning(card.title), 'Delete Forever', async () => {
 										await permanentlyDeleteCard(card.id);
 										confirmState.show = false;
 									});
@@ -1415,7 +1527,6 @@
 			if (!col) return;
 			const updates = [{ id: card.id, columnId: targetColId, position: col.cards.length }];
 			await api.reorderCards(updates, data.board.id, currentUser.name, currentUser.emoji);
-			logActivity('card_moved', `${card.title} → ${col.title}`, card.id);
 			toasts.add(`Moved to ${col.title}`);
 			// WIP limit violation alert
 			if (col.wipLimit > 0 && col.cards.length + 1 > col.wipLimit) {
@@ -1473,18 +1584,20 @@
 {#if blockedState.show}
 	<ConfirmModal
 		title="Cannot Complete"
-		message={blockedState.reason === 'subboard'
-			? `This card has ${blockedState.incomplete} incomplete task${blockedState.incomplete > 1 ? 's' : ''} on its sub-board. All sub-board tasks must be completed first.`
-			: `This card has ${blockedState.incomplete} incomplete subtask${blockedState.incomplete > 1 ? 's' : ''}. All subtasks must be completed before moving it to the Complete column.`
+		message={blockedState.reason === 'subtasks'
+			? `This card has ${blockedState.incomplete} incomplete subtask${blockedState.incomplete > 1 ? 's' : ''}. All subtasks must be completed before moving it to the Complete column.`
+			: blockedState.subBoardId === null
+				? `This card has ${blockedState.incomplete} incomplete task${blockedState.incomplete > 1 ? 's' : ''} on a sub-board you cannot open. All sub-board tasks must be completed first.`
+				: `This card has ${blockedState.incomplete} incomplete task${blockedState.incomplete > 1 ? 's' : ''} on its sub-board. All sub-board tasks must be completed first.`
 		}
-		confirmText={blockedState.reason === 'subboard' ? 'Open Sub-board' : 'Open Card'}
+		confirmText={blockedState.subBoardId !== null ? 'Open Sub-board' : 'Open Card'}
 		confirmDanger={false}
 		onConfirm={() => {
 			blockedState.show = false;
 			if (blockedState.card) {
-				if (blockedState.reason === 'subboard' && blockedState.card.subBoards.length > 0) {
-					const firstIncomplete = blockedState.card.subBoards.find(sb => sb.done < sb.total);
-					if (firstIncomplete) window.location.href = `/board/${firstIncomplete.id}`;
+				// A sub-board the caller cannot open is not offered: it is counted, not named.
+				if (blockedState.subBoardId !== null) {
+					window.location.href = `/board/${blockedState.subBoardId}`;
 				} else {
 					openCardModal(blockedState.card);
 				}
@@ -1532,8 +1645,9 @@
 
 <!-- Category Modal -->
 {#if showCategoryModal}
+	<!-- Not one a card here carries from a board the caller cannot open (card 2128): it is not theirs to manage. -->
 	<CategoryModal
-		categories={boardCategories}
+		categories={boardCategories.filter((c) => !c.carried)}
 		onAdd={async ({ name, color }) => {
 			await api.createCategory({ boardId: data.board.id, name, color });
 			await invalidateAll();
@@ -1684,6 +1798,13 @@
 
 	.breadcrumb-link:hover {
 		color: var(--text-primary);
+	}
+
+	/* Not a link: it does not answer the pointer as one. */
+	.breadcrumb-withheld,
+	.breadcrumb-withheld:hover {
+		color: var(--text-tertiary);
+		cursor: default;
 	}
 
 	.breadcrumb-sep {
@@ -1995,6 +2116,8 @@
 		border-radius: 5px 0 0 5px;
 		box-shadow: 2px 0 8px var(--strip-color, transparent);
 	}
+	/* Absolute, as the category strip is, so that nothing else on the card moves. */
+	.card-cover-strip { position: absolute; left: 0; right: 0; top: 0; height: 6px; pointer-events: none; }
 	.card-title { font-size: 0.85rem; font-weight: 500; line-height: 1.4; margin-bottom: var(--space-xs); cursor: text; }
 	.inline-edit-input {
 		width: 100%; font-size: 0.85rem; font-weight: 500; line-height: 1.4;
