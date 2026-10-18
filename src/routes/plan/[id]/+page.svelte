@@ -1464,8 +1464,9 @@
 
 	/* ─── Body & panels ────────────────────────────────────────────────── */
 
+	/* The page's last line stops above the user badge (card 2239). */
 	.plan-body {
-		padding: var(--space-xl); max-width: 1100px; width: 100%; margin: 0 auto;
+		padding: var(--space-xl) var(--space-xl) var(--user-badge-space); max-width: 1100px; width: 100%; margin: 0 auto;
 		display: flex; flex-direction: column; gap: var(--space-lg);
 	}
 
@@ -1942,7 +1943,7 @@
 
 	@media (max-width: 720px) {
 		.plan-header { flex-wrap: wrap; }
-		.plan-body { padding: var(--space-md); }
+		.plan-body { padding: var(--space-md) var(--space-md) var(--user-badge-space); }
 		.stat-row { gap: var(--space-lg); }
 	}
 </style>

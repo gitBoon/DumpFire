@@ -1,9 +1,9 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.33
+version: 1.34
 status: As-Built
-date: 2026-10-15
+date: 2026-10-18
 tags:
   - admin
   - operations
@@ -290,6 +290,8 @@ A backup made before this version does hold the sessions of whoever was signed i
 6. Enable failure email alerts
 
 Each setting is checked when it is saved, and one the server cannot use is refused with the setting named and nothing saved: a time written `HH:MM`, a retention of 1 to 100, a failure email of one address or more (separated by commas, semicolons or lines, and saved separated by commas), and for each destination a name, one of the four types, and its own fields, an SFTP port being a whole number from 1 to 65535 (`destinations[0].port must be a whole number from 1 to 65535`), and a port left empty being 22. A destination's text is at most 2,048 characters, but an SFTP private key and a Google service account's JSON, which are pasted in, at most 20,000. A Retention box left empty is not sent, and the retention saved before is kept. A save keeps what it does not send: until card 2117 a save that sent part of the settings wrote the defaults over the rest, and one that sent nothing switched the schedule off and removed every destination. A destination keeps only the fields of its type.
+
+**Retention on Google Drive** (card 2238). After each backup to a Google Drive destination, retention reads every `dumpfire-backup-*` file in the folder, however many there are, with what the connected account may do to each. A file it may delete is deleted, as before. A file it may only move to the trash goes to the trash, where Drive keeps it for 30 days, and the run's line says `moved to the trash` where it would say `deleted`. A copy in the trash is still a full copy of the database: for those 30 days the drive's managers can open and read it there, so empty it by hand sooner if that matters. A file it may do neither to is left where it is and not counted: one another account made (a service account used while setting up, for example), or one in a Shared drive where the account is not a Manager. Retention keeps its number of copies among the files it can remove, so with a retention of 7 and three such files the folder holds ten, and the seven go round as before. Each run that finds such files writes one `[WARN] [BACKUP]` line on the Audit page's Live Console, saying how many there are and naming the oldest. To clear it, remove those files by hand in Drive, signed in as their owner, or make the connected account a Manager of the Shared drive; from the next run they are counted and removed in their turn. A delete that fails for any other reason is still one `[ERROR] [BACKUP]` line naming the file, and the run goes on to the next. Until this change such a file was tried on every run, being the oldest, and each try was an `ERROR` line saying `File not found`.
 
 ### Manual Backup
 

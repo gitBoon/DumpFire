@@ -902,9 +902,10 @@
 	}
 
 	/* Content */
+	/* The page's last line stops above the user badge (card 2239). */
 	.reports-content {
 		flex: 1;
-		padding: var(--space-xl);
+		padding: var(--space-xl) var(--space-xl) var(--user-badge-space);
 		max-width: 800px;
 		margin: 0 auto;
 		width: 100%;
@@ -1183,7 +1184,7 @@
 	.empty-state p { font-size: 0.85rem; }
 
 	@media (max-width: 600px) {
-		.reports-content { padding: var(--space-md); }
+		.reports-content { padding: var(--space-md) var(--space-md) var(--user-badge-space); }
 		.form-row { flex-direction: column; }
 		.tab-bar { overflow-x: auto; }
 		.pdf-header { flex-direction: column; gap: var(--space-sm); }

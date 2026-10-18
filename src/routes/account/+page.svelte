@@ -696,9 +696,10 @@
 	.account-header h1 { flex: 1; font-size: 1.25rem; }
 	.back-btn { padding: var(--space-sm); }
 
+	/* The page's last line stops above the user badge (card 2239). */
 	.account-content {
 		max-width: 600px; margin: 0 auto;
-		padding: var(--space-2xl);
+		padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);
 		display: flex; flex-direction: column; gap: var(--space-xl);
 	}
 

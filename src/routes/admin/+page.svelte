@@ -2135,8 +2135,9 @@
 	}
 	.admin-header-right { display: flex; gap: var(--space-sm); }
 
+	/* The page's last line stops above the user badge (card 2239). */
 	.admin-content {
-		max-width: 800px; margin: 0 auto; padding: var(--space-2xl);
+		max-width: 800px; margin: 0 auto; padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);
 		display: flex; flex-direction: column; gap: var(--space-xl);
 	}
 

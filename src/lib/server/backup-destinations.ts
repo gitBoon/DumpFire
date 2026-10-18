@@ -24,7 +24,17 @@ export interface BackupDestination {
 	test(): Promise<{ success: boolean; message: string }>;
 	upload(data: Buffer, filename: string): Promise<void>;
 	list(): Promise<string[]>;
-	delete(filename: string): Promise<void>;
+	/**
+	 * Remove one backup. A destination that moved it to a trash, where it can
+	 * still be read for a time, says so with 'trashed' (card 2238).
+	 */
+	delete(filename: string): Promise<void | 'trashed'>;
+	/**
+	 * The backups retention may remove, oldest first, and those it may not and
+	 * leaves where they are (card 2238). A destination without it is counted
+	 * from `list()`, every file of which retention may remove.
+	 */
+	listForRetention?(): Promise<{ removable: string[]; setAside: string[] }>;
 }
 
 // ─── Destination Config Types ────────────────────────────────────────────────
@@ -316,32 +326,108 @@ export class GDriveDestination implements BackupDestination {
 		});
 	}
 
-	async list(): Promise<string[]> {
+	/**
+	 * Every backup in the folder, oldest first, with what this account may do
+	 * to it. Drive answers 100 files a page unless asked for more, and a folder
+	 * can hold more than one page of either, so every page is read.
+	 */
+	private async listBackups(): Promise<GDriveBackupFile[]> {
 		const drive = await this.getDrive();
-		const res = await drive.files.list({
-			q: `'${this.config.folderId}' in parents and trashed = false and name contains 'dumpfire-backup-'`,
-			fields: 'files(id,name)',
-			orderBy: 'name',
-			supportsAllDrives: true,
-			includeItemsFromAllDrives: true
-		});
-		return (res.data.files || []).map(f => f.name || '').filter(Boolean);
+		const files: GDriveBackupFile[] = [];
+		let pageToken: string | undefined;
+		let pages = 0;
+		do {
+			// A token Drive answers again and again would otherwise list for
+			// ever; 100 pages of 1,000 is far past any folder of backups.
+			if (++pages > GDRIVE_MAX_PAGES) {
+				throw new Error(`Google Drive listing of the backup folder went on for more than ${GDRIVE_MAX_PAGES} pages`);
+			}
+			const res = await drive.files.list({
+				q: `'${this.config.folderId}' in parents and trashed = false and name contains 'dumpfire-backup-'`,
+				fields: 'nextPageToken, files(id, name, capabilities(canDelete, canTrash))',
+				orderBy: 'name',
+				pageSize: 1000,
+				pageToken,
+				supportsAllDrives: true,
+				includeItemsFromAllDrives: true
+			});
+			for (const f of res.data.files || []) {
+				if (!f.id || !f.name) continue;
+				files.push({
+					id: f.id,
+					name: f.name,
+					canDelete: f.capabilities?.canDelete === true,
+					canTrash: f.capabilities?.canTrash === true
+				});
+			}
+			pageToken = res.data.nextPageToken || undefined;
+		} while (pageToken);
+		return files;
 	}
 
-	async delete(filename: string): Promise<void> {
-		const drive = await this.getDrive();
-		// Find the file by name in the folder
-		const res = await drive.files.list({
-			q: `'${this.config.folderId}' in parents and name = '${filename}' and trashed = false`,
-			fields: 'files(id)',
-			supportsAllDrives: true,
-			includeItemsFromAllDrives: true
-		});
-		const file = res.data.files?.[0];
-		if (file?.id) {
-			await drive.files.delete({ fileId: file.id, supportsAllDrives: true });
-		}
+	async list(): Promise<string[]> {
+		return (await this.listBackups()).map(f => f.name);
 	}
+
+	/**
+	 * The files listed for retention, by name, so that `delete` removes the
+	 * file that was listed, by its id, in the way the account may remove it.
+	 */
+	private listed = new Map<string, GDriveBackupFile>();
+
+	/**
+	 * A file the account can see but may neither delete nor trash (one another
+	 * identity made, or one in a Shared drive where the account is no Manager)
+	 * is set aside: Drive answers a delete of it with 404 File not found, and
+	 * it would be picked first on every run, being the oldest (card 2238).
+	 */
+	async listForRetention(): Promise<{ removable: string[]; setAside: string[] }> {
+		const files = await this.listBackups();
+		// Only removable files are kept by name, so that a set-aside file of the
+		// same name as a removable one is never the one tried.
+		this.listed = new Map(files.filter(f => f.canDelete || f.canTrash).map(f => [f.name, f]));
+		const removable: string[] = [];
+		const setAside: string[] = [];
+		for (const f of files) (f.canDelete || f.canTrash ? removable : setAside).push(f.name);
+		return { removable, setAside };
+	}
+
+	async delete(filename: string): Promise<void | 'trashed'> {
+		const drive = await this.getDrive();
+		let file = this.listed.get(filename);
+		if (!file) {
+			// Not from a listing for retention: find it by name, as before.
+			const res = await drive.files.list({
+				q: `'${this.config.folderId}' in parents and name = '${filename}' and trashed = false`,
+				fields: 'files(id)',
+				supportsAllDrives: true,
+				includeItemsFromAllDrives: true
+			});
+			const id = res.data.files?.[0]?.id;
+			if (!id) return;
+			file = { id, name: filename, canDelete: true, canTrash: false };
+		}
+		if (file.canDelete) {
+			await drive.files.delete({ fileId: file.id, supportsAllDrives: true });
+			this.listed.delete(filename);
+			return;
+		}
+		// Only to the trash, where Drive keeps it for 30 days.
+		await drive.files.update({ fileId: file.id, requestBody: { trashed: true }, supportsAllDrives: true });
+		this.listed.delete(filename);
+		return 'trashed';
+	}
+}
+
+/** The most pages of 1,000 files a Google Drive listing reads before it gives up. */
+const GDRIVE_MAX_PAGES = 100;
+
+/** A backup in a Google Drive folder, and what the account may do to it. */
+interface GDriveBackupFile {
+	id: string;
+	name: string;
+	canDelete: boolean;
+	canTrash: boolean;
 }
 
 // ─── OneDrive Provider ───────────────────────────────────────────────────────

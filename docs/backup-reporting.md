@@ -1,9 +1,9 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.14
+version: 1.15
 status: As-Built
-date: 2026-10-15
+date: 2026-10-18
 tags:
   - backup
   - reports
@@ -185,6 +185,8 @@ After each successful upload, the system:
 1. Lists all backup files at the destination
 2. Sorts oldest-first
 3. Deletes files exceeding the configured retention count
+
+On Google Drive the listing reads every page of the folder (up to 100 pages of 1,000 files; past that it stops with an error rather than follow a page token for ever) and each file's `capabilities.canDelete` and `canTrash` (card 2238), through the destination's optional `listForRetention()`. A file the account may delete is deleted by the id it was listed under; one it may only trash is moved to the trash, and logged `Retention cleanup: moved to the trash <name>` rather than `deleted` (its `delete()` answers `'trashed'`); one it may do neither to is set aside, not counted towards the retention number and not tried, and each run that finds any writes one `WARN` line saying how many and naming the oldest. The other destinations have no `listForRetention()` and are counted from `list()` as before. See [Configuring Backups](admin-guide.md#configuring-backups) for what to do about files set aside.
 
 ### Failure Notifications
 

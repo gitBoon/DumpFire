@@ -236,9 +236,10 @@
 {/if}
 
 <style>
+	/* The page's last line stops above the user badge (card 2239). */
 	.archived-page {
 		min-height: 100vh;
-		padding: 0 var(--space-xl) var(--space-2xl);
+		padding: 0 var(--space-xl) var(--user-badge-space);
 	}
 
 	.archived-header {

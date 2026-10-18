@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.27
+version: 1.28
 status: As-Built
 date: 2026-10-18
 tags:
@@ -1951,7 +1951,7 @@ The scheduler checks once a minute whether a backup is due. Each backup:
 1. Writes a complete copy of the database to a temporary file beside it with `VACUUM INTO`, which includes changes still in the write-ahead log. It then opens the copy with no journal, deletes every session, every unused invite and the key remembered browsers are signed with from it, masks every invite's token, any request link's token and the name typed at an old failed sign-in in its system log, and writes it out again with a second `VACUUM INTO` to a second temporary file, so that nothing of what was deleted is left in the file. It reads that second file and deletes both. The running database is not touched: nobody is signed out by a backup, and its own log is as it was. Every step of this is synchronous, so **the server answers no request from the start of the first `VACUUM INTO` until the second file has been read**: both copies, the masking, the deletes and the read, and not only the first copy. "Export Backup" stops it the same way. See "How long the server stops answering", below. Both temporary files are beside the database, on the volume, so it needs room for two copies while a backup is made, and none for a journal.
 2. Uploads the copy as it is, not compressed, to each configured destination as `dumpfire-backup-<UTC date and time>.db`
 3. Records the result for each destination in the `backup_log` table, which keeps the last 10 entries
-4. After a successful upload, deletes the oldest backups at that destination beyond the retention count (a retention of 0 keeps them all)
+4. After a successful upload, deletes the oldest backups at that destination beyond the retention count (a retention of 0 keeps them all). On Google Drive only the files the connected account may delete or trash are counted, and one it may not is left with one `WARN` line a run: see [Configuring Backups](admin-guide.md#configuring-backups)
 
 A failed upload is not retried. It is logged at `ERROR`, recorded in `backup_log` with the error, and emailed to the alert address if failure alerts are switched on and SMTP is configured. The destination is tried again at the next scheduled backup.
 

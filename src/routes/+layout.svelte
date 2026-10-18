@@ -96,6 +96,16 @@
 		min-height: 100vh;
 		position: relative;
 		z-index: 1;
+		/*
+		 * How far from the foot of the window a page's last line has to stop to
+		 * be clear of the user badge (card 2239): the badge's gap below it, its
+		 * height (8px padding twice and 1px border twice, then its tallest part:
+		 * the sign-out button's 28px, or the emoji's line, 1.2rem at the body's
+		 * line-height 1.5, whichever is taller at the root font size), a
+		 * space-sm gap above it, and the update bar while it shows. A page ends
+		 * its scroll, or its last line, here.
+		 */
+		--user-badge-space: calc(var(--space-lg) + 18px + max(28px, 1.8rem) + var(--space-sm) + var(--update-bar-space, 0px));
 	}
 
 	/*
@@ -138,7 +148,17 @@
 		opacity: 0.9;
 	}
 
-	/* User badge — fixed bottom-left, beneath the pages' windows (z-index 1000 and up) */
+	/*
+	 * User badge — fixed bottom-left, beneath the pages' windows (z-index 1000
+	 * and up). Opaque, over the global .glass's see-through background (2 to 6%
+	 * in every theme), so that a page's text under it does not read through it
+	 * (card 2239).
+	 */
+	.user-badge,
+	.user-badge:hover {
+		background: var(--bg-elevated);
+		box-shadow: var(--shadow-md);
+	}
 	.user-badge {
 		position: fixed;
 		bottom: calc(var(--space-lg) + var(--update-bar-space, 0px));

@@ -138,12 +138,13 @@
 </div>
 
 <style>
-	/* Full width at any size, scrolling down and never across. */
+	/* Full width at any size, scrolling down and never across, and ending its
+	   scroll above the user badge (card 2239). */
 	.list-view {
 		flex: 1; min-height: 0; min-width: 0;
 		display: flex; flex-direction: column;
 		overflow-y: auto; overflow-x: hidden;
-		padding: var(--space-lg);
+		padding: var(--space-lg) var(--space-lg) var(--user-badge-space);
 	}
 	.list-toolbar {
 		display: flex; align-items: flex-start; justify-content: space-between;

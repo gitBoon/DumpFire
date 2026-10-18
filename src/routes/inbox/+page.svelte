@@ -482,9 +482,10 @@
 		position: absolute; right: var(--space-xl);
 		width: 80px;
 	}
+	/* The page's last line stops above the user badge (card 2239). */
 	.inbox-content {
 		max-width: 800px; margin: 0 auto;
-		padding: var(--space-2xl);
+		padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);
 	}
 
 	/* Tabs */
