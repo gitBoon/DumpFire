@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.32
+version: 1.33
 status: As-Built
 date: 2026-10-15
 tags:
@@ -118,7 +118,7 @@ flowchart TD
 - **Send an invite** (📧) — mails the user a new invite link, with which they set a password themselves. It works for seven days. Any earlier invite to that account stops working as soon as the new one is sent, and the message says so. Whoever opens an older link is told it no longer works and to ask an administrator for a new one. When the user sets a password with the link, every session and every API key they had ends, and the invite page tells them so beforehand if they have keys
 - **Delete user** — permanently remove. See below for what goes with them
 
-**An invite ends when the account changes.** An invite not yet used stops working when the account's email address or role is changed, by you on this page or by a direct call, or by the user on their Account page: the mail may be in a mailbox the account no longer has, or was sent before the account was made an administrator. Changing a username or an emoji, or sending the role the account already has, ends nothing, and no such change signs anyone out. Whoever opens the old link is told it no longer works, and why it might not. Send a new invite with 📧. An invite already waiting before this rule was deployed works until it expires, within seven days. See [When an Account's Email or Role Changes](authentication-security.md#when-an-accounts-email-or-role-changes).
+**An invite ends when the account changes.** An invite not yet used stops working when the account's email address or role is changed, by you on this page or by a direct call, or by the user on their Account page: the mail may be in a mailbox the account no longer has, or was sent before the account was made an administrator. Changing a username or an emoji, or sending the role the account already has, ends nothing, and no such change signs anyone out. Whoever opens the old link is told it no longer works, and why it might not. Send a new invite with 📧. Invites waiting at the update that brings migration 0054 were ended by it, whatever their account; send again with 📧 the ones still wanted. See [When an Account's Email or Role Changes](authentication-security.md#when-an-accounts-email-or-role-changes).
 
 **Ten wrong passwords on the Account page.** The email form, the password form and Generate Key each ask for the current password, and so does the 🔑 dialog on your own row. After ten wrong ones in 15 minutes from one signed-in browser, that browser is refused at all three, the right password included, for up to 15 minutes: "Too many wrong passwords. Try again in N minute(s)." Signing in again, or another browser already signed in, is not held up, so a user who is refused can still change their password elsewhere, and an administrator can still reset it. An account can have at most five current-password checks and sign-ins from remembered browsers going at once, plus the new hash of each password change it completes, which the password form makes after giving its place back; that cannot hold up sign-ins from other browsers, invites and set-up, which are served at least every fourth job the threads take. A sixth current-password check at the same moment is answered "The server is very busy checking passwords right now. Wait a minute and try again.", and a sixth sign-in from a remembered browser "A sign-in with this name is already under way from another browser. Wait a few seconds and try again, or sign in from a browser you have used here before." Nobody using the pages one at a time meets either. See [Guessing a Current Password](authentication-security.md#guessing-a-current-password).
 
@@ -444,6 +444,14 @@ Attachment files are on the server's disk, in the `uploads` folder beside the da
 
 When an attachment's row is deleted, because the attachment itself, its card, its column or its board was deleted, its file is moved to a trash folder and removed 30 days later. Until then, importing a backup taken before the delete brings the attachment back, file included. There is no screen for the trash: files come back through **Import Backup**.
 
+**Files no attachment names go to the trash too** (card 2107). Every six hours, and first 15 minutes after the server starts, DumpFire looks through the card folders of the uploads folder for files that no attachment on any card names: a file left by a delete whose move to the trash failed, by an upload that was cut off, or by a permanent delete made before deleted cards' files went to the trash. Each one that has not changed for a day is moved to the trash, kept 30 days and then removed, like any other. It never touches a file an attachment names, a file written in the last day, or anything that is not a plain file in a card's own folder, and it does nothing at all if it cannot read the attachments. It runs only where the scheduled backups and reports run, so not on a copy started with `SCHEDULERS=off`.
+
+- **The first run after the update that brings it** moves every file left by permanent deletes made before then. The system log says how many in one `[INFO] [UPLOADS]` line on the Audit page's Live Console.
+- **Importing a backup within 30 days puts any of them back** that a restored attachment names, as it does for a deleted card's files.
+- **A restore that left the attachments out** says so in its result. Its files go to the trash at the next run, and importing a backup that has the attachments, within 30 days, puts them back.
+
+What the sweep reads, what it never touches and every line it writes are in [Deployment](deployment.md#the-sweep-files-no-attachment-names).
+
 ### How large an attachment can be
 
 A file of up to 25 MB can be attached to a card. A file that is not attached is listed under the upload area with the reason, one line a file, and the others of the same upload are still tried:
@@ -558,6 +566,13 @@ Each line carries a timestamp and its level before the module name:
 [2026-10-12T15:14:21.903Z] [INFO] [HTTP] GET /board/1 → 200 (12ms) | {"method":"GET","path":"/board/1","status":200,"durationMs":12}
 ```
 
+**After the update that brings migration 0053, everybody is signed out once**, you
+included (card 2106): see [Every Session Ended Once](authentication-security.md#every-session-ended-once-by-migration-0053).
+Until each browser signs in again, every request it makes with its old cookie writes a
+`WARN` line under `AUTH`, `Session validation failed — token not in DB (deleted or never issued)`. A few
+for each browser are expected that day; they stop as people sign in.
+The update that brings migration 0054 ends every invite not yet used, once: see [Every Unused Invite Ended Once](authentication-security.md#every-unused-invite-ended-once-by-migration-0054); send again with 📧 the ones still wanted.
+
 **The sign-in and password lines**, all under `AUTH`, on the Audit page's Live Console and at `GET /api/logs`:
 
 | Line | Level | When |
@@ -633,6 +648,11 @@ newest first. Administrators only. The Audit Log's filters apply together (card 
 So Action `card_completed` with Source All shows every completion, with Source API those
 made through the API, and with Source Web application those made on a page. The page asks
 `GET /api/audit`, which answers a `source` other than `ui` or `api` with `400`.
+
+**From** and **To** are whole days, in UTC: from today to today shows today's entries, the
+last minute's included (card 2095). Every time on the page, in both tabs, is the stored time,
+which is UTC, shown in your browser's own time zone, and the Live Console shows it to the
+second.
 
 ### A board beneath one of its own cards
 

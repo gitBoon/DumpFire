@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { inTransaction } from '$lib/server/db/transaction';
 import { recordTokenUsageBatch, getCardTokenTotals, TokenError } from '$lib/server/tokens';
 import { emit } from '$lib/server/events';

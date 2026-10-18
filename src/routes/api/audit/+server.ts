@@ -1,9 +1,9 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { activityLog, boards } from '$lib/server/db/schema';
-import { eq, desc, and, gte, lte, like, notLike } from 'drizzle-orm';
+import { eq, desc, and, gte, lte, like, notLike, sql } from 'drizzle-orm';
 import { actionCondition } from '$lib/server/logActivity';
-import { readLimit, readOffset, readQueryId } from '$lib/server/request-body';
+import { readLimit, readOffset, readQueryDate, readQueryId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
@@ -12,6 +12,9 @@ import type { RequestHandler } from './$types';
  * Internal twin of /api/v1/audit-log for the /audit page.
  * Filters: ?boardId=N &action=string (suffix * for prefix match) &source=ui|api
  *          &userId=N &from=ISO &to=ISO &limit=N (default 100, max 500) &offset=N
+ *
+ * `from` and `to` are each a date or a timestamp (`400 from is not a date`),
+ * read as `readQueryDate` reads them; a bare `to` includes its whole day.
  *
  * The action filter finds the action however it was done (card 2127):
  * `card_completed` finds the page's `card_completed` and the API's
@@ -39,8 +42,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const action = url.searchParams.get('action');
 	const source = url.searchParams.get('source');
 	const userId = readQueryId(url.searchParams.get('userId'), 'user', 'Invalid userId');
-	const from = url.searchParams.get('from');
-	const to = url.searchParams.get('to');
+	// Each bound a date or a timestamp, in the stored form, a bare `to` the
+	// whole of its day (card 2095, decision 10). They were compared as sent,
+	// so a bound in the other form gained or lost the day at its end, a bare
+	// `to` lost the whole of its day, and `from=yesterday` was taken.
+	const from = readQueryDate(url.searchParams.get('from'), 'from', 'lower');
+	const to = readQueryDate(url.searchParams.get('to'), 'to', 'upper');
 	const limit = readLimit(url.searchParams.get('limit'), { max: 500, fallback: 100 });
 	const offset = readOffset(url.searchParams.get('offset'));
 
@@ -50,7 +57,13 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	const conditions = [];
 	if (boardId !== undefined) conditions.push(eq(activityLog.boardId, boardId));
-	if (userId !== undefined) conditions.push(eq(activityLog.userId, userId));
+	// With a board as well, the person is asked as `+user_id`, which no index
+	// can answer, so SQLite reads the board's entries by the board's index.
+	// Asked plainly, it took the person's index for its order and read every
+	// entry of theirs to find the few on that board.
+	if (userId !== undefined) {
+		conditions.push(boardId !== undefined ? eq(sql`+${activityLog.userId}`, userId) : eq(activityLog.userId, userId));
+	}
 	if (action) {
 		conditions.push(actionCondition(action));
 		// Written with `api:` in front, it was done through the API.

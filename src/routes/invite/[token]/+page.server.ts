@@ -8,6 +8,7 @@ import { createSession, setSessionCookie, endAccountAccess } from '$lib/server/a
 import { CheckNotMade, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
 import { rememberBrowser } from '$lib/server/known-browsers';
 import { createLogger } from '$lib/server/logger';
+import { stamp, toStamp } from '$lib/timestamps';
 
 const log = createLogger('AUTH');
 
@@ -54,7 +55,8 @@ export const load: PageServerLoad = async ({ params }) => {
 
 /**
  * The invite, if it can set a password: it has not been used, it has not
- * expired, and its account is not the superadmin's.
+ * expired (and its expiry names a moment), and its account is not the
+ * superadmin's.
  *
  * Nobody may set the superadmin's password but the superadmin, who does so on
  * the Account page with the current one, and no route issues an invite for
@@ -64,7 +66,8 @@ export const load: PageServerLoad = async ({ params }) => {
  * the superadmin sends those.
  */
 function usableInvite(token: string) {
-	const now = new Date().toISOString();
+	// The stored form, as `issueInvite` writes the expiry (card 2095).
+	const now = stamp();
 	const found = db.select({ invite: inviteTokens, role: users.role })
 		.from(inviteTokens)
 		.innerJoin(users, eq(users.id, inviteTokens.userId))
@@ -75,6 +78,12 @@ function usableInvite(token: string) {
 		))
 		.get();
 	if (!found || found.role === 'superadmin') return undefined;
+	// The query compares text, which lets through an expiry that names no
+	// moment (`zzz` sorts after every stamp) and ISO with its `T` on the day
+	// itself; so the expiry is read as the moment it names as well, and one
+	// that names none has passed (the P6 review, S2).
+	const expires = toStamp(found.invite.expiresAt);
+	if (expires === null || expires <= now) return undefined;
 	return found.invite;
 }
 

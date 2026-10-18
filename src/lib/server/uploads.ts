@@ -10,12 +10,14 @@
  * name, and every path is built here. Backups hold the database and not the
  * files, so a file whose row is deleted is not removed: it is moved to the
  * trash, where an import of an earlier backup can find it again, and the
- * trash is emptied of anything older than 30 days.
+ * trash is emptied of anything older than 30 days. A file in a card's folder
+ * that no row names is moved to the trash the same way, by a sweep
+ * (`sweepUnnamed`, run by `uploads-sweep.ts`).
  *
  * Nothing here runs when the module is loaded, and nothing here touches the
  * database or the log. Each function says what it did and what it could not
  * do, and the caller logs it: `logger.ts` calls `emptyTrash`, so this module
- * must not import the logger.
+ * must not import the logger. The sweep's caller reads the rows it is given.
  *
  * The files are moved with the synchronous calls, so that a delete has moved
  * them before it answers.
@@ -146,6 +148,32 @@ function trashDirOf(cardId: number): string {
 }
 
 /**
+ * Refuse the trash, or a card's folder in it, when it is there and is not a
+ * plain folder: a link, or a junction on Windows (the P6 review, S3).
+ * `mkdirSync` with `recursive` takes a link to a folder for the folder, so a
+ * move would put the marker and the file wherever the link points, outside
+ * the uploads folder. Read with `lstat`, which does not follow a link; a
+ * folder that is not there yet is made by the move, as a plain folder.
+ */
+function refuseLinkedTrash(cardId: number): void {
+	for (const [path, called] of [
+		[join(uploadsDir(), TRASH), TRASH],
+		[trashDirOf(cardId), `${TRASH}/${folderName(cardId)}`]
+	]) {
+		let stat;
+		try {
+			stat = lstatSync(path);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+			throw err;
+		}
+		if (!stat.isDirectory()) {
+			throw new UploadPathError(`${called} in the uploads folder is a link, or not a folder: nothing is moved into it`);
+		}
+	}
+}
+
+/**
  * Refuse a file name that is not the plain name of a file in `dir`.
  *
  * After a restore a file name is data: it is whatever the backup held. A name
@@ -214,7 +242,9 @@ export type TrashResult = {
  * nothing is left in it, and is left alone if anything is. A file that is not
  * there is passed over. A file that cannot be moved, or whose name is
  * refused, is reported in `failed` and stops nothing: the rows are gone
- * whatever happens here.
+ * whatever happens here. So is every file of a card whose trash folder, or
+ * the trash itself, is a link (`refuseLinkedTrash`): nothing is moved through
+ * a link to somewhere outside the uploads folder.
  *
  * Throws only an `UploadsDirError`, for an uploads folder that is refused.
  */
@@ -234,6 +264,7 @@ export function moveToTrash(files: readonly UploadFile[], now: Date = new Date()
 			}
 			const trash = trashDirOf(file.cardId);
 			if (!marked.has(file.cardId)) {
+				refuseLinkedTrash(file.cardId);
 				// The marker goes in before the first file, so that a folder of
 				// the trash with a file in it always says how old it is. A folder
 				// added to again is dated again: nothing in it is removed sooner
@@ -374,6 +405,149 @@ export function putBackFromTrash(files: readonly UploadFile[]): PutBackResult {
 			// Gone already.
 		}
 		removeIfEmpty(trash);
+	}
+	return result;
+}
+
+// ─── Files no row names ─────────────────────────────────────────────────────
+
+/**
+ * The key of a file in the set `sweepUnnamed` is given: the card id and the
+ * file name, as `<cardId>/<filename>`. The card id is written as JavaScript
+ * writes a number, which is also the name of the card's folder, so that the
+ * key a row gives and the key a folder gives are the same text.
+ */
+export function uploadKey(cardId: number, filename: string): string {
+	return `${String(cardId)}/${filename}`;
+}
+
+/** A card's own folder: a whole number from 1 up, written with no leading zero. */
+const CARD_FOLDER = /^[1-9][0-9]*$/;
+
+export type SweepResult = {
+	/** Files that are in the trash now. */
+	moved: number;
+	/** Card folders at least one of those files came from. */
+	folders: number;
+	/** Card folders removed because the sweep moved the last file out of them. */
+	emptyRemoved: number;
+	/** Files no row names that were changed too recently to be moved. */
+	tooNew: number;
+	/**
+	 * Files left only because a row names them in another case (`notes.txt`,
+	 * a row naming `Notes.TXT`): that row's file where names are not told apart
+	 * by case, and a file no row reads where they are.
+	 */
+	caseOnly: number;
+	/** Card folders whose number is above the highest card id this database has issued. */
+	otherDatabase: string[];
+	/** Names in the uploads folder that are not a card's folder, `.trash` aside. */
+	notCardFolders: string[];
+	/** Files that are still where they were, each with why. */
+	failed: string[];
+};
+
+/**
+ * Move to the trash every file in a card's folder that no attachment row
+ * names, and that has not been changed for `marginMs`.
+ *
+ * `named` holds the `uploadKey` of every row; `highestCardId` is the highest
+ * card id the database has issued. The caller reads both, with no transaction
+ * open and nothing awaited between that and this, so no request can write a
+ * row in between. This module reads neither: it touches no database.
+ *
+ * What it leaves alone:
+ * - a file a row names, in any case of its name; one a row names only in
+ *   another case is counted in `caseOnly`, for the sweep's `WARN`;
+ * - a file changed within `marginMs` of `now`: an upload writes its file
+ *   before its row, so a file with no row yet may be an upload in progress;
+ * - anything that is not a plain file in a card's own folder: links, folders
+ *   inside a card's folder, `.trash`, and any name that is not exactly a card
+ *   id. A folder `07` is not card 7's, and is counted in `notCardFolders`;
+ * - a folder whose number is above `highestCardId`. Card ids are never used
+ *   twice, so it was made by another database. It is counted in
+ *   `otherDatabase`;
+ * - a folder it finds empty. A card's folder is removed only by
+ *   `moveToTrash`, once the sweep has moved the last file out of it.
+ *
+ * Every file goes through `moveToTrash`, given the folder's own number, so
+ * the path checked and the path moved are one path.
+ *
+ * Throws only an `UploadsDirError`, for an uploads folder that is refused.
+ */
+export function sweepUnnamed(
+	named: ReadonlySet<string>,
+	options: { now: Date; marginMs: number; highestCardId: number }
+): SweepResult {
+	const result: SweepResult = {
+		moved: 0,
+		folders: 0,
+		emptyRemoved: 0,
+		tooNew: 0,
+		caseOnly: 0,
+		otherDatabase: [],
+		notCardFolders: [],
+		failed: []
+	};
+	const root = uploadsDir();
+	const changedSince = options.now.getTime() - options.marginMs;
+	// Where names are not told apart by case (Windows, macOS), `Notes.TXT` and
+	// `notes.txt` are one file, and a row naming either reads it; so a file is
+	// left whose key a row names in any case (the P6 review, N5). Where they
+	// are told apart, such a file is only left for a person to look at, so it
+	// is counted in `caseOnly` and the sweep says how many in a `WARN`.
+	const namedAnyCase = new Set([...named].map((key) => key.toLowerCase()));
+
+	let names: string[];
+	try {
+		names = readdirSync(root);
+	} catch {
+		// No uploads folder yet: nothing has been uploaded.
+		return result;
+	}
+
+	for (const name of names.sort()) {
+		if (name === TRASH) continue;
+		const folder = join(root, name);
+		try {
+			const cardId = Number(name);
+			if (!CARD_FOLDER.test(name) || !Number.isSafeInteger(cardId) || !lstatSync(folder).isDirectory()) {
+				result.notCardFolders.push(name);
+				continue;
+			}
+			if (cardId > options.highestCardId) {
+				result.otherDatabase.push(name);
+				continue;
+			}
+
+			const unnamed: UploadFile[] = [];
+			for (const filename of readdirSync(folder)) {
+				const stat = lstatSync(join(folder, filename));
+				const key = uploadKey(cardId, filename);
+				if (!stat.isFile() || named.has(key)) continue;
+				if (namedAnyCase.has(key.toLowerCase())) {
+					result.caseOnly++;
+					continue;
+				}
+				if (stat.mtimeMs > changedSince) {
+					result.tooNew++;
+					continue;
+				}
+				unnamed.push({ cardId, filename });
+			}
+			if (unnamed.length === 0) continue;
+
+			const trashed = moveToTrash(unnamed, options.now);
+			result.moved += trashed.moved;
+			result.failed.push(...trashed.failed);
+			if (trashed.moved > 0) {
+				result.folders++;
+				if (!existsSync(folder)) result.emptyRemoved++;
+			}
+		} catch (err) {
+			if (err instanceof UploadsDirError) throw err;
+			result.failed.push(`${name}: ${messageOf(err)}`);
+		}
 	}
 	return result;
 }

@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { inTransaction } from '$lib/server/db/transaction';
 import { requireCard, requireColumn, requireUser } from '$lib/server/route-guards';
 import {

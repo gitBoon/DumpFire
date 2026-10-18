@@ -103,7 +103,9 @@ const TEST_FILES = [
 	'schedulers.test.ts',
 	'sub-board-depth.test.ts',
 	'test-helpers.test.ts',
+	'timestamps.test.ts',
 	'transaction.test.ts',
+	'uploads-sweep.test.ts',
 	'uploads.test.ts',
 	'user-delete.test.ts'
 ];

@@ -14,6 +14,7 @@
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
+	import { parseStamp } from '$lib/timestamps';
 
 	let { data }: { data: PageData } = $props();
 	let currentTheme = $state('light');
@@ -103,8 +104,12 @@
 		const end = new Date();
 		const endStr = end.toISOString();
 
+		// The dates as chosen. The server reads a bare date as the start of that
+		// day for periodStart and its last second for periodEnd, in UTC, so
+		// "1 to 14 October" includes the 14th; midnight at the start of the end
+		// date, which was sent, left it out (card 2095).
 		if (genPeriod === 'custom') {
-			return { start: genCustomStart ? new Date(genCustomStart).toISOString() : endStr, end: genCustomEnd ? new Date(genCustomEnd).toISOString() : endStr };
+			return { start: genCustomStart || endStr, end: genCustomEnd || endStr };
 		}
 
 		const start = new Date();
@@ -379,7 +384,9 @@
 
 	function formatDateTime(dateStr: string): string {
 		if (!dateStr) return '—';
-		const d = new Date(dateStr);
+		// A schedule's times are in the stored form, UTC with no zone: read as UTC.
+		const d = parseStamp(dateStr);
+		if (!d) return '—';
 		return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 	}
 

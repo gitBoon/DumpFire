@@ -12,6 +12,7 @@
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { PURGE_WARNING, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
+	import { parseStamp } from '$lib/timestamps';
 
 	let { data }: { data: PageData } = $props();
 
@@ -54,8 +55,8 @@
 
 	function formatArchiveDate(dateStr: string | null): string {
 		if (!dateStr) return 'Unknown';
-		const d = new Date(dateStr.endsWith('Z') ? dateStr : dateStr + 'Z');
-		if (isNaN(d.getTime())) return 'Unknown';
+		const d = parseStamp(dateStr);
+		if (!d) return 'Unknown';
 		const diff = Math.floor((Date.now() - d.getTime()) / 1000);
 		if (diff < 60) return 'just now';
 		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;

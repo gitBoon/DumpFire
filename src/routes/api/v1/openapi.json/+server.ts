@@ -1,4 +1,4 @@
-import { json } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import type { RequestHandler } from './$types';
 
 const spec = {
@@ -110,6 +110,16 @@ const spec = {
 			'and "colorTag must be a colour written #rrggbb, or empty" on POST /api/v1/boards/{boardId}/cards, PUT /api/v1/cards/{cardId}, POST /api/v1/cards/{cardId}/subtasks and PUT /api/v1/subtasks/{subtaskId}, where empty text clears the tag; ' +
 			'until then any text was stored, up to 32 characters where a length was checked, a style such as red;background:url(//x.io) included, and a colour is drawn into the page of everyone who opens the board; ' +
 			'a colour the row already holds, sent back unchanged, is accepted as it is, and one stored before this rule is returned as stored. ' +
+			'(53) every timestamp DumpFire stores is answered in ISO 8601 with Z, as 2026-10-14T08:00:00.000Z, in every answer under /api/v1/ (the data of a webhook body holds no stored time today, and would hold one in the same form): ' +
+			'a field that was YYYY-MM-DD HH:MM:SS, which names no zone, comes back in ISO 8601, which is createdAt everywhere, updatedAt on a row never edited, an audit-log entry\'s createdAt, ' +
+			'and the from and to of the activity report\'s period and of GET /api/v1/cards/{cardId}/board-history; a field that was ISO 8601 keeps its shape, but its fraction of a second is now always .000, ' +
+			'because a moment is kept to the whole second; a date (dueDate, targetDate, asOf) is unchanged; and every such field is now declared format: date-time in this document. ' +
+			'(54) a timestamp sent as the from or to of GET /api/v1/audit-log and GET /api/v1/reports/activity is read as ISO 8601, with or without a fraction and with Z or an offset, ' +
+			'as YYYY-MM-DD HH:MM:SS in UTC, or as a date, and anything else is answered 400 "from is not a date" or "to is not a date": the audit log compared what it was sent as text, unchecked, ' +
+			'so a bound written another way gained or lost the day at its end, and the activity report refused YYYY-MM-DD HH:MM:SS; a bound with an offset is read in UTC, and a date alone as `to` ' +
+			'is the whole of that day, to 23:59:59 UTC, in the audit log as in the report, where the audit log left that day out. ' +
+			'(55) PUT /api/v1/cards/{cardId} reads an archivedAt that is text as the moment it names, so the archivedAt a GET answered, sent back, is the stamp the card holds and changes nothing, ' +
+			'in ISO 8601 with any fraction or offset or as YYYY-MM-DD HH:MM:SS; null still restores the card, and any other value, true and a number included, is still answered 400. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -122,9 +132,15 @@ const spec = {
 			'and plain text. Two answers about a subtask\'s dependencies changed their status on that day too: a link between a subtask and ' +
 			'itself, or with an end that is archived, is answered 400 where it was 409, and removing a link that is not there is answered ' +
 			'404 where it was 200.\n\n' +
-			'**Timestamps.** Every timestamp DumpFire writes is UTC. Some are written `YYYY-MM-DD HH:MM:SS` and some as ISO 8601 with a `T` ' +
-			'and a `Z`, `2026-10-13T09:41:07.123Z`, and the same field can hold either: a new card\'s `updatedAt` is in the first form and is ' +
-			'in the second after the card is updated. So a value with no zone is UTC, and must be read as UTC.\n\n' +
+			'**Timestamps.** Every timestamp in an answer is UTC, in ISO 8601 with a `Z`, as `2026-10-14T08:00:00.000Z`. That holds for every stored ' +
+			'time, `createdAt`, `updatedAt`, `completedAt`, `archivedAt` and the rest, for the `from` and `to` of the activity report\'s period and of a ' +
+			'card\'s board history, and for the moments of answering, `generatedAt` and a webhook\'s own `timestamp`. Each such field is declared ' +
+			'`format: date-time`. A stored time is kept to the whole second, so its fraction is always `.000`; a moment of answering, `generatedAt` or a ' +
+			'webhook\'s `timestamp`, carries the milliseconds of the moment it was made. A date, such as `dueDate`, `targetDate` or `asOf`, is `YYYY-MM-DD`. ' +
+			'A timestamp sent as a parameter or in a body is read as ISO 8601, with or without a fraction and with a `Z` or an offset, as ' +
+			'`YYYY-MM-DD HH:MM:SS` in UTC, or as a date, and an offset is moved to UTC; a date alone is the start of that day, or, as the end of a range, ' +
+			'its last second, 23:59:59 UTC. Anything else is answered 400 naming the parameter. Until 2026-10-14 some stored times were answered as ' +
+			'`YYYY-MM-DD HH:MM:SS`, which names no zone, and the same field could be in either form (item 53).\n\n' +
 			'**The request body.** A body that is missing, is not valid JSON, or is JSON and not an object is answered 400 when the ' +
 			'operation reads it. The size limit is 512 KB on every operation here. A body that declares more than that in Content-Length is ' +
 			'answered 413 before the operation is reached, and before the key is looked at: its `message` says how large it is and what the ' +
@@ -219,8 +235,8 @@ const spec = {
 					categoryId: { type: ['integer', 'null'], description: 'The board category it is filed under on the dashboard, or null' },
 					isPublic: { type: 'boolean' },
 					createdBy: { type: ['integer', 'null'], description: 'The user who created it. null once that user has been deleted.' },
-					createdAt: { type: 'string' },
-					updatedAt: { type: 'string' }
+					createdAt: { type: 'string', format: 'date-time' },
+					updatedAt: { type: 'string', format: 'date-time' }
 				},
 				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'createdBy', 'createdAt', 'updatedAt']
 			},
@@ -248,8 +264,8 @@ const spec = {
 					categoryId: { type: ['integer', 'null'] },
 					isPublic: { type: 'boolean' },
 					createdBy: { type: ['integer', 'null'] },
-					createdAt: { type: 'string' },
-					updatedAt: { type: 'string' },
+					createdAt: { type: 'string', format: 'date-time' },
+					updatedAt: { type: 'string', format: 'date-time' },
 					columns: { type: 'array', items: { $ref: '#/components/schemas/Column' } }
 				},
 				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'createdBy', 'createdAt', 'updatedAt', 'columns']
@@ -274,13 +290,15 @@ const spec = {
 					pinned: { type: 'boolean' },
 					completedAt: {
 						type: ['string', 'null'],
+						format: 'date-time',
 						description: 'When the card was moved into, or created in, a Complete column. null while it is not in one: reopening a card clears it.'
 					},
 					firstCompletedAt: {
 						type: ['string', 'null'],
+						format: 'date-time',
 						description: 'When the card was first completed. Kept when it is reopened.'
 					},
-					archivedAt: { type: ['string', 'null'], description: 'When the card was archived, or null' },
+					archivedAt: { type: ['string', 'null'], format: 'date-time', description: 'When the card was archived, or null' },
 					coverUrl: {
 						type: ['string', 'null'],
 						description:
@@ -321,8 +339,8 @@ const spec = {
 						type: ['string', 'null'],
 						description: 'Reporting field: built, on UAT or live. null when not recorded.'
 					},
-					createdAt: { type: 'string' },
-					updatedAt: { type: 'string' }
+					createdAt: { type: 'string', format: 'date-time' },
+					updatedAt: { type: 'string', format: 'date-time' }
 				},
 				required: [
 					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
@@ -347,9 +365,9 @@ const spec = {
 					onHoldNote: { type: ['string', 'null'] },
 					businessValue: { type: ['string', 'null'] },
 					pinned: { type: 'boolean' },
-					completedAt: { type: ['string', 'null'] },
-					firstCompletedAt: { type: ['string', 'null'] },
-					archivedAt: { type: ['string', 'null'] },
+					completedAt: { type: ['string', 'null'], format: 'date-time' },
+					firstCompletedAt: { type: ['string', 'null'], format: 'date-time' },
+					archivedAt: { type: ['string', 'null'], format: 'date-time' },
 					coverUrl: {
 						type: ['string', 'null'],
 						description:
@@ -371,8 +389,8 @@ const spec = {
 					customerImpact: { type: ['string', 'null'] },
 					closeReason: { type: ['string', 'null'] },
 					releaseState: { type: ['string', 'null'] },
-					createdAt: { type: 'string' },
-					updatedAt: { type: 'string' },
+					createdAt: { type: 'string', format: 'date-time' },
+					updatedAt: { type: 'string', format: 'date-time' },
 					columnTitle: { type: 'string', description: 'Title of the column the card is in' },
 					subtaskCount: { type: 'integer', description: 'How many subtasks the card has' },
 					subtaskCompleted: { type: 'integer', description: 'How many of them are completed' }
@@ -401,9 +419,9 @@ const spec = {
 					onHoldNote: { type: ['string', 'null'] },
 					businessValue: { type: ['string', 'null'] },
 					pinned: { type: 'boolean' },
-					completedAt: { type: ['string', 'null'] },
-					firstCompletedAt: { type: ['string', 'null'] },
-					archivedAt: { type: ['string', 'null'] },
+					completedAt: { type: ['string', 'null'], format: 'date-time' },
+					firstCompletedAt: { type: ['string', 'null'], format: 'date-time' },
+					archivedAt: { type: ['string', 'null'], format: 'date-time' },
 					coverUrl: {
 						type: ['string', 'null'],
 						description:
@@ -425,8 +443,8 @@ const spec = {
 					customerImpact: { type: ['string', 'null'] },
 					closeReason: { type: ['string', 'null'] },
 					releaseState: { type: ['string', 'null'] },
-					createdAt: { type: 'string' },
-					updatedAt: { type: 'string' },
+					createdAt: { type: 'string', format: 'date-time' },
+					updatedAt: { type: 'string', format: 'date-time' },
 					columnTitle: { type: 'string', description: 'Title of the column the card is now in' },
 					boardId: { type: 'integer', description: 'The board the card is now on: another board after a move across boards' }
 				},
@@ -513,7 +531,7 @@ const spec = {
 					},
 					events: { type: 'array', items: { type: 'string' } },
 					active: { type: 'boolean' },
-					createdAt: { type: 'string' }
+					createdAt: { type: 'string', format: 'date-time' }
 				},
 				required: ['id', 'boardId', 'hasSecret', 'events', 'active', 'createdAt']
 			},
@@ -558,7 +576,7 @@ const spec = {
 							'Until 2026-10-14 they were given.'
 					},
 					createdByUserId: { type: ['integer', 'null'], description: 'Who recorded the link, where that is known' },
-					createdAt: { type: 'string', description: 'When the link was recorded' }
+					createdAt: { type: 'string', format: 'date-time', description: 'When the link was recorded' }
 				},
 				required: [
 					'id', 'kind', 'cardId', 'parentCardId', 'title', 'boardId', 'boardName', 'columnName', 'priority', 'resolved',
@@ -883,7 +901,7 @@ const spec = {
 					userName: { type: ['string', 'null'], description: 'The user\'s name as it was when the entry was written' },
 					userEmoji: { type: ['string', 'null'] },
 					source: { type: 'string', enum: ['ui', 'api'], description: 'Where the action came from. Never null.' },
-					createdAt: { type: 'string' },
+					createdAt: { type: 'string', format: 'date-time' },
 					boardName: { type: 'string', description: 'Name of the board, or "Unknown"' }
 				},
 				required: [
@@ -924,7 +942,7 @@ const spec = {
 								action: { type: 'string', description: 'The action as stored: an action done through the API has the prefix api:' },
 								detail: { type: ['string', 'null'] },
 								boardId: { type: 'integer' },
-								createdAt: { type: 'string' }
+								createdAt: { type: 'string', format: 'date-time' }
 							},
 							required: ['id', 'action', 'detail', 'boardId', 'createdAt']
 						}
@@ -949,9 +967,9 @@ const spec = {
 					onHoldNote: { type: ['string', 'null'] },
 					businessValue: { type: ['string', 'null'] },
 					pinned: { type: 'boolean' },
-					completedAt: { type: ['string', 'null'] },
-					firstCompletedAt: { type: ['string', 'null'] },
-					archivedAt: { type: ['string', 'null'] },
+					completedAt: { type: ['string', 'null'], format: 'date-time' },
+					firstCompletedAt: { type: ['string', 'null'], format: 'date-time' },
+					archivedAt: { type: ['string', 'null'], format: 'date-time' },
 					coverUrl: {
 						type: ['string', 'null'],
 						description:
@@ -973,8 +991,8 @@ const spec = {
 					customerImpact: { type: ['string', 'null'] },
 					closeReason: { type: ['string', 'null'] },
 					releaseState: { type: ['string', 'null'] },
-					createdAt: { type: 'string' },
-					updatedAt: { type: 'string' },
+					createdAt: { type: 'string', format: 'date-time' },
+					updatedAt: { type: 'string', format: 'date-time' },
 					boardId: { type: 'integer', description: 'The board the card is on' },
 					columnTitle: { type: 'string', description: 'Title of the column the card is in' },
 					subtasks: { type: 'array', items: { $ref: '#/components/schemas/Subtask' } },
@@ -998,8 +1016,8 @@ const spec = {
 					cardId: { type: 'integer' },
 					userId: { type: 'integer' },
 					content: { type: 'string' },
-					createdAt: { type: 'string' },
-					updatedAt: { type: 'string' },
+					createdAt: { type: 'string', format: 'date-time' },
+					updatedAt: { type: 'string', format: 'date-time' },
 					username: { type: 'string' },
 					userEmoji: { type: 'string' }
 				},
@@ -1148,8 +1166,8 @@ const spec = {
 					targetDate: { type: ['string', 'null'], description: 'The day the milestone is meant to be reached, as it was sent, or null' },
 					status: { type: 'string', enum: ['open', 'closed'] },
 					createdBy: { type: ['integer', 'null'], description: 'The user who created it' },
-					createdAt: { type: 'string' },
-					updatedAt: { type: 'string' }
+					createdAt: { type: 'string', format: 'date-time' },
+					updatedAt: { type: 'string', format: 'date-time' }
 				},
 				required: ['id', 'boardId', 'name', 'description', 'targetDate', 'status', 'createdBy', 'createdAt', 'updatedAt']
 			},
@@ -1165,8 +1183,8 @@ const spec = {
 					targetDate: { type: ['string', 'null'] },
 					status: { type: 'string', enum: ['open', 'closed'] },
 					createdBy: { type: ['integer', 'null'] },
-					createdAt: { type: 'string' },
-					updatedAt: { type: 'string' },
+					createdAt: { type: 'string', format: 'date-time' },
+					updatedAt: { type: 'string', format: 'date-time' },
 					boardName: { type: ['string', 'null'], description: 'Name of the board the milestone belongs to. null for a milestone that spans boards.' },
 					cardCount: { type: 'integer', description: 'How many cards are in the milestone' },
 					doneCount: { type: 'integer', description: 'How many of them are in a Complete column' },
@@ -1188,8 +1206,8 @@ const spec = {
 					targetDate: { type: ['string', 'null'] },
 					status: { type: 'string', enum: ['open', 'closed'] },
 					createdBy: { type: ['integer', 'null'] },
-					createdAt: { type: 'string' },
-					updatedAt: { type: 'string' },
+					createdAt: { type: 'string', format: 'date-time' },
+					updatedAt: { type: 'string', format: 'date-time' },
 					cards: {
 						type: 'array',
 						description:
@@ -1514,7 +1532,7 @@ const spec = {
 					cacheWrite1hTokens: { type: ['integer', 'null'], format: 'int64' },
 					apiCalls: { type: ['integer', 'null'], description: 'How many calls of the model the entry covers, where that was sent' },
 					note: { type: ['string', 'null'] },
-					createdAt: { type: 'string' }
+					createdAt: { type: 'string', format: 'date-time' }
 				},
 				required: [
 					'id', 'cardId', 'subtaskId', 'subtaskTitle', 'tokens', 'model', 'inputTokens', 'outputTokens', 'cacheReadTokens',
@@ -1686,8 +1704,8 @@ const spec = {
 							properties: {
 								boardId: { type: 'integer' },
 								boardName: { type: 'string', description: 'Name of the board, or "Board not visible to you" for one the key\'s user cannot see' },
-								from: { type: 'string', description: 'When the card arrived on the board' },
-								to: { type: ['string', 'null'], description: 'When it left. null on the span it is in now.' },
+								from: { type: 'string', format: 'date-time', description: 'When the card arrived on the board' },
+								to: { type: ['string', 'null'], format: 'date-time', description: 'When it left. null on the span it is in now.' },
 								current: { type: 'boolean', description: 'true on the span it is in now' }
 							},
 							required: ['boardId', 'boardName', 'from', 'to', 'current']
@@ -1719,10 +1737,10 @@ const spec = {
 					priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
 					columnTitle: { type: 'string' },
 					boardId: { type: 'integer' },
-					createdAt: { type: 'string' },
+					createdAt: { type: 'string', format: 'date-time' },
 					createdBy: { type: ['integer', 'null'] },
 					createdByName: { type: ['string', 'null'] },
-					completedAt: { type: ['string', 'null'] },
+					completedAt: { type: ['string', 'null'], format: 'date-time' },
 					milestoneId: { type: ['integer', 'null'] },
 					milestoneName: { type: ['string', 'null'] },
 					subtasks: {
@@ -1751,7 +1769,7 @@ const spec = {
 							properties: {
 								id: { type: 'integer' },
 								content: { type: 'string' },
-								createdAt: { type: 'string' },
+								createdAt: { type: 'string', format: 'date-time' },
 								username: { type: 'string' }
 							},
 							required: ['id', 'content', 'createdAt', 'username']
@@ -1801,8 +1819,8 @@ const spec = {
 					period: {
 						type: 'object',
 						properties: {
-							from: { type: 'string', description: 'Start of the window, UTC, as "YYYY-MM-DD HH:MM:SS"' },
-							to: { type: 'string', description: 'End of the window, in the same form' },
+							from: { type: 'string', format: 'date-time', description: 'Start of the window, UTC, in ISO 8601: a date sent as from is the start of that day' },
+							to: { type: 'string', format: 'date-time', description: 'End of the window, in the same form: a date sent as to is the last second of that day' },
 							days: { type: 'integer' }
 						},
 						required: ['from', 'to', 'days']
@@ -2086,7 +2104,7 @@ const spec = {
 									streak: 2,
 									activeCards: 5,
 									recentActivity: [
-										{ id: 9120, action: 'api:card_updated', detail: 'Updated fields: priority on "Deploy v2.1"', boardId: 1, createdAt: '2026-10-13 09:41:07' }
+										{ id: 9120, action: 'api:card_updated', detail: 'Updated fields: priority on "Deploy v2.1"', boardId: 1, createdAt: '2026-10-13T09:41:07.000Z' }
 									]
 								}
 							}
@@ -3796,7 +3814,7 @@ const spec = {
 											priority: 'high',
 											resolved: false,
 											createdByUserId: 2,
-											createdAt: '2026-10-13 09:41:07'
+											createdAt: '2026-10-13T09:41:07.000Z'
 										}
 									],
 									blocks: []
@@ -4969,13 +4987,17 @@ const spec = {
 						name: 'from',
 						in: 'query',
 						schema: { type: 'string' },
-						description: 'Entries created at or after this time. Compared as text with the stored time, which is UTC as "YYYY-MM-DD HH:MM:SS".'
+						description:
+							'Entries created at or after this moment: ISO 8601, with or without a fraction and with Z or an offset, which is read in UTC; YYYY-MM-DD HH:MM:SS in UTC; or a date, which is from the start of that day. ' +
+							'Anything else is 400 `from is not a date`: until 2026-10-14 it was compared as text with the stored time, unchecked (item 54).'
 					},
 					{
 						name: 'to',
 						in: 'query',
 						schema: { type: 'string' },
-						description: 'Entries created at or before this time, compared in the same way'
+						description:
+							'Entries created at or before this moment, read as `from` is, but a date alone is the whole of that day, to 23:59:59 UTC. ' +
+							'Anything else is 400 `to is not a date`: until 2026-10-14 a date alone left that day out.'
 					},
 					{
 						name: 'limit',
@@ -5019,7 +5041,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'source is neither ui nor api, or boardId, userId or cardId is not a whole number of 1 or more (`Invalid board ID`)',
+						description: 'source is neither ui nor api, boardId, userId or cardId is not a whole number of 1 or more (`Invalid board ID`), or from or to is not a date or a timestamp (`from is not a date`)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'source must be "ui" or "api"' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -5074,8 +5096,8 @@ const spec = {
 										targetDate: '2026-12-01',
 										status: 'open',
 										createdBy: 2,
-										createdAt: '2026-10-01 08:15:00',
-										updatedAt: '2026-10-01 08:15:00',
+										createdAt: '2026-10-01T08:15:00.000Z',
+										updatedAt: '2026-10-01T08:15:00.000Z',
 										boardName: null,
 										cardCount: 12,
 										doneCount: 5,
@@ -5137,8 +5159,8 @@ const spec = {
 									targetDate: '2026-12-01',
 									status: 'open',
 									createdBy: 2,
-									createdAt: '2026-10-01 08:15:00',
-									updatedAt: '2026-10-01 08:15:00'
+									createdAt: '2026-10-01T08:15:00.000Z',
+									updatedAt: '2026-10-01T08:15:00.000Z'
 								}
 							}
 						}
@@ -5186,8 +5208,8 @@ const spec = {
 									targetDate: '2026-12-01',
 									status: 'open',
 									createdBy: 2,
-									createdAt: '2026-10-01 08:15:00',
-									updatedAt: '2026-10-01 08:15:00',
+									createdAt: '2026-10-01T08:15:00.000Z',
+									updatedAt: '2026-10-01T08:15:00.000Z',
 									cards: [{ id: 1686, title: 'Rotate the signing keys', priority: 'high', columnId: 3, columnTitle: 'In Progress', boardId: 1, withheld: false }]
 								}
 							}
@@ -5252,7 +5274,7 @@ const spec = {
 									targetDate: '2026-12-01',
 									status: 'closed',
 									createdBy: 2,
-									createdAt: '2026-10-01 08:15:00',
+									createdAt: '2026-10-01T08:15:00.000Z',
 									updatedAt: '2026-10-13T09:41:07.000Z'
 								}
 							}
@@ -5725,7 +5747,7 @@ const spec = {
 											cacheWrite1hTokens: null,
 											apiCalls: null,
 											note: 'verification',
-											createdAt: '2026-10-13 10:02:31'
+											createdAt: '2026-10-13T10:02:31.000Z'
 										},
 										{
 											id: 311,
@@ -5741,7 +5763,7 @@ const spec = {
 											cacheWrite1hTokens: 0,
 											apiCalls: 14,
 											note: 'applied the fix',
-											createdAt: '2026-10-13 09:41:07'
+											createdAt: '2026-10-13T09:41:07.000Z'
 										}
 									]
 								}
@@ -6108,15 +6130,15 @@ const spec = {
 						in: 'query',
 						schema: { type: 'string' },
 						description:
-							'Start of the window, UTC: a date as YYYY-MM-DD, which is from the start of that day, or a full ISO time; a time with an offset, or with no zone, is read in UTC. ' +
-							'Default: 30 days before now. Anything else is 400 `from is not a date`: until 2026-10-14 it was not checked.'
+							'Start of the window, UTC: a date as YYYY-MM-DD, which is from the start of that day, a full ISO time, or YYYY-MM-DD HH:MM:SS in UTC; a time with an offset, or with no zone, is read in UTC. ' +
+							'Default: 30 days before now. Anything else is 400 `from is not a date`: until 2026-10-14 it was not checked, and YYYY-MM-DD HH:MM:SS was refused (item 54).'
 					},
 					{
 						name: 'to',
 						in: 'query',
 						schema: { type: 'string' },
 						description:
-							'End of the window, UTC: a date as YYYY-MM-DD, which is to the end of that day, or a full ISO time, read as `from` is. Default: now. Anything else is 400 `to is not a date`.'
+							'End of the window, UTC: a date as YYYY-MM-DD, which is to the end of that day, 23:59:59, or a time, read as `from` is. Default: now. Anything else is 400 `to is not a date`.'
 					},
 					{
 						name: 'boardIds',
@@ -6180,8 +6202,8 @@ const spec = {
 								example: {
 									cardId: 1713,
 									history: [
-										{ boardId: 4, boardName: 'Backlog', from: '2026-09-02 11:20:45', to: '2026-09-18 14:03:10', current: false },
-										{ boardId: 1, boardName: 'Sprint 43', from: '2026-09-18 14:03:10', to: null, current: true }
+										{ boardId: 4, boardName: 'Backlog', from: '2026-09-02T11:20:45.000Z', to: '2026-09-18T14:03:10.000Z', current: false },
+										{ boardId: 1, boardName: 'Sprint 43', from: '2026-09-18T14:03:10.000Z', to: null, current: true }
 									]
 								}
 							}

@@ -185,11 +185,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const allCompletedCards = enrichedCards.filter(c => c.bucket === 'Complete');
 	const totalCompletedCount = allCompletedCards.length;
 
-	// Sort completed cards by completedAt (most recent first), fallback to updatedAt
+	// Sort completed cards by completedAt (most recent first), fallback to
+	// updatedAt, and the newer card first within one second. Every timestamp is
+	// in the stored form (card 2095), so the text orders the moments; one in
+	// the ISO form sorted after every stored value of its day, and the cap
+	// below could cut a newer card (A7).
 	allCompletedCards.sort((a, b) => {
 		const aDate = a.completedAt || a.updatedAt || a.createdAt;
 		const bDate = b.completedAt || b.updatedAt || b.createdAt;
-		return bDate.localeCompare(aDate);
+		return bDate.localeCompare(aDate) || b.id - a.id;
 	});
 
 	const cappedCompleted = allCompletedCards.slice(0, completedLimit);

@@ -1,7 +1,9 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { buildActivityReport } from '$lib/server/activity-report';
 import { isAdmin } from '$lib/server/board-access';
 import { pathId, readQueryCount, readQueryDate, readQueryId } from '$lib/server/request-body';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 /**
@@ -10,9 +12,10 @@ import type { RequestHandler } from './$types';
  * Query parameters:
  *   ?userId=N            Report on one person's activity. Omit for everyone.
  *   ?from=ISO&to=ISO     Window. Bare dates are whole days, `to` inclusive.
- *                        Defaults to the last 30 days. Each is a date or a
- *                        timestamp (`400 from is not a date`); a timestamp
- *                        with an offset, or no zone, is read in UTC.
+ *                        Defaults to the last 30 days. Each is a date, a
+ *                        timestamp in ISO 8601 or `YYYY-MM-DD HH:MM:SS`
+ *                        (`400 from is not a date`); a timestamp with an
+ *                        offset is moved to UTC, and one with no zone is UTC.
  *   ?boardIds=1,2,3      Restrict to these boards. Omit for every board the
  *                        caller can see. Each is an id.
  *   ?include=subtasks,comments   Opt in to per-card detail.
@@ -36,12 +39,16 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		throw error(403, 'Only an admin can report on another user');
 	}
 
-	const to = readQueryDate(url.searchParams.get('to'), 'to') ?? new Date().toISOString();
+	// Both ends in the stored form (card 2095, decision 10), a bare date the
+	// whole of its day, so they compare as text. A bound in the stored form
+	// was read in the server's own zone by this check, and one it could not
+	// read at all passed it (A18).
+	const to = readQueryDate(url.searchParams.get('to'), 'to', 'upper') ?? stamp();
 	const from =
-		readQueryDate(url.searchParams.get('from'), 'from') ??
-		new Date(Date.now() - 30 * 86_400_000).toISOString();
+		readQueryDate(url.searchParams.get('from'), 'from', 'lower') ??
+		stamp(new Date(Date.now() - 30 * 86_400_000));
 
-	if (Date.parse(normalise(from, 'start')) > Date.parse(normalise(to, 'end'))) {
+	if (from > to) {
 		throw error(400, '`from` is after `to`');
 	}
 
@@ -82,15 +89,3 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	return json(report);
 };
-
-/**
- * Accept a bare date or a full ISO timestamp when sanity-checking the window.
- * A bare date is a whole day, as the report reads it: its start as the lower
- * bound, and its end as the upper one. A bare `to` was read as its start, so
- * `from=2026-10-14T09:00:00Z&to=2026-10-14`, which is the rest of that day,
- * was refused as `from` after `to` (card 2117).
- */
-function normalise(value: string, bound: 'start' | 'end'): string {
-	if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
-	return bound === 'start' ? `${value}T00:00:00.000Z` : `${value}T23:59:59.999Z`;
-}

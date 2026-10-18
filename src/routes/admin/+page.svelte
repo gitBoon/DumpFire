@@ -27,6 +27,7 @@
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
+	import { parseStamp } from '$lib/timestamps';
 
 	let { data }: { data: PageData } = $props();
 
@@ -511,11 +512,9 @@
 
 	function formatRelativeTime(dateStr: string): string {
 		if (!dateStr) return '—';
-		// SQLite datetime('now') returns 'YYYY-MM-DD HH:MM:SS' (UTC, no Z)
-		// Normalise to ISO: replace space with T and append Z if no timezone
-		const normalized = dateStr.includes('T') ? dateStr : dateStr.replace(' ', 'T') + 'Z';
-		const d = new Date(normalized);
-		if (isNaN(d.getTime())) return dateStr;
+		// The stored form, 'YYYY-MM-DD HH:MM:SS', is UTC with no zone: read as UTC.
+		const d = parseStamp(dateStr);
+		if (!d) return dateStr;
 		const now = new Date();
 		const diff = now.getTime() - d.getTime();
 		const mins = Math.floor(diff / 60000);

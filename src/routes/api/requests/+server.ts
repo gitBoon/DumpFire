@@ -10,6 +10,7 @@ import { checkRateLimit } from '$lib/server/rate-limit';
 import { addressToCount } from '$lib/server/client-address';
 import { readBody, readChoice, readEmail, readId, readText } from '$lib/server/request-body';
 import { requireBoard } from '$lib/server/route-guards';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 const PRIORITIES = ['low', 'medium', 'high', 'critical'] as const;
@@ -198,10 +199,7 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 			limit(`request-email:${email.toLowerCase()}`, 3, 60 * MINUTE);
 
 			// Requests nobody confirmed are dead weight; clear the old ones as we go.
-			const cutoff = new Date(Date.now() - UNVERIFIED_LIFETIME_DAYS * 24 * 60 * MINUTE)
-				.toISOString()
-				.replace('T', ' ')
-				.slice(0, 19);
+			const cutoff = stamp(new Date(Date.now() - UNVERIFIED_LIFETIME_DAYS * 24 * 60 * MINUTE));
 			db.delete(taskRequests)
 				.where(and(eq(taskRequests.status, 'unverified'), lt(taskRequests.createdAt, cutoff)))
 				.run();

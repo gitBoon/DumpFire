@@ -12,6 +12,7 @@ import { announceCardCreated, recordCardCreated } from '$lib/server/card-create'
 import { linkBaseUrl } from '$lib/server/email';
 import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { pathId, readBody, readChoice, readId, readText } from '$lib/server/request-body';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 /**
@@ -131,7 +132,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 				status: 'accepted',
 				resolvedBy: user.id,
 				resolvedCardId: newCard.id,
-				resolvedAt: new Date().toISOString()
+				resolvedAt: stamp()
 			}).where(eq(taskRequests.id, id)).run();
 
 			// Copy discussion messages as card comments
@@ -191,7 +192,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 				status: 'rejected',
 				resolvedBy: user.id,
 				rejectReason: rejectReason || null,
-				resolvedAt: new Date().toISOString()
+				resolvedAt: stamp()
 			}).where(eq(taskRequests.id, id)).run();
 
 			// Notify requester via email

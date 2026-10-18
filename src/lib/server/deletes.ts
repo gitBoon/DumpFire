@@ -45,6 +45,7 @@ import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
 import { createLogger } from './logger';
 import { moveToTrash, type UploadFile } from './uploads';
+import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DELETE');
 
@@ -329,7 +330,7 @@ export function archiveCard(
 		const card = cardAndBoard(cardId);
 		if (!card) return null;
 
-		const now = new Date().toISOString();
+		const now = stamp();
 		sqlite.prepare('UPDATE cards SET archived_at = ?, updated_at = ? WHERE id = ?').run(now, now, cardId);
 		logActivity({
 			boardId: card.boardId,

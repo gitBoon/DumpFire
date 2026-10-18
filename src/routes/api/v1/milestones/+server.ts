@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { inTransaction } from '$lib/server/db/transaction';
 import { listMilestones, createMilestone, requireMilestoneBoard, MilestoneError } from '$lib/server/milestones';
 import { logActivity } from '$lib/server/logActivity';

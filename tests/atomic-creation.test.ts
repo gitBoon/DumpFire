@@ -480,7 +480,7 @@ describe('POST /api/teams', () => {
 // ─── Restoring a card from the archive ──────────────────────────────────────
 
 describe('restoring a card from the archive', () => {
-	const ARCHIVED_AT = '2026-10-01T09:00:00.000Z';
+	const ARCHIVED_AT = '2026-10-01 09:00:00';
 
 	/** The card of the scene, archived, with a subtask that went nowhere. */
 	const withArchived = () => {

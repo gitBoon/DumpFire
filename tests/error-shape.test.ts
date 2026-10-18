@@ -46,14 +46,18 @@ const ROOT = process.cwd();
  * Answers this test cannot classify and that are right as they are, as
  * `'path/from/the/repository/root.ts:line': 'why'`.
  *
- * One entry. An entry that no longer matches a finding fails the test, so
+ * Two entries. An entry that no longer matches a finding fails the test, so
  * that the list cannot outlive its reasons.
  */
 const ALLOWED: Record<string, string> = {
 	'src/lib/server/api-errors.ts:235':
 		'jsonInPlaceOf: the JSON the gate puts in place of a failure that was not JSON. Its status is the ' +
 		'status of the answer it replaces, which cannot be written as a number, and its body is { message } ' +
-		'and nothing else. tests/gate.test.ts holds what it answers.'
+		'and nothing else. tests/gate.test.ts holds what it answers.',
+	'src/lib/server/v1-json.ts:76':
+		"json, the v1 API's own: SvelteKit's json given its caller's body and options, with each stored " +
+		'timestamp in ISO 8601 (card 2095, plan R1). Each call of it is read where it is made, as a call of ' +
+		"SvelteKit's json is: the import of it is read as one below."
 };
 
 /**
@@ -121,18 +125,23 @@ function check(file: string, source: string): Found {
 
 	// What this file calls `error`, `json` and `text` from @sveltejs/kit. A
 	// file that does not import one of them has no such call: `error` is also
-	// what a catch clause is often named.
+	// what a catch clause is often named. The `json` of `$lib/server/v1-json`,
+	// which every v1 handler answers with (card 2095), is SvelteKit's given
+	// the same body and options, and is read as it is.
 	const kit = new Map<string, string>();
 	for (const statement of tree.statements) {
 		if (
 			ts.isImportDeclaration(statement) &&
 			ts.isStringLiteral(statement.moduleSpecifier) &&
-			statement.moduleSpecifier.text === '@sveltejs/kit' &&
 			statement.importClause?.namedBindings &&
 			ts.isNamedImports(statement.importClause.namedBindings)
 		) {
+			const from = statement.moduleSpecifier.text;
 			for (const element of statement.importClause.namedBindings.elements) {
-				kit.set(element.name.text, (element.propertyName ?? element.name).text);
+				const imported = (element.propertyName ?? element.name).text;
+				if (from === '@sveltejs/kit' || (from === '$lib/server/v1-json' && imported === 'json')) {
+					kit.set(element.name.text, imported);
+				}
 			}
 		}
 	}

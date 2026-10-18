@@ -202,7 +202,7 @@ const FIELD_READERS: {
 	{ name: 'readChoice', read: (body, rule) => readChoice(body, 'f', { ...rule, from: ['low', 'high'] }), good: 'low', bad: 'urgent' },
 	{ name: 'readDate', read: (body, rule) => readDate(body, 'f', rule), good: '2026-10-14', bad: '2026-02-30' },
 	{ name: 'readTime', read: (body, rule) => readTime(body, 'f', rule), good: '09:00', bad: '24:00' },
-	{ name: 'readTimestamp', read: (body, rule) => readTimestamp(body, 'f', rule), good: '2026-10-14T09:00:00.000Z', bad: 'soon' },
+	{ name: 'readTimestamp', read: (body, rule) => readTimestamp(body, 'f', rule), good: '2026-10-14 09:00:00', bad: 'soon' },
 	{ name: 'readUrl', read: (body, rule) => readUrl(body, 'f', rule), good: 'https://example.test/h', bad: 'ftp://example.test' },
 	{ name: 'readEmail', read: (body, rule) => readEmail(body, 'f', rule), good: 'a@example.test', bad: 'a' },
 	{ name: 'readEmailText', read: (body, rule) => readEmailText(body, 'f', rule), good: 'a@example.test, b@example.test', bad: 'a, b' },
@@ -471,10 +471,15 @@ describe('readTimestamp', () => {
 	const WRONG = 'expiresAt must be a timestamp, such as 2027-01-01T09:00:00Z';
 	const stamp = (sent: unknown, rule: { future?: boolean } = {}) => outcome(() => readTimestamp({ expiresAt: sent }, 'expiresAt', rule));
 
-	it('hands back the moment in one form, whatever zone it was written in', () => {
-		expect(stamp('2027-01-01T09:30:00+02:00')).toEqual(handed('2027-01-01T07:30:00.000Z'));
-		expect(stamp('2027-01-01T07:30:00Z')).toEqual(handed('2027-01-01T07:30:00.000Z'));
-		expect(stamp('2027-01-01')).toEqual(handed('2027-01-01T00:00:00.000Z'));
+	it('hands back the moment in the stored form, whatever zone or form it was written in (card 2095)', () => {
+		expect(stamp('2027-01-01T09:30:00+02:00')).toEqual(handed('2027-01-01 07:30:00'));
+		expect(stamp('2027-01-01T07:30:00Z')).toEqual(handed('2027-01-01 07:30:00'));
+		expect(stamp('2027-01-01T07:30:00.000Z')).toEqual(handed('2027-01-01 07:30:00'));
+		expect(stamp('2027-01-01 07:30:00')).toEqual(handed('2027-01-01 07:30:00'));
+		// A date alone is the start of that day: a key expiring on it stops at 00:00 UTC.
+		expect(stamp('2027-01-01')).toEqual(handed('2027-01-01 00:00:00'));
+		// Seven digits of a fraction and an offset, as PowerShell's `Get-Date -Format o` writes (R7).
+		expect(stamp('2027-01-01T09:30:00.1234567+01:00')).toEqual(handed('2027-01-01 08:30:00'));
 	});
 
 	it('reads a time with no zone as UTC, as a date alone is, whatever zone the server is in', () => {
@@ -482,12 +487,13 @@ describe('readTimestamp', () => {
 		// A zone with no summer time and not on UTC, so that a time read in it is plainly not UTC.
 		process.env.TZ = 'Asia/Kolkata';
 		try {
-			expect(stamp('2027-07-01T09:30:00')).toEqual(handed('2027-07-01T09:30:00.000Z'));
-			expect(stamp('2027-07-01T09:30')).toEqual(handed('2027-07-01T09:30:00.000Z'));
-			expect(stamp('2027-07-01T09:30:00.5')).toEqual(handed('2027-07-01T09:30:00.500Z'));
-			expect(stamp('2027-07-01')).toEqual(handed('2027-07-01T00:00:00.000Z'));
-			// A zone written is kept.
-			expect(stamp('2027-07-01T09:30:00-01:00')).toEqual(handed('2027-07-01T10:30:00.000Z'));
+			expect(stamp('2027-07-01T09:30:00')).toEqual(handed('2027-07-01 09:30:00'));
+			expect(stamp('2027-07-01T09:30')).toEqual(handed('2027-07-01 09:30:00'));
+			// A fraction of a second is dropped: the stored form is whole seconds.
+			expect(stamp('2027-07-01T09:30:00.5')).toEqual(handed('2027-07-01 09:30:00'));
+			expect(stamp('2027-07-01')).toEqual(handed('2027-07-01 00:00:00'));
+			// A zone written is read.
+			expect(stamp('2027-07-01T09:30:00-01:00')).toEqual(handed('2027-07-01 10:30:00'));
 		} finally {
 			if (zone === undefined) delete process.env.TZ;
 			else process.env.TZ = zone;
@@ -495,14 +501,14 @@ describe('readTimestamp', () => {
 	});
 
 	it('refuses anything that is not a moment so written', () => {
-		for (const sent of ['banana', '2027-02-30T00:00:00Z', '2027-01-01 09:00', '2027-01-01T25:00:00Z', '1', 1798761600000, null]) {
+		for (const sent of ['banana', '2027-02-30T00:00:00Z', '2027-01-01 25:00:00', '2027-01-01T25:00:00Z', '1', 1798761600000, true, null]) {
 			expect(stamp(sent), JSON.stringify(sent)).toEqual(refused(WRONG));
 		}
 	});
 
 	it('refuses a moment that has come, where one in the future is asked for', () => {
 		expect(stamp('2000-01-01T00:00:00Z', { future: true })).toEqual(refused('expiresAt must be in the future'));
-		expect(stamp('2999-01-01T00:00:00Z', { future: true })).toEqual(handed('2999-01-01T00:00:00.000Z'));
+		expect(stamp('2999-01-01T00:00:00Z', { future: true })).toEqual(handed('2999-01-01 00:00:00'));
 	});
 });
 
@@ -733,11 +739,16 @@ describe('the query readers, which take the value and not the name (R7)', () => 
 		expect(outcome(() => readQueryId('x', 'board', 'Invalid boardId'))).toEqual(refused('Invalid boardId'));
 	});
 
-	it('readQueryDate reads a date or a timestamp, and refuses anything else (decision 17)', () => {
+	it('readQueryDate reads a date or a timestamp, in the stored form, and refuses anything else (decision 17; card 2095)', () => {
 		expect([null, ''].map((value) => readQueryDate(value, 'from'))).toEqual([undefined, undefined]);
-		expect(readQueryDate('2026-10-14', 'from')).toBe('2026-10-14');
-		expect(readQueryDate('2026-10-14T09:00:00Z', 'from')).toBe('2026-10-14T09:00:00Z');
-		for (const value of ['yesterday', '2026-13-01', '14/10/2026', '1']) {
+		expect(readQueryDate('2026-10-14T09:00:00Z', 'from')).toBe('2026-10-14 09:00:00');
+		expect(readQueryDate('2026-10-14T09:00:00.999Z', 'from')).toBe('2026-10-14 09:00:00');
+		expect(readQueryDate('2026-10-14 09:00:00', 'from')).toBe('2026-10-14 09:00:00');
+		// A date alone is the whole of that day: its first second as a lower bound, its last as an upper one.
+		expect(readQueryDate('2026-10-14', 'from')).toBe('2026-10-14 00:00:00');
+		expect(readQueryDate('2026-10-14', 'to', 'upper')).toBe('2026-10-14 23:59:59');
+		expect(readQueryDate('2026-10-14T09:00:00Z', 'to', 'upper')).toBe('2026-10-14 09:00:00');
+		for (const value of ['yesterday', '2026-13-01', '2026-02-30', '14/10/2026', '1']) {
 			expect(outcome(() => readQueryDate(value, 'from')), value).toEqual(refused('from is not a date'));
 		}
 	});
@@ -748,13 +759,14 @@ describe('the query readers, which take the value and not the name (R7)', () => 
 		process.env.TZ = 'Asia/Kolkata';
 		try {
 			// A stored timestamp is compared as text: `09:00+02:00` compared as written is two hours out.
-			expect(readQueryDate('2026-10-14T09:00:00+02:00', 'from')).toBe('2026-10-14T07:00:00.000Z');
-			expect(readQueryDate('2026-10-14T09:00:00-01:30', 'from')).toBe('2026-10-14T10:30:00.000Z');
+			expect(readQueryDate('2026-10-14T09:00:00+02:00', 'from')).toBe('2026-10-14 07:00:00');
+			expect(readQueryDate('2026-10-14T09:00:00-01:30', 'from')).toBe('2026-10-14 10:30:00');
 			// No zone is UTC, as the API's own timestamps are, and not the server's zone.
-			expect(readQueryDate('2026-10-14T09:00:00', 'from')).toBe('2026-10-14T09:00:00.000Z');
-			expect(readQueryDate('2026-10-14T09:00', 'from')).toBe('2026-10-14T09:00:00.000Z');
-			// A date stays a date: a report reads one as a whole day.
-			expect(readQueryDate('2026-10-14', 'to')).toBe('2026-10-14');
+			expect(readQueryDate('2026-10-14T09:00:00', 'from')).toBe('2026-10-14 09:00:00');
+			expect(readQueryDate('2026-10-14T09:00', 'from')).toBe('2026-10-14 09:00:00');
+			expect(readQueryDate('2026-10-14 09:00:00', 'from')).toBe('2026-10-14 09:00:00');
+			// A date is the whole day in UTC, whatever the server's zone.
+			expect(readQueryDate('2026-10-14', 'to', 'upper')).toBe('2026-10-14 23:59:59');
 		} finally {
 			if (zone === undefined) delete process.env.TZ;
 			else process.env.TZ = zone;
@@ -1945,9 +1957,9 @@ describe('the handlers of /api/v1/ that card 2117’s second slice moved onto th
 
 	it('restores a card with archivedAt null, and does nothing else with it (decision 12)', async () => {
 		const w = world();
-		db.update(cards).set({ archivedAt: '2026-10-01T00:00:00.000Z' }).where(eq(cards.id, w.cardId)).run();
+		db.update(cards).set({ archivedAt: '2026-10-01 00:00:00' }).where(eq(cards.id, w.cardId)).run();
 
-		// The stamp the card holds, sent back, changes nothing.
+		// The stamp the card holds, sent back as this API answers it (ISO 8601, card 2095), changes nothing.
 		const kept = await api('PUT', `/api/v1/cards/${w.cardId}`, { user: w.owner, body: { title: 'Renamed', archivedAt: '2026-10-01T00:00:00.000Z' } });
 		expect(kept.status, JSON.stringify(kept.body)).toBe(200);
 		expect(kept.body.archivedAt).toBe('2026-10-01T00:00:00.000Z');
@@ -1982,7 +1994,7 @@ describe('the handlers of /api/v1/ that card 2117’s second slice moved onto th
 	it('puts no archived card into a milestone, in the words of the batch (decision 15)', async () => {
 		const w = world();
 		const column = db.select().from(columns).where(eq(columns.id, w.columnId)).get()!;
-		const archived = makeCard(column, { archivedAt: '2026-10-01T00:00:00.000Z' });
+		const archived = makeCard(column, { archivedAt: '2026-10-01 00:00:00' });
 		const before = snapshotDb();
 
 		const one = await api('POST', `/api/v1/milestones/${w.milestoneId}/cards`, { user: w.owner, body: { cardId: archived.id } });
@@ -2026,7 +2038,8 @@ describe('the handlers of /api/v1/ that card 2117’s second slice moved onto th
 		// 09:00 at +02:00 is 07:00 UTC: compared as written, it was two hours out.
 		const shifted = await report(`from=${encodeURIComponent('2026-10-14T09:00:00+02:00')}&to=2026-10-15`);
 		expect(shifted.status, JSON.stringify(shifted.body)).toBe(200);
-		expect(shifted.body.period).toMatchObject({ from: '2026-10-14 07:00:00', to: '2026-10-15 23:59:59' });
+		// Read in the stored form, a bare `to` the whole of its day, and answered in ISO 8601 (card 2095).
+		expect(shifted.body.period).toMatchObject({ from: '2026-10-14T07:00:00.000Z', to: '2026-10-15T23:59:59.000Z' });
 	});
 
 	it('answers an average cycle time of 0 as 0, where it was null (decision 17)', async () => {
@@ -2501,7 +2514,7 @@ describe('the web application’s work routes that card 2117’s third slice mov
 	it('puts no archived card into a milestone from the card window, in the words of the batch (decision 15)', async () => {
 		const w = world();
 		const column = db.select().from(columns).where(eq(columns.id, w.columnId)).get()!;
-		const archived = makeCard(column, { archivedAt: '2026-10-01T00:00:00.000Z' });
+		const archived = makeCard(column, { archivedAt: '2026-10-01 00:00:00' });
 		const before = snapshotDb();
 
 		const res = await api('PATCH', `/api/milestones/${w.milestoneId}`, { user: w.owner, body: { cardId: archived.id } });
@@ -3022,8 +3035,8 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		});
 
 		expect(res.status, JSON.stringify(res.body)).toBe(201);
-		expect(res.body.expiresAt).toBe('2099-01-01T07:30:00.000Z');
-		expect(db.select({ expiresAt: apiKeys.expiresAt }).from(apiKeys).get()).toEqual({ expiresAt: '2099-01-01T07:30:00.000Z' });
+		expect(res.body.expiresAt).toBe('2099-01-01 07:30:00');
+		expect(db.select({ expiresAt: apiKeys.expiresAt }).from(apiKeys).get()).toEqual({ expiresAt: '2099-01-01 07:30:00' });
 	});
 
 	it('holds a username and an email to POST’s rules on PUT /api/users/:id, and answers a duplicate 409 where it was a 500 (decision 14)', async () => {
@@ -3225,7 +3238,7 @@ describe('the review fixes to card 2117’s slices 2 to 5 (version 1.7)', () => 
 	it('restores a card before it puts it in a milestone, and keeps it archived when the milestone is refused (fault 14)', async () => {
 		const w = world();
 		const column = db.select().from(columns).where(eq(columns.id, w.columnId)).get()!;
-		const stamp = '2026-10-01T00:00:00.000Z';
+		const stamp = '2026-10-01 00:00:00';
 		const archived = makeCard(column, { archivedAt: stamp });
 
 		// It was refused as archived: the milestone was set before the card was restored.

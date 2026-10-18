@@ -30,6 +30,7 @@ import {
 	readNumber,
 	readText
 } from '$lib/server/request-body';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 /**
@@ -181,7 +182,7 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 			if (changed.length > 0) {
 				const written = db
 					.update(cards)
-					.set({ ...fields, updatedAt: new Date().toISOString() })
+					.set({ ...fields, updatedAt: stamp() })
 					.where(eq(cards.id, id))
 					.returning()
 					.get();

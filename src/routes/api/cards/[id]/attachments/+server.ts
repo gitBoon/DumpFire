@@ -56,7 +56,19 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	let madeDir = false;
 	try {
 		madeDir = (await mkdir(cardDir(cardId), { recursive: true })) !== undefined;
-		await writeFile(filePath, buffer);
+		try {
+			await writeFile(filePath, buffer);
+		} catch (err) {
+			// The sweep of files no row names (uploads-sweep.ts) can run between
+			// the two awaits, move the folder's last file to the trash and remove
+			// the folder it left empty. The folder is made again, once: the
+			// sweep removes only a folder it emptied, and it moves no file
+			// changed in the last 24 hours, so the folder holding the file just
+			// written stays.
+			if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+			madeDir = (await mkdir(cardDir(cardId), { recursive: true })) !== undefined || madeDir;
+			await writeFile(filePath, buffer);
+		}
 
 		const attachment = inTransaction(() => {
 			// The card may have gone, or the caller's access to it, since the

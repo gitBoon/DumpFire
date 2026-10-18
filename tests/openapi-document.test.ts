@@ -66,6 +66,7 @@ import {
 	webhooks
 } from '$lib/server/db/schema';
 import { MAX_TOKENS_PER_ENTRY } from '$lib/server/tokens';
+import { stamp } from '$lib/timestamps';
 import { api as call, routeMethods, routePatterns, type ApiOptions, type ApiResult } from './helpers/api';
 import {
 	addBoardMember,
@@ -83,6 +84,13 @@ import {
 
 const ROOT = process.cwd();
 const KIT = '@sveltejs/kit';
+/**
+ * The v1 API's own `json` (card 2095, plan R1): SvelteKit's, given the same
+ * body and options, with each stored timestamp in ISO 8601. A call of it is
+ * read as a call of SvelteKit's `json` is, by the options written where it is
+ * made.
+ */
+const V1_JSON = '$lib/server/v1-json';
 
 /**
  * How many operations the document has.
@@ -285,6 +293,7 @@ function reading(file: string, name: string): Reading {
 	};
 	const fromKit = (called: string) => {
 		const imported = source.imports.get(called);
+		if (imported?.module === V1_JSON && imported.name === 'json') return 'json';
 		return imported?.module === KIT ? imported.name : null;
 	};
 
@@ -1971,7 +1980,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		makeSubtask(outside, { completed: true });
 		const milestone = makeMilestone({ createdBy: admin, cards: [first, second, archived] });
 		makeDependency({ blocked: first, blocker: outside });
-		db.update(cards).set({ archivedAt: new Date().toISOString() }).where(eq(cards.id, archived.id)).run();
+		db.update(cards).set({ archivedAt: stamp() }).where(eq(cards.id, archived.id)).run();
 		const empty = makeMilestone({ createdBy: admin, cards: [makeCard(cols['To Do'])] });
 
 		const schema = answerSchema('GET /api/v1/milestones/{milestoneId}/summary', 200);
@@ -2253,7 +2262,7 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	it('GET /reports/activity: with no parameters, and with everything it can include', async () => {
 		const { admin, board, cols, first } = fixture();
-		const done = makeCard(cols['Complete'], { completedAt: new Date().toISOString() });
+		const done = makeCard(cols['Complete'], { completedAt: stamp() });
 		makeMilestone({ board, cards: [done] });
 		makeSubtask(first);
 		makeComment(first, admin);
@@ -2372,7 +2381,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		const step = makeSubtask(first);
 		const comment = makeComment(first, admin);
 		assignCard(first, admin);
-		makeCard(cols['Complete'], { completedAt: new Date().toISOString() });
+		makeCard(cols['Complete'], { completedAt: stamp() });
 		// A second board with open work, so that the burndown spans two and estimates each.
 		makeCard(makeBoard({ owner: admin }).cols['To Do']);
 

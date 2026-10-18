@@ -17,6 +17,7 @@ import { eq } from 'drizzle-orm';
 import { db } from './db';
 import { inTransaction } from './db/transaction';
 import { cards, columns, type Card } from './db/schema';
+import { stamp } from '$lib/timestamps';
 import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
 
 /** Who is restoring: the signed-in user. */
@@ -51,7 +52,7 @@ export function restoreCard(
 
 		const restored = db
 			.update(cards)
-			.set({ archivedAt: null, updatedAt: new Date().toISOString() })
+			.set({ archivedAt: null, updatedAt: stamp() })
 			.where(eq(cards.id, cardId))
 			.returning()
 			.get()!;

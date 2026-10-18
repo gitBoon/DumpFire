@@ -48,6 +48,23 @@ import {
 	type BoardFixture
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { sweepUploads } from '$lib/server/uploads-sweep';
+
+// The upload route's `mkdir`, with a hook a test can set to run straight after
+// it once: where the sweep can run, between the folder made and the file
+// written. Every other call is the real one.
+const afterMkdir = vi.hoisted(() => ({ once: null as null | (() => void) }));
+vi.mock('fs/promises', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('fs/promises')>();
+	const mkdir = (async (...args: Parameters<typeof actual.mkdir>) => {
+		const made = await actual.mkdir(...args);
+		const hook = afterMkdir.once;
+		afterMkdir.once = null;
+		hook?.();
+		return made;
+	}) as typeof actual.mkdir;
+	return { ...actual, default: { ...actual, mkdir }, mkdir };
+});
 
 const DAY = 86_400_000;
 
@@ -551,6 +568,29 @@ describe('uploading an attachment', () => {
 		expect(res.body.message).toBe('Card not found');
 		expect(rows()).toEqual([]);
 		expect(fileIn(card.id)).toBe(false);
+	});
+
+	it('writes the file when the sweep empties and removes the card’s folder between the folder made and the file written (N4)', async () => {
+		// The card's folder holds a two-day-old file no row names. The upload's
+		// mkdir finds the folder there, the sweep runs on the next turn, moves
+		// that file to the trash and removes the folder it left empty, and the
+		// write then has no folder to write into.
+		mkdirSync(at(card.id), { recursive: true });
+		writeFileSync(at(card.id, 'stray.txt'), 'stray');
+		const old = new Date(Date.now() - 2 * DAY);
+		utimesSync(at(card.id, 'stray.txt'), old, old);
+		let swept = false;
+		afterMkdir.once = () => {
+			swept = sweepUploads()?.emptyRemoved === 1;
+		};
+
+		const res = await upload(card, page());
+
+		expect(swept).toBe(true);
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(rows()).toHaveLength(1);
+		expect(readFileSync(at(card.id, res.body.filename), 'utf8')).toBe('<p>hello</p>');
+		expect(fileIn('.trash', card.id, 'stray.txt')).toBe(true);
 	});
 
 	it('is refused before anything is written to a caller who cannot edit the card', async () => {

@@ -31,6 +31,7 @@ import { db } from './db';
 import { afterCommit, inTransaction } from './db/transaction';
 import { cards, type Card, type Column } from './db/schema';
 import { isCompleteColumnTitle } from '$lib/column-role';
+import { stamp } from '$lib/timestamps';
 import { awardXp, celebrateCompletions, completionOf } from './card-moves';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
@@ -93,8 +94,8 @@ function record({
 		return { card, column, boardId: column.boardId, completed: false, xpAwarded: 0 };
 	}
 
-	const { stamp, xp } = completionOf(card, new Date().toISOString());
-	const written = db.update(cards).set(stamp).where(eq(cards.id, card.id)).returning().get();
+	const { stamp: completion, xp } = completionOf(card, stamp());
+	const written = db.update(cards).set(completion).where(eq(cards.id, card.id)).returning().get();
 	awardXp(actor, xp);
 	logActivity({ ...who, action: ACTIONS.cardCompleted, detail: `"${card.title}": created in ${column.title}` });
 

@@ -10,7 +10,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { db, sqlite } from './db';
 import { afterCommit, inTransaction } from './db/transaction';
 import { users, sessions, apiKeys, type Session, type User } from './db/schema';
-import { eq, lt } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { error, type Cookies } from '@sveltejs/kit';
 import { endUnusedInvites } from './invites';
 import {
@@ -23,6 +23,8 @@ import {
 } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
+import { stamp, toStamp } from '$lib/timestamps';
+import { registerStampFunctions } from './db/timestamps';
 
 const log = createLogger('AUTH');
 
@@ -198,7 +200,7 @@ export async function whilePasswordHolds<T>(
 /** Create a new session for a user. Returns the session token (UUID). */
 export function createSession(userId: number): string {
 	const token = crypto.randomUUID();
-	const expiresAt = new Date(Date.now() + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+	const expiresAt = stamp(new Date(Date.now() + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000));
 
 	db.insert(sessions)
 		.values({ id: token, userId, expiresAt })
@@ -235,7 +237,11 @@ function findSession(token: string): FoundSession {
 		.get();
 	if (!session) return { open: false, why: 'missing' };
 
-	if (session.expiresAt <= new Date().toISOString()) return { open: false, why: 'expired', session };
+	// Read as the moment it names, and closed when it names none (the P6
+	// review, S2): compared as text, `zzz`, 30 February 2099, or ISO with its
+	// `T` on the day itself all sorted after now, and kept the session open.
+	const expires = toStamp(session.expiresAt);
+	if (expires === null || expires <= stamp()) return { open: false, why: 'expired', session };
 
 	const user = db.select()
 		.from(users)
@@ -274,7 +280,7 @@ export function validateSession(token: string): SessionUser | null {
 	}
 
 	// Slide the session expiry forward
-	const newExpiry = new Date(Date.now() + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+	const newExpiry = stamp(new Date(Date.now() + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000));
 	db.update(sessions)
 		.set({ expiresAt: newExpiry })
 		.where(eq(sessions.id, token))
@@ -378,10 +384,19 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean }): Ac
 	return { sessions: sessionsEnded, invites: invitesEnded, apiKeys: apiKeysEnded };
 }
 
-/** Delete all expired sessions (housekeeping). */
+/**
+ * Delete all expired sessions (housekeeping), by the rule `findSession`
+ * applies: an expiry that names no moment has passed, and a readable one is
+ * compared as the stamp it names (`stamp_of`, which is `toStamp`). Deleted by
+ * text, `expires_at < now`, such a session was closed at its next use but
+ * never cleared (the second P6 review).
+ */
 export function cleanExpiredSessions(): void {
-	const now = new Date().toISOString();
-	const result = db.delete(sessions).where(lt(sessions.expiresAt, now)).run();
+	const now = stamp();
+	registerStampFunctions(sqlite);
+	const result = sqlite
+		.prepare('DELETE FROM sessions WHERE stamp_of(expires_at) IS NULL OR stamp_of(expires_at) <= ?')
+		.run(now);
 	if (result.changes > 0) {
 		log.info(`Cleaned up ${result.changes} expired session(s)`);
 	}
@@ -465,7 +480,7 @@ export function generateApiKey(): { plaintextKey: string; keyHash: string; keyPr
  */
 export function findApiKey(key: string): { id: number; user: SessionUser } | null {
 	const hash = hashApiKey(key);
-	const now = new Date().toISOString();
+	const now = stamp();
 
 	const apiKey = db.select()
 		.from(apiKeys)
@@ -474,8 +489,12 @@ export function findApiKey(key: string): { id: number; user: SessionUser } | nul
 
 	if (!apiKey) return null;
 
-	// Check expiry
-	if (apiKey.expiresAt && apiKey.expiresAt < now) return null;
+	// An expiry is read as the moment it names, and one that names none has
+	// passed (the P6 review, S2), as a session's is in `findSession`.
+	if (apiKey.expiresAt !== null) {
+		const expires = toStamp(apiKey.expiresAt);
+		if (expires === null || expires < now) return null;
+	}
 
 	const user = db.select()
 		.from(users)
@@ -499,7 +518,7 @@ export function findApiKey(key: string): { id: number; user: SessionUser } | nul
 /** Record that the API key with this row id was used, now. */
 export function markApiKeyUsed(id: number): void {
 	db.update(apiKeys)
-		.set({ lastUsedAt: new Date().toISOString() })
+		.set({ lastUsedAt: stamp() })
 		.where(eq(apiKeys.id, id))
 		.run();
 }

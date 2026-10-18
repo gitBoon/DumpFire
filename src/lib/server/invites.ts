@@ -22,6 +22,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { inviteTokens } from './db/schema';
+import { stamp } from '$lib/timestamps';
 
 /** How long an invite works for once it is issued: seven days. */
 export const INVITE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
@@ -48,7 +49,7 @@ export function issueInvite(userId: number): string {
 	endUnusedInvites(userId);
 
 	const token = crypto.randomUUID();
-	const expiresAt = new Date(Date.now() + INVITE_LIFETIME_MS).toISOString();
+	const expiresAt = stamp(new Date(Date.now() + INVITE_LIFETIME_MS));
 	db.insert(inviteTokens).values({ token, userId, expiresAt }).run();
 
 	return token;

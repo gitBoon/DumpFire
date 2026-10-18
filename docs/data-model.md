@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.23
+version: 1.25
 status: As-Built
-date: 2026-10-15
+date: 2026-10-18
 tags:
   - database
   - schema
@@ -16,6 +16,8 @@ tags:
   - deletes
   - cascade
   - completion
+  - indexes
+  - timestamps
 description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, and how migrations and schema reconciliation bring every database to the model"
 ---
 
@@ -424,6 +426,32 @@ erDiagram
 
 What the rows marked "in code" mean for each kind of delete is set out under
 [What a Delete Removes](#what-a-delete-removes).
+
+**Every foreign key column leads an index** (card 2106, migration
+`0053_index_foreign_keys_end_sessions.sql`). When a parent row goes, SQLite looks up its
+children in every child table, for each row removed; with no index on the child's column
+that lookup reads the whole table. A permanent delete of a board paid that cost once per
+card, per child table, and held the write lock throughout. Measured in memory on 20,000
+cards, 80,000 subtasks, 40,000 comments and 100,000 activity rows, deleting one board of
+2,000 cards took 9.4 seconds before 0053 and 48 ms after it; applying 0053 to that database
+took 30 ms. Migration 0053 added the 39 indexes the model lacked, among them
+`idx_cards_column_id` and `idx_subtasks_card_id`, which the board and card views read by
+too (card 2216). A composite primary key or a unique index whose first column is the
+foreign key counts; one that covers it only further along does not. Migration
+`0054_index_user_time_end_unused_invites.sql` replaced one of the 39, 0053's
+`idx_activity_log_user_id`, with `idx_activity_log_user_id_created_at` on `user_id` and
+`created_at`, which still leads with the foreign key: see
+[Key Schema Notes](#key-schema-notes).
+
+```mermaid
+flowchart LR
+    Delete["DELETE one board"] --> Cards["Its cards go<br/>(cascade through columns)"]
+    Cards --> Lookup{"Index on the<br/>child's foreign key?"}
+    Lookup -->|"no, before 0053"| Scan["Read every row of the child table,<br/>once for each card removed"]
+    Lookup -->|"yes, from 0053"| Seek["Read only the card's own children"]
+    Scan --> Slow["9.4 s for 2,000 cards, write lock held"]
+    Seek --> Fast["48 ms"]
+```
 
 `work_dependencies` holds dependencies between any two pieces of work — card or subtask —
 in one polymorphic table, so the planning engine walks a single graph. Polymorphic ids
@@ -997,23 +1025,97 @@ of about zero.
 
 ## Key Schema Notes
 
-- **Timestamps come in two shapes, and they do not sort against each other.**
-  Columns defaulted by SQLite write `2026-04-09 13:53:46` (`datetime('now')`);
-  columns set from application code write `2026-04-09T13:54:01.210Z`
-  (`toISOString()`). Both are UTC. A space (`0x20`) sorts *before* `T` (`0x54`),
-  so comparing the two forms as strings — which is how every date filter in this
-  codebase works — gives the wrong answer: `'2026-09-14 09:00:00' <
-  '2026-09-14T00:00:00.000Z'` is **true**.
+- **Every timestamp is stored in one form: `YYYY-MM-DD HH:MM:SS`, in UTC, to the whole
+  second** (card 2095). It is what SQLite's `datetime('now')` writes, which 22 columns take
+  as their default. Text orders moments only when both sides are in one form: a space
+  (`0x20`) sorts before `T` (`0x54`), so `'2026-09-14 09:00:00' < '2026-09-14T00:00:00.000Z'`
+  was **true** while some columns held ISO 8601, and a date filter gained or lost a whole
+  day at the end of a window. Now every comparison is between stored values, or between a
+  stored value and a bound made in the same form.
+  - **The naming rule.** A column whose name ends in `_at`, and `system_logs.timestamp`, is
+    a moment in the stored form; one ending in `_date` (and `daily_snapshots.date`) is a day,
+    `YYYY-MM-DD`, never compared with a moment. `schema.ts` says so in its header.
+    `timestampColumns(database)` in `src/lib/server/db/timestamps.ts` finds every such
+    TEXT column by the rule (37 on the model), leaving out SQLite's own tables,
+    `__drizzle_migrations` and `__new_*` leftovers of a rebuild.
+  - **One helper writes and reads them**, `src/lib/timestamps.ts`, used by the server and
+    the pages alike: `stamp(date)` gives the stored form, and every write from JavaScript
+    goes through it; `toStamp(input, edge)` reads what a caller sends (the stored form,
+    ISO 8601 with or without a fraction, `Z` or an offset, or a date, which is 00:00:00 as
+    a lower bound and 23:59:59 as an upper one) and gives `null` for anything else;
+    `parseStamp(value)` gives the `Date` a stored value names, read as UTC, and every page
+    and report parses through it; `toIso(value)` gives ISO 8601 with `Z`.
+  - **What is answered.** The v1 API turns every stored moment into ISO 8601 with `Z` as it
+    answers (`onTheWire`, `src/lib/server/v1-json.ts`), because the stored form names no
+    zone and most readers take it as their own. The web application's routes, its pages'
+    data and the CSV exports answer the stored form.
+  - **Kept one form.** At every start, after the backfills, and after every restore,
+    `normaliseTimestamps()` converts any value in a shape it reads (ISO 8601 with `T`, the
+    stored form with a fraction or a zone, the stored form to the minute with no seconds,
+    a bare date) with SQLite's
+    `strftime('%Y-%m-%d %H:%M:%S', value)`, in one immediate transaction, and only where
+    `toStamp` reads the value as that same moment; a value it cannot read is left as it is
+    and reported at every start. SQLite and the helper read a value by one rule: the
+    conversion gives its connection two functions from `src/lib/timestamps.ts`,
+    `stamp_of(v)` (`toStamp`) and `is_stamp(v)` (`isStamp`: a real moment in the stored
+    form). A GLOB sees only the shape and `strftime` reads `2026-02-30` as 2 March and keeps
+    an hour of 24, so `2026-02-30`, `2026-10-14T24:00:00` and `9999-99-99 99:99:99` are
+    reported, never converted to another moment or passed as stored. Calling the function
+    costs about a microsecond a value at every start (600,000 values in 0.53 s, in memory,
+    against 0.07 s for the GLOB alone). A restore copies a backup's values
+    verbatim, so an older backup brings the other form back, and this is what puts it
+    right. See [Migrations and Schema Reconciliation](#migrations-and-schema-reconciliation).
+    The test suite checks after every test that every such column holds a real moment in the
+    stored form, by the same `is_stamp`, or NULL (`tests/helpers/timestamps.ts`).
+  - **An expiry is read as the moment it names.** A session's, an API key's and an invite's
+    expiry is read with `toStamp` before it is compared with now, and one that names no
+    moment counts as passed: compared as text, `zzz` sorted after every stamp and never
+    expired (the review of cards 2095, 2106 and 2107, item S2).
 
-  | Shape | Columns |
-  |---|---|
-  | `YYYY-MM-DD HH:MM:SS` | `cards.created_at`, `activity_log.created_at`, `card_comments.created_at` |
-  | ISO 8601 with `Z` | `cards.completed_at`, `cards.first_completed_at`, `cards.updated_at` |
+  ```mermaid
+  flowchart LR
+      Code["A write from code"] -->|"stamp()"| Store[("Every *_at column,<br/>system_logs.timestamp")]
+      Default["datetime('now') default"] --> Store
+      Restore["A restore, copied verbatim"] --> Store
+      Start["Every start, every restore"] -->|"normaliseTimestamps"| Store
+      Caller["A bound a caller sends"] -->|"toStamp, or 400"| Bound["Stored form"]
+      Bound -->|"compared as text"| Store
+      Store -->|"parseStamp, as UTC"| Pages["Pages and reports"]
+      Store -->|"onTheWire, ISO 8601 with Z"| V1["v1 answers"]
+  ```
+- **Indexes are named `idx_<table>_<column>`**, and an index on two columns
+  `idx_<table>_<first>_<second>`. Migration 0053 added 39, one for every foreign key column
+  that led no index (card 2106). `tests/migrations.test.ts` fails on a foreign key column
+  that leads no index, in the model, on a new database and on the production fixture taken
+  through the runner, and names it.
+- **A person's log entries are indexed by person and time** (migration 0054, the review of
+  the three cards). 0053 indexed `activity_log.user_id` alone, and SQLite then answered
+  "this person's newest entries" by finding all of them and sorting them. 0054 dropped it
+  for `idx_activity_log_user_id_created_at` on (`user_id`, `created_at`): the audit routes
+  filtered by a person (`/api/audit`, `/api/v1/audit-log`) read the newest entries straight
+  from it and stop at the page, and `/api/v1/me/stats` reads only the days it counts.
+  `card_comments.user_id` keeps its index on that column alone: the one query by a person is
+  the count when an account is deleted, and comments are listed by card.
+  An index that leads with the person is the wrong one where each card's own entries are
+  wanted, so those queries ask for the person as `+user_id`, which no index serves: the
+  activity report filtered by a person (`activity-report.ts`, `+al2.user_id` and
+  `+cc2.user_id`), which otherwise read every entry of the person's once for each card
+  (4,215 ms against 9 ms on 2,000 cards and 60,000 entries), and a person's recent activity
+  (`recentActivityFor`, `list-access.ts`), which walks the index of time. The audit routes
+  ask `+user_id` too when a board or a card is filtered as well (`boardId` on both,
+  `cardId` on `/api/v1/audit-log`), so that board's or card's own index serves the page and
+  its total: asked plainly, SQLite took the composite for its order and read every entry of
+  the person's to find the few on that board or card (the second review of the three).
+  `tests/migrations.test.ts` asserts each of these plans.
 
-  Any query spanning both must normalise first. The reporting code does this with
-  `replace(substr(col, 1, 19), 'T', ' ')` on both sides; see
-  [Management Activity Reporting](management-reporting.md). Getting it wrong
-  silently includes or excludes a whole day at a window boundary.
+  ```mermaid
+  flowchart LR
+      Audit["Audit routes, me/stats:<br/>one person, newest first"] -->|"user_id = ?"| Composite[("idx_activity_log_user_id_created_at")]
+      Report["Activity report:<br/>an entry by this person on this card"] -->|"card_id = ? and +user_id = ?"| Card[("idx_activity_log_card")]
+      AuditCard["Audit routes:<br/>one person on one card"] -->|"card_id = ? and +user_id = ?"| Card
+      AuditBoard["Audit routes:<br/>one person on one board"] -->|"board_id = ? and +user_id = ?"| Board[("idx_activity_log_board_created")]
+      Recent["recentActivityFor:<br/>newest on the boards they open"] -->|"+user_id = ? and +board_id"| Time[("idx_activity_log_created_at")]
+  ```
 - **Task request status** is `unverified`, `pending`, `accepted` or `rejected`. A request
   from someone without an account starts `unverified` and is hidden from the inbox until
   the requester confirms it; see
@@ -1103,8 +1205,10 @@ of about zero.
     `var(--x)`, `#ef4444 `), and grey (`#94a3b8`) otherwise: see
     [Colours From a Request](authentication-security.md#colours-from-a-request);
   - `position` on `cards`, `subtasks` and `columns` is a number, never text;
-  - `api_keys.expires_at` is null or a timestamp as `toISOString()` writes it, because
-    `findApiKey()` compares it with the time as text.
+  - `api_keys.expires_at` is null or a timestamp in the stored form, read from what the
+    caller sent with `toStamp` (card 2095), because `findApiKey()` compares it with the
+    time as text; `cards.archived_at` sent through `PUT /api/v1/cards/{id}` is read the
+    same way.
 
   Rows written before these rules may hold other values. They are left as they are: a
   write that sends a row's stored value back unchanged is accepted, so a card with an old
@@ -1128,11 +1232,24 @@ is in [Deployment](deployment.md#start-up-sequence). This section is how it work
 | 3. Apply each file not yet recorded, one transaction per file | Yes, on the first failure |
 | 4. Rebuild any of the six reconciled tables that is not in the model's shape | Only if foreign keys cannot be switched back on |
 | 5. Repeat the backfills of migrations `0050` and `0051` for rows that lack the values | Yes, if they fail |
-| 6. Compare the whole database with the model and report differences | No |
+| 6. Bring every timestamp to the stored form (`normaliseTimestamps`, card 2095), unless the database records a migration this build has no file for | No: a failure is rolled back, logged at `ERROR`, and tried again at the next start |
+| 7. Compare the whole database with the model and report differences | No |
 
 `runMigrations()` returns a report of all of it (files applied, statements tolerated,
-tables rebuilt or left alone, sub-boards detached, rows backfilled, differences found),
-which is what the tests assert on.
+tables rebuilt or left alone, sub-boards detached, rows backfilled, timestamps converted or
+left unread, differences found), which is what the tests assert on. A restore runs steps 5
+and 6 again on what it brought in.
+
+A migration file may hold a one-off change to stored data as well as structure, as 0053
+ends every session once and 0054 every invite not yet used. Such a statement comes after the structural ones, under a header
+comment that says what it changes, why, that it runs once on each database and what people
+will see; it does nothing harmful on an empty table; and it is declared, by file and table,
+in `tests/rehearsal/one-offs.ts`, so that the rehearsal reports the loss as expected. A
+unit test fails on any file from 0053 on that loses rows undeclared: a `DELETE`, a
+`DROP TABLE`, a `REPLACE`, a statement that opens with `WITH`, an `INSERT OR REPLACE` or
+`UPDATE OR REPLACE`, or a trigger whose body deletes or replaces (a `DROP INDEX` loses no
+row, and is not one). A change that would need repeating after a restore is a backfill or a runner step, not a
+one-off.
 
 ### Two Lineages Share 0001 to 0005
 
@@ -1341,7 +1458,7 @@ comparison, and the rebuild is rolled back and reported.
 
 ### The Start-Up Schema Check
 
-After the backfills, the whole live database is compared with the model
+After the backfills and the timestamp conversion, the whole live database is compared with the model
 (`schemaDifferences()`): a table, column, view or trigger that only one side has; a
 column whose type, nullability, default, position in the primary key or kind (ordinary
 or generated) differs; a foreign key or an index that only one side has; and whether a

@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { cards, columns } from '$lib/server/db/schema';
@@ -11,6 +12,7 @@ import { notifyPlanCreated } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readIds, type RequestBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 interface CardRow {
@@ -159,7 +161,7 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 		const wasEmpty =
 			db.select({ id: cards.id }).from(cards).where(eq(cards.milestoneId, milestoneId)).all().length === 0;
 
-		const now = new Date().toISOString();
+		const now = stamp();
 		for (const card of toAttach) {
 			db.update(cards).set({ milestoneId, updatedAt: now }).where(eq(cards.id, card.cardId)).run();
 		}
@@ -288,7 +290,7 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 
 		if (problems.length > 0) return { rejected: true as const, problems };
 
-		const now = new Date().toISOString();
+		const now = stamp();
 		for (const card of toDetach) {
 			db.update(cards).set({ milestoneId: null, updatedAt: now }).where(eq(cards.id, card.cardId)).run();
 		}

@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { columns, cards, cardAssignees } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
 import { completeColumnIds } from '$lib/column-role';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 /**
@@ -53,7 +54,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	const completed = myCards.filter(c => doneColIds.has(c.columnId) && c.completedAt);
 
-	// Period boundaries (UTC day boundaries, matching the dashboard's date maths)
+	// Period boundaries (UTC day boundaries, matching the dashboard's date
+	// maths), in the stored form, as `completedAt` is (card 2095), so the two
+	// compare as text.
 	const startOfTomorrow = new Date();
 	startOfTomorrow.setUTCHours(0, 0, 0, 0);
 	startOfTomorrow.setUTCDate(startOfTomorrow.getUTCDate() + 1);
@@ -62,12 +65,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const prevPeriodStart = periodStart - days * 86400000;
 
 	const inPeriod = completed.filter(c =>
-		c.completedAt! >= new Date(periodStart).toISOString() &&
-		c.completedAt! < new Date(periodEnd).toISOString()
+		c.completedAt! >= stamp(new Date(periodStart)) &&
+		c.completedAt! < stamp(new Date(periodEnd))
 	);
 	const inPrevPeriod = completed.filter(c =>
-		c.completedAt! >= new Date(prevPeriodStart).toISOString() &&
-		c.completedAt! < new Date(periodStart).toISOString()
+		c.completedAt! >= stamp(new Date(prevPeriodStart)) &&
+		c.completedAt! < stamp(new Date(periodStart))
 	);
 
 	// Bucket: daily for short ranges, weekly for long ones
@@ -78,16 +81,16 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	for (let i = bucketCount - 1; i >= 0; i--) {
 		const bStart = periodEnd - (i + 1) * bucketDays * 86400000;
 		const bEnd = periodEnd - i * bucketDays * 86400000;
-		const startISO = new Date(bStart).toISOString();
-		const endISO = new Date(bEnd).toISOString();
-		const count = inPeriod.filter(c => c.completedAt! >= startISO && c.completedAt! < endISO).length;
+		const startStamp = stamp(new Date(bStart));
+		const endStamp = stamp(new Date(bEnd));
+		const count = inPeriod.filter(c => c.completedAt! >= startStamp && c.completedAt! < endStamp).length;
 
 		const d = new Date(bStart);
 		const label = bucketDays === 1
 			? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })
 			: `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })}`;
 
-		buckets.push({ start: startISO.split('T')[0], label, count });
+		buckets.push({ start: startStamp.slice(0, 10), label, count });
 	}
 
 	const total = inPeriod.length;

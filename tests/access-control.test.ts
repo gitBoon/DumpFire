@@ -43,6 +43,7 @@ import {
 	resetDb,
 	type BoardFixture
 } from './helpers/fixtures';
+import { stamp } from '$lib/timestamps';
 
 let owner: SessionUser;
 let editor: SessionUser;
@@ -350,7 +351,7 @@ describe('labels', () => {
 
 describe('archive and restore', () => {
 	it('refuses to list a board archive to someone who cannot open the board', async () => {
-		makeCard(A.cols['To Do'], { archivedAt: new Date().toISOString(), title: 'Secret' });
+		makeCard(A.cols['To Do'], { archivedAt: stamp(), title: 'Secret' });
 
 		expect((await api('GET', `/api/boards/${A.board.id}/archive`)).status).toBe(401);
 		expect((await api('GET', `/api/boards/${A.board.id}/archive`, { user: outsider })).status).toBe(403);
@@ -360,7 +361,7 @@ describe('archive and restore', () => {
 	});
 
 	it('refuses to restore a card on a board the caller cannot edit, by either route', async () => {
-		const card = makeCard(A.cols['To Do'], { archivedAt: new Date().toISOString() });
+		const card = makeCard(A.cols['To Do'], { archivedAt: stamp() });
 
 		const viaBoard = await api('POST', `/api/boards/${B.board.id}/archive`, {
 			user: outsider,
@@ -375,7 +376,7 @@ describe('archive and restore', () => {
 	});
 
 	it('still lets an editor restore', async () => {
-		const card = makeCard(A.cols['To Do'], { archivedAt: new Date().toISOString() });
+		const card = makeCard(A.cols['To Do'], { archivedAt: stamp() });
 		expect((await api('POST', `/api/cards/${card.id}/restore`, { user: editor })).status).toBe(200);
 		expect(cardRow(card.id)?.archivedAt).toBeNull();
 	});

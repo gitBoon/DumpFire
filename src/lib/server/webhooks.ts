@@ -11,6 +11,7 @@ import { eq, and } from 'drizzle-orm';
 import { createHmac } from 'crypto';
 import { createLogger } from './logger';
 import { getBoardRole, type Actor } from './board-access';
+import { onTheWire } from './v1-json';
 
 const log = createLogger('Webhooks');
 
@@ -105,12 +106,14 @@ export function dispatchWebhook(
 			const events: string[] = JSON.parse(hook.events || '[]');
 			if (events.length > 0 && !events.includes(event)) continue;
 
-			// Build payload
+			// Build payload. The card data's stored timestamps go out as ISO 8601
+			// with `Z`, as the v1 API answers them and as `timestamp` is
+			// (card 2095, plan R1): the stored form names no zone.
 			const body = JSON.stringify({
 				event,
 				timestamp: new Date().toISOString(),
 				boardId,
-				data: payload
+				data: onTheWire(payload)
 			});
 
 			// Compute HMAC signature

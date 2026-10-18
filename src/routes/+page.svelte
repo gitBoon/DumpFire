@@ -29,6 +29,7 @@
 	import VelocityModal from '$lib/components/VelocityModal.svelte';
 	import SpendModal from '$lib/components/SpendModal.svelte';
 	import { drawnColour } from '$lib/colours';
+	import { parseStamp } from '$lib/timestamps';
 
 	let { data }: { data: PageData } = $props();
 
@@ -366,8 +367,9 @@
 					case 'name':
 						return dir * a.name.localeCompare(b.name);
 					case 'activity': {
-						const aTime = new Date(a.lastActivity || '').getTime() || 0;
-						const bTime = new Date(b.lastActivity || '').getTime() || 0;
+						// Read as UTC: the stored form names no zone (card 2095).
+						const aTime = parseStamp(a.lastActivity)?.getTime() ?? 0;
+						const bTime = parseStamp(b.lastActivity)?.getTime() ?? 0;
 						return dir * (aTime - bTime);
 					}
 					case 'cards':
@@ -393,9 +395,8 @@
 	});
 
 	function timeAgo(dateStr: string | null | undefined): string {
-		if (!dateStr) return 'unknown';
-		const dateObj = new Date(dateStr.endsWith('Z') ? dateStr : dateStr + 'Z');
-		if (isNaN(dateObj.getTime())) return 'unknown';
+		const dateObj = parseStamp(dateStr);
+		if (!dateObj) return 'unknown';
 		const diff = Math.floor((Date.now() - dateObj.getTime()) / 1000);
 		if (diff < 60) return 'just now';
 		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;

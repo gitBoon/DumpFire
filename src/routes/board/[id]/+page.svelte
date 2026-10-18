@@ -30,6 +30,7 @@
 	import { COLUMN_COLORS, FLIP_DURATION_MS } from '$lib/utils/constants';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, isStale, isNew } from '$lib/utils/date-utils';
+	import { parseStamp } from '$lib/timestamps';
 	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel } from '$lib/utils/card-utils';
 	import { isCoverValue } from '$lib/colours';
 	import { drawnColour } from '$lib/colours';
@@ -1587,7 +1588,7 @@
 							<!-- All Tasks' words, from one table (card 2212). -->
 							<span class="activity-action">{activityLabel(activity.action)}</span>
 							<span class="activity-detail">{activity.detail}</span>
-							<span class="activity-time">{new Date(activity.createdAt + 'Z').toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · {activity.userName}</span>
+							<span class="activity-time">{parseStamp(activity.createdAt)?.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) ?? ''} · {activity.userName}</span>
 						</div>
 					</div>
 				{/each}
@@ -1625,7 +1626,7 @@
 							<div class="archive-card-info">
 								<span class="archive-card-title">{card.title}</span>
 								{#if card.archivedAt}
-									<span class="archive-card-date">Archived {new Date(card.archivedAt + 'Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
+									<span class="archive-card-date">Archived {parseStamp(card.archivedAt)?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) ?? ''}</span>
 								{/if}
 							</div>
 							<div class="archive-card-actions">

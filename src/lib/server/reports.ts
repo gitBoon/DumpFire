@@ -23,6 +23,7 @@ import { createLogger } from './logger';
 import { takeAllowance } from './rate-limit';
 import { readId, readQueryDate, readText, type RequestBody } from './request-body';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
+import { parseStamp, stamp, toStamp, type Stamp } from '$lib/timestamps';
 
 const log = createLogger('REPORTS');
 
@@ -52,32 +53,31 @@ export const REPORT_SCOPES = ['board', 'category', 'all'] as const;
 export const REPORT_DETAIL_LEVELS = ['summary', 'detailed'] as const;
 
 /**
- * One end of a report's period, from a request body, as it was sent: a date
- * (`2026-10-01`) or a timestamp, and one written with an offset or with no
- * zone in UTC, as `readQueryDate` reads one. `missing` is the route's text
- * for a period not sent. Any value was taken, and one that was not text was
- * a 500 when the PDF was drawn (card 2117).
+ * One end of a report's period, from a request body: a date (`2026-10-01`) or
+ * a timestamp, handed back in the stored form, `YYYY-MM-DD HH:MM:SS` in UTC,
+ * as `readQueryDate` reads one (card 2095, decision 10). A date alone is the
+ * whole of that day: its first second as `periodStart`, its last as
+ * `periodEnd`, so a report to 14 October includes the 14th (A19). `missing`
+ * is the route's text for a period not sent. Any value was taken, and one
+ * that was not text was a 500 when the PDF was drawn (card 2117).
  */
-export function readReportPeriod(body: RequestBody, name: 'periodStart' | 'periodEnd', missing: string): string {
+export function readReportPeriod(body: RequestBody, name: 'periodStart' | 'periodEnd', missing: string): Stamp {
 	const sent = readText(body, name, { required: true, min: 1, says: { missing, empty: missing } });
-	return readQueryDate(sent, name) ?? sent;
+	return readQueryDate(sent, name, name === 'periodEnd' ? 'upper' : 'lower')!;
 }
 
 /**
  * A report's period, from a request body: each end as `readReportPeriod` reads
  * it, and `periodStart` not after `periodEnd`, or `400 periodStart is after
- * periodEnd`. They are compared as the activity report compares its window
- * (`normalise()` in v1/reports/activity): a bare date is a whole day, its
- * start for `periodStart` and its end for `periodEnd`, so one day's report,
- * from a date to the same date, is a day. A period that ended before it began
- * was drawn as a report of nothing.
+ * periodEnd`. Both are in the stored form, so they compare as text: one day's
+ * report, from a date to the same date, is that day, from 00:00:00 to
+ * 23:59:59. A period that ended before it began was drawn as a report of
+ * nothing.
  */
-export function readReportWindow(body: RequestBody, missing: string): { periodStart: string; periodEnd: string } {
+export function readReportWindow(body: RequestBody, missing: string): { periodStart: Stamp; periodEnd: Stamp } {
 	const periodStart = readReportPeriod(body, 'periodStart', missing);
 	const periodEnd = readReportPeriod(body, 'periodEnd', missing);
-	const bound = (value: string, end: boolean) =>
-		/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T${end ? '23:59:59.999' : '00:00:00.000'}Z` : value;
-	if (Date.parse(bound(periodStart, false)) > Date.parse(bound(periodEnd, true))) error(400, 'periodStart is after periodEnd');
+	if (periodStart > periodEnd) error(400, 'periodStart is after periodEnd');
 	return { periodStart, periodEnd };
 }
 
@@ -243,9 +243,16 @@ function getColumnMap(boardIds: number[]): Map<number, ColumnInfo> {
 	return map;
 }
 
+/**
+ * A day as the PDF and the mail show it, from a stored timestamp, an ISO one
+ * or a date. Read as UTC (`parseStamp`): `new Date()` read the stored form as
+ * the server's local time (card 2095, A5). `—` for nothing, or for a value
+ * that is not a date.
+ */
 export function formatDate(iso: string): string {
 	if (!iso) return '—';
-	const d = new Date(iso);
+	const d = parseStamp(iso);
+	if (!d) return '—';
 	return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
@@ -427,12 +434,18 @@ function generateReportForBoards(
 	const completedCards = scopedCards.filter(c => doneColIds.has(c.columnId));
 	const activeCards = scopedCards.filter(c => !doneColIds.has(c.columnId));
 
-	const completedInPeriod = completedCards.filter(c => {
-		const completedDate = c.completedAt || c.updatedAt;
-		return completedDate >= periodStart && completedDate <= periodEnd;
-	});
+	// The period's ends in the stored form, which is the form of the columns
+	// they are compared with as text (card 2095, A2 and A3). A bound in ISO
+	// left out a card created on the first day and counted one created on the
+	// last whatever its time; a bare date as the end is the whole of that day.
+	// One that cannot be read is compared as it was sent, as it always was.
+	const from = toStamp(periodStart, 'lower') ?? periodStart;
+	const to = toStamp(periodEnd, 'upper') ?? periodEnd;
+	const inPeriod = (moment: string) => moment >= from && moment <= to;
 
-	const createdInPeriod = scopedCards.filter(c => c.createdAt >= periodStart && c.createdAt <= periodEnd);
+	const completedInPeriod = completedCards.filter(c => inPeriod(c.completedAt || c.updatedAt));
+
+	const createdInPeriod = scopedCards.filter(c => inPeriod(c.createdAt));
 	const overdueCards = activeCards.filter(c => c.dueDate && c.dueDate < now);
 
 	// Split the open cards by where they sit on the board
@@ -468,8 +481,7 @@ function generateReportForBoards(
 		if (!card) continue;
 		const stats = assigneeMap.get(assignment.userId)!;
 		if (doneColIds.has(card.columnId)) {
-			const completedDate = card.completedAt || card.updatedAt;
-			if (completedDate >= periodStart && completedDate <= periodEnd) {
+			if (inPeriod(card.completedAt || card.updatedAt)) {
 				stats.completedInPeriod++;
 			}
 		} else {
@@ -530,7 +542,9 @@ function generateReportForBoards(
 
 	// Completed tasks in period (not listed when the report is limited to open work)
 	const completedTasksList = (statusFilter === 'todo' || statusFilter === 'in_progress' ? [] : completedInPeriod)
-		.sort((a, b) => (b.completedAt || b.updatedAt).localeCompare(a.completedAt || a.updatedAt))
+		// Newest first, and the newer card first within one second (card 2095,
+		// A4 and decision 12): with one form the text orders the moments.
+		.sort((a, b) => (b.completedAt || b.updatedAt).localeCompare(a.completedAt || a.updatedAt) || b.id - a.id)
 		.map(c => {
 			const colInfo = columnMap.get(c.columnId);
 			const cardAssigns = allAssignments.filter(a => a.cardId === c.id);
@@ -556,10 +570,7 @@ function generateReportForBoards(
 			return colInfo?.boardId === boardId;
 		});
 		const boardCompleted = boardCards.filter(c => doneColIds.has(c.columnId));
-		const boardCompletedInPeriod = boardCompleted.filter(c => {
-			const cd = c.completedAt || c.updatedAt;
-			return cd >= periodStart && cd <= periodEnd;
-		});
+		const boardCompletedInPeriod = boardCompleted.filter(c => inPeriod(c.completedAt || c.updatedAt));
 		return {
 			boardName: b?.name || 'Unknown',
 			parentBoardName: parentNameMap.get(boardId) || null,
@@ -1498,7 +1509,7 @@ function computeNextRunAt(schedule: typeof reportSchedules.$inferSelect): string
 		target.setHours(h, m, 0, 0);
 		const dayDiff = (schedule.dayOfWeek - target.getDay() + 7) % 7;
 		target.setDate(target.getDate() + (dayDiff === 0 && target <= now ? 7 : dayDiff));
-		return target.toISOString();
+		return stamp(target);
 	}
 
 	const target = new Date(now);
@@ -1507,14 +1518,14 @@ function computeNextRunAt(schedule: typeof reportSchedules.$inferSelect): string
 	if (target <= now) {
 		target.setMonth(target.getMonth() + 1);
 	}
-	return target.toISOString();
+	return stamp(target);
 }
 
 function getPeriodForSchedule(schedule: typeof reportSchedules.$inferSelect, now: Date): { start: string; end: string } {
-	const end = now.toISOString();
+	const end = stamp(now);
 	const start = new Date(now);
 	start.setDate(start.getDate() - (schedule.periodDays || 7));
-	return { start: start.toISOString(), end };
+	return { start: stamp(start), end };
 }
 
 /**
@@ -1534,7 +1545,9 @@ function getPeriodForSchedule(schedule: typeof reportSchedules.$inferSelect, now
  * second time to everyone it did reach.
  */
 export async function runDueReportSchedules(now: Date): Promise<void> {
-	const nowStr = now.toISOString();
+	// The stored form, as `next_run_at` is: a schedule due at 09:00 compared
+	// with an ISO "now" ran at any time after midnight that day (card 2095).
+	const nowStr = stamp(now);
 
 	const activeSchedules = db.select().from(reportSchedules)
 		.where(eq(reportSchedules.enabled, true))

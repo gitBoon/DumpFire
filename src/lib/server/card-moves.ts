@@ -59,6 +59,7 @@ import {
 	type Column
 } from './db/schema';
 import { columnRole } from '$lib/column-role';
+import { stamp } from '$lib/timestamps';
 import { getCompletionBlocker } from './card-completion';
 import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
@@ -220,7 +221,7 @@ function moveCard(request: MoveRequest): CardMove {
 		if (blocker) throw new CardMoveError(409, blocker);
 	}
 
-	const now = new Date().toISOString();
+	const now = stamp();
 	// The stamp and the XP by the one rule a creation uses too: see completionOf.
 	const completion = completed ? completionOf(before, now) : null;
 	const xpAwarded = completion?.xp ?? 0;

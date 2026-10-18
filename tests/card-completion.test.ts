@@ -47,6 +47,7 @@ import {
 	type BoardFixture
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { toIso } from '$lib/timestamps';
 
 let owner: SessionUser;
 let A: BoardFixture;
@@ -253,7 +254,7 @@ describe.each(routes)('completing a card by $name', ({ move, source }) => {
 	});
 
 	it('says that a move is an edit: updatedAt is the moment of the move', async () => {
-		const card = makeCard(A.cols['To Do'], { updatedAt: '2020-01-01T00:00:00.000Z' });
+		const card = makeCard(A.cols['To Do'], { updatedAt: '2020-01-01 00:00:00' });
 
 		await move(card, A.cols['In Progress'], owner);
 
@@ -375,8 +376,9 @@ describe.each(creatingRoutes)('creating a card by $name', ({ source, ready, then
 		expect(row).toMatchObject({ columnId: A.cols['Complete'].id, createdBy: owner.id });
 		expect(row.completedAt).not.toBeNull();
 		expect(row.firstCompletedAt).toBe(row.completedAt);
-		// A route that answers with the card answers it as written.
-		if ('completedAt' in res.body) expect(res.body.completedAt).toBe(row.completedAt);
+		// A route that answers with the card answers it as written: the v1 API
+		// in ISO 8601, the others in the stored form (card 2095, plan R1).
+		if ('completedAt' in res.body) expect(res.body.completedAt).toBe(source === 'api' ? toIso(row.completedAt) : row.completedAt);
 		expect(xpOf(owner)).toBe(150);
 
 		const entries = activityFor(res.cardId);
@@ -535,7 +537,7 @@ describe('duplicating a card from the board page', () => {
 	const copyOf = (card: Card) => db.select().from(cards).where(eq(cards.title, `${card.title} (Copy)`)).get()!;
 
 	it('makes the copy of a finished card in the first column that is not a Complete column, open', async () => {
-		const done = makeCard(A.cols['Complete'], { title: 'Shipped', priority: 'high', completedAt: '2026-10-01T00:00:00.000Z' });
+		const done = makeCard(A.cols['Complete'], { title: 'Shipped', priority: 'high', completedAt: '2026-10-01 00:00:00' });
 		// In no particular order: the page's order is not what decides.
 		const page = onThePage([A.cols['Complete'], A.cols['In Progress'], A.cols['To Do'], A.cols['On Hold']]);
 
@@ -565,7 +567,7 @@ describe('duplicating a card from the board page', () => {
 
 	it('keeps the copy beside the original on a board with no other column, where it is completed', async () => {
 		const B = makeBoard({ owner, name: 'B', columns: ['Done', 'Complete'] });
-		const done = makeCard(B.cols['Complete'], { title: 'Finished', completedAt: '2026-10-01T00:00:00.000Z' });
+		const done = makeCard(B.cols['Complete'], { title: 'Finished', completedAt: '2026-10-01 00:00:00' });
 		const page = onThePage(Object.values(B.cols));
 
 		await duplicateCard(done as unknown as CardType, page, B.board.id, []);
@@ -575,7 +577,7 @@ describe('duplicating a card from the board page', () => {
 	});
 
 	it('names the column the copy went to when it is not beside the original, for the board page to say (O7)', async () => {
-		const done = makeCard(A.cols['Complete'], { title: 'Shipped', completedAt: '2026-10-01T00:00:00.000Z' });
+		const done = makeCard(A.cols['Complete'], { title: 'Shipped', completedAt: '2026-10-01 00:00:00' });
 		const working = makeCard(A.cols['In Progress'], { title: 'Building' });
 		const page = onThePage(Object.values(A.cols));
 
@@ -1176,7 +1178,7 @@ describe('the browser no longer writes activity entries', () => {
  * a Complete column.
  */
 describe('archived cards on a sub-board (card 2205)', () => {
-	const ARCHIVED = '2026-10-01T00:00:00.000Z';
+	const ARCHIVED = '2026-10-01 00:00:00';
 	let editor: SessionUser;
 	let parent: Card;
 	let S: ReturnType<typeof makeSubBoard>;

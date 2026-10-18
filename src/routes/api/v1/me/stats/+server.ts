@@ -1,9 +1,11 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { activityLog, cards, columns } from '$lib/server/db/schema';
 import { eq, and, count, sql, gte, inArray } from 'drizzle-orm';
 import { ACTIONS, storedActions } from '$lib/server/logActivity';
 import { recentActivityFor } from '$lib/server/list-access';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 /**
@@ -27,8 +29,11 @@ export const GET: RequestHandler = async ({ locals }) => {
 
 	const userId = locals.user.id;
 	const now = new Date();
-	const d7 = new Date(now.getTime() - 7 * 86400000).toISOString();
-	const d30 = new Date(now.getTime() - 30 * 86400000).toISOString();
+	// In the stored form, as `activity_log.created_at` is (card 2095): an ISO
+	// bound sorts after every stored value of its day, so each completion on
+	// the cutoff day was left out (A1).
+	const d7 = stamp(new Date(now.getTime() - 7 * 86400000));
+	const d30 = stamp(new Date(now.getTime() - 30 * 86400000));
 
 	// Cards completed (by action log matching this user)
 	const completedAll = db.select({ cnt: count() })

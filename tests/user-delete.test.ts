@@ -208,7 +208,7 @@ function full(): Full {
 			{ name: s.owner.username, xp: 100 }
 		])
 		.run();
-	db.insert(sessions).values({ id: 'session-of-leaver', userId: s.leaver.id, expiresAt: '2099-01-01T00:00:00.000Z' }).run();
+	db.insert(sessions).values({ id: 'session-of-leaver', userId: s.leaver.id, expiresAt: '2099-01-01 00:00:00' }).run();
 
 	const key = (user: SessionUser, n: number) =>
 		db

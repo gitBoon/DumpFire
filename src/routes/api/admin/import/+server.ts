@@ -34,6 +34,7 @@
 import { isHttpError, json } from '@sveltejs/kit';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import { sqlite } from '$lib/server/db';
+import { convertedList, totalConverted } from '$lib/server/db/timestamps';
 import {
 	NO_SUPERADMIN_IN_BACKUP,
 	RestoreError,
@@ -158,7 +159,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 
 			// The copy itself, with foreign keys off for its duration and back
 			// on whether it succeeds or throws, followed by the runner's
-			// backfills — see restoreFromBackup.
+			// backfills and its timestamp conversion — see restoreFromBackup.
 			let result: RestoreResult | null = null;
 			try {
 				// Asked of the backup before anything here is touched, the
@@ -257,6 +258,17 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			log.info(
 				ending(`Database restored from an uploaded backup (${size}). Rows: ${summary || 'none'}. Filled in: ${filled}.`)
 			);
+			// A backup made before card 2095 holds timestamps in two forms, and
+			// they were brought to one. Said as a start says it, in a WARN line:
+			// expected after an import of an older backup, and at no other time.
+			const converted = totalConverted(result.timestamps.converted);
+			if (converted > 0) {
+				log.warn(
+					`${converted} timestamp(s) the backup held in another form were converted to the stored form ` +
+						`(YYYY-MM-DD HH:MM:SS, UTC), each still naming the same moment to the second: ` +
+						`${convertedList(result.timestamps.converted)}.`
+				);
+			}
 			// A backup taken before card 2141 can hold a board beneath one of its
 			// own cards. Said now, as the server says it at every start, so that
 			// it is not first seen at the next one. A check that cannot be made

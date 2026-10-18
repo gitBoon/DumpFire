@@ -10,6 +10,7 @@
 	import type { PageData } from './$types';
 	import { onMount } from 'svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import { parseStamp } from '$lib/timestamps';
 
 	let { data }: { data: PageData } = $props();
 
@@ -105,9 +106,13 @@
 		return () => es.close();
 	});
 
+	// A log entry's time is in the stored form, `YYYY-MM-DD HH:MM:SS` in UTC, the
+	// row's and the live feed's alike (card 2095): read as UTC, and to the
+	// second, which is all it holds.
 	function fmtTime(ts: string): string {
-		const d = new Date(ts);
-		return d.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+		const d = parseStamp(ts);
+		if (!d) return ts;
+		return d.toLocaleTimeString('en-GB', { hour12: false });
 	}
 
 	function fmtMeta(meta: string | null): string {
@@ -151,7 +156,9 @@
 			if (fAction.trim()) params.set('action', fAction.trim());
 			if (fSource) params.set('source', fSource);
 			if (fFrom) params.set('from', fFrom);
-			if (fTo) params.set('to', fTo + 'T23:59:59');
+			// The date as chosen: the server takes a bare date as `to` for the
+			// whole of that day, to its last second in UTC (card 2095).
+			if (fTo) params.set('to', fTo);
 			params.set('limit', String(AUDIT_PAGE));
 			params.set('offset', String(reset ? 0 : auditRows.length));
 
@@ -174,7 +181,8 @@
 	}
 
 	function fmtDateTime(ts: string): string {
-		const d = new Date(ts.endsWith('Z') || ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z');
+		const d = parseStamp(ts);
+		if (!d) return ts;
 		return d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 	}
 

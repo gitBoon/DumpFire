@@ -15,6 +15,7 @@ import { canViewBoard, canEditBoard, getAccessibleBoardIds } from './board-acces
 import { isCompleteColumnTitle } from './card-completion';
 import { getMilestoneBoardIds } from './planning';
 import type { SessionUser } from './auth';
+import { stamp } from '$lib/timestamps';
 
 export type MilestoneRow = typeof milestones.$inferSelect;
 
@@ -256,7 +257,7 @@ export function updateMilestone(user: SessionUser, milestoneId: number, patch: U
 	}
 
 	if (Object.keys(updateData).length === 0) throw new MilestoneError(400, 'No valid fields to update');
-	updateData.updatedAt = new Date().toISOString();
+	updateData.updatedAt = stamp();
 
 	return db.update(milestones).set(updateData).where(eq(milestones.id, milestoneId)).returning().get();
 }
@@ -336,7 +337,7 @@ export function setCardMilestone(user: SessionUser, cardId: number, milestoneId:
 			);
 		}
 
-		db.update(cards).set({ milestoneId, updatedAt: new Date().toISOString() }).where(eq(cards.id, cardId)).run();
+		db.update(cards).set({ milestoneId, updatedAt: stamp() }).where(eq(cards.id, cardId)).run();
 		return { cardId, milestoneId, boardId };
 	});
 }
@@ -367,7 +368,7 @@ export function takeCardOutOfMilestone(user: SessionUser, cardId: number, named?
 		if (named !== undefined && card.milestoneId !== named) throw new MilestoneError(404, 'Card is not in this milestone');
 		if (card.milestoneId !== null) requireMilestone(user, card.milestoneId, true);
 
-		db.update(cards).set({ milestoneId: null, updatedAt: new Date().toISOString() }).where(eq(cards.id, cardId)).run();
+		db.update(cards).set({ milestoneId: null, updatedAt: stamp() }).where(eq(cards.id, cardId)).run();
 		return { cardId, milestoneId: null, boardId };
 	});
 }

@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/me — Returns the authenticated user's profile info. */

@@ -22,6 +22,7 @@ import {
 	readTime
 } from '$lib/server/request-body';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 /** How often a schedule may run: the two the scheduler works out a next run for. */
@@ -63,7 +64,7 @@ export const PUT: RequestHandler = async ({ locals, params, request }) => {
 		// is kept when the page sends it back. `frequency` keeps the words of the
 		// route that creates a schedule; an unknown one used to be ignored, and
 		// `dayOfMonth` above 28 was read as 28.
-		const updates: Partial<typeof reportSchedules.$inferInsert> = { updatedAt: new Date().toISOString() };
+		const updates: Partial<typeof reportSchedules.$inferInsert> = { updatedAt: stamp() };
 		const enabled = readBoolean(body, 'enabled', { keep: schedule.enabled });
 		if (enabled !== undefined) updates.enabled = enabled;
 		const name = readText(body, 'name', { trim: true, min: 1, max: 200, keep: schedule.name });

@@ -1,4 +1,4 @@
-import { json } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';

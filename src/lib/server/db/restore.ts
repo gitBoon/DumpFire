@@ -16,6 +16,7 @@ import { dev } from '$app/environment';
 import { schedulerSetting } from '../schedulers';
 import { putBackFromTrash, type UploadFile } from '../uploads';
 import { defaultsForNull, orDefault, runBackfills, type Backfill } from './migrate';
+import { normaliseTimestamps, unreadableList, type TimestampNormalisation } from './timestamps';
 import { KNOWN_BROWSER_SECRET_KEY } from '../known-browsers';
 
 /** The runner's record of which migration files this database has applied. */
@@ -69,6 +70,12 @@ export type RestoreResult = {
 	errors: string[];
 	/** Rows the backup left without a value that the current code needs. */
 	backfilled: Backfill;
+	/**
+	 * Timestamps the backup held in another form, now in the stored one, and
+	 * any it held that could not be read (card 2095). A failure, and each column
+	 * left unread, is in `errors` too.
+	 */
+	timestamps: TimestampNormalisation;
 	/**
 	 * What was switched off or removed once the tables were copied, for a
 	 * restore asked to switch off what reaches outside. `null` for one that
@@ -491,6 +498,10 @@ export function defaultOutside(
  *   backfills are repeated once the restore has committed. If they fail, the
  *   restore has still succeeded: the failure is reported in `errors`, and the
  *   backfills run again at the next start.
+ * - A backup taken before card 2095 holds timestamps in two forms. They are
+ *   brought to the stored one after the backfills, as at every start
+ *   (`normaliseTimestamps`), and the count is in `timestamps`. A failure, or a
+ *   value in no form that can be read, is reported in `errors`.
  * - A backup taken while a column was nullable can hold a NULL where the
  *   column is NOT NULL here: `columns.wip_limit`, in every backup of
  *   production taken before card 2006. Where the column has a default, the
@@ -770,5 +781,21 @@ export function restoreFromBackup(
 		errors.push(`Backfill after the restore: ${messageOf(e)}`);
 	}
 
-	return { restored, defaulted, errors, backfilled, outside };
+	// A backup copies its timestamps as it holds them, and one made before card
+	// 2095 holds two forms: brought to one, as every start does. It never throws.
+	const timestamps = normaliseTimestamps(live);
+	if (timestamps.failed !== null) {
+		errors.push(
+			`Timestamps after the restore were not brought to the stored form, and none was changed: ${timestamps.failed}. ` +
+				'The next start tries again.'
+		);
+	}
+	if (Object.keys(timestamps.unreadable).length > 0) {
+		errors.push(
+			`Timestamps in no form this build can read were left as they are: ${unreadableList(timestamps.unreadable)}. ` +
+				'Each start reports them until they are corrected.'
+		);
+	}
+
+	return { restored, defaulted, errors, backfilled, timestamps, outside };
 }

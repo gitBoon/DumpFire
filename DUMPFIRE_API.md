@@ -317,6 +317,9 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. No opera
 - **Sub-boards nest at most 20 levels deep** (card 2172), below a board that is not a sub-board. `POST /boards` with a `parentCardId` on a board already 20 levels deep, or in or below a loop, is `409` `Sub-boards can be nested at most 20 levels deep, and a board under this card would be deeper.`, and nothing is created. `PUT /cards/:cardId/move` to another board is `409` `Card "<title>" cannot go onto "<board>": its sub-boards would then be nested more than 20 levels deep.`, and nothing moves, when the card's sub-boards would end up deeper than that and deeper than they are now; a card with no sub-board is never refused. Both were accepted at any depth. A tree already deeper keeps working, and a move that lifts it, or leaves it no deeper, is allowed. Archived cards count. See [Move a Card](#move-a-card-to-a-different-column).
 - **A request with no key DumpFire accepts is counted by its network** (card 2195). The address it came from is counted by its /64 network when it is IPv6, as the IPv4 address when it is an IPv4 address written as IPv6, and without a port, so the 61st request in a minute from any address of one IPv6 network is answered `429`, where each address had its own sixty. A key's own count is unchanged.
 - **Every colour is a colour written `#rrggbb`** (card 2162). Every operation that takes a `color` or a `colorTag` reads it as `#` and six hex digits, in either case, trimmed, and answers `400` for anything else, `red` and `#fff` included, and for a value that is not text: `color must be a colour written #rrggbb` on `POST /boards/:boardId/columns`, `/labels` and `/categories`, `POST /board-categories`, and `PUT /columns/:columnId`, `/labels/:labelId`, `/categories/:categoryId` and `/board-categories/:categoryId`; `colorTag must be a colour written #rrggbb, or empty` on `POST /boards/:boardId/cards`, `PUT /cards/:cardId`, `POST /cards/:cardId/subtasks` and `PUT /subtasks/:subtaskId`, where `''` clears the tag. Nothing is written. Until then any text was stored, up to 32 characters where a length was checked, a style such as `red;background:url(//x.io)` included, and a colour is drawn into the page of everyone who opens the board. A colour the row already holds, sent back unchanged, is accepted as it is, and one stored before this rule is answered as stored; the pages draw it as it is when it is a colour and nothing more (`red`, `#fff`), and grey otherwise. **Through the tracking wrapper, quote a colour: `-Color '#ef4444'`, `-ColorTag '#ef4444'`.** In PowerShell an unquoted `#` begins a comment, so `-Color #ef4444` sends no value and the call stops with "Missing an argument for parameter 'Color'". The web application's routes take a colour by the same rule (below).
+- **Every timestamp DumpFire stores is answered in ISO 8601 with `Z`** (card 2095), as `2026-10-14T08:00:00.000Z`, in every answer under `/api/v1/`. Fields that were `YYYY-MM-DD HH:MM:SS`, which names no zone and which most languages read in their own zone, now come back in ISO 8601: `createdAt` everywhere, `updatedAt` on a row never edited, an audit-log entry's `createdAt`, and the `from` and `to` of the activity report's `period` and of `GET /cards/:cardId/board-history`. Fields that were ISO 8601 (`completedAt`, `firstCompletedAt`, `archivedAt`, `updatedAt` after an edit) keep their shape, but the fraction of a second is always `.000`, because every stored moment is now kept to the whole second (`generatedAt` and a webhook's own `timestamp`, which are not stored, carry real milliseconds). Dates (`dueDate`, `targetDate`, `asOf`) are unchanged, and the OpenAPI document declares every timestamp field `format: date-time` (item 53). A webhook body's own `timestamp` was ISO 8601 already; its `data` holds no stored time, and would hold one in the same form.
+- **`from` and `to` on `GET /audit-log` and `GET /reports/activity` take ISO 8601, `YYYY-MM-DD HH:MM:SS` or a date** (card 2095): ISO 8601 with or without a fraction, with `Z` or an offset, which is read in UTC; `YYYY-MM-DD HH:MM:SS` in UTC; or a date alone. Anything else is `400` `from is not a date` or `to is not a date`. The audit log compared what it was sent with the stored time as text, unchecked, so a bound written in the other form gained or lost the day at its end, and a date alone as `to` left that whole day out; the activity report refused `YYYY-MM-DD HH:MM:SS`. A date alone as `to` is now the whole of that day, to 23:59:59 UTC, in both (item 54).
+- **An `archivedAt` that is text, on `PUT /cards/:cardId`, is read as the moment it names** (card 2095), so the `archivedAt` a `GET` answered, sent back in ISO 8601 with any fraction or offset, or as `YYYY-MM-DD HH:MM:SS`, is the stamp the card holds and changes nothing. `null` still restores the card, and any other value, `true` and a number included, is still `400` (item 55).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but reach the keys every caller uses:
 
@@ -427,6 +430,10 @@ These touch only the web application, whose routes under `/api/` the pages use, 
 - **A failed sign-in's log line holds nothing that was typed** (card 2193), in `GET /api/logs` and on the Audit page: `Failed login attempt at "alice" (user 12) from IP … (bad password)` with the account as the line's user, or `Failed login attempt for a name that is no account (17 characters) from IP …`, each with the address as its `ip`. The lines already stored for names that were no account are rewritten that way at the first start, and in every backup.
 - **Sub-boards nest at most 20 levels deep in the web application too** (card 2172), as `POST /boards` and `PUT /cards/:cardId/move` above: `POST /api/boards` with a `parentCardId` is `409` in the same words, and so is `PUT /api/cards/{id}` with a `columnId` on another board, with nothing in the request saved. `PUT /api/boards/{id}` with a `parentCardId` is `409` `Board "<name>" cannot go under this card: it and its sub-boards would then be nested more than 20 levels deep.` when the board, or one beneath it, would be deeper than 20 and deeper than it is now. A board in or below a loop counts as past the limit. The board page says each refusal: the card menu's Create Sub-board in an error toast (`No answer from the server. The sub-board may not have been made.` when there is none), and the new-card window for each sub-board refused, `Sub-board "<name>" was not made.` and the server's words, the card kept. Its breadcrumbs show the nearest 20 boards above, and a "…" titled "More boards above", with no link, when there are more; its Link existing board list is empty on a board 20 deep.
 - **`PUT /api/cards/reorder` names at most 5,000 cards, each once, and moves at most 100 to another column** (card 2209). More entries is `400` `A reorder can name at most 5,000 cards, and this names 5,001. Nothing was moved.`, and a card named twice `400` `updates names card 12 more than once`, each checked before any card is read (a card named over and over, to and fro between two columns, was a real move for every entry, past the cap below); more cards moved is `400` `At most 100 cards can be moved to another column at once, and this moves 101. Nothing was moved: move them in groups of 100 or fewer.`, checked once every card and column has been read and the caller found able to edit the board. Nothing moves and nothing is sent. The board page's drop sends every card of the board and moves one; only a bulk move of more than 100 selected cards meets the cap, and the page now says so in an error toast and keeps the selection (`No answer from the server. The cards may not have been moved.` when there is none), where it read no answer. So one request sends at most 100 deliveries to each webhook of the board.
+- **`GET /api/audit` and `GET /api/logs` read `from` and `to` as `GET /audit-log` does** (card 2095): ISO 8601, `YYYY-MM-DD HH:MM:SS` in UTC, or a date, a date alone as `to` being the whole of that day, and anything else `400` `from is not a date` or `to is not a date`, where each was compared as text, unchecked. The Audit page sends the last day of its range as the date chosen.
+- **`POST /api/account/api-keys` reads `expiresAt` in the same forms** (card 2095), `YYYY-MM-DD HH:MM:SS` included, and stores and answers it as `YYYY-MM-DD HH:MM:SS` in UTC, where it answered ISO 8601. A date is 00:00 UTC that day, as before; `null` is no expiry; anything that is not text is `400`.
+- **`POST /api/reports` and `POST /api/reports/email` read `periodStart` and `periodEnd` in the same forms** (card 2095), a date alone as `periodEnd` being the whole of that day. The Reports page sends a custom range as the dates chosen, so a report from 1 to 14 October includes the 14th, where the page sent the end as midnight at its start and the 14th was left out.
+- **The web application's routes, its pages and the two CSV exports keep `YYYY-MM-DD HH:MM:SS` in UTC** (card 2095), the form every timestamp is stored in. Fields they answered in ISO 8601 (`completedAt`, `archivedAt`, `updatedAt` after an edit, `resolvedAt`, a key's `lastUsedAt` and `expiresAt`, a schedule's `lastRunAt` and `nextRunAt`, a log line's `timestamp`) are in that form now, and so is the CSVs' "Completed" column, which a spreadsheet opens as a date and time. The pages read every one as UTC.
 
 ### Changes on 2026-10-13
 
@@ -602,7 +609,7 @@ How the user associated with the API key is doing. Takes no parameters.
       "action": "api:card_updated",
       "detail": "Updated fields: priority on \"Deploy v2.1\"",
       "boardId": 1,
-      "createdAt": "2026-10-13 09:41:07"
+      "createdAt": "2026-10-13T09:41:07.000Z"
     }
   ]
 }
@@ -639,8 +646,8 @@ Returns all boards the API key's user has access to.
     "categoryId": null,
     "isPublic": false,
     "createdBy": 1,
-    "createdAt": "2026-04-01 12:00:00",
-    "updatedAt": "2026-04-09 10:30:00"
+    "createdAt": "2026-04-01T12:00:00.000Z",
+    "updatedAt": "2026-04-09T10:30:00.000Z"
   }
 ]
 ```
@@ -701,8 +708,8 @@ GET /api/v1/boards/:boardId/cards
     "position": 0,
     "dueDate": "2026-04-15",
     "columnTitle": "To Do",
-    "createdAt": "2026-04-01 09:00:00",
-    "updatedAt": "2026-04-09 10:00:00"
+    "createdAt": "2026-04-01T09:00:00.000Z",
+    "updatedAt": "2026-04-09T10:00:00.000Z"
   }
 ]
 ```
@@ -1186,7 +1193,7 @@ GET /api/v1/cards/{cardId}/dependencies
       "resolved": false,
       "withheld": false,
       "createdByUserId": 2,
-      "createdAt": "2026-09-11 09:14:02"
+      "createdAt": "2026-09-11T09:14:02.000Z"
     }
   ],
   "blocks": []

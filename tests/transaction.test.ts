@@ -14,6 +14,7 @@ import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { CardMoveError } from '$lib/server/card-moves';
 import { emit, subscribeGlobal } from '$lib/server/events';
 import { createLogger } from '$lib/server/logger';
+import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { makeBoard, makeUser, resetDb } from './helpers/fixtures';
 
@@ -460,7 +461,8 @@ describe('inTransaction, called while a transaction the helper did not open is o
 
 describe('log lines written while a transaction is open', () => {
 	it('are in system_logs after a rollback, in order and with the time they were logged', async () => {
-		const start = new Date().toISOString();
+		// In the stored form, as the rows are (card 2095).
+		const start = stamp();
 		let whileOpen: unknown[] = [];
 
 		expect(() =>
@@ -473,7 +475,7 @@ describe('log lines written while a transaction is open', () => {
 				throw new Error('failed');
 			})
 		).toThrow('failed');
-		const end = new Date().toISOString();
+		const end = stamp();
 
 		expect(whileOpen).toEqual([]);
 		expect(keys()).toEqual([]);
