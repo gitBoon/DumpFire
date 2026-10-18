@@ -8,12 +8,16 @@
  * test, which is the point.
  */
 import dns from 'node:dns';
+import http from 'node:http';
+import https from 'node:https';
+import net from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { afterAll, afterEach } from 'vitest';
 import { getDbPath, sqlite } from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
 import { afterEachTimestampCheck } from './helpers/timestamps';
+import { requestOf, StandInRequest } from './helpers/stand-in-request';
 
 // tests/harness.test.ts holds the list of every test file and the test that
 // compares it with the files on disk: it is what notices a test file that was
@@ -64,14 +68,16 @@ afterAll(() => {
 	}
 });
 
-// Nothing in a test may reach the network. A webhook is delivered with `fetch`
-// and a mail goes to a host whose address is looked up first. The application
-// catches the failure of either, so a test that attempted one passed all the
-// same, having waited on a resolver for a name that does not exist. Both are
-// replaced here, before anything runs: an attempt is refused at once, and it
-// fails the test that made it, by the address. A test that is about a webhook
-// or a mail installs `effects()` (tests/helpers/effects.ts), which records it
-// and puts this back afterwards.
+// Nothing in a test may reach the network. A webhook is delivered with
+// `http.request` or `https.request` (card 2161), and it and a mail go to a
+// host whose address is looked up first. The application catches the failure
+// of either, so a test that attempted one passed all the same, having waited
+// on a resolver for a name that does not exist. Every lookup, `fetch`, and a
+// request to an IP address, which is not looked up, are replaced here, before
+// anything runs: an attempt is refused at once, and it fails the test that
+// made it, by the address. A test that is about a webhook or a mail installs
+// `effects()` (tests/helpers/effects.ts), which records it and puts this back
+// afterwards.
 //
 // Assigned, and not spied on with `vi.spyOn`: several test files call
 // `vi.restoreAllMocks()`, which would take a spy off again.
@@ -86,6 +92,21 @@ const refused = (what: string, address: unknown): Error => {
 globalThis.fetch = (async (input: RequestInfo | URL) => {
 	throw refused('a fetch of', input instanceof Request ? input.url : input);
 }) as typeof fetch;
+
+// A request to a name is left to the lookup, refused below. One to an IP
+// address makes none, so it is refused here, by the address, and answered with
+// the refusal as an 'error', as a connection refused is. Loopback is let
+// through: tests/webhooks.test.ts delivers to servers of its own listening on
+// this machine.
+const loopback = (host: string) => host.startsWith('127.') || host === '::1';
+for (const module of [http, https] as unknown as { request: (...args: unknown[]) => unknown }[]) {
+	const real = module.request;
+	module.request = (...args: unknown[]) => {
+		const { url, host } = requestOf(args);
+		if (net.isIP(host) === 0 || loopback(host)) return real(...args);
+		return new StandInRequest().destroy(refused('a request to', url || host));
+	};
+}
 
 // Every way of asking for an address: `dns.lookup`, which a socket uses, and
 // the resolver's own questions, which nodemailer asks first.

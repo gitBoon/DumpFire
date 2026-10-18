@@ -1,5 +1,5 @@
 /**
- * startup-checks.ts — nine things about an installation that are said in the
+ * startup-checks.ts — twelve things about an installation that are said in the
  * system log when the server starts, because nothing else would say them.
  *
  * None stops the server and none changes anything. They are looked for by
@@ -24,7 +24,16 @@
  * The ninth is the secrets a backup does not hold and this installation still
  * lacks (card 2169): a database put in place by hand from a backup, or one an
  * import restored onto another server, has no mail password, no destination
- * credentials and its signed webhooks off until they are entered.
+ * credentials and its signed webhooks off until they are entered. The tenth
+ * is each entry of `WEBHOOK_ALLOW_INSIDE` that is ignored (card 2161): the
+ * list is read at every registration and every delivery, where a line would
+ * be written once for each webhook judged, so it is named here, once, at the
+ * start that read it. The eleventh is each board with more webhooks than the
+ * 10 a board may have (card 2201): they were made before the cap, are kept and
+ * still sent, and nothing else says why no webhook can be added to one. The
+ * twelfth is each webhook that is on and is refused as its address is written
+ * (the review of card 2161, O1): it is not sent at any event, and a board's
+ * owner may not know why until an event's line says so.
  *
  * And one that does stop the server, after the migrations and before it
  * listens: `refuseUserlessBesideAnother`, when the database in use has no
@@ -44,6 +53,8 @@ import { signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
 import { secretsToEnter, secretsToEnterSentence } from './backup-secrets';
+import { parseAllowInside } from './webhook-address';
+import { activeWebhooksRefused, boardsOverWebhookCap, MAX_WEBHOOKS_PER_BOARD } from './webhooks';
 
 const log = createLogger('STARTUP');
 
@@ -96,8 +107,89 @@ export function reportPlaceholderOrigin(origin: string | undefined = process.env
 	return true;
 }
 
+/**
+ * One WARN line for each entry of `WEBHOOK_ALLOW_INSIDE` that is ignored,
+ * naming it and why (card 2161, the plan's R-S2). Returns whether any was
+ * said.
+ *
+ * The list names receivers inside the network that webhooks may reach. An
+ * entry that does not read (a port, a wildcard, `127.1`), or that is wider
+ * than one inside range (`0.0.0.0/0`, or `10.0.0.0/2` for `/24`, which would
+ * let every webhook reach this server and the metadata service), or that holds
+ * `0.0.0.0` or `::` (`0.0.0.0/8`, `::/8`, `::ffff:10.0.5.0/24`, which is
+ * `::/24`), is ignored, and the rest of the list applies. In production the variable changes only
+ * with a restart, so this is when it can be wrong.
+ */
+export function reportWebhookAllowInside(value: string | undefined = process.env.WEBHOOK_ALLOW_INSIDE): boolean {
+	if (!value) return false;
+	const { bad } = parseAllowInside(value);
+	for (const { entry, why } of bad) log.warn(`WEBHOOK_ALLOW_INSIDE: ${JSON.stringify(printable(entry))} ignored: ${why}`);
+	return bad.length > 0;
+}
+
 /** How many boards the line names. The rest are counted; the admin guide has the query for all of them. */
 const LOOP_BOARDS_NAMED = 20;
+
+/** How many boards the line of boards over the webhook cap names. The rest are counted. */
+const OVER_CAP_BOARDS_NAMED = 20;
+
+/**
+ * One WARN line when any board has more webhooks than the 10 a board may have
+ * (card 2201, decision 24), naming each by id and count, never an address
+ * (one can carry a token). Returns whether it was said.
+ *
+ * Such a board was filled before the cap. Its webhooks are kept and every
+ * active one is still sent, since which to drop would be a guess, and no
+ * webhook can be added to it until it has fewer than 10. Every start says it
+ * again until then. The first 20 boards are named, and the rest counted.
+ */
+export function reportWebhooksOverCap(): boolean {
+	const over = boardsOverWebhookCap();
+	if (over.length === 0) return false;
+
+	const named = over
+		.slice(0, OVER_CAP_BOARDS_NAMED)
+		.map((b) => `board ${b.boardId} has ${b.webhooks}`)
+		.join(', ');
+	const more = over.length > OVER_CAP_BOARDS_NAMED ? `, and ${over.length - OVER_CAP_BOARDS_NAMED} more` : '';
+	log.warn(
+		`${over.length} board(s) have more webhooks than the ${MAX_WEBHOOKS_PER_BOARD} a board may have: ${named}${more}. ` +
+			`All of them are still sent, and none can be added to such a board until it has fewer than ${MAX_WEBHOOKS_PER_BOARD}.`
+	);
+	return true;
+}
+
+/** How many webhooks the line of webhooks refused as written names. The rest are counted. */
+const REFUSED_WEBHOOKS_NAMED = 20;
+
+/**
+ * One WARN line when any webhook that is on is refused as its address is
+ * written (the review of card 2161, O1): an address inside the network that
+ * `WEBHOOK_ALLOW_INSIDE` does not name, one that carries a user name or
+ * password, or one that is not an http or https URL. Names each by webhook
+ * and board, with why, never the path or the query (one can carry a token).
+ * Returns whether it was said.
+ *
+ * No name is looked up: a name that resolves inside is named by the first
+ * event's line. The first 20 are named, and the rest counted. Every start says
+ * it again while one is on.
+ */
+export function reportWebhooksRefused(): boolean {
+	const refused = activeWebhooksRefused();
+	if (refused.length === 0) return false;
+
+	const named = refused
+		.slice(0, REFUSED_WEBHOOKS_NAMED)
+		.map((w) => `webhook ${w.id} on board ${w.boardId} (${printable(w.reason)})`)
+		.join('; ');
+	const more = refused.length > REFUSED_WEBHOOKS_NAMED ? `; and ${refused.length - REFUSED_WEBHOOKS_NAMED} more` : '';
+	log.warn(
+		`${refused.length} webhook(s) that are on are not sent, whatever their names resolve to: ${named}${more}. ` +
+			'Each is refused at every event until its address is changed or it is switched off; one inside the network ' +
+			'can instead be named in WEBHOOK_ALLOW_INSIDE.'
+	);
+	return true;
+}
 
 /**
  * A name or a title as the line prints it: each control character, a line
@@ -410,7 +502,7 @@ export function reportSecretsToEnter(): boolean {
 }
 
 /**
- * Say all nine, if they are so. Called once, from hooks.server.ts, as the
+ * Say all twelve, if they are so. Called once, from hooks.server.ts, as the
  * server loads.
  *
  * It never throws, whatever goes wrong in looking: a fault here must not be
@@ -427,7 +519,10 @@ export function reportInstallation(): void {
 		() => reportOtherDatabase(),
 		() => reportSignInsNotOneAtATime(),
 		() => reportCspMode(),
-		reportSecretsToEnter
+		reportSecretsToEnter,
+		() => reportWebhookAllowInside(),
+		reportWebhooksOverCap,
+		reportWebhooksRefused
 	]) {
 		try {
 			check();

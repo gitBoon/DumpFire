@@ -29,6 +29,7 @@ This document does not list every route. The complete list, with every field, st
   - [Bulk Planning](#bulk-planning)
   - [Token Cost](#token-cost)
   - [Burndown](#burndown)
+  - [Webhooks](#webhooks)
 - [Examples](#examples)
 
 ---
@@ -76,7 +77,7 @@ Setting the account's password can end every key it has, at once:
 | An administrator resets your password | All end |
 | An invite link is used to set your password | All end |
 
-A key that has ended is answered `401` with `Invalid or expired API key` from then on, the same as one that was revoked, and whatever uses it stops until it is given a new key. So before an administrator resets the password of an account a script runs on, the reset dialog says how many keys the account has. See [What Setting a Password Ends](docs/authentication-security.md#what-setting-a-password-ends).
+A key that has ended is answered `401` with `Invalid or expired API key` from then on, the same as one that was revoked, and whatever uses it stops until it is given a new key. So before an administrator resets the password of an account a script runs on, the reset dialog says how many keys the account has. The webhooks the account set up go with its keys, switched off (see [Webhooks](#webhooks)); a reset and an invite also pause its report schedules. See [What Setting a Password Ends](docs/authentication-security.md#what-setting-a-password-ends).
 
 ---
 
@@ -120,7 +121,7 @@ Six failures carry more beside `message`:
 | `409` for a rejected `DELETE /milestones/:milestoneId/cards/bulk` | `detached` (always 0), `problems[]` (each `cardId`, `reason`) |
 | `409` for a rejected `POST /tokens/bulk` | `written` (always 0), `problems[]` (each `index`, `reason`) |
 
-The `message` of every rejected batch is `Batch rejected — nothing was written`. A dependency that is already recorded is a `409` too, with `message` alone: a cycle is the `409` that has `cycle` in it.
+The `message` of every rejected batch is `Batch rejected — nothing was written`. A dependency that is already recorded is a `409` too, with `message` alone: a cycle is the `409` that has `cycle` in it. So is a board's 11th webhook (`This board has 10 webhooks, and a board may have at most 10: delete 1 before adding another.`).
 
 ```mermaid
 flowchart TD
@@ -164,7 +165,7 @@ Every answer DumpFire's gate gives carries `X-Content-Type-Options: nosniff`, `X
 | `403` | Forbidden: the key's user may not do this |
 | `404` | The resource in the path does not exist, whoever asks; an id in the body names nothing (a category, a user, a milestone); something to be removed is not there (an assignee, a label on a card, a card in the milestone named); or the path is no route: `{ "message": "Not found" }` |
 | `405` | The route does not have this method: `{ "message": "PATCH method not allowed" }`. The `Allow` header names the methods it has |
-| `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a column renamed into or out of Complete or Done while it holds a card, a dependency that already exists or would close a loop, or a rejected batch |
+| `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a column renamed into or out of Complete or Done while it holds a card, a dependency that already exists or would close a loop, a board's 11th webhook, or a rejected batch |
 | `413` | The request body is over the size limit, 512 KB: `{ "message", "limitBytes" }`. See [The Request Body](#the-request-body) |
 | `429` | Rate limit exceeded: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts |
 | `500` | DumpFire failed: `{ "message": "Internal Error" }`. Nothing of the fault is in the answer; it is written to DumpFire's system log |
@@ -210,7 +211,7 @@ Every operation reads each field it uses by the field's type and range, and refu
 | `coverUrl` | A colour written `#rrggbb`, or one of the eight preset gradients exactly as the card window offers them and [Update a Card](#update-a-card) lists them, or `null`; `''` is read as `null` | `coverUrl must be a colour written #rrggbb, one of the preset gradients, or null` |
 | A milestone's `status` | `open` or `closed` | `status must be open or closed` |
 | `archivedAt` on `PUT /cards/:cardId` | `null`, which restores the card, and nothing else | `archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}` |
-| A webhook's `url`, `secret`, `events` | An `http` or `https` address of at most 2,048 characters, trimmed; text of at most 256; a list of the six event names, each trimmed, where `[]` is every event | `url must be an http or https address`, `events must be a list` |
+| A webhook's `url`, `secret`, `events` | An `http` or `https` address of at most 2,048 characters, trimmed, not inside the network as written and with no user name or password (see [Webhooks](#webhooks)); text of at most 256; a list of the six event names, each trimmed, where `[]` is every event | `url must be an http or https address`, `Webhook url points inside the network: 127.0.0.1 is a loopback address`, `Webhook url must not carry a user name or password`, `events must be a list` |
 | The reporting fields (`summary`, `theme`, `customerImpact`, `closeReason`, `releaseState`) | Each in its own vocabulary, as before, or `null` to clear it | `theme must be one of: ...` |
 
 `null` clears a field only where the field can be empty: a due or target date, a category, the cover, a milestone, a milestone's board, a parent card, the reporting fields. Anywhere else `null` is a value of the wrong type, and a `400`.
@@ -290,7 +291,7 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. No opera
 - **`GET /me/stats` answers an average cycle time of 0 as `0`**, where it was `null`.
 - **The compact milestone summary keeps its titles apart.** `GET /milestones/:milestoneId/summary?compact=true` has the cards' titles in `cardTitles` and the subtasks' in a new `subtaskTitles`, each by its id. Both were in `cardTitles` by the bare id, and a card and a subtask with the same id took one key between them.
 - **`POST /dependencies/bulk` reads each end as an id.** An end of a link, or an entry of `chain`, whose id is not a whole number of 1 or more (`1.5`, `"1e3"`, `0`, `-1`, `"subtask:abc"`), a list, or an object whose `kind` is not `card` or `subtask`, is `400` `<entry> must be a card id, "subtask:<id>", or {kind, id}`, naming the entry (`links[0].blocker`, `chain[1]`). `1.5` and `"1e3"` were taken as ids and reported in the `409` as links to nothing, a list was read as the id in it, and another `kind` as a card.
-- **A webhook's `url` goes with its secret** (card 2133). It is answered only to the board's owner and an administrator, and in the answer to the `POST` that created the webhook. `GET /boards/:boardId/webhooks`, `GET /webhooks/:webhookId` and the answer to `PUT /webhooks/:webhookId` leave the key out for anyone else, an editor's own update included, where every caller who could view the board was given it. An editor may still set a new address.
+- **A webhook's `url` goes with its secret** (card 2133). It is answered only to the board's owner and an administrator, and in the answer to the `POST` that created the webhook. `GET /boards/:boardId/webhooks`, `GET /webhooks/:webhookId` and the answer to `PUT /webhooks/:webhookId` leave the key out for anyone else, an editor's own update included, where every caller who could view the board was given it. Since card 2154 (item 57, below) an editor can no longer set a new address either.
 - **`recentActivity` on `GET /me/stats` lists only entries on boards the key's user can open** (card 2126), the 20 counted after that, where an entry on a board they had been taken off was listed, with the card title in its `detail`. The counts beside it are as they were.
 - **A board category is given only to a key whose user may be told of it** (card 2128). `GET /board-categories` lists the board categories that hold a board the key's user can open, and those that hold no board yet, where every one was listed; an administrator's key is given every one. `GET /board-categories/:categoryId` answers `403` `No access to this board category` for any other, where it was given. `GET /burndown` with the `boardCategoryId` of one answers `403` `No access to board category <id>`, where it was charted empty under the category's name. `PUT /boards/:boardId` answers `403` `No access to this board category` for a `categoryId` that names one, and saves nothing, where the board was filed under it.
 - **`GET /categories/:categoryId` answers `403` `No access to this category`** for a card category of a board the key's user cannot open (card 2128), where any key was given any category. One that belongs to no board is given to every key.
@@ -320,11 +321,16 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. No opera
 - **Every timestamp DumpFire stores is answered in ISO 8601 with `Z`** (card 2095), as `2026-10-14T08:00:00.000Z`, in every answer under `/api/v1/`. Fields that were `YYYY-MM-DD HH:MM:SS`, which names no zone and which most languages read in their own zone, now come back in ISO 8601: `createdAt` everywhere, `updatedAt` on a row never edited, an audit-log entry's `createdAt`, and the `from` and `to` of the activity report's `period` and of `GET /cards/:cardId/board-history`. Fields that were ISO 8601 (`completedAt`, `firstCompletedAt`, `archivedAt`, `updatedAt` after an edit) keep their shape, but the fraction of a second is always `.000`, because every stored moment is now kept to the whole second (`generatedAt` and a webhook's own `timestamp`, which are not stored, carry real milliseconds). Dates (`dueDate`, `targetDate`, `asOf`) are unchanged, and the OpenAPI document declares every timestamp field `format: date-time` (item 53). A webhook body's own `timestamp` was ISO 8601 already; its `data` holds no stored time, and would hold one in the same form.
 - **`from` and `to` on `GET /audit-log` and `GET /reports/activity` take ISO 8601, `YYYY-MM-DD HH:MM:SS` or a date** (card 2095): ISO 8601 with or without a fraction, with `Z` or an offset, which is read in UTC; `YYYY-MM-DD HH:MM:SS` in UTC; or a date alone. Anything else is `400` `from is not a date` or `to is not a date`. The audit log compared what it was sent with the stored time as text, unchecked, so a bound written in the other form gained or lost the day at its end, and a date alone as `to` left that whole day out; the activity report refused `YYYY-MM-DD HH:MM:SS`. A date alone as `to` is now the whole of that day, to 23:59:59 UTC, in both (item 54).
 - **An `archivedAt` that is text, on `PUT /cards/:cardId`, is read as the moment it names** (card 2095), so the `archivedAt` a `GET` answered, sent back in ISO 8601 with any fraction or offset, or as `YYYY-MM-DD HH:MM:SS`, is the stamp the card holds and changes nothing. `null` still restores the card, and any other value, `true` and a number included, is still `400` (item 55).
+- **A webhook's `url` may not point inside the network** (card 2161), on `POST /boards/:boardId/webhooks` and `PUT /webhooks/:webhookId`: one that does, as written, is `400` `Webhook url points inside the network: <why>`, where it was stored. Inside is a loopback, private, shared (carrier NAT), link-local (the cloud metadata service at `169.254.169.254` among them), reserved, documentation or multicast address, in IPv4 or IPv6, an IPv4 address written another way (`2130706433`, `127.1`) or inside an IPv6 form (`::ffff:127.0.0.1`), and the names `localhost`, any name ending `.localhost`, a name with no dot, and any name ending `.local`, `.internal` or `.home.arpa`. One that carries a user name or password is `400` `Webhook url must not carry a user name or password`. No name is looked up then: a name is judged at each delivery by every address it resolves to, and a delivery to one that resolves inside is not made. Redirects are not followed. The server's operator may let named receivers inside the network be sent to. A stored `url` sent back unchanged is accepted, and is refused at each delivery until it is changed or let in (item 56).
+- **Only the board's owner or an administrator changes a webhook's address or secret, or switches one on** (card 2154), on `PUT /webhooks/:webhookId`: an editor who sends `url` or `secret` at all, whatever the value, the stored one and `null` included, is `403` `Only the board's owner or an administrator can change a webhook's address or secret. Ask the board's owner.`, and one who sends `active: true` for a webhook that is off `403` `Only the board's owner or an administrator can switch a webhook on. Ask the board's owner.`, with nothing written, where an editor could change both and switch one on. An editor still changes `events`, switches a webhook off, and may send `active: true` for one already on. A script that sends back a webhook's whole answer with a changed `events` is refused for an editor: send only the fields that change (item 57). Whoever creates a webhook, changes its `url` or `secret`, or switches it on is the one
+  whose password reset switches it off, and a `POST` or `PUT` whose key such a reset ends while
+  its body is still arriving is `401` `Invalid or expired API key`, with nothing written.
+- **A board has at most 10 webhooks** (card 2201), switched-off ones counted: `POST /boards/:boardId/webhooks` answers `409` `This board has 10 webhooks, and a board may have at most 10: delete 1 before adding another.` after every other check, and creates nothing, where any number could be made. A board that already has more keeps them all, and every active one is still sent; the `409` gives its own count (`This board has 14 webhooks, … delete 5 before adding another.`) (item 58).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but reach the keys every caller uses:
 
 - **Making a key asks for the account's password**, on My Account: see [Generating an API Key](#generating-an-api-key). Keys made before are kept.
-- **Setting a password can end the account's keys.** An administrator's reset and an invite used end every key of the account; your own change ends them only if you ask. A key that has ended is answered `401` `Invalid or expired API key`: see [When a Key Ends Without Being Revoked](#when-a-key-ends-without-being-revoked).
+- **Setting a password can end the account's keys.** An administrator's reset and an invite used end every key of the account; your own change ends them only if you ask. A key that has ended is answered `401` `Invalid or expired API key`: see [When a Key Ends Without Being Revoked](#when-a-key-ends-without-being-revoked). Since card 2168 the webhooks the account set up go with its keys, switched off, and a reset or an invite pauses its report schedules; the board's owner or an administrator switches a webhook on again with `PUT /webhooks/:webhookId` and `{"active": true}`.
 - **Wrong passwords at Generate Key are counted.** Ten in 15 minutes from one signed-in browser, counted with the Account page's email and password forms, and that browser is refused for up to 15 minutes, the right password included: see [Generating an API Key](#generating-an-api-key).
 
 These touch only the web application, whose routes under `/api/` the pages use, and not the API:
@@ -425,6 +431,7 @@ These touch only the web application, whose routes under `/api/` the pages use, 
 - **Sign-in waits after five wrong passwords at one account** (card 2177), on the login form, from any number of addresses: every sign-in at the account from a browser not remembered for it, the right password included, waits 1, 2, then 4 seconds before its password is checked, until 15 minutes pass with no wrong password or the right one is given. The wait itself refuses nothing, and the answer's status and words do not change; card 2194, below, adds a refusal while it lasts. Ten attempts from one address in 15 minutes are still refused `429` "Too many login attempts", at once and not counted at the account. The Sign In button reads "Signing in…" while it waits. See [Authentication & Security](docs/authentication-security.md#guessing-a-password-at-sign-in).
 - **A browser that has signed in is remembered, and other browsers are let in one at a time while an account is being guessed at** (card 2194), on the login form. A sign-in that succeeds, a password changed on the Account page, an invite used, set-up and a sign-out with an open session set a cookie, `dumpfire_known_<user id>` (`Path=/login`, `HttpOnly`, `SameSite=Strict`, a year), that lets that browser past the account's wait, the one-at-a-time rule and the per-address limit, until the account's password is set again. While an account (or a name that is no account) has had five wrong passwords within 15 minutes of each other, a browser not remembered for it is let in only while fewer such sign-ins are in flight there than the free guesses left, and never fewer than one: the rest are answered at once `429` "A sign-in with this name is already under way from another browser. Wait a few seconds and try again, or sign in from a browser you have used here before.", counted at their address and not at the account. Nothing was refused for the account before. A remembered browser is refused in the same words, counting nothing, only while five of the account's sign-ins from remembered browsers and current-password checks are already in flight. See [Authentication & Security](docs/authentication-security.md#browsers-that-have-signed-in-before).
 - **The login form, an invite's form and set-up can answer `503`** (card 2191) when 150 password checks for each thread are already waiting (about thirty seconds of them on a fast host, a minute or more on a small one), or the caller has gone before a thread was free for theirs: "Sign-in is very busy right now. Wait a minute and try again, or sign in from a browser you have used here before.", and on the other two "The server is very busy checking passwords right now. Wait a minute and try again." Passwords are hashed and checked on worker threads, never on the server's own. A name that is no account is now checked as slowly as a wrong password at an account (card 2192), so the time taken no longer tells which names are accounts.
+- **The two password answers say what was switched off and paused** (card 2168). `PUT /api/users/{id}/password`, an administrator's reset, answers `{ success, sessionsEnded, apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused }`, where it answered the first three: every webhook the account set that was on is switched off, and every report schedule of it that was on is paused, in the transaction that sets the password. `PUT /api/account/password`, your own change, answers `{ success, apiKeysEnded, webhooksSwitchedOff }`: with `endApiKeys: true` the webhooks you set are switched off with your keys, and your report schedules are left on. Both counts are `0` where there was nothing to switch off. An invite used switches off and pauses as a reset does.
 - **`PUT /api/account/password`, `PUT /api/account/email` and `POST /api/account/api-keys` can answer `409`** "Your password was changed while this was being saved. Nothing was changed. Try again." (card 2191) when the account's password was changed twice while the request was being saved; once, and the current password is checked against the new one, as before. Nothing is written. Each can also answer `429` "The server is very busy checking passwords right now. Wait a minute and try again." when five of the account's current-password checks and sign-ins from remembered browsers are already in flight, with nothing counted or checked. So one account keeps at most five password checks in the first lane, which goes ahead of the rest, plus the new hash of each password change it completes (`PUT /api/account/password` makes its hash after giving its place back). That cannot starve the second lane (sign-ins from browsers not remembered, invites and set-up), which is served at least every fourth job the threads take. See [Authentication & Security](docs/authentication-security.md#off-the-servers-thread-card-2191).
 - **A sign-in that succeeds gives back only the attempts its address made at that account** (card 2226): attempts at another account, at a name that is no account, and refusals stay counted to the end of the 15 minutes, where the whole count was cleared. Sign-in and the public request form (`POST /api/requests`, `GET /api/requests/targets`, `POST /api/requests/{id}/confirm`) count an IPv6 address by its /64 network, an IPv4 address written as IPv6 as the IPv4 address, and no port (card 2195).
 - **A failed sign-in's log line holds nothing that was typed** (card 2193), in `GET /api/logs` and on the Audit page: `Failed login attempt at "alice" (user 12) from IP … (bad password)` with the account as the line's user, or `Failed login attempt for a name that is no account (17 characters) from IP …`, each with the address as its `ip`. The lines already stored for names that were no account are rewritten that way at the first start, and in every backup.
@@ -2103,6 +2110,56 @@ over any window (up to 730 days). Days are UTC.
 
 **Errors:** every invalid parameter is a `400` naming it; `403` for a board,
 milestone or board category you cannot see; `404` for one that does not exist.
+
+### Webhooks
+
+A webhook sends each event of its board that it asks for (`card.created`, `card.updated`,
+`card.moved`, `card.completed`, `card.deleted`, `comment.added`) to its `url` as a `POST`, after
+the change is committed, signed with its `secret`. What is sent, and how a receiver checks the
+signature: [Notifications & Email](docs/notifications-email.md#webhooks).
+
+| Route | Does | Needs | Answers |
+|-------|------|-------|---------|
+| `GET /api/v1/boards/{boardId}/webhooks` | Lists the board's webhooks | View access | `200` |
+| `POST /api/v1/boards/{boardId}/webhooks` | Creates one: `url` (required), `secret`, `events` | Edit access | `201`, `400`, `409` |
+| `GET /api/v1/webhooks/{webhookId}` | Reads one | View access | `200` |
+| `PUT /api/v1/webhooks/{webhookId}` | Changes `url`, `secret`, `events` or `active` | Edit access; the board's owner or an administrator for `url`, `secret`, or switching it on | `200`, `400`, `403`, `404` |
+| `DELETE /api/v1/webhooks/{webhookId}` | Deletes one | Edit access | `200` |
+
+- **The address and the secret are given only to the board's owner and an administrator**,
+  and in the answer to the `POST` that made the webhook. Anyone else is given the webhook
+  without `url` and `secret`, with `hasSecret` saying whether a secret is set.
+- **Only the board's owner or an administrator changes the address or the secret, or switches a
+  webhook on.** An editor who sends `url` or `secret` at all, whatever the value, is `403`
+  `Only the board's owner or an administrator can change a webhook's address or secret. Ask the board's owner.`, and one
+  who sends `"active": true` for a webhook that is off `403` `Only the board's owner or an
+  administrator can switch a webhook on. Ask the board's owner.`. An editor changes `events`, switches a webhook off, and
+  deletes one. **Send only the fields that change**: the answer of the `POST` carries `url` and
+  `secret`, and sent back whole by an editor it is refused.
+- **Where a webhook may send.** Not inside the network: an address that is loopback, private,
+  shared, link-local (the cloud metadata service among them), reserved, documentation or
+  multicast, in IPv4 or IPv6, and the names `localhost`, `*.localhost`, a name with no dot,
+  `*.local`, `*.internal` and `*.home.arpa`, are `400` `Webhook url points inside the network:
+  <why>` when the webhook is created or its `url` changed; an address with a user name or
+  password is `400` `Webhook url must not carry a user name or password`. A name is judged again
+  at each delivery by every address it resolves to, and a delivery to one that resolves inside is
+  not made. Redirects are not followed. The server's operator may let named receivers inside the
+  network be sent to (`WEBHOOK_ALLOW_INSIDE`). The stored `url` sent back unchanged is accepted.
+- **At most 10 webhooks a board**, switched-off ones counted: the 11th `POST` is `409` `This board
+  has 10 webhooks, and a board may have at most 10: delete 1 before adding another.`, after every
+  other check. Deleting one makes room.
+- **A key ended while the request is arriving.** A `POST` or a `PUT` whose key a password reset
+  ends while its body is still arriving is `401` `Invalid or expired API key`, with nothing
+  written: the key is asked again in the transaction that writes.
+- **A webhook switched off by a password reset** (the account that set its address or secret, or switched it on, was taken back) is switched on again with `PUT /api/v1/webhooks/{webhookId}` and `{"active": true}`,
+  by the board's owner or an administrator. An editor is refused, for a webhook they set up themselves too: they ask the owner, or delete it and
+  create it again. Whoever switches one on becomes its setter, so their own reset switches it off again.
+
+```bash
+curl -X PUT -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"events": ["card.moved", "card.completed"]}' \
+  https://dumpfire.example.com/api/v1/webhooks/7
+```
 
 ---
 

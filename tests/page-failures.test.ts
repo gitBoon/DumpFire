@@ -852,8 +852,10 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 //
 // Setting a password ends the account's sessions and its invites not yet
 // used. An administrator's reset and an invite end its API keys too, and the
-// holder's own change ends them only when asked (cards 2116 and 2137). Making
-// a key asks for the password. These are what the three pages say about it.
+// holder's own change ends them only when asked (cards 2116 and 2137). The
+// webhooks the account set go with the keys, and a reset or an invite pauses
+// its report schedules as well (card 2168). Making a key asks for the
+// password. These are what the three pages say about it.
 
 /** Every `name = ...` inside `within`. */
 function assignmentsTo(within: ts.Node, name: string): ts.BinaryExpression[] {
@@ -918,40 +920,73 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 		expect(markup).toContain('disabled={!newKeyName.trim() || !newKeyPassword || generatingKey}');
 	});
 
-	it('offers to end the API keys with a password change, not ticked, and only when there are keys to end', () => {
+	it('offers to end the API keys with a password change, not ticked, and only when there are keys to end or webhooks to switch off', () => {
 		// Not ticked unless the holder ticks it.
 		expect(page.getText()).toContain('let endApiKeysToo = $state(false);');
 		expect(assignmentsTo(page, 'endApiKeysToo').map((assignment) => assignment.right.getText())).toEqual(['false', 'false']);
-		// And cleared whenever the list is empty, not only after a change: a box
-		// ticked beside a key that was then revoked must not come back ticked
+		// And cleared whenever the box is not offered, not only after a change: a
+		// box ticked beside a key that was then revoked must not come back ticked
 		// beside the next one.
 		const cleared = page.statements.filter(
 			(statement) => ts.isExpressionStatement(statement) && statement.getText().startsWith('$effect(')
 		);
 		expect(cleared.map((statement) => assignmentsTo(statement, 'endApiKeysToo').length)).toContain(1);
-		expect(page.getText()).toMatch(/\$effect\(\(\) => \{\s*if \(apiKeys\.length === 0\) endApiKeysToo = false;\s*\}\);/);
+		expect(page.getText()).toMatch(/\$effect\(\(\) => \{\s*if \(!offerToEnd\) endApiKeysToo = false;\s*\}\);/);
 
-		// The box, with the count, only when the list holds a key.
-		expect(around('bind:checked={endApiKeysToo}')).toEqual([{ condition: 'apiKeys.length > 0', inElse: false }]);
-		// "It" for one key, "they" for more.
-		expect(markup).toContain(
+		// The box while the list holds a key, or while the account set a webhook
+		// that is on (card 2168): deleting the key that made a webhook leaves the
+		// webhook sending. For a webhook alone, only once the key list has been
+		// read, so that a list that failed to load does not hide keys the box
+		// would end.
+		expect(page.getText()).toContain('let webhooksSet = $derived(data.webhooks ?? 0);');
+		expect(page.getText()).toContain('let offerToEnd = $derived(apiKeys.length > 0 || (apiKeysRead && webhooksSet > 0));');
+		expect(assignmentsTo(page, 'apiKeysRead').map((assignment) => assignment.right.getText())).toEqual(['true']);
+		expect(around('bind:checked={endApiKeysToo}')).toEqual([{ condition: 'offerToEnd', inElse: false }]);
+		// "It" for one, "they" for more.
+		expect(around(
 			"You have {keysInWords(apiKeys.length)}. {apiKeys.length === 1 ? 'It keeps' : 'They keep'} working after a password change unless you tick the box."
-		);
-		expect(markup).toContain(
-			"End my {keysInWords(apiKeys.length)} too. Do this if anyone else may have used your account. Anything that uses {apiKeys.length === 1 ? 'it' : 'them'} stops working until it is given a new key."
-		);
+		)).toEqual([
+			{ condition: 'offerToEnd', inElse: false },
+			{ condition: 'apiKeys.length > 0', inElse: false }
+		]);
+		expect(around(
+			"You set up {webhooksInWords(webhooksSet)}. {webhooksSet === 1 ? 'It keeps' : 'They keep'} sending your boards' events after a password change unless you tick the box."
+		)).toEqual([
+			{ condition: 'offerToEnd', inElse: false },
+			{ condition: 'webhooksSet > 0', inElse: false }
+		]);
+		// What ticking it ends, worded for what there is.
+		expect(markup).toContain('<span>{whatTheBoxEnds(apiKeys.length, webhooksSet)}</span>');
+		const words = functionNamed(page, 'whatTheBoxEnds').getText();
+		for (const phrase of [
+			'`End my ${keysInWords(keys)} too, and switch off the ${webhooksInWords(hooks)} I set up.`',
+			'`End my ${keysInWords(keys)} too.`',
+			'`Switch off the ${webhooksInWords(hooks)} I set up.`',
+			"'Do this if anyone else may have used your account.'",
+			"`Anything that uses ${keys === 1 ? 'the key' : 'the keys'} stops working until it is given a new key.`",
+			"\"A webhook switched off sends nothing until the board's owner or an administrator switches it on again.\""
+		]) {
+			expect(words, phrase).toContain(phrase);
+		}
 	});
 
 	it('sends the choice as endApiKeys, says what the change ended, and reads the key list again after keys were ended', () => {
 		const changing = functionNamed(page, 'changePassword');
 
 		expect(bodiesSent(changing)).toEqual([['currentPassword', 'newPassword', 'endApiKeys']]);
-		expect(changing.getText()).toContain('const endApiKeys = endApiKeysToo && apiKeys.length > 0;');
-		// The count is the answer's, read where the answer is a success.
+		expect(changing.getText()).toContain('const endApiKeys = endApiKeysToo && offerToEnd;');
+		// The counts are the answer's, read where the answer is a success.
 		expect(branches(page, 'changePassword', 'answerBody')).toEqual(['ok']);
-		expect(changing.getText()).toContain('(await answerBody(res))?.apiKeysEnded');
+		expect(changing.getText()).toContain('const answer = await answerBody(res);');
+		expect(changing.getText()).toContain("typeof answer?.apiKeysEnded === 'number'");
+		expect(changing.getText()).toContain("typeof answer?.webhooksSwitchedOff === 'number'");
 		expect(changing.getText()).toContain("'Password changed. Your other sessions were signed out'");
+		expect(changing.getText()).toContain(
+			"`the ${webhooksInWords(hooksOff)} you set up ${hooksOff === 1 ? 'was' : 'were'} switched off`"
+		);
 		expect(branches(page, 'changePassword', 'loadApiKeys')).toEqual(['ok']);
+		// And the count of webhooks is read again once they were switched off.
+		expect(branches(page, 'changePassword', 'invalidateAll')).toEqual(['ok']);
 		expect(branches(page, 'changePassword', 'failureMessage')).toEqual(['failed']);
 	});
 
@@ -997,8 +1032,10 @@ describe('the admin page’s password dialog, src/routes/admin/+page.svelte', ()
 		return blocksAround(source, from + markup.indexOf(text));
 	};
 
-	it('tells an administrator on their own row that their keys keep working, and sends no endApiKeys', () => {
-		const line = 'Your API keys keep working. To end them too, change your password on the <a href="/account">Account page</a>.';
+	it('tells an administrator on their own row that their keys and webhooks keep working, and sends no endApiKeys', () => {
+		const line =
+			'Your API keys and the webhooks you set up keep working. To end the keys and switch off those webhooks too, ' +
+			'change your password on the <a href="/account">Account page</a>.';
 
 		expect(around(line).at(-1)).toEqual({ condition: 'resettingOwnPassword', inElse: false });
 		expect(bodiesSent(functionNamed(page, 'resetPassword'))).toEqual([['currentPassword', 'newPassword'], ['password']]);
@@ -1012,12 +1049,36 @@ describe('the admin page’s password dialog, src/routes/admin/+page.svelte', ()
 			{ condition: 'resettingOwnPassword', inElse: true },
 			{ condition: 'resetTargetKeys !== null && resetTargetKeys > 0', inElse: false }
 		]);
-		expect(around('They are signed out everywhere, every API key they have stops working, and any invite not yet used stops working.').at(-1)).toEqual({
+		expect(
+			around(
+				'They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, ' +
+					'the webhooks they set up are switched off and their report schedules are paused.'
+			).at(-1)
+		).toEqual({
 			condition: 'resettingOwnPassword',
 			inElse: true
 		});
 		expect(page.getText()).toContain('let resetTarget = $derived(data.users.find((u) => u.id === resetPasswordUserId));');
 		expect(page.getText()).toContain('let resetTargetKeys = $derived(resetKeysRead ? (resetTarget?.apiKeys ?? null) : null);');
+	});
+
+	it('says beforehand how many webhooks a reset switches off and report schedules it pauses, once the counts are read again (card 2168)', () => {
+		const webhooks = "They set up {counted(resetTargetWebhooks, 'webhook')}, which {resetTargetWebhooks === 1 ? 'is' : 'are'} switched off.";
+		const schedules = "They have {counted(resetTargetSchedules, 'report schedule')}, which {resetTargetSchedules === 1 ? 'is' : 'are'} paused.";
+
+		expect(around(webhooks).slice(-2)).toEqual([
+			{ condition: 'resettingOwnPassword', inElse: true },
+			{ condition: 'resetTargetWebhooks !== null && resetTargetWebhooks > 0', inElse: false }
+		]);
+		expect(around(schedules).slice(-2)).toEqual([
+			{ condition: 'resettingOwnPassword', inElse: true },
+			{ condition: 'resetTargetSchedules !== null && resetTargetSchedules > 0', inElse: false }
+		]);
+		// Null until the page's data has been read again since the dialog opened, as the key count is.
+		expect(page.getText()).toContain('let resetTargetWebhooks = $derived(resetKeysRead ? (resetTarget?.webhooks ?? null) : null);');
+		expect(page.getText()).toContain(
+			'let resetTargetSchedules = $derived(resetKeysRead ? (resetTarget?.reportSchedules ?? null) : null);'
+		);
 	});
 
 	it('reads the counts again when the dialog opens, and shows none until it has', () => {
@@ -1047,8 +1108,15 @@ describe('the admin page’s password dialog, src/routes/admin/+page.svelte', ()
 
 		expect(branches(page, 'resetPassword', 'answerBody')).toEqual(['ok']);
 		expect(resetting.getText()).toContain(
-			"`Password reset: ${counted(sessionsEnded, 'session')} and ${counted(apiKeysEnded, 'API key')} ended`"
+			"`Password reset: ${counted(sessionsEnded, 'session')} and ${counted(apiKeysEnded, 'API key')} ended, ` +"
 		);
+		expect(resetting.getText()).toContain(
+			"`${counted(webhooksSwitchedOff, 'webhook')} switched off and ${counted(reportSchedulesPaused, 'report schedule')} paused`"
+		);
+		for (const count of ['sessionsEnded', 'apiKeysEnded', 'webhooksSwitchedOff', 'reportSchedulesPaused']) {
+			expect(resetting.getText()).toContain(`const ${count} = result?.${count};`);
+			expect(resetting.getText()).toContain(`typeof ${count} === 'number'`);
+		}
 		expect(branches(page, 'resetPassword', 'invalidateAll')).toEqual(['ok']);
 		expect(branches(page, 'resetPassword', 'failureMessage')).toEqual(['failed']);
 	});
@@ -1099,14 +1167,24 @@ describe('the invite page, src/routes/invite/[token]/+page.svelte', () => {
 		expect(source).not.toContain('invalid or has already been used');
 	});
 
-	it('says, before the form is sent, that setting a password ends the account’s API keys', () => {
-		const notice = "Setting a password here ends this account's {apiKeys} API key{apiKeys === 1 ? '' : 's'} and signs it out everywhere else.";
+	it('says, before the form is sent, that setting a password ends the account’s API keys, switches off its webhooks and pauses its report schedules', () => {
+		const notice = 'Setting a password here {whatItEnds} and signs it out everywhere else.';
 
 		expect(around(notice)).toEqual([
 			{ condition: 'data.valid', inElse: false },
-			{ condition: 'apiKeys > 0', inElse: false }
+			{ condition: 'whatItEnds', inElse: false }
 		]);
-		expect(scriptOf(file).getText()).toContain('let apiKeys = $derived(data.apiKeys ?? 0);');
+		const script = scriptOf(file).getText();
+		expect(script).toContain('let apiKeys = $derived(data.apiKeys ?? 0);');
+		expect(script).toContain('let webhooks = $derived(data.webhooks ?? 0);');
+		expect(script).toContain('let reportSchedules = $derived(data.reportSchedules ?? 0);');
+		for (const phrase of [
+			"`ends this account's ${apiKeys} API key${apiKeys === 1 ? '' : 's'}`",
+			"`switches off the ${webhooks} webhook${webhooks === 1 ? '' : 's'} it set up`",
+			"`pauses its ${reportSchedules} report schedule${reportSchedules === 1 ? '' : 's'}`"
+		]) {
+			expect(script, phrase).toContain(phrase);
+		}
 	});
 });
 

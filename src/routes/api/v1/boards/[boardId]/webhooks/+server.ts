@@ -3,9 +3,11 @@ import { db } from '$lib/server/db';
 import { webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { inTransaction } from '$lib/server/db/transaction';
-import { pathId, readBody, readChoices, readText, readUrl } from '$lib/server/request-body';
+import { pathId, readBody, readChoices, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
-import { canSeeWebhookSecret, presentWebhook, WEBHOOK_EVENTS } from '$lib/server/webhooks';
+import { stillAuthenticated } from '$lib/server/auth';
+import { canSeeWebhookSecret, presentWebhook, refuseWebhookOverCap, WEBHOOK_EVENTS } from '$lib/server/webhooks';
+import { readWebhookUrl } from '$lib/server/webhook-address';
 import type { RequestHandler } from './$types';
 
 /**
@@ -34,25 +36,35 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * The response carries the secret and the address back to the caller who has
  * just supplied them. After this they are only ever shown to the board's owner
  * or an administrator.
+ *
+ * The address may not point inside the network as written, nor carry a user
+ * name or password (card 2161): a 400 that says why, with no name looked up;
+ * delivery judges what the name resolves to. The caller is recorded as the
+ * webhook's setter (`set_by`, card 2168), whose password reset switches it
+ * off. A board holds at most 10 webhooks (card 2201): the 11th is a 409, the
+ * last check, made immediately before the insert in the same transaction.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const user = requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
 	const body = await readBody(request);
 
-	// The board is looked for and the caller checked in the transaction that
-	// saves the webhook, once the body has arrived.
+	// The key is asked again, the board looked for and the caller checked in
+	// the transaction that saves the webhook, once the body has arrived: a
+	// reset that ended the key while the body was arriving is a 401 here.
 	const hook = inTransaction(() => {
+		stillAuthenticated(locals);
 		requireBoard(user, boardId, 'edit');
 
-		const url = readUrl(body, 'url', { required: true, says: { missing: 'URL is required' } });
+		const url = readWebhookUrl(body, { required: true, says: { missing: 'URL is required' } })!;
 		const secret = readText(body, 'secret', { max: 256 });
 		// Each name trimmed: the wrapper sends "card.created, card.moved" split
 		// on the commas. An empty list, or none, is every event.
 		const events = readChoices(body, 'events', { from: WEBHOOK_EVENTS, trim: true });
 
+		refuseWebhookOverCap(boardId);
 		return db.insert(webhooks)
-			.values({ boardId, url, secret: secret ?? '', events: JSON.stringify(events ?? []) })
+			.values({ boardId, url, secret: secret ?? '', events: JSON.stringify(events ?? []), setBy: user.id })
 			.returning()
 			.get();
 	});

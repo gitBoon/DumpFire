@@ -11,6 +11,7 @@ import { reportSchedules } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { overCapScheduleWords, REPORT_STATUS_FILTERS, takeReportMail } from '$lib/server/reports';
 import { inTransaction } from '$lib/server/db/transaction';
+import { stillAuthenticated } from '$lib/server/auth';
 import {
 	pathId,
 	readBody,
@@ -53,8 +54,10 @@ export const PUT: RequestHandler = async ({ locals, params, request }) => {
 
 	// The schedule is looked for among the caller's own in the transaction
 	// that changes it, once the body has arrived, and the answer is the row
-	// as that transaction wrote it.
+	// as that transaction wrote it. The session is asked again first: a reset
+	// that ended it while the body was arriving is a 401.
 	const updated = inTransaction(() => {
+		stillAuthenticated(locals);
 		const schedule = db.select().from(reportSchedules)
 			.where(and(eq(reportSchedules.id, scheduleId), eq(reportSchedules.userId, user.id)))
 			.get();

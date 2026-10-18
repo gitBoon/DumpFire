@@ -6,8 +6,9 @@ import { eq } from 'drizzle-orm';
 import { requireBoard, requireUser, type Need } from '$lib/server/route-guards';
 import { canSeeWebhookSecret, presentWebhook, storedEvents, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { inTransaction } from '$lib/server/db/transaction';
-import { pathId, readBody, readBoolean, readChoices, readText, readUrl } from '$lib/server/request-body';
-import type { SessionUser } from '$lib/server/auth';
+import { pathId, readBody, readBoolean, readChoices, readText } from '$lib/server/request-body';
+import { readWebhookUrl } from '$lib/server/webhook-address';
+import { stillAuthenticated, type SessionUser } from '$lib/server/auth';
 import type { RequestHandler } from './$types';
 
 /** The webhook, if the caller may view or edit the board it belongs to. */
@@ -37,29 +38,61 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * PUT /api/v1/webhooks/:webhookId — Update a webhook.
  *
  * Answered as a read is: an editor who is not the board's owner is not given
- * the secret or the address, even one they have just sent.
+ * the secret or the address.
+ *
+ * Who may change what (card 2154). An editor may change `events`, switch the
+ * webhook off, and send `active: true` for one already on. Changing the
+ * address or the secret, and switching a webhook on, are for the board's owner
+ * or an administrator, the people who may read the address: an editor who
+ * sends `url` or `secret` at all is refused 403, whatever the value, because
+ * accepting the stored value unchanged would let them test guesses at an
+ * address they cannot read; and starting deliveries again is choosing again to
+ * send the board's events to an address they cannot see, perhaps an
+ * intruder's that a password reset switched off. Both 403s come after the
+ * edit guard and before any field is read.
+ *
+ * A new address is held to card 2161's rules (`readWebhookUrl`); the stored
+ * one sent back unchanged is accepted. Whoever changes the address or the
+ * secret, or switches the webhook on, becomes its setter (`set_by`, card
+ * 2168).
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	const user = requireUser(locals.user);
 	const webhookId = pathId(params.webhookId, 'webhook');
 	const body = await readBody(request);
 
-	// The webhook is read and the caller checked in the transaction that
-	// changes it, once the body has arrived. A webhook deleted meanwhile is
-	// 404: the update found nothing, and the answer was a 500.
+	// The key is asked again, the webhook read and the caller checked in the
+	// transaction that changes it, once the body has arrived. A key a reset
+	// ended meanwhile is 401. A webhook deleted meanwhile is 404: the update
+	// found nothing, and the answer was a 500.
 	const { updated, reveal } = inTransaction(() => {
+		stillAuthenticated(locals);
 		const { hook, reveal } = requireWebhook(user, webhookId, 'edit');
 
+		if (!reveal && (Object.hasOwn(body, 'url') || Object.hasOwn(body, 'secret'))) {
+			throw error(403, "Only the board's owner or an administrator can change a webhook's address or secret. Ask the board's owner.");
+		}
+		const active = readBoolean(body, 'active', { keep: hook.active });
+		const switchedOn = active === true && !hook.active;
+		if (!reveal && switchedOn) {
+			throw error(403, "Only the board's owner or an administrator can switch a webhook on. Ask the board's owner.");
+		}
+
 		const updates: Partial<typeof webhooks.$inferInsert> = {};
-		const url = readUrl(body, 'url', { keep: hook.url });
+		const url = readWebhookUrl(body, { keep: hook.url });
 		if (url !== undefined) updates.url = url;
 		const secret = readText(body, 'secret', { max: 256, keep: hook.secret });
 		if (secret !== undefined) updates.secret = secret;
 		// Each name trimmed; an empty list is every event.
 		const events = readChoices(body, 'events', { from: WEBHOOK_EVENTS, trim: true, keep: storedEvents(hook.events) });
 		if (events !== undefined) updates.events = JSON.stringify(events);
-		const active = readBoolean(body, 'active', { keep: hook.active });
 		if (active !== undefined) updates.active = active;
+		// Only a change: the address or the secret sent back as stored sets nothing.
+		// Switching it on does (the review, S2): whoever starts its deliveries
+		// again answers for them, and their reset is what switches it off.
+		if ((url !== undefined && url !== hook.url) || (secret !== undefined && secret !== hook.secret) || switchedOn) {
+			updates.setBy = user.id;
+		}
 
 		if (Object.keys(updates).length === 0) throw error(400, 'No fields to update');
 

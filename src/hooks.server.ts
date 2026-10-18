@@ -288,6 +288,10 @@ async function handleRequest(event: RequestEvent, resolve: ResolveFn, path: stri
 
 		markApiKeyUsed(key.id);
 		event.locals.user = key.user;
+		// The key itself, by its row, so that a handler can ask in the
+		// transaction that writes whether it is still open: a body may arrive
+		// long after this, and a reset end the key meanwhile (`stillAuthenticated`).
+		event.locals.credential = { kind: 'api key', id: key.id };
 
 		let response: Response;
 		if (event.route.id === null) {
@@ -314,6 +318,8 @@ async function handleRequest(event: RequestEvent, resolve: ResolveFn, path: stri
 	} else {
 		event.locals.user = null;
 	}
+	// The session the account was found by, as the key is kept above.
+	event.locals.credential = token && event.locals.user ? { kind: 'session', token } : null;
 
 	// Decided on the route's id, which a path that is no route has not got.
 	const routeId = event.route.id;

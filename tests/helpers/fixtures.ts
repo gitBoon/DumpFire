@@ -43,6 +43,7 @@ import {
 } from '$lib/server/db/schema';
 import { createSession, generateApiKey, type SessionUser } from '$lib/server/auth';
 import { resetMailStatus } from '$lib/server/email';
+import { forgetWebhookWarnings } from '$lib/server/webhooks';
 
 let seq = 0;
 const next = () => ++seq;
@@ -100,6 +101,9 @@ export function resetDb(): void {
 	// What mail has done is kept in memory since the server started (card
 	// 2196): each test starts as a server does.
 	resetMailStatus();
+	// So is which webhook lines were written in the last hour (the review of
+	// the webhook group, O2): a test's webhook 1 is not the last test's.
+	forgetWebhookWarnings();
 }
 
 export type Role = 'user' | 'admin' | 'superadmin';
@@ -395,11 +399,12 @@ export function assignCard(card: Card, user: SessionUser): void {
 
 /**
  * A webhook on a board. With no `events` it receives every event. Use it with
- * `effects()`, which records the delivery and sends nothing.
+ * `effects()`, which records the delivery and sends nothing. With no `setBy`
+ * it has no recorded setter, as a webhook made before migration 0056.
  */
 export function makeWebhook(
 	board: Board,
-	opts: { url?: string; events?: string[]; secret?: string; active?: boolean } = {}
+	opts: { url?: string; events?: string[]; secret?: string; active?: boolean; setBy?: SessionUser } = {}
 ): typeof webhooks.$inferSelect {
 	return db
 		.insert(webhooks)
@@ -408,7 +413,8 @@ export function makeWebhook(
 			url: opts.url ?? `https://hooks.example.test/${next()}`,
 			events: JSON.stringify(opts.events ?? []),
 			secret: opts.secret ?? '',
-			active: opts.active ?? true
+			active: opts.active ?? true,
+			setBy: opts.setBy?.id
 		})
 		.returning()
 		.get();

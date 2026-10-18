@@ -74,16 +74,45 @@
 	let passwordMessage = $state('');
 	let passwordError = $state(false);
 	/**
-	 * Whether the change ends this account's API keys too. Not ticked unless
-	 * the holder ticks it: a routine change is not about an intruder, and
-	 * ending keys stops every script that uses them. Offered only when the key
-	 * list has loaded with a key in it, so a list that failed to load keeps
-	 * the keys, which is the safe side.
+	 * Whether the change ends this account's API keys too, and switches off
+	 * the webhooks it set up, which go with the keys on the server (card
+	 * 2168). Not ticked unless the holder ticks it: a routine change is not
+	 * about an intruder, and ending keys stops every script that uses them.
+	 * Offered only when the key list has loaded, with a key in it or with a
+	 * webhook of the account's on, so a list that failed to load keeps the
+	 * keys, which is the safe side.
 	 */
 	let endApiKeysToo = $state(false);
 
 	/** `1 API key`, `2 API keys`. */
 	const keysInWords = (n: number) => `${n} API key${n === 1 ? '' : 's'}`;
+
+	/** `1 webhook`, `2 webhooks`. */
+	const webhooksInWords = (n: number) => `${n} webhook${n === 1 ? '' : 's'}`;
+
+	/**
+	 * What ticking the box ends, in the words beside it: the keys, the
+	 * webhooks the account set up, or both. The box is there for a webhook
+	 * with no key left too: deleting the key that made a webhook leaves the
+	 * webhook sending, and the server switches it off with `endApiKeys` all
+	 * the same.
+	 */
+	function whatTheBoxEnds(keys: number, hooks: number): string {
+		const ends =
+			keys > 0 && hooks > 0
+				? `End my ${keysInWords(keys)} too, and switch off the ${webhooksInWords(hooks)} I set up.`
+				: keys > 0
+					? `End my ${keysInWords(keys)} too.`
+					: `Switch off the ${webhooksInWords(hooks)} I set up.`;
+		return [
+			ends,
+			'Do this if anyone else may have used your account.',
+			keys > 0 ? `Anything that uses ${keys === 1 ? 'the key' : 'the keys'} stops working until it is given a new key.` : '',
+			hooks > 0 ? "A webhook switched off sends nothing until the board's owner or an administrator switches it on again." : ''
+		]
+			.filter(Boolean)
+			.join(' ');
+	}
 
 	async function changeEmail() {
 		if (!newEmail?.trim() || !emailPassword) return;
@@ -140,8 +169,9 @@
 		passwordMessage = '';
 		passwordError = false;
 
-		// Only when the box was there to tick: it is not, with no keys.
-		const endApiKeys = endApiKeysToo && apiKeys.length > 0;
+		// Only when the box was there to tick: it is not, with no keys and no
+		// webhook of the account's on.
+		const endApiKeys = endApiKeysToo && offerToEnd;
 		try {
 			const res = await fetch('/api/account/password', {
 				method: 'PUT',
@@ -150,12 +180,16 @@
 			});
 
 			if (res.ok) {
-				// How many keys the server ended, from its answer.
-				const ended = (await answerBody(res))?.apiKeysEnded;
-				const keysEnded = typeof ended === 'number' ? ended : 0;
+				// How many keys the server ended and webhooks it switched off, from its answer.
+				const answer = await answerBody(res);
+				const keysEnded = typeof answer?.apiKeysEnded === 'number' ? answer.apiKeysEnded : 0;
+				const hooksOff = typeof answer?.webhooksSwitchedOff === 'number' ? answer.webhooksSwitchedOff : 0;
+				const ended = [
+					keysEnded > 0 ? `your ${keysInWords(keysEnded)} ${keysEnded === 1 ? 'was' : 'were'} ended` : '',
+					hooksOff > 0 ? `the ${webhooksInWords(hooksOff)} you set up ${hooksOff === 1 ? 'was' : 'were'} switched off` : ''
+				].filter(Boolean);
 				passwordMessage =
-					'Password changed. Your other sessions were signed out' +
-					(keysEnded > 0 ? `, and your ${keysInWords(keysEnded)} ${keysEnded === 1 ? 'was' : 'were'} ended.` : '.');
+					'Password changed. Your other sessions were signed out' + (ended.length > 0 ? `; ${ended.join(' and ')}.` : '.');
 				passwordError = false;
 				currentPassword = '';
 				newPassword = '';
@@ -164,8 +198,10 @@
 				if (endApiKeys) {
 					// A key made a moment ago went with the others: its panel goes too.
 					newlyCreatedKey = '';
-					// The list is read again, so that it no longer shows keys that have gone.
+					// The list is read again, so that it no longer shows keys that have gone,
+					// and so is the count of webhooks, which were switched off with them.
 					await loadApiKeys();
+					await invalidateAll();
 				}
 			} else {
 				passwordMessage = await failureMessage(res, 'Failed to change password');
@@ -212,6 +248,8 @@
 
 	let apiKeys = $state<ApiKeyInfo[]>([]);
 	let apiKeysLoading = $state(true);
+	/** The key list has been read: until then, `apiKeys` being empty says nothing. */
+	let apiKeysRead = $state(false);
 	let newKeyName = $state('');
 	/** The current password, which making a key asks for. Cleared after each attempt. */
 	let newKeyPassword = $state('');
@@ -223,16 +261,28 @@
 	let deletingKeyId = $state<number | null>(null);
 	let confirmDeleteId = $state<number | null>(null);
 
-	// The box to end the keys goes when the last key does, and takes its tick
-	// with it, so that it cannot come back ticked beside a key made later.
+	/** How many webhooks this account set up that are on, from the page's load (card 2168). */
+	let webhooksSet = $derived(data.webhooks ?? 0);
+	/**
+	 * Whether the box is offered: while the list holds a key, or, once the
+	 * list has been read, while a webhook the account set is on.
+	 */
+	let offerToEnd = $derived(apiKeys.length > 0 || (apiKeysRead && webhooksSet > 0));
+
+	// The box to end the keys goes when there is nothing left for it to end,
+	// and takes its tick with it, so that it cannot come back ticked beside a
+	// key made later.
 	$effect(() => {
-		if (apiKeys.length === 0) endApiKeysToo = false;
+		if (!offerToEnd) endApiKeysToo = false;
 	});
 
 	async function loadApiKeys() {
 		try {
 			const res = await fetch('/api/account/api-keys');
-			if (res.ok) apiKeys = await res.json();
+			if (res.ok) {
+				apiKeys = await res.json();
+				apiKeysRead = true;
+			}
 		} catch { /* silent */ }
 		apiKeysLoading = false;
 	}
@@ -513,13 +563,18 @@
 					</div>
 				</div>
 
-				{#if apiKeys.length > 0}
-					<!-- The holder's own change keeps their API keys unless they ask. -->
+				{#if offerToEnd}
+					<!-- The holder's own change keeps their API keys, and the webhooks they set up, unless they ask. -->
 					<div class="end-keys">
-						<p class="end-keys-note">You have {keysInWords(apiKeys.length)}. {apiKeys.length === 1 ? 'It keeps' : 'They keep'} working after a password change unless you tick the box.</p>
+						{#if apiKeys.length > 0}
+							<p class="end-keys-note">You have {keysInWords(apiKeys.length)}. {apiKeys.length === 1 ? 'It keeps' : 'They keep'} working after a password change unless you tick the box.</p>
+						{/if}
+						{#if webhooksSet > 0}
+							<p class="end-keys-note">You set up {webhooksInWords(webhooksSet)}. {webhooksSet === 1 ? 'It keeps' : 'They keep'} sending your boards' events after a password change unless you tick the box.</p>
+						{/if}
 						<label class="end-keys-check">
 							<input type="checkbox" bind:checked={endApiKeysToo} />
-							<span>End my {keysInWords(apiKeys.length)} too. Do this if anyone else may have used your account. Anything that uses {apiKeys.length === 1 ? 'it' : 'them'} stops working until it is given a new key.</span>
+							<span>{whatTheBoxEnds(apiKeys.length, webhooksSet)}</span>
 						</label>
 					</div>
 				{/if}

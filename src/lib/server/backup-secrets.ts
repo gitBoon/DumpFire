@@ -206,7 +206,7 @@ export type SecretsAccount = { kept: SecretsKept; toEnter: SecretsToEnter };
 export type SecretsHere = {
 	mail: Record<(typeof MAIL_KEYS)[number], string | null>;
 	destinations: Entry[];
-	webhooks: { id: number; boardId: number; url: string; secret: string }[];
+	webhooks: { id: number; boardId: number; url: string; secret: string; setBy: number | null }[];
 };
 
 const isEntry = (value: unknown): value is Entry => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -839,15 +839,17 @@ export function unsealedBecause(backup: Database.Database, key: string | null): 
 /**
  * This server's secrets, and the fields that decide where each goes: the mail
  * host, port, way out, user and password; every destination whole; each
- * webhook that has a secret, with its board and address. Read by
+ * webhook that has a secret, with its board, its address and who set them
+ * (`set_by`, card 2168; none before migration 0056). Read by
  * `restoreFromBackup` inside its transaction, before the first table is
  * cleared. A table or setting that is not there reads as none.
  */
 export function readSecretsHere(live: Database.Database): SecretsHere {
 	const mail = readMailHere(live);
+	const setBy = hasColumns(live, 'webhooks', 'set_by') ? 'set_by' : 'NULL';
 	const webhooks = hasColumns(live, 'webhooks', 'id', 'board_id', 'url', 'secret')
 		? (live
-				.prepare("SELECT id, board_id AS boardId, url, secret FROM webhooks WHERE secret IS NOT NULL AND secret <> ''")
+				.prepare(`SELECT id, board_id AS boardId, url, secret, ${setBy} AS setBy FROM webhooks WHERE secret IS NOT NULL AND secret <> ''`)
 				.all() as SecretsHere['webhooks'])
 		: [];
 	return { mail, destinations: destinationsIn(settingOf(live, 'backup_config')), webhooks };
@@ -1026,8 +1028,14 @@ function boardName(database: Database.Database, boardId: number): string | null 
  *     secret and its refresh token are empty, and then both are taken; an
  *     SFTP one whose match here has neither either is as it is here;
  *   - a webhook `listed` in the backup's marker that has no secret, from the
- *     webhook here with the same id, board and address, switched on or off as
- *     the marker says it was. One with a secret in the backup is left as it is.
+ *     webhook here with the same id, board, address and setter (`set_by`,
+ *     none and none alike), switched on or off as the marker says it was. The
+ *     setter is the account that last set the address or the secret, and a
+ *     password reset switches off what it set (card 2168): a secret here set
+ *     by another account than the one the backup's row names was set again
+ *     since, and filled it would be the other account's secret under the
+ *     backup's setter, which that account's reset would not reach. One with a
+ *     secret in the backup is left as it is.
  *
  * A value the backup has is never replaced. `writeMarker`, for a restore as it
  * is, writes the marker into the restored settings trimmed to the webhooks
@@ -1113,12 +1121,17 @@ export function fillSecretGaps(
 	// The webhooks the backup's marker lists.
 	const leftListed: ListedWebhook[] = [];
 	if (hasColumns(live, 'webhooks', 'id', 'board_id', 'url', 'secret', 'active')) {
-		const find = live.prepare('SELECT id, board_id AS boardId, url, secret, active FROM webhooks WHERE id = ?');
+		const setBy = hasColumns(live, 'webhooks', 'set_by') ? 'set_by' : 'NULL';
+		const find = live.prepare(`SELECT id, board_id AS boardId, url, secret, active, ${setBy} AS setBy FROM webhooks WHERE id = ?`);
 		const fill = live.prepare('UPDATE webhooks SET secret = ?, active = ? WHERE id = ?');
 		for (const entry of listed) {
-			const row = find.get(entry.id) as { id: number; boardId: number; url: string; secret: string | null; active: number } | undefined;
+			const row = find.get(entry.id) as
+				| { id: number; boardId: number; url: string; secret: string | null; active: number; setBy: number | null }
+				| undefined;
 			if (!row || has(row.secret)) continue;
-			const match = here.webhooks.find((hook) => hook.id === row.id && hook.boardId === row.boardId && hook.url === row.url);
+			const match = here.webhooks.find(
+				(hook) => hook.id === row.id && hook.boardId === row.boardId && hook.url === row.url && (hook.setBy ?? null) === row.setBy
+			);
 			if (match) {
 				// On or off as the marker says it was. The marker is the backup's
 				// word, but `here` holds anything only for a backup whose seal

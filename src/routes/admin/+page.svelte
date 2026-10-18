@@ -1052,6 +1052,14 @@
 	 * is given no count for.
 	 */
 	let resetTargetKeys = $derived(resetKeysRead ? (resetTarget?.apiKeys ?? null) : null);
+	/**
+	 * How many webhooks that account set that are on, and how many of its
+	 * report schedules are on. A reset switches off the first and pauses the
+	 * second (card 2168), and the dialog says how many, by the same rule as the
+	 * keys: null until read again, and for an account the caller may not reset.
+	 */
+	let resetTargetWebhooks = $derived(resetKeysRead ? (resetTarget?.webhooks ?? null) : null);
+	let resetTargetSchedules = $derived(resetKeysRead ? (resetTarget?.reportSchedules ?? null) : null);
 
 	/** Open the dialog on an account, and read the key counts again for it. */
 	async function openResetDialog(userId: number) {
@@ -1108,12 +1116,19 @@
 				const result = await answerBody(res);
 				const sessionsEnded = result?.sessionsEnded;
 				const apiKeysEnded = result?.apiKeysEnded;
+				const webhooksSwitchedOff = result?.webhooksSwitchedOff;
+				const reportSchedulesPaused = result?.reportSchedulesPaused;
 				showToast(
-					typeof sessionsEnded === 'number' && typeof apiKeysEnded === 'number'
-						? `Password reset: ${counted(sessionsEnded, 'session')} and ${counted(apiKeysEnded, 'API key')} ended`
+					typeof sessionsEnded === 'number' &&
+						typeof apiKeysEnded === 'number' &&
+						typeof webhooksSwitchedOff === 'number' &&
+						typeof reportSchedulesPaused === 'number'
+						? `Password reset: ${counted(sessionsEnded, 'session')} and ${counted(apiKeysEnded, 'API key')} ended, ` +
+								`${counted(webhooksSwitchedOff, 'webhook')} switched off and ${counted(reportSchedulesPaused, 'report schedule')} paused`
 						: 'Password reset'
 				);
-				// The key counts are read again: the account now holds none.
+				// The counts are read again: the account now holds no key, and has no
+				// webhook or report schedule on.
 				await invalidateAll();
 			}
 		} else {
@@ -2008,14 +2023,20 @@
 						<!-- Their own account: the password they have is asked for, as on the Account page. -->
 						<p>This is your own account. Enter your current password and a new one. Your other sessions will be signed out.</p>
 						<!-- Sent with no endApiKeys, so the keys are kept. The Account page offers the choice. -->
-						<p>Your API keys keep working. To end them too, change your password on the <a href="/account">Account page</a>.</p>
+						<p>Your API keys and the webhooks you set up keep working. To end the keys and switch off those webhooks too, change your password on the <a href="/account">Account page</a>.</p>
 						<input type="password" placeholder="Current password" bind:value={resetPasswordCurrent} class="form-input" style="width: 100%; margin: var(--space-md) 0 0;" autocomplete="current-password" />
 					{:else}
 						<p>Enter a new password for {resetTarget?.username || 'user'}.</p>
 						{#if resetTargetKeys !== null && resetTargetKeys > 0}
 							<p class="warning-text">They have {counted(resetTargetKeys, 'API key')}, which {resetTargetKeys === 1 ? 'stops' : 'stop'} working.</p>
 						{/if}
-						<p>They are signed out everywhere, every API key they have stops working, and any invite not yet used stops working.</p>
+						{#if resetTargetWebhooks !== null && resetTargetWebhooks > 0}
+							<p class="warning-text">They set up {counted(resetTargetWebhooks, 'webhook')}, which {resetTargetWebhooks === 1 ? 'is' : 'are'} switched off.</p>
+						{/if}
+						{#if resetTargetSchedules !== null && resetTargetSchedules > 0}
+							<p class="warning-text">They have {counted(resetTargetSchedules, 'report schedule')}, which {resetTargetSchedules === 1 ? 'is' : 'are'} paused.</p>
+						{/if}
+						<p>They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, the webhooks they set up are switched off and their report schedules are paused.</p>
 					{/if}
 					<input type="password" placeholder="New password (min 8 chars)" bind:value={resetPasswordValue} class="form-input" style="width: 100%; margin: var(--space-md) 0;" autocomplete="new-password" />
 					<div class="modal-actions">

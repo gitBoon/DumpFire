@@ -1081,9 +1081,12 @@ describe('the line in the system log when there are users and no superadmin', ()
 		expect(() => reportInstallation()).not.toThrow();
 
 		// Once for each check that reads the database: the superadmin's, the
-		// boards in a loop (card 2142), and the secrets still to enter (card
-		// 2169). The ORIGIN check reads none here.
+		// boards in a loop (card 2142), the secrets still to enter (card 2169),
+		// the boards over the webhook cap (card 2201), and the webhooks refused
+		// as written (the webhook review, O1). The ORIGIN check reads none here.
 		expect(said.mock.calls.map(([line]) => String(line))).toEqual([
+			'[STARTUP] A check of the installation could not be made: the database is not to be had',
+			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had'
@@ -1339,7 +1342,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 	const serverWith = (given: {
 		mail?: Record<string, string>;
 		destinations?: unknown[];
-		webhooks?: { id: number; url: string; secret: string; active?: number }[];
+		webhooks?: { id: number; url: string; secret: string; active?: number; setBy?: number }[];
 		key?: string | null;
 	}) => {
 		const live = migratedDb();
@@ -1350,8 +1353,12 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		if (key !== null) set.run(BACKUP_SEAL_KEY, key);
 		for (const [key, value] of Object.entries(given.mail ?? {})) set.run(key, value);
 		if (given.destinations) set.run('backup_config', configWith(given.destinations));
-		const hook = live.prepare("INSERT INTO webhooks (id, board_id, url, secret, events, active) VALUES (?, ?, ?, ?, '[]', ?)");
-		for (const w of given.webhooks ?? []) hook.run(w.id, hooks.boardId, w.url, w.secret, w.active ?? 1);
+		const hook = live.prepare("INSERT INTO webhooks (id, board_id, url, secret, events, active, set_by) VALUES (?, ?, ?, ?, '[]', ?, ?)");
+		const setter = live.prepare("INSERT OR IGNORE INTO users (id, username, email, password_hash) VALUES (?, 'setter' || ?, 'setter' || ? || '@example.test', 'x')");
+		for (const w of given.webhooks ?? []) {
+			if (w.setBy !== undefined) setter.run(w.setBy, w.setBy, w.setBy);
+			hook.run(w.id, hooks.boardId, w.url, w.secret, w.active ?? 1, w.setBy ?? null);
+		}
 		return live;
 	};
 
@@ -2208,6 +2215,25 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 			expect(result.secrets.toEnter.destinations).toEqual(NEEDS);
 			expect(result.secrets.toEnter.webhooks).toEqual(hooksToEnter());
 			expect(holdsOwn(live)).toBe(false);
+		});
+
+		it('fills no webhook whose secret here was set by another account than the backup\'s row names, and one whose setter is the same (card 2168)', () => {
+			const here = { id: hooks.on, url: 'https://hooks.example.test/on', secret: `${HERE}-hook-on` };
+
+			// Set again here since the backup, by account 90: the secret is 90's, and the backup's row names nobody.
+			const reset = serverWith({ webhooks: [{ ...here, setBy: 90 }] });
+			const refused = restoreFromBackup(reset, backupNow());
+			expect(refused.errors).toEqual([]);
+			expect(refused.secrets.kept.webhooks).toEqual([]);
+			expect(refused.secrets.toEnter.webhooks).toEqual(hooksToEnter());
+			expect(holdsOwn(reset)).toBe(false);
+
+			// The same account on both sides.
+			sqlite.prepare('UPDATE webhooks SET set_by = ? WHERE id = ?').run(chief.id, hooks.on);
+			const same = serverWith({ webhooks: [{ ...here, setBy: chief.id }] });
+			const filled = restoreFromBackup(same, backupNow());
+			expect(filled.secrets.kept.webhooks).toEqual([hooks.on]);
+			expect(same.prepare('SELECT secret, set_by FROM webhooks WHERE id = ?').get(hooks.on)).toEqual({ secret: `${HERE}-hook-on`, set_by: chief.id });
 		});
 
 		it('fills a destination the same in every field that is not secret, a missing S3 endpoint and an empty one alike', () => {

@@ -2,9 +2,9 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { afterCommit, inTransaction } from '$lib/server/db/transaction';
-import { apiKeys, inviteTokens, users } from '$lib/server/db/schema';
-import { eq, count } from 'drizzle-orm';
-import { createSession, setSessionCookie, endAccountAccess } from '$lib/server/auth';
+import { apiKeys, inviteTokens, reportSchedules, users, webhooks } from '$lib/server/db/schema';
+import { and, eq, count } from 'drizzle-orm';
+import { createSession, setSessionCookie, endAccountAccess, namingIds } from '$lib/server/auth';
 import { CheckNotMade, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
 import { rememberBrowser } from '$lib/server/known-browsers';
 import { createLogger } from '$lib/server/logger';
@@ -38,18 +38,30 @@ export const load: PageServerLoad = async ({ params }) => {
 		.where(eq(users.id, invite.userId))
 		.get();
 
-	// Setting a password here ends every API key of the account, and the page
-	// says how many before the form is sent.
+	// Setting a password here ends every API key of the account, switches off
+	// every webhook it set that is on and pauses every report schedule of it
+	// that is on (card 2168), and the page says how many of each before the
+	// form is sent.
 	const keys = db.select({ count: count() })
 		.from(apiKeys)
 		.where(eq(apiKeys.userId, invite.userId))
+		.get();
+	const hooks = db.select({ count: count() })
+		.from(webhooks)
+		.where(and(eq(webhooks.setBy, invite.userId), eq(webhooks.active, true)))
+		.get();
+	const schedules = db.select({ count: count() })
+		.from(reportSchedules)
+		.where(and(eq(reportSchedules.userId, invite.userId), eq(reportSchedules.enabled, true)))
 		.get();
 
 	return {
 		valid: true,
 		username: user?.username || '',
 		emoji: user?.emoji || '👤',
-		apiKeys: keys?.count ?? 0
+		apiKeys: keys?.count ?? 0,
+		webhooks: hooks?.count ?? 0,
+		reportSchedules: schedules?.count ?? 0
 	};
 };
 
@@ -111,14 +123,25 @@ export const actions: Actions = {
 				.run();
 
 			// An invite is how an account is taken back, so using one ends every
-			// session the account had, its other invites and its API keys. This
-			// one is marked used first, so it is not among the invites deleted.
-			const ended = endAccountAccess(invite.userId, { apiKeys: true });
+			// session the account had, its other invites and its API keys, switches
+			// off the webhooks it set and pauses its report schedules (card 2168).
+			// This one is marked used first, so it is not among the invites deleted.
+			const ended = endAccountAccess(invite.userId, { apiKeys: true, reportSchedules: true });
 			afterCommit(() =>
 				log.info(
 					`Password set with an invite for user ${invite.userId} — ended ${ended.sessions} session(s), ` +
-						`${ended.invites} other invite(s) and ${ended.apiKeys} API key(s)`,
-					{ sessionsEnded: ended.sessions, invitesEnded: ended.invites, apiKeysEnded: ended.apiKeys },
+						`${ended.invites} other invite(s) and ${ended.apiKeys} API key(s), switched off ` +
+						`${ended.webhooks} webhook(s) they set up${namingIds(ended.webhookIds)} and paused ` +
+						`${ended.reportSchedules} report schedule(s)${namingIds(ended.reportScheduleIds)}`,
+					{
+						sessionsEnded: ended.sessions,
+						invitesEnded: ended.invites,
+						apiKeysEnded: ended.apiKeys,
+						webhooksSwitchedOff: ended.webhooks,
+						webhookIds: ended.webhookIds,
+						reportSchedulesPaused: ended.reportSchedules,
+						reportScheduleIds: ended.reportScheduleIds
+					},
 					{ userId: invite.userId }
 				)
 			);

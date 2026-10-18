@@ -4,6 +4,8 @@
  * the callers for form actions and page loads, the builders, and the each-write-in-turn
  * pattern itself. If these are wrong, a test built on them proves nothing.
  */
+import http from 'node:http';
+import https from 'node:https';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
@@ -16,6 +18,7 @@ import { logUiActivity } from '$lib/server/logActivity';
 import { createLogger } from '$lib/server/logger';
 import { notifyCardMoved } from '$lib/server/notifications';
 import { getWorkDependencies } from '$lib/server/planning';
+import { dispatchWebhook } from '$lib/server/webhooks';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import { action, loadKeys, pageLoad, pagePatterns } from './helpers/actions';
 import { eachWriteInTurn } from './helpers/each-write';
@@ -37,6 +40,7 @@ import {
 	resetDb
 } from './helpers/fixtures';
 import { readBudget, ReadBudgetSpent, watchReads } from './helpers/reads';
+import { StandInRequest } from './helpers/stand-in-request';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(resetDb);
@@ -333,20 +337,25 @@ describe('effects()', () => {
 	});
 
 	it('notes an effect that starts while a transaction is open', async () => {
-		// Sent straight from inside one, which no application code may do.
-		sqlite.transaction(() => {
-			void fetch('https://hooks.example.test/too-early', { method: 'POST', body: '{}' });
-		})();
-		await fetch('https://hooks.example.test/after', { method: 'POST', body: '{}' });
+		const { board } = makeBoard({ owner: makeUser() });
+		makeWebhook(board, { url: 'https://hooks.example.test/a' });
+
+		// Dispatched straight from inside one, which no application code may do.
+		sqlite.transaction(() => dispatchWebhook(board.id, 'card.created', { cardId: 1 }))();
+		dispatchWebhook(board.id, 'card.moved', { cardId: 1 });
+		await sent.settle();
 
 		expect(sent.all.map((e) => e.inTransaction)).toEqual([true, false]);
 		expect(sent.duringTransaction).toHaveLength(1);
-		expect(sent.duringTransaction[0]).toMatchObject({ url: 'https://hooks.example.test/too-early' });
+		expect(sent.duringTransaction[0]).toMatchObject({ url: 'https://hooks.example.test/a', event: 'card.created' });
 	});
 
 	it('keeps the order across kinds, and forgets on clear()', async () => {
+		const { board } = makeBoard({ owner: makeUser() });
+		makeWebhook(board);
+
 		emit(1, 'update', {});
-		await fetch('https://hooks.example.test/a', { method: 'POST', body: '{}' });
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
 		emit(1, 'celebrate', {});
 
 		expect(sent.all.map((e) => e.kind)).toEqual(['event', 'webhook', 'event']);
@@ -354,16 +363,45 @@ describe('effects()', () => {
 		expect(sent.all).toEqual([]);
 	});
 
-	it('puts fetch back, and stops listening', () => {
-		const stub = globalThis.fetch;
+	it('hands a request that is not a webhook to the request it replaced', () => {
+		sent.restore();
+		const handed: unknown[][] = [];
+		const before = https.request;
+		const stub = ((...args: unknown[]) => {
+			handed.push(args);
+			return new StandInRequest();
+		}) as unknown as typeof https.request;
+		https.request = stub;
+		try {
+			sent = effects();
+			https.request('https://bucket.example.test/backup.gz', { method: 'PUT', headers: { 'Content-Type': 'application/gzip' } }).end('x');
+			sent.restore();
+			expect(https.request).toBe(stub);
+		} finally {
+			https.request = before;
+			// Installed again for afterEach to remove.
+			sent = effects();
+		}
+
+		expect(handed).toHaveLength(1);
+		expect(handed[0][0]).toBe('https://bucket.example.test/backup.gz');
+		expect(sent.all).toEqual([]);
+	});
+
+	it('puts both requests back, never replaces fetch, and stops listening', () => {
+		const stubs = [http.request, https.request];
+		const realFetch = globalThis.fetch;
 		sent.restore();
 
-		expect(globalThis.fetch).not.toBe(stub);
+		expect(http.request).not.toBe(stubs[0]);
+		expect(https.request).not.toBe(stubs[1]);
+		expect(globalThis.fetch).toBe(realFetch);
 		emit(1, 'update', {});
 		expect(sent.all).toEqual([]);
 
 		// Installed again for afterEach to remove.
 		sent = effects();
+		expect(globalThis.fetch).toBe(realFetch);
 	});
 });
 
@@ -663,11 +701,15 @@ describe('eachWriteInTurn', () => {
 	it('catches an effect that starts while the transaction is still open', async () => {
 		await expect(
 			eachWriteInTurn({
-				build,
-				request: () =>
+				build: () => {
+					const built = build();
+					makeWebhook(built.board);
+					return built;
+				},
+				request: ({ board }) =>
 					sqlite.transaction(() => {
 						setting('a');
-						void fetch('https://hooks.example.test/too-early', { method: 'POST', body: '{}' });
+						dispatchWebhook(board.id, 'card.created', { cardId: 1 });
 					})()
 			})
 		).rejects.toThrow(/1 effect\(s\) started while the transaction was still open: webhook/);

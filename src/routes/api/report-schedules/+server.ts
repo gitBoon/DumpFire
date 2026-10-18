@@ -14,6 +14,7 @@ import { inTransaction } from '$lib/server/db/transaction';
 import { REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS, takeReportMail } from '$lib/server/reports';
 import { readBody, readChoice, readId, readNumber, readReportRecipients, readText, readTime } from '$lib/server/request-body';
 import { requireBoard } from '$lib/server/route-guards';
+import { stillAuthenticated } from '$lib/server/auth';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
@@ -64,9 +65,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!user) throw error(401, 'Unauthorized');
 	const body = await readBody(request);
 
-	// One transaction: the board or the grouping is looked for, and the caller
-	// checked, in the one that makes the schedule.
+	// One transaction: the session is asked again (a reset that ended it while
+	// the body was arriving is a 401), and the board or the grouping is looked
+	// for, and the caller checked, in the one that makes the schedule.
 	const created = inTransaction(() => {
+		stillAuthenticated(locals);
 		const scope = readChoice(body, 'scope', {
 			required: true,
 			from: REPORT_SCOPES,

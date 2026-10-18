@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.47
+version: 1.48
 status: As-Built
 date: 2026-10-18
 tags:
@@ -17,7 +17,8 @@ tags:
   - openapi
   - dependencies
   - tokens
-description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints, and examples"
+  - webhooks
+description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board), and examples"
 ---
 
 # External API Reference
@@ -67,7 +68,8 @@ that ends keys:
 A key that has ended is answered `401` `{ "message": "Invalid or expired API key" }`, as a
 revoked one is, and whatever uses it stops until it is given a new key. Before an
 administrator resets the password of an account a script runs on, the reset dialog says how
-many keys it has. See
+many keys it has. The webhooks the account set up go with its keys, switched off (see
+[Webhooks](#webhooks)); a reset and an invite also pause its report schedules. See
 [What Setting a Password Ends](authentication-security.md#what-setting-a-password-ends).
 
 ## Rate Limits
@@ -121,7 +123,8 @@ Six failures carry more beside `message`:
 
 The `message` of every rejected batch is `Batch rejected — nothing was written`. A dependency
 that is already recorded is a `409` too, with `message` alone: a cycle is the `409` that has
-`cycle` in it.
+`cycle` in it. So is a board's 11th webhook (`This board has 10 webhooks, and a board may
+have at most 10: delete 1 before adding another.`).
 
 | Code | Meaning |
 |------|---------|
@@ -132,7 +135,7 @@ that is already recorded is a `409` too, with `message` alone: a cycle is the `4
 | `403` | The key's user may not do this |
 | `404` | The resource in the path does not exist, whoever asks; an id in the body names nothing (a category, a user, a milestone); something to be removed is not there (an assignee, a label on a card, a card in the milestone named); or the path is no route: `{ "message": "Not found" }` |
 | `405` | The route does not have this method: `{ "message": "PATCH method not allowed" }`. The `Allow` header names the methods it has |
-| `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a dependency that already exists or would close a loop, or a rejected batch |
+| `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a dependency that already exists or would close a loop, a board's 11th webhook, or a rejected batch |
 | `413` | The request body is over the size limit, 512 KB: `{ "message", "limitBytes" }`. See [The Request Body](#the-request-body) |
 | `429` | Rate limited: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts |
 | `500` | DumpFire failed: `{ "message": "Internal Error" }`. Nothing of the fault is in the answer; it is written to DumpFire's system log, with the route and the key's user |
@@ -192,7 +195,7 @@ number or an id is read.
 | `coverUrl` | A colour written `#rrggbb`, or one of the eight preset gradients exactly as [`PUT /api/v1/cards/:cardId`](#put-apiv1cardscardid) lists them, or `null`; `''` is read as `null` | `coverUrl must be a colour written #rrggbb, one of the preset gradients, or null` |
 | A milestone's `status` | `open` or `closed` | `status must be open or closed` |
 | `archivedAt` on `PUT /cards/:cardId` | `null`, which restores the card, and nothing else | `archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}` |
-| A webhook's `url`, `secret`, `events` | An `http` or `https` address of at most 2,048 characters, trimmed; text of at most 256; a list of the six event names, each trimmed, where `[]` is every event | `url must be an http or https address`, `events must be a list` |
+| A webhook's `url`, `secret`, `events` | An `http` or `https` address of at most 2,048 characters, trimmed, not inside the network as written and with no user name or password (see [Webhooks](#webhooks)); text of at most 256; a list of the six event names, each trimmed, where `[]` is every event | `url must be an http or https address`, `Webhook url points inside the network: 127.0.0.1 is a loopback address`, `Webhook url must not carry a user name or password`, `events must be a list` |
 | The reporting fields (`summary`, `theme`, `customerImpact`, `closeReason`, `releaseState`) | Each in its own vocabulary, as before, or `null` to clear it | `theme must be one of: ...` |
 
 `null` clears a field only where the field can be empty: a due or target date, a category,
@@ -533,8 +536,8 @@ new; these answers and fields are:
   board's owner and an administrator, and in the answer to the `POST` that created the
   webhook. `GET /boards/:boardId/webhooks`, `GET /webhooks/:webhookId` and the answer to
   `PUT /webhooks/:webhookId` leave the key out for anyone else, an editor's own update
-  included, where every caller who could view the board was given it. An editor may still
-  set a new address.
+  included, where every caller who could view the board was given it. Since card 2154 (item
+  57, below) an editor can no longer set a new address either.
 - **`recentActivity` on `GET /me/stats` lists only entries on boards the key's user can
   open** (card 2126), the 20 counted after that, where an entry on a board they had been
   taken off was listed, with the card title in its `detail`. The counts beside it are as
@@ -766,6 +769,38 @@ new; these answers and fields are:
   or offset, or as `YYYY-MM-DD HH:MM:SS`, is the stamp the card holds and changes nothing.
   `null` still restores the card, and any other value, `true` and a number included, is
   still `400` (item 55).
+- **A webhook's `url` may not point inside the network** (card 2161), on
+  `POST /boards/:boardId/webhooks` and `PUT /webhooks/:webhookId`: one that does, as
+  written, is `400` `Webhook url points inside the network: <why>`, where it was stored.
+  Inside is a loopback, private, shared (carrier NAT), link-local (the cloud metadata service
+  at `169.254.169.254` among them), reserved, documentation or multicast address, in IPv4 or
+  IPv6, an IPv4 address written another way (`2130706433`, `127.1`) or inside an IPv6 form
+  (`::ffff:127.0.0.1`), and the names `localhost`, any name ending `.localhost`, a name with
+  no dot, and any name ending `.local`, `.internal` or `.home.arpa`. One that carries a user
+  name or password is `400` `Webhook url must not carry a user name or password`. No name is
+  looked up then: a name is judged at each delivery by every address it resolves to, and a
+  delivery to one that resolves inside is not made. Redirects are not followed. The server's
+  operator may let named receivers inside the network be sent to. A stored `url` sent back
+  unchanged is accepted, and is refused at each delivery until it is changed or let in
+  (item 56).
+- **Only the board's owner or an administrator changes a webhook's address or secret, or
+  switches one on** (card 2154), on `PUT /webhooks/:webhookId`: an editor who sends `url` or
+  `secret` at all, whatever the value, the stored one and `null` included, is `403` `Only the
+  board's owner or an administrator can change a webhook's address or secret. Ask the board's owner.`, and one who
+  sends `active: true` for a webhook that is off `403` `Only the board's owner or an
+  administrator can switch a webhook on. Ask the board's owner.`, with nothing written, where an editor could change
+  both and switch one on. An editor still changes `events`, switches a webhook off, and may
+  send `active: true` for one already on. A script that sends back a webhook's whole answer
+  with a changed `events` is refused for an editor: send only the fields that change (item
+  57). Whoever creates a webhook, changes its `url` or `secret`, or switches it on is the one
+  whose password reset switches it off, and a `POST` or `PUT` whose key such a reset ends while
+  its body is still arriving is `401` `Invalid or expired API key`, with nothing written.
+- **A board has at most 10 webhooks** (card 2201), switched-off ones counted:
+  `POST /boards/:boardId/webhooks` answers `409` `This board has 10 webhooks, and a board may
+  have at most 10: delete 1 before adding another.` after every other check, and creates
+  nothing, where any number could be made. A board that already has more keeps them all,
+  and every active one is still sent; the `409` gives its own count (`This board has 14
+  webhooks, … delete 5 before adding another.`) (item 58).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -775,7 +810,10 @@ reach the keys every caller uses:
 - **Setting a password can end the account's keys.** An administrator's reset and an invite
   used end every key of the account; the holder's own change ends them only if asked. A key
   that has ended is answered `401` `Invalid or expired API key`: see
-  [When a Key Ends](#when-a-key-ends).
+  [When a Key Ends](#when-a-key-ends). Since card 2168 the webhooks the account set up go
+  with its keys, switched off, and a reset or an invite pauses its report schedules; the
+  board's owner or an administrator switches a webhook on again with
+  `PUT /webhooks/:webhookId` and `{"active": true}`.
 - **Wrong passwords at Generate Key are counted.** Ten in 15 minutes from one signed-in
   browser, counted with the Account page's email and password forms, and that browser is
   refused for up to 15 minutes, the right password included: see
@@ -1407,6 +1445,16 @@ API:
   and checked on worker threads, never on the server's own. A name that is no account is now
   checked as slowly as a wrong password at an account (card 2192), so the time taken no
   longer tells which names are accounts.
+- **The two password answers say what was switched off and paused** (card 2168).
+  `PUT /api/users/{id}/password`, an administrator's reset, answers `{ success,
+  sessionsEnded, apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused }`, where it
+  answered the first three: every webhook the account set that was on is switched off, and
+  every report schedule of it that was on is paused, in the transaction that sets the
+  password. `PUT /api/account/password`, the holder's own change, answers `{ success,
+  apiKeysEnded, webhooksSwitchedOff }`: with `endApiKeys: true` the webhooks the account set
+  are switched off with its keys, and its report schedules are left on. Both counts are `0`
+  where there was nothing to switch off. An invite used switches off and pauses as a reset
+  does.
 - **`PUT /api/account/password`, `PUT /api/account/email` and `POST /api/account/api-keys`
   can answer `409`** "Your password was changed while this was being saved. Nothing was
   changed. Try again." (card 2191) when the account's password was changed twice while the
@@ -2776,6 +2824,62 @@ Fetch a single comment (requires view access to the card's board).
 #### `PUT /api/v1/comments/:commentId`
 
 Edit a comment's text: `{ "content": "Replacement text" }`. Only the comment's author or an admin may edit, and the author only while they can still edit the board the comment is on, which is what posting a comment asks for: someone taken off a board, or left on it as a viewer, is answered `403` with `No edit access to this board` for a comment they wrote there. A viewer can still read it. Sets `updatedAt`, logs `api:comment_edited` to the activity feed and pushes a live board update. The comment is looked for and the caller checked before `content` is read, which is held to the rule of a new comment, `Comment too long (max 50000 chars)` past it. The text is stored trimmed and otherwise as sent (no tag prefixing).
+
+### Webhooks
+
+A webhook sends each event of its board that it asks for (`card.created`, `card.updated`,
+`card.moved`, `card.completed`, `card.deleted`, `comment.added`) to its `url` as a `POST`,
+after the change is committed, signed with its `secret`. What is sent:
+[Notifications & Email](notifications-email.md#webhooks).
+
+| Route | Does | Needs | Answers |
+|-------|------|-------|---------|
+| `GET /api/v1/boards/:boardId/webhooks` | Lists the board's webhooks | View access | `200` |
+| `POST /api/v1/boards/:boardId/webhooks` | Creates one: `url` (required), `secret`, `events` | Edit access | `201`, `400`, `409` |
+| `GET /api/v1/webhooks/:webhookId` | Reads one | View access | `200` |
+| `PUT /api/v1/webhooks/:webhookId` | Changes `url`, `secret`, `events` or `active` | Edit access; the board's owner or an administrator for `url`, `secret`, or switching it on | `200`, `400`, `403`, `404` |
+| `DELETE /api/v1/webhooks/:webhookId` | Deletes one | Edit access | `200` |
+
+```mermaid
+flowchart TD
+    Post["POST /boards/:boardId/webhooks"] --> G{"Board there, and edit access?"}
+    G -->|"No"| R4["404 or 403"]
+    G -->|"Yes"| U{"url an http or https address, not inside<br/>the network, with no user name or password?"}
+    U -->|"No"| B400["400 naming why"]
+    U -->|"Yes"| C{"Fewer than 10 webhooks on the board?"}
+    C -->|"No"| C409["409: delete N before adding another"]
+    C -->|"Yes"| W["201, set_by the key's user"]
+```
+
+- **The address and the secret are given only to the board's owner and an administrator**,
+  and in the answer to the `POST` that made the webhook. Anyone else is given the webhook
+  without `url` and `secret`, with `hasSecret` saying whether a secret is set.
+- **Only the board's owner or an administrator changes the address or the secret, or
+  switches a webhook on.** An editor who sends `url` or `secret` at all, whatever the value,
+  is `403` `Only the board's owner or an administrator can change a webhook's address or
+  secret. Ask the board's owner.`, and one who sends `"active": true` for a webhook that is off `403` `Only the
+  board's owner or an administrator can switch a webhook on. Ask the board's owner.`. An editor changes `events`,
+  switches a webhook off, and deletes one. **Send only the fields that change**: the answer of
+  the `POST` carries `url` and `secret`, and sent back whole by an editor it is refused.
+- **Where a webhook may send.** Not inside the network: an address that is loopback,
+  private, shared, link-local (the cloud metadata service among them), reserved,
+  documentation or multicast, in IPv4 or IPv6, and the names `localhost`, `*.localhost`, a
+  name with no dot, `*.local`, `*.internal` and `*.home.arpa`, are `400` `Webhook url points
+  inside the network: <why>` when the webhook is created or its `url` changed; an address
+  with a user name or password is `400` `Webhook url must not carry a user name or password`.
+  A name is judged again at each delivery by every address it resolves to, and a delivery to
+  one that resolves inside is not made. Redirects are not followed. The server's operator may
+  let named receivers inside the network be sent to (`WEBHOOK_ALLOW_INSIDE`). The stored
+  `url` sent back unchanged is accepted.
+- **At most 10 webhooks a board**, switched-off ones counted: the 11th `POST` is `409` `This
+  board has 10 webhooks, and a board may have at most 10: delete 1 before adding another.`,
+  after every other check. Deleting one makes room.
+- **A key ended while the request is arriving.** A `POST` or a `PUT` whose key a password reset
+  ends while its body is still arriving is `401` `Invalid or expired API key`, with nothing
+  written: the key is asked again in the transaction that writes.
+- **A webhook switched off by a password reset** (the account that set its address or secret, or switched it on, was taken back) is switched on again with `PUT /api/v1/webhooks/:webhookId` and
+  `{"active": true}`, by the board's owner or an administrator. An editor is refused, for a webhook they set up themselves too: they ask the owner, or delete it and
+  create it again. Whoever switches one on becomes its setter, so their own reset switches it off again.
 
 ---
 

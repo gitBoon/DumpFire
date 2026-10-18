@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.27
+version: 1.28
 status: As-Built
 date: 2026-10-18
 tags:
@@ -304,6 +304,7 @@ erDiagram
         text events
         bool active
         text created_at
+        int set_by FK
     }
 
     report_schedules {
@@ -357,6 +358,7 @@ erDiagram
     users ||--o{ card_assignees : "assigned to"
     users ||--o{ card_comments : "writes"
     users ||--o{ report_schedules : "configures"
+    users |o--o{ webhooks : "set by"
 
     boards ||--o{ columns : "contains"
     boards ||--o{ board_members : "shared with"
@@ -422,6 +424,7 @@ erDiagram
 | `milestones` | `cards.milestoneId` | SET NULL — **in code, not SQL** |
 | `categories` | `cards.categoryId` | SET NULL |
 | `users` | `boards.createdBy` | SET NULL |
+| `users` | `webhooks.set_by` (migration 0056, card 2168) | SET NULL. `deleteUser()` switches the user's webhooks off first, while they still name the user |
 | `users` | `cards.createdBy`, `activity_log.userId`, `task_requests.requesterUserId`, `task_requests.resolvedBy`, `token_usage.reportedByUserId` | SET NULL |
 
 What the rows marked "in code" mean for each kind of delete is set out under
@@ -634,16 +637,21 @@ be refused by the key. The email is written (card 2171) because a request made s
 mailed at its account's email as it is when each mail is sent (`requesterAddress()`): once
 the key has set `requester_user_id` to NULL, the request is mailed at `requester_email`, as a
 request made without an account is, and without the write that would be the address the
-account had when the request was made, perhaps long changed since. It is the one write
-besides the five that card 2007's rule ("nothing else is written") allows.
+account had when the request was made, perhaps long changed since. Then every webhook the
+user set that is on is switched off (`UPDATE webhooks SET active = 0 WHERE set_by = ? AND
+active = 1`, card 2168), while it still names them: deleting an account is the strongest way
+of taking it back, and once the key has set `set_by` to NULL a webhook an intruder set would
+go on sending with nobody named for a reset to reach. Those two are the only writes besides
+the five that card 2007's rule ("nothing else is written") allows.
 
 ```mermaid
 flowchart LR
     User["DELETE a user"] --> Clear["Set to NULL where they name the user:<br/>card_attachments.uploaded_by<br/>card_templates.created_by<br/>milestones.created_by<br/>work_dependencies.created_by_user_id<br/>card_dependencies.created_by_user_id"]
     Clear --> Address["UPDATE task_requests<br/>SET requester_email = the user's email now<br/>WHERE requester_user_id = the user"]
-    Address --> Del["DELETE FROM users"]
+    Address --> Hooks["UPDATE webhooks SET active = 0<br/>WHERE set_by = the user AND active = 1"]
+    Hooks --> Del["DELETE FROM users"]
     Del --> Cascade["Deleted by cascade:<br/>sessions, api_keys, report_schedules,<br/>card_comments, card_assignees,<br/>team_members, board_members,<br/>board_favourites, invite_tokens"]
-    Del --> Null["Set to NULL by the key:<br/>boards.created_by, cards.created_by,<br/>activity_log.user_id,<br/>task_requests.requester_user_id and resolved_by,<br/>token_usage.reported_by_user_id"]
+    Del --> Null["Set to NULL by the key:<br/>boards.created_by, cards.created_by,<br/>activity_log.user_id,<br/>task_requests.requester_user_id and resolved_by,<br/>token_usage.reported_by_user_id,<br/>webhooks.set_by"]
     Del --> Stay["Not touched:<br/>user_xp (keyed by name),<br/>task_requests addressed to the user,<br/>activity_log.user_name"]
 ```
 
@@ -657,10 +665,12 @@ flowchart LR
 | Boards and cards they created; activity entries they made | Kept. The link to the user is cleared; an activity entry keeps the name it was written with |
 | Task requests addressed to them | Kept, with the same target. Only an administrator can then accept, reject or reply |
 | Task requests they made | Kept, with `requester_user_id` NULL and `requester_email` the account's email at the delete, where mail about them goes from then on (card 2171) |
+| Webhooks they set (their address or secret last set, or last switched on, by the user) | Kept, switched off, with `set_by` NULL (card 2168). The board's owner or an administrator switches one on again through the API |
 | Their XP | Kept. `user_xp` is keyed by username and has no key to `users` |
 
-One `INFO` line in `system_logs`, written after the commit, says who deleted whom and how
-many API keys, report schedules and comments went.
+One `INFO` line in `system_logs`, written after the commit, says who deleted whom, how
+many API keys, report schedules and comments went, and how many webhooks were switched off,
+naming them by id (`… 1 webhook(s) they set up were switched off (id 4); …`).
 
 ### Ids are never reused
 
@@ -1100,7 +1110,8 @@ of about zero.
   ```
 - **Indexes are named `idx_<table>_<column>`**, and an index on two columns
   `idx_<table>_<first>_<second>`. Migration 0053 added 39, one for every foreign key column
-  that led no index (card 2106). `tests/migrations.test.ts` fails on a foreign key column
+  that led no index (card 2106); 0056 created `idx_webhooks_set_by` with its column.
+  `tests/migrations.test.ts` fails on a foreign key column
   that leads no index, in the model, on a new database and on the production fixture taken
   through the runner, and names it.
 - **A person's log entries are indexed by person and time** (migration 0054, the review of
@@ -1154,6 +1165,18 @@ of about zero.
   there. `deleteUser()` writes the account's email into it before the account's row goes, so
   the request is then mailed at the account's last address. A request whose account was
   deleted before card 2171 keeps the address stored when it was made.
+- **`webhooks.set_by` is who last set a webhook's address or secret, or switched it on** (card 2168, migration
+  `0056_add_webhook_set_by.sql`): a nullable integer, `REFERENCES users(id) ON DELETE SET
+  NULL`, with `idx_webhooks_set_by` (card 2106's rule that every foreign key leads an index).
+  The `POST` that makes a webhook sets it to its caller, and a `PUT` whose `url` or `secret`
+  differs from what is stored, or that switches the webhook on, to its caller (only the
+  board's owner or an administrator may do either). `endAccountAccess()` switches off the webhooks a taken-back account set
+  (`active = 0`, `set_by` left as it is), and `deleteUser()` does before the key clears it.
+  `presentWebhook()` leaves it out of every answer. Rows made before 0056, and those whose
+  setter was deleted, hold NULL: nothing fills them, since no record says who made them. A
+  sealed restore fills a webhook's secret only from the webhook here with the same id,
+  board, address and setter (`fillSecretGaps()`), reading `set_by` as NULL on a database
+  without the column. 0056 changes no row, so it declares nothing to the rehearsal.
 - **No secret is in a backup's copy** (card 2169): no `smtp_pass` row, every secret field of
   `backup_config`'s destinations `''`, and every `webhooks.secret` `''` with the webhook's
   `active` 0. The `webhook_secrets_left_out` row of `settings` lists, as a JSON array of

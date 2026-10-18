@@ -8,6 +8,7 @@ import {
 	checkCurrentPassword,
 	createSession,
 	endAccountAccess,
+	namingIds,
 	setSessionCookie,
 	whilePasswordHolds
 } from '$lib/server/auth';
@@ -29,9 +30,10 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 
 	const body = await readBody(request);
 
-	// Whether the account's API keys end with the change. They are kept unless
-	// asked: the holder has just proved they hold the password, and ending keys
-	// stops every script that uses them. Anything but true or false is refused
+	// Whether the account's API keys end with the change, and the webhooks it
+	// set are switched off. They are kept unless asked: the holder has just
+	// proved they hold the password, and ending keys stops every script that
+	// uses them. Anything but true or false is refused
 	// before a password is checked or hashed, rather than read as one or the other.
 	const endApiKeys = readBoolean(body, 'endApiKeys', {}) ?? false;
 
@@ -64,7 +66,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	// against; if another request or an administrator changed it in between,
 	// the password is checked again against the new one, outside, and not
 	// counted again: the same guess.
-	const { newToken, apiKeysEnded } = await whilePasswordHolds(userId, currentPassword, user.passwordHash, () => {
+	const { newToken, apiKeysEnded, webhooksSwitchedOff } = await whilePasswordHolds(userId, currentPassword, user.passwordHash, () => {
 		// Update password
 		db.update(users)
 			.set({ passwordHash: newHash })
@@ -73,19 +75,28 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 
 		// Every existing session of this user ends, and every invite not yet
 		// used, which would set the password again. The API keys end only if
-		// the user asked.
-		const ended = endAccountAccess(userId, { apiKeys: endApiKeys });
+		// the user asked, and the webhooks they set are switched off with them
+		// (card 2168): a change that keeps the keys keeps their webhooks. Their
+		// report schedules are left on: they see them on the Reports page.
+		const ended = endAccountAccess(userId, { apiKeys: endApiKeys, reportSchedules: false });
 		afterCommit(() =>
 			log.info(
 				`Password changed by user — ended ${ended.sessions} session(s), ${ended.invites} invite(s) and ` +
-					`${ended.apiKeys} API key(s)`,
-				{ sessionsEnded: ended.sessions, invitesEnded: ended.invites, apiKeysEnded: ended.apiKeys },
+					`${ended.apiKeys} API key(s), and switched off ${ended.webhooks} webhook(s) they set up` +
+					namingIds(ended.webhookIds),
+				{
+					sessionsEnded: ended.sessions,
+					invitesEnded: ended.invites,
+					apiKeysEnded: ended.apiKeys,
+					webhooksSwitchedOff: ended.webhooks,
+					webhookIds: ended.webhookIds
+				},
 				{ userId }
 			)
 		);
 
 		// Create a fresh session so the current user stays logged in
-		return { newToken: createSession(userId), apiKeysEnded: ended.apiKeys };
+		return { newToken: createSession(userId), apiKeysEnded: ended.apiKeys, webhooksSwitchedOff: ended.webhooks };
 	}, wrong);
 
 	setSessionCookie(cookies, newToken);
@@ -93,5 +104,5 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	// which made the change, is remembered again (card 2194).
 	rememberBrowser(cookies, userId, newHash);
 
-	return json({ success: true, apiKeysEnded });
+	return json({ success: true, apiKeysEnded, webhooksSwitchedOff });
 };

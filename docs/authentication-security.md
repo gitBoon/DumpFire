@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.37
+version: 1.38
 status: As-Built
 date: 2026-10-18
 tags:
@@ -38,7 +38,8 @@ tags:
   - dompurify
   - mentions
   - fonts
-description: "Deep-dive into DumpFire's authentication system, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, and how attachments are served"
+  - ssrf
+description: "Deep-dive into DumpFire's authentication system, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -1091,25 +1092,28 @@ So a password is never changed while the old sessions stay good, an invite never
 **An API key outlives a password change only when the account's own holder made that
 change with their current password, and chose to keep their keys. Every other way of
 setting a password ends the account's keys. Every way of setting a password ends its
-sessions and its invites that have not been used.**
+sessions and its invites that have not been used. The webhooks the account set go with its
+keys, switched off; its report schedules are paused by a reset and an invite, never by the
+holder's own change** (card 2168).
 
 ```mermaid
 flowchart TD
     Set["A password is set"] --> How{"How?"}
-    How -->|"own change, with the current password<br/>(Account page, or the admin page's own row)"| Own["Every session ends, and this browser gets a new one<br/>Every unused invite ends<br/>API keys end only if 'End my API keys too' is ticked<br/>(not ticked by default)"]
-    How -->|"an administrator's reset of an ordinary user,<br/>or the superadmin's of an administrator or a user"| Reset["Every session ends<br/>Every unused invite ends<br/>Every API key ends"]
-    How -->|"an invite is used"| Invite["The invite is marked used<br/>Every other unused invite ends<br/>Every session ends, and the user is signed in afresh<br/>Every API key ends"]
-    Own --> One["endAccountAccess(userId, { apiKeys }),<br/>in the transaction that sets the password"]
+    How -->|"own change, with the current password<br/>(Account page, or the admin page's own row)"| Own["Every session ends, and this browser gets a new one<br/>Every unused invite ends<br/>API keys end, and the webhooks the account set are switched off,<br/>only if the Account page's box is ticked (not by default)<br/>Report schedules are left on"]
+    How -->|"an administrator's reset of an ordinary user,<br/>or the superadmin's of an administrator or a user"| Reset["Every session ends<br/>Every unused invite ends<br/>Every API key ends<br/>Every webhook the account set is switched off<br/>Every report schedule of the account is paused"]
+    How -->|"an invite is used"| Invite["The invite is marked used<br/>Every other unused invite ends<br/>Every session ends, and the user is signed in afresh<br/>Every API key ends<br/>Every webhook the account set is switched off<br/>Every report schedule of the account is paused"]
+    Own --> One["endAccountAccess(userId, { apiKeys, reportSchedules }),<br/>in the transaction that sets the password"]
     Reset --> One
     Invite --> One
+    One --> Order["Sessions, then invites, then under apiKeys the keys<br/>and the webhooks whose set_by is the account and are on,<br/>then under reportSchedules the schedules that are on"]
 ```
 
-| How the password is set | Sessions | Invites not yet used | API keys |
-|-------------------------|----------|----------------------|----------|
-| Your own change, with your current password, on the Account page or your own row of the admin page. The superadmin's included | All end; this browser gets a new one | All end | **Kept, unless you tick "End my N API keys too"**, which is not ticked by default. The admin page's dialog sends no choice, so it keeps them, and says so |
-| An administrator resets an ordinary user's password, or the superadmin an administrator's or a user's | All end | All end | **All end** |
-| An invite is used | All end, and the user is signed in with one new session | All others end; the one used is kept, marked used | **All end** |
-| A restore, an import, Reset Everything | Not a password change: these replace the whole database. See [What a Backup Holds](#what-a-backup-holds-and-what-a-restore-brings-in) | | |
+| How the password is set | Sessions | Invites not yet used | API keys | Webhooks the account set | Its report schedules |
+|-------------------------|----------|----------------------|----------|--------------------------|----------------------|
+| Your own change, with your current password, on the Account page or your own row of the admin page. The superadmin's included | All end; this browser gets a new one | All end | **Kept, unless you tick "End my N API keys too"**, which is not ticked by default. The admin page's dialog sends no choice, so it keeps them, and says so | **Kept on, unless the box is ticked**, with the keys. The box is offered for a webhook alone too, "Switch off the N webhooks I set up", once the key list has loaded. The admin page's own-row dialog keeps them | Left on |
+| An administrator resets an ordinary user's password, or the superadmin an administrator's or a user's | All end | All end | **All end** | **All switched off** | **All paused** |
+| An invite is used | All end, and the user is signed in with one new session | All others end; the one used is kept, marked used | **All end** | **All switched off** | **All paused** |
+| A restore, an import, Reset Everything | Not a password change: these replace the whole database. See [What a Backup Holds](#what-a-backup-holds-and-what-a-restore-brings-in) | | | | |
 
 Why a reset and an invite always end keys: they are how someone who does not have the
 current password takes an account back from someone who has its password or a session.
@@ -1118,27 +1122,65 @@ change is not about an intruder, and ending keys stops every script that uses th
 server cannot tell a recovery from a takeover, so a user who forgot their password and is
 sent a reset or an invite loses their keys too.
 
+**What it switches off, and why not deleted.** A webhook is made with a key and keeps
+sending a board's events to its address after the key has gone, so it goes with the keys:
+every webhook whose `webhooks.set_by` is the account and that is on is switched off
+(`active = 0`). `set_by` is the account that last set the webhook's address or secret, or
+switched it on, not the one that first made it: an administrator's key that points somebody
+else's webhook at an address of its holder's choosing becomes its setter, and that
+administrator's reset reaches it; so does the owner's or administrator's key that switches on
+again a webhook a reset switched off, since whoever starts its deliveries again answers for
+them. A report schedule keeps mailing its recipients, so a reset and an invite pause
+every one of the account's that is on (`enabled = 0`, `updated_at` stamped); the holder's own
+change leaves them, since they are made with a session, which that change ends, and their
+owner sees them on the Reports page. Neither is deleted: the account's own integrations and
+reports would go with an intruder's, and a webhook's secret with it. A switched-off webhook
+is switched on again by the board's owner or an administrator with `PUT
+/api/v1/webhooks/{id}` and `{"active": true}` (an editor is refused: see
+[Permission Matrix](#permission-matrix)); a paused schedule by its owner on the Reports page,
+where it shows ⏸️. Deleting an account switches off what it set too, before its row goes and
+the key clears `set_by` (`deleteUser`).
+
 **What a reset does not end.** A reset, an invite used and a change with the box ticked end
-the account's sessions, its waiting invites and its keys: every way in as that user. They
-do not end everything an intruder could have set up while they held the account:
+the account's sessions, its waiting invites and its keys, and switch off the webhooks it set.
+They do not reach:
 
-- **Webhooks registered with the account's keys.** A webhook has no owner column, and any
-  key with edit access to a board can register one on it, so a webhook made that way keeps
-  receiving the board's events after the key that made it has ended.
-- **The account's report schedules.** They keep mailing their reports to the recipients
-  they name.
+- **A webhook nobody is recorded as having set**: one registered before migration 0056, or
+  one whose setter's account was deleted. A webhook made that way with the account's keys
+  keeps receiving its board's events.
+- **A webhook somebody else set since**: an owner or administrator who changed its address
+  or secret, or switched it on, became its setter.
 
-After taking an account back, look over the webhooks of the boards it could edit (no page
-lists them: `GET /api/v1/boards/{id}/webhooks`), and have the account's holder look over
-their report schedules on the Reports page, where only they see them. Delete any that
-nobody recognises.
+**A request still arriving when the reset is committed.** The gate decides who is calling
+before a request's body is read, and a body can take as long as the caller likes to arrive. A
+webhook created or changed (`POST /api/v1/boards/{id}/webhooks`, `PUT /api/v1/webhooks/{id}`),
+or a report schedule created or changed (`POST /api/report-schedules`, `PUT
+/api/report-schedules/{id}`), by a request the gate let in before the reset and whose body
+arrived after it, was written, for the account just taken back, on and running. Each of those
+four now asks again, inside the transaction that writes, that the key or the session the gate
+let it in with is still open (`stillAuthenticated` in `src/lib/server/auth.ts`, reading
+`locals.credential`, which the gate sets beside `locals.user`), and answers `401` in the gate's
+own words, "Invalid or expired API key" for a key and "Not authenticated" for a session, with
+nothing written. No other write route asks yet: each still writes what a request let in before
+a reset sends after it.
 
-- **One function.** `endAccountAccess(userId, { apiKeys })` in `src/lib/server/auth.ts`
-  deletes the account's sessions, then its invites with `used = 0`, then, when asked, its
-  API keys, and returns how many of each (`AccessEnded`: `{ sessions, invites, apiKeys }`).
-  All three password routes call it inside the transaction that writes the password, and it
-  throws if no transaction is open. Ending a key is deleting its row, as Revoke does; the
-  gate then answers the key `401` `Invalid or expired API key`.
+A switched-off webhook keeps naming its setter, so a second reset counts it again only if it
+was switched on in between. After taking an account back, look over once the webhooks with no
+setter on the boards it could edit (no page lists them: `GET /api/v1/boards/{id}/webhooks`).
+Delete any that nobody recognises.
+
+- **One function.** `endAccountAccess(userId, { apiKeys, reportSchedules })` in
+  `src/lib/server/auth.ts` deletes the account's sessions, then its invites with `used = 0`,
+  then, under `apiKeys`, its API keys and switches off the webhooks it set that are on, then,
+  under `reportSchedules`, pauses its report schedules that are on. Each statement runs only
+  under its option, whether or not a row matches. It returns how many of each and which
+  (`AccessEnded`: `{ sessions, invites, apiKeys, webhooks, reportSchedules, webhookIds,
+  reportScheduleIds }`, the ids sorted). Each caller states both options: the reset and the
+  invite `{ apiKeys: true, reportSchedules: true }`, the holder's own change `{ apiKeys:
+  endApiKeys, reportSchedules: false }`. All three password routes call it inside the
+  transaction that writes the password, and it throws if no transaction is open. Ending a key
+  is deleting its row, as Revoke does; the gate then answers the key `401` `Invalid or
+  expired API key`.
 - **One invite per account.** `issueInvite(userId)` in `src/lib/server/invites.ts` deletes
   every invite of the account not yet used, expired or not (`endUnusedInvites()`, which
   `endAccountAccess()` and a change of email or role call too), writes the new one with its
@@ -1202,25 +1244,47 @@ nobody recognises.
   the words, and `tests/page-failures.test.ts` holds them equal.
 - **What each person is told beforehand.** The Account page, when you have keys: "You have N
   API keys. They keep working after a password change unless you tick the box" ("It keeps",
-  for one), and the box. The box is cleared whenever the list of keys is empty, so it never
-  comes back ticked beside a key made later. The admin page's reset dialog: "They have N API
-  keys, which stop working" when there are any, then "They are signed out everywhere, every
-  API key they have stops working, and any invite not yet used stops working." The page is
-  given each count only for an account whose password the caller may reset (`null` for the
-  caller's own, the superadmin's, and, for an ordinary administrator, another
-  administrator's), and never a key's name or prefix. The dialog reads the counts again
-  when it opens and shows none until it has, so a key made since the page was loaded is
-  counted. The invite page, on an account with keys: "Setting a password here ends this
-  account's N API keys and signs it out everywhere else."
-- **And afterwards.** Your own change answers `{ success: true, apiKeysEnded }`, and the page
-  says the keys were ended when they were. A reset answers
-  `{ success: true, sessionsEnded, apiKeysEnded }`, and the toast gives both counts. The user
-  whose password was reset is not mailed: the administrator gives them the new password and
-  tells them then.
-- **The system log.** Each writes one `INFO` line under `AUTH`, after the commit:
-  `Password changed by user — ended S session(s), I invite(s) and K API key(s)`;
-  `Password reset for user N ("name") by "actor" — ended S session(s), I invite(s) and K API key(s)`;
-  `Password set with an invite for user N — ended S session(s), I other invite(s) and K API key(s)`.
+  for one); when you set up webhooks that are on: "You set up N webhooks. They keep sending
+  your boards' events after a password change unless you tick the box." The box reads "End my
+  N API keys too, and switch off the N webhooks I set up.", "End my N API keys too." or, with
+  no key left, "Switch off the N webhooks I set up.", followed by "Do this if anyone else may
+  have used your account." and, for what it holds, "Anything that uses the keys stops working
+  until it is given a new key." and "A webhook switched off sends nothing until the board's
+  owner or an administrator switches it on again." It is offered while the key list holds a
+  key, or, once that list has loaded, while a webhook of the account's is on: deleting the key
+  that made a webhook leaves the webhook sending, and the box is the holder's way to stop it.
+  A key list that failed to load offers no box for a webhook alone, so nothing is ended that
+  was not shown. The box is cleared whenever there is nothing left for it to end, so it never
+  comes back ticked. The admin page's reset dialog: "They have N API keys, which stop
+  working", "They set up N webhooks, which are switched off." and "They have N report
+  schedules, which are paused.", each only above zero, then "They are signed out everywhere,
+  every API key they have stops working, any invite not yet used stops working, the webhooks
+  they set up are switched off and their report schedules are paused." The page is given each
+  count only for an account whose password the caller may reset (`null` for the caller's own,
+  the superadmin's, and, for an ordinary administrator, another administrator's), and never a
+  key's name or prefix, nor a webhook's address. The dialog reads the counts again when it
+  opens and shows none until it has, so a key or webhook made since the page was loaded is
+  counted. The invite page names what there is: "Setting a password here ends this account's
+  N API keys, switches off the N webhooks it set up, pauses its N report schedules and signs it
+  out everywhere else.", each part only above zero, and no notice when all three are zero. The
+  admin page's own-row dialog says "Your API keys and the webhooks you set up keep working. To
+  end the keys and switch off those webhooks too, change your password on the Account page."
+- **And afterwards.** Your own change answers `{ success: true, apiKeysEnded,
+  webhooksSwitchedOff }`, and the page says what was ended: "Password changed. Your other
+  sessions were signed out; your 2 API keys were ended and the 1 webhook you set up was
+  switched off." A reset answers `{ success: true, sessionsEnded, apiKeysEnded,
+  webhooksSwitchedOff, reportSchedulesPaused }`, and the toast gives all four counts, zeros
+  included: "Password reset: 1 session and 1 API key ended, 3 webhooks switched off and 1
+  report schedule paused". The user whose password was reset is not mailed: the administrator
+  gives them the new password and tells them then.
+- **The system log.** Each writes one `INFO` line under `AUTH`, after the commit, naming the
+  webhooks and schedules by id:
+  `Password changed by user — ended S session(s), I invite(s) and K API key(s), and switched off W webhook(s) they set up (ids 4, 9)`;
+  `Password reset for user N ("name") by "actor" — ended S session(s), I invite(s) and K API key(s), switched off W webhook(s) they set up (ids 4, 9, 12) and paused R report schedule(s) (id 2)`;
+  `Password set with an invite for user N — ended S session(s), I other invite(s) and K API key(s), switched off W webhook(s) they set up (…) and paused R report schedule(s) (…)`.
+  The ids are left out where there are none. The line's meta adds `webhooksSwitchedOff`,
+  `webhookIds`, and for the reset and the invite `reportSchedulesPaused` and
+  `reportScheduleIds`.
 - **A script's key.** A key on an account whose keys end is answered `401` `Invalid or
   expired API key` from then on, and whatever uses it stops until it is given a new key.
   Before resetting the password of an account a script or an integration runs on, look at
@@ -1368,8 +1432,9 @@ flowchart TD
 
 The admin page follows the same rule: on an administrator's own row the reset dialog asks
 for the current password and sends it to `PUT /api/account/password`, with no
-`endApiKeys`, so the keys are kept. The dialog says so: "Your API keys keep working. To
-end them too, change your password on the Account page."
+`endApiKeys`, so the keys, and the webhooks you set, are kept. The dialog says so: "Your API
+keys and the webhooks you set up keep working. To end the keys and switch off those webhooks
+too, change your password on the Account page."
 
 ### The Superadmin's Operations
 
@@ -1538,7 +1603,7 @@ backup is sealed with a key this server keeps and no backup holds (the review's 
 |---|---|---|---|
 | The file an export downloads, and the copy a scheduled backup or "Run Now" uploads | none: its row is deleted | none: each secret field `''`, every other field kept | none: `''`, and a webhook that had one is switched off and listed in `webhook_secrets_left_out` with whether it was on |
 | The running database, after a backup | as it was | as they were | as they were |
-| After Import Backup "as it is" on the server the backup came from, the file unchanged | kept from this server, if its mail settings name the same host, port, "Allow mail without a checked, encrypted connection" and user (card 2189; "Use SSL/TLS" before it) | kept from this server, if exactly one destination here is the same in every field that is not secret | kept, if a webhook here has the same id, board and address, and the webhook on or off as it was |
+| After Import Backup "as it is" on the server the backup came from, the file unchanged | kept from this server, if its mail settings name the same host, port, "Allow mail without a checked, encrypted connection" and user (card 2189; "Use SSL/TLS" before it) | kept from this server, if exactly one destination here is the same in every field that is not secret | kept, if a webhook here has the same id, board, address and setter (`set_by`, card 2168), and the webhook on or off as it was |
 | After Import Backup "as it is" on another server or a fresh one, of a backup changed since it was made, or of a file that fails `PRAGMA integrity_check` or holds an object named as SQLite's own that no backup of this server's holds | to enter again: there is no seal this server can check, or it does not verify, or the file failed a check made first | to enter again | to enter again. Off until it is set |
 | After Import Backup as a working copy | removed with the other mail settings, as before | removed with the destinations, as before | filled where it can be, and off with every webhook. Those not filled are listed |
 | A backup file put in place by hand as the database | none, named at every start | none, named at every start | none, the webhook off, named at every start |
@@ -1661,7 +1726,11 @@ flowchart TD
   filled only when both its client secret and its refresh token are empty, and a refresh
   token filled brings this server's `grantedScope` with it, or none (card 2188). A webhook listed
   in the backup's `webhook_secrets_left_out` is filled from the webhook here with the same id,
-  board and address, and switched on or off as the list says it was. A value the backup has is
+  board, address and setter (`set_by`, none and none alike: card 2168), and switched on or off
+  as the list says it was. A secret here set by another account than the one the backup's row
+  names was set again since: filled, it would be that account's secret under the backup's
+  setter, out of reach of that account's reset, so it is listed to enter again. A backup made
+  before migration 0056 restored onto rows nobody has set since matches. A value the backup has is
   never replaced, so a backup made before this change restores as it always did. A restore
   that rolls back leaves this server's secrets as they were.
 - **The list is never brought in as it is.** `rowsToRestore()` leaves `webhook_secrets_left_out`
@@ -1985,7 +2054,8 @@ until October 2026.
 | Add, edit, reorder and delete columns | ✅ | ✅ | ❌ | ✅ |
 | Comment, and edit or delete your own comment | ✅ | ✅ | ❌ | ✅ |
 | Create a card category or template on the board | ✅ | ✅ | ❌ | ✅ |
-| Create, update and delete webhooks | ✅ | ✅ | ❌ | ✅ |
+| Create a webhook, change its events, switch it off, and delete it | ✅ | ✅ | ❌ | ✅ |
+| Change a webhook's address or secret, or switch it on (since card 2154: an editor who sends `url` or `secret` at all, or `active: true` for one that is off, is `403`) | ✅ | ❌ | ❌ | ✅ |
 | Read a webhook's signing secret and address (the address since card 2133) | ✅ | ❌ | ❌ | ✅ |
 | Read the email addresses in the board's share list (since card 2128) | ✅ | ❌ | ❌ | ✅ |
 | Share board | ✅ | ❌ | ❌ | ✅ |
@@ -2255,8 +2325,7 @@ a card is refused while a sub-board the caller cannot open is unfinished, and th
 refusal names it (card 2151): the board page counts that sub-board's open cards before a drop
 onto Complete, without its name, and shows a refusal it did not stop in the server's words; the "Unblocked" comment and the plan-created mail carry another
 board's card title (card 2152); the inbox names a request's desired board to an addressee
-who cannot open it (card 2153); an editor can change a webhook's address they cannot read
-(card 2154); and a card moved to another board keeps a milestone of the board it left
+who cannot open it (card 2153); and a card moved to another board keeps a milestone of the board it left
 (card 2155). The dashboard's All Tasks walk follows only the
 sub-boards the caller can open, so it cannot reach one shared with them under a card of a
 board they cannot open, which `/all` counts.
@@ -2316,7 +2385,9 @@ was an empty list.
 - **Someone taken off a board** stops seeing its cards in their dashboard figures and
   Upcoming Deadlines, and their past actions there in Recent Activity.
 - **Webhook addresses.** An API key of a board's viewer or editor no longer gets webhook
-  addresses, as it already got no secrets. No screen shows webhooks.
+  addresses, as it already got no secrets. No screen shows webhooks. Since card 2154 an
+  editor's key cannot change an address or a secret, or switch a webhook on, either: see
+  [Who May Change a Webhook](notifications-email.md#who-may-change-a-webhook).
 - **The request links.** Anything scripted against a request's routes without its link now
   gets `404` where it got `403`; the reply page says "This link is no longer valid" for any
   failure.
@@ -2533,6 +2604,110 @@ requests were given a token by migration `0051`, so the next email about them ha
 working link.
 
 Covered by `tests/public-requests.test.ts`.
+
+## Webhook Destinations
+
+A webhook is a request the server makes, to an address a caller chose. That makes it a way
+to have the server send requests where the caller could not (server-side request forgery):
+any API key with edit access to a board could register a webhook and have every event of the
+board `POST`ed to this server's own ports, the Docker host and its other containers, the
+office or cloud network, or the cloud metadata service at `169.254.169.254`. The caller never
+sees the answer, but the request is made. Since card 2161 **an address inside the network is
+refused**, and what is left is bounded. The tables, the words and the log lines are in
+[Where a Webhook May Send](notifications-email.md#where-a-webhook-may-send).
+
+```mermaid
+sequenceDiagram
+    participant K as API key (editor)
+    participant S as DumpFire
+    participant D as DNS
+    participant R as Receiver
+    K->>S: POST /boards/3/webhooks with url http://hooks.example.com/x
+    S->>S: As written: no credentials, no inside address or name
+    S-->>K: 201, no name looked up
+    Note over S: Later, an event on board 3
+    S->>S: As written again
+    S->>D: Every address of hooks.example.com
+    D-->>S: 203.0.113.9 or, rebound, 127.0.0.1
+    alt Any address inside and not allowed
+        S->>S: EWEBHOOKINSIDE: WARN, no connection
+    else All outside
+        S->>R: POST, connected to the address judged
+        R-->>S: Status line, read for a redirect only
+    end
+```
+
+- **Judged twice, at the moment it matters.** At registration (`POST`, and a `PUT` that sends
+  `url`) the address as written: an inside IP or a name that is inside whatever it resolves to
+  (`localhost`, a name with no dot, `.local`, `.internal`, `.home.arpa`) is `400`, and so is an
+  address with a user name or password. No name is looked up then: its answer could change a
+  second later. At every delivery the address as written again, then every address the name
+  resolves to, judged by the lookup of the webhooks' own agents as the connection is made, so
+  the address judged is the address connected to. A name that answers one outside and one
+  inside address is refused: that is what DNS rebinding looks like, and the connection could
+  be made to either.
+- **One judgement, read by family.** `insideReason()` reads an address into a number with its
+  family from `net.isIP`, judges an IPv6 form that holds an IPv4 address (mapped, NAT64, 6to4)
+  by that address, and treats anything it cannot read as inside. It does not use
+  `net.BlockList`, whose `check` answers "not listed" for an IPv6 address it is not told is
+  IPv6, which would have let every IPv6 inside address through at delivery.
+- **No connection kept, no redirect followed.** The agents use `keepAlive: false` and every
+  request says `Connection: close`, so each delivery is a connection of its own, made through
+  the lookup. Each agent holds at most 20 connections to one host and port at once
+  (`maxSockets: 20`); a delivery past that waits, and is given a new connection, with its
+  lookup. A delivery that waits is never handed another host's socket: the socket is destroyed
+  on `'response'`, and Node pools sockets by host, port and family. `http.request` never follows
+  a redirect; a 3xx is logged.
+- **No proxy.** The agents are never given a proxy from the environment: through a proxy the
+  lookup would judge the proxy's address, not the receiver's.
+- **An exception is named by whoever runs the server.** `WEBHOOK_ALLOW_INSIDE` lets in named
+  hosts, addresses and ranges inside the network. An entry wider than one row of the tables
+  (`0.0.0.0/0`, `::/0`, `::ffff:0:0/96`, `10.0.0.0/2` written for `/24`) is ignored and named in
+  the start-up log, and so is one a row holds that holds `0.0.0.0` or `::`, or a row listed
+  before the one that holds it (`0.0.0.0/8`, `::/8`, `::/96`, `::1/8`, anything else in `::/8`,
+  and `::ffff:10.0.5.0/24`, which is `::/24` and held `::1`). These rules shut out `0.0.0.0`,
+  `::` and the reserved forms only. A listed name is never let reach `0.0.0.0` or `::`: a DNS
+  filter answers `0.0.0.0` for a name it blocks, which would reach this server, so such an
+  answer is refused at the connection, and an address written in `0.0.0.0/8` is refused
+  whatever range is listed. An entry that names this server on purpose (`127.0.0.1`, `::1`,
+  `localhost`) is taken as written, and every entry trusts every account that can register a
+  webhook with every port and path on that host: an entry with a port is not taken. So a host
+  with anything else listening on it, `host.docker.internal` above all, is not to be listed;
+  name a dedicated host or address. Nor is a range that holds this container's own address:
+  its Docker network (`172.16.0.0/12`, or the narrower network it is on) opens this server too;
+  name the receiver's single address or name instead. It is an environment variable, not an admin setting, so neither an administrator's
+  session nor a restore can change it. See [Deployment](deployment.md#where-a-webhook-may-send).
+- **The address goes with the secret.** Only the board's owner and an administrator may read a
+  webhook's address (card 2133), and only they may change it or its secret, or switch a webhook
+  on (card 2154): an editor could otherwise point a webhook somewhere they cannot see, or start
+  again one a password reset switched off. Both refusals end "Ask the board's owner.": an
+  editor whose own webhook their own reset switched off asks the owner too, or deletes it and
+  creates it again. See [Permission Matrix](#permission-matrix).
+- **What one event sends is bounded.** A board holds at most 10 webhooks (card 2201), switched
+  off ones counted, so one event makes at most 10 requests, except on a board already over the
+  cap from before it (one of 14 makes 14), each a connection of its own held up to 10 seconds; a reorder moves at most 100 cards to another column (card 2209), so one request
+  makes at most 1,000.
+
+**What is left.**
+
+- **This server's own public address.** A webhook to production's public IPv4 or IPv6 address,
+  or to a name that resolves to one, leaves the container, turns at the host, and reaches what
+  listens there from the host's own address, inside the cloud firewall that keeps the internet
+  out. The tables cannot name that address, and ports are not limited: the proxy on 443 is on
+  it anyway. Nothing on the host should trust a request for coming from the host's own address
+  (see [Deployment](deployment.md#where-a-webhook-may-send)).
+- **Rows stored before card 2161.** They are kept, and refused at every delivery until their
+  address is changed or allowed; nothing stops their being sent back unchanged.
+- **How much a board sends over time.** Nothing limits deliveries per board per minute, or
+  across the server: the cap is per event, and a burst of changes on a board of 10 webhooks
+  sends 10 for each.
+- **A board's owner is not told a webhook is refused or failing.** The result is in the
+  system log only, which administrators read: one refusal or redirect `WARN` per webhook and
+  kind of refusal per hour (the next one counts those not written), each failure
+  `ERROR` every time, and at every start one line naming each webhook that is on and refused as
+  written. At `LOG_LEVEL=ERROR` neither `WARN` is written.
+
+Covered by `tests/webhooks.test.ts` and `tests/access-control.test.ts`.
 
 ## Security Headers
 
@@ -2928,7 +3103,7 @@ which is what Reset Everything in the admin panel leaves.
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `checkCurrentPassword()`, the count of current-password guesses for a session, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `sessionStillOpen()` and `openSessionUser()`, which an open live stream asks at each heartbeat |
+| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction; `checkCurrentPassword()`, the count of current-password guesses for a session, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `sessionStillOpen()` and `openSessionUser()`, which an open live stream asks at each heartbeat |
 | `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
 | `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME` |
 | `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS` |
@@ -2937,7 +3112,8 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/sub-boards.ts` | `wouldLoop()`, whether putting a board under a card would make a loop, by a walk that ends on a loop already in the data; `linkableBoards()`, what the board page offers to link |
 | `src/lib/server/list-access.ts` | What a list answers a caller, decided in one place and filtered before any limit: `recentActivityFor()`, `listUsersFor()`, `listTeamsFor()`, `boardCategoryRule()` and `boardCategoriesFor()`, `categoryRule()` and `cardCategoriesFor()`, `subBoardsFor()`. See [What a List Gives](#what-a-list-gives) |
 | `src/lib/server/planning.ts` | Besides the plan: the viewer every reader of a dependency or a plan must pass, and `withhold()`, which shows work on a board the viewer cannot open as "A card on a board you cannot open" |
-| `src/lib/server/webhooks.ts` | `presentWebhook(hook, reveal)`, which leaves a webhook's `url` and `secret` out of every answer but the owner's, an administrator's and the one to the request that made it |
+| `src/lib/server/webhooks.ts` | `presentWebhook(hook, reveal)`, which leaves a webhook's `url` and `secret` out of every answer but the owner's, an administrator's and the one to the request that made it, and `setBy` out of every answer; `deliver()` on the webhooks' own agents; the cap of 10 a board |
+| `src/lib/server/webhook-address.ts` | Where a webhook may send (card 2161): `insideReason()`, `addressRefusal()`, `guardedLookup()`, `allowInside()` for `WEBHOOK_ALLOW_INSIDE`, and `readWebhookUrl()`, the registration's `400` |
 | `src/lib/server/request-access.ts` | Who may read, answer and resolve a task request; `requesterAddress()`, the one address a requester is mailed at and the team is shown (card 2171) |
 | `src/lib/server/request-tokens.ts` | Form tokens and per-request tokens for callers without an account |
 | `src/routes/api/requests/[id]/link/+server.ts` | The new link a requester asks for when theirs no longer works (card 2158): one answer for every ask, the link mailed only to the request's address (`requesterAddress()`, card 2171), after the answer and within three limits (`mayMail()`); a `503` in plain words, its reason in the log |

@@ -79,13 +79,14 @@ import { isHttpError, type Cookies, type RequestEvent } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
-import { apiKeys, inviteTokens, sessions, taskRequests, users } from '$lib/server/db/schema';
+import { apiKeys, inviteTokens, reportSchedules, sessions, taskRequests, users } from '$lib/server/db/schema';
 import { MASTER_PREF, NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import { PASSWORD_CHANGED_MEANWHILE, sessionStillOpen, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { PASSWORDS_BUSY, checkPassword, makePasswordHash } from '$lib/server/passwords';
 import { endUnusedInvites, issueInvite } from '$lib/server/invites';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { knownBrowserCookie, rememberBrowser, rememberedNonce } from '$lib/server/known-browsers';
+import { dispatchWebhook } from '$lib/server/webhooks';
 import { PUT as changeOwnPassword } from '../src/routes/api/account/password/+server';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
 import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.server';
@@ -93,7 +94,7 @@ import { action, type ActionResult } from './helpers/actions';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects, type RecordedEffect } from './helpers/effects';
-import { addBoardMember, makeApiKey, makeBoard, makeCard, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
+import { addBoardMember, makeApiKey, makeBoard, makeCard, makeSmtp, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
 import { gate } from './helpers/gate';
 import { watchReads } from './helpers/reads';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -348,7 +349,7 @@ describe('PUT /api/account/password', () => {
 			request: ({ me }) => changeOwn(me, { currentPassword: OLD, newPassword: NEW }),
 			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
-				expect(res.body).toEqual({ success: true, apiKeysEnded: 0 });
+				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
 
 				expect(await matches(NEW, hashOf(me.id))).toBe(true);
 				expect(await matches(OLD, hashOf(me.id))).toBe(false);
@@ -388,7 +389,7 @@ describe('PUT /api/account/password', () => {
 			request: ({ me }) => changeOwn(me, { currentPassword: OLD, newPassword: NEW, endApiKeys: true }),
 			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
-				expect(res.body).toEqual({ success: true, apiKeysEnded: 2 });
+				expect(res.body).toEqual({ success: true, apiKeysEnded: 2, webhooksSwitchedOff: 0 });
 				expect(await matches(NEW, hashOf(me.id))).toBe(true);
 				expect(sessionsOf(me.id)).toEqual([res.cookie!.value]);
 				expect(invitesOf(me.id)).toEqual([]);
@@ -406,6 +407,9 @@ describe('PUT /api/account/password', () => {
 			'delete from sessions',
 			'delete from invite_tokens',
 			'delete from api_keys',
+			// The webhooks the account set (card 2168): written whether or not one
+			// matches, and only when the keys end.
+			'update webhooks set',
 			'insert into sessions'
 		]);
 		expect(run.effects).toEqual([]);
@@ -420,11 +424,11 @@ describe('PUT /api/account/password', () => {
 
 		const kept = await changeOwn(chief, { currentPassword: OLD, newPassword: NEW, endApiKeys: false });
 		expect(kept.status).toBe(200);
-		expect(kept.body).toEqual({ success: true, apiKeysEnded: 0 });
+		expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
 		expect((await meWithKey(key)).status).toBe(200);
 
 		const ended = await changeOwn(chief, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true });
-		expect(ended.body).toEqual({ success: true, apiKeysEnded: 1 });
+		expect(ended.body).toEqual({ success: true, apiKeysEnded: 1, webhooksSwitchedOff: 0 });
 		expect(keysOf(chief.id)).toEqual([]);
 		const refused = await meWithKey(key);
 		expect(refused.status).toBe(401);
@@ -587,7 +591,13 @@ describe('PUT /api/users/:id/password', () => {
 			request: ({ admin, target }) => reset(admin, target.id),
 			afterSuccess: async ({ admin, target, bystander }, res: ApiResult) => {
 				expect(res.status).toBe(200);
-				expect(res.body).toEqual({ success: true, sessionsEnded: 2, apiKeysEnded: 1 });
+				expect(res.body).toEqual({
+					success: true,
+					sessionsEnded: 2,
+					apiKeysEnded: 1,
+					webhooksSwitchedOff: 0,
+					reportSchedulesPaused: 0
+				});
 				expect(await matches(NEW, hashOf(target.id))).toBe(true);
 				expect(sessionsOf(target.id)).toEqual([]);
 				expect(invitesOf(target.id)).toEqual([]);
@@ -607,7 +617,10 @@ describe('PUT /api/users/:id/password', () => {
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
-			'delete from api_keys'
+			'delete from api_keys',
+			// What the account set going (card 2168), written whether or not a row matches.
+			'update webhooks set',
+			'update report_schedules set'
 		]);
 		expect(run.effects).toEqual([]);
 		expectHashedOutsideTransaction();
@@ -619,7 +632,7 @@ describe('PUT /api/users/:id/password', () => {
 		const res = await reset(s.chief, s.admin.id);
 
 		expect(res.status).toBe(200);
-		expect(res.body).toEqual({ success: true, sessionsEnded: 1, apiKeysEnded: 1 });
+		expect(res.body).toEqual({ success: true, sessionsEnded: 1, apiKeysEnded: 1, webhooksSwitchedOff: 0, reportSchedulesPaused: 0 });
 		expect(sessionsOf(s.admin.id)).toEqual([]);
 		expect(keysOf(s.admin.id)).toEqual([]);
 		// The target's are not the administrator's.
@@ -980,6 +993,8 @@ describe('the invite page', () => {
 			'delete from sessions',
 			'delete from invite_tokens',
 			'delete from api_keys',
+			'update webhooks set',
+			'update report_schedules set',
 			'insert into sessions'
 		]);
 		expect(run.effects).toEqual([]);
@@ -1005,7 +1020,14 @@ describe('the invite page', () => {
 		makeApiKey(invitee);
 		makeApiKey(invitee);
 
-		expect(await loadInvite(TOKEN)).toEqual({ valid: true, username: 'invitee', emoji: '👤', apiKeys: 2 });
+		expect(await loadInvite(TOKEN)).toEqual({
+			valid: true,
+			username: 'invitee',
+			emoji: '👤',
+			apiKeys: 2,
+			webhooks: 0,
+			reportSchedules: 0
+		});
 
 		// Replaced by a newer invite, issued the one way an invite is.
 		const newer = inTransaction(() => issueInvite(invitee.id));
@@ -1116,6 +1138,426 @@ describe('the invite page', () => {
 		expect(bcrypt.inTransaction).toEqual([]);
 		expect(invite().used).toBe(false);
 		expect(hashOf(invitee.id)).toBe('not-a-real-hash');
+	});
+});
+
+// ─── What taking an account back switches off (card 2168) ───────────────────
+//
+// A webhook names the account that last set its address or secret
+// (`webhooks.set_by`, migration 0056). An administrator's reset and an invite
+// used switch off every webhook the account set and pause its report
+// schedules; the holder's own change switches off the webhooks only when they
+// end their keys, and pauses no schedule. A webhook nobody is recorded as
+// having set, and one somebody else set, are left alone.
+
+describe('what taking an account back switches off (card 2168)', () => {
+	/** A webhook's switch and its setter, as stored. */
+	const hookRow = (id: number) =>
+		sqlite.prepare('SELECT active, set_by AS setBy FROM webhooks WHERE id = ?').get(id) as { active: number; setBy: number | null };
+	/** A report schedule's switch and when it was last changed, as stored. */
+	const scheduleRow = (id: number) =>
+		sqlite.prepare('SELECT enabled, updated_at AS updatedAt FROM report_schedules WHERE id = ?').get(id) as {
+			enabled: number;
+			updatedAt: string;
+		};
+	const LONG_AGO = '2020-01-01 00:00:00';
+	const makeSchedule = (user: SessionUser, opts: { enabled?: boolean } = {}) =>
+		db
+			.insert(reportSchedules)
+			.values({ userId: user.id, name: 'Weekly', scope: 'all', enabled: opts.enabled ?? true, updatedAt: LONG_AGO })
+			.returning()
+			.get().id;
+
+	/**
+	 * The target owns a board with four webhooks: one they set, one an editor
+	 * set, one nobody is recorded as having set (as one made before 0056), and
+	 * one they set that is already off. The target has a report schedule that
+	 * is on and one that is paused; the editor has one that is on.
+	 */
+	const scene = () => {
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const target = withPassword(makeUser({ username: 'target' }));
+		const editor = makeUser({ username: 'editor' });
+		const { board } = makeBoard({ owner: target, name: 'Theirs' });
+		addBoardMember(board, editor, 'editor');
+		const hooks = {
+			theirs: makeWebhook(board, { url: 'https://hooks.example.test/theirs', setBy: target }).id,
+			editors: makeWebhook(board, { url: 'https://hooks.example.test/editors', setBy: editor }).id,
+			nobodys: makeWebhook(board, { url: 'https://hooks.example.test/nobodys' }).id,
+			alreadyOff: makeWebhook(board, { url: 'https://hooks.example.test/off', setBy: target, active: false }).id
+		};
+		const schedules = {
+			theirs: makeSchedule(target),
+			alreadyPaused: makeSchedule(target, { enabled: false }),
+			editors: makeSchedule(editor)
+		};
+		return { admin, target, editor, board, hooks, schedules };
+	};
+	type Scene = ReturnType<typeof scene>;
+
+	const reset = (by: SessionUser, id: number) => api('PUT', `/api/users/${id}/password`, { user: by, body: { password: NEW } });
+
+	/** Only the target's webhook that was on, and their schedule that was on, changed. */
+	function expectTakenBack(s: Scene, opts: { schedules: boolean }) {
+		// Switched off, and still naming who set it.
+		expect(hookRow(s.hooks.theirs)).toEqual({ active: 0, setBy: s.target.id });
+		expect(hookRow(s.hooks.editors)).toEqual({ active: 1, setBy: s.editor.id });
+		expect(hookRow(s.hooks.nobodys)).toEqual({ active: 1, setBy: null });
+		expect(hookRow(s.hooks.alreadyOff)).toEqual({ active: 0, setBy: s.target.id });
+
+		const paused = scheduleRow(s.schedules.theirs);
+		if (opts.schedules) {
+			expect(paused.enabled).toBe(0);
+			expect(paused.updatedAt).not.toBe(LONG_AGO);
+			expect(parseStamp(paused.updatedAt)).not.toBeNull();
+		} else {
+			expect(paused).toEqual({ enabled: 1, updatedAt: LONG_AGO });
+		}
+		// One already paused is not counted or touched; nobody else's is.
+		expect(scheduleRow(s.schedules.alreadyPaused)).toEqual({ enabled: 0, updatedAt: LONG_AGO });
+		expect(scheduleRow(s.schedules.editors)).toEqual({ enabled: 1, updatedAt: LONG_AGO });
+	}
+
+	/** The system log's lines from the AUTH context, with their meta read. */
+	const authLines = (like: string) =>
+		(sqlite.prepare('SELECT message, meta FROM system_logs WHERE message LIKE ? ORDER BY id').all(like) as {
+			message: string;
+			meta: string;
+		}[]).map((line) => ({ message: line.message, meta: JSON.parse(line.meta) }));
+
+	/** Run `test` with INFO lines written, and the level put back. */
+	async function atInfo(test: () => Promise<void>) {
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'INFO';
+		try {
+			await test();
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+	}
+
+	it("on an administrator's reset, switches off the webhooks the account set and pauses its report schedules, or does neither", async () => {
+		const run = await eachWriteInTurn({
+			build: scene,
+			request: ({ admin, target }) => reset(admin, target.id),
+			afterSuccess: (s, res: ApiResult) => {
+				expect(res.status).toBe(200);
+				expect(res.body).toEqual({
+					success: true,
+					sessionsEnded: 0,
+					apiKeysEnded: 0,
+					webhooksSwitchedOff: 1,
+					reportSchedulesPaused: 1
+				});
+				expectTakenBack(s, { schedules: true });
+			}
+		});
+
+		// Each failure in turn left the webhook on and the schedule enabled,
+		// with nothing sent: `eachWriteInTurn` checks every row each time.
+		expect(shape(run.writes)).toEqual([
+			'update users set',
+			'delete from sessions',
+			'delete from invite_tokens',
+			'delete from api_keys',
+			'update webhooks set',
+			'update report_schedules set'
+		]);
+		expect(run.effects).toEqual([]);
+	});
+
+	it('sends the next event to every webhook of the board but those switched off, and names what went in the log', async () => {
+		await atInfo(async () => {
+			const s = scene();
+			// Registered with one of the target's keys, so its setter is theirs.
+			const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, {
+				user: s.target,
+				body: { url: 'https://hooks.example.test/registered' }
+			});
+			expect(made.status).toBe(201);
+
+			const sent = effects();
+			try {
+				const res = await reset(s.admin, s.target.id);
+				expect(res.body).toMatchObject({ webhooksSwitchedOff: 2, reportSchedulesPaused: 1 });
+				expect(hookRow(made.body.id)).toEqual({ active: 0, setBy: s.target.id });
+
+				dispatchWebhook(s.board.id, 'card.moved', { cardId: 1 });
+				await sent.settle();
+				expect(sent.webhooks.map((hook) => hook.url)).toEqual([
+					'https://hooks.example.test/editors',
+					'https://hooks.example.test/nobodys'
+				]);
+			} finally {
+				sent.restore();
+			}
+
+			expect(authLines('Password reset for user%')).toEqual([
+				{
+					message:
+						`Password reset for user ${s.target.id} ("target") by "admin" — ended 0 session(s), 0 invite(s) and ` +
+						`0 API key(s), switched off 2 webhook(s) they set up (ids ${s.hooks.theirs}, ${made.body.id}) and ` +
+						`paused 1 report schedule(s) (id ${s.schedules.theirs})`,
+					meta: {
+						targetUserId: s.target.id,
+						resetBy: s.admin.id,
+						sessionsEnded: 0,
+						invitesEnded: 0,
+						apiKeysEnded: 0,
+						webhooksSwitchedOff: 2,
+						webhookIds: [s.hooks.theirs, made.body.id],
+						reportSchedulesPaused: 1,
+						reportScheduleIds: [s.schedules.theirs]
+					}
+				}
+			]);
+		});
+	});
+
+	it('when an invite is used, switches off the webhooks the account set and pauses its report schedules, or does neither', async () => {
+		const withInvite = () => {
+			const s = scene();
+			makeInvite(s.target, 'the-token');
+			return s;
+		};
+		const use = () => action('/invite/the-token', { form: { password: NEW, confirmPassword: NEW } });
+
+		const run = await eachWriteInTurn({
+			build: withInvite,
+			request: use,
+			afterSuccess: (s, res: ActionResult) => {
+				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/' });
+				expectTakenBack(s, { schedules: true });
+			}
+		});
+		expect(shape(run.writes)).toEqual([
+			'update users set',
+			'update invite_tokens set',
+			'delete from sessions',
+			'delete from invite_tokens',
+			'delete from api_keys',
+			'update webhooks set',
+			'update report_schedules set',
+			'insert into sessions'
+		]);
+
+		await atInfo(async () => {
+			resetDb();
+			const s = withInvite();
+			await use();
+			expect(authLines('Password set with an invite%')).toEqual([
+				{
+					message:
+						`Password set with an invite for user ${s.target.id} — ended 0 session(s), 0 other invite(s) and ` +
+						`0 API key(s), switched off 1 webhook(s) they set up (id ${s.hooks.theirs}) and paused 1 report ` +
+						`schedule(s) (id ${s.schedules.theirs})`,
+					meta: {
+						sessionsEnded: 0,
+						invitesEnded: 0,
+						apiKeysEnded: 0,
+						webhooksSwitchedOff: 1,
+						webhookIds: [s.hooks.theirs],
+						reportSchedulesPaused: 1,
+						reportScheduleIds: [s.schedules.theirs]
+					}
+				}
+			]);
+		});
+	});
+
+	it("on the holder's own change, switches off the webhooks they set only when they end their keys, and pauses no schedule", async () => {
+		await atInfo(async () => {
+			const s = scene();
+
+			// A change that keeps the keys keeps their webhooks.
+			const kept = await changeOwn(s.target, { currentPassword: OLD, newPassword: NEW });
+			expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
+			expect(hookRow(s.hooks.theirs)).toEqual({ active: 1, setBy: s.target.id });
+			expect(scheduleRow(s.schedules.theirs)).toEqual({ enabled: 1, updatedAt: LONG_AGO });
+
+			// Asked to end the keys, with none to end: the webhook they set is
+			// switched off all the same (R-S5), and the schedule stays on.
+			const ended = await changeOwn(s.target, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true });
+			expect(ended.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 1 });
+			expectTakenBack(s, { schedules: false });
+
+			expect(authLines('Password changed by user%').map((line) => line.message)).toEqual([
+				'Password changed by user — ended 0 session(s), 0 invite(s) and 0 API key(s), and switched off 0 webhook(s) they set up',
+				// The session the first change started is among those the second ends.
+				`Password changed by user — ended 1 session(s), 0 invite(s) and 0 API key(s), and switched off 1 webhook(s) they set up (id ${s.hooks.theirs})`
+			]);
+			expect(authLines('Password changed by user%')[1].meta).toEqual({
+				sessionsEnded: 1,
+				invitesEnded: 0,
+				apiKeysEnded: 0,
+				webhooksSwitchedOff: 1,
+				webhookIds: [s.hooks.theirs]
+			});
+		});
+	});
+
+	it("makes an administrator who re-points somebody else's webhook its setter, so the administrator's reset switches it off", async () => {
+		const s = scene();
+		const chief = makeUser({ username: 'chief', role: 'superadmin' });
+
+		const repointed = await api('PUT', `/api/v1/webhooks/${s.hooks.editors}`, {
+			user: s.admin,
+			body: { url: 'https://admins.example.test/x' }
+		});
+		expect(repointed.status).toBe(200);
+
+		const res = await reset(chief, s.admin.id);
+		expect(res.body).toMatchObject({ webhooksSwitchedOff: 1, reportSchedulesPaused: 0 });
+		expect(hookRow(s.hooks.editors)).toEqual({ active: 0, setBy: s.admin.id });
+		expect(hookRow(s.hooks.theirs)).toEqual({ active: 1, setBy: s.target.id });
+	});
+
+	it("leaves a webhook a reset switched off for the board's owner or an administrator to switch on, not an editor", async () => {
+		const s = scene();
+		expect((await reset(s.admin, s.target.id)).status).toBe(200);
+		const switchOn = (user: SessionUser) => api('PUT', `/api/v1/webhooks/${s.hooks.theirs}`, { user, body: { active: true } });
+
+		const refused = await switchOn(s.editor);
+		expect(refused.status).toBe(403);
+		expect(refused.body.message).toBe("Only the board's owner or an administrator can switch a webhook on. Ask the board's owner.");
+		expect(hookRow(s.hooks.theirs).active).toBe(0);
+
+		// The board's owner, signed in again with the new password.
+		expect((await switchOn(s.target)).status).toBe(200);
+		expect(hookRow(s.hooks.theirs).active).toBe(1);
+	});
+
+	it('says on the invite page how many webhooks and report schedules setting a password switches off and pauses', async () => {
+		const s = scene();
+		makeInvite(s.target, 'the-token');
+
+		expect(await loadInvite('the-token')).toEqual({
+			valid: true,
+			username: 'target',
+			emoji: '👤',
+			apiKeys: 0,
+			webhooks: 1,
+			reportSchedules: 1
+		});
+	});
+
+	describe('a create or a change whose body arrives after the reset (the review, S1)', () => {
+		/**
+		 * A JSON body the test lets go of. The gate decides who is calling before
+		 * it hands the body on, so once the body is first asked for the request
+		 * has been let in; `release` then sends it, and ends it.
+		 */
+		const heldBody = (value: unknown) => {
+			let asked!: () => void;
+			const wasAsked = new Promise<void>((resolve) => (asked = resolve));
+			let controller!: ReadableStreamDefaultController<Uint8Array>;
+			const body = new ReadableStream<Uint8Array>(
+				{
+					start: (c) => void (controller = c),
+					pull: () => asked()
+				},
+				{ highWaterMark: 0 }
+			);
+			const release = () => {
+				controller.enqueue(new TextEncoder().encode(JSON.stringify(value)));
+				controller.close();
+			};
+			return { body, wasAsked, release };
+		};
+
+		/** Sends the request, lets the reset (or nothing) happen once the gate has let it in, then the body. */
+		const sendAround = async (
+			method: string,
+			path: string,
+			credential: { key: string } | { session: string },
+			value: unknown,
+			meanwhile: () => Promise<unknown>
+		) => {
+			const held = heldBody(value);
+			// Asked for as a page's script asks: SvelteKit answers a refusal to a
+			// request that asks for nothing in particular with its error page.
+			const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json' };
+			if ('key' in credential) headers.authorization = `Bearer ${credential.key}`;
+			else headers.cookie = `${SESSION_COOKIE_NAME}=${credential.session}`;
+			const sent = gate(method, path, { headers, body: held.body });
+			await held.wasAsked;
+			await meanwhile();
+			held.release();
+			const res = await sent;
+			return { status: res.status, body: await res.json() };
+		};
+
+		const hooksOn = (boardId: number) =>
+			sqlite.prepare('SELECT id, url, active, set_by AS setBy FROM webhooks WHERE board_id = ? ORDER BY id').all(boardId);
+		const schedulesOf = (userId: number) =>
+			sqlite.prepare('SELECT id, name, enabled FROM report_schedules WHERE user_id = ? ORDER BY id').all(userId);
+		const SCHEDULE = (boardId: number) => ({ name: 'Late', scope: 'board', scopeId: boardId, frequency: 'weekly' });
+
+		it('refuses 401 a webhook made or re-pointed with a key the reset ended, and writes nothing', async () => {
+			const s = scene();
+			const key = makeApiKey(s.target);
+			const resetTarget = () => reset(s.admin, s.target.id);
+
+			const made = await sendAround('POST', `/api/v1/boards/${s.board.id}/webhooks`, { key }, { url: 'https://intruder.example.test/new' }, resetTarget);
+			expect(made).toEqual({ status: 401, body: { message: 'Invalid or expired API key' } });
+			const after = hooksOn(s.board.id);
+			expect(after).toHaveLength(4);
+
+			// A second key, made again after the first reset, for the change.
+			const again = makeApiKey(s.target);
+			const changed = await sendAround(
+				'PUT',
+				`/api/v1/webhooks/${s.hooks.theirs}`,
+				{ key: again },
+				{ url: 'https://intruder.example.test/back', active: true },
+				resetTarget
+			);
+			expect(changed).toEqual({ status: 401, body: { message: 'Invalid or expired API key' } });
+			expect(hooksOn(s.board.id)).toEqual(after);
+			expect(hookRow(s.hooks.theirs)).toEqual({ active: 0, setBy: s.target.id });
+		});
+
+		it('refuses 401 a report schedule made or switched on with a session the reset ended, and writes nothing', async () => {
+			const s = scene();
+			const resetTarget = () => reset(s.admin, s.target.id);
+
+			makeSession(s.target, 'target-laptop');
+			const made = await sendAround('POST', '/api/report-schedules', { session: 'target-laptop' }, SCHEDULE(s.board.id), resetTarget);
+			expect(made).toEqual({ status: 401, body: { message: 'Not authenticated' } });
+			const after = schedulesOf(s.target.id);
+			expect(after).toHaveLength(2);
+
+			// Signed in again after the first reset, for the change.
+			makeSession(s.target, 'target-phone');
+			const changed = await sendAround(
+				'PUT',
+				`/api/report-schedules/${s.schedules.theirs}`,
+				{ session: 'target-phone' },
+				{ enabled: true },
+				resetTarget
+			);
+			expect(changed).toEqual({ status: 401, body: { message: 'Not authenticated' } });
+			expect(schedulesOf(s.target.id)).toEqual(after);
+			expect(scheduleRow(s.schedules.theirs).enabled).toBe(0);
+		});
+
+		it('lets each through, sent the same way, when nothing ended meanwhile', async () => {
+			const s = scene();
+			const key = makeApiKey(s.target);
+			const session = 'target-laptop';
+			makeSession(s.target, session);
+			const nothing = async () => {};
+
+			const made = await sendAround('POST', `/api/v1/boards/${s.board.id}/webhooks`, { key }, { url: 'https://hooks.example.test/new' }, nothing);
+			expect(made.status).toBe(201);
+			const changed = await sendAround('PUT', `/api/v1/webhooks/${s.hooks.alreadyOff}`, { key }, { active: true }, nothing);
+			expect(changed.status).toBe(200);
+			const scheduled = await sendAround('POST', '/api/report-schedules', { session }, SCHEDULE(s.board.id), nothing);
+			expect(scheduled.status).toBe(201);
+			const resumed = await sendAround('PUT', `/api/report-schedules/${s.schedules.alreadyPaused}`, { session }, { enabled: true }, nothing);
+			expect(resumed.status).toBe(200);
+		});
 	});
 });
 
@@ -1834,6 +2276,43 @@ describe('the admin page', () => {
 			['other-admin', 1],
 			['holder', 1],
 			['none', 0]
+		]);
+	});
+
+	it('gives the webhooks each account set that are on, and its report schedules that are on, by the same rule (card 2168)', async () => {
+		const accounts = scene();
+		const { board } = makeBoard({ owner: accounts.holder });
+		makeWebhook(board, { setBy: accounts.holder });
+		makeWebhook(board, { setBy: accounts.holder });
+		makeWebhook(board, { setBy: accounts.holder, active: false });
+		makeWebhook(board, { setBy: accounts.other });
+		makeWebhook(board);
+		const schedule = (user: SessionUser, enabled: boolean) =>
+			db.insert(reportSchedules).values({ userId: user.id, name: 'Weekly', scope: 'all', enabled }).run();
+		schedule(accounts.holder, true);
+		schedule(accounts.holder, false);
+		schedule(accounts.admin, true);
+
+		const counts = async (caller: SessionUser) => {
+			const data = (await loadAdminPage({ locals: { user: caller } } as unknown as Parameters<typeof loadAdminPage>[0])) as {
+				users: { username: string; webhooks: number | null; reportSchedules: number | null }[];
+			};
+			return data.users.map((u) => [u.username, u.webhooks, u.reportSchedules]);
+		};
+
+		expect(await counts(accounts.admin)).toEqual([
+			['owner', null, null],
+			['admin', null, null],
+			['other-admin', null, null],
+			['holder', 2, 1],
+			['none', 0, 0]
+		]);
+		expect(await counts(accounts.owner)).toEqual([
+			['owner', null, null],
+			['admin', 0, 1],
+			['other-admin', 1, 0],
+			['holder', 2, 1],
+			['none', 0, 0]
 		]);
 	});
 });

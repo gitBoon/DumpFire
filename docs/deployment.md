@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.30
+version: 1.31
 status: As-Built
 date: 2026-10-18
 tags:
@@ -31,7 +31,9 @@ tags:
   - timestamps
   - indexes
   - attachment-sweep
-description: "Docker deployment, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, and production configuration for DumpFire"
+  - webhooks
+  - webhook-allow-list
+description: "Docker deployment, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -170,7 +172,7 @@ When `npm run verify` fails, on a workstation or in the build:
 | `test files in TEST_FILES that are not under tests/` | A test file in the list is not in this tree: it was left out of the commit, or deleted | Commit the file. If it was deleted on purpose, take its name out of `TEST_FILES` in `tests/harness.test.ts` |
 | `test files under tests/ that are not in TEST_FILES` | A test file was added and not listed | Add its name to `TEST_FILES` in `tests/harness.test.ts`. See [Testing](testing.md#the-list-of-test-files) |
 | `Unexpected .only modifier` | A test or a `describe` was left marked `.only` | Take the `.only` off |
-| `This test reached for the network: ...` | A test let the application try a `fetch` or a DNS lookup, at the address named: a webhook or a mail it set up and did not stand in for | Install `effects()` in the test. See [Testing](testing.md#proving-a-request-is-all-or-nothing) |
+| `This test reached for the network: ...` | A test let the application try a `fetch`, a DNS lookup, or an `http`/`https` request to an IP address other than loopback, at the address named: a webhook or a mail it set up and did not stand in for | Install `effects()` in the test. See [Testing](testing.md#proving-a-request-is-all-or-nothing) |
 | Every test of a file fails with `N migration(s) did not apply to a fresh database` | A file under `drizzle/` does not apply to an empty database. The built server would stop at start-up in the same way | Fix the migration file. See [Changing the Schema](#changing-the-schema) |
 | A failure under "the checked-in copy of the model" in `tests/migrations.test.ts` | `expected-schema.ts` is out of date. `docker build` would stop on the same thing | `npm run schema:expected`, and commit the result |
 | `Tests must run against an in-memory database` | The suite was started in some way that did not set `DB_PATH` | Run it with `npm run verify` or `npm test`, never with `DB_PATH` set by hand |
@@ -205,6 +207,7 @@ On the Docker host itself there is usually no Node to run the suite with outside
 | `PASSWORD_THREADS` | not set: two, or one on a machine with one or two CPUs | No: **leave it unset** | How many worker threads hash and check passwords, so that the server's own thread is never held by one (card 2191). Unset, it is `min(2, max(1, CPUs - 1))`. A whole number from `0` to `8` is taken as it is; `0` checks every password on the server's own thread, as the tests do, which holds every other request for about a fifth of a second each time, and is not for a server. Anything else is one `[WARN] [AUTH]` line, `PASSWORD_THREADS="…" is not a whole number from 0 to 8: password checks run on N worker thread(s)`, and the default. Read once, at the first check. See [Password Hashing](authentication-security.md#password-hashing) |
 | `SIGN_IN_ONE_AT_A_TIME` | not set, which is `on` | No: **set it only as** [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out) **says, and remove it after** | `on` or `off`, in any case, trimmed; empty is `on`. `off` turns off the rule that holds sign-ins from browsers not remembered for an account to one at a time while the account is being guessed at (card 2194): every browser is then let in after the account's wait. While it is `off`, one `[WARN] [STARTUP]` line at every start says so, to the console whatever `LOG_LEVEL` is. Anything else is one `[WARN] [AUTH]` line, `SIGN_IN_ONE_AT_A_TIME is "…", which is neither on nor off: sign-ins from browsers not remembered are held to one at a time`, and `on`. Read once, at start. See [Browsers That Have Signed In Before](authentication-security.md#browsers-that-have-signed-in-before) |
 | `CSP_MODE` | not set, which is `enforce` | No: **set it only for the first deploy of the policy**, as [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy) says, **and remove it after** | `enforce` or `report-only`, written exactly so. `report-only` sends every page its Content-Security-Policy as `Content-Security-Policy-Report-Only`: the browser names in its console what the policy would refuse, and refuses nothing. While it is set, one `[WARN] [STARTUP]` line at every start says so, to the console whatever `LOG_LEVEL` is. Any other value, `REPORT-ONLY` and ` report-only` among them, is enforced, and one `[WARN] [STARTUP]` line at every start names it: `CSP_MODE is "…", which is neither enforce nor report-only: the Content-Security-Policy is enforced.` Read at every request. See [The Content-Security-Policy](authentication-security.md#the-content-security-policy) |
+| `WEBHOOK_ALLOW_INSIDE` | not set: no webhook may send inside the network | Only for a webhook receiver inside the network, such as an automation tool beside DumpFire | A list, separated by commas, of the host names, addresses and ranges inside the network that webhooks may send to (card 2161): `n8n`, `host.docker.internal`, `10.0.5.20`, `10.0.5.0/24`, `fd00::/8`, `[fd00::1]`. A name is exact, case ignored, final dots removed, and allowed whatever it resolves to inside, but never `0.0.0.0` or `::` (a DNS filter's answer for a blocked name); an address or range must lie wholly inside one of the inside ranges, or it is ignored and named in one `[WARN] [STARTUP]` line at every start. Read when a webhook is registered and at every delivery, and parsed again when its value changes; set it when the container is created. An entry trusts every account that can register a webhook with every port and path on that host, so name a dedicated host or address, never `host.docker.internal` while anything else listens on the Docker host; an entry with a port (`n8n:5678`) is not taken. See [Where a Webhook May Send](#where-a-webhook-may-send) |
 | `NODE_EXTRA_CA_CERTS` | not set | Only for a mail server whose certificate comes from a private authority, or is self-signed | The path, inside the container, of a PEM file of certificates Node trusts beside its own, for every TLS connection of the process: mail, webhook deliveries and backup destinations (card 2189). Read once, when the process starts: set it, with the file mounted read-only, when the container is created; a restart applies neither. See [Mail Server Certificates](#mail-server-certificates) |
 
 > ⚠️ **CRITICAL**: `ORIGIN` must be set to your actual public URL (e.g. `https://dumpfire.example.com`). Leaving it as localhost will cause CSRF token validation failures on all form submissions.
@@ -300,6 +303,83 @@ It checks the connection without the way out, whatever the panel has, so it says
 | `FAIL:` … `does not match certificate's altnames` | The host is entered as an address, or a name that is not on the certificate | Enter the certificate's name as the host, with the password typed again |
 | `FAIL:` … `certificate has expired` | The mail server's certificate is out of date | The provider's to renew. Mail stops until it is; the way out meanwhile |
 | `FAIL: ESOCKET connect…`, `EDNS`, or a timeout | The server cannot be reached from the container | Unrelated to certificates: mail is not working now either |
+
+### Where a Webhook May Send
+
+A webhook is not sent to an address inside the network (card 2161): loopback, the private
+ranges Docker and an office use, carrier NAT and Tailscale, link-local with the cloud
+metadata service at `169.254.169.254`, the reserved, documentation and multicast ranges, their
+IPv6 counterparts, and the names `localhost`, `*.localhost`, a name with no dot (a service on
+the same Docker network, `n8n`), `*.local`, `*.internal` (`host.docker.internal`) and
+`*.home.arpa`. It is refused when the webhook is registered, as written, and at every delivery,
+by every address its name resolves to. The full tables are in
+[Where a Webhook May Send](notifications-email.md#where-a-webhook-may-send).
+
+```mermaid
+flowchart LR
+    Hook["A webhook's address"] --> Inside{"Inside the network,<br/>as written or as resolved?"}
+    Inside -->|"No"| Send["Sent"]
+    Inside -->|"Yes"| Allowed{"Named by WEBHOOK_ALLOW_INSIDE?"}
+    Allowed -->|"Yes"| Send
+    Allowed -->|"No"| Refused["400 at registration,<br/>WARN and not sent at delivery"]
+```
+
+**A receiver that is inside on purpose** is let in by naming it in `WEBHOOK_ALLOW_INSIDE`, set
+on the container:
+
+| To let in | Set |
+|-----------|-----|
+| A container on the same Docker network, `http://n8n:5678/webhook/…` | `WEBHOOK_ALLOW_INSIDE=n8n` |
+| A service on the Docker host, `http://host.docker.internal:8080/…`, only where nothing else listens on the host (see below) | `WEBHOOK_ALLOW_INSIDE=host.docker.internal` |
+| A machine on the office network | `WEBHOOK_ALLOW_INSIDE=10.0.5.20`, or the narrowest range that holds the receivers, `10.0.5.0/24` |
+| A receiver on a development machine, `http://localhost:9911/x` or `http://127.0.0.1:9911/x` | `WEBHOOK_ALLOW_INSIDE=localhost,127.0.0.1` |
+
+- A name is allowed whatever it resolves to inside, and only that name: it passes the name
+  rules. A listed name is never let reach `0.0.0.0` or `::`: a DNS filter answers `0.0.0.0` for
+  a name it blocks, which would reach this server, so that answer is refused. An address or a
+  range lets in any address inside it, written in the webhook's address or resolved from a
+  name, but never one in `0.0.0.0/8` or `::`.
+- An entry is kept only if it lies wholly inside one inside range. `0.0.0.0/0`, `::/0`,
+  `::ffff:0:0/96`, a slip such as `10.0.0.0/2` for `10.0.0.0/24`, an address outside the
+  network, `127.1` (an IPv4 address not written as four decimal numbers), a port, a path and a
+  wildcard are each ignored, and named at every start: `[WARN] [STARTUP] WEBHOOK_ALLOW_INSIDE:
+  "10.0.0.0/2" ignored: wider than one inside range`. The rest of the list applies. Read the
+  start log after changing it.
+- So is an entry that one inside range holds but that holds `0.0.0.0` or `::`, which reach
+  this server whatever it listens on, or a range listed before the one that holds it:
+  `0.0.0.0/8` and `0.0.0.0` (`it holds 0.0.0.0, …`), `::/8`, `::/96` and `::1/8` (`it holds ::,
+  …`), anything else inside `::/8`, and an IPv4-mapped range written with a short prefix,
+  `::ffff:10.0.5.0/24`, which is `::/24` and held `::1` (`an IPv4-mapped range needs /96 or
+  more`: write `10.0.5.0/24`, or `::ffff:10.0.5.0/120`). These rules shut out `0.0.0.0`, `::`
+  and the reserved forms only. They do not stop an entry that names this server on purpose (`127.0.0.1`, `::1`, `localhost`), as a development installation's
+  does, nor one that names a host where other things listen (the next point).
+- **An entry trusts every account with every port and path on that host.** Anyone who can
+  register a webhook, an editor of any board, can send to any port and any path of a host or
+  range the list names, and an entry with a port (`n8n:5678`) is not taken, so the port cannot
+  be narrowed. Name a dedicated host or address for the receiver, and the narrowest range. Do
+  not list `host.docker.internal`, or the Docker host's address, while anything else listens
+  on the host (an admin interface, a database, another application): every webhook could
+  reach it. Nor list a range that holds this container's own address: its Docker network
+  (`172.16.0.0/12`, or the narrower network it is on, which `docker network inspect` shows)
+  opens this server too. Name the receiver's single address or name instead.
+- A receiver's address with a user name or password is refused whatever the list says.
+- It is read where a webhook is registered and at every delivery, and parsed again whenever
+  its value changes. On a container the value changes only when the container is made again,
+  so set it with `-e WEBHOOK_ALLOW_INSIDE=…` (or under `environment:` in a compose file) when
+  the container is created.
+
+**No proxy.** Webhooks are delivered directly, never through `HTTP_PROXY`, `HTTPS_PROXY` or
+`NODE_USE_ENV_PROXY`: through a proxy the check would judge the proxy's address, not the
+receiver's. An installation whose only way out is a proxy could not deliver webhooks before
+(Node's `fetch` went direct too) and cannot now.
+
+**Nothing on the host should trust a request for coming from the host's own address.** A
+webhook to this server's own public IPv4 or IPv6 address, or to a name that resolves to one,
+is outside by the tables: it leaves the container, turns at the host, and reaches what listens
+there from the host's own address, inside the cloud firewall. Every port is open to webhooks,
+since closing them would not close this (443 on that address is the proxy). So no proxy rule,
+admin interface or service on the host may let a request in because it comes from the host's
+own public address. See [Webhook Destinations](authentication-security.md#webhook-destinations).
 
 ## Running
 
@@ -520,7 +600,7 @@ One more refusal comes after the migrations, before the server listens. If the d
 
 Expired sessions are then cleared, the system log is pruned to its retention, the backup, report and snapshot schedulers and the attachment file sweep start, and the server listens. On a database that is already up to date, steps 1 to 7 change nothing and log nothing.
 
-Last, eight things about the installation are said in the log if they are so. None stops the server, and none changes anything: there are user accounts and none of them is the superadmin (`[CRITICAL] [STARTUP]`, see [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin)); `ORIGIN` is still the address the image is built with and no App URL is set (`[WARN] [STARTUP]`, see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)); and a board hangs beneath one of its own cards, a loop left by a move made before card 2141, the legacy JSON import or a restored backup (`[WARN] [STARTUP]`, naming up to 20 such boards with the card each hangs from, see [A board beneath one of its own cards](admin-guide.md#a-board-beneath-one-of-its-own-cards) in the admin guide). The third reads the boards once and finds the loops in memory, so it costs next to nothing however deep the boards nest, and an import of a backup that brings a loop writes the same line at once, as `[WARN] [IMPORT]`, without waiting for the next start. The other three are about the database (card 2083), each a `[WARN] [STARTUP]` line: there was no database file, or an empty one, before this start opened it (`No database was at <path>: a new, empty one was created at this start.`, said once by a new installation, and the alarm on one that had data: stop the container before anyone opens the site); the folder the database is in is the container's own file system and not a mounted volume, at every start; and a database file is at `/app/dumpfire.db` beside the image's `/app/data/dumpfire.db`, which has data and is the one in use, at every start, naming both with their sizes and when each was last written. The seventh is that `SIGN_IN_ONE_AT_A_TIME` is `off` (card 2194), a `[WARN] [STARTUP]` line at every start while it is, written to the console whatever `LOG_LEVEL` is, as are the first two about the database: it is meant to be set for one sign-in and removed (see [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out)). The eighth is that `CSP_MODE` is `report-only`, or holds a value that is neither mode (card 2162), a `[WARN] [STARTUP]` line at every start while it does, written to the console whatever `LOG_LEVEL` is: `report-only` is meant for the policy's first deploy and then removed (see [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy)). The first two about the database (no database file before this start, and the folder not on a mounted volume) are written to the console whatever `LOG_LEVEL` is, even `ERROR`, because the checks after a deploy look for them in `docker logs`; with `LOG_LEVEL` at `ERROR` or `CRITICAL` they are printed but not kept in `system_logs`, as for any line. The second knows a container's own file system from `/proc/self/mountinfo`: the mount that holds the folder is the root and an overlay (`overlay`, as Docker has it, `fuse-overlayfs`, as rootless Podman has it, or `aufs`), or it is `tmpfs`. A container on another storage driver (`btrfs`, `zfs`, `vfs`) is not recognised and nothing is said, and where there is no `/proc/self/mountinfo` (Windows, macOS) nothing is said either. An in-memory database has no folder and is not looked at. A check that cannot be made is said on the console, one line for each such check, and the server starts all the same.
+Last, twelve things about the installation are said in the log if they are so. None stops the server, and none changes anything: there are user accounts and none of them is the superadmin (`[CRITICAL] [STARTUP]`, see [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin)); `ORIGIN` is still the address the image is built with and no App URL is set (`[WARN] [STARTUP]`, see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)); and a board hangs beneath one of its own cards, a loop left by a move made before card 2141, the legacy JSON import or a restored backup (`[WARN] [STARTUP]`, naming up to 20 such boards with the card each hangs from, see [A board beneath one of its own cards](admin-guide.md#a-board-beneath-one-of-its-own-cards) in the admin guide). The third reads the boards once and finds the loops in memory, so it costs next to nothing however deep the boards nest, and an import of a backup that brings a loop writes the same line at once, as `[WARN] [IMPORT]`, without waiting for the next start. The other three are about the database (card 2083), each a `[WARN] [STARTUP]` line: there was no database file, or an empty one, before this start opened it (`No database was at <path>: a new, empty one was created at this start.`, said once by a new installation, and the alarm on one that had data: stop the container before anyone opens the site); the folder the database is in is the container's own file system and not a mounted volume, at every start; and a database file is at `/app/dumpfire.db` beside the image's `/app/data/dumpfire.db`, which has data and is the one in use, at every start, naming both with their sizes and when each was last written. The seventh is that `SIGN_IN_ONE_AT_A_TIME` is `off` (card 2194), a `[WARN] [STARTUP]` line at every start while it is, written to the console whatever `LOG_LEVEL` is, as are the first two about the database: it is meant to be set for one sign-in and removed (see [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out)). The eighth is that `CSP_MODE` is `report-only`, or holds a value that is neither mode (card 2162), a `[WARN] [STARTUP]` line at every start while it does, written to the console whatever `LOG_LEVEL` is: `report-only` is meant for the policy's first deploy and then removed (see [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy)). The ninth is the secrets a backup does not hold that this installation still lacks (card 2169), one `[WARN] [STARTUP]` line naming them. The tenth is each entry of `WEBHOOK_ALLOW_INSIDE` that is ignored (card 2161), one `[WARN] [STARTUP]` line each, naming the entry and why: it is said here, once, because the list is read at every registration and every delivery, where a line would be written once for each webhook judged (see [Where a Webhook May Send](#where-a-webhook-may-send)). The eleventh is each board with more webhooks than the 10 a board may have (card 2201), in one `[WARN] [STARTUP]` line naming the first 20 by id and count, never an address: such a board was filled before the cap, keeps every webhook, and none can be added to it until it has fewer than 10. The twelfth is each webhook that is on and is refused as its address is written (an address inside the network that `WEBHOOK_ALLOW_INSIDE` does not name, a user name or password, or an address that is not http or https), in one `[WARN] [STARTUP]` line naming the first 20 by webhook and board, with why, never the path: it is not sent at any event, and no name is looked up for it. The last three are written at `WARN` like any line, so `LOG_LEVEL` at `ERROR` or above drops them. The first two about the database (no database file before this start, and the folder not on a mounted volume) are written to the console whatever `LOG_LEVEL` is, even `ERROR`, because the checks after a deploy look for them in `docker logs`; with `LOG_LEVEL` at `ERROR` or `CRITICAL` they are printed but not kept in `system_logs`, as for any line. The second knows a container's own file system from `/proc/self/mountinfo`: the mount that holds the folder is the root and an overlay (`overlay`, as Docker has it, `fuse-overlayfs`, as rootless Podman has it, or `aufs`), or it is `tmpfs`. A container on another storage driver (`btrfs`, `zfs`, `vfs`) is not recognised and nothing is said, and where there is no `/proc/self/mountinfo` (Windows, macOS) nothing is said either. An in-memory database has no folder and is not looked at. A check that cannot be made is said on the console, one line for each such check, and the server starts all the same.
 
 Nothing at start-up touches the uploads folder. The log is pruned again every six hours, and the same six-hourly tick empties the [uploads trash](#the-trash) of what has been in it for more than 30 days; the trash is also emptied once, ten minutes after the start. Where the schedulers run, [the sweep](#the-sweep-files-no-attachment-names) looks at the card folders 15 minutes after the start, and every six hours from then.
 
@@ -553,6 +633,9 @@ What stops a start, and what is only reported:
 | `CSP_MODE=report-only` | `[WARN] [STARTUP]`, at every start while it is set, on the console whatever `LOG_LEVEL` is: `CSP_MODE=report-only: pages are sent the Content-Security-Policy to report only, not to enforce; remove CSP_MODE once the trial is over. See docs/deployment.md.` | Yes. Pages are not protected by the policy: a browser reports what it would refuse and refuses nothing. Remove it and make the container again: see [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy) |
 | `CSP_MODE` holds anything but `enforce` or `report-only` | `[WARN] [STARTUP]`, at every start while it does, on the console whatever `LOG_LEVEL` is: `CSP_MODE is "<value>", which is neither enforce nor report-only: the Content-Security-Policy is enforced.` | Yes, with the policy enforced. Correct the value or remove it |
 | A secret a backup does not hold is still to be entered (card 2169): the mail settings name a host and a user and hold no password; an S3, Google Drive or OneDrive destination lacks its credentials; or a webhook the database's `webhook_secrets_left_out` lists is still off with no secret | `[WARN] [STARTUP]`, at every start while it is so: `To enter again, because a backup does not hold them: <the mail password (Admin, 📧 Email / SMTP); backup destination(s) "…" (…) (Admin, Scheduled Backups); the signing secret(s) of webhook(s) N (board "…"), which stay switched off until the board's owner or an administrator sets each one's secret and switches it on with PUT /api/v1/webhooks/{id}, or deletes it if it is no longer wanted>. A database put in place by hand from a backup has none of them: see docs/admin-guide.md, Restoring from Backup.` A list that cannot be read is said on the console alone | Yes. Mail is not sent, those destinations are not tried, and those webhooks send nothing, until each is entered: see [Restoring from Backup](admin-guide.md#restoring-from-backup) |
+| An entry of `WEBHOOK_ALLOW_INSIDE` that is not read, or is wider than one inside range, holds `0.0.0.0` or `::`, or is outside the network (card 2161) | `[WARN] [STARTUP]`, one line for each such entry at every start while it is set: `WEBHOOK_ALLOW_INSIDE: "10.0.0.0/2" ignored: wider than one inside range` (or `not inside the network, so it allows nothing`, `an IPv4 address not written as four decimal numbers`, `its range is not a number of bits`, `not a host name, an address or a range (a port, a path or a wildcard is not taken)`) | Yes, with that entry ignored and the rest of the list applied. Correct it and make the container again: see [Where a Webhook May Send](#where-a-webhook-may-send) |
+| A board has more than 10 webhooks, made before the cap (card 2201) | `[WARN] [STARTUP]`, at every start while one has: `2 board(s) have more webhooks than the 10 a board may have: board 12 has 14, board 40 has 11. All of them are still sent, and none can be added to such a board until it has fewer than 10.`, the first 20 named and then `, and N more` | Yes. Every active webhook of such a board is still sent; look at each with the board's owner and delete the ones not wanted |
+| A webhook that is on is refused as its address is written (card 2161) | `[WARN] [STARTUP]`, at every start while one is: `2 webhook(s) that are on are not sent, whatever their names resolve to: webhook 4 on board 3 (127.0.0.1 is a loopback address); webhook 9 on board 3 (n8n is a name with no dot, which is looked up inside the network). Each is refused at every event until its address is changed or it is switched off; one inside the network can instead be named in WEBHOOK_ALLOW_INSIDE.`, the first 20 named and then `; and N more` | Yes. Such a webhook is sent nothing; change its address, switch it off, or name its host in `WEBHOOK_ALLOW_INSIDE` |
 
 How the runner, the rebuild and the comparison work is described in [Data Model](data-model.md#migrations-and-schema-reconciliation).
 
@@ -2118,6 +2201,163 @@ Nothing is done to the database.
 - **The mail settings.** The older image reads `smtp_secure` again, which this image left as it was, and never reads `smtp_allow_insecure`: mail on any port but 465 goes as before this change, STARTTLS only if offered and the certificate checked only where "Use SSL/TLS" was ticked. A mail host, port or user changed meanwhile stays. A password typed meanwhile stays.
 - **The backup settings.** The older image masks the secrets it knew and shows the Google Drive refresh token again; it takes a masked secret by its place in the list again. A `grantedScope` recorded by a Connect meanwhile stays in the destination and is not read. A destination connected meanwhile keeps its `drive.file` token and the folder DumpFire made, and backs up there.
 - **nodemailer** goes back to 8.0.7 with the older image.
+
+### The Update That Brings Migration 0056 and the Webhook Rules
+
+Five cards go out in one image, and this is the one note for them. One migration, no data changed.
+
+- **Card 2145** sends each webhook of a board on its own: a webhook whose stored `events` is not a JSON list is skipped with a `WARN`, where one holding `null` stopped every later webhook of its board, a number or an object was sent every event, and a string was matched by substring.
+- **Card 2161** refuses a webhook's address inside the network: at registration as written (`400`), and at every delivery as written and by every address its name resolves to (a `WARN`, nothing sent). Redirects are not followed, an address with a user name or password is refused, and a failed delivery's `ERROR` names the host, never the path. Webhooks are delivered with `node:http` and `node:https`, not `fetch`. A receiver inside the network on purpose is named in `WEBHOOK_ALLOW_INSIDE`: see [Where a Webhook May Send](#where-a-webhook-may-send).
+- **Card 2154** keeps a webhook's address and secret, and switching it on, with the board's owner and administrators: an editor's key that sends `url` or `secret`, or `active: true` for a webhook that is off, is `403`.
+- **Card 2168** brings migration `0056_add_webhook_set_by.sql`, a column `webhooks.set_by` (the account that last set the webhook's address or secret) and its index, and with it what taking an account back switches off: an administrator's reset and an invite used switch off every webhook the account set and pause every report schedule of it; the holder's own change with the box ticked switches off the webhooks; deleting an account switches off the webhooks it set.
+- **Card 2201** holds a board to 10 webhooks, switched-off ones counted: the 11th create is `409`. A board that already has more keeps them all, and is named at every start.
+
+0056 is two statements and changes no row:
+
+```sql
+ALTER TABLE `webhooks` ADD COLUMN `set_by` integer REFERENCES `users`(`id`) ON DELETE SET NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `idx_webhooks_set_by` ON `webhooks` (`set_by`);
+```
+
+```mermaid
+flowchart TD
+    L["0l: each webhook's host and what it resolves to,<br/>in the container, read-only"] --> Inside{"A host inside the network<br/>that is wanted?"}
+    Inside -->|"Yes"| Allow["WEBHOOK_ALLOW_INSIDE on the new container"]
+    Inside -->|"No"| R
+    Allow --> R["0c: the rehearsal lists 0056"]
+    M["0m: webhooks whose events are not a list,<br/>on the host, read-only"] --> R
+    N["0n: the boards with the most webhooks,<br/>on the host, read-only"] --> R
+    R --> Deploy["Deploy as in Updating a Running Installation"]
+    Deploy --> First["First start: 0056 applied,<br/>no row changed, every webhook with no setter"]
+    First --> After["Checks 51 to 71"]
+```
+
+#### Before the deploy: checks 0l to 0n
+
+Each runs on the host, against the live database, read-only. None prints a path, a query string, a secret or a password: a webhook's path can hold a token. Check 0l also asks the container's resolver for each host it lists, and connects to nothing.
+
+**Check 0l: where each webhook sends.** Each webhook's board, whether it is on, when it was made, the host and port it sends to and the addresses that host resolves to now from inside the running container, with whether its address carries a user name or password and whether it is written in an odd form:
+
+```bash
+docker exec dumpfire node -e "
+const dns = require('dns');
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+const rows = db.prepare('SELECT id, board_id, active, created_at, url FROM webhooks ORDER BY id').all();
+db.close();
+const backslash = String.fromCharCode(92);
+const read = (url) => {
+  const sep = url.indexOf('://');
+  const rest = sep < 0 ? url : url.slice(sep + 3);
+  const ends = ['/', '?', '#', backslash].map((c) => rest.indexOf(c)).filter((i) => i >= 0);
+  const authority = ends.length > 0 ? rest.slice(0, Math.min(...ends)) : rest;
+  const at = authority.lastIndexOf('@');
+  const hostAndPort = authority.slice(at + 1);
+  const host = hostAndPort.startsWith('[') ? hostAndPort.slice(1, hostAndPort.indexOf(']')) : hostAndPort.split(':')[0];
+  const lower = url.toLowerCase();
+  const usual = (lower.startsWith('http://') || lower.startsWith('https://')) && url.includes(backslash) === false;
+  return { hostAndPort, host, credentials: at >= 0 ? 1 : 0, odd: usual ? 0 : 1 };
+};
+const hosts = [...new Set(rows.map((r) => read(r.url).host))];
+const looked = hosts.map((h) => dns.promises.lookup(h, { all: true }).then((found) => found.map((a) => a.address).join(' '), (err) => 'not resolved: ' + err.code));
+Promise.all(looked).then((answers) => {
+  const resolved = new Map(hosts.map((h, i) => [h, answers[i]]));
+  console.table(rows.map((r) => {
+    const w = read(r.url);
+    return { id: r.id, board_id: r.board_id, active: r.active, created_at: r.created_at, host_and_port: w.hostAndPort, resolves_to: resolved.get(w.host), has_credentials: w.credentials, odd_form: w.odd };
+  }));
+});
+"
+```
+
+Read it for five things:
+
+- **A host inside the network**, as written or in `resolves_to`: an address `10.x`, `172.16.x` to `172.31.x`, `192.168.x`, `127.x`, `100.64.x` to `100.127.x`, `169.254.x`, `::1`, `fd…` or `fe80…`; `localhost`; a name with no dot (`n8n:5678`); or a name ending `.local`, `.internal` or `.home.arpa`. That webhook stops being delivered when the new image starts, with a `WARN` at the first event and at most once an hour after. If it is wanted, put its host in `WEBHOOK_ALLOW_INSIDE` on the new container (see [Where a Webhook May Send](#where-a-webhook-may-send)). `resolves_to` is what the container's own resolver answers now, every address of the name; a public name that answers an inside address is refused at delivery too. `not resolved: ENOTFOUND` is a name the container cannot resolve, which is not delivered now either.
+- **An `http://` host that is sent**: run `curl -sI http://<host_and_port>/` against each from a machine outside, or from the container. A `307` or `308` there may mean its receiver redirects every `POST`, which stops being followed at the deploy (see [What changes at the first start](#what-changes-at-the-first-start)).
+- **`has_credentials` 1**: that webhook has never been delivered (`fetch` refused such an address) and still will not be. The board's owner or an administrator registers it again without them. The host is read after the last `@`, as the URL parser reads it, so a password holding `@` does not hide the host.
+- **`odd_form` 1**: an address not beginning `http://` or `https://`, such as `http:/127.0.0.1/x`, or one holding a backslash, which the URL parser reads as `/` (`http://hooks.example.com\@10.0.0.5/`), whose host this check may misread. Look at that row's address by hand.
+- **Any row at all**: after 0056 none has a recorded setter, so a password reset will not switch it off. Look each over once, with the board's owner.
+
+**Check 0m: webhooks whose events are not a list** (card 2145):
+
+```bash
+docker exec dumpfire node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+console.table(db.prepare('SELECT id, board_id, active, events FROM webhooks WHERE CASE WHEN json_valid(events) THEN json_type(events) <> @array ELSE 1 END ORDER BY id').all({ array: 'array' }));
+db.close();
+"
+```
+
+An empty table is what is expected. Any row is skipped at every event from the deploy on, with a `WARN` naming it, where before it stopped the board's later webhooks (`null`), was sent every event (a number or an object) or was matched by substring (a string). Fix each with `PUT /api/v1/webhooks/{id}` and a list of events, before or after the deploy; check 69 looks at it afterwards.
+
+**Check 0n: the boards with the most webhooks** (card 2201):
+
+```bash
+docker exec dumpfire node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+console.table(db.prepare('SELECT w.board_id, b.name AS board_name, COUNT(*) AS webhooks, SUM(w.active) AS active, MIN(w.created_at) AS first_made, MAX(w.created_at) AS last_made FROM webhooks w LEFT JOIN boards b ON b.id = w.board_id GROUP BY w.board_id ORDER BY webhooks DESC, w.board_id LIMIT 20').all());
+db.close();
+"
+```
+
+A board above 10 keeps every webhook and every delivery after the deploy, no webhook can be added to it until it has fewer than 10, and every start names it (check 67). Look at each with its owner and delete what is not wanted; one made in a burst (`first_made` close to `last_made`) is worth a closer look. Boards at 8 to 10 with genuine integrations are within reach of the cap.
+
+**In the rehearsal (check 0c)**, `Migration files applied` lists `0056_add_webhook_set_by.sql` too, with no note under `Worth knowing`: it changes no row, and declares nothing.
+
+#### What changes at the first start
+
+- **0056 is applied**: one column and one index, no row changed. Every webhook there has no setter, so no reset switches one off until its address or secret is set again. A webhook registered from now on names the account that registered it.
+- **Every webhook is judged by where it sends**, at each event. One that check 0l showed inside the network, and that `WEBHOOK_ALLOW_INSIDE` does not name, is not sent, and writes a `WARN` under `Webhooks` at the first event it would have been sent: `Webhook 4 on board 3 not sent: 127.0.0.1 is a loopback address`. A receiver that answers with a redirect is a `WARN`, not followed. Each such `WARN` is written one line per webhook and kind of refusal per hour, however its words change (another address resolved, another status), the next one saying how many were not written in between (`… (12 more like this since the last such line were not logged)`), so a busy board does not fill the system log, which keeps 50,000 rows. Only a receiver that answers `307` or `308` newly stops: a `301`, `302` or `303` was already followed by `fetch` as a `GET` with no body, which no webhook receiver takes, so such a receiver was not receiving before either. Check 0l's `curl -sI` finds them. A delivery that fails writes `ERROR` naming the host and port, never the path. The receiver sees the same body, event header, signature and `User-Agent` as before, with `Content-Length` (never chunked), `Accept: */*` and `Connection: close`, and none of the other headers `fetch` added (`accept-language`, `sec-fetch-mode`, `accept-encoding`).
+- **The start log** has a `[WARN] [STARTUP]` line for each ignored entry of `WEBHOOK_ALLOW_INSIDE`, one naming the boards over 10 webhooks, and one naming each webhook that is on and refused as written (the hosts inside the network that check 0l found, unless the list names them), only where there are any.
+- **At `LOG_LEVEL=ERROR`** none of that is written: the refusal and redirect `WARN`s and the two start-up lines about webhooks (the allow-list's and the refused webhooks') are below the level, so a receiver inside the network that stops at the deploy leaves no trace. Run with `INFO` or `WARN` for the first days, or run check 0l again after the deploy.
+- **Through the API**: an address inside the network is `400` at registration; an editor's `url`, `secret` or switching on is `403`, ending "Ask the board's owner." (an editor whose own webhook their own reset switched off asks the owner too, or deletes it and creates it again); the 11th webhook of a board is `409`. Scripts that send back a webhook's whole answer with a changed `events` are refused when run with an editor's key: send only the fields that change.
+- **On the pages**: the admin page's reset dialog counts the webhooks the account set and its report schedules, and the toast names what was switched off and paused; the Account page's password box offers to switch off the webhooks you set, and can appear with no API key; the invite page names what setting a password there ends; the delete confirmation says webhooks are switched off.
+
+**Owner to know.** An address inside the network stops being sent at the deploy unless `WEBHOOK_ALLOW_INSIDE` names it, and an entry of that list wider than one inside range is ignored, named in the start log. An editor can no longer change a webhook's address or secret, or switch one on. A password reset, an invite used, and the holder's own change with the box ticked switch off the webhooks the account set (reset and invite pause its report schedules too), and so does deleting the account; the board's owner or an administrator switches a webhook on again through the API, and a schedule's owner on the Reports page. A board holds at most 10 webhooks. A webhook can still reach this server's own public address: nothing on the host is to trust a request for coming from it.
+
+#### After the deploy
+
+Checks 51 to 69 run on production; 70 and 71 on a development instance. Accounts: the superadmin; an ordinary user `qb-check` who owns a board "QB check" and a board "QB cap"; an ordinary user `qb-editor`, editor on "QB check"; an API key for each of the two. A public request catcher (such as `https://webhook.site`, which gives a unique address) receives the webhooks. In Windows PowerShell 5.1 send each request with `curl.exe` and its body from a file (`-d "@hook.json"`): 5.1 strips the quotes from JSON typed on the line.
+
+| # | Card | Do | Account and data | Expect | A fault if |
+|---|---|---|---|---|---|
+| 51 | 2161 | `POST /api/v1/boards/{QB check}/webhooks` with `{"url":"<catcher>","secret":"s3"}`; move a card on the board | `qb-check`'s key | `201`; the catcher receives a `POST` with `X-DumpFire-Event: card.moved`, `X-DumpFire-Signature: sha256=…`, `Content-Length`, `Accept: */*`, and no `Transfer-Encoding` | Not received, or `Transfer-Encoding: chunked` |
+| 52 | 2161 | `POST` the same with each of `http://127.0.0.1:3000/x`, `http://localhost/x`, `http://169.254.169.254/latest/meta-data/`, `http://n8n:5678/x`, `https://u:p@example.com/` | `qb-check`'s key | `400` each: `Webhook url points inside the network: 127.0.0.1 is a loopback address`, `…: localhost is this server`, `…: 169.254.169.254 is a link-local address, where the cloud metadata service is`, `…: n8n is a name with no dot, which is looked up inside the network`, and `Webhook url must not carry a user name or password` | Any `201` |
+| 53 | 2161 | `POST` with `http://localtest.me:3000/x` (a public name that resolves to `127.0.0.1`); move a card; open the Audit page's Live Console | `qb-check`'s key; the superadmin | `201`, then `WARN` `Webhook N on board B not sent: localtest.me resolves to 127.0.0.1, a loopback address` | The `201` followed by no line |
+| 54 | 2161 | `POST` with `http://169.254.169.254.nip.io/x`; move a card | `qb-check`'s key | `201`, then a `WARN` ending `resolves to 169.254.169.254, a link-local address, where the cloud metadata service is` | No line |
+| 55 | 2154 | `PUT /api/v1/webhooks/{51's id}` with `{"url":"<another catcher>"}`; then `{"active":false}`; then `{"active":true}` | `qb-editor`'s key | `403` `Only the board's owner or an administrator can change a webhook's address or secret. Ask the board's owner.`; `200`; `403` `Only the board's owner or an administrator can switch a webhook on. Ask the board's owner.` | `200` to the first or the third |
+| 56 | 2154 | `PUT` the same webhook `{"active":true}` | `qb-check`'s key | `200` | `403` |
+| 57 | 2168 | Make a report schedule on the Reports page; then, as the superadmin, reload the admin page and open 🔑 on `qb-check`'s row | `qb-check`; the superadmin | After a moment: "They have 1 API key, which stops working.", "They set up 3 webhooks, which are switched off." (checks 51, 53, 54) and "They have 1 report schedule, which is paused." | No counts, or wrong ones |
+| 58 | 2168 | Reset `qb-check`'s password; move a card on "QB check"; read the Live Console | The superadmin | The toast "Password reset: … and 1 API key ended, 3 webhooks switched off and 1 report schedule paused" (the sessions as they were); the catcher receives nothing; an `AUTH` line naming the three webhooks and the schedule by id | The catcher receives `card.moved` |
+| 59 | 2168 | Sign in with the new password; Reports, Schedules | `qb-check` | The schedule shows ⏸️; switching it on works | ✅ before it is switched |
+| 60 | 2168 | Make a key on the Account page; register a webhook to the catcher with it; change the password **without** ticking the box; move a card | `qb-check` | The catcher receives it | Not received |
+| 61 | 2168 | Change the password again **with** the box ticked ("End my 1 API key too, and switch off the 1 webhook I set up."); move a card | `qb-check` | "Password changed. Your other sessions were signed out; your 1 API key was ended and the 1 webhook you set up was switched off."; the catcher receives nothing | Received |
+| 62 | 2168 | Make a key, register a webhook to the catcher, delete the key on the Account page and reload it; tick the box, change the password, move a card | `qb-check` | The box reads "Switch off the 1 webhook I set up."; the catcher receives nothing | No box, or the event received |
+| 63 | 2168 | Make `qb-gone`, give it a key, register a webhook on a board of its own; delete `qb-gone`; `GET /api/v1/webhooks/{id}` | The superadmin, and the superadmin's key | The confirmation says "Webhooks they set up are switched off; the board's owner or an administrator can switch one on again through the API."; the webhook answers `"active": false`; the delete's log line says "1 webhook(s) they set up were switched off (id N)", N the webhook's id | `"active": true` |
+| 64 | 2201 | Put `{"url":"<catcher>"}` in `hook.json`; then `1..11 \| % { curl.exe -s -w " %{http_code}\n" -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "@hook.json" https://<host>/api/v1/boards/<QB cap>/webhooks }` | `qb-check`'s key (a new one) | Ten answers ending `201`; the 11th `{"message":"This board has 10 webhooks, and a board may have at most 10: delete 1 before adding another."} 409` | A `201` for the 11th |
+| 65 | 2201 | `PUT` one of them `{"active":false}`; create again | `qb-check`'s key | Still `409` | `201` |
+| 66 | 2201 | `DELETE` one; create again | `qb-check`'s key | `201` | `409` |
+| 67 | 2161, 2201 | Read the start log (`docker logs dumpfire 2>&1`, or the Live Console) | | A `[WARN] [STARTUP]` line naming each board check 0n listed above 10, and none if it listed none; a line naming each webhook that is on and refused as written (checks 52 and 53's are not: 52's were refused, 53's name looks outside as written), and none if there is none; no `WEBHOOK_ALLOW_INSIDE` line unless an entry is wrong | A line naming a board of 10 or fewer, or one holding an address |
+| 68 | 2201 | Open `/docs`, Webhooks, Create a webhook | | A `409` listed with the text of check 64 | No `409` |
+| 69 | 2145 | Only if check 0m listed rows: move a card on such a board | | Its other webhooks receive; one `WARN` names the row, "its events are not a list" | Nothing received |
+| 70 | 2161 | On a development instance started with `WEBHOOK_ALLOW_INSIDE=127.0.0.1`, run the receiver below; register `http://127.0.0.1:9911/x`; move a card | That instance's user and key | `201`, and the receiver prints the `POST` | `400`, or nothing received |
+| 71 | 2161 | Start that instance with `WEBHOOK_ALLOW_INSIDE=0.0.0.0/0,::/0,10.0.0.0/2,127.1,::/8,0.0.0.0/8,10.0.5.0/24`; `POST` `http://169.254.169.254/x`, `http://127.0.0.1:9911/x`, `http://[::1]:9911/x` and `http://10.0.5.20/x` | That instance's user and key | Six `[WARN] [STARTUP]` lines, one for each of the first six entries; `400`, `400`, `400` and `201` | Any of the first three `201` |
+
+Check 70's receiver, on the development machine:
+
+```bash
+node -e "require('http').createServer((q, s) => { let b = ''; q.on('data', (d) => (b += d)); q.on('end', () => { console.log(q.method, q.url, b); s.end('ok'); }); }).listen(9911)"
+```
+
+Delete the check accounts, the two boards and the catcher's webhooks afterwards.
+
+#### Going back to the previous image
+
+Nothing is done to the database.
+
+- **0056 stays applied.** The older image logs one `[ERROR] [DB]` line for the recorded file it has no file for, and its schema check one for the column and the index its model lacks, and starts. It neither reads nor writes `set_by`: a webhook it makes names nobody.
+- **The webhook rules go with it.** It delivers to addresses inside the network again, follows redirects, lets an editor change an address or a secret or switch a webhook on, and has no cap. A webhook switched off by a reset meanwhile stays off; a schedule paused stays paused.
+- **Its restore fills a webhook's secret** by id, board and address again, without the setter.
 
 ## Changing the Schema
 
