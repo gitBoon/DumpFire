@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.62
+version: 1.63
 status: Living
 date: 2026-10-18
 tags:
@@ -421,8 +421,14 @@ of SvelteKit that breaks the harness fails there, by name, and not as forty fail
 look like the gate's.
 
 SvelteKit's refusal of a write sent as a form with no matching `Origin` is made here, as a
-built server makes it, before `handle` is called: since SvelteKit 2.70 (card 2227) it is
-skipped under `vite dev` alone and no longer under vitest. So a test that posts a form, or
+built server makes it, before `handle` is called. Since SvelteKit 2.70 (card 2227) the check
+is skipped while the global `__SVELTEKIT_DEV__` is true, and vitest sets it true in every
+test file, as under `vite dev`; `start()` in `tests/helpers/gate.ts` sets it false, as a
+build is, for the files that use the harness. The harness reads `svelte.config.js` with
+`load_svelte_config()` and not `load_config()`, which resolves the whole Vite config as a
+build, rewrites `.svelte-kit/` from every such file at once, and, when two of them raced,
+fell back without a word and left the check off in that file (the harness test below
+failed in about one full run in three). So a test that posts a form, or
 `text/plain`, as a page or a page's script does sends `origin: 'http://localhost'`, as a
 browser does; one without it is SvelteKit's `403`, and never reaches the gate. "The harness"
 in `tests/gate.test.ts` holds this: a form posted to `/login` with no `Origin`, or another
