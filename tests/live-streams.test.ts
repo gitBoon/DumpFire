@@ -153,7 +153,7 @@ const ENDINGS: { what: string; end: (user: SessionUser, token: string) => void }
 	{
 		what: 'the session expires where it stands',
 		end: (_user, token) =>
-			db.update(sessions).set({ expiresAt: '2020-01-01T00:00:00.000Z' }).where(eq(sessions.id, token)).run()
+			db.update(sessions).set({ expiresAt: '2020-01-01 00:00:00' }).where(eq(sessions.id, token)).run()
 	},
 	{
 		// The cascade deletes the sessions with the account. A database made
@@ -270,7 +270,7 @@ describe('a stream whose session is still open', () => {
 			const token = makeSession(user);
 			const reader = await open(stream, token);
 			// Put where a moved expiry would show, whatever the clock reads.
-			const opened = '2099-01-01T00:00:00.000Z';
+			const opened = '2099-01-01 00:00:00';
 			db.update(sessions).set({ expiresAt: opened }).where(eq(sessions.id, token)).run();
 			const expiry = () => db.select().from(sessions).where(eq(sessions.id, token)).get()?.expiresAt;
 
@@ -377,7 +377,7 @@ describe('sessionStillOpen', () => {
 		const deleted = makeSession(w.viewer);
 		db.delete(sessions).where(eq(sessions.id, deleted)).run();
 		const expired = makeSession(w.viewer);
-		db.update(sessions).set({ expiresAt: '2020-01-01T00:00:00.000Z' }).where(eq(sessions.id, expired)).run();
+		db.update(sessions).set({ expiresAt: '2020-01-01 00:00:00' }).where(eq(sessions.id, expired)).run();
 		const orphan = makeSession(w.owner);
 		withoutForeignKeys(() => db.delete(users).where(eq(users.id, w.owner.id)).run());
 
@@ -403,7 +403,7 @@ describe('openSessionUser', () => {
 		const deleted = makeSession(w.admin);
 		db.delete(sessions).where(eq(sessions.id, deleted)).run();
 		const expired = makeSession(w.admin);
-		db.update(sessions).set({ expiresAt: '2020-01-01T00:00:00.000Z' }).where(eq(sessions.id, expired)).run();
+		db.update(sessions).set({ expiresAt: '2020-01-01 00:00:00' }).where(eq(sessions.id, expired)).run();
 		const orphan = makeSession(w.owner);
 		withoutForeignKeys(() => db.delete(users).where(eq(users.id, w.owner.id)).run());
 		// Changed since the session was made, and read as it is now.

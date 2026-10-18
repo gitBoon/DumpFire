@@ -155,7 +155,10 @@ function world(): World {
 	makeWebhook(A.board);
 	makeWebhook(B.board);
 
-	const doomed = makeCard(A.cols['To Do'], { title: 'Doomed' });
+	// Last edited well before the test: a write stamps `updated_at` to the
+	// second (card 2095), and one made in the second the card was made would
+	// leave it as it was, where the archive tests look for it to change.
+	const doomed = makeCard(A.cols['To Do'], { title: 'Doomed', updatedAt: '2026-01-01 00:00:00' });
 	const neighbour = makeCard(A.cols['To Do'], { title: 'Neighbour', position: 1 });
 	const sibling = makeCard(A.cols['In Progress'], { title: 'Sibling' });
 	const outside = makeCard(B.cols['To Do'], { title: 'Outside' });
@@ -675,7 +678,7 @@ describe.each([
 });
 
 describe('deleting for good from the admin panel', () => {
-	const ARCHIVED = '2026-10-01T09:00:00.000Z';
+	const ARCHIVED = '2026-10-01 09:00:00';
 
 	/** `doomed`, with its sub-boards, and `other` on board B are archived. */
 	const withArchived = () => {
@@ -1073,7 +1076,7 @@ describe('a delete inside a transaction that then rolls back', () => {
 		[
 			'every archived card',
 			(w) => {
-				sqlite.prepare('UPDATE cards SET archived_at = ? WHERE id = ?').run('2026-10-01T09:00:00.000Z', w.doomed.id);
+				sqlite.prepare('UPDATE cards SET archived_at = ? WHERE id = ?').run('2026-10-01 09:00:00', w.doomed.id);
 				return purgeArchivedCards(w.admin);
 			}
 		]

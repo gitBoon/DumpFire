@@ -350,7 +350,7 @@ describe('report schedules: 10 addresses each, 20 an account', () => {
 });
 
 describe('the scheduled run', () => {
-	const due = { nextRunAt: '2000-01-01T00:00:00.000Z' };
+	const due = { nextRunAt: '2000-01-01 00:00:00' };
 
 	it('switches off a schedule kept with more than 10, sends nothing, and says so once', { timeout: 30_000 }, async () => {
 		const id = stored(addresses(12).join(', '), due);

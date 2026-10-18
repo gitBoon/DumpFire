@@ -15,6 +15,7 @@ import { REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS, takeReportM
 import { readBody, readChoice, readId, readNumber, readReportRecipients, readText, readTime } from '$lib/server/request-body';
 import { requireBoard } from '$lib/server/route-guards';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 /** How often a schedule may run: the two the scheduler works out a next run for. */
@@ -159,7 +160,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			periodDays,
 			detailLevel,
 			statusFilter,
-			nextRunAt: nextRunAt.toISOString()
+			// The stored form, as the scheduler compares it (card 2095).
+			nextRunAt: stamp(nextRunAt)
 		}).returning().get();
 	});
 

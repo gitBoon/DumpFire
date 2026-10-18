@@ -17,6 +17,7 @@
 	import { formatTokens } from '$lib/tokens';
 	import { costOf, costInputOf, formatUsd, unpricedReason, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
 	import { templateLabelIds } from '$lib/templates';
+	import { parseStamp, stamp } from '$lib/timestamps';
 	import { answerBody, deleteFailure, dependencyEndBody, dependencyRow, failureMessage, uploadFailure, uploadNoAnswer, uploadNotRead } from '$lib/api';
 	import {
 		THEMES,
@@ -913,13 +914,15 @@
 			windowError = await failureMessage(res, 'The comment was not saved.');
 			return;
 		}
-		comments = comments.map(c => c.id === commentId ? { ...c, content: editingCommentText.trim(), updatedAt: new Date().toISOString() } : c);
+		comments = comments.map(c => c.id === commentId ? { ...c, content: editingCommentText.trim(), updatedAt: stamp() } : c);
 		editingCommentId = null;
 		editingCommentText = '';
 	}
 
 	function commentTimeAgo(dateStr: string): string {
-		const diff = Math.floor((Date.now() - new Date(dateStr + 'Z').getTime()) / 1000);
+		const then = parseStamp(dateStr)?.getTime();
+		if (then === undefined) return '';
+		const diff = Math.floor((Date.now() - then) / 1000);
 		if (diff < 60) return 'just now';
 		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
 		if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
@@ -1889,7 +1892,7 @@
 
 		{#if card}
 			<div class="sidebar-timestamp">
-				Created {new Date(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+				Created {parseStamp(card.createdAt)?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) ?? ''}
 			</div>
 		{/if}
 		{/if} <!-- end details-only block for more options -->

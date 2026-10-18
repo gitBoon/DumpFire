@@ -40,7 +40,10 @@ import { subBoardProgress } from './card-completion';
  * index: so it reads the log newest first by `idx_activity_log_created_at`
  * and stops at the limit. Asked plainly, it took the index of board and time
  * for the boards, then sorted every entry of the caller's on them (55 ms
- * against 2.9 ms, on 200,000 entries).
+ * against 2.9 ms, on 200,000 entries). The user is asked as `+user_id` for the
+ * same reason, since 0053 indexed that column (card 2106): asked plainly, SQLite
+ * took `idx_activity_log_user_id` and sorted every entry of the caller's. (0054
+ * replaced that index with `idx_activity_log_user_id_created_at`.)
  */
 export function recentActivityFor(user: Actor, limit: number): ActivityLog[] {
 	const boardIds = getAccessibleBoardIds(user);
@@ -51,7 +54,7 @@ export function recentActivityFor(user: Actor, limit: number): ActivityLog[] {
 		.from(activityLog)
 		.where(
 			and(
-				eq(activityLog.userId, user.id),
+				eq(sql`+${activityLog.userId}`, user.id),
 				boardIds === null ? undefined : inArray(sql`+${activityLog.boardId}`, boardIds)
 			)
 		)

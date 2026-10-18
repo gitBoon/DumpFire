@@ -10,6 +10,7 @@
 	import { MASTER_PREF, NOTIFICATION_PREFS, type NotificationPrefKey } from '$lib/notification-prefs';
 	import { onMount } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
+	import { parseStamp } from '$lib/timestamps';
 
 	let { data }: { data: PageData } = $props();
 
@@ -296,9 +297,12 @@
 		}
 	}
 
+	// A key's times come in the stored form, `YYYY-MM-DD HH:MM:SS` in UTC, which
+	// `new Date()` read as local time (card 2095): read as UTC.
 	function formatDate(dateStr: string | null): string {
 		if (!dateStr) return 'Never';
-		const d = new Date(dateStr);
+		const d = parseStamp(dateStr);
+		if (!d) return dateStr;
 		return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 	}
 

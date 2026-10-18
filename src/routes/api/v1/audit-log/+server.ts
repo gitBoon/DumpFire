@@ -1,10 +1,11 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { db, sqlite } from '$lib/server/db';
 import { activityLog } from '$lib/server/db/schema';
 import { eq, desc, and, gte, lte, like, notLike, sql } from 'drizzle-orm';
 import { actionCondition, canonicalAction, readSource } from '$lib/server/logActivity';
 import { isAdmin } from '$lib/server/board-access';
-import { readLimit, readOffset, readQueryId } from '$lib/server/request-body';
+import { readLimit, readOffset, readQueryDate, readQueryId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /** Default page size. Stated here, in the docs, and in every response. */
@@ -25,7 +26,9 @@ const MAX_LIMIT = 500;
  *   ?userId=N        — Filter by user
  *   ?cardId=N        — Filter by card
  *   ?from=ISO        — From date (inclusive)
- *   ?to=ISO          — To date (inclusive)
+ *   ?to=ISO          — To date (inclusive). Each is a date, a timestamp in
+ *                      ISO 8601 or `YYYY-MM-DD HH:MM:SS` (UTC), or a 400
+ *                      (`from is not a date`); a bare `to` is the whole day.
  *   ?limit=N         — Max results (default 100, max 500). A whole number,
  *                      rounded down and held between 1 and 500: -1 is 1, and
  *                      not every row, which is what SQLite gave for it.
@@ -52,8 +55,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const source = url.searchParams.get('source');
 	const userId = readQueryId(url.searchParams.get('userId'), 'user');
 	const cardId = readQueryId(url.searchParams.get('cardId'), 'card');
-	const from = url.searchParams.get('from');
-	const to = url.searchParams.get('to');
+	// Each bound a date or a timestamp, in the stored form, a bare `to` the
+	// whole of its day (card 2095, decision 10). They were compared as sent,
+	// so a bound in the other form gained or lost the day at its end, a bare
+	// `to` lost the whole of its day, and `from=yesterday` was taken.
+	const from = readQueryDate(url.searchParams.get('from'), 'from', 'lower');
+	const to = readQueryDate(url.searchParams.get('to'), 'to', 'upper');
 	const limit = readLimit(url.searchParams.get('limit'), { max: MAX_LIMIT, fallback: DEFAULT_LIMIT });
 	const offset = readOffset(url.searchParams.get('offset'));
 
@@ -64,7 +71,17 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	// Build conditions array
 	const conditions = [];
 	if (boardId !== undefined) conditions.push(eq(activityLog.boardId, boardId));
-	if (userId !== undefined) conditions.push(eq(activityLog.userId, userId));
+	// With a board or a card as well, the person is asked as `+user_id`, which
+	// no index can answer, so SQLite reads that board's or card's entries by
+	// their own index. Asked plainly, it took the person's index for its order
+	// and read every entry of theirs to find the few on that board or card.
+	if (userId !== undefined) {
+		conditions.push(
+			boardId !== undefined || cardId !== undefined
+				? eq(sql`+${activityLog.userId}`, userId)
+				: eq(activityLog.userId, userId)
+		);
+	}
 	if (cardId !== undefined) conditions.push(eq(activityLog.cardId, cardId));
 	// The same action is stored as `card_moved` from the UI and
 	// `api:card_moved` from the API, so a filter has to match both or it

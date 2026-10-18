@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { boards, columns } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
@@ -8,6 +9,7 @@ import { inTransaction } from '$lib/server/db/transaction';
 import { deleteBoard } from '$lib/server/deletes';
 import { pathId, readBody, readBoolean, readId, readText } from '$lib/server/request-body';
 import { requireBoard, requireBoardCategory, requireBoardOwner, requireUser } from '$lib/server/route-guards';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 /**
@@ -82,7 +84,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			requireBoardCategory(user, categoryId);
 		}
 
-		updates.updatedAt = new Date().toISOString();
+		updates.updatedAt = stamp();
 
 		const updated = db.update(boards)
 			.set(updates)

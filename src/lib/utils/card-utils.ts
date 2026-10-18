@@ -10,6 +10,7 @@ import type { CardType, ColumnType, CategoryType, LabelType, SortOption } from '
 import { PRIORITY_ORDER } from './constants';
 import { isHexColour } from '$lib/colours';
 import { isCompleteColumnTitle, isHoldColumnTitle } from '$lib/column-role';
+import { parseStamp } from '$lib/timestamps';
 
 // ─── Column Status Helpers ───────────────────────────────────────────────────
 
@@ -140,14 +141,20 @@ export function sortCards(cards: CardType[], sort: SortOption, categories: Categ
 	const unpinned = cards.filter(c => !c.pinned);
 	if (sort === 'none' || !sort) return [...pinned, ...unpinned];
 
+	// A card's creation as a number, read as UTC from the stored form (card
+	// 2095): `new Date()` read it as local time, and an engine that refuses the
+	// form gave NaN, which leaves a sort in no order at all. Cards made in the
+	// same second keep the order they were made in, by id.
+	const created = (card: CardType) => parseStamp(card.createdAt)?.getTime() ?? 0;
+
 	const doSort = (arr: CardType[]) => {
 		const sorted = [...arr];
 		switch (sort) {
 			case 'date-asc':
-				sorted.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+				sorted.sort((a, b) => created(a) - created(b) || a.id - b.id);
 				break;
 			case 'date-desc':
-				sorted.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+				sorted.sort((a, b) => created(b) - created(a) || b.id - a.id);
 				break;
 			case 'priority':
 				sorted.sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9));

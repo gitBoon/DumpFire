@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { inTransaction } from '$lib/server/db/transaction';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { getWorkDependencies, type WorkKind, type WorkRef } from '$lib/server/planning';

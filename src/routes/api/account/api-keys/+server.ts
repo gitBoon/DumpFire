@@ -55,9 +55,10 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 		says: { missing: 'Key name is required', empty: 'Key name is required', invalid: 'Key name too long (max 100 chars)' }
 	});
 	const password = readText(body, 'password', { required: true, min: 1, says: 'Password is required' });
-	// A moment yet to come, kept in one form (R13): the expiry is compared with
-	// the time as text, and any text was stored, so "banana" never expired and
-	// a time written with an offset compared wrongly.
+	// A moment yet to come, kept in the stored form, `YYYY-MM-DD HH:MM:SS` in
+	// UTC (R13; card 2095): the expiry is compared with the time as text, and
+	// any text was stored, so "banana" never expired and a time written with an
+	// offset compared wrongly. `null`, or no field, is no expiry.
 	const expiresAt = readTimestamp(body, 'expiresAt', { future: true, nullable: true }) ?? null;
 
 	/** Limit to 10 keys per user. */

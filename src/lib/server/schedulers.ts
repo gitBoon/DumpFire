@@ -6,14 +6,19 @@
  * and mail settings. Left to run, it would back up to production's destination,
  * prune the backups already there and send production's reports.
  *
+ * The sweep of attachment files no row names is one of them too. A copy
+ * started beside production's uploads folder, or beside a copy of it, would
+ * move to the trash every file its own rows do not name.
+ *
  * So the schedulers are off under the dev server unless they are asked for, and
  * a rehearsal sets SCHEDULERS=off. A built server runs them unless it is told
  * not to.
  *
  * Two things this does not cover:
  *
- * - The log maintenance timer stays on. It only deletes old rows from this
- *   database.
+ * - The log maintenance timer stays on. It deletes old rows from this
+ *   database's log, and empties the uploads trash of folders that have been
+ *   in it for 30 days. It removes no file outside the trash.
  * - Email and webhooks sent in answer to an action are not schedulers and are
  *   not affected.
  */
@@ -22,6 +27,7 @@ import { initBackupScheduler } from './backup';
 import { createLogger } from './logger';
 import { initReportScheduler } from './reports';
 import { initSnapshotScheduler } from './snapshots';
+import { initUploadsSweep } from './uploads-sweep';
 
 const log = createLogger('SCHEDULERS');
 
@@ -56,7 +62,8 @@ export function schedulerSetting(value: string | undefined, isDev: boolean): Sch
 }
 
 /**
- * Start the backup, report and snapshot schedulers, or none of them.
+ * Start the backup, report and snapshot schedulers and the attachment file
+ * sweep, or none of them.
  *
  * Called once, from hooks.server.ts, as the server loads. Importing this module
  * starts nothing.
@@ -79,10 +86,11 @@ export function startSchedulers(
 		initBackupScheduler();
 		initReportScheduler();
 		initSnapshotScheduler();
+		initUploadsSweep();
 	} else {
 		log.warn(
-			`Schedulers are off (${setting.reason}). No scheduled backup, report or snapshot ` +
-				'will run from this instance. Set SCHEDULERS=on to run them.'
+			`Schedulers are off (${setting.reason}). No scheduled backup, report, snapshot or ` +
+				'attachment file sweep will run from this instance. Set SCHEDULERS=on to run them.'
 		);
 	}
 

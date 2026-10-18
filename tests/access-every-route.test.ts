@@ -136,6 +136,7 @@ import { gate } from './helpers/gate';
 import { watchReads } from './helpers/reads';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { loadKeys, pageLoad } from './helpers/actions';
+import { stamp } from '$lib/timestamps';
 
 // ─── The cast and what is on each board ────────────────────────────────────
 
@@ -274,7 +275,7 @@ function side(owner: SessionUser, member: SessionUser, name: string): Side {
 	const card = makeCard(cols['To Do'], { title: `${name} card`, position: 0 });
 	const other = makeCard(cols['To Do'], { title: `${name} other card`, position: 1 });
 	const loose = makeCard(cols['To Do'], { title: `${name} loose card`, position: 2 });
-	const archived = makeCard(cols['To Do'], { title: `${name} archived card`, archivedAt: new Date().toISOString() });
+	const archived = makeCard(cols['To Do'], { title: `${name} archived card`, archivedAt: stamp() });
 	const sub = makeSubtask(card, { title: `${name} subtask` });
 	const otherSub = makeSubtask(other, { title: `${name} other subtask` });
 	const label = makeLabel(board, `${name} label`);

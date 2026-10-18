@@ -153,7 +153,7 @@ describe.each(ROUTES)('renaming a column through %s', (_name, pathOf) => {
 	});
 
 	it('counts an archived card, which a restore would put back in the column', async () => {
-		makeCard(board.cols['Complete'], { archivedAt: '2026-10-01T00:00:00.000Z' });
+		makeCard(board.cols['Complete'], { archivedAt: '2026-10-01 00:00:00' });
 
 		await expectRefused(
 			board.cols['Complete'],
@@ -166,9 +166,9 @@ describe.each(ROUTES)('renaming a column through %s', (_name, pathOf) => {
 	it('says how many of the cards it holds are archived', async () => {
 		makeCard(board.cols['On Hold']);
 		makeCard(board.cols['On Hold']);
-		makeCard(board.cols['On Hold'], { archivedAt: '2026-10-01T00:00:00.000Z' });
-		makeCard(board.cols['To Do'], { archivedAt: '2026-10-01T00:00:00.000Z' });
-		makeCard(board.cols['To Do'], { archivedAt: '2026-10-01T00:00:00.000Z' });
+		makeCard(board.cols['On Hold'], { archivedAt: '2026-10-01 00:00:00' });
+		makeCard(board.cols['To Do'], { archivedAt: '2026-10-01 00:00:00' });
+		makeCard(board.cols['To Do'], { archivedAt: '2026-10-01 00:00:00' });
 
 		const onHold = await rename(board.cols['On Hold'], 'complete');
 		const toDo = await rename(board.cols['To Do'], 'Done');

@@ -97,6 +97,7 @@ import { addBoardMember, makeApiKey, makeBoard, makeCard, makeSmtp, makeUser, re
 import { gate } from './helpers/gate';
 import { watchReads } from './helpers/reads';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { parseStamp, stamp } from '$lib/timestamps';
 
 bcrypt.open = () => sqlite.inTransaction;
 
@@ -171,7 +172,7 @@ const from = (id: string) => ({ cookie: `${SESSION_COOKIE_NAME}=${id}` });
 /** A session that is good for another day. */
 function makeSession(user: SessionUser, id: string): void {
 	db.insert(sessions)
-		.values({ id, userId: user.id, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() })
+		.values({ id, userId: user.id, expiresAt: stamp(new Date(Date.now() + 24 * 60 * 60 * 1000)) })
 		.run();
 }
 
@@ -193,7 +194,7 @@ function makeInvite(user: SessionUser, token: string, opts: { expiresIn?: number
 		.values({
 			token,
 			userId: user.id,
-			expiresAt: new Date(Date.now() + (opts.expiresIn ?? HOUR)).toISOString(),
+			expiresAt: stamp(new Date(Date.now() + (opts.expiresIn ?? HOUR))),
 			used: opts.used ?? false
 		})
 		.run();
@@ -728,7 +729,7 @@ describe('POST /api/users', () => {
 				const invites = db.select().from(inviteTokens).all();
 				expect(invites).toHaveLength(1);
 				expect(invites[0]).toMatchObject({ userId: res.body.id, used: false });
-				expect(Date.parse(invites[0].expiresAt)).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1000);
+				expect(parseStamp(invites[0].expiresAt)!.getTime()).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1000);
 
 				// The link mailed is the invite that was saved.
 				expect(sent).toHaveLength(1);
@@ -866,7 +867,7 @@ describe('POST /api/users/:id/invite', () => {
 					[mailed, false]
 				]);
 				const issued = db.select().from(inviteTokens).where(eq(inviteTokens.token, mailed)).get()!;
-				expect(Date.parse(issued.expiresAt)).toBeGreaterThan(Date.now() + 6 * 24 * HOUR);
+				expect(parseStamp(issued.expiresAt)!.getTime()).toBeGreaterThan(Date.now() + 6 * 24 * HOUR);
 
 				expect(invitesOf(bystander.id)).toEqual([['theirs', false]]);
 			}
@@ -912,7 +913,7 @@ describe('the invite page', () => {
 	const invited = () => {
 		const invitee = makeUser({ username: 'invitee' });
 		db.insert(inviteTokens)
-			.values({ token: TOKEN, userId: invitee.id, expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() })
+			.values({ token: TOKEN, userId: invitee.id, expiresAt: stamp(new Date(Date.now() + 60 * 60 * 1000)) })
 			.run();
 		return { invitee };
 	};
@@ -1079,8 +1080,8 @@ describe('the invite page', () => {
 		const other = makeUser({ username: 'other' });
 		db.insert(inviteTokens)
 			.values([
-				{ token: 'expired', userId: other.id, expiresAt: new Date(Date.now() - 1000).toISOString() },
-				{ token: 'used', userId: other.id, expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(), used: true }
+				{ token: 'expired', userId: other.id, expiresAt: stamp(new Date(Date.now() - 1000)) },
+				{ token: 'used', userId: other.id, expiresAt: stamp(new Date(Date.now() + 60 * 60 * 1000)), used: true }
 			])
 			.run();
 		const refused = async (fields: Record<string, string>, token?: string) => {

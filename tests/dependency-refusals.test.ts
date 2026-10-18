@@ -318,7 +318,7 @@ describe.each(ROUTES)('$name', (route) => {
 	it('answers 400 when the other end is archived, and when this end is', async () => {
 		const self = route.self();
 		const archive = (card: Card) =>
-			db.update(cards).set({ archivedAt: '2026-10-01T00:00:00.000Z' }).where(eq(cards.id, card.id)).run();
+			db.update(cards).set({ archivedAt: '2026-10-01 00:00:00' }).where(eq(cards.id, card.id)).run();
 
 		archive(second);
 		expect((await refused(post(owner, self.id, { dependsOnCardId: second.id }), 400)).body).toEqual({

@@ -9,6 +9,7 @@
   import { isCompleteColumnTitle } from '$lib/column-role';
   import type { ColumnType, CategoryType, CardType } from '$lib/types';
   import { getDueStatus } from '$lib/utils/date-utils';
+  import { parseStamp } from '$lib/timestamps';
   import { onMount } from 'svelte';
   import CfdChart from './CfdChart.svelte';
   import BurndownChart from './BurndownChart.svelte';
@@ -53,13 +54,18 @@
     allCards.filter(c => c.dueDate && getDueStatus(c.dueDate) === 'overdue').length
   );
 
-  /** Average age of all cards in days. Returns a formatted string like "5d". */
+  /**
+   * Average age of all cards in days. Returns a formatted string like "5d".
+   * `createdAt` is in the stored form, UTC with no zone, read as UTC (card
+   * 2095); a card whose time cannot be read is left out of the average.
+   */
   const avgAge = $derived(() => {
-    if (allCards.length === 0) return '0d';
-    const totalDays = allCards.reduce(
-      (sum, c) => sum + Math.floor((Date.now() - new Date(c.createdAt).getTime()) / 86400000), 0
-    );
-    return `${Math.round(totalDays / allCards.length)}d`;
+    const ages = allCards
+      .map(c => parseStamp(c.createdAt))
+      .filter((at): at is Date => at !== null)
+      .map(at => Math.floor((Date.now() - at.getTime()) / 86400000));
+    if (ages.length === 0) return '0d';
+    return `${Math.round(ages.reduce((sum, days) => sum + days, 0) / ages.length)}d`;
   });
 
   // ─── Cycle/Lead Time Metrics ─────────────────────────────────────────

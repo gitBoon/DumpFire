@@ -539,7 +539,7 @@ describe('the activity report does not count a dependency added or removed as wo
 	it('in the window, or for the person who linked them, in either spelling', async () => {
 		const s = scene();
 		// Made long ago and not changed since: only the entries could bring them in.
-		db.update(cards).set({ createdAt: '2020-01-01 00:00:00', updatedAt: '2020-01-01T00:00:00.000Z' }).run();
+		db.update(cards).set({ createdAt: '2020-01-01 00:00:00', updatedAt: '2020-01-01 00:00:00' }).run();
 		const sent = async (method: 'POST' | 'DELETE', path: string, body: unknown, status: number) => {
 			const res = await api(method, path, { user: s.owner, body });
 			expect(res.status, JSON.stringify(res.body)).toBe(status);

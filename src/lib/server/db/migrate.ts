@@ -13,7 +13,10 @@
  *      shape — unless the database records a migration that has no file on
  *      disk, in which case that is reported and no table is reshaped
  *   5. repeat the backfills from 0050 and 0051 for rows that still need them
- *   6. compare the whole database with the model, and report any difference
+ *   6. bring every timestamp to the stored form, `YYYY-MM-DD HH:MM:SS` in UTC
+ *      (`normaliseTimestamps`, card 2095) — unless, as in step 4, the
+ *      database records a migration that has no file on disk
+ *   7. compare the whole database with the model, and report any difference
  *
  * What stops start-up and what does not:
  *
@@ -39,7 +42,12 @@
  *   is logged at ERROR with what to do about it, appears in the report
  *   `runMigrations` returns, and is found and reported again at every start
  *   until its cause is dealt with. Reported, never swallowed.
- * - Step 6 never does. It logs at ERROR and returns: an older build started
+ * - Step 6 never does. It runs in a transaction of its own, and a failure is
+ *   rolled back, logged at ERROR and tried again at the next start: the server
+ *   ran on mixed forms before card 2095, and stopping it would be worse than
+ *   what the step fixes. A value it cannot read is left as it is and logged at
+ *   ERROR at every start until somebody deals with it.
+ * - Step 7 never does. It logs at ERROR and returns: an older build started
  *   against a newer database is exactly what it would find, and going back to
  *   the previous image has to work. The same goes for a recorded migration
  *   with no file, in step 4.
@@ -63,6 +71,13 @@ import { join } from 'node:path';
 import { sqlite } from './index';
 import { EXPECTED_SCHEMA } from './expected-schema';
 import { createLogger, ensureSystemLogsTable } from '../logger';
+import {
+	convertedList,
+	normaliseTimestamps,
+	totalConverted,
+	unreadableList,
+	type TimestampNormalisation
+} from './timestamps';
 
 const log = createLogger('DB');
 
@@ -239,6 +254,13 @@ export type MigrationReport = {
 	 */
 	reconciliationSkipped: string | null;
 	backfilled: Backfill;
+	/**
+	 * What bringing every timestamp to the stored form did (card 2095): the
+	 * values converted and the values it could not read, column by column, or
+	 * why it was rolled back. Null when it was not run, for the same reason as
+	 * `reconciliationSkipped`: the database may be newer than this build.
+	 */
+	timestamps: TimestampNormalisation | null;
 	/** Where the database still differs from the model. Empty on a healthy database. */
 	schemaDifferences: string[];
 	/** Names recorded as applied that have no file in the migrations directory. */
@@ -2355,7 +2377,8 @@ export function runBackfills(database: Database.Database = sqlite): Backfill {
  * a file that a database has recorded never runs it there again.
  *
  * Then the six reconciled tables are brought to the model's shape, the
- * backfills are repeated, and the whole database is compared with the model.
+ * backfills are repeated, every timestamp is brought to the stored form, and
+ * the whole database is compared with the model.
  * A table that cannot be brought to it is left as it was and reported, in the
  * log and in what this returns; that does not throw. See `reconcileSchema`.
  *
@@ -2585,8 +2608,9 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 			`${missingFromDisk.length} migration(s) are recorded as applied but have no file in ${migrationsDir}: ` +
 				`${missingFromDisk.join(', ')}. Either this build is older than the database, ` +
 				'or a migration file has been renamed or removed. Schema reconciliation was skipped because of it: ' +
-				`none of ${RECONCILED_TABLES.join(', ')} was compared or reshaped, since a build must not reshape a ` +
-				'database that may be newer than it is. Starting anyway. This is expected after going back to the ' +
+				`none of ${RECONCILED_TABLES.join(', ')} was compared or reshaped, and no timestamp was converted to ` +
+				'the stored form, since a build must not reshape a database that may be newer than it is. ' +
+				'Starting anyway. This is expected after going back to the ' +
 				'previous image on purpose, and is reported at every start until the newer image is started again. ' +
 				'If that is not what was done, this image is missing a migration file: build it again from a ' +
 				'complete checkout.'
@@ -2673,6 +2697,15 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 		);
 	}
 
+	// Every timestamp in one form (card 2095). Not on a database that may be
+	// newer than this build, for the reason reconciliation is not: a later
+	// build may have chosen otherwise. The ERROR line above says so.
+	let timestamps: TimestampNormalisation | null = null;
+	if (missingFromDisk.length === 0) {
+		timestamps = normaliseTimestamps(database);
+		reportTimestamps(timestamps);
+	}
+
 	// Whatever still differs from the model is reported and nothing more. It is
 	// not rebuilt, because only the six reconciled tables ever are, and it does
 	// not stop start-up, because an older build started against a newer database
@@ -2735,7 +2768,47 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 		detachedSubBoards: reconciled.detached,
 		reconciliationSkipped,
 		backfilled,
+		timestamps,
 		schemaDifferences: differences,
 		missingFromDisk
 	};
+}
+
+/**
+ * Say what `normaliseTimestamps` did at a start, with its transaction over.
+ *
+ * - Values converted: one WARN line naming each column and its count. It is
+ *   expected once, at the first start of the build that brings card 2095, and
+ *   after an import; at any other start it means something still writes
+ *   another form.
+ * - Values it could not read: one ERROR line, at every start until they are
+ *   corrected or cleared.
+ * - A failure: one ERROR line. Nothing was changed, and the next start tries
+ *   again.
+ */
+function reportTimestamps(done: TimestampNormalisation): void {
+	if (done.failed !== null) {
+		log.error(
+			`Timestamps could not be brought to the stored form (YYYY-MM-DD HH:MM:SS, UTC), and none was changed: ` +
+				`${done.failed}. Start-up continues on the values as they are, and the next start tries again.`
+		);
+		return;
+	}
+	const converted = totalConverted(done.converted);
+	if (converted > 0) {
+		log.warn(
+			`${converted} timestamp(s) converted to the stored form (YYYY-MM-DD HH:MM:SS, UTC), each still naming the ` +
+				`same moment to the second: ${convertedList(done.converted)}. Expected once after the update that ` +
+				'brings card 2095, and after an import of an older backup; at any other start something still writes ' +
+				'another form.'
+		);
+	}
+	if (Object.keys(done.unreadable).length > 0) {
+		log.error(
+			`Timestamp column(s) hold values in no form this build can read, and they were left as they are: ` +
+				`${unreadableList(done.unreadable)}. Anything that reads them, a report or a comparison with now, ` +
+				'reads them as text. Correct each one to YYYY-MM-DD HH:MM:SS in UTC, or clear it where the column ' +
+				'allows NULL. This is reported at every start until then.'
+		);
+	}
 }

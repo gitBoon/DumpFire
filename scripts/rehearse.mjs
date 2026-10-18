@@ -113,6 +113,28 @@ function print(found) {
 			`Filled in: first_completed_at on ${first.backfilled.firstCompletedAt} card(s), ` +
 				`access_token on ${first.backfilled.accessTokens} request(s)`
 		);
+
+		// Card 2095: what the first start converts, column by column. On an
+		// export of production this is the measurement of what it holds.
+		const stamps = first.timestamps;
+		if (!stamps) {
+			console.log('Timestamps: not converted, because the database may be newer than this build');
+		} else if (stamps.failed) {
+			console.log(`Timestamps: the conversion failed and changed nothing: ${stamps.failed}`);
+		} else {
+			const converted = Object.entries(stamps.converted);
+			console.log(
+				`Timestamps converted to the stored form (YYYY-MM-DD HH:MM:SS, UTC): ` +
+					`${converted.reduce((sum, [, n]) => sum + n, 0)}${converted.length ? `\n${list(converted.map(([column, n]) => `${column}: ${n}`))}` : ''}`
+			);
+			const unreadable = Object.entries(stamps.unreadable);
+			if (unreadable.length > 0) {
+				console.log(
+					`Timestamps in no form the conversion can read, left as they are:\n` +
+						list(unreadable.map(([column, u]) => `${column}: ${u.count}, such as ${JSON.stringify(u.example)}`))
+				);
+			}
+		}
 	}
 
 	if (found.before && found.after) {
@@ -125,7 +147,8 @@ function print(found) {
 	if (found.integrity) console.log(`Integrity check: ${found.integrity}. Foreign keys on afterwards: ${found.foreignKeysOn ? 'yes' : 'NO'}`);
 	if (found.second) {
 		console.log(
-			`A second run: ${found.second.applied.length} file(s) applied, ${found.second.rebuilt.length} table(s) rebuilt`
+			`A second run: ${found.second.applied.length} file(s) applied, ${found.second.rebuilt.length} table(s) rebuilt, ` +
+				`${Object.values(found.second.timestamps?.converted ?? {}).reduce((sum, n) => sum + n, 0)} timestamp(s) converted`
 		);
 	}
 	if (found.milliseconds !== null) {
@@ -141,6 +164,9 @@ function print(found) {
 		for (const name of first.missingFromDisk) toRead.push(`The database records ${name}, and there is no such file in drizzle/`);
 		for (const left of first.leftAlone) toRead.push(`${left.table} was left as it is: ${left.reason}. ${left.whatToDo}`);
 		for (const difference of first.schemaDifferences) toRead.push(`Still differs from the model: ${difference}`);
+		for (const [column, u] of Object.entries(first.timestamps?.unreadable ?? {})) {
+			toRead.push(`${column} holds ${u.count} value(s) in no timestamp form, such as ${JSON.stringify(u.example)}`);
+		}
 	}
 	if (toRead.length > 0) {
 		console.log(`\nThe server would start, and would log each of these as an error at every start:\n${list(toRead)}`);

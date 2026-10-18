@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.25
+version: 1.27
 status: As-Built
-date: 2026-10-15
+date: 2026-10-18
 tags:
   - architecture
   - sveltekit
@@ -130,7 +130,9 @@ flowchart TB
             Tx["Transaction Helper\ndb/transaction.ts"]
             Deletes["Shared Delete\ndeletes.ts"]
             Uploads["Uploads + Trash\nuploads.ts"]
+            Sweep["Attachment File Sweep\nuploads-sweep.ts"]
             ApiErrors["API Failures\napi-errors.ts"]
+            V1Json["v1 Answers in ISO 8601\nv1-json.ts"]
         end
 
         DB[("SQLite")]
@@ -146,6 +148,8 @@ flowchart TB
     Services --> DB
     Deletes --> Tx
     Deletes --> Uploads
+    Sweep --> Uploads
+    ExternalAPI --> V1Json
     Uploads --> Files
     SSE -.->|"Server-Sent Events"| Client
     ReportEngine -.->|"SMTP"| EmailServer["Email Server"]
@@ -861,6 +865,7 @@ stateDiagram-v2
     [*] --> CardFolder : Upload - the file is written, then its row
     CardFolder --> [*] : The row could not be written, so the file is removed again
     CardFolder --> Trash : Its row is deleted and the delete commits
+    CardFolder --> Trash : The sweep - no row names it and it has not changed for 24 hours
     CardFolder --> CardFolder : The card is archived or restored - nothing moves
     Trash --> CardFolder : Import Backup brings back a row that names the file
     Trash --> Removed : In the trash for more than 30 days, ten minutes after a start or at a six-hourly tick
@@ -875,7 +880,48 @@ A row is deleted, and its file moved, by deleting the attachment itself, by a pe
 - **The trash is emptied by the log maintenance timer**, ten minutes after the server starts and then every six hours, of every folder last added to more than 30 days before. The timer starts with the server, and its first look at the trash is ten minutes later: nothing is removed from the disk as the server starts. It looks only at numbered folders directly inside `.trash`, removes the files in one that is due and then the folder, follows no link and never goes into a folder inside one, so it cannot reach anything outside the trash.
 - **Serving.** `attachmentHeaders()` answers every attachment as a download (`Content-Disposition: attachment`, `application/octet-stream`) except PNG, JPEG, GIF, WebP and `.txt` files, which are shown in the browser, and only when the stored type and the file's extension agree. A PDF, an HTML file and an SVG file are downloads. Every answer carries `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`. On a card, those four image types have a thumbnail that opens the image, and the name of every attachment is a link that saves the file. See [Authentication & Security](authentication-security.md#attachments).
 
+- **Files no row names are swept** (card 2107). `src/lib/server/uploads-sweep.ts` is one of the schedulers, started by `startSchedulers()` in `schedulers.ts`, so it runs only where they run (never under `vite dev`, in a rehearsal or with `SCHEDULERS=off`): 15 minutes after the start, then every six hours. `sweepUploads()` does nothing while the connection has a transaction open; otherwise it reads every `card_attachments` row as `<card id>/<file name>` (`uploadKey()`) and the highest card id issued (the larger of `sqlite_sequence` and `MAX(cards.id)`), and hands both to `sweepUnnamed()` in `uploads.ts`, which touches no database and no logger. That walks the folders named exactly by a card id (`/^[1-9][0-9]*$/`, read with `lstat`, so a link is never followed) and moves, through `moveToTrash`, each plain file no row names that has not changed for 24 hours. The rows, the listing and the moves are one synchronous pass, so no request of this process writes a row in between; against another process on the same volume the 24-hour margin is what protects. A folder numbered above the highest card id belongs to another database and is left alone; so is a folder the sweep finds already empty, and every name that is not a card's folder. A read that fails moves nothing.
+
+```mermaid
+flowchart TD
+    Tick["Sweep: 15 minutes after start, then six-hourly"] --> Tx{"Transaction open?"}
+    Tx -->|"yes"| Skip["Skip this run"]
+    Tx -->|"no"| Read{"Rows and the highest card id read?"}
+    Read -->|"no"| Warn["One WARN line, nothing moved"]
+    Read -->|"yes"| Walk["Each folder named exactly by a card id,<br/>never a link, never .trash"]
+    Walk --> Other{"Above the highest card id?"}
+    Other -->|"yes"| Leave["Left alone, named in a WARN line"]
+    Other -->|"no"| File{"A plain file no row names,<br/>unchanged for 24 hours?"}
+    File -->|"no"| Keep["Left where it is"]
+    File -->|"yes"| Move["moveToTrash, the folder removed if this left it empty"]
+    Move --> Info["One INFO line with the counts"]
+```
+
 How an operator backs the folder up, and what a restore does with the trash, is in [Deployment](deployment.md#attachment-files).
+
+## One Timestamp Form
+
+Every moment DumpFire stores is `YYYY-MM-DD HH:MM:SS`, in UTC, to the whole second (card 2095): what SQLite's `datetime('now')` writes, which 22 columns take as their default. Stored values are compared as text, and text orders moments only within one form, so one form is what makes every date filter right.
+
+| Module | What it does |
+|---|---|
+| `src/lib/timestamps.ts` | Plain functions with no imports, used by the server and the pages alike. `stamp(date)` gives the stored form, and every write from JavaScript goes through it. `toStamp(input, edge)` reads what a caller sends: the stored form, ISO 8601 with or without a fraction, `Z` or an offset, or a date, 00:00:00 as a lower bound and 23:59:59 as an upper one; anything else is `null`, which a route answers `400` naming the parameter. `parseStamp(value)` gives the `Date` a stored value names, read as UTC: every page, report and metric parses through it, never with `new Date()`, which reads the stored form as local time. `toIso(value)` gives ISO 8601 with `Z`. `isStamp(value)` says whether a value is a real moment in the stored form, which a pattern cannot: `2026-02-30 08:00:00` has the shape |
+| `src/lib/server/db/timestamps.ts` | `timestampColumns(database)`: every TEXT column whose name ends in `_at`, and `system_logs.timestamp`. `normaliseTimestamps(database)`: converts every value in a shape it reads to the stored form, where SQLite's `strftime` and `toStamp` read it as the same moment, in one immediate transaction, and reports every value that is not a real moment in the stored form. `registerStampFunctions(database)` gives the connection `is_stamp` and `stamp_of` from `src/lib/timestamps.ts` for that SQL, so SQL and code read a moment by one rule; the suite's check after every test calls it too. The runner calls it at every start after the backfills, and the restore after every import |
+| `src/lib/server/v1-json.ts` | `json(data, init)`, which every `/api/v1/` handler answers with, and `onTheWire(data)`, which `dispatchWebhook` applies to a webhook's `data`, a copy built with `Object.fromEntries` so that a key named `__proto__` stays a key: a string under a key ending `At` or `_at`, or named `timestamp`, `from` or `to`, that is exactly in the stored form goes out as ISO 8601 with `Z`. A date and a user's text are never touched |
+
+```mermaid
+flowchart LR
+    Caller["A bound or a time a caller sends"] -->|"toStamp, else 400"| Store[("Every *_at column")]
+    Code["A write from code"] -->|"stamp()"| Store
+    Default["SQL default datetime('now')"] --> Store
+    Restore["A restore, copied verbatim"] --> Store
+    Start["Every start, every restore"] -->|"normaliseTimestamps"| Store
+    Store -->|"as stored"| Internal["Internal routes, page data,<br/>live stream, CSV exports"]
+    Internal -->|"parseStamp, as UTC"| Pages["Pages"]
+    Store -->|"onTheWire"| V1["v1 answers, ISO 8601 with Z"]
+```
+
+The test suite holds the form: `tests/setup.ts` checks after every test that every timestamp column holds the stored form or NULL, and fails the test that left anything else. See [Data Model](data-model.md#key-schema-notes) and [Testing](testing.md).
 
 ## Request Lifecycle
 
@@ -907,6 +953,7 @@ stateDiagram-v2
 | Session Cleanup | On startup | Remove expired session tokens |
 | Log Maintenance | On startup, then every six hours | Prune `system_logs` past its retention |
 | Uploads Trash | Ten minutes after startup, then every six hours, on the log maintenance timer; never on startup itself | Remove attachment files that have been in the trash for more than 30 days |
+| Attachment File Sweep | 15 minutes after startup, then every six hours; only where the schedulers run (`SCHEDULERS`) | Move attachment files that no row names, unchanged for 24 hours, to the trash (card 2107) |
 
 ## Key Design Decisions
 

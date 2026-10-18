@@ -10,22 +10,23 @@
  * re-evaluation every 15 seconds when the tick counter increments.
  */
 
+import { parseStamp } from '$lib/timestamps';
+
 /**
- * Parses a SQLite datetime string as UTC.
+ * Parses a stored timestamp as UTC: `parseStamp` under the name its importers
+ * know (card 2095).
  *
- * SQLite's `datetime('now')` stores UTC timestamps without a 'Z' suffix.
- * Without appending 'Z', JavaScript's `new Date()` interprets bare timestamps
- * as local time, causing an offset equal to the user's timezone.
+ * The stored form, `YYYY-MM-DD HH:MM:SS`, names no zone, and `new Date()`
+ * reads it as local time, so every page parses a stored value through
+ * `parseStamp`, which reads it as UTC.
  *
- * @param dateStr — A date string from SQLite (e.g. "2026-04-01 14:30:00")
- * @returns A correctly UTC-interpreted Date object
+ * @param dateStr — A stored timestamp (e.g. "2026-04-01 14:30:00")
+ * @returns The moment it names; now for an empty string, as before; an
+ *   invalid Date for anything that is not a timestamp
  */
 export function parseUTC(dateStr: string): Date {
 	if (!dateStr) return new Date();
-	// If it already has timezone info (Z or +/-), parse as-is
-	if (/[Zz]|[+-]\d{2}:\d{2}$/.test(dateStr)) return new Date(dateStr);
-	// Otherwise it's a bare SQLite UTC timestamp — append Z
-	return new Date(dateStr + 'Z');
+	return parseStamp(dateStr) ?? new Date(NaN);
 }
 
 /**

@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { cardComments, cards, columns, users } from '$lib/server/db/schema';

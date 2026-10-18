@@ -26,6 +26,7 @@ import { db, sqlite } from '$lib/server/db';
 import { boardCategories, boards, reportSchedules } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { runDueReportSchedules, runDueReportSchedulesOnce } from '$lib/server/reports';
+import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import { makeBoard, makeSmtp, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
@@ -159,7 +160,7 @@ describe('the scheduled report, runDueReportSchedules', () => {
 	function dueSchedule(scopeId: number, recipients: string): number {
 		return db
 			.insert(reportSchedules)
-			.values({ userId: owner.id, name: 'Weekly', scope: 'board', scopeId, recipients, nextRunAt: '2000-01-01T00:00:00.000Z' })
+			.values({ userId: owner.id, name: 'Weekly', scope: 'board', scopeId, recipients, nextRunAt: '2000-01-01 00:00:00' })
 			.returning()
 			.get().id;
 	}
@@ -181,7 +182,7 @@ describe('the scheduled report, runDueReportSchedules', () => {
 
 		expect(mail.emails.map((m) => m.to)).toEqual(['a@example.test', 'b@example.test']);
 		expect(linesOf()).toEqual([{ level: 'WARN', message: 'Scheduled report emailed: "Weekly" to 2 of 2 recipient(s)' }]);
-		expect(scheduleRow(id).lastRunAt).toBe(now.toISOString());
+		expect(scheduleRow(id).lastRunAt).toBe(stamp(now));
 	});
 
 	it('logs an ERROR line naming the address it did not reach, and moves on to its next run', { timeout: 30_000 }, async () => {
@@ -204,8 +205,8 @@ describe('the scheduled report, runDueReportSchedules', () => {
 		]);
 		// No retry before the next run: a@example.test has it already.
 		const row = scheduleRow(id);
-		expect(row.lastRunAt).toBe(now.toISOString());
-		expect(row.nextRunAt! > now.toISOString()).toBe(true);
+		expect(row.lastRunAt).toBe(stamp(now));
+		expect(row.nextRunAt! > stamp(now)).toBe(true);
 		await runDueReportSchedules(now);
 		expect(mail.emails).toHaveLength(1);
 	});
@@ -244,7 +245,7 @@ describe('the scheduled report, runDueReportSchedules', () => {
 					"the board it covers (id 9999) is gone, or the schedule's owner can no longer read it"
 			}
 		]);
-		expect(scheduleRow(id).lastRunAt).toBe(now.toISOString());
+		expect(scheduleRow(id).lastRunAt).toBe(stamp(now));
 	});
 
 	it('logs the same for a board its owner can no longer read', async () => {
@@ -265,7 +266,7 @@ describe('the scheduled report, runDueReportSchedules', () => {
 		const mail = mailServer();
 		for (const scope of ['board', 'category']) {
 			db.insert(reportSchedules)
-				.values({ userId: owner.id, name: scope, scope, scopeId: null, recipients: 'a@example.test', nextRunAt: '2000-01-01T00:00:00.000Z' })
+				.values({ userId: owner.id, name: scope, scope, scopeId: null, recipients: 'a@example.test', nextRunAt: '2000-01-01 00:00:00' })
 				.run();
 		}
 
@@ -285,7 +286,7 @@ describe('the scheduled report, runDueReportSchedules', () => {
 		const theirs = makeBoard({ owner: makeUser() });
 		db.update(boards).set({ categoryId: grouping.id }).where(eq(boards.id, theirs.board.id)).run();
 		db.insert(reportSchedules)
-			.values({ userId: owner.id, name: 'Grouped', scope: 'category', scopeId: grouping.id, recipients: 'a@example.test', nextRunAt: '2000-01-01T00:00:00.000Z' })
+			.values({ userId: owner.id, name: 'Grouped', scope: 'category', scopeId: grouping.id, recipients: 'a@example.test', nextRunAt: '2000-01-01 00:00:00' })
 			.run();
 
 		await runDueReportSchedules(new Date());
@@ -316,7 +317,7 @@ describe('the scheduled report, runDueReportSchedules', () => {
 		expect(await first).toBe(true);
 
 		expect(mail.emails.map((m) => m.to)).toEqual(['a@example.test']);
-		expect(scheduleRow(id).lastRunAt).toBe(now.toISOString());
+		expect(scheduleRow(id).lastRunAt).toBe(stamp(now));
 		// The run is over, so the next tick runs, and finds nothing due.
 		expect(await runDueReportSchedulesOnce(now)).toBe(true);
 		expect(mail.emails).toHaveLength(1);

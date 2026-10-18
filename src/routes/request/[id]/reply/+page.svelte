@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
+	import { parseStamp } from '$lib/timestamps';
 
 	type Message = {
 		id: number;
@@ -124,8 +125,8 @@
 
 	function timeAgo(dateStr: string): string {
 		const now = Date.now();
-		const then = new Date(dateStr.endsWith('Z') ? dateStr : dateStr + 'Z').getTime();
-		if (isNaN(then)) return 'unknown';
+		const then = parseStamp(dateStr)?.getTime();
+		if (then === undefined) return 'unknown';
 		const diff = Math.floor((now - then) / 1000);
 		if (diff < 60) return 'just now';
 		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;

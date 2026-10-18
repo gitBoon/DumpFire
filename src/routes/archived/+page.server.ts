@@ -27,6 +27,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.all()
 		.filter(c => colToBoardMap.has(c.columnId));
 
+	// Newest first, and the newer card first within one second: stored
+	// moments are whole seconds (card 2095, decision 12).
 	const archivedCards = archived.map(c => {
 		const boardId = colToBoardMap.get(c.columnId)!;
 		const boardInfo = boardMap.get(boardId);
@@ -41,7 +43,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 			boardEmoji: boardInfo?.emoji || '📋',
 			boardId
 		};
-	}).sort((a, b) => (b.archivedAt || '').localeCompare(a.archivedAt || ''));
+	}).sort((a, b) => (b.archivedAt || '').localeCompare(a.archivedAt || '') || b.id - a.id);
 
 	return {
 		archivedCards,

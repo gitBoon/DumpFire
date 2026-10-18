@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { recordTokenUsage, TokenError } from '$lib/server/tokens';
 import { emit } from '$lib/server/events';
 import { pathId, readBody } from '$lib/server/request-body';

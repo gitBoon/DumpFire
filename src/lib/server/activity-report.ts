@@ -33,6 +33,7 @@ import { canViewBoard } from './board-access';
 import { isCompleteColumnTitle, isHoldColumnTitle } from './card-completion';
 import { ACTIONS, readSource, storedActions } from './logActivity';
 import type { SessionUser } from './auth';
+import { parseStamp, stamp, toStamp } from '$lib/timestamps';
 
 /**
  * Which bucket a card falls into for the window.
@@ -140,37 +141,21 @@ export interface ActivityReportOptions {
 }
 
 /**
- * Timestamps in this database come in two shapes and are compared as strings.
+ * A window bound in the stored form, `YYYY-MM-DD HH:MM:SS` in UTC, which is the
+ * form of every timestamp column (card 2095), so the columns are compared as
+ * they are and the indexes on them can be used. A bare date as the upper bound
+ * means the whole of that day: a report for "15 August to 14 September" that
+ * stopped at midnight on the 14th would drop a full day of work, which is
+ * exactly the sort of quiet omission this replaces. That is `toStamp`'s rule
+ * for every bound.
  *
- * SQLite's `datetime('now')` default writes `2026-04-09 13:53:46`, while
- * anything set from JavaScript writes `2026-04-09T13:54:01.210Z`. Both are UTC,
- * but they do not sort against each other: a space (0x20) sorts before `T`
- * (0x54), so `'2026-09-14 09:00:00' < '2026-09-14T00:00:00.000Z'` is *true* and
- * a window boundary silently includes or excludes the wrong day's work.
- *
- * `cards.created_at`, `activity_log.created_at` and `card_comments.created_at`
- * are the space form; `cards.completed_at` and `cards.updated_at` are the ISO
- * form — so a single report query hits both. Everything is therefore trimmed to
- * `YYYY-MM-DD HH:MM:SS` on both sides before any comparison. Sub-second
- * precision is dropped, which is immaterial for a report bucketed by day.
+ * Every caller reads the bound first (`readQueryDate`); one that still cannot
+ * be read is a fault in the caller, and is thrown rather than compared.
  */
-const TS = (col: string) => `replace(substr(${col}, 1, 19), 'T', ' ')`;
-
-/** The same normalisation in JavaScript, for comparisons done after the query. */
-function tsKey(ts: string): string {
-	return ts.slice(0, 19).replace('T', ' ');
-}
-
-/**
- * A window bound as a comparable key.
- *
- * A bare date as the upper bound means the whole of that day: a report for
- * "15 August to 14 September" that stopped at midnight on the 14th would drop a
- * full day of work, which is exactly the sort of quiet omission this replaces.
- */
-function boundKey(value: string, end: boolean): string {
-	if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return `${value} ${end ? '23:59:59' : '00:00:00'}`;
-	return tsKey(value);
+function boundOf(value: string, edge: 'lower' | 'upper'): string {
+	const bound = toStamp(value, edge);
+	if (bound === null) throw new Error(`Not a date or a timestamp: ${JSON.stringify(value)}`);
+	return bound;
 }
 
 const EMPTY_TOTALS = (): Record<ActivityBucket, number> => ({
@@ -251,8 +236,8 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 		commentLimit = 3
 	} = opts;
 
-	const fromBound = boundKey(from, false);
-	const toBound = boundKey(to, true);
+	const fromBound = boundOf(from, 'lower');
+	const toBound = boundOf(to, 'upper');
 
 	// A card is in the window if anything about it moved: it completed, it was
 	// raised, it was edited, someone logged an action against it, or someone
@@ -260,14 +245,14 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 	// the hand-built report miss 30% of completions. A dependency added or
 	// removed is not work on the card, and does not count (`NOT_WORK_ON_THE_CARD`).
 	const touched = `(
-		   (c.completed_at IS NOT NULL AND ${TS('c.completed_at')} BETWEEN @from AND @to)
-		OR (${TS('c.created_at')} BETWEEN @from AND @to)
-		OR (${TS('c.updated_at')} BETWEEN @from AND @to)
+		   (c.completed_at IS NOT NULL AND c.completed_at BETWEEN @from AND @to)
+		OR (c.created_at BETWEEN @from AND @to)
+		OR (c.updated_at BETWEEN @from AND @to)
 		OR EXISTS (SELECT 1 FROM activity_log al
 		            WHERE al.card_id = c.id AND al.action NOT IN (${NOT_WORK_ON_THE_CARD})
-		              AND ${TS('al.created_at')} BETWEEN @from AND @to)
+		              AND al.created_at BETWEEN @from AND @to)
 		OR EXISTS (SELECT 1 FROM card_comments cc
-		            WHERE cc.card_id = c.id AND ${TS('cc.created_at')} BETWEEN @from AND @to)
+		            WHERE cc.card_id = c.id AND cc.created_at BETWEEN @from AND @to)
 	)`;
 
 	// Attribution to a person. Deliberately broad and deliberately documented:
@@ -275,15 +260,22 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 	// assigned to it. Assignment is a *current* fact used as a proxy for a
 	// historic one — that approximation is reported in `meta.attribution`
 	// rather than left for a reader to discover.
+	//
+	// The person is asked as `+al2.user_id` and `+cc2.user_id`, so that each
+	// card's entries and comments are looked up by card. Asked plainly, SQLite
+	// took an index that leads with user_id (card 2106 added them; 0054 made
+	// the log's one user_id and created_at) and read every entry of the
+	// person's once for each card: 4,215 ms against 9 ms on 2,000 cards and
+	// 60,000 entries (the P6 review). list-access.ts does the same.
 	const byUser = userId
 		? `AND (
 			   EXISTS (SELECT 1 FROM activity_log al2
-			            WHERE al2.card_id = c.id AND al2.user_id = @userId
+			            WHERE al2.card_id = c.id AND +al2.user_id = @userId
 			              AND al2.action NOT IN (${NOT_WORK_ON_THE_CARD})
-			              AND ${TS('al2.created_at')} BETWEEN @from AND @to)
+			              AND al2.created_at BETWEEN @from AND @to)
 			OR EXISTS (SELECT 1 FROM card_comments cc2
-			            WHERE cc2.card_id = c.id AND cc2.user_id = @userId
-			              AND ${TS('cc2.created_at')} BETWEEN @from AND @to)
+			            WHERE cc2.card_id = c.id AND +cc2.user_id = @userId
+			              AND cc2.created_at BETWEEN @from AND @to)
 			OR EXISTS (SELECT 1 FROM card_assignees ca
 			            WHERE ca.card_id = c.id AND ca.user_id = @userId)
 			OR c.created_by = @userId
@@ -360,7 +352,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 		const bucket = bucketOf(r, fromBound, toBound);
 
 		const completedInWindow =
-			!!r.completedAt && tsKey(r.completedAt) >= fromBound && tsKey(r.completedAt) <= toBound;
+			!!r.completedAt && r.completedAt >= fromBound && r.completedAt <= toBound;
 		const closeReasonAssumed = completedInWindow && !r.closeReason;
 		if (closeReasonAssumed) closeReasonAssumedCount++;
 		if (!r.summary) missingSummaryCount++;
@@ -407,7 +399,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 							.prepare(
 								`SELECT cc.id, cc.content, cc.created_at AS createdAt, u.username
 								 FROM card_comments cc JOIN users u ON u.id = cc.user_id
-								 WHERE cc.card_id = ? ORDER BY cc.created_at DESC LIMIT ?`
+								 WHERE cc.card_id = ? ORDER BY cc.created_at DESC, cc.id DESC LIMIT ?`
 							)
 							.all(r.id, commentLimit) as ReportCard['comments'])
 					: [];
@@ -471,7 +463,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
  */
 function bucketOf(r: CardRow, from: string, to: string): ActivityBucket {
 	const completedInWindow =
-		!!r.completedAt && tsKey(r.completedAt) >= from && tsKey(r.completedAt) <= to;
+		!!r.completedAt && r.completedAt >= from && r.completedAt <= to;
 
 	if (completedInWindow) {
 		// Closed after investigation with nothing built. Kept visible, kept out
@@ -498,9 +490,9 @@ function bucketOf(r: CardRow, from: string, to: string): ActivityBucket {
 	// So: untouched *and* still where it was raised. `columnPosition` is the
 	// board's first column, which is where new cards land; anything further along
 	// has been moved by somebody, whatever the timestamps say.
-	const raisedInWindow = tsKey(r.createdAt) >= from && tsKey(r.createdAt) <= to;
+	const raisedInWindow = r.createdAt >= from && r.createdAt <= to;
 	const neverMoved = r.columnPosition === r.firstColumnPosition;
-	if (raisedInWindow && tsKey(r.updatedAt) === tsKey(r.createdAt) && neverMoved) return 'created';
+	if (raisedInWindow && r.updatedAt === r.createdAt && neverMoved) return 'created';
 
 	// Sitting in a Complete column is deliberately NOT enough to count as a
 	// completion. A card finished in May that picked up one comment in September
@@ -531,8 +523,8 @@ function milestonesInWindow(cardIds: number[], from: string, to: string): Report
 		SELECT
 			m.id, m.name, m.board_id AS boardId, m.target_date AS targetDate, m.status,
 			COUNT(c.id) AS totalCards,
-			SUM(CASE WHEN c.completed_at IS NOT NULL AND ${TS('c.completed_at')} <  @from THEN 1 ELSE 0 END) AS completedAtStart,
-			SUM(CASE WHEN c.completed_at IS NOT NULL AND ${TS('c.completed_at')} <= @to   THEN 1 ELSE 0 END) AS completedAtEnd
+			SUM(CASE WHEN c.completed_at IS NOT NULL AND c.completed_at <  @from THEN 1 ELSE 0 END) AS completedAtStart,
+			SUM(CASE WHEN c.completed_at IS NOT NULL AND c.completed_at <= @to   THEN 1 ELSE 0 END) AS completedAtEnd
 		FROM milestones m
 		JOIN cards c ON c.milestone_id = m.id AND c.archived_at IS NULL
 		WHERE m.id IN (SELECT DISTINCT milestone_id FROM cards
@@ -567,7 +559,7 @@ function pct(done: number, total: number): number {
 
 /** Window length in days. Both bounds are `YYYY-MM-DD HH:MM:SS` keys in UTC. */
 function daysBetween(from: string, to: string): number {
-	const ms = Date.parse(`${to.replace(' ', 'T')}Z`) - Date.parse(`${from.replace(' ', 'T')}Z`);
+	const ms = (parseStamp(to)?.getTime() ?? NaN) - (parseStamp(from)?.getTime() ?? NaN);
 	return Number.isFinite(ms) ? Math.max(1, Math.round(ms / 86_400_000)) : 0;
 }
 
@@ -601,7 +593,7 @@ export function getCardBoardHistory(cardId: number): {
 			 WHERE al.card_id = ?
 			   AND (al.action LIKE '%card_moved_in' OR al.action LIKE '%card_moved_away'
 			        OR al.action LIKE '%card_created')
-			 ORDER BY al.created_at ASC`
+			 ORDER BY al.created_at ASC, al.id ASC`
 		)
 		.all(cardId) as { boardId: number; boardName: string; action: string; createdAt: string }[];
 
@@ -662,7 +654,7 @@ export function getCardBoardHistory(cardId: number): {
 			last.current = true;
 			last.to = null;
 		} else {
-			last.to = last.to ?? new Date().toISOString();
+			last.to = last.to ?? stamp();
 			spans.push({
 				boardId: current.boardId,
 				boardName: current.boardName,

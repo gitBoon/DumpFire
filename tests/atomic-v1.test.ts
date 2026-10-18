@@ -281,7 +281,7 @@ describe('PUT /api/v1/cards/:cardId', () => {
 	});
 
 	describe('restoring a card with archivedAt: null (card 2108, R2)', () => {
-		const ARCHIVED_AT = '2026-10-01T09:00:00.000Z';
+		const ARCHIVED_AT = '2026-10-01 09:00:00';
 		const withArchived = () => {
 			const s = scene();
 			db.update(cards).set({ archivedAt: ARCHIVED_AT }).where(eq(cards.id, s.first.id)).run();

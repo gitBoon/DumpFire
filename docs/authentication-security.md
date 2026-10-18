@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.32
+version: 1.34
 status: As-Built
-date: 2026-10-15
+date: 2026-10-18
 tags:
   - authentication
   - security
@@ -283,13 +283,79 @@ sequenceDiagram
     participant DB
 
     Browser->>Server: Request with session cookie
-    Server->>DB: SELECT session WHERE id = token AND expires_at > now
+    Server->>DB: SELECT session WHERE id = token
     DB-->>Server: Session found
+    Server->>Server: toStamp(expires_at) names a moment after now, else closed
     Server->>DB: UPDATE session SET expires_at = now + 30d
     Server->>DB: SELECT user WHERE id = session.userId
     DB-->>Server: User record
     Server-->>Browser: Response with user context
 ```
+
+The expiry is read as the moment it names, with `toStamp` from `src/lib/timestamps.ts`, and
+not compared with now as text. A session whose expiry names no moment, such as `zzz`,
+`2099-02-30 08:00:00` or an hour of 24, is closed, where text comparison sorted it after now
+and kept it open for good. API keys and invites are read the same way (the review of cards
+2095, 2106 and 2107, item S2); `tests/timestamps.test.ts` holds all three. The sweep of
+expired sessions at each start, `cleanExpiredSessions()`, deletes by the same rule (an expiry
+that names no moment, or one at or before now), through the `stamp_of` SQL function
+`registerStampFunctions` gives the connection.
+
+### Every Session Ended Once, by Migration 0053
+
+The update that brings migration `0053_index_foreign_keys_end_sessions.sql` (card 2106)
+ends every session on the installation, the owner's included, on the start that applies it.
+Its last statement is `DELETE FROM sessions`, under a header comment saying so, and it runs
+once on each database, as every migration does.
+
+The reason is the backups. Until card 2135 a backup, scheduled, run by hand or exported,
+held every session id of its day, and a session's id is the whole of what its cookie
+carries. Copies made then are at outside destinations and in download folders, and a
+session's expiry moves on every time it is used, so a session in such a copy could stay
+good for as long as its owner kept using DumpFire. A backup now holds no session (see
+[What a Backup Holds](#what-a-backup-holds-and-what-a-restore-brings-in)), and ending
+every session once makes the ids in the older copies dead. 0053 must therefore never be
+deployed before card 2135's backups: a session made in between would leave in the next
+backup, and the one-off would be spent. Both are in the same release.
+
+| What | After the start that applies 0053 |
+|---|---|
+| Sessions | None: each browser is sent to the sign-in page at its next request, and signs in again |
+| API keys | Untouched |
+| Invites | Untouched by 0053. Every invite not yet used is ended by 0054, in the same release: see below |
+| Requesters' links | Untouched |
+| The log | One `WARN` line, "token not in DB", for each request that carries a cookie whose session is gone, until that browser signs in again |
+
+`tests/migrations.test.ts` holds it: 0053 empties `sessions` and leaves every other table as
+it was; a later start deletes nothing, and a session made after it survives; and a backup
+made after a session is made holds no trace of its id, so the tests of 0053 cannot pass in
+a tree without card 2135's change.
+
+### Every Unused Invite Ended Once, by Migration 0054
+
+The next file, `0054_index_user_time_end_unused_invites.sql`, ends the other thing older
+backups hold that signs somebody in: its last statement is
+`DELETE FROM invite_tokens WHERE used = 0`, under a header comment saying so, run once on
+each database.
+
+Until card 2135 a backup held the token of every invite that was waiting when it was made,
+and an invite's token sets its account's password, with no other question, until it expires
+up to seven days after it was made. Those copies cannot be called back, and nothing lists
+the invites in them for the owner to end one by one. A backup now holds no unused invite,
+and a restore brings none in.
+
+| What | After the start that applies 0054 |
+|---|---|
+| Invites not yet used, expired or not | Deleted. Each link shows the page for a link that no longer works |
+| Invites already used | Kept, marked used |
+| Accounts, sessions, API keys | Untouched |
+
+The owner lists the waiting invites before the deploy, with the read-only command in
+[The Update That Brings Migration 0053](deployment.md#before-the-deploy-checks-0a-0b-0c-and-0d)
+(check 0d), and sends again, from User Management, the ones still wanted once the deploy is
+done. `tests/migrations.test.ts` holds it: 0054 deletes every unused invite and keeps the
+used ones and every other table as it was, a later start deletes nothing, and an invite
+issued after it survives. The rehearsal notes the loss as a declared one-off.
 
 ### An Open Stream and Its Session
 
@@ -1138,8 +1204,9 @@ flowchart TD
   whichever of the two changed), or `User N changed their email address — ended I unused
   invite(s)`. No address is written.
 
-An invite already waiting when an account's email or role changed before this was deployed
-stays usable until it expires, within seven days. Covered by `tests/atomic-accounts.test.ts`.
+Invites waiting at the update that brings migration 0054 were ended by it, whatever their
+account: see [Every Unused Invite Ended Once](#every-unused-invite-ended-once-by-migration-0054).
+Send again with 📧 the ones still wanted. Covered by `tests/atomic-accounts.test.ts`.
 
 ### Who May Manage Which Account
 
@@ -1340,9 +1407,13 @@ session's expiry moves on every time it is used.
   cookie that lets a browser past sign-in's throttling for that account. So a restore forgets
   every remembered browser, as it signs everybody out, and the restored server makes a new
   key. See [Browsers That Have Signed In Before](#browsers-that-have-signed-in-before).
-- **Not covered.** Copies made before this, at a destination or downloaded, still hold the
-  session ids of whoever was signed in then, and those sessions are still good on the
-  installation they came from. Only ending every session there makes them dead. The safety
+- **Copies made before this.** Copies made before card 2135, at a destination or
+  downloaded, still hold the session ids of whoever was signed in then. Migration 0053 ends
+  every session once, on the update that brings it, so those ids sign nobody in from then on:
+  see [Every Session Ended Once](#every-session-ended-once-by-migration-0053). They also hold
+  the invites not yet used on their day, which 0053 does not end and migration 0054 does,
+  once, on the update that brings it: see
+  [Every Unused Invite Ended Once](#every-unused-invite-ended-once-by-migration-0054). The safety
   copy an import writes before it replaces anything (`.pre-restore-safety.json`, in the
   server's working directory) holds every table as it was, sessions included, and is not
   deleted; it leaves out only the key remembered browsers are signed with, as a backup does,
@@ -1460,7 +1531,7 @@ flowchart LR
 | Hash algorithm | SHA-256 |
 | Storage | Only the hash is stored |
 | Prefix stored | First 11 chars for identification |
-| Expiry | Optional per-key: `expiresAt`, a timestamp in the future, stored in UTC as `toISOString()` writes it, because it is compared with the time as text. No page sends one |
+| Expiry | Optional per-key: `expiresAt`, a timestamp in the future, stored as `YYYY-MM-DD HH:MM:SS` in UTC (card 2095), and read as the moment it names when the key is checked. An expiry that names no moment, which only a row from before card 2117 or a restore could hold, ends the key. No page sends one |
 | Rate limit | 60 requests/minute per key, counted against the key's own row once it is checked; 60 requests/minute per address for requests with no key the gate accepts |
 
 ### Key Lifecycle
@@ -1475,7 +1546,8 @@ flowchart LR
    name or prefix: every administrator reads the system log, and every backup holds it
 4. Each request the key is let in with updates `last_used_at`; one refused for being over
    the limit does not
-5. Expired keys are rejected at validation time
+5. Expired keys are rejected at validation time, and so is a key whose expiry names no
+   moment (`zzz`, `2099-02-30 08:00:00`): compared as text, such a key never expired
 6. A key ends when it is revoked on the Account page, or when its account's password is set
    in a way that ends keys: an administrator's reset, an invite used, or the holder's own
    change with "End my API keys too" ticked (see

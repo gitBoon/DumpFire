@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { cards, columns, subtasks, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
@@ -25,6 +26,7 @@ import {
 	readText
 } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { stamp, toStamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -189,9 +191,12 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		Object.assign(updateData, normaliseReportingFields(body));
 
 		// `archivedAt` restores, and does nothing else (decision 12). The stamp
-		// the card already holds, sent back, changes nothing.
+		// the card already holds, sent back, changes nothing: it is read with
+		// `toStamp` (card 2095), so the ISO form this API answers with is the
+		// same moment as the stored form the card holds.
 		const restoring = 'archivedAt' in body && body.archivedAt === null;
-		if ('archivedAt' in body && !restoring && body.archivedAt !== card.archivedAt) {
+		const sentArchivedAt = restoring ? null : toStamp(body.archivedAt);
+		if ('archivedAt' in body && !restoring && (sentArchivedAt === null || sentArchivedAt !== card.archivedAt)) {
 			throw error(400, 'archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}');
 		}
 
@@ -240,7 +245,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		if (Object.keys(fields).length === 0 && !settingMilestone && !restored) return card;
 
 		const updated = db.update(cards)
-			.set({ ...fields, updatedAt: new Date().toISOString() })
+			.set({ ...fields, updatedAt: stamp() })
 			.where(eq(cards.id, cardId))
 			.returning()
 			.get();

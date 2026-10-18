@@ -7,6 +7,7 @@ import { subBoardProgress } from '$lib/server/card-completion';
 import { completionPercent } from '$lib/progress';
 import { getBoardTokenTotals, getUserSpendByPeriod } from '$lib/server/tokens';
 import { completeColumnIds, holdColumnIds, isCompleteColumnTitle } from '$lib/column-role';
+import { parseStamp, stamp } from '$lib/timestamps';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -74,6 +75,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const completeColIds = completeColumnIds(boardCols);
 		const completedCards = boardCards.filter(c => completeColIds.has(c.columnId)).length;
 
+		// The latest of the board's and its cards' edits. Every one is in the
+		// stored form (card 2095), so the greater text is the later moment; one
+		// value in the ISO form, which sorts after any stored value of its day,
+		// made an earlier edit win (A6).
 		let lastActivity = board.updatedAt;
 		for (const c of boardCards) {
 			if (c.updatedAt > lastActivity) lastActivity = c.updatedAt;
@@ -247,16 +252,17 @@ export const load: PageServerLoad = async ({ locals }) => {
 		if (p in priorityCounts) priorityCounts[p]++;
 	}
 
-	// Completed this week
+	// Completed this week. The bounds are in the stored form, as `completedAt`
+	// is (card 2095): text compares moments only within one form.
 	const weekAgo = new Date();
 	weekAgo.setDate(weekAgo.getDate() - 7);
-	const weekAgoStr = weekAgo.toISOString();
+	const weekAgoStr = stamp(weekAgo);
 	const completedThisWeek = myCompletedCards.filter(c => c.completedAt && c.completedAt >= weekAgoStr).length;
 
 	// Completed this month
 	const monthAgo = new Date();
 	monthAgo.setDate(monthAgo.getDate() - 30);
-	const monthAgoStr = monthAgo.toISOString();
+	const monthAgoStr = stamp(monthAgo);
 	const completedThisMonth = myCompletedCards.filter(c => c.completedAt && c.completedAt >= monthAgoStr).length;
 
 	// Recent activity: the last 10 entries of this user's, on boards they can
@@ -340,7 +346,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const agingBuckets = { fresh: 0, week: 0, fortnight: 0, month: 0, stale: 0 };
 	const nowMs = Date.now();
 	for (const c of myActiveCards) {
-		const created = new Date(c.createdAt.endsWith('Z') ? c.createdAt : c.createdAt + 'Z').getTime();
+		const created = parseStamp(c.createdAt)?.getTime() ?? NaN;
 		const days = Math.floor((nowMs - created) / 86400000);
 		if (days <= 2) agingBuckets.fresh++;
 		else if (days <= 7) agingBuckets.week++;
@@ -408,7 +414,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const label = w === 0 ? 'This Week' : w === 1 ? 'Last Week' : `${w + 1}w ago`;
 		const count = myCompletedCards.filter(c => {
 			if (!c.completedAt) return false;
-			return c.completedAt >= start.toISOString() && c.completedAt < end.toISOString();
+			return c.completedAt >= stamp(start) && c.completedAt < stamp(end);
 		}).length;
 		weeklyTrend.push({ label, count });
 	}

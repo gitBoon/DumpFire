@@ -26,6 +26,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { activityLog, cards, categories, subtasks, type Card } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
+import { onTheWire } from '$lib/server/v1-json';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import {
@@ -41,7 +42,7 @@ import {
 } from './helpers/fixtures';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 
-const STAMP = '2020-01-01T00:00:00.000Z';
+const STAMP = '2020-01-01 00:00:00';
 
 let owner: SessionUser;
 let viewer: SessionUser;
@@ -64,7 +65,14 @@ afterEach(() => sent.restore());
 const cardRow = (id: number) => db.select().from(cards).where(eq(cards.id, id)).get()!;
 const entries = () => db.select().from(activityLog).all();
 /** The row as a route answers it: through JSON. */
-const asAnswered = (row: Card) => JSON.parse(JSON.stringify(row));
+/**
+ * A row as `path` answers it: as stored from the internal tree, and with each
+ * stored timestamp in ISO 8601 from the v1 API (card 2095, plan R1).
+ */
+const asAnswered = (row: Card, path: string) => {
+	const copy = JSON.parse(JSON.stringify(row));
+	return path.startsWith('/api/v1/') ? onTheWire(copy) : copy;
+};
 
 const category = (board: BoardFixture, name: string) =>
 	db.insert(categories).values({ boardId: board.board.id, name }).returning().get();
@@ -169,16 +177,16 @@ const TREES = [
 ] as const;
 
 /** Sends `body`, and waits for whatever it set off. */
-async function put(path: string, body: unknown, user: SessionUser = owner): Promise<ApiResult> {
+async function put(path: string, body: unknown, user: SessionUser = owner): Promise<ApiResult & { path: string }> {
 	const res = await api('PUT', path, { user, body });
 	await sent.settle();
-	return res;
+	return Object.assign(res, { path });
 }
 
 /** 200 with the card as stored, nothing in the database changed, and nothing sent. */
-function expectNothingDone(res: ApiResult, card: Card, before: ReturnType<typeof snapshotDb>) {
+function expectNothingDone(res: ApiResult & { path: string }, card: Card, before: ReturnType<typeof snapshotDb>) {
 	expect(res.status).toBe(200);
-	expect(res.body).toEqual(asAnswered(card));
+	expect(res.body).toEqual(asAnswered(card, res.path));
 	expectUnchanged(before);
 	expect(sent.all).toEqual([]);
 }
@@ -245,11 +253,11 @@ describe.each(TREES)('$tree: a save that changes one field among many (card 2183
 		const after = cardRow(card.id);
 		expect(after.updatedAt).not.toBe(STAMP);
 		expect(after).toEqual({ ...card, theme: 'new capability', updatedAt: after.updatedAt });
-		expect(res.body).toEqual(asAnswered(after));
+		expect(res.body).toEqual(asAnswered(after, path(card.id)));
 		// The card and its one entry: nothing else in the database moved.
 		const changed = diffSnapshots(before, snapshotDb());
 		expect(changed.filter((line) => line.startsWith('cards:'))).toEqual([
-			expect.stringMatching(/^cards: row \d+ changed \(updated_at: "2020-01-01T00:00:00\.000Z" became "[^"]+"; theme: "maintenance" became "new capability"\)$/)
+			expect.stringMatching(/^cards: row \d+ changed \(updated_at: "2020-01-01 00:00:00" became "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"; theme: "maintenance" became "new capability"\)$/)
 		]);
 		expect(changed.filter((line) => !/^(cards|activity_log|sqlite_sequence):/.test(line))).toEqual([]);
 

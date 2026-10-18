@@ -75,6 +75,7 @@
 import { error } from '@sveltejs/kit';
 import { isCoverValue, isHexColour } from '$lib/colours';
 import { reportRecipients } from '$lib/report-recipients';
+import { parseStamp, toStamp, type Edge, type Stamp } from '$lib/timestamps';
 
 /** A request body: a JSON object, none of whose fields has been looked at. */
 export type RequestBody = Record<string, unknown>;
@@ -126,10 +127,6 @@ const WHOLE_AS_TEXT = /^-?\d+(\.0+)?$/;
 const ID_AS_TEXT = /^\d+$/;
 const CALENDAR_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const TIME_OF_DAY = /^([01]\d|2[0-3]):[0-5]\d$/;
-/** A date, or a date and a time with or without a zone. The date is held to the calendar apart. */
-const TIMESTAMP = /^\d{4}-\d{2}-\d{2}(T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d{1,9})?)?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)?)?$/;
-/** The zone at the end of a timestamp, when it has one. */
-const ZONE = /(Z|[+-]\d{2}:\d{2})$/;
 /**
  * Something, an @, and something, with no space anywhere, and none of
  * `, ; < > " ( )`: the mailer reads `victim,attacker@evil.test` as two
@@ -240,11 +237,6 @@ function isCalendarDate(text: string): boolean {
 	const [year, month, day] = [Number(parts[1]), Number(parts[2]), Number(parts[3])];
 	const date = new Date(Date.UTC(year, month - 1, day));
 	return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
-}
-
-/** A calendar date, or one with a time of day, that a `Date` reads as the same moment. */
-function isTimestamp(text: string): boolean {
-	return TIMESTAMP.test(text) && isCalendarDate(text.slice(0, 10)) && !Number.isNaN(Date.parse(text));
 }
 
 /** The choice `value` is, in its spelling in `from`, or undefined. */
@@ -433,26 +425,32 @@ export type TimestampRule = Rule & {
 };
 
 /**
- * A moment, written as a date or as a date and a time with or without a zone
- * (`2027-01-01`, `2027-01-01T09:30:00+02:00`). It is handed back in one form,
- * `toISOString()`, because a stored timestamp is compared as text.
+ * A moment, written as a date, as a date and a time with or without a zone
+ * (`2027-01-01`, `2027-01-01T09:30:00+02:00`), or in the stored form
+ * (`2027-01-01 09:30:00`). It is handed back in the stored form,
+ * `YYYY-MM-DD HH:MM:SS` in UTC (card 2095, decision 10), because a stored
+ * timestamp is compared as text, and text compares moments only within one
+ * form. It was handed back as `toISOString()`, which sorts after every stored
+ * value of its day.
  *
  * A time with no zone is UTC, as a date alone is and as the API's own
  * timestamps are: `2027-01-01T09:30:00` is 09:30 UTC, where `new Date()` would
- * read it in the server's own zone.
+ * read it in the server's own zone. A fraction of a second is dropped. A date
+ * alone is the start of that day, so an API key that expires on a date stops
+ * at 00:00 UTC that day, as it did.
  *
  *     type     not text: `<name> must be a timestamp, such as 2027-01-01T09:00:00Z`
  *     invalid  text that is not one, in the same words; `<name> must be in the future`
  */
-export function readTimestamp<R extends TimestampRule>(body: RequestBody, name: string, rule: R): Read<string, R> {
+export function readTimestamp<R extends TimestampRule>(body: RequestBody, name: string, rule: R): Read<Stamp, R> {
 	const wrong = `${name} must be a timestamp, such as 2027-01-01T09:00:00Z`;
 	return field(body, name, rule, wrong, (sent) => {
 		if (typeof sent !== 'string') refuse(rule, 'type', wrong);
-		if (!isTimestamp(sent)) refuse(rule, 'invalid', wrong);
-		const moment = new Date(sent.includes('T') && !ZONE.test(sent) ? `${sent}Z` : sent);
-		if (rule.future && moment.getTime() <= Date.now()) refuse(rule, 'invalid', `${name} must be in the future`);
-		return moment.toISOString();
-	}) as Read<string, R>;
+		const stored = toStamp(sent, 'lower');
+		if (stored === null) refuse(rule, 'invalid', wrong);
+		if (rule.future && parseStamp(stored)!.getTime() <= Date.now()) refuse(rule, 'invalid', `${name} must be in the future`);
+		return stored;
+	}) as Read<Stamp, R>;
 }
 
 /** The rule of a web address. */
@@ -823,19 +821,23 @@ export function readQueryId(value: string | null, thing: string, says?: string):
 }
 
 /**
- * A date (`2026-10-14`) or a timestamp (`2026-10-14T09:00:00Z`) in a query
- * string, and `undefined` when it was not sent or is empty. Anything else is a
- * 400: `<name> is not a date`, or `says`.
+ * A date (`2026-10-14`) or a timestamp (`2026-10-14T09:00:00Z`,
+ * `2026-10-14 09:00:00`) in a query string, as one end of a range, and
+ * `undefined` when it was not sent or is empty. Anything else is a 400:
+ * `<name> is not a date`, or `says`.
  *
- * A date, and a timestamp in UTC (`Z`), are handed back as they came. A
- * timestamp written with an offset, or with no zone, is handed back in UTC,
- * as `readTimestamp` hands one back: a stored timestamp is compared as text,
- * so `2026-10-14T09:00:00+02:00` compared as written is two hours out, and
- * one with no zone is UTC, as the API's own timestamps are.
+ * It is handed back in the stored form, `YYYY-MM-DD HH:MM:SS` in UTC (card
+ * 2095, decision 10), because a stored timestamp is compared as text: a
+ * timestamp written with an offset is moved to UTC, one with no zone is UTC
+ * already, as the API's own timestamps are, and a fraction is dropped. A
+ * date alone is the whole of that day: its first second as the `lower` end
+ * of a range, its last as the `upper` one, so a range to 14 October includes
+ * the 14th. A date was handed back as it came and a timestamp in ISO, and
+ * each caller compared them its own way.
  */
-export function readQueryDate(value: string | null, name: string, says?: string): string | undefined {
+export function readQueryDate(value: string | null, name: string, edge: Edge = 'lower', says?: string): Stamp | undefined {
 	if (value === null || value === '') return undefined;
-	if (!isTimestamp(value)) error(400, says ?? `${name} is not a date`);
-	if (!value.includes('T') || value.endsWith('Z')) return value;
-	return new Date(ZONE.test(value) ? value : `${value}Z`).toISOString();
+	const stored = toStamp(value, edge);
+	if (stored === null) error(400, says ?? `${name} is not a date`);
+	return stored;
 }

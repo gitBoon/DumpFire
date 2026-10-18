@@ -1,4 +1,5 @@
-import { json, error } from '@sveltejs/kit';
+import { error } from '@sveltejs/kit';
+import { json } from '$lib/server/v1-json';
 import { setCardMilestone, requireMilestone, takeCardOutOfMilestone, MilestoneError } from '$lib/server/milestones';
 import { emit } from '$lib/server/events';
 import { pathId, readBody, readId } from '$lib/server/request-body';

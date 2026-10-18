@@ -44,6 +44,7 @@ import { getSmtpConfig, isSmtpConfigured } from '$lib/server/email';
 import { issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { api, routeMethods } from './helpers/api';
 import { makeUser, resetDb } from './helpers/fixtures';
+import { afterEachTimestampCheck } from './helpers/timestamps';
 
 const REAL_MIGRATIONS = join(process.cwd(), 'drizzle');
 
@@ -558,8 +559,14 @@ describe('what the application reads after a restore', () => {
 	 */
 	afterEach(() => {
 		vi.restoreAllMocks();
-		sqlite.pragma('foreign_keys = ON');
-		resetDb();
+		// The check after every test (tests/setup.ts) runs after this hook, on an
+		// emptied database, so it is made here first, once nothing is mocked (card 2095).
+		try {
+			afterEachTimestampCheck(sqlite);
+		} finally {
+			sqlite.pragma('foreign_keys = ON');
+			resetDb();
+		}
 	});
 
 	/** As `runDueReportSchedules` selects them. */
@@ -644,7 +651,13 @@ describe('the choice made when none is given', () => {
 
 	describe('in the admin page', () => {
 		afterEach(() => {
-			resetDb();
+			// The check after every test (tests/setup.ts) runs after this hook, on an
+			// emptied database, so it is made here first (card 2095).
+			try {
+				afterEachTimestampCheck(sqlite);
+			} finally {
+				resetDb();
+			}
 		});
 
 		/** What the page's load hands the import dialog as the choice to open with. */
@@ -688,8 +701,14 @@ describe('through the route', () => {
 	 */
 	afterEach(() => {
 		vi.restoreAllMocks();
-		sqlite.pragma('foreign_keys = ON');
-		resetDb();
+		// The check after every test (tests/setup.ts) runs after this hook, on an
+		// emptied database, so it is made here first, once nothing is mocked (card 2095).
+		try {
+			afterEachTimestampCheck(sqlite);
+		} finally {
+			sqlite.pragma('foreign_keys = ON');
+			resetDb();
+		}
 	});
 
 	/** Everything but the log, which is meant to gain a line about what happened. */

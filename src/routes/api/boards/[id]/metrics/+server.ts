@@ -7,6 +7,7 @@ import { completeColumnIds } from '$lib/column-role';
 import { ACTIONS, storedActions } from '$lib/server/logActivity';
 import { pathId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { parseStamp, stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 /**
@@ -28,7 +29,9 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 	if (!role) throw error(403, 'No access to this board');
 
 	const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 365);
-	const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+	// In the stored form, as `completed_at` is (card 2095), so the two compare
+	// as text.
+	const cutoff = stamp(new Date(Date.now() - days * 86400000));
 
 	// Get columns for this board
 	const boardCols = db.select().from(columns)
@@ -73,17 +76,21 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 
 	const firstMoveMap = new Map(firstMoves.map(m => [m.cardId, m.firstMovedAt]));
 
-	// Calculate metrics per card
+	// Calculate metrics per card. Every stored moment is UTC and is read as
+	// such with parseStamp (card 2095): `new Date()` read the stored form in
+	// the server's own zone, and lead and cycle time were out by its offset
+	// from UTC (A11).
+	const ms = (value: string) => parseStamp(value)?.getTime() ?? NaN;
 	const cardMetrics = completedCards.map(card => {
-		const createdMs = new Date(card.createdAt).getTime();
-		const completedMs = new Date(card.completedAt!).getTime();
+		const createdMs = ms(card.createdAt);
+		const completedMs = ms(card.completedAt!);
 		const leadTimeMs = completedMs - createdMs;
 		const leadTimeHours = Math.round(leadTimeMs / 3600000);
 
 		const firstMoved = card.id ? firstMoveMap.get(card.id) : null;
 		let cycleTimeHours: number | null = null;
 		if (firstMoved) {
-			const firstMovedMs = new Date(firstMoved).getTime();
+			const firstMovedMs = ms(firstMoved);
 			cycleTimeHours = Math.round((completedMs - firstMovedMs) / 3600000);
 		}
 

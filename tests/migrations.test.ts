@@ -32,13 +32,19 @@ import {
 	schemaDifferences,
 	scratchNameOf,
 	scratchTableStatement,
+	sqlStatements,
 	type MigrationOptions,
 	type MigrationReport
 } from '$lib/server/db/migrate';
 import { RestoreError, restoreFromBackup } from '$lib/server/db/restore';
+import { generateBackupData } from '$lib/server/backup';
+import { buildActivityReport } from '$lib/server/activity-report';
 import { api, routeMethods } from './helpers/api';
-import { makeUser, resetDb } from './helpers/fixtures';
+import { makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { afterEachTimestampCheck } from './helpers/timestamps';
 import production from './fixtures/production-schema-2026-10-12.json';
+import { compare, stateOf, type Findings, type State } from './rehearsal/compare';
+import { ONE_OFFS, ONE_OFFS_FROM, type OneOff } from './rehearsal/one-offs';
 
 const ROOT = process.cwd();
 const REAL_MIGRATIONS = join(ROOT, 'drizzle');
@@ -300,6 +306,73 @@ const sequenceIn = (database: Database.Database, table: string) =>
 		}
 	).seq;
 
+/** The name of every index in the database, SQLite's own included. */
+const indexesOf = (database: Database.Database) =>
+	(database.prepare("SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name").all() as { name: string }[]).map(
+		(index) => index.name
+	);
+
+/**
+ * Every foreign key column that is the first column of no index, as
+ * `table.column`, sorted.
+ *
+ * Deleting a row makes SQLite look up the rows that refer to it in each child
+ * table, and with no index on the column each look-up reads the whole table
+ * (card 2106). A primary key or a UNIQUE constraint counts, as SQLite indexes
+ * it; so does an INTEGER PRIMARY KEY on its own, which is the rowid itself.
+ */
+function unindexedForeignKeys(database: Database.Database): string[] {
+	const found = new Set<string>();
+	for (const table of tablesOf(database)) {
+		const quoted = `"${table.replaceAll('"', '""')}"`;
+		const leading = new Set<string>();
+		for (const index of database.prepare(`PRAGMA index_list(${quoted})`).all() as { name: string }[]) {
+			const columns = database.prepare(`PRAGMA index_info("${index.name.replaceAll('"', '""')}")`).all() as {
+				seqno: number;
+				name: string | null;
+			}[];
+			const first = columns.find((column) => column.seqno === 0)?.name;
+			if (first) leading.add(first);
+		}
+		const keyColumns = (database.prepare(`PRAGMA table_info(${quoted})`).all() as { name: string; type: string; pk: number }[]).filter(
+			(column) => column.pk > 0
+		);
+		if (keyColumns.length === 1 && keyColumns[0].type.toUpperCase() === 'INTEGER') leading.add(keyColumns[0].name);
+
+		for (const key of database.prepare(`PRAGMA foreign_key_list(${quoted})`).all() as { seq: number; from: string }[]) {
+			if (key.seq === 0 && !leading.has(key.from)) found.add(`${table}.${key.from}`);
+		}
+	}
+	return [...found].sort();
+}
+
+/** The file of card 2106: an index on each foreign key column that had none, and every session ended once. */
+const FILE_0053 = '0053_index_foreign_keys_end_sessions.sql';
+
+/** The indexes 0053 creates, read from the file itself. */
+const INDEXES_0053 = [
+	...readFileSync(join(REAL_MIGRATIONS, FILE_0053), 'utf-8').matchAll(
+		/^CREATE INDEX IF NOT EXISTS `(\w+)` ON `(\w+)` \(`(\w+)`\);$/gm
+	)
+].map(([, name, table, column]) => ({ name, table, column }));
+
+/**
+ * The file of the P6 review: activity_log's index on user_id made one on
+ * user_id and created_at, and every unused invite ended once.
+ */
+const FILE_0054 = '0054_index_user_time_end_unused_invites.sql';
+
+/**
+ * The indexes the model declares that a database from before 0053 lacks:
+ * 0053's 39, with 0054's index on user_id and created_at in place of 0053's on
+ * user_id alone.
+ */
+const INDEXES_FROM_0053 = INDEXES_0053.map((index) =>
+	index.name === 'idx_activity_log_user_id'
+		? { name: 'idx_activity_log_user_id_created_at', table: 'activity_log', column: 'user_id, created_at' }
+		: index
+);
+
 /**
  * A database with the structure production had on 2026-10-12: every table and
  * index as `sqlite_master` reported it, and the 55 migration files it had
@@ -350,8 +423,9 @@ function preCardMigrations(): string {
 	};
 
 	const files: Record<string, string> = {};
-	// 0052 is the card's own file; a database from before the card never ran it.
-	for (const file of realFiles.filter((f) => f !== '0052_drop_time_entries.sql')) {
+	// 0052 is the card's own file, and 0053 (card 2106) came after it; a
+	// database from before the card never ran either.
+	for (const file of realFiles.filter((f) => f < '0052_drop_time_entries.sql')) {
 		let sql = readFileSync(join(REAL_MIGRATIONS, file), 'utf-8').replace(/\r\n/g, '\n');
 		for (const [now, before] of corrected[file] ?? []) {
 			expect(sql.split(now)).toHaveLength(2);
@@ -443,7 +517,7 @@ function productionWithRows(): Database.Database {
  */
 function preCardWithRows(): Database.Database {
 	const database = preCardDatabase();
-	// 0052, the one file such a database has not had.
+	// 0052 and 0053, the files such a database has not had.
 	applyFilesOnly(database);
 	seed(database);
 	return database;
@@ -1465,7 +1539,9 @@ describe('the six reconciled tables', () => {
 			],
 			differences: [
 				'columns.position: is nullable; the model has it NOT NULL',
-				'columns.wip_limit: is nullable; the model has it NOT NULL'
+				'columns.wip_limit: is nullable; the model has it NOT NULL',
+				// 0053 made it, and it went with the table this test replaced.
+				'columns: index in the model but not in the database: index idx_columns_board_id on (board_id)'
 			]
 		});
 		expect(positions()).toEqual([
@@ -1482,7 +1558,7 @@ describe('the six reconciled tables', () => {
 		[
 			'invite_tokens',
 			'token',
-			"INSERT INTO invite_tokens (token, user_id, expires_at) VALUES (NULL, 1, '2027-01-01'), (NULL, 2, '2027-01-01'), (NULL, 1, '2027-02-01')",
+			"INSERT INTO invite_tokens (token, user_id, expires_at) VALUES (NULL, 1, '2027-01-01 00:00:00'), (NULL, 2, '2027-01-01 00:00:00'), (NULL, 1, '2027-02-01 00:00:00')",
 			3
 		]
 	])(
@@ -2052,7 +2128,10 @@ describe('the six reconciled tables', () => {
 				defaulted: [],
 				differences: [
 					'boards: foreign key in the database but not in the model: (created_by) references users(id), on update NO ACTION, on delete NO ACTION',
-					'boards: foreign key in the model but not in the database: (created_by) references users(id), on update NO ACTION, on delete SET NULL'
+					'boards: foreign key in the model but not in the database: (created_by) references users(id), on update NO ACTION, on delete SET NULL',
+					// 0053 made these, and they went with the table this test replaced.
+					'boards: index in the model but not in the database: index idx_boards_created_by on (created_by)',
+					'boards: index in the model but not in the database: index idx_boards_parent_card_id on (parent_card_id)'
 				]
 			}
 		]);
@@ -2926,8 +3005,11 @@ describe('the six reconciled tables', () => {
 		expect(report.rebuilt.map((r) => r.table)).toContain('categories');
 		expect(report.schemaDifferences).toEqual(['category_notes: the table is in the database but not in the model']);
 		// The index went with the old table. The model does not declare it, and
-		// the rebuilt table is the model's.
-		expect(database.prepare('PRAGMA index_list(categories)').all()).toEqual([]);
+		// the rebuilt table is the model's, with the one index the model does
+		// declare for it (0053, card 2106).
+		expect(
+			(database.prepare('PRAGMA index_list(categories)').all() as { name: string }[]).map((index) => index.name)
+		).toEqual(['idx_categories_board_id']);
 		// The other table was not touched, and still refers to `categories`.
 		expect(notes()).toEqual(notesBefore);
 		database.prepare('DELETE FROM categories WHERE id = 1').run();
@@ -2937,10 +3019,10 @@ describe('the six reconciled tables', () => {
 	});
 
 	it('recreates the indexes the model declares for a table it rebuilds', () => {
-		// None of the six has an index of its own today, so this is a made-up
-		// model in which `settings` has two. DROP TABLE removes a table's indexes
-		// with it; the day one of the six gains an index, the rebuild has to put
-		// it back.
+		// A made-up model in which `settings` has two indexes, one of them
+		// unique. DROP TABLE removes a table's indexes with it, and the rebuild
+		// has to put back the ones the model declares: four of the six have one
+		// since 0053 (card 2106), and the production test below finds them.
 		const model = [
 			'CREATE TABLE `settings` (\n\t`key` text PRIMARY KEY NOT NULL,\n\t`value` text NOT NULL\n);',
 			'CREATE INDEX `idx_settings_value` ON `settings` (`value`);',
@@ -3072,6 +3154,9 @@ describe('the six reconciled tables', () => {
 		// nothing right: here five tables are in an older shape and stay in it.
 		const database = productionWithRows();
 		database.prepare('INSERT INTO __drizzle_migrations (hash) VALUES (?)').run('0099_from_a_newer_build.sql');
+		// Nor are its timestamps converted (card 2095, R5): a later build may
+		// have chosen another form. This one is in the form before card 2095.
+		database.prepare("UPDATE users SET created_at = '2026-10-14T08:00:00.000Z' WHERE id = 1").run();
 		const master = masterOf(database);
 		const before = contentsOf(database);
 
@@ -3086,6 +3171,7 @@ describe('the six reconciled tables', () => {
 		expect(report.rebuilt).toEqual([]);
 		expect(report.leftAlone).toEqual([]);
 		expect(report.detachedSubBoards).toEqual([]);
+		expect(report.timestamps).toBeNull();
 		expect(masterOf(database)).toEqual(master);
 		expect(contentsOf(database)).toEqual(before);
 
@@ -3099,7 +3185,8 @@ describe('the six reconciled tables', () => {
 		expect(
 			errors[0].endsWith(
 				'Schema reconciliation was skipped because of it: none of boards, columns, categories, settings, user_xp, ' +
-					'invite_tokens was compared or reshaped, since a build must not reshape a database that may be newer than it is. ' +
+					'invite_tokens was compared or reshaped, and no timestamp was converted to the stored form, since a build ' +
+					'must not reshape a database that may be newer than it is. ' +
 					'Starting anyway. This is expected after going back to the previous image on purpose, and is reported at ' +
 					'every start until the newer image is started again. If that is not what was done, this image is missing ' +
 					'a migration file: build it again from a complete checkout.'
@@ -3124,6 +3211,74 @@ describe('the six reconciled tables', () => {
 		expect(after.reconciliationSkipped).toBeNull();
 		expect(after.rebuilt.map((r) => r.table)).toEqual(OLDER_ON_PRODUCTION);
 		expect(after.schemaDifferences).toEqual([]);
+		expect(after.timestamps?.converted).toEqual({ 'users.created_at': 1 });
+	});
+});
+
+// ─── Timestamps at every start (card 2095) ──────────────────────────────────
+
+describe('timestamps brought to the stored form at every start (card 2095)', () => {
+	/** A migrated database holding a session expiry in ISO and an API key expiry nobody can read. */
+	function mixed(): Database.Database {
+		const database = memoryDb();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x');
+			INSERT INTO sessions (id, user_id, expires_at) VALUES ('s', 1, '2026-10-21T09:00:00.000+01:00');
+			INSERT INTO api_keys (user_id, name, key_hash, key_prefix, expires_at) VALUES (1, 'k', 'h', 'df_1', 'zzz');
+		`);
+		return database;
+	}
+
+	it('converts what it can read, says so in one WARN line, and reports the rest at ERROR at every start', () => {
+		const database = mixed();
+		process.env.LOG_LEVEL = 'DEBUG';
+		const warned: string[] = [];
+		vi.spyOn(console, 'warn').mockImplementation((line) => warned.push(String(line).replace(/^\[[^\]]+\] /, '')));
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		const { report, errors } = reporting({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.timestamps).toEqual({
+			converted: { 'sessions.expires_at': 1 },
+			unreadable: { 'api_keys.expires_at': { count: 1, example: 'zzz' } },
+			failed: null
+		});
+		expect(database.prepare('SELECT expires_at FROM sessions').pluck().get()).toBe('2026-10-21 08:00:00');
+		expect(warned).toEqual([
+			'[WARN] [DB] 1 timestamp(s) converted to the stored form (YYYY-MM-DD HH:MM:SS, UTC), each still naming the ' +
+				'same moment to the second: sessions.expires_at 1. Expected once after the update that brings card 2095, ' +
+				'and after an import of an older backup; at any other start something still writes another form.'
+		]);
+		const unreadable =
+			'[ERROR] [DB] Timestamp column(s) hold values in no form this build can read, and they were left as they are: ' +
+			'api_keys.expires_at 1 (such as "zzz"). Anything that reads them, a report or a comparison with now, reads ' +
+			'them as text. Correct each one to YYYY-MM-DD HH:MM:SS in UTC, or clear it where the column allows NULL. ' +
+			'This is reported at every start until then.';
+		expect(errors).toEqual([unreadable]);
+
+		// The next start converts nothing and says nothing of it, and says the rest again.
+		warned.length = 0;
+		const next = reporting({ database, migrationsDir: REAL_MIGRATIONS });
+		expect(next.report.timestamps?.converted).toEqual({});
+		expect(warned).toEqual([]);
+		expect(next.errors).toEqual([unreadable]);
+	});
+
+	it('rolls a failure back, logs it at ERROR, and starts', () => {
+		const database = mixed();
+		database.exec(`CREATE TRIGGER refuse BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'refused by a trigger'); END`);
+
+		const { report, errors } = reporting({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.timestamps).toEqual({ converted: {}, unreadable: {}, failed: 'refused by a trigger' });
+		expect(database.prepare('SELECT expires_at FROM sessions').pluck().get()).toBe('2026-10-21T09:00:00.000+01:00');
+		// The schema check then reports the test's trigger, which the model has not.
+		expect(errors[0]).toBe(
+			'[ERROR] [DB] Timestamps could not be brought to the stored form (YYYY-MM-DD HH:MM:SS, UTC), and none was ' +
+				'changed: refused by a trigger. Start-up continues on the values as they are, and the next start tries again.'
+		);
+		expect(errors).toHaveLength(2);
 	});
 });
 
@@ -3155,6 +3310,7 @@ describe('the start-up schema check', () => {
 			detachedSubBoards: [],
 			reconciliationSkipped: null,
 			backfilled: { firstCompletedAt: 0, accessTokens: 0 },
+			timestamps: { converted: {}, unreadable: {}, failed: null },
 			schemaDifferences: [],
 			missingFromDisk: []
 		});
@@ -3974,8 +4130,14 @@ describe('restoring a backup taken before the latest migrations', () => {
 		 */
 		afterEach(() => {
 			vi.restoreAllMocks();
-			sqlite.pragma('foreign_keys = ON');
-			resetDb();
+			// The check after every test (tests/setup.ts) runs after this hook, on an
+			// emptied database, so it is made here first, once nothing is mocked (card 2095).
+			try {
+				afterEachTimestampCheck(sqlite);
+			} finally {
+				sqlite.pragma('foreign_keys = ON');
+				resetDb();
+			}
 		});
 
 		/** Everything but the log, which is meant to gain a line about what happened. */
@@ -4470,6 +4632,19 @@ describe('the database the runner leaves, against the model', () => {
 	});
 	const NONE = { byThisFile: [], byTheRunner: [] };
 
+	/**
+	 * Differences less the 39 indexes 0053 creates (one of them as 0054 makes
+	 * it), which must all be among them: what a database that has not had 0053
+	 * lacks.
+	 */
+	const withoutTheIndexesOf0053 = (differences: string[]) => {
+		const lacking = INDEXES_FROM_0053.map(
+			({ name, table, column }) => `${table}: index in the model but not in the database: index ${name} on (${column})`
+		);
+		expect(differences).toEqual(expect.arrayContaining(lacking));
+		return differences.filter((difference) => !lacking.includes(difference));
+	};
+
 	describe('the checked-in copy of the model', () => {
 		it('is the DDL that drizzle-kit exports, statement for statement', () => {
 			// The runner cannot ask drizzle-kit: it is not installed in production.
@@ -4512,7 +4687,14 @@ describe('the database the runner leaves, against the model', () => {
 				const database = modelDatabase();
 				database.exec(scratch);
 				const structure = structureOf(database);
-				expect(structure[scratchName]).toEqual(structure[table]);
+				// Less the indexes of its own CREATE INDEX statements, which the
+				// table's statement does not make: the rebuild creates those after
+				// the rename. Four of the six have one since card 2106.
+				const own = structure[table];
+				expect(structure[scratchName]).toEqual({
+					...own,
+					indexes: own.indexes.filter((index) => index.includes(' for a '))
+				});
 			}
 		);
 
@@ -4586,8 +4768,9 @@ describe('the database the runner leaves, against the model', () => {
 		const database = productionDatabase();
 		// Measured on production: no categories, and three have existed.
 		database.exec("INSERT INTO sqlite_sequence (name, seq) VALUES ('categories', 3)");
-		// Where it starts. Every difference the card set out to close, and no other.
-		expect(differencesFromModel(structureOf(database), structureOf(modelDatabase()))).toEqual([
+		// Where it starts. Every difference card 2006 set out to close, the 39
+		// indexes of 0053 (card 2106), and no other.
+		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'cards.first_completed_at: the column is in the model but not in the database',
 			'categories.board_id: is NOT NULL; the model has it nullable',
 			'categories: foreign key not in the model: (board_id) references boards(id), on update NO ACTION, on delete CASCADE',
@@ -4606,16 +4789,24 @@ describe('the database the runner leaves, against the model', () => {
 		expect(report.applied).toEqual([
 			'0050_add_first_completed_at.sql',
 			'0051_add_request_access_token.sql',
-			'0052_drop_time_entries.sql'
+			'0052_drop_time_entries.sql',
+			'0053_index_foreign_keys_end_sessions.sql',
+			FILE_0054
 		]);
 		expect(report.tolerated).toEqual([]);
 		expect(report.rebuilt.map((r) => r.table)).toEqual(['columns', 'categories', 'settings', 'user_xp', 'invite_tokens']);
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(recordedIn(database)).toHaveLength(58);
+		expect(recordedIn(database)).toHaveLength(60);
 		expect(sequenceIn(database, 'categories')).toBe(3);
 		expect(foreignKeysOn(database)).toBe(true);
 		expect(differencesIn(database)).toEqual(NONE);
+		// 0053 indexed columns of columns, categories and invite_tokens, and the
+		// rebuilds above then dropped those tables with their indexes. Each rebuild
+		// creates the model's indexes again, so all 39 are there (card 2106, R12),
+		// one of them as 0054 makes it.
+		expect(indexesOf(database)).toEqual(expect.arrayContaining(INDEXES_FROM_0053.map((index) => index.name)));
+		expect(unindexedForeignKeys(database)).toEqual([]);
 
 		// And the start after that has nothing left to do.
 		const again = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
@@ -4627,8 +4818,9 @@ describe('the database the runner leaves, against the model', () => {
 	it('is the model exactly, for a database from before card 2006, with its rows', () => {
 		const database = preCardDatabase();
 		seed(database);
-		// Where it starts: `boards` with neither of its foreign keys right.
-		expect(differencesFromModel(structureOf(database), structureOf(modelDatabase()))).toEqual([
+		// Where it starts: `boards` with neither of its foreign keys right, and
+		// none of the 39 indexes of 0053 (card 2106).
+		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'boards: foreign key not in the model: (created_by) references users(id), on update NO ACTION, on delete NO ACTION',
 			'boards: foreign key in the model but not in the database: (created_by) references users(id), on update NO ACTION, on delete SET NULL',
 			'boards: foreign key in the model but not in the database: (parent_card_id) references cards(id), on update NO ACTION, on delete CASCADE',
@@ -4639,13 +4831,18 @@ describe('the database the runner leaves, against the model', () => {
 		]);
 		const rowsOf = (table: string) => contentsOf(database)[table];
 		const before = Object.fromEntries(['boards', 'columns', 'categories', 'cards', 'labels'].map((t) => [t, rowsOf(t)]));
-		const differed = { boards: differencesOf(database, 'boards'), categories: differencesOf(database, 'categories') };
+		// Less the indexes of 0053, which the run creates before it rebuilds.
+		const notOf0053 = (difference: string) => !INDEXES_FROM_0053.some(({ name }) => difference.includes(` index ${name} on `));
+		const differed = {
+			boards: differencesOf(database, 'boards').filter(notOf0053),
+			categories: differencesOf(database, 'categories').filter(notOf0053)
+		};
 		expect(differed.boards).toHaveLength(3);
 		expect(differed.categories).toHaveLength(3);
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual(['0052_drop_time_entries.sql']);
+		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054]);
 		expect(report.rebuilt).toEqual([
 			{ table: 'boards', rows: 3, defaulted: [], differences: differed.boards },
 			{ table: 'categories', rows: 3, defaulted: [], differences: differed.categories }
@@ -4671,5 +4868,548 @@ describe('the database the runner leaves, against the model', () => {
 			expect(() => insert(1, null)).not.toThrow();
 			expect(() => insert(null, 1)).not.toThrow();
 		}
+	});
+
+	describe('foreign key columns (card 2106)', () => {
+		it('each lead an index: in the model, in a new database and in production once the runner has been over it', () => {
+			// The message names any column that does not.
+			expect(unindexedForeignKeys(modelDatabase()), 'in the model').toEqual([]);
+
+			const fresh = memoryDb();
+			runMigrations({ database: fresh, migrationsDir: REAL_MIGRATIONS });
+			expect(unindexedForeignKeys(fresh), 'in a new database').toEqual([]);
+
+			const live = productionDatabase();
+			runMigrations({ database: live, migrationsDir: REAL_MIGRATIONS });
+			expect(unindexedForeignKeys(live), 'in production').toEqual([]);
+		});
+
+		it('had no index before 0053 in exactly the 39 columns it indexes, each named after its table and column', () => {
+			expect(INDEXES_0053).toHaveLength(39);
+			for (const { name, table, column } of INDEXES_0053) expect(name).toBe(`idx_${table}_${column}`);
+
+			const database = memoryDb();
+			const before = Object.fromEntries(
+				realFiles.filter((f) => f < FILE_0053).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+			);
+			applyFilesOnly(database, migrationsDir(before));
+			expect(unindexedForeignKeys(database)).toEqual(INDEXES_0053.map(({ table, column }) => `${table}.${column}`).sort());
+
+			// And in the model, under the same names, so that the start-up check
+			// compares them by name: all but the one on activity_log.user_id, which
+			// 0054 made one on user_id and created_at.
+			const declared = EXPECTED_SCHEMA.filter((statement) => statement.startsWith('CREATE INDEX'));
+			for (const { name, table, column } of INDEXES_0053.filter(({ name }) => name !== 'idx_activity_log_user_id')) {
+				expect(declared).toContain(`CREATE INDEX \`${name}\` ON \`${table}\` (\`${column}\`);`);
+			}
+			expect(declared).toContain(
+				'CREATE INDEX `idx_activity_log_user_id_created_at` ON `activity_log` (`user_id`,`created_at`);'
+			);
+		});
+
+		it('are found by the check when one has no index, whatever else the table has', () => {
+			const database = memoryDb();
+			database.exec(`
+				CREATE TABLE parents (id INTEGER PRIMARY KEY);
+				CREATE TABLE children (
+					id INTEGER PRIMARY KEY,
+					parent_id INTEGER REFERENCES parents(id),
+					indexed_id INTEGER REFERENCES parents(id),
+					second_id INTEGER REFERENCES parents(id)
+				);
+				CREATE INDEX idx_children_indexed ON children (indexed_id);
+				CREATE INDEX idx_children_pair ON children (id, second_id);
+				CREATE TABLE pairs (a INTEGER REFERENCES parents(id), b INTEGER REFERENCES parents(id), PRIMARY KEY (a, b));
+				CREATE TABLE one_to_one (id INTEGER PRIMARY KEY REFERENCES parents(id));
+			`);
+			// second_id is in an index, but not first in it; b is second in the key.
+			expect(unindexedForeignKeys(database)).toEqual(['children.parent_id', 'children.second_id', 'pairs.b']);
+		});
+	});
+});
+
+// ─── 0053: every session ended once ──────────────────────────────────────────
+
+describe('0053, which ends every session once (card 2106)', () => {
+	/**
+	 * A database with every migration before 0053 applied, two people signed
+	 * in, an API key and two invites.
+	 */
+	function signedIn(): Database.Database {
+		const database = memoryDb();
+		const before = Object.fromEntries(
+			realFiles.filter((f) => f < FILE_0053).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+		);
+		applyFilesOnly(database, migrationsDir(before));
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash) VALUES
+				(1, 'ann', 'ann@example.test', 'x'),
+				(2, 'bob', 'bob@example.test', 'x');
+			INSERT INTO sessions (id, user_id, expires_at) VALUES
+				('session-of-ann', 1, '2099-01-01 00:00:00'),
+				('session-of-bob', 2, '2099-01-01 00:00:00');
+			INSERT INTO api_keys (key_hash, key_prefix, name, user_id) VALUES ('hash-of-ann', 'df_ann', 'Ann''s key', 1);
+			INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES
+				('invite-unused', 2, '2099-01-01 00:00:00', 0),
+				('invite-used', 1, '2099-01-01 00:00:00', 1);
+		`);
+		return database;
+	}
+
+	it('ends every session, and leaves users, API keys, invites and everything else as they were', () => {
+		const database = signedIn();
+		const before = contentsOf(database);
+		expect(before.sessions).toHaveLength(2);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0053, FILE_0054]);
+		expect(report.schemaDifferences).toEqual([]);
+		const after = contentsOf(database);
+		expect(after.sessions).toEqual([]);
+		for (const table of Object.keys(before)) {
+			// The migration record, and its id counter, gain the files; 0054 ends
+			// the unused invite, which its own tests cover.
+			if (['sessions', 'invite_tokens', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
+			expect(after[table], table).toEqual(before[table]);
+		}
+		expect(after.users).toHaveLength(2);
+		expect(after.api_keys).toHaveLength(1);
+		expect(after.invite_tokens).toEqual(before.invite_tokens.filter((row) => row.includes('"invite-used"')));
+	});
+
+	it('deletes nothing at the next start, and a session made after it survives that start', () => {
+		const database = signedIn();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		database.exec(
+			"INSERT INTO sessions (id, user_id, expires_at) VALUES ('signed-in-again', 1, '2099-01-01 00:00:00')"
+		);
+		const before = contentsOf(database);
+
+		const again = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(again.applied).toEqual([]);
+		expect(contentsOf(database)).toEqual(before);
+		expect(contentsOf(database).sessions).toHaveLength(1);
+	});
+
+	it('passes the rehearsal, which notes the sessions it ended as the one-off declared for them', () => {
+		const database = signedIn();
+		const before = stateOf(database);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		const found: Findings = { problems: [], notes: [] };
+		compare(before, stateOf(database), report.applied, found);
+
+		expect(found.problems).toEqual([]);
+		expect(found.notes).toEqual([
+			`invite_tokens had 2 row(s) and has 1: every unused invite deleted by ${FILE_0054}, a one-off declared in tests/rehearsal/one-offs.ts`,
+			`sessions had 2 row(s) and has 0: every row deleted by ${FILE_0053}, a one-off declared in tests/rehearsal/one-offs.ts`
+		]);
+	});
+
+	it('is in a tree whose backups hold no session, without which it must not ship (card 2135)', () => {
+		// 0053 ends the sessions that backups already made hold. Sessions made
+		// after it must not leave in the next backup, or the one-off is spent:
+		// so card 2106's tests cannot pass without card 2135's change (R9).
+		resetDb();
+		try {
+			const user = makeUser();
+			const token = makeSession(user);
+			expect(sqlite.prepare('SELECT COUNT(*) AS n FROM sessions WHERE id = ?').get(token)).toEqual({ n: 1 });
+
+			const bytes = generateBackupData();
+
+			expect(bytes.includes(Buffer.from(token)), 'the id of a live session').toBe(false);
+			// It is a backup of this database: the user is in it.
+			expect(bytes.includes(Buffer.from(user.email))).toBe(true);
+		} finally {
+			resetDb();
+		}
+	});
+});
+
+// ─── One-off changes to data ─────────────────────────────────────────────────
+
+describe('a migration file that loses rows (card 2106, decision 3)', () => {
+	/** A statement's text with its comments, strings and quoted names blanked, so that a word in one is not read. */
+	const codeOf = (text: string) =>
+		text.replace(/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]/g, ' ');
+
+	/**
+	 * The statements of a migration file that can take rows away, read as the
+	 * runner reads them, so that a comment, a string or an `ON DELETE` is not
+	 * one: a DELETE, a DROP TABLE, a REPLACE, any statement that opens with
+	 * WITH (which can be a DELETE), an INSERT OR REPLACE and an UPDATE OR
+	 * REPLACE (each deletes the rows it collides with), and a trigger whose
+	 * body deletes or replaces. A DROP INDEX, VIEW or TRIGGER takes no row.
+	 */
+	const losingRows = (sql: string) =>
+		sqlStatements(sql)
+			.filter((statement) => {
+				const code = codeOf(statement.text);
+				if (['DELETE', 'REPLACE', 'WITH'].includes(statement.keyword)) return true;
+				if (statement.keyword === 'DROP') return /^\s*DROP\s+TABLE\b/i.test(code);
+				if (statement.keyword === 'INSERT' || statement.keyword === 'UPDATE') return /\bOR\s+REPLACE\b/i.test(code);
+				if (statement.keyword === 'CREATE' && /^\s*CREATE\s+(TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i.test(code)) {
+					// After its BEGIN: the event it waits for may be a DELETE, which takes nothing.
+					return /\b(DELETE|REPLACE)\b/i.test(code.slice(code.search(/\bBEGIN\b/i)));
+				}
+				return false;
+			})
+			.map((statement) => statement.text);
+
+	/** Each file from 0053 on that can lose rows and is not declared, with its first such statement. */
+	function undeclared(dir: string, oneOffs: readonly OneOff[] = ONE_OFFS): string[] {
+		const found: string[] = [];
+		for (const file of readdirSync(dir).filter((f) => f.endsWith('.sql') && f >= ONE_OFFS_FROM).sort()) {
+			const losing = losingRows(readFileSync(join(dir, file), 'utf-8'));
+			if (losing.length > 0 && !oneOffs.some((oneOff) => oneOff.file === file)) {
+				found.push(`${file}: ${losing[0]} — declare it in tests/rehearsal/one-offs.ts`);
+			}
+		}
+		return found;
+	}
+
+	it('is declared to the rehearsal, every one of them from 0053 on', () => {
+		expect(undeclared(REAL_MIGRATIONS)).toEqual([]);
+		// The one there is, which shows the reading sees it.
+		expect(losingRows(readFileSync(join(REAL_MIGRATIONS, FILE_0053), 'utf-8'))).toEqual(['DELETE FROM `sessions`;']);
+	});
+
+	it('is declared by a file in drizzle/ that loses rows, and a table in the model', () => {
+		for (const oneOff of ONE_OFFS) {
+			expect(realFiles, oneOff.file).toContain(oneOff.file);
+			expect(oneOff.file >= ONE_OFFS_FROM).toBe(true);
+			expect(losingRows(readFileSync(join(REAL_MIGRATIONS, oneOff.file), 'utf-8')), oneOff.file).not.toEqual([]);
+			expect(EXPECTED_SCHEMA.some((statement) => statement.startsWith(`CREATE TABLE \`${oneOff.table}\` (`)), oneOff.table).toBe(
+				true
+			);
+		}
+	});
+
+	it.each([
+		['a DELETE', 'DELETE FROM things WHERE id > 1;'],
+		['a DROP', 'DROP TABLE things;'],
+		['a REPLACE', "REPLACE INTO things (id, name) VALUES (1, 'a');"],
+		['an INSERT OR REPLACE', "INSERT OR REPLACE INTO things (id, name) VALUES (1, 'a');"],
+		['a DELETE that opens with WITH', 'WITH old AS (SELECT id FROM things) DELETE FROM things WHERE id IN (SELECT id FROM old);'],
+		// An UPDATE OR REPLACE deletes each row its new value collides with, and
+		// a trigger that deletes takes rows whenever it fires (the P6 review, N9).
+		['an UPDATE OR REPLACE', "UPDATE OR REPLACE things SET name = 'a';"],
+		[
+			'a trigger that deletes',
+			'CREATE TRIGGER prune AFTER INSERT ON things BEGIN DELETE FROM things WHERE id < NEW.id - 10; END;'
+		],
+		[
+			'a trigger that replaces',
+			"CREATE TEMP TRIGGER swap AFTER UPDATE ON things BEGIN INSERT OR REPLACE INTO things (id, name) VALUES (1, 'a'); END;"
+		]
+	])('fails when it holds %s and is not declared', (_kind, sql) => {
+		const dir = migrationsDir({
+			'0040_older.sql': 'DELETE FROM things;',
+			'0054_sample.sql': statements('CREATE TABLE extra (id INTEGER PRIMARY KEY);', sql)
+		});
+
+		// The older file was written before the rule and is not read.
+		expect(undeclared(dir)).toEqual([`0054_sample.sql: ${sql} — declare it in tests/rehearsal/one-offs.ts`]);
+		expect(undeclared(dir, [...ONE_OFFS, { file: '0054_sample.sql', table: 'things', change: 'some rows deleted' }])).toEqual([]);
+	});
+
+	it('passes when its only DELETE is in a comment, a string or an ON DELETE', () => {
+		const dir = migrationsDir({
+			'0054_sample.sql': statements(
+				'-- DELETE FROM sessions; DROP TABLE users;',
+				'CREATE TABLE extra (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id) ON DELETE cascade);',
+				"INSERT INTO extra (id) SELECT id FROM users WHERE username <> 'DELETE';",
+				'CREATE INDEX IF NOT EXISTS `idx_extra_user_id` ON `extra` (`user_id`);'
+			)
+		});
+		expect(undeclared(dir)).toEqual([]);
+	});
+
+	it('passes when it drops an index, or has a trigger that fires on a delete and deletes nothing itself', () => {
+		// Neither loses a row: an index holds none, and the trigger's DELETE is
+		// the event it waits for, not a statement it runs.
+		const dir = migrationsDir({
+			'0054_sample.sql': statements(
+				'DROP INDEX IF EXISTS `idx_extra_user_id`;',
+				"CREATE TRIGGER noted AFTER DELETE ON extra BEGIN INSERT INTO log (what) VALUES ('-- DELETE'); END;",
+				"CREATE TRIGGER /* DELETE */ also AFTER UPDATE ON extra BEGIN UPDATE extra SET note = 'DELETE' WHERE id = NEW.id; END;"
+			)
+		});
+		expect(undeclared(dir)).toEqual([]);
+	});
+
+	describe('in the rehearsal', () => {
+		const state = (sessions: number, recorded: number): State => ({
+			rows: { __drizzle_migrations: recorded, sessions, users: 2 },
+			sequences: {},
+			violations: 0
+		});
+		const comparing = (applied: string[]): Findings => {
+			const found: Findings = { problems: [], notes: [] };
+			compare(state(5, 52), state(0, 52 + applied.length), applied, found);
+			return found;
+		};
+
+		it('is a note in a run that applied the file that declares it', () => {
+			expect(comparing([FILE_0053])).toEqual({
+				problems: [],
+				notes: [`sessions had 5 row(s) and has 0: every row deleted by ${FILE_0053}, a one-off declared in tests/rehearsal/one-offs.ts`]
+			});
+		});
+
+		it('is a failure in a run that did not apply that file', () => {
+			expect(comparing(['0054_something_else.sql'])).toEqual({
+				problems: [`sessions had 5 row(s) and has 0, and ${FILE_0053}, which may take its rows, was not applied in this run`],
+				notes: []
+			});
+			expect(comparing([]).problems).toHaveLength(1);
+		});
+
+		it('is a failure in a table nothing declares', () => {
+			const found: Findings = { problems: [], notes: [] };
+			compare(state(5, 52), { ...state(5, 53), rows: { ...state(5, 53).rows, users: 1 } }, [FILE_0053], found);
+			expect(found.problems).toEqual(['users had 2 row(s) and has 1']);
+		});
+	});
+});
+
+// ─── 0054: a person's log entries by person and time, and no unused invite ──
+
+describe('0054, which indexes a person’s entries by time and ends every unused invite (the P6 review)', () => {
+	/** Every statement `sqlite.prepare` was given while `run` ran, and what `run` gave. */
+	async function preparedDuring<T>(run: () => T | Promise<T>): Promise<{ result: T; prepared: string[] }> {
+		const prepared: string[] = [];
+		const prepare = sqlite.prepare.bind(sqlite);
+		const spy = vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
+			prepared.push(source);
+			return prepare(source);
+		}) as typeof sqlite.prepare);
+		try {
+			return { result: await run(), prepared };
+		} finally {
+			spy.mockRestore();
+		}
+	}
+
+	/** The query plan of `source`, every `?` bound to `value`: with no statistics, a plan does not depend on the values. */
+	const planOf = (source: string, value: unknown = 1) =>
+		(
+			sqlite
+				.prepare(`EXPLAIN QUERY PLAN ${source}`)
+				.all(...Array.from({ length: (source.match(/\?/g) ?? []).length }, () => value)) as { detail: string }[]
+		).map((row) => row.detail);
+
+	/**
+	 * A person who has written a lot: three boards of ten cards, each card
+	 * with entries and comments by them and by somebody else, as the activity
+	 * report and the audit routes meet them.
+	 */
+	function aBusyPerson() {
+		resetDb();
+		const admin = makeUser({ role: 'admin' });
+		const heavy = makeUser();
+		const other = makeUser();
+		const insertEntry = sqlite.prepare(
+			"INSERT INTO activity_log (board_id, card_id, user_id, action, detail, created_at) VALUES (?, ?, ?, 'card_moved', 'moved', ?)"
+		);
+		const insertComment = sqlite.prepare('INSERT INTO card_comments (card_id, user_id, content, created_at) VALUES (?, ?, ?, ?)');
+		for (let b = 0; b < 3; b++) {
+			const { board, cols } = makeBoard({ owner: admin });
+			for (let c = 0; c < 10; c++) {
+				const card = makeCard(cols['To Do']);
+				for (let e = 0; e < 5; e++) {
+					const at = `2026-10-${String(1 + e).padStart(2, '0')} 0${b}:${String(c).padStart(2, '0')}:00`;
+					insertEntry.run(board.id, card.id, e % 2 ? other.id : heavy.id, at);
+					insertComment.run(card.id, e % 2 ? heavy.id : other.id, `comment ${e}`, at);
+				}
+			}
+		}
+		return { admin, heavy };
+	}
+
+	afterEach(() => {
+		try {
+			afterEachTimestampCheck(sqlite);
+		} finally {
+			resetDb();
+		}
+	});
+
+	it('is the one file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
+		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054]);
+		const sql = sqlStatements(readFileSync(join(REAL_MIGRATIONS, FILE_0054), 'utf-8')).map((s) => s.text);
+		expect(sql).toEqual([
+			'DROP INDEX IF EXISTS `idx_activity_log_user_id`;',
+			'CREATE INDEX IF NOT EXISTS `idx_activity_log_user_id_created_at` ON `activity_log` (`user_id`,`created_at`);',
+			'DELETE FROM `invite_tokens` WHERE `used` = 0;'
+		]);
+	});
+
+	it('the activity report filtered by a person looks each card’s entries and comments up by card (B1)', async () => {
+		// With an index on user_id, SQLite answered "an entry by this person on
+		// this card" by the person's index, once for every card: 4,215 ms
+		// against 9 ms on 2,000 cards and 60,000 entries (the P6 review).
+		const { admin, heavy } = aBusyPerson();
+		const { result, prepared } = await preparedDuring(() =>
+			buildActivityReport({ actor: admin, userId: heavy.id, from: '2026-10-01', to: '2026-10-31' })
+		);
+		expect(result.totals.cards).toBe(30);
+
+		const report = prepared.filter((source) => source.includes('FROM activity_log al2'));
+		expect(report).toHaveLength(1);
+		const plan = (
+			sqlite
+				.prepare(`EXPLAIN QUERY PLAN ${report[0]}`)
+				.all({ from: '2026-10-01 00:00:00', to: '2026-10-31 23:59:59', userId: heavy.id }) as { detail: string }[]
+		).map((row) => row.detail);
+		expect(plan).toContain('SEARCH al2 USING INDEX idx_activity_log_card (card_id=?)');
+		expect(plan).toContain('SEARCH cc2 USING INDEX idx_card_comments_card_id (card_id=?)');
+		expect(plan.filter((line) => /\b(al2|cc2)\b/.test(line) && /user_id/.test(line))).toEqual([]);
+	});
+
+	it.each(['/api/audit', '/api/v1/audit-log'])(
+		'%s, filtered by a person, reads their newest entries by person and time, and sorts nothing (M2)',
+		async (path) => {
+			const { admin, heavy } = aBusyPerson();
+			for (const query of [`userId=${heavy.id}`, `userId=${heavy.id}&from=2026-10-02&to=2026-10-04`]) {
+				const { result, prepared } = await preparedDuring(() => api('GET', `${path}?${query}&limit=10`, { user: admin }));
+				expect(result.status, JSON.stringify(result.body)).toBe(200);
+				expect(result.body.data).toHaveLength(10);
+
+				const page = prepared.filter((source) => source.includes('from "activity_log"') && / order by /i.test(source));
+				expect(page, query).toHaveLength(1);
+				const plan = planOf(page[0], heavy.id);
+				expect(plan, query).toEqual([
+					expect.stringMatching(/^SEARCH activity_log USING INDEX idx_activity_log_user_id_created_at \(user_id=\?/)
+				]);
+			}
+		}
+	);
+
+	it.each([
+		['/api/audit', 'boardId', 'idx_activity_log_board_created (board_id=?'],
+		['/api/v1/audit-log', 'boardId', 'idx_activity_log_board_created (board_id=?'],
+		['/api/v1/audit-log', 'cardId', 'idx_activity_log_card (card_id=?']
+	])(
+		'%s, filtered by a person and a %s, reads that one’s entries by its own index, not every entry of the person’s',
+		async (path, filter, index) => {
+			// Asked plainly, SQLite took the person's index for its order and read
+			// every entry of theirs to find the few on this board or card (the
+			// second P6 review). The person is asked as `+user_id`, as the
+			// activity report does.
+			const { admin, heavy } = aBusyPerson();
+			const where = sqlite
+				.prepare('SELECT board_id AS boardId, card_id AS cardId FROM activity_log WHERE user_id = ? LIMIT 1')
+				.get(heavy.id) as { boardId: number; cardId: number };
+			const value = filter === 'boardId' ? where.boardId : where.cardId;
+			for (const query of [
+				`userId=${heavy.id}&${filter}=${value}`,
+				`userId=${heavy.id}&${filter}=${value}&from=2026-10-01&to=2026-10-05`
+			]) {
+				const { result, prepared } = await preparedDuring(() => api('GET', `${path}?${query}&limit=10`, { user: admin }));
+				expect(result.status, JSON.stringify(result.body)).toBe(200);
+				expect(result.body.data).toHaveLength(filter === 'boardId' ? 10 : 3);
+				expect(result.body.data.every((entry: { userId: number }) => entry.userId === heavy.id)).toBe(true);
+
+				const reads = prepared.filter((source) => source.includes('from "activity_log"'));
+				expect(reads.length, query).toBeGreaterThan(0);
+				for (const source of reads) {
+					const plan = planOf(source, value);
+					expect(plan[0], `${query}\n${source}`).toMatch(new RegExp(`^SEARCH activity_log USING INDEX ${index.replace(/[()?]/g, '\\$&')}`));
+					expect(plan.some((line) => line.includes('user_id')), query).toBe(false);
+				}
+			}
+		}
+	);
+
+	it('GET /api/v1/me/stats counts a person’s completions by person and time (M2)', async () => {
+		const { heavy } = aBusyPerson();
+		const { result, prepared } = await preparedDuring(() => api('GET', '/api/v1/me/stats', { user: heavy }));
+		expect(result.status, JSON.stringify(result.body)).toBe(200);
+
+		const counts = prepared.filter((source) => /^select count\(\*\) from "activity_log"/i.test(source));
+		expect(counts).toHaveLength(3);
+		const [allTime, ...lately] = counts.map((source) => planOf(source, heavy.id));
+		// All time: every completion of theirs, from the index.
+		expect(allTime).toEqual([
+			expect.stringMatching(/^SEARCH activity_log USING INDEX idx_activity_log_user_id_created_at \(user_id=\?\)$/)
+		]);
+		// The last 7 and 30 days: only that stretch of the index is read.
+		for (const plan of lately) {
+			expect(plan).toEqual([
+				expect.stringMatching(/^SEARCH activity_log USING INDEX idx_activity_log_user_id_created_at \(user_id=\? AND created_at>\?\)$/)
+			]);
+		}
+		// The streak reads the same index; what it sorts is days, one row a day at most.
+		const streak = prepared.filter((source) => /select distinct date\(created_at\)/i.test(source));
+		expect(streak).toHaveLength(1);
+		expect(planOf(streak[0], heavy.id)[0]).toMatch(
+			/^SEARCH activity_log USING INDEX idx_activity_log_user_id_created_at \(user_id=\?\)$/
+		);
+	});
+
+	it('leaves the index on card_comments.user_id as it is: nothing reads a person’s comments in order of time', () => {
+		// The one query by a person is the count made when an account is
+		// deleted (deletes.ts), which no order helps; comments are listed by card.
+		const declared = EXPECTED_SCHEMA.filter((statement) => statement.startsWith('CREATE INDEX'));
+		expect(declared).toContain('CREATE INDEX `idx_card_comments_user_id` ON `card_comments` (`user_id`);');
+		expect(declared).toContain('CREATE INDEX `idx_activity_log_user_id_created_at` ON `activity_log` (`user_id`,`created_at`);');
+		expect(declared.some((statement) => statement.includes('`idx_activity_log_user_id`'))).toBe(false);
+	});
+
+	it('deletes every unused invite, keeps the used ones and everything else, and deletes nothing at the next start (I4)', () => {
+		const database = memoryDb();
+		const before0054 = Object.fromEntries(
+			realFiles.filter((f) => f < FILE_0054).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+		);
+		applyFilesOnly(database, migrationsDir(before0054));
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash) VALUES
+				(1, 'ann', 'ann@example.test', 'x'),
+				(2, 'bob', 'bob@example.test', 'x');
+			INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES
+				('waiting-from-an-old-backup', 2, '2099-01-01 00:00:00', 0),
+				('expired-unused', 2, '2020-01-01 00:00:00', 0),
+				('used-long-ago', 1, '2020-01-01 00:00:00', 1);
+		`);
+		const before = contentsOf(database);
+		const state = stateOf(database);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0054]);
+		expect(report.schemaDifferences).toEqual([]);
+		expect((database.prepare('SELECT token FROM invite_tokens').all() as { token: string }[]).map((r) => r.token)).toEqual([
+			'used-long-ago'
+		]);
+		const after = contentsOf(database);
+		for (const table of Object.keys(before)) {
+			// The migration record, and its id counter, gain the file.
+			if (table === 'invite_tokens' || table === '__drizzle_migrations' || table === 'sqlite_sequence') continue;
+			expect(after[table], table).toEqual(before[table]);
+		}
+		expect(indexesOf(database)).toContain('idx_activity_log_user_id_created_at');
+		expect(indexesOf(database)).not.toContain('idx_activity_log_user_id');
+
+		// The rehearsal notes the loss as the one-off declared for it.
+		const found: Findings = { problems: [], notes: [] };
+		compare(state, stateOf(database), report.applied, found);
+		expect(found).toEqual({
+			problems: [],
+			notes: [
+				`invite_tokens had 3 row(s) and has 1: every unused invite deleted by ${FILE_0054}, a one-off declared in tests/rehearsal/one-offs.ts`
+			]
+		});
+
+		// An invite issued after it survives the next start.
+		database.exec(
+			"INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES ('issued-after', 2, '2099-01-01 00:00:00', 0)"
+		);
+		const later = contentsOf(database);
+		expect(runMigrations({ database, migrationsDir: REAL_MIGRATIONS }).applied).toEqual([]);
+		expect(contentsOf(database)).toEqual(later);
 	});
 });

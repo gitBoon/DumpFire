@@ -33,6 +33,7 @@ import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients'
 import { readBody, readChoice, readEmailList, readId } from '$lib/server/request-body';
 import { isSmtpConfigured, sendEmailWithAttachment } from '$lib/server/email';
 import { escapeHtml } from '$lib/escape-html';
+import { parseStamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ locals, request }) => {
@@ -114,9 +115,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const pdfBuffer = await generateReportPdf(reportData, detailLevel);
 	const dateStr = new Date().toISOString().split('T')[0];
 	const filename = `dumpfire-report-${scopeName.toLowerCase().replace(/\s+/g, '-')}-${dateStr}.pdf`;
-	// A YYYY-MM-DD bound is read as UTC midnight, so it is written out in UTC: in the
-	// server's own zone, west of UTC, it would read as the day before.
-	const day = (value: string) => new Date(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+	// Each bound is in the stored form, which is UTC (card 2095), so it is read
+	// with parseStamp and written out in UTC: `new Date()` reads the stored form
+	// in the server's own zone, and west of UTC that is the day before.
+	const day = (value: string) => (parseStamp(value) ?? new Date(NaN)).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 
 	// Why a send failed, for the page. The mail server's own answer is in the
 	// system log, which `email.ts` writes, and not in an answer to the browser.

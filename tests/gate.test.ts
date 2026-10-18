@@ -2516,7 +2516,7 @@ describe('what the gate writes to the system log', () => {
 		const token = 'invite-token-that-sets-a-password-7c41e9';
 		sqlite
 			.prepare('INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)')
-			.run(token, user.id, '2099-01-01T00:00:00.000Z');
+			.run(token, user.id, '2099-01-01 00:00:00');
 		const kept: LogEntry[] = [];
 		const unsubscribe = subscribeToLogs((entry) => kept.push(entry));
 

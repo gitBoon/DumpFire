@@ -45,6 +45,7 @@ import { api, routeMethods } from './helpers/api';
 import { makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
 import { gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { afterEachTimestampCheck } from './helpers/timestamps';
 
 /** What the stand-in destination was handed: the bytes, under the name and for the destination they were for. */
 const uploaded = vi.hoisted(() => [] as { destination: string; filename: string; bytes: Buffer }[]);
@@ -109,7 +110,7 @@ const OLD_FAILED_LINES: { old: string; now: string }[] = [
 /** Write `OLD_FAILED_LINES` into the running database's log, as sign-in wrote them. */
 function writeOldFailedLines(): void {
 	const old = sqlite.prepare(
-		"INSERT INTO system_logs (timestamp, level, context, message) VALUES ('2026-10-01T00:00:00.000Z', 'WARN', 'AUTH', ?)"
+		"INSERT INTO system_logs (timestamp, level, context, message) VALUES ('2026-10-01 00:00:00', 'WARN', 'AUTH', ?)"
 	);
 	for (const line of OLD_FAILED_LINES) old.run(line.old);
 }
@@ -138,19 +139,25 @@ beforeEach(() => {
 	memberSession = makeSession(member);
 	db.insert(inviteTokens)
 		.values([
-			{ token: UNUSED_INVITE, userId: member.id, expiresAt: '2099-01-01T00:00:00.000Z', used: false },
-			{ token: USED_INVITE, userId: admin.id, expiresAt: '2099-01-01T00:00:00.000Z', used: true }
+			{ token: UNUSED_INVITE, userId: member.id, expiresAt: '2099-01-01 00:00:00', used: false },
+			{ token: USED_INVITE, userId: admin.id, expiresAt: '2099-01-01 00:00:00', used: true }
 		])
 		.run();
 	makeCard(makeBoard({ owner: member, name: 'A board' }).cols['To Do'], { title: 'A card' });
 });
 
 afterEach(() => {
-	for (const database of opened.splice(0)) database.close();
-	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 	vi.restoreAllMocks();
-	sqlite.pragma('foreign_keys = ON');
-	resetDb();
+	// The check after every test (tests/setup.ts) runs after this hook, on an
+	// emptied database, so it is made here first, once nothing is mocked (card 2095).
+	try {
+		afterEachTimestampCheck(sqlite);
+	} finally {
+		for (const database of opened.splice(0)) database.close();
+		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+		sqlite.pragma('foreign_keys = ON');
+		resetDb();
+	}
 });
 
 /** A separate in-memory database with every migration applied, and no rows. */
@@ -338,7 +345,7 @@ describe('a backup', () => {
 			else process.env.LOG_LEVEL = level;
 		}
 		const old = sqlite.prepare(
-			"INSERT INTO system_logs (timestamp, level, context, message, meta) VALUES ('2026-10-01T00:00:00.000Z', ?, 'HTTP', ?, ?)"
+			"INSERT INTO system_logs (timestamp, level, context, message, meta) VALUES ('2026-10-01 00:00:00', ?, 'HTTP', ?, ?)"
 		);
 		old.run('INFO', `GET /invite/${UNUSED_INVITE} → 200 (3ms)`, JSON.stringify({ method: 'GET', path: `/invite/${UNUSED_INVITE}`, status: 200 }));
 		old.run('WARN', `An invite was looked for that is ${UNUSED_INVITE}`, null);
@@ -875,7 +882,7 @@ describe('the running database’s system log, at start', () => {
 		// its token, which no gate wrote but a line may hold; and one line that
 		// is no secret.
 		const old = sqlite.prepare(
-			"INSERT INTO system_logs (timestamp, level, context, message, meta) VALUES ('2026-10-01T00:00:00.000Z', 'INFO', 'HTTP', ?, ?)"
+			"INSERT INTO system_logs (timestamp, level, context, message, meta) VALUES ('2026-10-01 00:00:00', 'INFO', 'HTTP', ?, ?)"
 		);
 		const meta = (path: string) => JSON.stringify({ method: 'GET', path, status: 200 });
 		old.run(`GET /invite/${UNUSED_INVITE} → 200 (3ms)`, meta(`/invite/${UNUSED_INVITE}`));

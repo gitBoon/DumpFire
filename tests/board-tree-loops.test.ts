@@ -53,6 +53,7 @@ import {
 } from './helpers/fixtures';
 import { readBudget, watchReads } from './helpers/reads';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { stamp } from '$lib/timestamps';
 
 beforeEach(resetDb);
 afterEach(() => {
@@ -207,7 +208,7 @@ describe('a card moved onto a board beneath it, at any depth, is refused (card 2
 				const f = family();
 				await expectRefused(() => move(f.owner, f.card, f.Y.cols['To Do']), 'Parent card', 'Y');
 
-				db.update(cards).set({ archivedAt: new Date().toISOString() }).where(eq(cards.id, f.X.cards[0].id)).run();
+				db.update(cards).set({ archivedAt: stamp() }).where(eq(cards.id, f.X.cards[0].id)).run();
 				await expectRefused(() => move(f.owner, f.card, f.Y.cols['To Do']), 'Parent card', 'Y');
 			});
 
@@ -536,7 +537,7 @@ describe('the line in the system log when a board hangs beneath one of its own c
 
 	it('marks a card that is archived, which All Tasks does not list, to be restored first', () => {
 		const w = world();
-		db.update(cards).set({ archivedAt: new Date().toISOString() }).where(eq(cards.id, w.s.id)).run();
+		db.update(cards).set({ archivedAt: stamp() }).where(eq(cards.id, w.s.id)).run();
 
 		expect(boardsInLoops().map((b) => [b.boardName, b.cardArchived])).toEqual([
 			['S', true],
@@ -638,7 +639,7 @@ describe('a delete that reaches a loop takes every board of it and every board b
 		{
 			door: 'purging the archive while that card is archived',
 			request: (w) => {
-				db.update(cards).set({ archivedAt: new Date().toISOString() }).where(eq(cards.id, w.s.id)).run();
+				db.update(cards).set({ archivedAt: stamp() }).where(eq(cards.id, w.s.id)).run();
 				return api('POST', '/api/admin/purge-archived', { user: w.admin });
 			},
 			gone: ['S', 'Z', 'W']
@@ -714,7 +715,7 @@ describe('a delete that reaches a loop takes every board of it and every board b
 
 		it('a purge with the card S hangs from archived: S is told it was deleted, and the system log names it', async () => {
 			const w = world();
-			db.update(cards).set({ archivedAt: new Date().toISOString() }).where(eq(cards.id, w.s.id)).run();
+			db.update(cards).set({ archivedAt: stamp() }).where(eq(cards.id, w.s.id)).run();
 
 			const events = await told(w, () => api('POST', '/api/admin/purge-archived', { user: w.admin }));
 

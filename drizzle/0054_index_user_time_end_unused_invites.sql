@@ -1,0 +1,43 @@
+-- A person's log entries indexed by person and time, and every unused invite
+-- ended once (the review of cards 2095, 2106 and 2107, 2026-10-18).
+--
+-- Part 1: the index. 0053 indexed activity_log.user_id on its own. The audit
+-- routes filtered by a person (/api/audit, /api/v1/audit-log) ask for that
+-- person's newest entries, a page at a time, and /api/v1/me/stats counts their
+-- completions in the last 7 and 30 days. With user_id alone SQLite found every
+-- entry of the person's and sorted them all to give one page; with user_id and
+-- created_at it reads the newest straight from the index and stops at the
+-- page, and reads only the days a count asks for. The index still leads with
+-- user_id, so the foreign key keeps its index (card 2106's rule), and it is
+-- declared in src/lib/server/db/schema.ts under the same name.
+-- card_comments.user_id keeps its index on that column alone: nothing reads a
+-- person's comments in order of time.
+--
+-- Part 2, a one-off change to data: every invite that has not been used is
+-- deleted, the last statement of the file. Backups made before card 2135 hold
+-- the token of every invite that was waiting when they were made, and an
+-- invite's token sets its account's password for up to seven days. Those
+-- backups cannot be called back; ending every waiting invite once makes the
+-- tokens in them worthless, and none of them is listed anywhere for the owner
+-- to end one by one.
+--
+-- What people see: an invite sent before the deploy and not yet used no longer
+-- works; its link shows the page for a link that no longer works. The owner
+-- sends again the invites still wanted, once the deploy is done
+-- (docs/deployment.md lists them before it). Used invites, accounts, sessions
+-- and API keys are untouched.
+--
+-- Harmless where it finds nothing: a new database has no invites. It is
+-- declared to the rehearsal in tests/rehearsal/one-offs.ts, which then expects
+-- `invite_tokens` to lose its unused rows.
+--
+-- Runs once. The runner records this file by name and never runs it again,
+-- and nothing repeats the delete at start-up or after a restore: a restore
+-- already brings in no unused invite.
+
+DROP INDEX IF EXISTS `idx_activity_log_user_id`;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `idx_activity_log_user_id_created_at` ON `activity_log` (`user_id`,`created_at`);
+--> statement-breakpoint
+-- The one-off: every invite not yet used.
+DELETE FROM `invite_tokens` WHERE `used` = 0;

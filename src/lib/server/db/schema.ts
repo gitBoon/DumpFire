@@ -15,6 +15,19 @@ import { sql } from 'drizzle-orm';
 // already create, under the same names. They are declared so that the model
 // describes the database that exists; `tests/migrations.test.ts` compares the
 // two. Declaring one here does not create it anywhere: only a migration does.
+//
+// Every foreign key column is the first column of some index (card 2106,
+// migration 0053), so that deleting a row does not read the whole of each
+// table that refers to it. A new foreign key needs its index declared here and
+// created by its migration; tests/migrations.test.ts fails on one that has none.
+//
+// A column's name says what it holds (card 2095). A TEXT column named `*_at`,
+// and `system_logs.timestamp`, is a moment, stored as `YYYY-MM-DD HH:MM:SS` in
+// UTC: what `datetime('now')` writes, and what `stamp()` in
+// src/lib/timestamps.ts writes from code. A column named `*_date` (or `date`)
+// is a day, `YYYY-MM-DD`. The rule is how the conversion at every start finds
+// the timestamp columns (`timestampColumns`, in timestamps.ts beside this
+// file), so a new moment is named `*_at` and needs no list kept by hand.
 
 // ─── Users & Auth ────────────────────────────────────────────────────────────
 
@@ -40,7 +53,9 @@ export const sessions = sqliteTable('sessions', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_sessions_user_id').on(table.userId)
+]);
 
 // ─── Teams ───────────────────────────────────────────────────────────────────
 
@@ -62,7 +77,8 @@ export const teamMembers = sqliteTable('team_members', {
 		.references(() => users.id, { onDelete: 'cascade' }),
 	role: text('role').notNull().default('member') // 'owner' | 'member'
 }, (table) => [
-	primaryKey({ columns: [table.teamId, table.userId] })
+	primaryKey({ columns: [table.teamId, table.userId] }),
+	index('idx_team_members_user_id').on(table.userId)
 ]);
 
 // ─── Boards ──────────────────────────────────────────────────────────────────
@@ -87,7 +103,10 @@ export const boards = sqliteTable('boards', {
 	updatedAt: text('updated_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_boards_parent_card_id').on(table.parentCardId),
+	index('idx_boards_created_by').on(table.createdBy)
+]);
 
 // ─── Board Categories ────────────────────────────────────────────────────────
 
@@ -108,7 +127,8 @@ export const boardMembers = sqliteTable('board_members', {
 		.references(() => users.id, { onDelete: 'cascade' }),
 	role: text('role').notNull().default('viewer') // 'owner' | 'editor' | 'viewer'
 }, (table) => [
-	primaryKey({ columns: [table.boardId, table.userId] })
+	primaryKey({ columns: [table.boardId, table.userId] }),
+	index('idx_board_members_user_id').on(table.userId)
 ]);
 
 export const boardTeams = sqliteTable('board_teams', {
@@ -120,7 +140,8 @@ export const boardTeams = sqliteTable('board_teams', {
 		.references(() => teams.id, { onDelete: 'cascade' }),
 	role: text('role').notNull().default('viewer') // 'editor' | 'viewer'
 }, (table) => [
-	primaryKey({ columns: [table.boardId, table.teamId] })
+	primaryKey({ columns: [table.boardId, table.teamId] }),
+	index('idx_board_teams_team_id').on(table.teamId)
 ]);
 
 // ─── Columns & Cards ─────────────────────────────────────────────────────────
@@ -135,7 +156,9 @@ export const columns = sqliteTable('columns', {
 	color: text('color').notNull().default('#6366f1'),
 	showAddCard: integer('show_add_card', { mode: 'boolean' }).notNull().default(false),
 	wipLimit: integer('wip_limit').notNull().default(0)
-});
+}, (table) => [
+	index('idx_columns_board_id').on(table.boardId)
+]);
 
 export const categories = sqliteTable('categories', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
@@ -143,7 +166,9 @@ export const categories = sqliteTable('categories', {
 		.references(() => boards.id, { onDelete: 'set null' }),
 	name: text('name').notNull(),
 	color: text('color').notNull().default('#6366f1')
-});
+}, (table) => [
+	index('idx_categories_board_id').on(table.boardId)
+]);
 
 export const cards = sqliteTable('cards', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
@@ -205,7 +230,10 @@ export const cards = sqliteTable('cards', {
 		.default(sql`(datetime('now'))`)
 }, (table) => [
 	index('idx_cards_milestone').on(table.milestoneId),
-	index('idx_cards_completed_at').on(table.completedAt)
+	index('idx_cards_completed_at').on(table.completedAt),
+	index('idx_cards_column_id').on(table.columnId),
+	index('idx_cards_category_id').on(table.categoryId),
+	index('idx_cards_created_by').on(table.createdBy)
 ]);
 
 export const subtasks = sqliteTable('subtasks', {
@@ -220,7 +248,9 @@ export const subtasks = sqliteTable('subtasks', {
 	dueDate: text('due_date'),
 	completed: integer('completed', { mode: 'boolean' }).notNull().default(false),
 	position: real('position').notNull().default(0)
-});
+}, (table) => [
+	index('idx_subtasks_card_id').on(table.cardId)
+]);
 
 export const userXp = sqliteTable('user_xp', {
 	name: text('name').primaryKey(),
@@ -256,7 +286,10 @@ export const activityLog = sqliteTable('activity_log', {
 }, (table) => [
 	index('idx_activity_log_created_at').on(table.createdAt),
 	index('idx_activity_log_board_created').on(table.boardId, table.createdAt),
-	index('idx_activity_log_card').on(table.cardId)
+	index('idx_activity_log_card').on(table.cardId),
+	// A person's entries, newest first, a page at a time (0054): it leads with
+	// user_id, so the foreign key has its index.
+	index('idx_activity_log_user_id_created_at').on(table.userId, table.createdAt)
 ]);
 
 // ─── Daily Snapshots (for the CFD) ───────────────────────────────────────────
@@ -272,7 +305,8 @@ export const dailySnapshots = sqliteTable('daily_snapshots', {
 	date: text('date').notNull(),
 	cardCount: integer('card_count').notNull().default(0)
 }, (table) => [
-	index('idx_daily_snapshots_board_date').on(table.boardId, table.date)
+	index('idx_daily_snapshots_board_date').on(table.boardId, table.date),
+	index('idx_daily_snapshots_column_id').on(table.columnId)
 ]);
 
 // ─── Webhooks ────────────────────────────────────────────────────────────────
@@ -289,7 +323,9 @@ export const webhooks = sqliteTable('webhooks', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_webhooks_board_id').on(table.boardId)
+]);
 
 // ─── Card Dependencies ──────────────────────────────────────────────────────
 // `cardId` is the card that is BLOCKED; `dependsOnCardId` is its BLOCKER.
@@ -323,7 +359,8 @@ export const workDependencies = sqliteTable('work_dependencies', {
 		table.blockerId
 	),
 	index('idx_work_dep_blocked').on(table.blockedType, table.blockedId),
-	index('idx_work_dep_blocker').on(table.blockerType, table.blockerId)
+	index('idx_work_dep_blocker').on(table.blockerType, table.blockerId),
+	index('idx_work_dependencies_created_by_user_id').on(table.createdByUserId)
 ]);
 
 export type WorkDependency = typeof workDependencies.$inferSelect;
@@ -355,7 +392,8 @@ export const cardDependencies = sqliteTable('card_dependencies', {
 		.default(sql`(datetime('now'))`)
 }, (table) => [
 	uniqueIndex('idx_card_dep_pair').on(table.cardId, table.dependsOnCardId),
-	index('idx_card_dep_blocker').on(table.dependsOnCardId)
+	index('idx_card_dep_blocker').on(table.dependsOnCardId),
+	index('idx_card_dependencies_created_by_user_id').on(table.createdByUserId)
 ]);
 
 export const labels = sqliteTable('labels', {
@@ -365,7 +403,9 @@ export const labels = sqliteTable('labels', {
 		.references(() => boards.id, { onDelete: 'cascade' }),
 	name: text('name').notNull(),
 	color: text('color').notNull().default('#6366f1')
-});
+}, (table) => [
+	index('idx_labels_board_id').on(table.boardId)
+]);
 
 export const cardLabels = sqliteTable('card_labels', {
 	cardId: integer('card_id')
@@ -374,7 +414,10 @@ export const cardLabels = sqliteTable('card_labels', {
 	labelId: integer('label_id')
 		.notNull()
 		.references(() => labels.id, { onDelete: 'cascade' })
-});
+}, (table) => [
+	index('idx_card_labels_card_id').on(table.cardId),
+	index('idx_card_labels_label_id').on(table.labelId)
+]);
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
@@ -393,7 +436,8 @@ export const cardAssignees = sqliteTable('card_assignees', {
 		.notNull()
 		.references(() => users.id, { onDelete: 'cascade' })
 }, (table) => [
-	primaryKey({ columns: [table.cardId, table.userId] })
+	primaryKey({ columns: [table.cardId, table.userId] }),
+	index('idx_card_assignees_user_id').on(table.userId)
 ]);
 
 // ─── Invite Tokens ───────────────────────────────────────────────────────────
@@ -411,7 +455,8 @@ export const boardFavourites = sqliteTable('board_favourites', {
 		.notNull()
 		.default(sql`(datetime('now'))`)
 }, (table) => [
-	primaryKey({ columns: [table.userId, table.boardId] })
+	primaryKey({ columns: [table.userId, table.boardId] }),
+	index('idx_board_favourites_board_id').on(table.boardId)
 ]);
 
 export const inviteTokens = sqliteTable('invite_tokens', {
@@ -424,7 +469,9 @@ export const inviteTokens = sqliteTable('invite_tokens', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_invite_tokens_user_id').on(table.userId)
+]);
 
 // ─── Type Exports ────────────────────────────────────────────────────────────
 
@@ -466,7 +513,10 @@ export const cardTemplates = sqliteTable('card_templates', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_card_templates_board_id').on(table.boardId),
+	index('idx_card_templates_created_by').on(table.createdBy)
+]);
 
 
 // ─── Milestones ──────────────────────────────────────────────────────────────
@@ -491,7 +541,10 @@ export const milestones = sqliteTable('milestones', {
 	updatedAt: text('updated_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_milestones_board_id').on(table.boardId),
+	index('idx_milestones_created_by').on(table.createdBy)
+]);
 
 export type Milestone = typeof milestones.$inferSelect;
 export type CardDependency = typeof cardDependencies.$inferSelect;
@@ -511,7 +564,10 @@ export const cardAttachments = sqliteTable('card_attachments', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_card_attachments_card_id').on(table.cardId),
+	index('idx_card_attachments_uploaded_by').on(table.uploadedBy)
+]);
 
 export type CardTemplate = typeof cardTemplates.$inferSelect;
 export type CardAttachment = typeof cardAttachments.$inferSelect;
@@ -533,7 +589,10 @@ export const cardComments = sqliteTable('card_comments', {
 	updatedAt: text('updated_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_card_comments_card_id').on(table.cardId),
+	index('idx_card_comments_user_id').on(table.userId)
+]);
 
 // ─── Task Requests ───────────────────────────────────────────────────────────
 
@@ -572,7 +631,11 @@ export const taskRequests = sqliteTable('task_requests', {
 	resolvedAt: text('resolved_at')
 }, (table) => [
 	// No two requests share a link. Requests with no token yet are not compared.
-	uniqueIndex('task_requests_access_token_idx').on(table.accessToken)
+	uniqueIndex('task_requests_access_token_idx').on(table.accessToken),
+	index('idx_task_requests_requester_user_id').on(table.requesterUserId),
+	index('idx_task_requests_resolved_by').on(table.resolvedBy),
+	index('idx_task_requests_resolved_card_id').on(table.resolvedCardId),
+	index('idx_task_requests_desired_board_id').on(table.desiredBoardId)
 ]);
 
 export type TaskRequest = typeof taskRequests.$inferSelect;
@@ -589,7 +652,9 @@ export const requestMessages = sqliteTable('request_messages', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_request_messages_request_id').on(table.requestId)
+]);
 
 export type RequestMessage = typeof requestMessages.$inferSelect;
 
@@ -608,7 +673,9 @@ export const apiKeys = sqliteTable('api_keys', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_api_keys_user_id').on(table.userId)
+]);
 
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
@@ -676,7 +743,9 @@ export const reportSchedules = sqliteTable('report_schedules', {
 	updatedAt: text('updated_at')
 		.notNull()
 		.default(sql`(datetime('now'))`)
-});
+}, (table) => [
+	index('idx_report_schedules_user_id').on(table.userId)
+]);
 
 export type ReportSchedule = typeof reportSchedules.$inferSelect;
 export type NewReportSchedule = typeof reportSchedules.$inferInsert;
@@ -732,6 +801,7 @@ export const tokenUsage = sqliteTable('token_usage', {
 }, (table) => [
 	index('idx_token_usage_card').on(table.cardId),
 	index('idx_token_usage_subtask').on(table.subtaskId),
+	index('idx_token_usage_reported_by_user_id').on(table.reportedByUserId),
 	// Exactly one owner, never both and never neither. Migration 0044 wrote the
 	// constraint without a name; Drizzle requires one, so the name exists only
 	// here.

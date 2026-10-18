@@ -13,6 +13,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { afterAll, afterEach } from 'vitest';
 import { getDbPath, sqlite } from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
+import { afterEachTimestampCheck } from './helpers/timestamps';
 
 // tests/harness.test.ts holds the list of every test file and the test that
 // compares it with the files on disk: it is what notices a test file that was
@@ -137,6 +138,18 @@ afterEach(async () => {
 });
 // Whatever started later still, after the last test of the file.
 afterAll(() => failOnAttempts('A test in this file'));
+
+// Every timestamp a test leaves in the database is in the stored form,
+// `YYYY-MM-DD HH:MM:SS` in UTC, or NULL (card 2095, decision 13 and R2): the
+// test that left another form fails, naming each value, and that is how a
+// write path that still writes another form is found. A test that writes one
+// on purpose says so with `allowOtherTimestampForms()`. Registered after the
+// hook above, so it runs before it: vitest runs `afterEach` hooks as a stack,
+// the last registered first, and a test file's own `afterEach` before both.
+// So a test file's `afterEach` that empties the database makes the check
+// itself first, or the check sees nothing: backups, import-working-copy and
+// migrations do. Nor may one forget the allowance.
+afterEach(() => afterEachTimestampCheck(sqlite));
 
 // Throws on the first migration that fails, which fails every test in the file.
 runMigrations();

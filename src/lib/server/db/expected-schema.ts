@@ -46,6 +46,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	"CREATE INDEX `idx_activity_log_created_at` ON `activity_log` (`created_at`);",
 	"CREATE INDEX `idx_activity_log_board_created` ON `activity_log` (`board_id`,`created_at`);",
 	"CREATE INDEX `idx_activity_log_card` ON `activity_log` (`card_id`);",
+	"CREATE INDEX `idx_activity_log_user_id_created_at` ON `activity_log` (`user_id`,`created_at`);",
 	[
 		"CREATE TABLE `api_keys` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -60,6 +61,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		");"
 	].join('\n'),
 	"CREATE UNIQUE INDEX `api_keys_key_hash_unique` ON `api_keys` (`key_hash`);",
+	"CREATE INDEX `idx_api_keys_user_id` ON `api_keys` (`user_id`);",
 	[
 		"CREATE TABLE `backup_log` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -90,6 +92,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_board_favourites_board_id` ON `board_favourites` (`board_id`);",
 	[
 		"CREATE TABLE `board_members` (",
 		"\t`board_id` integer NOT NULL,",
@@ -100,6 +103,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_board_members_user_id` ON `board_members` (`user_id`);",
 	[
 		"CREATE TABLE `board_teams` (",
 		"\t`board_id` integer NOT NULL,",
@@ -110,6 +114,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`team_id`) REFERENCES `teams`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_board_teams_team_id` ON `board_teams` (`team_id`);",
 	[
 		"CREATE TABLE `boards` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -125,6 +130,8 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`created_by`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_boards_parent_card_id` ON `boards` (`parent_card_id`);",
+	"CREATE INDEX `idx_boards_created_by` ON `boards` (`created_by`);",
 	[
 		"CREATE TABLE `card_assignees` (",
 		"\t`card_id` integer NOT NULL,",
@@ -134,6 +141,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_card_assignees_user_id` ON `card_assignees` (`user_id`);",
 	[
 		"CREATE TABLE `card_attachments` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -148,6 +156,8 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`uploaded_by`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_card_attachments_card_id` ON `card_attachments` (`card_id`);",
+	"CREATE INDEX `idx_card_attachments_uploaded_by` ON `card_attachments` (`uploaded_by`);",
 	[
 		"CREATE TABLE `card_comments` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -160,6 +170,8 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_card_comments_card_id` ON `card_comments` (`card_id`);",
+	"CREATE INDEX `idx_card_comments_user_id` ON `card_comments` (`user_id`);",
 	[
 		"CREATE TABLE `card_dependencies` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -174,6 +186,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	].join('\n'),
 	"CREATE UNIQUE INDEX `idx_card_dep_pair` ON `card_dependencies` (`card_id`,`depends_on_card_id`);",
 	"CREATE INDEX `idx_card_dep_blocker` ON `card_dependencies` (`depends_on_card_id`);",
+	"CREATE INDEX `idx_card_dependencies_created_by_user_id` ON `card_dependencies` (`created_by_user_id`);",
 	[
 		"CREATE TABLE `card_labels` (",
 		"\t`card_id` integer NOT NULL,",
@@ -182,6 +195,8 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`label_id`) REFERENCES `labels`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_card_labels_card_id` ON `card_labels` (`card_id`);",
+	"CREATE INDEX `idx_card_labels_label_id` ON `card_labels` (`label_id`);",
 	[
 		"CREATE TABLE `card_templates` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -198,6 +213,8 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`created_by`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_card_templates_board_id` ON `card_templates` (`board_id`);",
+	"CREATE INDEX `idx_card_templates_created_by` ON `card_templates` (`created_by`);",
 	[
 		"CREATE TABLE `cards` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -234,6 +251,9 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	].join('\n'),
 	"CREATE INDEX `idx_cards_milestone` ON `cards` (`milestone_id`);",
 	"CREATE INDEX `idx_cards_completed_at` ON `cards` (`completed_at`);",
+	"CREATE INDEX `idx_cards_column_id` ON `cards` (`column_id`);",
+	"CREATE INDEX `idx_cards_category_id` ON `cards` (`category_id`);",
+	"CREATE INDEX `idx_cards_created_by` ON `cards` (`created_by`);",
 	[
 		"CREATE TABLE `categories` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -243,6 +263,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE set null",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_categories_board_id` ON `categories` (`board_id`);",
 	[
 		"CREATE TABLE `columns` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -255,6 +276,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_columns_board_id` ON `columns` (`board_id`);",
 	[
 		"CREATE TABLE `daily_snapshots` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -267,6 +289,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		");"
 	].join('\n'),
 	"CREATE INDEX `idx_daily_snapshots_board_date` ON `daily_snapshots` (`board_id`,`date`);",
+	"CREATE INDEX `idx_daily_snapshots_column_id` ON `daily_snapshots` (`column_id`);",
 	[
 		"CREATE TABLE `invite_tokens` (",
 		"\t`token` text PRIMARY KEY NOT NULL,",
@@ -277,6 +300,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_invite_tokens_user_id` ON `invite_tokens` (`user_id`);",
 	[
 		"CREATE TABLE `labels` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -286,6 +310,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_labels_board_id` ON `labels` (`board_id`);",
 	[
 		"CREATE TABLE `milestones` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -301,6 +326,8 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`created_by`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE no action",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_milestones_board_id` ON `milestones` (`board_id`);",
+	"CREATE INDEX `idx_milestones_created_by` ON `milestones` (`created_by`);",
 	[
 		"CREATE TABLE `report_schedules` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -324,6 +351,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_report_schedules_user_id` ON `report_schedules` (`user_id`);",
 	[
 		"CREATE TABLE `request_messages` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -335,6 +363,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`request_id`) REFERENCES `task_requests`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_request_messages_request_id` ON `request_messages` (`request_id`);",
 	[
 		"CREATE TABLE `sessions` (",
 		"\t`id` text PRIMARY KEY NOT NULL,",
@@ -344,6 +373,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_sessions_user_id` ON `sessions` (`user_id`);",
 	[
 		"CREATE TABLE `settings` (",
 		"\t`key` text PRIMARY KEY NOT NULL,",
@@ -364,6 +394,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`card_id`) REFERENCES `cards`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_subtasks_card_id` ON `subtasks` (`card_id`);",
 	[
 		"CREATE TABLE `system_logs` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -405,6 +436,10 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		");"
 	].join('\n'),
 	"CREATE UNIQUE INDEX `task_requests_access_token_idx` ON `task_requests` (`access_token`);",
+	"CREATE INDEX `idx_task_requests_requester_user_id` ON `task_requests` (`requester_user_id`);",
+	"CREATE INDEX `idx_task_requests_resolved_by` ON `task_requests` (`resolved_by`);",
+	"CREATE INDEX `idx_task_requests_resolved_card_id` ON `task_requests` (`resolved_card_id`);",
+	"CREATE INDEX `idx_task_requests_desired_board_id` ON `task_requests` (`desired_board_id`);",
 	[
 		"CREATE TABLE `team_members` (",
 		"\t`team_id` integer NOT NULL,",
@@ -415,6 +450,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_team_members_user_id` ON `team_members` (`user_id`);",
 	[
 		"CREATE TABLE `teams` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -447,6 +483,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	].join('\n'),
 	"CREATE INDEX `idx_token_usage_card` ON `token_usage` (`card_id`);",
 	"CREATE INDEX `idx_token_usage_subtask` ON `token_usage` (`subtask_id`);",
+	"CREATE INDEX `idx_token_usage_reported_by_user_id` ON `token_usage` (`reported_by_user_id`);",
 	[
 		"CREATE TABLE `user_xp` (",
 		"\t`name` text PRIMARY KEY NOT NULL,",
@@ -480,6 +517,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
+	"CREATE INDEX `idx_webhooks_board_id` ON `webhooks` (`board_id`);",
 	[
 		"CREATE TABLE `work_dependencies` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
@@ -494,5 +532,6 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	].join('\n'),
 	"CREATE UNIQUE INDEX `idx_work_dep_pair` ON `work_dependencies` (`blocked_type`,`blocked_id`,`blocker_type`,`blocker_id`);",
 	"CREATE INDEX `idx_work_dep_blocked` ON `work_dependencies` (`blocked_type`,`blocked_id`);",
-	"CREATE INDEX `idx_work_dep_blocker` ON `work_dependencies` (`blocker_type`,`blocker_id`);"
+	"CREATE INDEX `idx_work_dep_blocker` ON `work_dependencies` (`blocker_type`,`blocker_id`);",
+	"CREATE INDEX `idx_work_dependencies_created_by_user_id` ON `work_dependencies` (`created_by_user_id`);"
 ]);

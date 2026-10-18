@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.45
+version: 1.47
 status: As-Built
-date: 2026-10-15
+date: 2026-10-18
 tags:
   - api
   - rest
@@ -297,6 +297,33 @@ one, and an attachment keeps its own `sandbox`.
 See [Security Headers](authentication-security.md#security-headers).
 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes and Failures](#writes-and-failures).
+
+### Timestamps
+
+Every timestamp in an answer under `/api/v1/` is UTC, in ISO 8601 with `Z`, as
+`2026-10-14T08:00:00.000Z`. That holds for every stored time (`createdAt`, `updatedAt`,
+`completedAt`, `firstCompletedAt`, `archivedAt`, an audit-log entry's `createdAt`), for the
+`from` and `to` of the activity report's `period` and of a card's board history, and for the
+moments of answering, `generatedAt` and a webhook's own `timestamp`. The OpenAPI document
+declares each of them `format: date-time`. A stored time is kept to the whole second, so
+its fraction is always `.000`. A moment of answering is not stored: `generatedAt` and a
+webhook's `timestamp` carry the milliseconds of the moment they were made, as in
+`2026-10-14T08:00:00.357Z`. A date (`dueDate`, `targetDate`, `asOf`, a burndown day) is
+`YYYY-MM-DD`.
+
+A timestamp you send, as a parameter or in a body, may be written three ways:
+
+| Written as | Read as |
+|---|---|
+| ISO 8601, with or without a fraction, with `Z` or an offset (`2026-10-14T09:00:00+01:00`, PowerShell's `Get-Date -Format o`) | That moment, moved to UTC; the fraction is dropped |
+| `YYYY-MM-DD HH:MM:SS` | That moment in UTC, as DumpFire stores it |
+| A date alone, `2026-10-14` | The start of that day, 00:00:00 UTC; as the end of a range (`to`), its last second, 23:59:59 UTC |
+
+Anything else is `400` naming the parameter (`from is not a date`). DumpFire stores every
+moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and the CSV
+exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
+some fields were answered in that form, which names no zone, and the same field could be in
+either.
 
 ### Changes on 2026-10-14
 
@@ -712,6 +739,33 @@ new; these answers and fields are:
   parameter gets no value and the call stops with "Missing an argument for parameter
   'Color'". The web application's routes take a colour by the same rule
   (below).
+
+- **Every timestamp DumpFire stores is answered in ISO 8601 with `Z`** (card 2095), as
+  `2026-10-14T08:00:00.000Z`, in every answer under `/api/v1/`. Fields that were
+  `YYYY-MM-DD HH:MM:SS`, which names no zone and which most languages read in their own
+  zone, now come back in ISO 8601: `createdAt` everywhere, `updatedAt` on a row never
+  edited, an audit-log entry's `createdAt`, and the `from` and `to` of the activity report's
+  `period` and of `GET /cards/:cardId/board-history`. Fields that were ISO 8601
+  (`completedAt`, `firstCompletedAt`, `archivedAt`, `updatedAt` after an edit) keep their
+  shape, but the fraction of a second is always `.000`, because every stored moment is now
+  kept to the whole second (`generatedAt` and a webhook's own `timestamp`, which are not
+  stored, carry real milliseconds). Dates (`dueDate`, `targetDate`, `asOf`) are unchanged, and the OpenAPI
+  document declares every timestamp field `format: date-time` (item 53). A webhook body's
+  own `timestamp` was ISO 8601 already; its `data` holds no stored time, and would hold one
+  in the same form. See [Timestamps](#timestamps).
+- **`from` and `to` on `GET /audit-log` and `GET /reports/activity` take ISO 8601,
+  `YYYY-MM-DD HH:MM:SS` or a date** (card 2095): ISO 8601 with or without a fraction, with
+  `Z` or an offset, which is read in UTC; `YYYY-MM-DD HH:MM:SS` in UTC; or a date alone.
+  Anything else is `400` `from is not a date` or `to is not a date`. The audit log compared
+  what it was sent with the stored time as text, unchecked, so a bound written in the other
+  form gained or lost the day at its end, and a date alone as `to` left that whole day out;
+  the activity report refused `YYYY-MM-DD HH:MM:SS`. A date alone as `to` is now the whole
+  of that day, to 23:59:59 UTC, in both (item 54).
+- **An `archivedAt` that is text, on `PUT /cards/:cardId`, is read as the moment it names**
+  (card 2095), so the `archivedAt` a `GET` answered, sent back in ISO 8601 with any fraction
+  or offset, or as `YYYY-MM-DD HH:MM:SS`, is the stamp the card holds and changes nothing.
+  `null` still restores the card, and any other value, `true` and a number included, is
+  still `400` (item 55).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -1407,6 +1461,28 @@ API:
   where it read no answer. So one request sends at most 100 deliveries to each webhook of
   the board.
 
+- **`GET /api/audit` and `GET /api/logs` read `from` and `to` as `GET /audit-log` does**
+  (card 2095): ISO 8601, `YYYY-MM-DD HH:MM:SS` in UTC, or a date, a date alone as `to`
+  being the whole of that day, and anything else `400` `from is not a date` or
+  `to is not a date`, where each was compared as text, unchecked. The Audit page sends the
+  last day of its range as the date chosen.
+- **`POST /api/account/api-keys` reads `expiresAt` in the same forms** (card 2095),
+  `YYYY-MM-DD HH:MM:SS` included, and stores and answers it as `YYYY-MM-DD HH:MM:SS` in UTC,
+  where it answered ISO 8601. A date is 00:00 UTC that day, as before; `null` is no expiry;
+  anything that is not text is `400`.
+- **`POST /api/reports` and `POST /api/reports/email` read `periodStart` and `periodEnd` in
+  the same forms** (card 2095), a date alone as `periodEnd` being the whole of that day. The
+  Reports page sends a custom range as the dates chosen, so a report from 1 to 14 October
+  includes the 14th, where the page sent the end as midnight at its start and the 14th was
+  left out.
+- **The web application's routes, its pages and the two CSV exports keep
+  `YYYY-MM-DD HH:MM:SS` in UTC** (card 2095), the form every timestamp is stored in. Fields
+  they answered in ISO 8601 (`completedAt`, `archivedAt`, `updatedAt` after an edit,
+  `resolvedAt`, a key's `lastUsedAt` and `expiresAt`, a schedule's `lastRunAt` and
+  `nextRunAt`, a log line's `timestamp`) are in that form now, and so is the CSVs'
+  "Completed" column, which a spreadsheet opens as a date and time. The pages read every
+  one as UTC.
+
 ### Changes on 2026-10-13
 
 The OpenAPI document's version went from `1.0.0` to `1.1.0` with these. The path is still
@@ -1648,7 +1724,7 @@ and about 18 minutes of hand collation.
 | Param | Default | Meaning |
 |---|---|---|
 | `userId` | everyone | Report on one person, by id (`400` `userId must be an integer` otherwise). Another user requires admin. |
-| `from`, `to` | last 30 days | Each a date (`2026-10-14`) or a timestamp; anything else is `400` `from is not a date`. Bare dates are whole days; `to` is inclusive. A timestamp with an offset, or with no zone, is read in UTC. `from` after `to` is `400`. |
+| `from`, `to` | last 30 days | Each a date (`2026-10-14`), a timestamp in ISO 8601, or `YYYY-MM-DD HH:MM:SS` in UTC ([Timestamps](#timestamps)); anything else is `400` `from is not a date`. Bare dates are whole days; `to` is inclusive. A timestamp with an offset, or with no zone, is read in UTC. `from` after `to` is `400`. `period.from` and `period.to` are answered in ISO 8601. |
 | `boardIds` | all visible | Comma-separated ids; one that is not a whole number of 1 or more is `400` `boardIds must be a comma-separated list of ids`. |
 | `include` | — | `subtasks`, `comments` |
 | `commentLimit` | 3 (max 20) | Most recent comments per card: a whole number, 0 or more. `0` gives each card an empty `comments` list, more than 20 is read as 20, and a negative number or a fraction is `400` `commentLimit must be a whole number of 0 or more`. |
@@ -1732,6 +1808,11 @@ character, and `card_*` found those two as well. An `api:` in front of the actio
 as part of its spelling, so `api:card_completed` asks what `card_completed` asks: filter
 by `source=api` for what was done through the API.
 
+`from` and `to` are read as [Timestamps](#timestamps) says: ISO 8601, `YYYY-MM-DD HH:MM:SS`
+in UTC, or a date, a date alone as `to` being the whole of that day; anything else is `400`
+`from is not a date` or `to is not a date`. Until 2026-10-14 they were compared with the
+stored time as text, unchecked, and a date alone as `to` left that day out.
+
 `pagination` carries `total` and `hasMore` — check it, because a full default
 page of 100 used to be indistinguishable from a complete result.
 
@@ -1775,7 +1856,7 @@ How the key's user is doing. Takes no parameters.
   "recentActivity": [
     { "id": 9120, "action": "api:card_updated",
       "detail": "Updated fields: priority on \"Deploy v2.1\"",
-      "boardId": 1, "createdAt": "2026-10-13 09:41:07" }
+      "boardId": 1, "createdAt": "2026-10-13T09:41:07.000Z" }
   ]
 }
 ```
@@ -2236,7 +2317,7 @@ the card's board. Work that has been archived or deleted is not listed.
       "resolved": false,
       "withheld": false,
       "createdByUserId": 2,
-      "createdAt": "2026-10-13 09:41:07"
+      "createdAt": "2026-10-13T09:41:07.000Z"
     }
   ],
   "blocks": []

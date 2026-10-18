@@ -151,8 +151,8 @@ function everything(): Everything {
 		.run();
 
 	db.insert(userXp).values({ name: owner.username, xp: 100 }).run();
-	db.insert(sessions).values({ id: 'session-of-admin', userId: admin.id, expiresAt: '2099-01-01T00:00:00.000Z' }).run();
-	db.insert(inviteTokens).values({ token: 'invite', userId: member.id, expiresAt: '2099-01-01T00:00:00.000Z' }).run();
+	db.insert(sessions).values({ id: 'session-of-admin', userId: admin.id, expiresAt: '2099-01-01 00:00:00' }).run();
+	db.insert(inviteTokens).values({ token: 'invite', userId: member.id, expiresAt: '2099-01-01 00:00:00' }).run();
 	db.insert(apiKeys).values({ keyHash: 'hash', keyPrefix: 'df_', name: 'Key', userId: owner.id }).run();
 	db.insert(boardFavourites).values({ userId: owner.id, boardId: A.board.id }).run();
 	db.insert(reportSchedules).values({ userId: owner.id, name: 'Weekly', scope: 'board', scopeId: A.board.id }).run();
@@ -177,7 +177,7 @@ function everything(): Everything {
 		.run();
 	sqlite
 		.prepare('INSERT INTO system_logs (timestamp, level, context, message) VALUES (?, ?, ?, ?)')
-		.run('2026-10-01T09:00:00.000Z', 'INFO', 'TEST', 'A line from before the reset');
+		.run('2026-10-01 09:00:00', 'INFO', 'TEST', 'A line from before the reset');
 
 	const rows = Object.fromEntries(appTables().map((table) => [table, count(table)]));
 	return { admin, owner, withFiles, before: snapshotDb(), rows };

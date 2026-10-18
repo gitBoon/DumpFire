@@ -10,6 +10,7 @@ import { settings, backupLog } from './db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { createDestination, type DestinationConfig } from './backup-destinations';
 import { escapeHtml } from '$lib/escape-html';
+import { parseStamp } from '$lib/timestamps';
 import { sendEmail, isSmtpConfigured } from './email';
 import Database from 'better-sqlite3';
 import { mkdtempSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
@@ -433,7 +434,9 @@ function isBackupDue(config: BackupConfig, now: Date): boolean {
 				.limit(1)
 				.all();
 			if (latest.length > 0) {
-				lastBackupTime = new Date(latest[0].createdAt).getTime();
+				// Read as UTC, which is what it is: `new Date()` read the stored
+				// form as the server's local time (card 2095, A10).
+				lastBackupTime = parseStamp(latest[0].createdAt)?.getTime() ?? 0;
 			}
 		}
 

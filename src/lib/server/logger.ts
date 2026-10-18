@@ -17,6 +17,7 @@ import { EventEmitter } from 'node:events';
 import { sqlite } from './db';
 // uploads.ts imports nothing that imports this module, and has to stay so.
 import { emptyTrash } from './uploads';
+import { stamp } from '$lib/timestamps';
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'CRITICAL';
 
@@ -28,6 +29,7 @@ export type LogFields = {
 
 export type LogEntry = {
 	id: number;
+	/** When it was logged, in the stored form: `YYYY-MM-DD HH:MM:SS`, UTC. */
 	timestamp: string;
 	level: LogLevel;
 	context: string;
@@ -165,7 +167,7 @@ export function flushPendingLogs(): void {
 		pendingRowsDropped = 0;
 		writeRow({
 			id: 0,
-			timestamp: rows[0]?.timestamp ?? new Date().toISOString(),
+			timestamp: rows[0]?.timestamp ?? stamp(),
 			level: 'WARN',
 			context: 'LOGGER',
 			message: `${dropped} earlier log line(s) written inside one transaction were printed but not stored: more than ${MAX_PENDING_ROWS} were waiting for it to end`,
@@ -187,7 +189,7 @@ export function cleanOldSystemLogs(): void {
 	if (!ensureTable()) return;
 	try {
 		const retentionDays = Number(process.env.LOG_RETENTION_DAYS) || 30;
-		const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString();
+		const cutoff = stamp(new Date(Date.now() - retentionDays * 86400000));
 		sqlite.prepare('DELETE FROM system_logs WHERE timestamp < ?').run(cutoff);
 		sqlite.prepare(
 			'DELETE FROM system_logs WHERE id NOT IN (SELECT id FROM system_logs ORDER BY id DESC LIMIT ?)'
@@ -253,8 +255,12 @@ function serializeMeta(meta: unknown): string | null {
 	}
 }
 
-function formatLine(entry: LogEntry): string {
-	let line = `[${entry.timestamp}] [${entry.level}] [${entry.context}] ${entry.message}`;
+/**
+ * The console line. Its time is ISO 8601 with milliseconds, as a console line
+ * has always been; the row and the live feed carry the stored form (card 2095).
+ */
+function formatLine(entry: LogEntry, at: Date): string {
+	let line = `[${at.toISOString()}] [${entry.level}] [${entry.context}] ${entry.message}`;
 	if (entry.meta) line += ` | ${entry.meta}`;
 	return line;
 }
@@ -262,9 +268,10 @@ function formatLine(entry: LogEntry): string {
 function emit(level: LogLevel, context: string, message: string, meta?: unknown, fields?: LogFields): void {
 	if (LEVEL_RANK[level] < currentThreshold()) return;
 
+	const at = new Date();
 	const entry: LogEntry = {
 		id: nextEntryId++,
-		timestamp: new Date().toISOString(),
+		timestamp: stamp(at),
 		level,
 		context,
 		message,
@@ -273,7 +280,7 @@ function emit(level: LogLevel, context: string, message: string, meta?: unknown,
 		ip: fields?.ip ?? null
 	};
 
-	const line = formatLine(entry);
+	const line = formatLine(entry, at);
 	if (level === 'ERROR' || level === 'CRITICAL') console.error(line);
 	else if (level === 'WARN') console.warn(line);
 	else console.log(line);

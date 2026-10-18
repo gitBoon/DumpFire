@@ -9,6 +9,7 @@ import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { pathId, readBody, readBoolean, readId, readText } from '$lib/server/request-body';
 import { requireBoard, requireBoardCategory, requireBoardOwner, requireSubBoardLink, requireUser } from '$lib/server/route-guards';
 import { getCardBoardId } from '$lib/server/work-access';
+import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
@@ -61,7 +62,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		if (moving) updates.parentCardId = parentCardId;
 
 		const fields = Object.keys(updates);
-		updates.updatedAt = new Date().toISOString();
+		updates.updatedAt = stamp();
 		const row = db.update(boards).set(updates).where(eq(boards.id, id)).returning().get();
 
 		// What was sent is recorded, with the fields named, and the board's own

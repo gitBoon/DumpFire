@@ -14,15 +14,20 @@
  *
  *   - the runner does not stop
  *   - no table has fewer rows than it had. The migration record gains a row
- *     for each file applied, and `time_entries` may go only if it was empty
+ *     for each file applied, `time_entries` may go only if it was empty, and
+ *     a table a migration file declares a one-off for (tests/rehearsal/one-offs.ts)
+ *     may lose rows in a run that applied that file, which is noted
  *   - no id counter is lower
  *   - no more rows break a foreign key than did before
  *   - `PRAGMA integrity_check` says ok, and foreign keys are on afterwards
  *   - a second run applies nothing, rebuilds nothing and changes no row count
+ *   - the timestamp conversion (card 2095) does not fail, and a second run
+ *     converts nothing
  *
  * What is reported and does not fail it, because the server starts all the
- * same: a table left in the shape it has, and anything that still differs from
- * the model. Both are for somebody to read.
+ * same: a table left in the shape it has, anything that still differs from
+ * the model, and timestamps in no form the conversion can read. All three are
+ * for somebody to read.
  *
  * Everything found is written to the file REHEARSE_REPORT names before
  * anything is asserted, so the account survives a failure.
@@ -32,19 +37,10 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { runMigrations, type MigrationReport } from '$lib/server/db/migrate';
+import { compare, stateOf, type State } from './compare';
 
 const COPY = process.env.REHEARSE_DB;
 const REPORT = process.env.REHEARSE_REPORT;
-
-/** What is compared before and after. */
-type State = {
-	/** Rows in each table, SQLite's own tables left out. */
-	rows: Record<string, number>;
-	/** Each id counter in `sqlite_sequence`. */
-	sequences: Record<string, number>;
-	/** How many rows `PRAGMA foreign_key_check` reports. */
-	violations: number;
-};
 
 export type Rehearsal = {
 	before: State | null;
@@ -60,55 +56,6 @@ export type Rehearsal = {
 	/** Worth knowing, and not a failure. */
 	notes: string[];
 };
-
-function stateOf(database: Database.Database): State {
-	const names = (
-		database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[]
-	)
-		.map((row) => row.name)
-		.filter((name) => !name.startsWith('sqlite_'));
-
-	const rows: Record<string, number> = {};
-	for (const name of names) {
-		rows[name] = (database.prepare(`SELECT COUNT(*) AS n FROM "${name.replaceAll('"', '""')}"`).get() as { n: number }).n;
-	}
-
-	const sequences: Record<string, number> = {};
-	if (database.prepare("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_sequence'").get()) {
-		for (const row of database.prepare('SELECT name, seq FROM sqlite_sequence').all() as { name: string; seq: number }[]) {
-			sequences[row.name] = Math.max(sequences[row.name] ?? 0, row.seq);
-		}
-	}
-
-	return { rows, sequences, violations: (database.pragma('foreign_key_check') as unknown[]).length };
-}
-
-/** Every way `after` has less than `before`, and what it has more of. */
-function compare(before: State, after: State, applied: number, found: Rehearsal): void {
-	for (const [table, had] of Object.entries(before.rows)) {
-		const has = after.rows[table];
-		if (has === undefined) {
-			// 0052 drops this one, on the understanding that nothing ever used it.
-			if (table === 'time_entries' && had === 0) found.notes.push('time_entries was empty and was dropped');
-			else found.problems.push(`${table} had ${had} row(s) and is gone`);
-			continue;
-		}
-		const expected = had + (table === '__drizzle_migrations' ? applied : 0);
-		if (has < expected) found.problems.push(`${table} had ${had} row(s) and has ${has}`);
-		else if (has > expected) found.notes.push(`${table} had ${had} row(s) and has ${has}: a migration put the others there`);
-	}
-	for (const [name, was] of Object.entries(before.sequences)) {
-		const is = after.sequences[name];
-		// A table that was dropped takes its counter with it.
-		if (is === undefined && after.rows[name] === undefined) continue;
-		if (is === undefined || is < was) found.problems.push(`the id counter of ${name} was ${was} and is ${is ?? 'gone'}`);
-	}
-	if (after.violations > before.violations) {
-		found.problems.push(`${before.violations} row(s) broke a foreign key before and ${after.violations} do now`);
-	} else if (after.violations < before.violations) {
-		found.notes.push(`${before.violations} row(s) broke a foreign key before and ${after.violations} do now`);
-	}
-}
 
 it('takes the migration runner over the copy', () => {
 	if (!COPY) throw new Error('REHEARSE_DB is not set. Run this with "npm run rehearse", which makes the copy.');
@@ -145,7 +92,12 @@ it('takes the migration runner over the copy', () => {
 
 		if (found.first) {
 			found.after = stateOf(database);
-			compare(found.before, found.after, found.first.applied.length, found);
+			compare(found.before, found.after, found.first.applied, found);
+			// A conversion that failed was rolled back, converts nothing on either
+			// run, and would pass the second-run check below (card 2095, R6).
+			if (found.first.timestamps?.failed) {
+				found.problems.push(`timestamps could not be brought to the stored form: ${found.first.timestamps.failed}`);
+			}
 
 			try {
 				found.second = runMigrations({ database, migrationsDir });
@@ -158,6 +110,15 @@ it('takes the migration runner over the copy', () => {
 				}
 				if (found.second.rebuilt.length > 0) {
 					found.problems.push(`a second run rebuilt ${found.second.rebuilt.map((table) => table.table).join(', ')}`);
+				}
+				// The first run left every value it could read in the stored form,
+				// so the second has nothing to convert. If it does, the conversion
+				// writes a form it does not itself recognise as converged.
+				const reconverted = Object.entries(found.second.timestamps?.converted ?? {});
+				if (reconverted.length > 0) {
+					found.problems.push(
+						`a second run converted timestamps again: ${reconverted.map(([column, n]) => `${column} ${n}`).join(', ')}`
+					);
 				}
 				const again = stateOf(database);
 				for (const [table, has] of Object.entries(found.after.rows)) {
