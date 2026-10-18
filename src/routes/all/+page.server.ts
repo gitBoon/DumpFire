@@ -1,13 +1,6 @@
-import { db } from '$lib/server/db';
-import { boards, columns, cards, subtasks, labels, cardLabels, cardAssignees, users, taskRequests } from '$lib/server/db/schema';
-import { asc, inArray, eq, isNull, and } from 'drizzle-orm';
-import { getAccessibleBoardIds } from '$lib/server/board-access';
-import { boardCategoriesFor, cardCategoriesFor } from '$lib/server/list-access';
-import { getBlockedStateForCards } from '$lib/server/planning';
-import { milestoneNamesForCards } from '$lib/server/milestones';
+import type { columns } from '$lib/server/db/schema';
 import { getCardTokenTotals } from '$lib/server/tokens';
-import { boardAncestry } from '$lib/server/board-tree';
-import { placeBoards } from '$lib/board-tree';
+import { readCrossBoardCards } from '$lib/server/cross-board-cards';
 import { columnRole } from '$lib/column-role';
 import type { PageServerLoad } from './$types';
 
@@ -17,87 +10,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	const user = locals.user!;
 	const completedLimit = Math.max(1, Math.min(500, Number(url.searchParams.get('completedLimit')) || DEFAULT_COMPLETED_LIMIT));
 
-	// Get board IDs this user can access (null = admin, sees all)
-	const accessibleIds = getAccessibleBoardIds(user);
-
-	let allBoards: (typeof boards.$inferSelect)[];
-	if (accessibleIds === null) {
-		allBoards = db.select().from(boards).all();
-	} else if (accessibleIds.length === 0) {
-		allBoards = [];
-	} else {
-		allBoards = db.select().from(boards).all().filter(b => accessibleIds.includes(b.id));
-	}
-
-	const accessibleBoardIds = allBoards.map(b => b.id);
-	const allColumns = accessibleBoardIds.length > 0
-		? db.select().from(columns).where(inArray(columns.boardId, accessibleBoardIds)).orderBy(asc(columns.position)).all()
-		: [];
-
-	const columnIds = allColumns.map(c => c.id);
-	const allCards = columnIds.length > 0
-		? db.select().from(cards).where(and(inArray(cards.columnId, columnIds), isNull(cards.archivedAt))).orderBy(asc(cards.position)).all()
-		: [];
-
-	const cardIds = allCards.map(c => c.id);
-	const allSubtasks = cardIds.length > 0
-		? db.select().from(subtasks).where(inArray(subtasks.cardId, cardIds)).orderBy(asc(subtasks.position)).all()
-		: [];
-
-	const allCardLabels = cardIds.length > 0
-		? db.select().from(cardLabels).where(inArray(cardLabels.cardId, cardIds)).all()
-		: [];
-
-	// Fetch assignees for all cards
-	const allAssignments = cardIds.length > 0
-		? db.select().from(cardAssignees).where(inArray(cardAssignees.cardId, cardIds)).all()
-		: [];
-	const allUsers = db.select({ id: users.id, username: users.username, emoji: users.emoji }).from(users).all();
-	const userMap = new Map(allUsers.map(u => [u.id, u]));
-
-	// The categories of the boards the caller can open and the shared ones, and
-	// any other a card here carries, marked `carried` (card 2128).
-	const allCategories = cardCategoriesFor(user, allCards);
-
-	// Get request origins for cards created from accepted task requests, by the
-	// requester's name and not their address, which no screen reads (card 2128's review).
-	const requestOrigins = cardIds.length > 0
-		? db.select({
-			resolvedCardId: taskRequests.resolvedCardId,
-			requesterName: taskRequests.requesterName,
-			title: taskRequests.title
-		}).from(taskRequests).where(inArray(taskRequests.resolvedCardId, cardIds)).all()
-		: [];
-	const requestOriginMap = new Map(requestOrigins.map(r => [r.resolvedCardId, r]));
-
-	const allLabels = accessibleBoardIds.length > 0
-		? db.select().from(labels).where(inArray(labels.boardId, accessibleBoardIds)).all()
-		: [];
-
-	// Build a map of column id -> column info (with board name)
-	const columnMap = new Map<number, { title: string; boardId: number }>();
-	for (const col of allColumns) {
-		columnMap.set(col.id, { title: col.title, boardId: col.boardId });
-	}
-
-	// The groupings the caller is listed (card 2128), and a lookup map. Every
-	// board here is one they can open, so its grouping is among them.
-	const allBoardCategories = boardCategoriesFor(user);
-	const boardCatMap = new Map(allBoardCategories.map(bc => [bc.id, bc]));
-
-	const boardMap = new Map<number, { name: string; emoji: string; categoryId: number | null }>();
-	for (const b of allBoards) {
-		boardMap.set(b.id, { name: b.name, emoji: b.emoji || '📋', categoryId: b.categoryId });
-	}
-
-	// Where each board sits in the tree (card 1990): the nearest board above it
-	// that the caller can open, whether boards they cannot open come between,
-	// and the category the filter counts it in, its own or that of the nearest
-	// board above it the caller can open, and none for a category since
-	// deleted. The page builds each board's path from these. Choosing a board
-	// or a category then takes in its sub-boards, and a card's tag names the
-	// boards its board hangs beneath.
-	const places = placeBoards(allBoards, boardAncestry(accessibleBoardIds), allBoardCategories.map((c) => c.id));
+	// The boards the caller can open, their columns and every live card on
+	// them, read as All To Do reads them (card 2240).
+	const { boards: allBoards, columns: allColumns, cards: crossBoardCards, labels: allLabels, categories: allCategories,
+		boardCategories: allBoardCategories, users: allUsers, blockedState, milestoneNames } = readCrossBoardCards(user);
 
 	// Normalize column titles into buckets
 	function getBucket(colTitle: string): string {
@@ -106,36 +22,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		if (role === 'complete') return 'Complete';
 		if (t === 'in progress' || t === 'in-progress' || t === 'doing') return 'In Progress';
 		if (role === 'hold') return 'On Hold';
-		if (t === 'to do' || t === 'todo') return 'To Do';
+		if (role === 'todo') return 'To Do';
 		// Title case for consistent merging of custom columns
 		return t.replace(/\b\w/g, c => c.toUpperCase());
 	}
 
-	// Build enriched cards with board info
-	const enrichedCards = allCards.map(card => {
-		const colInfo = columnMap.get(card.columnId);
-		const boardInfo = colInfo ? boardMap.get(colInfo.boardId) : null;
-		const assignees = allAssignments
-			.filter(a => a.cardId === card.id)
-			.map(a => userMap.get(a.userId))
-			.filter(Boolean) as { id: number; username: string; emoji: string | null }[];
-		const boardCat = boardInfo?.categoryId ? boardCatMap.get(boardInfo.categoryId) : null;
-		const ro = requestOriginMap.get(card.id);
-		return {
-			...card,
-			subtasks: allSubtasks.filter(st => st.cardId === card.id),
-			labelIds: allCardLabels.filter(cl => cl.cardId === card.id).map(cl => cl.labelId),
-			assignees,
-			requestOrigin: ro ? { requesterName: ro.requesterName, requestTitle: ro.title } : null,
-			boardName: boardInfo?.name || 'Unknown',
-			boardEmoji: boardInfo?.emoji || '📋',
-			boardId: colInfo?.boardId || 0,
-			boardCategoryName: boardCat?.name || null,
-			boardCategoryColor: boardCat?.color || null,
-			columnTitle: colInfo?.title || 'Unknown',
-			bucket: colInfo ? getBucket(colInfo.title) : 'To Do'
-		};
-	});
+	// Each card in the bucket of its column. Every card was read through one of
+	// these columns, so each has one.
+	const columnTitles = new Map(allColumns.map(c => [c.id, c.title]));
+	const enrichedCards = crossBoardCards.map(card => ({ ...card, bucket: getBucket(columnTitles.get(card.columnId)!) }));
 
 	// Track which board has which bucket and calculate average positions
 	const baseBuckets = ['To Do', 'On Hold', 'In Progress', 'Complete'];
@@ -148,8 +43,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		colsByBoard.get(col.boardId)!.push(col);
 	}
 
-	for (const [boardId, boardCols] of colsByBoard.entries()) {
-		const boardInfo = boardMap.get(boardId);
+	for (const boardCols of colsByBoard.values()) {
 		boardCols.sort((a, b) => a.position - b.position);
 		
 		boardCols.forEach((col, index) => {
@@ -206,16 +100,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			: enrichedCards.filter(c => c.bucket === bucket)
 	}));
 
-	// Blocked state and milestone names for every card on the page, in one pass
-	// each. /all spans every accessible board and can run to thousands of cards,
-	// so a per-card lookup is not an option — these take the ids already loaded.
-	// A blocker on a board the caller cannot open is withheld (card 2129).
-	const blockedState = getBlockedStateForCards(cardIds, user);
-	const milestoneNames = milestoneNamesForCards(cardIds);
-
 	// Cost per card across every board in scope, in one query. Cards with nothing
 	// recorded are omitted, so a card face shows no badge rather than a zero.
-	const allTaskTotals = getCardTokenTotals(allCards.map(c => c.id));
+	const allTaskTotals = getCardTokenTotals(enrichedCards.map(c => c.id));
 	const cardTokens: Record<number, { tokens: number; costUsd: number | null }> = {};
 	let tokenSum = 0, costSum = 0, pricedAny = false, recordedAny = false;
 	for (const [id, t] of allTaskTotals) {
@@ -233,13 +120,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	return {
 		cardTokens,
 		allTokenSummary,
-		// What the page reads of each board and no more: not its parent card,
-		// which is on a board the caller may not be able to open, nor its
-		// maker, category or dates (card 1990's review).
-		boards: allBoards.map(b => {
-			const { name, emoji } = boardMap.get(b.id)!;
-			return { id: b.id, name, emoji, ...places.get(b.id)! };
-		}),
+		boards: allBoards,
 		buckets: grouped,
 		blockedState,
 		milestoneNames,
@@ -248,7 +129,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		labels: allLabels,
 		columns: allColumns,
 		allUsers: allUsers.map(u => ({ id: u.id, username: u.username, emoji: u.emoji || '👤' })),
-		totalCards: allCards.length,
+		totalCards: enrichedCards.length,
 		completedCards: totalCompletedCount,
 		hasMoreCompleted,
 		totalCompletedCount,

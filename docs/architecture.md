@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.28
+version: 1.29
 status: As-Built
 date: 2026-10-18
 tags:
@@ -92,6 +92,7 @@ flowchart TB
         Dashboard["Dashboard"]
         BoardView["Board View + DnD"]
         AllTasks["All Tasks"]
+        AllToDo["All To Do"]
         ArchivedView["Archived Tasks"]
         AdminPanel["Admin Panel"]
         Reports["Reports"]
@@ -133,6 +134,7 @@ flowchart TB
             Sweep["Attachment File Sweep\nuploads-sweep.ts"]
             ApiErrors["API Failures\napi-errors.ts"]
             V1Json["v1 Answers in ISO 8601\nv1-json.ts"]
+            CrossBoard["Cross-Board Cards\ncross-board-cards.ts"]
         end
 
         DB[("SQLite")]
@@ -151,10 +153,23 @@ flowchart TB
     Sweep --> Uploads
     ExternalAPI --> V1Json
     Uploads --> Files
+    CrossBoard --> BoardAccess
     SSE -.->|"Server-Sent Events"| Client
     ReportEngine -.->|"SMTP"| EmailServer["Email Server"]
     BackupService -.->|"Push"| BackupDest["Backup Destinations"]
 ```
+
+All Tasks and All To Do (card 2240) read their cards through one reader,
+`readCrossBoardCards(user, { inColumn? })` in `src/lib/server/cross-board-cards.ts`: the boards
+the caller can open, their columns, the unarchived cards on the columns `inColumn` lets through
+(all of them for All Tasks; those whose title is To Do or Todo, `isTodoColumnTitle`, for All To
+Do), enriched once, with the category rules of card 2128, the sub-board places of card 1990 and
+the withheld blockers of card 2129. So the two pages give a caller the same boards and the same
+cards, and All To Do lists exactly All Tasks' To Do bucket. All To Do's filters and sort are
+worked out in the browser by `src/lib/todo-table.ts` and kept in the address with
+`goto(…, { replaceState: true })`, a real navigation that re-runs no load, because neither its
+load nor the layout's reads `url`; a shallow `replaceState` would leave `page.url` and the
+history entry at the arrival address, so Back from a board would lose the filters.
 
 ## The Gate
 

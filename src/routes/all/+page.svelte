@@ -199,6 +199,12 @@
 	const chosenBoard = $derived(chosenBoardId(boardFilter));
 	const ownBoardOnly = ' (the chosen board alone, not its sub-boards)';
 
+	/**
+	 * All To Do with this page's board filter, so the two pages hand over the
+	 * same scope (card 2240): a board there takes in its sub-boards, as here.
+	 */
+	const todoHref = $derived(String(boardFilter) === 'all' ? '/todo' : `/todo?${new URLSearchParams({ board: String(boardFilter) })}`);
+
 	/** A card's board tag: the boards its board hangs beneath, then its board. */
 	function boardTag(card: any): string {
 		return boardPathText(boardPlaces.get(card.boardId)?.path ?? [], { emoji: card.boardEmoji, name: card.boardName });
@@ -674,6 +680,14 @@
 					<path d="M5.3 8.9l5.4 2.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
 				</svg>
 				Planning
+			</a>
+			<!-- All To Do over the same scope: the chosen board with its sub-boards, or the grouping (card 2240). -->
+			<a href={todoHref} class="hdr-control hdr-action" title="All To Do — every To Do column as one table{boardFilter === 'all' ? '' : ', for the boards chosen here'}">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+					<rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/>
+					<path d="M4.8 6.2l1.2 1.2 2-2.2M9.6 6.4h2M4.8 10.2h6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+				All To Do
 			</a>
 			<div class="more-menu-container">
 				<button class="hdr-control hdr-action" class:is-on={showMoreMenu} onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="Panels">

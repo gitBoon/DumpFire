@@ -105,6 +105,7 @@ const TEST_FILES = [
 	'sub-board-depth.test.ts',
 	'test-helpers.test.ts',
 	'timestamps.test.ts',
+	'todo-page.test.ts',
 	'transaction.test.ts',
 	'uploads-sweep.test.ts',
 	'uploads.test.ts',

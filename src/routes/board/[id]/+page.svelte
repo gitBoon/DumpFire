@@ -1143,6 +1143,16 @@
 				</svg>
 				Planning
 			</a>
+			<!-- Every board's To Do column as one table, filtered to this board and
+			     its sub-boards (card 2240). Shown on every board, one with no To Do
+			     column too: its sub-boards may have one. -->
+			<a href="/todo?board={data.board.id}" class="hdr-control hdr-action" title="This board's To Do column, and its sub-boards', with every other board's a filter away">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+					<rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/>
+					<path d="M4.8 6.2l1.2 1.2 2-2.2M9.6 6.4h2M4.8 10.2h6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+				All To Do
+			</a>
 			<button class="hdr-control hdr-action" onclick={() => (showAddColumnModal = true)} title="Add column">
 				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
 					<rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>

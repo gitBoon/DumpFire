@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.25
+version: 1.26
 status: As-Built
 date: 2026-10-18
 tags:
@@ -700,7 +700,14 @@ which has no server imports so the browser and the server share it:
 |------|------------------------------------------------------|
 | `complete` | Complete, Done |
 | `hold` | On Hold, Hold, Blocked, Parked, Waiting |
+| `todo` | To Do, Todo (checked after the other two) |
 | none | anything else |
+
+The `todo` role (card 2240) changes nothing about a card: no move stamps, clears or
+awards anything for it. It says which columns All Tasks puts in its To Do bucket and All
+To Do lists, every such column of a board, and which column the board's list view opens
+on (the first of them, else the first column). "To-Do", "Backlog" and the like are not
+To Do; the reports' own wider list (`src/lib/server/reports.ts`) is separate.
 
 Until October 2026 this was worked out wherever it was needed — about twenty places
 with three different word lists. The browser accepted only "complete" where the
@@ -708,7 +715,7 @@ server also accepted "done", and the dashboard counted "Waiting" as on hold wher
 the reports did not, so the same card could be complete on one screen and in
 progress on another. Nothing may compare a column title to a word list now; ask
 `columnRole()`, `isCompleteColumnTitle()`, `isHoldColumnTitle()`,
-`completeColumnIds()` or `holdColumnIds()`.
+`isTodoColumnTitle()`, `completeColumnIds()`, `holdColumnIds()` or `todoColumnIds()`.
 
 The `hold` role also decides what a move does to the card's `on_hold_note`. A move
 from a `hold` column to one that is not clears it to `''`, in the same `UPDATE` as the
