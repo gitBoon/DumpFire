@@ -68,13 +68,29 @@ async function start(): Promise<Started> {
 	const { Server: KitServer } = (await import(/* @vite-ignore */ `${KIT}/runtime/server/index.js`)) as {
 		Server: new (manifest: SSRManifest) => Server;
 	};
-	const { load_config } = await import(/* @vite-ignore */ `${KIT}/core/config/index.js`);
+	const { load_svelte_config } = await import(/* @vite-ignore */ `${KIT}/core/config/index.js`);
 	const { default: create_manifest_data } = await import(
 		/* @vite-ignore */ `${KIT}/core/sync/create_manifest_data/index.js`
 	);
 
-	const config = await load_config();
+	// svelte.config.js, read and checked, and nothing else. Not `load_config()`,
+	// which since SvelteKit 2.70 resolves the whole Vite config as a build: that
+	// runs SvelteKit's `sync`, rewriting `.svelte-kit/` from every test file
+	// that starts this harness, all at once. When two of them raced, the
+	// resolve threw (ENOENT on a file under `.svelte-kit/types` the other had
+	// just removed), `load_config()` fell back without a word, and in that file
+	// alone the origin check below was off.
+	const config = await load_svelte_config();
 	const data: ManifestData = create_manifest_data({ config });
+
+	// A built server runs with `__SVELTEKIT_DEV__` false, and that is what makes
+	// SvelteKit refuse a form posted with no matching `Origin` before `handle`
+	// is called (`internal_respond`), and send its pages as a build sends them.
+	// Vitest gives every test file SvelteKit's `vite dev` values as globals,
+	// this one true, and SvelteKit reads it at each request. So it is set here,
+	// for this test file's process alone (`pool: 'forks'`). It had been set
+	// only as a side effect of `load_config()`, and was not when that fell back.
+	(globalThis as Record<string, unknown>).__SVELTEKIT_DEV__ = false;
 
 	const manifest = {
 		appDir: config.kit.appDir,

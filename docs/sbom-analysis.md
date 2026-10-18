@@ -1,7 +1,7 @@
 ---
 title: "SBOM Analysis: DumpFire"
 category: "Identity & Security"
-version: 1.4
+version: 1.5
 status: As-Built
 date: 2026-10-18
 tags:
@@ -537,8 +537,9 @@ uses:
   the path with `decodeURI`, which threw: every malformed address became a `500`. Fixed in
   the gate (below).
 - **SvelteKit 2.70.0** makes the cross-site form check (`csrf.checkOrigin`) in any build,
-  and keys it on `__SVELTEKIT_DEV__` and not `DEV`; under vitest the check is now made, as
-  in a built server. Nothing changes in production, which always made it. Tests that post a
+  and keys it on `__SVELTEKIT_DEV__` and not `DEV`. Vitest sets that global true, as under
+  `vite dev`; the gate harness sets it false, so that the check is made there as in a built
+  server (docs/testing.md). Nothing changes in production, which always made it. Tests that post a
   form or `text/plain` now send `origin: 'http://localhost'`, as a browser does.
 - **SvelteKit 2.70.2** is the `Accept` fix ("prevent quadratic backtracking in `Accept`
   header content negotiation"); 2.70.3 stops `$app/state` being read eagerly at module

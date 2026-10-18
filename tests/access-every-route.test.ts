@@ -64,7 +64,7 @@
  */
 import { existsSync, readdirSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashSync } from 'bcryptjs';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
@@ -132,11 +132,19 @@ import {
 	shareBoardWithTeam,
 	testUploadsDir
 } from './helpers/fixtures';
-import { gate } from './helpers/gate';
+import { gate, gateRoutes } from './helpers/gate';
 import { watchReads } from './helpers/reads';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { loadKeys, pageLoad } from './helpers/actions';
 import { stamp } from '$lib/timestamps';
+
+// The first request through the harness starts SvelteKit's server for this file,
+// which takes two or three seconds alone and more under the whole suite's load;
+// start it here, with time to spare, so no single test pays for it against the
+// default five-second limit.
+beforeAll(async () => {
+	await gateRoutes();
+}, 30_000);
 
 // ─── The cast and what is on each board ────────────────────────────────────
 
