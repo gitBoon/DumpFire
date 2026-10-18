@@ -1245,10 +1245,11 @@
 	}
 
 
+	/* A list's scroll ends above the user badge (card 2239), or its last card is under it. */
 	.card-list {
 		flex: 1;
 		overflow-y: auto;
-		padding: 0 var(--space-md) var(--space-md);
+		padding: 0 var(--space-md) var(--user-badge-space);
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-sm);

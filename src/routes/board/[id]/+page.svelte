@@ -2185,8 +2185,9 @@
 	.color-swatch:hover { transform: scale(1.15); }
 	.color-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 8px rgba(255, 255, 255, 0.2); }
 
+	/* A list's scroll ends above the user badge (card 2239), or its last card is under it. */
 	.column-cards {
-		flex: 1; overflow-y: auto; padding: 0 var(--space-md) var(--space-md);
+		flex: 1; overflow-y: auto; padding: 0 var(--space-md) var(--user-badge-space);
 		min-height: 0; display: flex; flex-direction: column; gap: var(--space-sm);
 		/* Firefox scrollbar - hidden by default */
 		scrollbar-width: auto;

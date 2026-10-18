@@ -83,6 +83,7 @@ const TEST_FILES = [
 	'docs-format.test.ts',
 	'error-shape.test.ts',
 	'gate.test.ts',
+	'gdrive-retention.test.ts',
 	'harness.test.ts',
 	'import-working-copy.test.ts',
 	'internal-refusals.test.ts',

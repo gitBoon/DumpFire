@@ -427,9 +427,11 @@
 
 <style>
 	/* Full-viewport flex column: header and tabs take their natural height,
-	   the active panel fills everything else and scrolls internally. */
+	   the active panel fills everything else and scrolls internally. Its foot
+	   stops above the user badge (card 2239), or the Live Console's footer is
+	   under it. */
 	.audit-page {
-		padding: var(--space-md) var(--space-lg);
+		padding: var(--space-md) var(--space-lg) var(--user-badge-space);
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-md);

@@ -1475,7 +1475,8 @@
 {/if}
 
 <style>
-	.dashboard { max-width: 1400px; margin: 0 auto; padding: var(--space-xl) var(--space-xl); }
+	/* The page's last line stops above the user badge (card 2239). */
+	.dashboard { max-width: 1400px; margin: 0 auto; padding: var(--space-xl) var(--space-xl) var(--user-badge-space); }
 
 	/* ─── Grid Layout ────────────────────────────────────────────── */
 	.dashboard-grid {

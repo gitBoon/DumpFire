@@ -2987,6 +2987,54 @@ describe('the user badge, the update bar, the avatar and the subtask window’s 
 		expect(Number(/\.modal-overlay \{[^}]*z-index:\s*(\d+)/.exec(readFileSync(join(ROOT, 'src/app.css'), 'utf8'))?.[1])).toBe(1000);
 	});
 
+	// Card 2239. The badge had only the global .glass's background, 2 to 6%
+	// opaque in every theme, and the Live Console's footer on the audit page, a
+	// page of the window's height that does not scroll, read through it.
+	it('draws the user badge opaque in every theme, and ends each page, or its scroll, above it (card 2239)', () => {
+		const css = readFileSync(join(ROOT, 'src/app.css'), 'utf8');
+		const badge = /\.user-badge,\s*\.user-badge:hover \{([^}]*)\}/.exec(layout.source)?.[1] ?? '';
+		expect(badge).toContain('background: var(--bg-elevated);');
+		expect(badge).toContain('box-shadow: var(--shadow-md);');
+		expect(/\.glass \{([^}]*)\}/.exec(css)![1]).toContain('background: var(--glass-bg);');
+		// Each theme's block (the one that sets --glass-bg) gives --bg-elevated as a solid colour.
+		const themes = [...css.matchAll(/(:root|html\[data-theme="[a-z]+"\]) \{([^}]*)\}/g)].filter((m) => m[2].includes('--glass-bg:'));
+		expect(themes).toHaveLength(17);
+		for (const [, theme, body] of themes) {
+			expect(body, theme).toMatch(/--bg-elevated: #[0-9a-f]{6};/);
+			expect(body, theme).toMatch(/--shadow-md: /);
+		}
+		// How far up a page's foot has to stop: the badge's own bottom, its height and a gap, the update bar included.
+		// The height follows the root font size: 18px of padding and border, and the taller of the sign-out
+		// button (28px) and the emoji's line (1.2rem at line-height 1.5).
+		expect(/\.app-layout \{([^}]*)\}/.exec(layout.source)![1]).toContain(
+			'--user-badge-space: calc(var(--space-lg) + 18px + max(28px, 1.8rem) + var(--space-sm) + var(--update-bar-space, 0px));'
+		);
+		expect(/\.user-badge-emoji \{([^}]*)\}/.exec(layout.source)![1]).toContain('font-size: 1.2rem;');
+		expect(/\.user-badge-logout \{([^}]*)\}/.exec(layout.source)![1]).toContain('height: 28px;');
+		const rules: [string, RegExp, string][] = [
+			['src/routes/audit/+page.svelte', /\.audit-page \{([^}]*)\}/, 'padding: var(--space-md) var(--space-lg) var(--user-badge-space);'],
+			['src/routes/board/[id]/+page.svelte', /\.column-cards \{([^}]*)\}/, 'padding: 0 var(--space-md) var(--user-badge-space);'],
+			['src/lib/components/board/ColumnListView.svelte', /\.list-view \{([^}]*)\}/, 'padding: var(--space-lg) var(--space-lg) var(--user-badge-space);'],
+			['src/routes/all/+page.svelte', /\.card-list \{([^}]*)\}/, 'padding: 0 var(--space-md) var(--user-badge-space);'],
+			['src/routes/plan/[id]/+page.svelte', /\.plan-body \{([^}]*)\}/, 'padding: var(--space-xl) var(--space-xl) var(--user-badge-space);'],
+			['src/routes/archived/+page.svelte', /\.archived-page \{([^}]*)\}/, 'padding: 0 var(--space-xl) var(--user-badge-space);'],
+			['src/routes/admin/+page.svelte', /\.admin-content \{([^}]*)\}/, 'padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);'],
+			['src/routes/reports/+page.svelte', /\.reports-content \{([^}]*)\}/, 'padding: var(--space-xl) var(--space-xl) var(--user-badge-space);'],
+			['src/routes/inbox/+page.svelte', /\.inbox-content \{([^}]*)\}/, 'padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);'],
+			['src/routes/+page.svelte', /\.dashboard \{([^}]*)\}/, 'padding: var(--space-xl) var(--space-xl) var(--user-badge-space);'],
+			['src/routes/account/+page.svelte', /\.account-content \{([^}]*)\}/, 'padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);'],
+			// The API docs' sidebar scrolls within the window's height, so its last entries sat under the badge.
+			['src/routes/docs/+page.svelte', /\.docs-sidebar \{([^}]*)\}/, 'padding: var(--space-xl) var(--space-lg) var(--user-badge-space);']
+		];
+		for (const [file, rule, padding] of rules) {
+			expect(rule.exec(readFileSync(join(ROOT, file), 'utf8'))?.[1], file).toContain(padding);
+		}
+		// The two pages whose narrow-window rule sets the padding again keep the space there too.
+		for (const file of ['src/routes/plan/[id]/+page.svelte', 'src/routes/reports/+page.svelte']) {
+			expect(readFileSync(join(ROOT, file), 'utf8'), file).toContain('{ padding: var(--space-md) var(--space-md) var(--user-badge-space); }');
+		}
+	});
+
 	it('puts the update bar at the foot of the screen, and keeps the windows, the toast and the badge clear of it while it shows', () => {
 		const bar = /\.update-bar \{([^}]*)\}/.exec(layout.source)![1];
 		expect(bar).toMatch(/\bbottom: 0;/);

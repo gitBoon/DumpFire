@@ -270,14 +270,28 @@ async function cleanupRetention(config: DestinationConfig, retention: number): P
 	if (retention <= 0) return;
 	try {
 		const dest = createDestination(config);
-		const files = await dest.list();
+		// Only the files retention may remove are counted: one the account may
+		// not remove is left, with one warning a run, and not tried every run
+		// (card 2238). A destination that cannot tell removes all it lists.
+		let files: string[];
+		if (dest.listForRetention) {
+			const { removable, setAside } = await dest.listForRetention();
+			files = removable;
+			if (setAside.length > 0) {
+				log.warn(
+					`Retention: ${setAside.length} file(s) in ${config.name} cannot be removed by this account (for example ${setAside[0]}); remove them by hand as their owner, or make the account a Manager of the Shared drive`
+				);
+			}
+		} else {
+			files = await dest.list();
+		}
 		if (files.length > retention) {
 			// Files are sorted oldest-first; delete the oldest
 			const toDelete = files.slice(0, files.length - retention);
 			for (const filename of toDelete) {
 				try {
-					await dest.delete(filename);
-					log.warn(`Retention cleanup: deleted ${filename} from ${config.name}`);
+					const how = (await dest.delete(filename)) === 'trashed' ? 'moved to the trash' : 'deleted';
+					log.warn(`Retention cleanup: ${how} ${filename} from ${config.name}`);
 				} catch (err) {
 					log.error(`Retention cleanup: failed to delete ${filename}`, err);
 				}

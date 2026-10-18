@@ -649,7 +649,8 @@
 		top: 64px;
 		height: calc(100vh - 64px);
 		overflow-y: auto;
-		padding: var(--space-xl) var(--space-lg);
+		/* Its last entries scroll clear of the user badge (card 2239). */
+		padding: var(--space-xl) var(--space-lg) var(--user-badge-space);
 		border-right: 1px solid var(--glass-border);
 		border-radius: 0;
 		background: transparent;
