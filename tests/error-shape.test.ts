@@ -50,14 +50,19 @@ const ROOT = process.cwd();
  * that the list cannot outlive its reasons.
  */
 const ALLOWED: Record<string, string> = {
-	'src/lib/server/api-errors.ts:235':
+	'src/lib/server/api-errors.ts:236':
 		'jsonInPlaceOf: the JSON the gate puts in place of a failure that was not JSON. Its status is the ' +
 		'status of the answer it replaces, which cannot be written as a number, and its body is { message } ' +
 		'and nothing else. tests/gate.test.ts holds what it answers.',
 	'src/lib/server/v1-json.ts:76':
 		"json, the v1 API's own: SvelteKit's json given its caller's body and options, with each stored " +
 		'timestamp in ISO 8601 (card 2095, plan R1). Each call of it is read where it is made, as a call of ' +
-		"SvelteKit's json is: the import of it is read as one below."
+		"SvelteKit's json is: the import of it is read as one below.",
+	'src/hooks.server.ts:375':
+		'the 400 "Malformed URI" for an address that cannot be decoded, in plain text: what SvelteKit itself ' +
+		'answered before it called the gate, up to 2.60, and which the gate now answers in its place, word for ' +
+		'word, since SvelteKit 2.61 hands it such an address (card 2227). It is no route, under /api/ or not. ' +
+		'tests/gate.test.ts holds what it answers.'
 };
 
 /**

@@ -265,13 +265,17 @@ export async function gate(method: string, path: string, opts: GateOptions = {})
  * SvelteKit's `SvelteKitError` (@sveltejs/kit/src/exports/internal/index.js),
  * in a class that is not SvelteKit's.
  *
- * It is a class of its own on purpose. A built server has two copies of
- * SvelteKit's class: one bundled into the adapter's handler, which is the one
- * the body's stream fails with, and one in the server, which is the one
- * SvelteKit tests an error against with `instanceof` to find its status. The
- * adapter's is not an instance of the server's, so the server does not know
- * it for a 413. Thrown here as SvelteKit's own class, as it once was, it was
- * answered 413 in the tests and 500 in production.
+ * It is a class of its own on purpose. Up to adapter-node 5.5.4 a built
+ * server had two copies of SvelteKit's class: one bundled into the adapter's
+ * handler, which was the one the body's stream failed with, and one in the
+ * server, which is the one SvelteKit tests an error against with `instanceof`
+ * to find its status. The adapter's was not an instance of the server's, so
+ * the server did not know it for a 413. Thrown here as SvelteKit's own class,
+ * as it once was, it was answered 413 in the tests and 500 in production.
+ * Since 5.5.5 the build has one copy (card 2227), and the adapter's error is
+ * SvelteKit's own. A class that is not SvelteKit's is kept as the stricter
+ * case: the gate must know a 413 by its `status` whatever class it is, which
+ * still holds the one-copy build.
  */
 class AdapterError extends Error {
 	status: number;

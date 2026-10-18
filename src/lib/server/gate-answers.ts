@@ -32,12 +32,18 @@ import { json, type RequestEvent } from '@sveltejs/kit';
  * redirect for a form a page posts. The gate asks the same question and must
  * get the same answer, so it asks it the same way. tests/gate.test.ts runs
  * both on the same headers.
+ *
+ * As of SvelteKit 2.70.2 (card 2227) the pattern is anchored at the start of
+ * each part. Unanchored, it was tried again from every position of a part
+ * with no `/` in it, which took time in the square of its length: an Accept
+ * header of 50,000 letters held the server for most of a second, to anybody,
+ * before any check of who they were.
  */
 export function preferredType(accept: string, types: string[]): string | undefined {
 	const parts: { type: string; subtype: string; q: number; i: number }[] = [];
 
 	accept.split(',').forEach((str, i) => {
-		const match = /([^/ \t]+)\/([^; \t]+)[ \t]*(?:;[ \t]*q=([0-9.]+))?/.exec(str);
+		const match = /^[ \t]*([^/ \t]+)\/([^; \t]+)[ \t]*(?:;[ \t]*q=([0-9.]+))?/.exec(str);
 
 		// A part that is no type at all is ignored, as SvelteKit ignores it.
 		if (match) {
@@ -237,11 +243,12 @@ export const FRAMEABLE_ROUTES: ReadonlySet<string> = new Set(['/request', '/requ
  * reverse proxy's to head (docs/deployment.md): in a built server every
  * static file, which the adapter serves before the gate is called; and what
  * SvelteKit answers before it calls the gate or after the gate has failed,
- * which is the refusal of a form posted from another site, the 400 for an
- * address that cannot be decoded, the redirect that adds or removes a
- * trailing slash, the 404 for any other path that begins `/_app` (but a call
- * to a remote function, which the gate answers 404 itself), and the 500 for
- * a fault in the gate itself.
+ * which is the refusal of a form posted from another site, the redirect that
+ * adds or removes a trailing slash, the 404 for any other path that begins
+ * `/_app` (but a call to a remote function, which the gate answers 404
+ * itself), and the 500 for a fault in the gate itself. The 400 for an address
+ * that cannot be decoded was SvelteKit's too, up to SvelteKit 2.60; the gate
+ * answers it now, and heads it (card 2227).
  *
  * In report-only mode (`cspMode`), a page's `Content-Security-Policy` is
  * moved, unchanged, to `Content-Security-Policy-Report-Only`: a page is an

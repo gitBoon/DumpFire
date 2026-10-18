@@ -11,14 +11,22 @@
  *   - On the length a request declares in `Content-Length`, before the body
  *     is read: more than the limit is refused at once, 413 (`refuseBody`).
  *     A declared length can be trusted as far as it goes. The adapter fails a
- *     body that runs past what its request declared (`get_raw_body` in the
- *     adapter's handler.js), and `guardBody` in api-errors.ts answers that 413.
+ *     body that runs past what its request declared (`get_raw_body` in
+ *     SvelteKit's @sveltejs/kit/src/exports/node/index.js, whose `getRequest`
+ *     the adapter's handler.js builds every request with), and `guardBody` in
+ *     api-errors.ts answers that 413.
  *   - On the bytes themselves, as the body is read (`heldToLimit`). A body
- *     with no declared length, one sent in chunks, is held to nothing by the
- *     adapter: it compares what it has read with `Content-Length`, and against
- *     no number at all that comparison is never true, so with a limit of 512K
- *     a chunked body of 64 MB was read in full. The gate counts it instead,
- *     and the read is refused, 413, once the route's limit is passed.
+ *     with no declared length, one sent in chunks, was held to nothing by the
+ *     adapter up to adapter-node 5.5.4: with a limit of 512K a chunked body of
+ *     64 MB was read in full. Since then (card 2227) it is held to
+ *     `BODY_SIZE_LIMIT`, but that is the whole server's limit, 512M in the
+ *     image, and no route's. The gate counts it against the route's limit,
+ *     and the read is refused, 413, once that is passed. On the import,
+ *     whose limit is `BODY_SIZE_LIMIT` itself, the adapter refuses the chunk
+ *     that passes it before the gate's count sees it, so that 413 is the
+ *     adapter's, answered `{ message: 'Payload Too Large' }` with no
+ *     `limitBytes` (`tooLargeAs413` in api-errors.ts). Every route with a
+ *     smaller limit gets the gate's, with `limitBytes`.
  *
  * A chunked body is read, then, and held to the same limit as a body that
  * says how long it is, on every route. A browser says how long what it posts
@@ -72,7 +80,7 @@ const LARGER: Record<string, { bytes: number | 'the server'; to: 'signed in' | '
 
 /**
  * A size in bytes from text, exactly as the node adapter reads
- * `BODY_SIZE_LIMIT` (`parse_as_bytes` in its handler.js): a number of bytes,
+ * `BODY_SIZE_LIMIT` (`parse_as_bytes` in its files/utils.js): a number of bytes,
  * or a number followed by K, M or G. Anything else is NaN, `512MB` included:
  * its last letter is no unit, and the whole of it is no number. `Infinity`
  * is no limit.
@@ -232,7 +240,8 @@ export class BodyOverLimit extends Error {
  *
  * The old body is not cancelled when the limit is passed, only left unread.
  * The adapter answers a cancel by destroying the connection (`req.destroy` in
- * its handler.js), and the 413 would never reach the caller. Left unread, the
+ * SvelteKit's `getRequest`, which it uses), and the 413 would never reach the
+ * caller. Left unread, the
  * rest of the body waits on the connection while the 413 is sent, exactly as
  * the body of a request refused on its declared length does, which is never
  * read at all.

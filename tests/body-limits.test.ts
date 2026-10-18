@@ -160,7 +160,10 @@ beforeEach(() => {
 	const { board, cols } = makeBoard({ owner: user });
 	addBoardMember(board, viewer, 'viewer');
 	card = makeCard(cols['To Do']);
-	const cookie = (who: SessionUser) => ({ cookie: `${SESSION_COOKIE_NAME}=${makeSession(who)}`, accept: '*/*' });
+	// What a page's script sends: the session, and the page's origin, which a
+	// browser puts on every POST. A form (the attachment upload's) posted with
+	// none is refused 403 by SvelteKit before the gate, as from another site.
+	const cookie = (who: SessionUser) => ({ cookie: `${SESSION_COOKIE_NAME}=${makeSession(who)}`, accept: '*/*', origin: 'http://localhost' });
 	withKey = { authorization: `Bearer ${makeApiKey(user)}` };
 	asUser = cookie(user);
 	asViewer = cookie(viewer);
@@ -315,7 +318,7 @@ describe('the attachment upload, POST /api/cards/[id]/attachments', () => {
 	it('gives the larger limit to nobody who is not signed in: they are answered 401 with the body unread', async () => {
 		const read = vi.spyOn(Request.prototype, 'formData');
 
-		const res = await send('POST', to(), { headers: { 'content-length': String(5 * M) }, body: upload() });
+		const res = await send('POST', to(), { headers: { origin: 'http://localhost', 'content-length': String(5 * M) }, body: upload() });
 
 		expect({ status: res.status, location: res.location }).toEqual({ status: 401, location: null });
 		expect(read).not.toHaveBeenCalled();
@@ -637,11 +640,15 @@ describe('a form posted to a page with a body that runs past the length it decla
 
 /** The node adapter's handler, as it is installed: what a built server runs in front of the gate. */
 const ADAPTER = readFileSync(join(process.cwd(), 'node_modules/@sveltejs/adapter-node/files/handler.js'), 'utf8');
+/** SvelteKit's `@sveltejs/kit/node`, whose `getRequest` the handler builds every request with. */
+const KIT_NODE = readFileSync(join(process.cwd(), 'node_modules/@sveltejs/kit/src/exports/node/index.js'), 'utf8');
+/** Its helpers, which the handler imports: `parse_as_bytes` is here, not in handler.js, in adapter-node 5.5.7 (card 2227). */
+const ADAPTER_UTILS = readFileSync(join(process.cwd(), 'node_modules/@sveltejs/adapter-node/files/utils.js'), 'utf8');
 
 describe('the limit, read as the node adapter reads it', () => {
 	/** The adapter's own `parse_as_bytes`, taken out of its source and run. */
 	const theirs = (() => {
-		const source = /\nfunction parse_as_bytes\(value\) \{\n[\s\S]*?\n\}\n/.exec(ADAPTER);
+		const source = /\nfunction parse_as_bytes\(value\) \{\n[\s\S]*?\n\}\n/.exec(ADAPTER_UTILS);
 		if (!source) throw new Error('The adapter has no parse_as_bytes: read how it parses BODY_SIZE_LIMIT now');
 		return new Function(`${source[0]}; return parse_as_bytes;`)() as (value: string) => number;
 	})();
@@ -672,6 +679,8 @@ describe('the limit, read as the node adapter reads it', () => {
 
 	it('is 512K where the server was given none, as the adapter has it, and is what is set where one was', () => {
 		expect(ADAPTER).toContain("const body_size_limit = parse_as_bytes(env('BODY_SIZE_LIMIT', '512K'));");
+		// And the parse_as_bytes it calls is the one read above.
+		expect(ADAPTER).toMatch(/^import \{[^}]*\bparse_as_bytes\b[^}]*\} from '\.\/utils\.js';$/m);
 
 		expect(serverBodyLimit(undefined, false)).toBe(512 * K);
 		expect(serverBodyLimit('512M', false)).toBe(512 * M);
@@ -853,32 +862,44 @@ describe('what the node adapter makes of a request before the gate is called', (
 	// `gate()` builds its own `Request`, so none of this can be shown through
 	// it. These are the lines of the adapter that body-limits.ts goes by: a
 	// request it gives no body to is one the gate never refuses, a body with
-	// no declared length is one the adapter holds to no limit, and a body that
-	// is cancelled is a connection that is closed. If an upgrade changes one of
-	// them, this is the test that fails.
-	const rule = /\nfunction get_raw_body\(req, body_size_limit\) \{\n[\s\S]*?\n\}\n/.exec(ADAPTER)?.[0] ?? '';
+	// no declared length is one the adapter holds to `BODY_SIZE_LIMIT` alone
+	// and never to its route's limit, and a body that is cancelled is a
+	// connection that is closed. If an upgrade changes one of them, this is the
+	// test that fails.
+	//
+	// Since adapter-node 5.5.5 the handler builds its request with SvelteKit's
+	// own `getRequest` (`@sveltejs/kit/node`), bundled into the built server
+	// from the SvelteKit that is installed, and no longer with a copy of its
+	// own; so the rules are read from there (card 2227).
+	const rule = /\nfunction get_raw_body\(req, body_size_limit\) \{\n[\s\S]*?\n\}\n/.exec(KIT_NODE)?.[0] ?? '';
+
+	it('builds its request with SvelteKit’s getRequest, given the server’s limit', () => {
+		expect(ADAPTER).toMatch(/^import \{[^}]*\bgetRequest\b[^}]*\} from '@sveltejs\/kit\/node';$/m);
+		expect(ADAPTER).toContain('bodySizeLimit: body_size_limit');
+	});
 
 	it('gives a request no body when it has no Content-Type, a Content-Length of 0, or neither a length nor an encoding', () => {
 		expect(rule).toContain("if (!h['content-type']) {\n\t\treturn null;\n\t}");
 		expect(rule).toContain("const content_length = Number(h['content-length']);");
+		expect(rule).toContain('const has_content_length = Number.isFinite(content_length);');
 		expect(rule).toContain(
-			"(req.httpVersionMajor === 1 && isNaN(content_length) && h['transfer-encoding'] == null) ||\n\t\tcontent_length === 0\n\t) {\n\t\treturn null;"
+			"(req.httpVersionMajor === 1 && !has_content_length && h['transfer-encoding'] == null) ||\n\t\tcontent_length === 0\n\t) {\n\t\treturn null;"
 		);
 		// And never to a GET or a HEAD, whatever it carries.
-		expect(ADAPTER).toContain(
+		expect(KIT_NODE).toContain(
 			"request.method === 'GET' || request.method === 'HEAD'\n\t\t\t\t? undefined\n\t\t\t\t: get_raw_body(request, bodySizeLimit)"
 		);
 	});
 
-	it('holds a body to the length it declared, and so holds a body that declared none to nothing', () => {
+	it('holds a body to the length it declared, and one that declared none to the server’s limit alone', () => {
 		// Refused at the start if it declares more than the server's limit.
-		expect(rule).toContain('if (body_size_limit !== undefined && content_length > body_size_limit) {');
-		// And failed as it is read if it runs past what it declared. Against
-		// NaN, which is what no Content-Length is, neither is ever true: a body
-		// sent in chunks is read to its end. That is why the gate counts it.
-		expect(rule).toContain('if (size > content_length) {');
-		expect(rule).not.toContain('size > body_size_limit');
-		expect(NaN > 512 * K || 64 * M > NaN).toBe(false);
+		expect(rule).toContain('if (body_size_limit !== undefined && has_content_length && content_length > body_size_limit) {');
+		// And failed as it is read if it runs past what it declared, or past
+		// the server's limit, `BODY_SIZE_LIMIT`, 512M in the image. That is
+		// the largest any route accepts, and nothing smaller: the gate's count
+		// is still what holds a body in chunks to its route's limit.
+		expect(rule).toContain('if (has_content_length && size > content_length) {');
+		expect(rule).toContain('if (body_size_limit !== undefined && size > body_size_limit) {');
 	});
 
 	it('closes the connection when a body is cancelled, which is why the gate leaves one it has refused unread', () => {

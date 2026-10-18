@@ -8,7 +8,7 @@ import {
 	markApiKeyUsed
 } from '$lib/server/auth';
 import { startSchedulers } from '$lib/server/schedulers';
-import { json, type Handle, type HandleServerError, type RequestEvent } from '@sveltejs/kit';
+import { json, text, type Handle, type HandleServerError, type RequestEvent } from '@sveltejs/kit';
 import { createLogger, initLogMaintenance } from '$lib/server/logger';
 import { checkRateLimit } from '$lib/server/rate-limit';
 import { failureAsJson, guardBody } from '$lib/server/api-errors';
@@ -192,17 +192,24 @@ function describeFault(fault: unknown): { error: string; stack?: string } {
  *     @sveltejs/kit/src/utils/url.js): `decodeURI` on each piece between one
  *     `%25` and the next. So `%2F` stays as it is and is no `/`, to the router
  *     and here alike. `%2561` stays as it is, and is not decoded a second
- *     time into an `a`. A sequence that cannot be decoded never comes this
- *     far: SvelteKit has answered it 400 "Malformed URI" before it calls this
- *     hook, which is why `decodeURI` cannot throw here.
+ *     time into an `a`.
+ *   - Where the address cannot be decoded at all (`/%zz`), it is null, and
+ *     `handle` answers 400 "Malformed URI" before anything else. Up to
+ *     SvelteKit 2.60 SvelteKit answered that itself before it called this
+ *     hook; since 2.61 it calls the hook with no route, and `decodeURI` threw
+ *     here, a 500 (card 2227).
  *
  * An id is compared as it is written. No route here is inside a `(group)`,
  * whose name is in the id and not in the address, so that `/(app)/admin`
  * would not start with `/admin`: tests/gate.test.ts fails if one is added.
  */
-function routedPath(event: RequestEvent): string {
+function routedPath(event: RequestEvent): string | null {
 	if (event.route.id !== null) return event.route.id;
-	return event.url.pathname.split('%25').map(decodeURI).join('%25');
+	try {
+		return event.url.pathname.split('%25').map(decodeURI).join('%25');
+	} catch {
+		return null;
+	}
 }
 
 type ResolveFn = Parameters<Handle>[0]['resolve'];
@@ -360,7 +367,13 @@ async function handleRequest(event: RequestEvent, resolve: ResolveFn, path: stri
 export const handle: Handle = async ({ event, resolve }) => {
 	// Every rule here and in handleRequest is decided on this, the path as the
 	// router sees it, and none on the address as it was sent: see routedPath.
-	const path = routedPath(event);
+	const routed = routedPath(event);
+	// An address that cannot be decoded is answered as SvelteKit answered it
+	// before it began calling this hook for one: 400, the same plain words, and
+	// nothing written to the log. It is no route, so nobody is asked who they
+	// are; the security headers are put on it, now that it passes through here.
+	if (routed === null) return secured(text('Malformed URI', { status: 400 }), null);
+	const path = routed;
 	// A call to a remote function, which is answered 404 below whatever path it
 	// names: see noRemoteFunctions. Its `event.url` is the path its header
 	// names, so it is written down at the address it was really sent to.
@@ -525,7 +538,7 @@ export const handleError: HandleServerError = ({ error, event, status, message }
 		if (status >= 500 && !already) {
 			const method = event.request.method;
 			// As the gate writes it: an invite's address with its token masked.
-			const sent = pathToLog(event.url.pathname, routedPath(event));
+			const sent = pathToLog(event.url.pathname, routedPath(event) ?? event.url.pathname);
 			const fault = describeFault(error);
 			log.error(
 				`${method} ${sent} → ${status}: ${fault.error}`,

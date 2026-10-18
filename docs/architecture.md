@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.29
+version: 1.30
 status: As-Built
 date: 2026-10-18
 tags:
@@ -188,10 +188,11 @@ request: `runMigrations()`, `cleanExpiredSessions()`, `initLogMaintenance()` and
 ```mermaid
 flowchart TD
     Req["A request"] --> Kit{"SvelteKit, before handle is called"}
-    Kit -->|"a write sent as a form with no matching Origin (built server only),<br/>a trailing slash, a URL that is not validly encoded,<br/>a path that begins /_app but a remote call"| Early["403, 308, 400 or 404.<br/>The gate never sees it"]
+    Kit -->|"a write sent as a form with no matching Origin (built server only),<br/>a trailing slash,<br/>a path that begins /_app but a remote call"| Early["403, 308 or 404.<br/>The gate never sees it"]
     Kit --> Path["routedPath(event): the path as the router sees it.<br/>Every rule below is decided on it"]
+    Path -->|"null: a URL that is not validly encoded"| E400["400 Malformed URI, plain text,<br/>secured(), unlogged"]
     Path --> Remote{"Step 1: a call to a remote function,<br/>/_app/remote/...?"}
-    Remote -->|"Yes"| E404r["404 message: Not found,<br/>whatever path its header names"]
+    Remote -->|"Yes"| E404r["404 message: Not found,<br/>whatever path its header names<br/>(one that cannot be decoded: the 400 above)"]
     Remote -->|"No"| Size["Step 2: refuseBody(): 413 for a body declared<br/>over what the route gives anybody"]
     Size --> Static{"Step 3: /_app/ or /favicon.ico,<br/>and no body refused?"}
     Static -->|"Yes"| Pass["handOn, unlogged, then secured()"]
@@ -253,7 +254,7 @@ flowchart TD
 
 | # | Step | What it does |
 |---|------|--------------|
-| 1 | A remote call | A call to a remote function, `/_app/remote/<id>`, is answered `404` `{ "message": "Not found" }`, to anybody. SvelteKit sets its `event.url` and route from the `x-sveltekit-pathname` header, which the caller writes, so no rule below can be decided on it. DumpFire has no remote functions |
+| 1 | A remote call | A call to a remote function, `/_app/remote/<id>`, is answered `404` `{ "message": "Not found" }`, to anybody. SvelteKit sets its `event.url` and route from the `x-sveltekit-pathname` header, which the caller writes, so no rule below can be decided on it. A header that names a path that cannot be decoded is answered `400` `Malformed URI` before this step, as SvelteKit 2.60 also answered it. DumpFire has no remote functions |
 | 2 | Body size | `refuseBody()` asks every request whose body declares a length in `Content-Length` whether that is more than its route gives anybody: `413` with the limit if it is. A body with no length is let through to be counted (see `handOn`, below). The answer is kept, not thrown. See [Authentication & Security](authentication-security.md#how-large-a-request-may-be) |
 | 3 | Static assets | `/_app/` and `/favicon.ico`, exactly, are handed on at once and not logged, unless step 2 refused the body, which is logged like any other answer. Every other path that begins `/_app`, but a remote call, is answered `404` by SvelteKit before the gate is called |
 | 4 | `handleRequest()` | The `/api/v1/` branch, or the session branch for everything else. Each is set out below. Every refusal and every redirect in it is an answer that is returned: none is thrown. Every request it lets through is handed on by `handOn` |
@@ -297,8 +298,11 @@ answered with a session and no key, uncounted.
   under `/api/v1/` and is no route.
 - **Nothing is decoded twice.** `/%2561dmin` is the address `/%61dmin` spelt out, and is no
   route.
-- **A sequence that cannot be decoded never reaches the gate.** SvelteKit answers it `400`
-  first.
+- **A sequence that cannot be decoded is answered first.** `routedPath()` returns null for
+  it and `handle` answers `400` "Malformed URI", in plain text with the security headers,
+  before anything else and with nothing logged. SvelteKit answered it itself before calling
+  the gate up to 2.60; since 2.61 it hands it to the gate, where the decode threw, a `500`,
+  until card 2227.
 - **The two page loads check for themselves.** `src/routes/admin/+page.server.ts` and
   `src/routes/audit/+page.server.ts` send a caller who is not signed in to `/login` and one
   who is not an administrator to `/`, as the gate does. The gate was the only thing in
@@ -545,18 +549,20 @@ answer as SvelteKit made it.
 
 ### What is answered before the gate
 
-SvelteKit answers four kinds of request without calling `handle`, so the gate cannot make
-them JSON or head them. The first three are documented to callers as the exceptions, with
+SvelteKit answers three kinds of request without calling `handle`, so the gate cannot make
+them JSON or head them. The first two are documented to callers as the exceptions, with
 what to send instead, in the
-[External API Reference](api-reference.md#answers-that-are-not-json), and all four, with the
+[External API Reference](api-reference.md#answers-that-are-not-json), and all three, with the
 static files of a built server, as the proxy's to head in
-[Deployment](deployment.md#security-headers-from-the-proxy).
+[Deployment](deployment.md#security-headers-from-the-proxy). A URL that is not validly
+encoded, the third exception callers are told of, was a fourth up to SvelteKit 2.60; the
+gate now answers it itself, with the same plain-text `400` `Malformed URI` and the security
+headers (see [The path a rule is decided on](#the-path-a-rule-is-decided-on)).
 
 | Request | SvelteKit's answer |
 |---------|--------------------|
 | A `POST`, `PUT`, `PATCH` or `DELETE` whose `Content-Type` is a form's or `text/plain`, with no `Origin` that matches the server. A built server only: the check is skipped under `vite dev` | `403`, as plain text unless the `Accept` header is exactly `application/json` |
 | A path with a trailing slash that names a route | `308` to the path without it |
-| A URL that is not validly encoded | `400` `Malformed URI`, plain text |
 | A path that begins `/_app` and is no file the server has, but a call to a remote function, which the gate answers itself | `404` `Not found`, plain text |
 
 The first is SvelteKit's protection against cross-site form posts (`csrf.checkOrigin`),

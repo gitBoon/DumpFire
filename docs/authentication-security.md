@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.35
+version: 1.36
 status: As-Built
 date: 2026-10-18
 tags:
@@ -144,7 +144,9 @@ such a call is for from its `x-sveltekit-pathname` header, which the caller writ
 set the route from it before the gate is called: decided on that, a call naming `/login`
 was let through as the public page, and one naming `/_app/x` passed through unasked and
 unlogged. DumpFire has no remote functions. The gate's log line for it is at the address
-it was sent to.
+it was sent to. A header that names a path that cannot be decoded is answered `400`
+`Malformed URI` instead, as an address that cannot be decoded is, and as SvelteKit 2.60
+also answered it.
 
 - **By id, and not by how the address begins.** The list was compared with the start of
   the address, so `/requestX`, `/loginX`, `/api/requestsX` and `/faviconX` were let past the
@@ -229,8 +231,10 @@ the limit.
   enough for a database backup. Without the narrowing, anybody could post half a gigabyte
   to the login form.
 - **Why a body with no length is counted.** The server holds a body to the length it
-  declared. One that declares none is held to nothing: with a limit of 512 KB, a chunked
-  body of 64 MB was read in full. So the gate hands the handler a copy of the request whose
+  declared. One that declares none was held to nothing: with a limit of 512 KB, a chunked
+  body of 64 MB was read in full. Since adapter-node 5.5.5 (card 2227) it is held to
+  `BODY_SIZE_LIMIT`, but that is the whole server's limit, 512M in the image, and no
+  route's. So the gate hands the handler a copy of the request whose
   body passes through a count (`heldToLimit()`), and a read that passes the limit fails with
   the `413`. The body is left unread there, not cancelled: the server answers a cancelled
   body by closing the connection, and the `413` would never arrive.
@@ -2533,12 +2537,16 @@ refusals carried none.
 
 - in a built server, every static file, which the adapter serves before the gate is called;
 - the `403` SvelteKit answers to a form posted from another site;
-- the `400` "Malformed URI" for an address that cannot be decoded;
 - the redirect that adds or removes a trailing slash;
 - the `404` for any other path that begins `/_app`, but a call to a remote function, which
   the gate answers itself;
 - the `500` for a fault in the gate itself, which SvelteKit answers after the gate has
   failed.
+
+The `400` "Malformed URI" for an address that cannot be decoded was on this list up to
+SvelteKit 2.60, which answered it before calling the gate. Since 2.61 SvelteKit calls the
+gate for it, so the gate answers it, first and unlogged, in the same plain text, and heads
+it (card 2227).
 
 Covered by `tests/gate.test.ts`.
 
