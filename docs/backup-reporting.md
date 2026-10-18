@@ -116,8 +116,58 @@ destination. Each field is read by its rule: `schedule` one of the six above,
 commas, semicolons or lines and stored separated by commas, or empty. Each destination is
 a text `name`, a `type` of `sftp`, `s3`, `gdrive` or `onedrive`, and the fields of its
 type (`readDestination()` in `src/lib/server/backup-destinations.ts`); any other field is
-not kept, and a secret sent back masked is the one stored under that name. An SFTP `port`
-is a whole number from 1 to 65535, or `null`, which connects to 22.
+not kept, `grantedScope` included (only Connect writes it). An SFTP `port` is a whole number
+from 1 to 65535, or `null`, which connects to 22. `readDestination()` no longer puts a stored
+secret in place of a mask: it did until card 2190, finding the stored destination by name or
+by its place in the list. A mask is now resolved by `keepMaskedSecrets()`, below. An SFTP
+`host` is saved trimmed of ASCII spaces and tabs only, one sent back as stored kept as it is
+(`trimHost()`, the review-fix pass's S1). A list that names two destinations alike is refused
+`400` before anything else is asked of it (`twiceNamed()`, S4): "Two backup destinations are
+named "NAS"." and, where two of that name were saved before, "Remove the destinations named
+"NAS" (the page's Remove removes every one of that name) and add it once with its secret
+typed.", or otherwise "Each destination needs a name of its own: give one of them another
+name." A destination is found by its name to connect, test and back up to.
+
+**The secret fields, as the admin page is told them and as a save keeps them** (cards 2187
+and 2190). One list, `SECRET_FIELDS` in `src/lib/server/backup-secrets.ts` (the list a backup
+clears, card 2169's), serves three routes, so a field added to it is masked, kept and cleared
+with nothing else to change:
+
+```mermaid
+flowchart LR
+    List["SECRET_FIELDS:<br/>the one list"] --> Clear["clearSecrets:<br/>a backup's copy"]
+    List --> Mask["maskDestination:<br/>GET /api/admin/backup"]
+    List --> Keep["keepMaskedSecrets:<br/>PUT /api/admin/backup and<br/>POST /api/admin/backup/test"]
+    Rule["sameEntry and differences:<br/>the same in type, name and<br/>every field that is not secret"] --> Keep
+    Rule --> Fill["fillSecretGaps:<br/>a restore"]
+```
+
+- **`maskDestination()`** answers every secret field of any type that holds anything as
+  `••••••••` (`SECRET_MASK`), whatever the destination's type: SFTP `password` and
+  `privateKey`, S3 `secretAccessKey`, `clientSecret`, Google Drive `refreshToken` (which the
+  answer carried as stored until card 2187), and a service account's `private_key` inside
+  `serviceAccountJson` where the JSON reads as an object, and a `privateKey` beside it; such JSON is
+  always written out again from what was read, never shown as stored, so text that names
+  `private_key` twice (which reads as its last) cannot carry the first to the browser (S3).
+  JSON that cannot be read, or reads as anything else (a string, a list), is masked whole. Every other field is as stored,
+  `grantedScope` included.
+- **`keepMaskedSecrets(incoming, stored)`**, for the `PUT` (each destination, inside its
+  transaction, `400` on the first refusal) and the test route: a destination with a mask in
+  any secret field takes each masked field's value from the one stored destination that is
+  the same in type, name and every field that is not secret (`sameEntry`, compared as the
+  destination would use them: missing, `null` and `''` alike; the host trimmed of ASCII spaces
+  and tabs, ASCII letters in any case, any other difference a change; an SFTP port 22, an S3 region `us-east-1` and a OneDrive folder path `DumpFire
+  Backups`, slashes trimmed, when not set; a service account by its JSON's `client_email` and
+  `private_key_id`, its JSON then taken whole), and an SFTP host is then written as that entry
+  has it, so the secret goes to the host it was saved with byte for byte (S1). None, and it is
+  refused with decision 3's words, naming every field still masked and what changed; more than
+  one, and the words say to remove the destinations of that name, which the page's Remove
+  does, and add it once with its secret typed (O1). A Google Drive
+  OAuth destination with its token masked is told to be removed, added again and connected,
+  beginning with removing DumpFire's access in the Google account unless every stored
+  destination it could be was connected with `drive.file` alone. A destination with no mask
+  is used as sent. `grantedScope` is never taken from a request: it comes back only with a
+  kept refresh token.
 
 ### Backup Data Generation
 
@@ -234,6 +284,51 @@ Each destination implements three operations:
 - **upload** — Push a backup buffer with a timestamped filename
 - **list** — List existing backups for retention cleanup
 - **delete** — Remove old backups beyond retention limit
+
+**Google Drive's scope and folder** (card 2188). Connect (`POST
+/api/admin/backup/gdrive/auth`) asks for `https://www.googleapis.com/auth/drive.file`
+(`DRIVE_FILE_SCOPE` in `src/lib/drive-scope.ts`), the files DumpFire makes, where it asked for
+the whole of Drive; a service account already asked for `drive.file`. A token refreshes with
+the scopes it was granted, so a connection made before keeps the whole of Drive until it is
+connected again. The Connect, in order:
+
+```mermaid
+sequenceDiagram
+    participant P as Admin page
+    participant R as POST gdrive/auth
+    participant G as Google
+    P->>R: code, destination name
+    R->>G: exchange the code
+    G-->>R: refresh token, granted scope
+    alt no refresh token
+        R-->>P: No refresh token received, nothing made or saved
+    else Folder ID empty
+        R->>G: files.create, the folder DumpFire backups (made YYYY-MM-DD)
+        G-->>R: its id
+    else Folder ID set
+        R->>G: files.get (reachFolder)
+        G-->>R: a folder not in the trash, or refused
+    end
+    R->>R: read the settings again, the same client id, secret and Folder ID?
+    R-->>P: saved with the token, grantedScope and folder, or refused and a made folder deleted
+```
+
+- A folder that cannot be reached refuses the Connect with nothing saved, the destination
+  keeping the connection it had; Google's reason is a `WARN` line under `GDRIVE`.
+- The settings are read again after Google's answers and written with no `await` between,
+  only if the destination is still there with the client id, client secret and Folder ID it
+  had; otherwise "The destination was changed or removed while it was being connected, so
+  the connection was not saved. Connect it again." A folder made by a Connect that is not
+  saved, or that throws, is deleted again (best effort, a `WARN` naming its id on failure).
+- `grantedScope` is Google's `tokens.scope` as granted, and nothing when Google names none.
+  `driveScopeIsNarrow()` (in `src/lib/drive-scope.ts`, no server imports, read by the admin
+  page and by `keepMaskedSecrets()`) is true only when every scope in it, split on white
+  space, is exactly `drive.file`; a missing one is all of Drive. The page shows `✅ Connected`
+  or `⚠️ Connected · all of Drive` by it.
+- `GDriveDestination.test()` fetches the folder (`reachFolder()`) before it lists it, for
+  either sign-in method, and says when it cannot reach it; with no Folder ID it answers as
+  before.
+- A failed Connect is one `ERROR` line, `Google Drive Connect failed for destination "…": …`.
 
 ### Retention Cleanup
 
@@ -573,8 +668,9 @@ Individual card reports can be generated for completion notifications. These inc
 | File | Lines | Purpose |
 |------|-------|---------|
 | `src/lib/server/backup.ts` | ~570 | Backup scheduling, data generation (`withoutSecrets()`: no session, no unused invite, no key remembered browsers are signed with, no request link or form key, no secret, and sealed), upload orchestration (`runBackup()`, which does not try a destination without its credentials) |
-| `src/lib/server/backup-secrets.ts` | ~930 | What a backup leaves out because it is a secret (card 2169): `clearSecrets()`, `readSecretsHere()` and `fillSecretGaps()` for a restore, `credentialsMissing()`, `secretsToEnter()` for the start-up line, and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
-| `src/lib/server/backup-destinations.ts` | ~400 | SFTP, S3, Google Drive, OneDrive destination implementations |
+| `src/lib/server/backup-secrets.ts` | ~1,400 | What a backup leaves out because it is a secret (card 2169), and what the admin routes mask and keep (cards 2187 and 2190: `SECRET_MASK`, `maskDestination()`, `keepMaskedSecrets()`, `keepMailPassword()`): `clearSecrets()`, `readSecretsHere()` and `fillSecretGaps()` for a restore, `credentialsMissing()`, `secretsToEnter()` for the start-up line, and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
+| `src/lib/server/backup-destinations.ts` | ~670 | SFTP, S3, Google Drive, OneDrive destination implementations; `readDestination()`; `reachFolder()` and `makeDumpfireFolder()` for Google Drive (card 2188) |
+| `src/lib/drive-scope.ts` | ~40 | `DRIVE_FILE_SCOPE`, `driveScopeIsNarrow()` and `dumpfireFolderName()`, read by the server and the admin page (card 2188) |
 | `src/lib/server/reports.ts` | ~1,700 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()` and the timer's `runDueReportSchedulesOnce()`; `takeReportMail()`, the day's 100 addresses (card 2182) |
 | `src/routes/api/reports/email/+server.ts` | ~170 | A report emailed on demand, and its answer |
 | `src/lib/report-recipients.ts` | ~70 | `reportRecipients()` and `MAX_REPORT_RECIPIENTS`: the one reading of a list of recipients, for the routes, the scheduler and the page (card 2182) |

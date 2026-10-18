@@ -106,7 +106,8 @@ SMTP settings are stored in the `settings` table and configured via the Admin pa
 |------------|------|---------|-------------|
 | `smtp_host` | string | — | SMTP server hostname |
 | `smtp_port` | number | 587 | Port number |
-| `smtp_secure` | boolean | false | Use direct SSL |
+| `smtp_allow_insecure` | `'true'` or `'false'` | not set (off) | "Allow mail without a checked, encrypted connection" (card 2189): only `'true'` is on. Written when the panel first saves it |
+| `smtp_secure` | boolean | false | No longer read or written (card 2189). It was "Use SSL/TLS", which only switched the certificate check on for ports other than 465; that is now always on. A row saved before is left where it is, and a working copy removes it with the other mail settings |
 | `smtp_user` | string | — | Auth username |
 | `smtp_pass` | string | — | Auth password |
 | `smtp_from_address` | string | — | Sender email address |
@@ -115,9 +116,10 @@ SMTP settings are stored in the `settings` table and configured via the Admin pa
 **The password is in no backup** (card 2169). A backup's copy has no `smtp_pass` row; the
 other mail settings are in it. An Import Backup keeps this server's password when the
 backup is one this server made and nobody has changed since (its seal, made with a key this
-server keeps) and its `smtp_host` (trimmed, any case), `smtp_port`, `smtp_secure` and
+server keeps) and its `smtp_host` (trimmed of ASCII spaces and tabs, ASCII letters in any case), `smtp_port` (587 when not set),
+`smtp_allow_insecure` (off when not set, as in a backup made before card 2189) and
 `smtp_user` are all this server's, and otherwise lists the mail password to enter again in
-**Admin → 📧 Email / SMTP**: with the port or "Use SSL/TLS" compared too, a backup cannot have this server's
+**Admin → 📧 Email / SMTP**: with the port and the way out compared too, a backup cannot have this server's
 password sent over a connection whose certificate is not checked. Until it is entered, mail
 is tried with the user name and an empty password, which a mail server that asks for one
 refuses, the backup failure mail included; a requester who asks for a new link is told
@@ -125,26 +127,111 @@ refuses, the backup failure mail included; a requester who asks for a new link i
 than that one was sent, with the reason in a `[WARN] [REQUESTS]` line; and every start writes
 one `[WARN] [STARTUP]` line saying so. See [The Secrets a Backup Does Not Hold](authentication-security.md#the-secrets-a-backup-does-not-hold-card-2169).
 
+**The saved password stays with the connection it was saved for** (card 2190). `GET
+/api/admin/smtp` answers the password as `••••••••` (`SECRET_MASK` in
+`src/lib/server/backup-secrets.ts`) and `allowInsecure` as `true` or `false`; it no longer
+answers `secure`. `PUT /api/admin/smtp` takes `host`, `port`, `allowInsecure` (`true` or
+`false`; anything else is refused, `allowInsecure must be true or false`), `user`, `pass`,
+`fromAddress`, `fromName` and `appUrl`; a `secure` is ignored as any unknown key. A password
+typed, an empty one included, is saved as typed. One sent masked, or left out, while a
+password is stored, is kept only while the host (trimmed of ASCII spaces and tabs, ASCII letters in any case; a no-break space, a byte-order mark or an ideographic space is a change, as is a letter outside ASCII that `toLowerCase()` would fold to one inside it), port (587 when not set),
+user name (`''` when not set) and way out (off when not set) that the save would leave stored,
+each sent over the one stored, are the stored ones (`keepMailPassword`, by the rule a restore
+fills the password by). Otherwise the save is refused `400`, inside its transaction, with
+nothing written:
+
+> Type the mail password again. The saved password is used only with the host, port, user name
+> and "Allow mail without a checked, encrypted connection" setting it was saved with, and this
+> changes the host.
+
+naming each field that changed. The host is saved trimmed of ASCII spaces and tabs only, and
+where the stored password is kept the stored host is written in place of the one sent, so that
+the host compared is the host connected to, byte for byte (the review-fix pass's S1). The sender's address and name and the App URL decide nothing
+about where the password goes and are not compared, so the App URL saved alone is never
+refused; with no password stored there is nothing to keep and nothing is refused. Until card
+2190 a masked password was kept for any host, and one left out too, since only the keys sent
+are written: a save of `{ "host": "smtp.evil.example" }` sent the stored password there at the
+next mail. A save that changes the way out writes, once committed, one `WARN` line under
+`SMTP`: `Mail is now sent without a checked, encrypted connection (set by <username>)`, or
+`with`.
+
 ### Connection Handling
 
+Every mail goes through `createTransporter` in `src/lib/server/email.ts`, built afresh for each
+send from the stored settings: `sendEmail` (invites, notifications, request mail and its
+confirmation, the new-link mail, the backup failure mail), `sendEmailWithAttachment` (reports,
+the requester's completion PDF) and `sendTestEmail` (Send Test). Card 2189 made the connection
+a checked, encrypted one by default.
+
 ```mermaid
-flowchart LR
-    Request["Send Email"] --> ConfigCheck{"SMTP\nconfigured?"}
-    ConfigCheck -->|"No"| NoOp["Silent no-op\nreturn false"]
-    ConfigCheck -->|"Yes"| CreateTransport["Create transporter"]
-    CreateTransport --> PortCheck{"Port 465?"}
-    PortCheck -->|"Yes"| DirectSSL["Direct SSL"]
-    PortCheck -->|"No"| STARTTLS["STARTTLS"]
-    DirectSSL --> Send["Send via SMTP"]
-    STARTTLS --> Send
-    Send -->|"Success"| ReturnTrue["return true"]
-    Send -->|"Failure"| LogError["Log error\nreturn false"]
+flowchart TD
+    Mail["Any mail: notification, invite, report, test"] --> Configured{"A host saved?"}
+    Configured -->|"no"| NoOp["Nothing sent, false"]
+    Configured -->|"yes"| Port{"Port 465?"}
+    Port -->|"yes"| Implicit["TLS from the first byte,<br/>certificate checked<br/>(the way out changes nothing here)"]
+    Port -->|"no"| WayOut{"Way out ticked?<br/>smtp_allow_insecure"}
+    WayOut -->|"no"| Start["STARTTLS required (requireTLS):<br/>a server that does not offer it is refused, ETLS"]
+    WayOut -->|"yes"| Old["As before card 2189:<br/>STARTTLS only if offered,<br/>certificate not checked"]
+    Start --> Cert{"Certificate trusted<br/>for the host's name?"}
+    Implicit --> Cert
+    Cert -->|"yes"| Auth["Sign in and send"]
+    Old --> Auth
+    Cert -->|"no"| Refused["Refused before AUTH"]
+    CA["NODE_EXTRA_CA_CERTS:<br/>a private authority's certificate"] -.->|"adds to what is trusted"| Cert
+    Auth -->|"failure"| Fail["ERROR line, false"]
+    Refused --> Fail
+    Fail -->|"ETLS, or a certificate or STARTTLS message"| Warn["WARN Mail is not being sent,<br/>at most once in 10 minutes"]
 ```
 
-Key transport settings:
-- **IPv4 forced** — Prevents ETIMEDOUT on dual-stack DNS
-- **EHLO name** — Set to `dumpfire.app` to avoid Google 421 errors from local hostnames
-- **Timeouts** — 10s connection, 10s greeting, 15s socket
+The options handed to nodemailer (10.1.1):
+
+| Option | Port 465 | Any other port | Any other port, way out ticked |
+|---|---|---|---|
+| `secure` | `true` | `false` | `false` |
+| `requireTLS` | `false` (TLS already) | `true` | `false` |
+| `tls.rejectUnauthorized` | `true` | `true` | `false` |
+| `auth` | the user and password, when a user is saved | the same | the same |
+| `name` (the EHLO name) | `dumpfire.app` | `dumpfire.app` | `dumpfire.app` |
+| `connectionTimeout`, `greetingTimeout`, `socketTimeout` | 10 s, 10 s, 15 s | the same | the same |
+
+- **The certificate** is checked against Node's own authorities and any named by
+  `NODE_EXTRA_CA_CERTS`, which Node reads once at start for every TLS connection of the
+  process (webhook deliveries and backup destinations trust that authority too). There is no
+  setting for an authority's certificate on the panel: see
+  [Mail Server Certificates](deployment.md#mail-server-certificates).
+- **Port 465 is checked even with the way out ticked** (the plan's R9): it checked the
+  certificate before card 2189 too, so no installation on 465 depends on an unchecked one.
+- **The EHLO name** is `dumpfire.app`, to avoid Google's `421` answers to local host names.
+- **IPv4 and IPv6.** DumpFire no longer passes `family: 4` ("force IPv4"): nodemailer 10's SMTP
+  connection does not read a `family` option. nodemailer looks up the host's IPv4 and IPv6
+  addresses together, leaving out a family the server has no network address for (and falling
+  back to `dns.lookup` when neither finds an address), and with more than one address it has
+  Node's `net.connect` try them in turn (`autoSelectFamily`), going on to the next when one
+  fails or is slow.
+- **The check before deploying** ([Mail Server Certificates](deployment.md#mail-server-certificates))
+  builds these same options and calls `verify()`, which connects, upgrades, checks and quits
+  without signing in, so it tells what the first mail will meet. `createTransporter`'s comment
+  names it: change the two together.
+
+**What a failure says.** Send Test's `500` is `Failed to send test email: <the error>`. When the
+error is the certificate or STARTTLS (`tlsFaultHint`: the code `ETLS`, or a message matching
+`certificate`, `altnames`, `self-signed` or `STARTTLS`), the error is ended as a sentence and followed by:
+
+> The mail server's certificate could not be checked, or the server does not offer STARTTLS.
+> For a certificate from a private authority, see docs/deployment.md, Mail Server Certificates;
+> for a relay on this server's own network that cannot use TLS, tick "Allow mail without a
+> checked, encrypted connection" and type the password again.
+
+A refused STARTTLS comes back `ETLS` "Error upgrading connection with STARTTLS: …"; a
+certificate refused during STARTTLS comes back `ESOCKET` with Node's message
+("self-signed certificate", "Hostname/IP does not match certificate's altnames: …"); and a server
+that answers neither EHLO nor STARTTLS comes back `ECONNECTION` "EHLO failed but HELO does not
+support required STARTTLS", which nodemailer 10 names so (the review-fix pass's S6). A sign-in
+failure or a timeout says what it says, with no sentence. Every other mail is sent after its
+write commits, and a failure is an `ERROR` line (`Failed to send email to …`); when it is the
+certificate or STARTTLS, `sendEmail` and `sendEmailWithAttachment` also write one `WARN` line
+under `EMAIL`, `Mail is not being sent: <the error>. <the sentence above>`, at most once in ten
+minutes in a process, so the Audit page says why invites and notifications stopped.
 
 ### Email Types
 

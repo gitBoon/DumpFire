@@ -181,6 +181,7 @@ const MAIL_SETTINGS: Record<string, string> = {
 	smtp_user: 'dumpfire',
 	smtp_pass: 'not-a-real-password',
 	smtp_secure: 'true',
+	smtp_allow_insecure: 'true',
 	smtp_from_address: 'dumpfire@example.test',
 	smtp_from_name: 'DumpFire'
 };
@@ -192,7 +193,7 @@ const APP_URL = 'https://dumpfire.example.test';
  *
  *   report_schedules   1, 2 and 4 enabled; 3 disabled
  *   webhooks           1 and 3 active; 2 inactive
- *   settings           `backup_config` as above, the seven `smtp_*` keys,
+ *   settings           `backup_config` as above, the eight `smtp_*` keys,
  *                      `app_url` and `theme`
  *
  * and two users, two boards, two columns and two cards for those to belong to.
@@ -230,13 +231,13 @@ const SWITCHED_OFF: OutsideSwitchedOff = {
 	webhooks: 2,
 	backupScheduleWasOn: true,
 	backupDestinations: 2,
-	mailSettings: 7
+	mailSettings: 8
 };
 
 /** How the route says it. */
 const SENTENCE =
 	'Restored as a working copy: 3 report schedule(s) and 2 webhook(s) switched off, the backup schedule switched off, ' +
-	'2 backup destination(s) removed, 7 mail setting(s) removed.';
+	'2 backup destination(s) removed, 8 mail setting(s) removed.';
 
 /** The armed backup. */
 function armedBackup(): Database.Database {
@@ -314,7 +315,7 @@ const AS_THE_BACKUP_HAS_IT = {
 	webhooksActive: 2,
 	backupSchedule: 'daily',
 	backupDestinations: 2,
-	mailSettings: 7
+	mailSettings: 8
 };
 const AS_IT_WAS_HERE = {
 	reportSchedulesEnabled: 1,
@@ -382,7 +383,7 @@ describe('restoring as a working copy', () => {
 		expect(result.errors).toEqual([]);
 		// Webhooks 1 and 3 were on, and are off in the backup for want of a
 		// secret: still counted. One mail setting fewer: there is no password.
-		expect(result.outside).toEqual({ ...SWITCHED_OFF, mailSettings: 6 });
+		expect(result.outside).toEqual({ ...SWITCHED_OFF, mailSettings: 7 });
 		expect(reachingOutside(live)).toEqual(NOTHING);
 		expect(rowsOf(live, 'webhooks').map((row) => [row.id, row.secret, row.active])).toEqual([
 			[1, '', 0],
@@ -879,9 +880,9 @@ describe('through the route', () => {
 	it('says what a working copy of a backup made since card 2169 had on, and the webhooks to enter', async () => {
 		const { response } = await upload('?outside=off', armedBackupMadeNow());
 
-		const sentence = SENTENCE.replace('7 mail setting(s) removed', '6 mail setting(s) removed');
+		const sentence = SENTENCE.replace('8 mail setting(s) removed', '7 mail setting(s) removed');
 		expect(response.status).toBe(200);
-		expect(response.body.outside).toEqual({ ...SWITCHED_OFF, mailSettings: 6 });
+		expect(response.body.outside).toEqual({ ...SWITCHED_OFF, mailSettings: 7 });
 		expect(response.body.workingCopy).toBe(sentence);
 		expect(response.body.secretsToEnter).toBe(
 			'To enter again, because a backup does not hold them: the signing secret(s) of webhook(s) 1 (board "A"), 2 ' +

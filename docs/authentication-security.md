@@ -1341,10 +1341,10 @@ superadmin...", for everybody else who is not the superadmin, an administrator i
 | `GET /api/admin/export` | Download every password hash and email and every webhook's address. It held every session id and unused invite token too, and until card 2169 the mail password, every backup destination's credentials and every webhook's signing secret. It carries a seal made with a key no backup holds, so that only this server fills its secrets back into it, unchanged |
 | `POST /api/admin/import` | Replace every account with accounts of their own |
 | `POST /api/admin/reset` | Clear every account, and be the superadmin of the installation they then set up |
-| `GET`, `PUT`, `POST /api/admin/backup` | Add a destination of their own and have the whole database sent to it |
-| `POST /api/admin/backup/test` | Have a stored destination's password sent to a host of their choosing: a test whose secrets are masked connects with the stored ones |
-| `GET`, `POST /api/admin/backup/gdrive/auth` | Connect a Google Drive of their own as a destination |
-| `GET`, `PUT`, `POST /api/admin/smtp` | Point mail at a server of their own and the App URL at a host of their own, and read an invite meant for somebody else |
+| `GET`, `PUT`, `POST /api/admin/backup` | Add a destination of their own and have the whole database sent to it. The `GET` masks every secret field of every destination (card 2187; it answered a Google Drive refresh token as stored), and a `PUT` keeps a masked secret only for the one stored destination that is the same in type, name and every setting that is not secret (card 2190; it was taken by the destination's place in the list) |
+| `POST /api/admin/backup/test` | Have a stored destination's password sent to a host of their choosing, which until card 2190 a test whose secrets were masked did: it connected with the stored ones whatever host it named. Now a masked secret is used only for an unchanged destination, by the `PUT`'s rule, and any other is refused `400` before anything connects |
+| `GET`, `POST /api/admin/backup/gdrive/auth` | Connect a Google Drive of their own as a destination. Connect asks Google for `drive.file`, DumpFire's own files, where it asked for the whole of Drive (card 2188) |
+| `GET`, `PUT`, `POST /api/admin/smtp` | Point mail at a server of their own and the App URL at a host of their own, and read an invite meant for somebody else. A `PUT` keeps a masked or missing mail password only while the host, port, user name and "Allow mail without a checked, encrypted connection" are as stored, and turning that setting on or off from the panel needs the password typed and writes a `WARN` line naming who (cards 2190 and 2189), so a session in the wrong hands cannot send the stored password elsewhere, or lower its protection, without knowing it. The host is compared trimmed of ASCII spaces and tabs, ASCII letters in any case, and stored as it was saved while the password is kept, so the host compared is the host connected to (the review-fix pass's S1). A restore also brings the setting in, with the backup's other mail settings and with neither: it keeps this server's password only where the setting is this server's, and its "To enter again" line names the box where it differs (S5) |
 
 ```mermaid
 flowchart TD
@@ -1496,7 +1496,7 @@ backup is sealed with a key this server keeps and no backup holds (the review's 
 |---|---|---|---|
 | The file an export downloads, and the copy a scheduled backup or "Run Now" uploads | none: its row is deleted | none: each secret field `''`, every other field kept | none: `''`, and a webhook that had one is switched off and listed in `webhook_secrets_left_out` with whether it was on |
 | The running database, after a backup | as it was | as they were | as they were |
-| After Import Backup "as it is" on the server the backup came from, the file unchanged | kept from this server, if its mail settings name the same host, port, "Use SSL/TLS" and user | kept from this server, if exactly one destination here is the same in every field that is not secret | kept, if a webhook here has the same id, board and address, and the webhook on or off as it was |
+| After Import Backup "as it is" on the server the backup came from, the file unchanged | kept from this server, if its mail settings name the same host, port, "Allow mail without a checked, encrypted connection" and user (card 2189; "Use SSL/TLS" before it) | kept from this server, if exactly one destination here is the same in every field that is not secret | kept, if a webhook here has the same id, board and address, and the webhook on or off as it was |
 | After Import Backup "as it is" on another server or a fresh one, of a backup changed since it was made, or of a file that fails `PRAGMA integrity_check` or holds an object named as SQLite's own that no backup of this server's holds | to enter again: there is no seal this server can check, or it does not verify, or the file failed a check made first | to enter again | to enter again. Off until it is set |
 | After Import Backup as a working copy | removed with the other mail settings, as before | removed with the destinations, as before | filled where it can be, and off with every webhook. Those not filled are listed |
 | A backup file put in place by hand as the database | none, named at every start | none, named at every start | none, the webhook off, named at every start |
@@ -1593,11 +1593,22 @@ flowchart TD
 - **A restore fills each gap from this server, and only from the same account in the same
   place.** For a backup whose seal verified, inside the restore's transaction, `readSecretsHere()` reads this server's secrets
   before the first table is cleared, and `fillSecretGaps()` fills the restored rows after the
-  copy. The mail password is filled when the restored host (trimmed, any case), port, "Use
-  SSL/TLS" and user are all this server's: a backup that named this server's host and user on
-  port 587 with the box unticked would otherwise have the password sent where the certificate
-  is not checked. A destination is filled from the one destination here of its type that is
-  the same in every field that is not secret, the name and the place included (SFTP name,
+  copy. The mail password is filled when the restored host (trimmed of ASCII spaces and tabs, ASCII letters in any case), port (587
+  when not set), "Allow mail without a checked, encrypted connection" (`smtp_allow_insecure`,
+  off when not set, as in a backup made before card 2189) and user are all this server's: a
+  backup that named this server's host and user with the way out ticked would otherwise have
+  the password sent where the certificate is not checked. The restore does bring in the backup's
+  way out, with no password asked and no `WARN` line; where it differs from this server's, the
+  password is not filled and the "To enter again" line names the box ("the mail password
+  (Admin, 📧 Email / SMTP, where the backup brought in … ticked and this server had it
+  unticked)", the review-fix pass's S5). (Until card 2189 the rule compared
+  "Use SSL/TLS", `smtp_secure`, which is no longer read.) The same rule decides when a save of
+  the mail settings keeps a masked password (card 2190). A destination is filled from the one
+  destination here of its type that is the same in every field that is not secret, compared
+  as the destination would use them (missing and empty alike, the host trimmed of ASCII spaces and tabs, ASCII
+  letters in any case, an S3 region `us-east-1` and an SFTP port 22 when not set, a OneDrive folder path with
+  its slashes trimmed and `DumpFire Backups` when not set: card 2190's R8, the rule a save
+  keeps a masked secret by), the name and the place included (SFTP name,
   host, port, user name and remote path; S3 name, region, bucket, prefix, endpoint and access
   key id; Drive name, method, folder and client id, a service account also by its JSON's
   `client_email` and `private_key_id`, its JSON then taken whole; OneDrive name, tenant,
@@ -1605,7 +1616,8 @@ flowchart TD
   beside a secret is the backup's word, and a destination matched on its connection alone
   would upload this server's database, with this server's credentials, to a bucket or folder
   the backup chose, and have retention delete backups there. A Drive OAuth destination is
-  filled only when both its client secret and its refresh token are empty. A webhook listed
+  filled only when both its client secret and its refresh token are empty, and a refresh
+  token filled brings this server's `grantedScope` with it, or none (card 2188). A webhook listed
   in the backup's `webhook_secrets_left_out` is filled from the webhook here with the same id,
   board and address, and switched on or off as the list says it was. A value the backup has is
   never replaced, so a backup made before this change restores as it always did. A restore

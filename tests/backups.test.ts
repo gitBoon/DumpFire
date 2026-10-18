@@ -28,9 +28,18 @@
  *     anything is written: nobody could undo it.
  *   - The server says so in its log, when it starts, if that is already how
  *     things are.
+ *   - The backup settings show every secret masked, the Google Drive refresh
+ *     token included, and a save or a test keeps a masked secret only for the
+ *     one stored destination it was saved with, refusing anything else with
+ *     what changed (cards 2187 and 2190).
+ *   - Google Drive is asked for `drive.file` alone; Connect makes a folder of
+ *     DumpFire's own or checks the one it is given, records the scope Google
+ *     granted, and writes nothing over a save made while Google answers (card
+ *     2188). Google is stood in for by spies on `OAuth2.prototype.getToken`
+ *     and `google.drive`.
  *
  * No destination is reached. `createDestination` is replaced, for this file,
- * by one that keeps what it is handed: see `uploaded`.
+ * by one that keeps what it is handed: see `uploaded` and `handed`.
  *
  * The tests that call the import route point it at a temporary directory
  * first, because it writes its upload and a safety copy under the working
@@ -41,8 +50,9 @@ import Database from 'better-sqlite3';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { google } from 'googleapis';
 import { generateBackupData, saveBackupConfig, withoutSecrets } from '$lib/server/backup';
-import type { DestinationConfig } from '$lib/server/backup-destinations';
+import { GDriveDestination, dumpfireFolderName, type DestinationConfig, type GDriveDestinationConfig } from '$lib/server/backup-destinations';
 import {
 	BACKUP_SEAL,
 	BACKUP_SEAL_KEY,
@@ -50,6 +60,8 @@ import {
 	GDRIVE_NOT_CONNECTED,
 	NOT_SEALED_HERE,
 	NO_SEAL_HERE,
+	SECRET_FIELDS,
+	SECRET_MASK,
 	WEBHOOK_SECRETS_LEFT_OUT_KEY,
 	backupSealKey,
 	clearSecrets,
@@ -63,6 +75,7 @@ import {
 	strayInternalObjects,
 	unsealedBecause
 } from '$lib/server/backup-secrets';
+import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
@@ -80,21 +93,27 @@ import { afterEachTimestampCheck } from './helpers/timestamps';
 /** What the stand-in destination was handed: the bytes, under the name and for the destination they were for. */
 const uploaded = vi.hoisted(() => [] as { destination: string; filename: string; bytes: Buffer }[]);
 
+/** Each configuration the stand-in destination was made from, as `createDestination` was handed it (cards 2187 and 2190). */
+const handed = vi.hoisted(() => [] as Record<string, unknown>[]);
+
 vi.mock('$lib/server/backup-destinations', async (importOriginal) => {
 	const real = await importOriginal<typeof import('$lib/server/backup-destinations')>();
 	return {
 		...real,
 		// A destination that keeps what it is given and reaches nowhere.
-		createDestination: (config: { type: string; name: string }) => ({
-			type: config.type,
-			name: config.name,
-			test: async () => ({ success: true, message: 'ok' }),
-			upload: async (data: Buffer, filename: string) => {
-				uploaded.push({ destination: config.name, filename, bytes: Buffer.from(data) });
-			},
-			list: async () => [],
-			delete: async () => {}
-		})
+		createDestination: (config: { type: string; name: string }) => {
+			handed.push({ ...config });
+			return {
+				type: config.type,
+				name: config.name,
+				test: async () => ({ success: true, message: 'ok' }),
+				upload: async (data: Buffer, filename: string) => {
+					uploaded.push({ destination: config.name, filename, bytes: Buffer.from(data) });
+				},
+				list: async () => [],
+				delete: async () => {}
+			};
+		}
 	};
 });
 
@@ -166,6 +185,7 @@ let memberSession: string;
 beforeEach(() => {
 	resetDb();
 	uploaded.length = 0;
+	handed.length = 0;
 	chief = makeUser({ username: 'chief', role: 'superadmin' });
 	admin = makeUser({ username: 'administrator', role: 'admin' });
 	member = makeUser({ username: 'member' });
@@ -1177,11 +1197,15 @@ const SECRETS = {
 	webhookOff: 'webhook-secret-off-2169-d060'
 };
 
-/** The mail settings but the password. */
+/**
+ * The mail settings but the password. "Use SSL/TLS" (`smtp_secure`) is a row
+ * left from before card 2189, no longer read.
+ */
 const MAIL: Record<string, string> = {
 	smtp_host: 'mail.example.test',
 	smtp_port: '465',
 	smtp_secure: 'true',
+	smtp_allow_insecure: 'false',
 	smtp_user: 'dumpfire',
 	smtp_from_address: 'dumpfire@example.test'
 };
@@ -2086,7 +2110,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		it.each([
 			['another user', { smtp_user: 'someone-else' }],
 			['another port', { smtp_port: '587' }],
-			['“Use SSL/TLS” off where this server has it on', { smtp_secure: 'false' }],
+			['the way out (mail without a checked, encrypted connection) on here, where the backup has it off', { smtp_allow_insecure: 'true' }],
 			['another host', { smtp_host: 'mail.elsewhere.test' }]
 		])('does not fill the mail password for mail on %s, and lists it', (_case, change) => {
 			const live = serverWith({ mail: { ...MAIL, ...change, smtp_pass: `${HERE}-mail` } });
@@ -2099,7 +2123,57 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 			expect(holdsOwn(live)).toBe(false);
 		});
 
-		it('fills it where host (in another case, with spaces), port, “Use SSL/TLS” and user are this server’s', () => {
+		it('does not fill it for a backup with the way out on, where this server has it off (card 2189)', () => {
+			const live = serverWith({ mail: { ...MAIL, smtp_pass: `${HERE}-mail` } });
+			const backup = resealed(backupNow(), (made) =>
+				made.prepare("UPDATE settings SET value = 'true' WHERE key = 'smtp_allow_insecure'").run()
+			);
+
+			const result = restoreFromBackup(live, backup);
+
+			expect(settingsOf(live)['smtp_pass']).toBeUndefined();
+			expect(result.secrets.toEnter.mailPassword).toBe(true);
+		});
+
+		it('names the way-out box in what is to enter where the backup brought in a way out other than this server’s, and only then (S5)', () => {
+			const box = '"Allow mail without a checked, encrypted connection"';
+			const said = (result: ReturnType<typeof restoreFromBackup>) => secretsToEnterSentence(result.secrets.toEnter) ?? '';
+
+			// The backup off, this server on.
+			const offHere = restoreFromBackup(serverWith({ mail: { ...MAIL, smtp_allow_insecure: 'true', smtp_pass: `${HERE}-mail` } }), backupNow());
+			expect(offHere.secrets.toEnter.mailWayOut).toBe(false);
+			expect(said(offHere)).toContain(`the mail password (Admin, 📧 Email / SMTP, where the backup brought in ${box} unticked and this server had it ticked);`);
+
+			// The backup on, this server off.
+			const onBackup = resealed(backupNow(), (made) => made.prepare("UPDATE settings SET value = 'true' WHERE key = 'smtp_allow_insecure'").run());
+			const onHere = restoreFromBackup(serverWith({ mail: { ...MAIL, smtp_pass: `${HERE}-mail` } }), onBackup);
+			expect(onHere.secrets.toEnter.mailWayOut).toBe(true);
+			expect(said(onHere)).toContain(`the mail password (Admin, 📧 Email / SMTP, where the backup brought in ${box} ticked and this server had it unticked);`);
+
+			// Another host, the way out the same: the box is not named.
+			const elsewhere = restoreFromBackup(serverWith({ mail: { ...MAIL, smtp_host: 'mail.elsewhere.test', smtp_pass: `${HERE}-mail` } }), backupNow());
+			expect(elsewhere.secrets.toEnter).not.toHaveProperty('mailWayOut');
+			expect(said(elsewhere)).toContain('the mail password (Admin, 📧 Email / SMTP);');
+
+			// No seal this server can check is the reason, not the box.
+			const wayOutOn = resealed(backupNow(), (made) => made.prepare("UPDATE settings SET value = 'true' WHERE key = 'smtp_allow_insecure'").run());
+			const unsealed = restoreFromBackup(serverWith({ mail: { ...MAIL, smtp_pass: `${HERE}-mail` }, key: null }), wayOutOn);
+			expect(unsealed.unsealed).not.toBeNull();
+			expect(unsealed.secrets.toEnter.mailPassword).toBe(true);
+			expect(unsealed.secrets.toEnter).not.toHaveProperty('mailWayOut');
+		});
+
+		it('fills it for a backup made before card 2189, with no row for the way out, where this server has it off, whatever “Use SSL/TLS” says', () => {
+			const live = serverWith({ mail: { ...MAIL, smtp_secure: 'false', smtp_pass: `${HERE}-mail` } });
+			const backup = resealed(backupNow(), (made) => made.prepare("DELETE FROM settings WHERE key = 'smtp_allow_insecure'").run());
+
+			const result = restoreFromBackup(live, backup);
+
+			expect(settingsOf(live)['smtp_pass']).toBe(`${HERE}-mail`);
+			expect(result.secrets.kept.mailPassword).toBe(true);
+		});
+
+		it('fills it where host (in another case, with spaces), port, the way out and user are this server’s', () => {
 			const live = serverWith({ mail: { ...MAIL, smtp_host: '  MAIL.Example.TEST ', smtp_from_name: 'Another name', smtp_pass: `${HERE}-mail` } });
 
 			const result = restoreFromBackup(live, backupNow());
@@ -2434,5 +2508,592 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		const result = restoreFromBackup(working, backup, { outside: 'off' });
 		expect(settingsOf(working)[WEBHOOK_SECRETS_LEFT_OUT_KEY]).toBeUndefined();
 		expect(result.secrets.toEnter).toEqual({ mailPassword: false, destinations: [], webhooks: hooksToEnter() });
+	});
+
+	it('fills a Google Drive refresh token with the scope this server recorded for it, never the backup’s (card 2188, test 15)', () => {
+		const WIDE = 'https://www.googleapis.com/auth/drive';
+		// The backup says its connection reaches only DumpFire's files.
+		const claimingNarrow = () =>
+			resealed(backupNow(), (made) => {
+				const config = JSON.parse(settingsOf(made)['backup_config']);
+				config.destinations[2] = { ...config.destinations[2], grantedScope: DRIVE_FILE_SCOPE };
+				made.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(JSON.stringify(config));
+			});
+		const own = { clientSecret: `${HERE}-gdrive-secret`, refreshToken: `${HERE}-gdrive-token` };
+		const restoredDrive = (here: Record<string, unknown>) => {
+			const live = serverWith({ destinations: [here] });
+			const result = restoreFromBackup(live, claimingNarrow());
+			expect(result.secrets.kept.destinations).toEqual(['Drive']);
+			return JSON.parse(settingsOf(live)['backup_config']).destinations[2];
+		};
+
+		expect(restoredDrive({ ...DRIVE, ...own, grantedScope: WIDE })).toEqual({ ...DRIVE, ...own, grantedScope: WIDE });
+		// Recorded for none here (a connection made before card 2188): none.
+		expect(restoredDrive({ ...DRIVE, ...own })).toEqual({ ...DRIVE, ...own });
+	});
+});
+
+// ─── The backup settings' secrets (cards 2187 and 2190) ──────────────────────
+
+describe('the backup settings’ secrets: masked in every answer, kept only for the destination they were saved with (cards 2187 and 2190)', () => {
+	const MASK = '••••••••';
+	/** One destination of each type and sign-in method, every secret field set; the Drive OAuth one connected with `drive.file`. */
+	const STORED: Record<string, unknown>[] = DESTINATIONS.map((d) => (d.name === 'Drive' ? { ...d, grantedScope: DRIVE_FILE_SCOPE } : d));
+
+	const store = (destinations: unknown[]) =>
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('backup_config', configWith(destinations));
+	const storedDestinations = () => JSON.parse(settingsOf(sqlite)['backup_config']).destinations as Record<string, unknown>[];
+	const shown = async () => (await api('GET', '/api/admin/backup', { user: chief })).body.destinations as Record<string, unknown>[];
+	const put = (destinations: unknown[]) => api('PUT', '/api/admin/backup', { user: chief, body: { destinations } });
+	const tested = (destination: unknown) => api('POST', '/api/admin/backup/test', { user: chief, body: destination });
+
+	/** Decision 3's words for a destination with a secret typed again, as R8 names every field still masked. */
+	const typeAgain = (name: string, secrets: string, because: string) =>
+		`Backup destination "${name}": type its ${secrets} again. A saved secret is used only with the settings it was saved with, and ${because}.`;
+	/** The same for a connected Google Drive destination, by the scope it was connected with (R2, R5). */
+	const driveRefusal = (name: string, because: string, narrow: boolean) =>
+		`Backup destination "${name}": a connected Google Drive destination keeps its connection only while its name, sign-in method, ` +
+		`folder ID and client ID are as they were when it was connected, and ${because}. ` +
+		(narrow
+			? 'To change them, remove the destination, add it again, and connect it. To keep using a folder DumpFire made, give its ' +
+				'Folder ID again (shown on the destination as Folder:); Connect checks it can reach it.'
+			: "To change them, first remove DumpFire's access in the Google account (Google Account, Security, Your connections to " +
+				'third-party apps and services), then remove this destination, add it again with the Folder ID left empty, and connect it.');
+
+	beforeEach(() => {
+		store(STORED);
+	});
+
+	it('shows every secret masked, the Google Drive refresh token included, and every other field as stored (test 1)', async () => {
+		const res = await api('GET', '/api/admin/backup', { user: chief });
+
+		expect(res.status).toBe(200);
+		const text = JSON.stringify(res.body);
+		for (const [name, value] of Object.entries(SECRETS)) expect(text.includes(value), name).toBe(false);
+		expect(res.body.destinations).toEqual([
+			{ ...NAS, password: MASK, privateKey: MASK },
+			{ ...BUCKET, secretAccessKey: MASK },
+			{ ...DRIVE, clientSecret: MASK, refreshToken: MASK, grantedScope: DRIVE_FILE_SCOPE },
+			{ ...ROBOT, serviceAccountJson: serviceAccountJson(MASK) },
+			{ ...ONEDRIVE, clientSecret: MASK }
+		]);
+		expect(SECRET_MASK).toBe(MASK);
+	});
+
+	it('masks, keeps on a save and hands a test the stored value of every field in the one list, so that a field added to it needs no new test (test 2)', async () => {
+		const fields: [string, string][] = Object.entries(SECRET_FIELDS).flatMap(([type, names]) => names.map((name): [string, string] => [type, name]));
+		expect(fields).toEqual([
+			['sftp', 'password'],
+			['sftp', 'privateKey'],
+			['s3', 'secretAccessKey'],
+			['gdrive', 'clientSecret'],
+			['gdrive', 'refreshToken'],
+			['onedrive', 'clientSecret']
+		]);
+		// And a service account's key, inside its JSON.
+		const cases = [...fields.map(([type, field]) => ({ type, field })), { type: 'gdrive', field: 'serviceAccountJson' }];
+
+		for (const { type, field } of cases) {
+			store(STORED);
+			const at = STORED.findIndex((d) => d.type === type && field in d);
+			const page = await shown();
+			const masked = field === 'serviceAccountJson' ? serviceAccountJson(MASK) : MASK;
+			expect(page[at][field], `${type}.${field} as the GET shows it`).toBe(masked);
+
+			// This destination's other fields typed as stored, this one as the GET
+			// showed it, and the rest of the list as the GET gave it.
+			const sentBack = { ...STORED[at], [field]: masked };
+			const saved = await put(page.map((d, i) => (i === at ? sentBack : d)));
+			expect(saved.status, `${type}.${field} saved: ${JSON.stringify(saved.body)}`).toBe(200);
+			// A refresh token typed (here, as stored) has no recorded scope: the
+			// scope is kept only with a kept token (test 8).
+			const { grantedScope: _scope, ...typedToken } = STORED[at];
+			const expected = type === 'gdrive' && field !== 'refreshToken' && 'refreshToken' in STORED[at] ? typedToken : STORED[at];
+			expect(storedDestinations(), `${type}.${field} kept`).toEqual(STORED.map((d, i) => (i === at ? expected : d)));
+
+			handed.length = 0;
+			const test = await tested(sentBack);
+			expect(test.status, `${type}.${field} tested: ${JSON.stringify(test.body)}`).toBe(200);
+			expect(handed.map((config) => config[field]), `${type}.${field} handed`).toEqual([STORED[at][field]]);
+		}
+	});
+
+	it('masks a secret left in a field of another type, and a service account JSON that is not an object, whole (test 3, R7)', async () => {
+		store([
+			{ ...BUCKET, password: 'left-from-sftp-r7-1' },
+			{ ...ROBOT, name: 'Unreadable', serviceAccountJson: '{"private_key": "unreadable-r7-2"' },
+			{ ...ROBOT, name: 'Quoted', serviceAccountJson: JSON.stringify('quoted-key-r7-3') },
+			{ ...ROBOT, name: 'Listed', serviceAccountJson: JSON.stringify(['listed-key-r7-4']) }
+		]);
+
+		const res = await api('GET', '/api/admin/backup', { user: chief });
+
+		expect(JSON.stringify(res.body)).not.toMatch(/-r7-/);
+		expect((res.body.destinations as Record<string, unknown>[]).map((d) => [d.name, d.password ?? null, d.serviceAccountJson ?? null])).toEqual([
+			['Bucket', MASK, null],
+			['Unreadable', null, MASK],
+			['Quoted', null, MASK],
+			['Listed', null, MASK]
+		]);
+	});
+
+	it('writes a service account JSON out again from what it reads, so a key named twice or as privateKey is masked (S3)', async () => {
+		const email = 'robot@project.iam.example.test';
+		store([
+			// JSON.parse keeps the last of two keys alike: an empty last one used
+			// to leave the stored text, the first key in it, in the answer.
+			{ ...ROBOT, name: 'Twice', serviceAccountJson: `{"client_email":"${email}","private_key":"dup-key-s3-1","private_key":""}` },
+			{ ...ROBOT, name: 'Camel', serviceAccountJson: JSON.stringify({ client_email: email, privateKey: 'camel-key-s3-2' }) },
+			{ ...ROBOT, name: 'Keyless', serviceAccountJson: `{ "client_email" : "${email}" }` }
+		]);
+
+		const res = await api('GET', '/api/admin/backup', { user: chief });
+
+		expect(JSON.stringify(res.body)).not.toMatch(/-s3-/);
+		expect((res.body.destinations as { serviceAccountJson: string }[]).map((d) => d.serviceAccountJson)).toEqual([
+			JSON.stringify({ client_email: email, private_key: '' }),
+			JSON.stringify({ client_email: email, privateKey: MASK }),
+			JSON.stringify({ client_email: email })
+		]);
+	});
+
+	describe('a save with a masked secret and anything else changed is refused, naming what changed (test 4)', () => {
+		const changed = (at: number, change: Record<string, unknown>) => async () => {
+			const page = await shown();
+			return put(page.map((d, i) => (i === at ? { ...d, ...change } : d)));
+		};
+
+		it.each([
+			['SFTP host', changed(0, { host: 'backup.invalid' }), typeAgain('NAS', 'password and private key', 'this changes its host')],
+			['SFTP port', changed(0, { port: 2222 }), typeAgain('NAS', 'password and private key', 'this changes its port')],
+			['SFTP remote path', changed(0, { remotePath: '/elsewhere' }), typeAgain('NAS', 'password and private key', 'this changes its remote path')],
+			['S3 bucket', changed(1, { bucket: 'somebody-elses' }), typeAgain('Bucket', 'secret access key', 'this changes its bucket')],
+			['S3 prefix', changed(1, { prefix: 'other/' }), typeAgain('Bucket', 'secret access key', 'this changes its prefix')],
+			['S3 endpoint', changed(1, { endpoint: 'https://minio.invalid' }), typeAgain('Bucket', 'secret access key', 'this changes its endpoint')],
+			['Drive folder ID', changed(2, { folderId: 'shared-with-somebody' }), driveRefusal('Drive', 'this changes its folder ID', true)],
+			['Drive client ID', changed(2, { clientId: 'another-client' }), driveRefusal('Drive', 'this changes its client ID', true)],
+			['service account JSON', changed(3, { serviceAccountJson: JSON.stringify({ ...JSON.parse(serviceAccountJson(MASK)), client_email: 'other@iam.invalid' }) }), typeAgain('Robot', 'service account JSON', 'this changes its service account')],
+			['OneDrive tenant', changed(4, { tenantId: 'tenant-2' }), typeAgain('OneDrive', 'client secret', 'this changes its tenant ID')],
+			['SFTP host and port together', changed(0, { host: 'backup.invalid', port: 2222 }), typeAgain('NAS', 'password and private key', 'this changes its host and port')],
+			// S1: trimmed of ASCII spaces and tabs alone, so a Unicode space is a change.
+			['SFTP host with a no-break space', changed(0, { host: 'nas.example.test ' }), typeAgain('NAS', 'password and private key', 'this changes its host')],
+			['SFTP host with a byte-order mark', changed(0, { host: '﻿nas.example.test' }), typeAgain('NAS', 'password and private key', 'this changes its host')],
+			['SFTP host with an ideographic space', changed(0, { host: 'nas.example.test　' }), typeAgain('NAS', 'password and private key', 'this changes its host')],
+			// The probe's: renamed at the same place, and pointed elsewhere.
+			['rename at the same place', changed(0, { name: 'Other', host: 'backup.invalid' }), typeAgain('Other', 'password and private key', 'no destination of this name was saved')],
+			// The probe's: a destination of another type at the same place takes nothing of the one there.
+			[
+				'another type at the same place',
+				changed(4, { type: 'gdrive', authMethod: 'oauth', clientId: 'another-client', folderId: '', tenantId: undefined, folderPath: undefined }),
+				typeAgain('OneDrive', 'client secret', 'this changes its type')
+			],
+			[
+				'a name never saved',
+				async () => put([...(await shown()), { ...NAS, name: 'New', password: MASK, privateKey: '' }]),
+				typeAgain('New', 'password', 'no destination of this name was saved')
+			],
+			// R8: one secret typed again, the other still masked.
+			['the password typed and the private key not', changed(0, { host: 'backup.invalid', password: 'typed-again' }), typeAgain('NAS', 'private key', 'this changes its host')]
+		])('%s', async (_case, request, words) => {
+			const before = snapshotDb();
+
+			const res = await request();
+
+			expect(res.status, JSON.stringify(res.body)).toBe(400);
+			expect(res.body.message).toBe(words);
+			expectUnchanged(before);
+		});
+
+		it('tells a Google Drive destination connected before card 2188 to remove DumpFire’s access in the Google account first (R2)', async () => {
+			store(STORED.map((d) => (d.name === 'Drive' ? { ...DRIVE } : d)));
+			const before = snapshotDb();
+
+			const res = await changed(2, { folderId: 'shared-with-somebody' })();
+
+			expect(res.status).toBe(400);
+			expect(res.body.message).toBe(driveRefusal('Drive', 'this changes its folder ID', false));
+			expectUnchanged(before);
+		});
+	});
+
+	it('saves the list the GET gave, and what is the same in use, with every secret kept; and a typed secret as typed (test 5, R8)', async () => {
+		// Sent back unchanged.
+		expect((await put(await shown())).status).toBe(200);
+		expect(storedDestinations()).toEqual(STORED);
+
+		// Stored with an empty endpoint, no region, no prefix, no folder path and
+		// no port; sent back as the edit form fills them in.
+		const sparse = [
+			{ ...BUCKET, endpoint: '', region: undefined, prefix: undefined },
+			{ ...ONEDRIVE, folderPath: undefined },
+			{ ...NAS, port: null }
+		];
+		store(sparse);
+		const page = await shown();
+		const asTheFormSends = [
+			{ ...page[0], endpoint: undefined, region: 'us-east-1', prefix: '' },
+			{ ...page[1], folderPath: '/DumpFire Backups' },
+			{ ...page[2], port: 22, host: ' \tNAS.EXAMPLE.test ' }
+		];
+		const saved = await put(asTheFormSends);
+		expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+		// The host as stored, not as sent (S1): the secret goes to the host it
+		// was saved with, byte for byte.
+		expect(storedDestinations()).toEqual([
+			{ ...BUCKET, region: 'us-east-1', prefix: '' },
+			{ ...ONEDRIVE, folderPath: '/DumpFire Backups' },
+			{ ...NAS, port: 22 }
+		]);
+
+		// The host changed, with both secrets typed again (one emptied), saved
+		// trimmed of ASCII spaces and tabs alone (S1).
+		const moved = await put([{ ...NAS, host: ' nas2.example.test\t', password: 'a-new-password', privateKey: '' }]);
+		expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+		expect(storedDestinations()).toEqual([{ ...NAS, host: 'nas2.example.test', password: 'a-new-password', privateKey: '' }]);
+		const spaced = await put([{ ...NAS, host: 'nas2.example.test　', password: 'a-new-password', privateKey: '' }]);
+		expect(spaced.status, JSON.stringify(spaced.body)).toBe(200);
+		expect(storedDestinations()[0].host).toBe('nas2.example.test　');
+	});
+
+	it('refuses a masked secret where two saved destinations are the same in everything but their secrets, saying how to put it right (test 6, O1)', async () => {
+		store([
+			{ ...NAS, password: 'the-first-password' },
+			{ ...NAS, password: 'the-second-password' }
+		]);
+		const before = snapshotDb();
+		const words =
+			'Backup destination "NAS": more than one saved destination matches it, so its saved secret cannot be told apart. ' +
+			'Remove the destinations named "NAS" (the page\'s Remove removes every one of that name) and add it once with its secret typed.';
+
+		const one = (await shown())[0];
+		const saved = await put([one]);
+		expect(saved.status).toBe(400);
+		expect(saved.body.message).toBe(words);
+
+		handed.length = 0;
+		const test = await tested(one);
+		expect(test.status).toBe(400);
+		expect(test.body.message).toBe(words);
+		expect(handed).toEqual([]);
+		expectUnchanged(before);
+
+		// The way out works: Remove sends the list without either, and the one
+		// added again with its secret typed is saved.
+		expect((await put([])).status).toBe(200);
+		expect((await put([{ ...NAS, password: 'typed-once' }])).status).toBe(200);
+		expect(storedDestinations()).toEqual([{ ...NAS, password: 'typed-once' }]);
+	});
+
+	it('refuses a list that names two destinations alike, naming it, and writes nothing (S4)', async () => {
+		const before = snapshotDb();
+
+		// A second destination given a name already used.
+		const page = await shown();
+		const renamed = await put(page.map((d, i) => (i === 1 ? { ...d, name: 'NAS' } : d)));
+		expect(renamed.status).toBe(400);
+		expect(renamed.body.message).toBe('Two backup destinations are named "NAS". Each destination needs a name of its own: give one of them another name.');
+		expectUnchanged(before);
+
+		// Two saved before this: the list the page sends back as it is.
+		store([
+			{ ...NAS, password: 'the-first-password' },
+			{ ...NAS, host: 'nas2.example.test', password: 'the-second-password' }
+		]);
+		const stillTwo = snapshotDb();
+		const resent = await put(await shown());
+		expect(resent.status).toBe(400);
+		expect(resent.body.message).toBe(
+			'Two backup destinations are named "NAS". Remove the destinations named "NAS" (the page\'s Remove removes every one of that name) and add it once with its secret typed.'
+		);
+		expectUnchanged(stillTwo);
+	});
+
+	it('refuses a test of a saved destination pointed elsewhere with its secret masked, and hands it nothing (test 7)', async () => {
+		const nas = (await shown())[0];
+
+		const res = await tested({ ...nas, host: 'backup.invalid', port: 2222 });
+
+		expect(res.status).toBe(400);
+		expect(res.body.message).toBe(typeAgain('NAS', 'password and private key', 'this changes its host and port'));
+		expect(handed).toEqual([]);
+	});
+
+	it('keeps the recorded scope with a kept refresh token whatever is sent, and drops it with a token sent empty (test 8)', async () => {
+		const drive = (await shown())[2];
+
+		const kept = await put([{ ...drive, grantedScope: 'anything' }]);
+		expect(kept.status, JSON.stringify(kept.body)).toBe(200);
+		expect(storedDestinations()).toEqual([STORED[2]]);
+
+		const emptied = await put([{ ...drive, refreshToken: '', grantedScope: DRIVE_FILE_SCOPE }]);
+		expect(emptied.status, JSON.stringify(emptied.body)).toBe(200);
+		expect(storedDestinations()).toEqual([{ ...DRIVE, refreshToken: '' }]);
+	});
+});
+
+// ─── Google Drive asks for its own files (card 2188) ─────────────────────────
+
+describe('Google Drive asks only for the files DumpFire makes (card 2188)', () => {
+	const WIDE = 'https://www.googleapis.com/auth/drive';
+	const FOLDER_TYPE = 'application/vnd.google-apps.folder';
+	const G = { type: 'gdrive', name: 'G', authMethod: 'oauth', clientId: 'g-client.apps.example.test', clientSecret: 'g-client-secret-2188', folderId: '' };
+
+	/** Decision 8's words, as R2 has them begin for a connection made before card 2188. */
+	const cannotReach = (wide: boolean) =>
+		'Google gave DumpFire access only to the files it makes, and it cannot reach the folder this destination names, so no backup ' +
+		'could be written there. Nothing was changed: the destination keeps the connection it had. ' +
+		(wide
+			? "To use a folder DumpFire makes itself, first remove DumpFire's access in the Google account (Google Account, Security, " +
+				'Your connections to third-party apps and services), then remove this destination, add it again with the Folder ID left ' +
+				'empty, and connect it.'
+			: 'To use a folder DumpFire makes itself, remove this destination, add it again with the Folder ID left empty, and connect it.');
+	const CHANGED_MEANWHILE = 'The destination was changed or removed while it was being connected, so the connection was not saved. Connect it again.';
+
+	/** Drive, stood in for: what `files.get`, `files.create`, `files.delete` and `files.list` were asked, and answer. */
+	const files = { get: vi.fn(), create: vi.fn(), delete: vi.fn(), list: vi.fn() };
+
+	const store = (...destinations: unknown[]) =>
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('backup_config', configWith(destinations));
+	const storedG = () => JSON.parse(settingsOf(sqlite)['backup_config']).destinations[0];
+	const today = () => new Date().toISOString().slice(0, 10);
+
+	/** Google's code exchange, stood in for: it answers `tokens`, after `meanwhile` has run. */
+	const exchange = (tokens: Record<string, unknown>, meanwhile?: () => Promise<unknown>) =>
+		vi.spyOn(google.auth.OAuth2.prototype, 'getToken').mockImplementation((async () => {
+			await meanwhile?.();
+			return { tokens, res: null };
+		}) as never);
+	const connect = () => api('POST', '/api/admin/backup/gdrive/auth', { user: chief, body: { code: 'the-code', destName: 'G' } });
+
+	/** A folder `files.get` finds, and one it does not. */
+	const found = (id: string, more: Record<string, unknown> = {}) => ({ data: { id, name: 'Backups', mimeType: FOLDER_TYPE, trashed: false, ...more } });
+	const notFound = () => Object.assign(new Error('File not found: gone.'), { code: 404 });
+
+	beforeEach(() => {
+		for (const fn of Object.values(files)) fn.mockReset();
+		files.create.mockResolvedValue({ data: { id: 'made-folder-1' } });
+		files.delete.mockResolvedValue({ data: {} });
+		files.list.mockResolvedValue({ data: { files: [] } });
+		vi.spyOn(google, 'drive').mockReturnValue({ files } as never);
+	});
+
+	it('asks Google for drive.file alone, and not for what was granted before (test 9)', async () => {
+		store(G);
+
+		const res = await api('GET', '/api/admin/backup/gdrive/auth?dest=G', { user: chief });
+
+		expect(res.status).toBe(200);
+		const address = new URL(res.body.authUrl);
+		expect(address.searchParams.get('scope')).toBe(DRIVE_FILE_SCOPE);
+		expect(address.searchParams.get('include_granted_scopes')).not.toBe('true');
+	});
+
+	it.each([
+		[DRIVE_FILE_SCOPE, true],
+		[`  ${DRIVE_FILE_SCOPE}  `, true],
+		[WIDE, false],
+		[`${WIDE} ${DRIVE_FILE_SCOPE}`, false],
+		[`${DRIVE_FILE_SCOPE} https://www.googleapis.com/auth/drive.readonly`, false],
+		['', false],
+		[undefined, false],
+		[null, false]
+	])('reads a recorded scope of %j as reaching only DumpFire’s files: %s (test 9b, R6)', (scope, narrow) => {
+		expect(driveScopeIsNarrow(scope)).toBe(narrow);
+	});
+
+	it('makes a folder of its own when the Folder ID is empty, and saves it with the token and the scope granted (test 10)', async () => {
+		store(G);
+		exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+
+		const res = await connect();
+
+		expect(res.body).toEqual({
+			success: true,
+			message: `Google Drive connected. DumpFire made the folder "DumpFire backups (made ${today()})" in this account's My Drive, and backs up there.`
+		});
+		expect(files.create).toHaveBeenCalledTimes(1);
+		expect(files.create.mock.calls[0][0]).toMatchObject({ requestBody: { name: `DumpFire backups (made ${today()})`, mimeType: FOLDER_TYPE } });
+		expect(files.get).not.toHaveBeenCalled();
+		expect(storedG()).toEqual({ ...G, refreshToken: 'rt-new', grantedScope: DRIVE_FILE_SCOPE, folderId: 'made-folder-1' });
+	});
+
+	it('makes no folder and writes nothing when Google gives no refresh token (test 10b, R5)', async () => {
+		store(G);
+		exchange({ access_token: 'only-this' });
+		const before = snapshotDb();
+
+		const res = await connect();
+
+		expect(res.body.success).toBe(false);
+		expect(res.body.message).toMatch(/^No refresh token received/);
+		expect(files.create).not.toHaveBeenCalled();
+		expect(files.get).not.toHaveBeenCalled();
+		expectUnchanged(before);
+	});
+
+	it('checks a Folder ID it is given, and saves the token and its scope, or no scope when Google names none (test 11, R6)', async () => {
+		store({ ...G, folderId: 'hand-made', refreshToken: 'rt-old', grantedScope: WIDE });
+		files.get.mockResolvedValue(found('hand-made'));
+		exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+
+		const res = await connect();
+
+		expect(res.body).toEqual({ success: true, message: 'Google Drive connected successfully!' });
+		expect(files.get.mock.calls[0][0]).toMatchObject({ fileId: 'hand-made' });
+		expect(files.create).not.toHaveBeenCalled();
+		expect(storedG()).toEqual({ ...G, folderId: 'hand-made', refreshToken: 'rt-new', grantedScope: DRIVE_FILE_SCOPE });
+
+		// Google names no scope: none is recorded, not the one asked for.
+		exchange({ refresh_token: 'rt-newer' });
+		expect((await connect()).body.success).toBe(true);
+		expect(storedG()).toEqual({ ...G, folderId: 'hand-made', refreshToken: 'rt-newer' });
+	});
+
+	it.each([
+		['Google does not find it', () => files.get.mockRejectedValue(notFound())],
+		['it is not a folder', () => files.get.mockResolvedValue(found('gone', { mimeType: 'application/x-sqlite3' }))],
+		['it is in the trash', () => files.get.mockResolvedValue(found('gone', { trashed: true }))]
+	])('refuses a Folder ID it cannot reach, %s, and keeps the connection it had (test 12, N4)', async (_case, answer) => {
+		store({ ...G, folderId: 'gone', refreshToken: 'rt-old', grantedScope: DRIVE_FILE_SCOPE });
+		answer();
+		exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+		const before = snapshotDb();
+
+		const res = await connect();
+
+		expect(res.body).toEqual({ success: false, message: cannotReach(false) });
+		expect(files.create).not.toHaveBeenCalled();
+		expectUnchanged(before);
+	});
+
+	it('tells a destination connected before card 2188 to remove DumpFire’s access in the Google account first (test 12, R2)', async () => {
+		store({ ...G, folderId: 'hand-made', refreshToken: 'rt-old' });
+		files.get.mockRejectedValue(notFound());
+		exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+		const before = snapshotDb();
+
+		const res = await connect();
+
+		expect(res.body).toEqual({ success: false, message: cannotReach(true) });
+		expectUnchanged(before);
+	});
+
+	it('saves nothing when the destination is changed while Google answers, and removes the folder it made (test 13, R5)', async () => {
+		store(G);
+		// A save of the settings lands while Google is answering.
+		exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE }, () =>
+			api('PUT', '/api/admin/backup', { user: chief, body: { destinations: [{ ...G, folderId: 'chosen-meanwhile' }] } })
+		);
+
+		const res = await connect();
+
+		expect(res.body).toEqual({ success: false, message: CHANGED_MEANWHILE });
+		expect(storedG()).toEqual({ ...G, folderId: 'chosen-meanwhile' });
+		expect(files.delete).toHaveBeenCalledTimes(1);
+		expect(files.delete.mock.calls[0][0]).toMatchObject({ fileId: 'made-folder-1' });
+	});
+
+	it.each([
+		['OAuth', { ...G, folderId: 'gone', refreshToken: 'rt' }],
+		['a service account', { type: 'gdrive', name: 'G', authMethod: 'service_account', serviceAccountJson: serviceAccountJson('k'), folderId: 'gone' }]
+	])('Test says when it cannot reach the folder, signed in with %s, and lists one it can (test 14)', async (_case, config) => {
+		files.get.mockRejectedValue(notFound());
+
+		const unreachable = await new GDriveDestination(config as GDriveDestinationConfig).test();
+
+		expect(unreachable.success).toBe(false);
+		expect(unreachable.message).toContain('"gone"');
+		expect(files.list).not.toHaveBeenCalled();
+
+		files.get.mockReset().mockResolvedValue(found('gone'));
+		expect(await new GDriveDestination(config as GDriveDestinationConfig).test()).toEqual({
+			success: true,
+			message: 'Connected to Google Drive folder (0 existing files)'
+		});
+	});
+});
+
+describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, slice 4)', () => {
+	// Read as text: the page is CRLF in the working copy, so lines are joined with \n first.
+	const page = readFileSync(join(process.cwd(), 'src/routes/admin/+page.svelte'), 'utf8').replace(/\r\n/g, '\n');
+	const markup = page.slice(page.indexOf('</script>'));
+	const row = markup.slice(markup.indexOf('{#each backupDestinations as dest'), markup.indexOf('<!-- Inline edit form -->'));
+	const editForm = markup.slice(markup.indexOf('<!-- Inline edit form -->'), markup.indexOf('<!-- Add Destination Form -->'));
+	const addForm = markup.slice(markup.indexOf('<!-- Add Destination Form -->'), markup.indexOf('<!-- Backup History -->'));
+
+	/** R2's line under a connection that reaches all of Drive. */
+	const NARROW_IT =
+		"Connected with access to all of this Google account's Drive. To narrow it: first remove DumpFire's access in the " +
+		'Google account (Google Account, Security, Your connections to third-party apps and services), then remove this ' +
+		'destination, add it again with the Folder ID left empty, and connect it. See the admin guide, Configuring Backups.';
+	/** The OAuth hint in both forms (slice 4 as R5 has it), the folder's name from the server's own function. */
+	const OAUTH_HINT =
+		'DumpFire asks Google only for the files it makes. Leave the Folder ID empty: when you connect, DumpFire makes a ' +
+		'folder of its own, "{dumpfireFolderName()}". A folder you made yourself may not be reachable. To keep using a folder ' +
+		'DumpFire made, give its Folder ID again (shown on the destination as Folder:); Connect checks it can reach it.';
+	const OAUTH_PLACEHOLDER = 'Folder ID (leave empty: DumpFire makes one when you connect)';
+	/** Decision 3's line in the inline edit form. */
+	const KEPT_ONLY =
+		"A saved password, key or secret is kept only while the destination's name and settings stay as they were saved: " +
+		'type it again when you change them. A connected Google Drive destination is removed, added again and connected.';
+
+	it('reads a connection’s recorded scope and the folder’s name with the server’s own functions, and imports nothing of the server’s', () => {
+		expect(page).toContain("import { driveScopeIsNarrow, dumpfireFolderName } from '$lib/drive-scope';");
+		expect(page).not.toMatch(/from '\$lib\/server/);
+		// The folder named on the page is the one Connect makes.
+		expect(dumpfireFolderName(new Date('2026-10-18T12:00:00Z'))).toBe('DumpFire backups (made 2026-10-18)');
+	});
+
+	it('shows a connection narrowed to DumpFire’s files as Connected, any other as all of Drive, and Connect only where there is no connection (decision 7, R2, R6)', () => {
+		expect(row).toMatch(
+			/\{#if dest\.refreshToken\}\s*\{#if driveScopeIsNarrow\(dest\.grantedScope\)\}\s*<span[^>]*>✅ Connected<\/span>\s*\{:else\}\s*<span[^>]*>⚠️ Connected · all of Drive<\/span>\s*\{\/if\}\s*\{:else\}\s*<button[^>]*onclick=\{\(\) => connectGDriveOAuth\(dest\.name\)\}>🔗 Connect<\/button>\s*\{\/if\}/
+		);
+		// No "Connect again": the page would lead into the wrong order (R2).
+		expect(page).not.toContain('Connect again');
+		expect(markup.match(/connectGDriveOAuth\(/g)).toHaveLength(1);
+	});
+
+	it('says under a connection that reaches all of Drive how to narrow it, removing access first (R2)', () => {
+		const condition = "{#if dest.type === 'gdrive' && dest.authMethod === 'oauth' && dest.refreshToken && !driveScopeIsNarrow(dest.grantedScope)}";
+		const at = row.indexOf(condition);
+		expect(at).toBeGreaterThan(-1);
+		expect(row.slice(at, row.indexOf('{/if}', at))).toContain(NARROW_IT);
+		expect(page.split(NARROW_IT)).toHaveLength(2);
+	});
+
+	it.each([
+		['the add form', () => addForm],
+		['the inline edit form', () => editForm]
+	])('tells, in %s, that Google is asked only for DumpFire’s files and that it makes its own folder (decision 8, R5)', (_form, form) => {
+		const text = form();
+		const oauth = text.indexOf("{#if destGdriveAuthMethod === 'oauth'}");
+		expect(oauth).toBeGreaterThan(-1);
+		// Within the OAuth branch: before the service account's box.
+		expect(text.slice(oauth, text.indexOf('<textarea placeholder="', oauth))).toContain(OAUTH_HINT);
+		expect(text.split(OAUTH_HINT)).toHaveLength(2);
+		expect(text).toContain(`placeholder={destGdriveAuthMethod === 'oauth' ? '${OAUTH_PLACEHOLDER}' :`);
+	});
+
+	it('gives the folder hint in the inline edit form only for a destination not yet connected (the review-fix pass)', () => {
+		// A connected destination keeps its folder: telling it to leave the
+		// Folder ID empty would lead to a refusal.
+		const connected = editForm.indexOf('{#if destGdriveRefreshToken}');
+		expect(connected).toBeGreaterThan(-1);
+		const notYet = editForm.indexOf('{:else}', connected);
+		const end = editForm.indexOf('{/if}', notYet);
+		expect(editForm.slice(connected, notYet)).toContain('✅ Google account connected');
+		expect(editForm.slice(connected, notYet)).not.toContain(OAUTH_HINT);
+		expect(editForm.slice(notYet, end)).toContain(OAUTH_HINT);
+	});
+
+	it('says in the inline edit form when a saved secret is kept, and not in the add form (decision 3)', () => {
+		expect(editForm).toContain(KEPT_ONLY);
+		expect(addForm).not.toContain(KEPT_ONLY);
+	});
+
+	it('shows a refused save or Connect in the server’s own words (decisions 3, 8 and 9)', () => {
+		const script = page.slice(0, page.indexOf('</script>'));
+		expect(script).toContain('showToast(await failureMessage(res, fallback), \'error\', started);');
+		expect(script).toContain("showToast(said || 'Failed to connect', 'error', started);");
 	});
 });

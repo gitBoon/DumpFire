@@ -590,12 +590,19 @@ describe('PUT /api/admin/smtp', () => {
 	/**
 	 * Mail already set up, with a password, and an App URL. And the superadmin,
 	 * `chief`, whose settings these are: an administrator is refused them.
+	 * The host, port, the way out and user are `NEW`'s, the host written
+	 * otherwise, so that `NEW`'s masked password is kept: it is kept only for
+	 * the server it was saved for (card 2190).
 	 */
 	const withMail = () => {
 		const s = scene();
 		const chief = makeUser({ username: 'chief', role: 'superadmin' });
+		db.update(settings).set({ value: ' SMTP.New.Example.TEST ' }).where(eq(settings.key, 'smtp_host')).run();
 		db.insert(settings)
 			.values([
+				{ key: 'smtp_port', value: '465' },
+				{ key: 'smtp_allow_insecure', value: 'false' },
+				{ key: 'smtp_user', value: 'mailer' },
 				{ key: 'smtp_pass', value: 'the-old-secret' },
 				{ key: 'app_url', value: 'https://old.example.test' }
 			])
@@ -615,7 +622,7 @@ describe('PUT /api/admin/smtp', () => {
 	const NEW = {
 		host: 'smtp.new.example.test',
 		port: 465,
-		secure: true,
+		allowInsecure: false,
 		user: 'mailer',
 		pass: MASKED,
 		fromAddress: 'board@new.example.test',
@@ -631,9 +638,11 @@ describe('PUT /api/admin/smtp', () => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
 				expect(stored()).toEqual({
-					smtp_host: 'smtp.new.example.test',
+					// The host the kept password was saved with, as it was written
+					// (the review-fix pass's S1): it compares the same as the one sent.
+					smtp_host: ' SMTP.New.Example.TEST ',
 					smtp_port: '465',
-					smtp_secure: 'true',
+					smtp_allow_insecure: 'false',
 					smtp_user: 'mailer',
 					// Sent masked, so the one already stored is kept.
 					smtp_pass: 'the-old-secret',
@@ -650,9 +659,9 @@ describe('PUT /api/admin/smtp', () => {
 		// new host saved with the old password, and mail that could not be sent.
 		expect(shape(run.writes)).toEqual([
 			'update settings set',
-			'insert into settings',
-			'insert into settings',
-			'insert into settings',
+			'update settings set',
+			'update settings set',
+			'update settings set',
 			'update settings set',
 			'update settings set',
 			'insert into settings',

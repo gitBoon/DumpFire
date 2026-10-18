@@ -3,6 +3,17 @@
  *
  * Reads SMTP configuration from the settings table and provides
  * a simple sendEmail() function. Silently no-ops if SMTP is not configured.
+ *
+ * Every mail goes over a checked, encrypted connection (card 2189): TLS from
+ * the first byte on port 465, STARTTLS required on every other port, and the
+ * server's certificate checked for the host's name on all of them. Mail on
+ * 587 used to go out without requiring STARTTLS and without checking the
+ * certificate, so anyone on the network path could read the mail password and
+ * every message. A mail server whose certificate comes from a private
+ * authority is trusted through `NODE_EXTRA_CA_CERTS`, which Node reads at
+ * start (docs/deployment.md, Mail Server Certificates); a relay on this
+ * server's own network that cannot use TLS is what the one way out is for,
+ * the `smtp_allow_insecure` setting.
  */
 
 import nodemailer from 'nodemailer';
@@ -37,7 +48,14 @@ function setSetting(key: string, value: string): void {
 export type SmtpConfig = {
 	host: string;
 	port: number;
-	secure: boolean;
+	/**
+	 * The way out (card 2189): mail without a checked, encrypted connection,
+	 * as before that card, on any port but 465. Off unless it is saved on.
+	 * It replaces "Use SSL/TLS" (`smtp_secure`), whose row is left where it
+	 * is and no longer read or written: the certificate is now checked
+	 * whatever it says.
+	 */
+	allowInsecure: boolean;
 	user: string;
 	pass: string;
 	fromAddress: string;
@@ -52,7 +70,7 @@ export function getSmtpConfig(): SmtpConfig | null {
 	return {
 		host,
 		port: Number(getSetting('smtp_port') || '587'),
-		secure: getSetting('smtp_secure') === 'true',
+		allowInsecure: getSetting('smtp_allow_insecure') === 'true',
 		user: getSetting('smtp_user') || '',
 		pass: getSetting('smtp_pass') || '',
 		fromAddress: getSetting('smtp_from_address') || '',
@@ -70,7 +88,7 @@ export function saveSmtpConfig(config: Partial<SmtpConfig>): void {
 	inTransaction(() => {
 		if (config.host !== undefined) setSetting('smtp_host', config.host);
 		if (config.port !== undefined) setSetting('smtp_port', String(config.port));
-		if (config.secure !== undefined) setSetting('smtp_secure', String(config.secure));
+		if (config.allowInsecure !== undefined) setSetting('smtp_allow_insecure', String(config.allowInsecure));
 		if (config.user !== undefined) setSetting('smtp_user', config.user);
 		if (config.pass !== undefined) setSetting('smtp_pass', config.pass);
 		if (config.fromAddress !== undefined) setSetting('smtp_from_address', config.fromAddress);
@@ -180,23 +198,95 @@ export const NO_LINK_ADDRESS =
 
 // ─── Transporter ─────────────────────────────────────────────────────────────
 
+/**
+ * The transport every mail is sent through (card 2189):
+ *
+ *     port 465     TLS from the first byte (`secure`)
+ *     any other    STARTTLS required (`requireTLS`): a server that does not
+ *                  offer it is refused (`ETLS`) before the password is sent,
+ *                  where nodemailer upgrades only when the greeting offers it
+ *     every port   the certificate checked for the host's name
+ *                  (`rejectUnauthorized`); `NODE_EXTRA_CA_CERTS` adds to the
+ *                  authorities trusted
+ *
+ * With the way out (`allowInsecure`) on, any port but 465 is as it was before
+ * the card: STARTTLS when offered, the certificate not checked. Port 465
+ * checked the certificate before and still does (the plan's R9).
+ *
+ * The check the deployment guide runs before deploying (docs/deployment.md,
+ * Mail Server Certificates: the query that reads the mail settings and calls
+ * `verify()`, and the same in the new image) builds these same options, so it
+ * tells what the first mail will meet: change the two together.
+ */
 function createTransporter(config: SmtpConfig): Transporter {
-	// Port 465 = direct SSL, port 587/25 = STARTTLS (secure must be false)
-	const useDirectSSL = config.port === 465;
+	const implicitTls = config.port === 465;
+	const checked = implicitTls || !config.allowInsecure;
 
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	return nodemailer.createTransport({
 		host: config.host,
 		port: config.port,
-		secure: useDirectSSL,
+		secure: implicitTls,
+		requireTLS: !implicitTls && checked,
 		auth: config.user ? { user: config.user, pass: config.pass } : undefined,
-		tls: { rejectUnauthorized: useDirectSSL || config.secure },
-		family: 4, // Force IPv4 — prevents ETIMEDOUT on IPv6 DNS resolution
+		tls: { rejectUnauthorized: checked },
 		name: 'dumpfire.app', // Explicit EHLO name prevents Google 421 rate-limit errors from local computer names
 		connectionTimeout: 10000,
 		greetingTimeout: 10000,
 		socketTimeout: 15000
-	} as any);
+	});
+}
+
+/**
+ * What Send Test, and the log, add when mail fails for the certificate or
+ * STARTTLS (card 2189, decision 15): the two ways to put it right.
+ */
+export const TLS_FAULT_HINT =
+	"The mail server's certificate could not be checked, or the server does not offer STARTTLS. For a certificate " +
+	"from a private authority, see docs/deployment.md, Mail Server Certificates; for a relay on this server's own " +
+	'network that cannot use TLS, tick "Allow mail without a checked, encrypted connection" and type the password again.';
+
+/**
+ * `TLS_FAULT_HINT` when `err` is a failure of the certificate or of STARTTLS,
+ * otherwise null. nodemailer codes a STARTTLS refused or not offered, and a
+ * handshake that fails, `ETLS`; a certificate refused during the handshake
+ * can also come back as `ESOCKET` ("Hostname/IP does not match certificate's
+ * altnames", "self-signed certificate"), so the message is read as well, and
+ * nodemailer 10 codes a server that answers neither EHLO nor STARTTLS
+ * `ECONNECTION`, "EHLO failed but HELO does not support required STARTTLS"
+ * (the review-fix pass's S6). A sign-in refused or a timeout is neither.
+ */
+export function tlsFaultHint(err: unknown): string | null {
+	if (err === null || typeof err !== 'object') return null;
+	const { code, message } = err as { code?: unknown; message?: unknown };
+	if (code === 'ETLS') return TLS_FAULT_HINT;
+	if (typeof message === 'string' && /certificate|altnames|self[- ]signed|STARTTLS/i.test(message)) return TLS_FAULT_HINT;
+	return null;
+}
+
+/** `text` ended as a sentence, so that another can follow it. */
+export function asSentence(text: string): string {
+	const trimmed = text.trim().replace(/[\s:;,]+$/, '');
+	return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+/** How often, at most, a mail that fails for the certificate or STARTTLS is said in the log. */
+const TLS_WARNING_EVERY_MS = 10 * 60 * 1000;
+let lastTlsWarning = -Infinity;
+
+/**
+ * A `WARN` line, at most once in ten minutes in a process, when a mail sent
+ * after its write fails for the certificate or STARTTLS (the plan's R3).
+ * Those mails are logged as an `ERROR` and nothing else, so a mail server the
+ * new check refuses would otherwise stop invites, notifications, reports and
+ * the backup failure mail together with nothing on the log page to say why.
+ */
+function warnIfTlsFault(err: unknown): void {
+	const hint = tlsFaultHint(err);
+	if (hint === null) return;
+	const now = Date.now();
+	if (now - lastTlsWarning < TLS_WARNING_EVERY_MS) return;
+	lastTlsWarning = now;
+	log.warn(`Mail is not being sent: ${asSentence(String((err as { message?: unknown }).message ?? err))} ${hint}`);
 }
 
 // ─── Send Email ──────────────────────────────────────────────────────────────
@@ -220,6 +310,7 @@ export async function sendEmail(to: string, subject: string, html: string): Prom
 		return true;
 	} catch (err) {
 		log.error(`Failed to send email to ${to}: ${subject}`, err);
+		warnIfTlsFault(err);
 		return false;
 	}
 }
@@ -280,6 +371,7 @@ export async function sendEmailWithAttachment(
 		return true;
 	} catch (err) {
 		log.error(`Failed to send email with attachment to ${to}: ${subject}`, err);
+		warnIfTlsFault(err);
 		return false;
 	}
 }

@@ -421,6 +421,8 @@ export function rowsToRestore(backup: Database.Database, table: string): Record<
 /**
  * The settings that make up the mail configuration. No mail is sent without
  * `smtp_host`; the others go with it because one of them is a password.
+ * `smtp_secure` is no longer read (card 2189) but goes with the rest;
+ * `smtp_allow_insecure` is the way out that took its place.
  */
 const MAIL_SETTINGS = [
 	'smtp_host',
@@ -428,6 +430,7 @@ const MAIL_SETTINGS = [
 	'smtp_user',
 	'smtp_pass',
 	'smtp_secure',
+	'smtp_allow_insecure',
 	'smtp_from_address',
 	'smtp_from_name'
 ] as const;
@@ -443,7 +446,7 @@ const MAIL_SETTINGS = [
  *
  * Where there is a flag it is cleared, so that it can be set again in the
  * admin panel: `report_schedules.enabled` and `webhooks.active`. Where there
- * is none the setting is removed: the backup destinations, and the seven mail
+ * is none the setting is removed: the backup destinations, and the mail
  * settings. The backup schedule is set to disabled. `app_url` and every other
  * setting are left alone, and so is every other table.
  *
