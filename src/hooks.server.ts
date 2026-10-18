@@ -64,7 +64,8 @@ startSchedulers();
 // is still the address the image is built with, that a board hangs beneath
 // one of its own cards, or, of the database, that it was new at this start,
 // that it is not on a mounted volume, or that another is beside it (card
-// 2083). It reads and it logs, and it cannot throw. See
+// 2083), or that a secret a backup does not hold is still to be entered (card
+// 2169). It reads and it logs, and it cannot throw. See
 // $lib/server/startup-checks.ts.
 reportInstallation();
 
@@ -92,6 +93,9 @@ const PUBLIC_ROUTES = new Set([
 	'/api/requests',
 	'/api/requests/[id]',
 	'/api/requests/[id]/confirm',
+	// Asked from the page a dead request link opens (card 2158): it mails the
+	// current link only to the address the request was made with.
+	'/api/requests/[id]/link',
 	'/api/requests/[id]/messages',
 	'/api/requests/targets',
 	'/api/v1/openapi.json'

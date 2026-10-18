@@ -5,7 +5,7 @@ import { taskRequests, requestMessages, cards, cardAssignees, cardComments, user
 import { eq, asc } from 'drizzle-orm';
 import { canViewBoard, isAdmin } from '$lib/server/board-access';
 import { requireColumn } from '$lib/server/route-guards';
-import { canHandleRequest, canReadRequest, requireRequest } from '$lib/server/request-access';
+import { canHandleRequest, canReadRequest, requesterAddress, requireRequest } from '$lib/server/request-access';
 import { publicRequest, requestTokenMatches } from '$lib/server/request-tokens';
 import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } from '$lib/server/notifications';
 import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
@@ -25,6 +25,10 @@ import type { RequestHandler } from './$types';
  *
  * A caller with no session and without the link is answered 404, whether the
  * request is there or not (card 2132): it was 403 for one that is there.
+ *
+ * The requester's address goes to a signed-in reader only, and it is the one
+ * their mail goes to: the account's email as it is now, for a request made
+ * signed in (card 2171).
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const id = pathId(params.id, 'request');
@@ -42,7 +46,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 		priority: request.priority,
 		status: request.status,
 		requesterName: request.requesterName,
-		requesterEmail: isAuthed(request) ? request.requesterEmail : null, // only expose email to authenticated users
+		requesterEmail: isAuthed(request) ? requesterAddress(request) : null, // only expose email to authenticated users
 		createdAt: request.createdAt
 	});
 };
@@ -68,6 +72,11 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			throw error(403, 'This request is not addressed to you');
 		}
 		if (existing.status !== 'pending') throw error(400, 'Request already resolved');
+
+		// Where the requester's mail goes, as it is now: the account's email
+		// for a request made signed in (card 2171). The answer gives the same
+		// address, never the one stored when the request was made.
+		const requester = requesterAddress(existing);
 
 		// What was asked of it is read once whose it is is settled (card 2117,
 		// R1). Its ids are ids: one that was not was looked for as it came.
@@ -175,8 +184,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			}
 
 			// Notify requester via email
-			if (existing.requesterEmail) {
-				notifyRequesterAccepted(existing.requesterEmail, existing.title, user.username);
+			if (requester !== null) {
+				notifyRequesterAccepted(requester, existing.title, user.username);
 			}
 
 			// After "Request accepted", so that mail starts first: the live update,
@@ -184,7 +193,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			// the requester's "Your request is complete", which waits for its PDF.
 			announceCardCreated(creation, user, baseUrl);
 
-			return { ...publicRequest(existing), status: 'accepted', resolvedCardId: newCard.id };
+			return { ...publicRequest(existing), requesterEmail: requester, status: 'accepted', resolvedCardId: newCard.id };
 
 		} else {
 			const rejectReason = readText(body, 'rejectReason', { nullable: true, max: 10000 });
@@ -196,11 +205,11 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			}).where(eq(taskRequests.id, id)).run();
 
 			// Notify requester via email
-			if (existing.requesterEmail) {
-				notifyRequesterRejected(existing.requesterEmail, existing.title, user.username, rejectReason || undefined);
+			if (requester !== null) {
+				notifyRequesterRejected(requester, existing.title, user.username, rejectReason || undefined);
 			}
 
-			return { ...publicRequest(existing), status: 'rejected' };
+			return { ...publicRequest(existing), requesterEmail: requester, status: 'rejected' };
 		}
 	});
 

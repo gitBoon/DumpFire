@@ -8,7 +8,7 @@
  * administrator could read it from `GET /api/logs` and every backup kept it.
  * So such a path is written down with the secret masked (`pathToLog`), and
  * what the log already holds is masked the same way (`maskSecretsInLog`): in
- * a backup's copy, by `withoutSignIns` in backup.ts, and in the running
+ * a backup's copy, by `withoutSecrets` in backup.ts, and in the running
  * database's own log once at every start, by startup-checks.ts.
  *
  * Only the path is ever written down, never the query, so a token sent as
@@ -115,7 +115,7 @@ export const SECRET_PATH_MARKERS: readonly string[] = [...SECRET_IN_PATH.map(({ 
  * log changes nothing. The log is capped at 50,000 lines (logger.ts), and a
  * line is looked at by SQLite's `instr` before anything here is asked of it.
  *
- * Run over a backup's copy by `withoutSignIns` in backup.ts, and over the
+ * Run over a backup's copy by `withoutSecrets` in backup.ts, and over the
  * running database at start by `maskLiveLog` in startup-checks.ts: one rule,
  * so that the log a backup holds and the log an administrator reads cannot
  * differ. A table that is not there is skipped; anything else that goes

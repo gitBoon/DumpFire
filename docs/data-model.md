@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.26
+version: 1.27
 status: As-Built
 date: 2026-10-18
 tags:
@@ -628,13 +628,20 @@ told only its own board.
 ### Deleting a user
 
 `deleteUser()` first clears the five columns that name a user through a foreign key with no
-`ON DELETE` action, then deletes the user, in one transaction. While any of the five named
-a user, the delete used to be refused by the key.
+`ON DELETE` action, then writes the user's email onto every task request they made, then
+deletes the user, in one transaction. While any of the five named a user, the delete used to
+be refused by the key. The email is written (card 2171) because a request made signed in is
+mailed at its account's email as it is when each mail is sent (`requesterAddress()`): once
+the key has set `requester_user_id` to NULL, the request is mailed at `requester_email`, as a
+request made without an account is, and without the write that would be the address the
+account had when the request was made, perhaps long changed since. It is the one write
+besides the five that card 2007's rule ("nothing else is written") allows.
 
 ```mermaid
 flowchart LR
     User["DELETE a user"] --> Clear["Set to NULL where they name the user:<br/>card_attachments.uploaded_by<br/>card_templates.created_by<br/>milestones.created_by<br/>work_dependencies.created_by_user_id<br/>card_dependencies.created_by_user_id"]
-    Clear --> Del["DELETE FROM users"]
+    Clear --> Address["UPDATE task_requests<br/>SET requester_email = the user's email now<br/>WHERE requester_user_id = the user"]
+    Address --> Del["DELETE FROM users"]
     Del --> Cascade["Deleted by cascade:<br/>sessions, api_keys, report_schedules,<br/>card_comments, card_assignees,<br/>team_members, board_members,<br/>board_favourites, invite_tokens"]
     Del --> Null["Set to NULL by the key:<br/>boards.created_by, cards.created_by,<br/>activity_log.user_id,<br/>task_requests.requester_user_id and resolved_by,<br/>token_usage.reported_by_user_id"]
     Del --> Stay["Not touched:<br/>user_xp (keyed by name),<br/>task_requests addressed to the user,<br/>activity_log.user_name"]
@@ -649,6 +656,7 @@ flowchart LR
 | Their sessions, team and board memberships, favourites, invites and card assignments | Deleted |
 | Boards and cards they created; activity entries they made | Kept. The link to the user is cleared; an activity entry keeps the name it was written with |
 | Task requests addressed to them | Kept, with the same target. Only an administrator can then accept, reject or reply |
+| Task requests they made | Kept, with `requester_user_id` NULL and `requester_email` the account's email at the delete, where mail about them goes from then on (card 2171) |
 | Their XP | Kept. `user_xp` is keyed by username and has no key to `users` |
 
 One `INFO` line in `system_logs`, written after the commit, says who deleted whom and how
@@ -1128,7 +1136,38 @@ of about zero.
   the requester confirms it; see
   [Authentication & Security](authentication-security.md#the-public-request-form).
   `task_requests.access_token` is the secret in the requester's link (migration `0051`,
-  unique index) and is never returned by an API response.
+  unique index) and is never returned by an API response. It is written when a request is
+  made and changes only in two ways (card 2158): migration `0055` replaced every request's
+  once, and every restore gives every request a new one inside its transaction, whatever
+  the backup holds. A backup holds it as `NULL` (the unique index takes any number of
+  NULLs); the start's backfill gives a token to any row without one, so a backup put in
+  place by hand, or restored by an older image, has them filled in. The key the request
+  form signs its tokens with, the `request_form_secret` row of `settings`, is in no backup
+  and never restored: a new one is made at first use.
+- **`task_requests.requester_email` is where a request made without an account is mailed.**
+  It is written when any request is made: the address given on the form, or for a request
+  made while signed in the account's email at that moment. For a request with
+  `requester_user_id` set it is no longer read for mail (card 2171): every mail to the
+  requester, and the address the inbox and `GET /api/requests/[id]` show, is
+  `requesterAddress()` in `src/lib/server/request-access.ts`, the account's `users.email` as
+  it is when the mail is sent, or no address (nothing sent) when the account named is not
+  there. `deleteUser()` writes the account's email into it before the account's row goes, so
+  the request is then mailed at the account's last address. A request whose account was
+  deleted before card 2171 keeps the address stored when it was made.
+- **No secret is in a backup's copy** (card 2169): no `smtp_pass` row, every secret field of
+  `backup_config`'s destinations `''`, and every `webhooks.secret` `''` with the webhook's
+  `active` 0. The `webhook_secrets_left_out` row of `settings` lists, as a JSON array of
+  `{"id": n, "active": true|false}`, each webhook the copy left without its secret and
+  whether it was on. A restore reads it from the backup and never brings it in as it is;
+  a restore "as it is" that leaves listed webhooks without a secret writes it again, trimmed
+  to those, and the start-up line reads it. Two more rows of `settings` are about backups
+  (the review's S1): `backup_seal_key`, this server's key for sealing its backups (32 random
+  bytes as 64 hex characters, made by the first backup, in no backup, and kept by a restore
+  from the running database in place of anything a backup brings), and `backup_seal`, in a
+  backup's copy only, the HMAC-SHA256 with that key of every other row of the copy. A restore
+  never brings either in, and fills this server's secrets only into a backup whose seal it
+  can make again. See
+  [The Secrets a Backup Does Not Hold](authentication-security.md#the-secrets-a-backup-does-not-hold-card-2169).
 - **Positions** use `real` float type for fractional ordering — allows inserting between items without reordering all rows
 - **Sub-boards** are regular boards with a `parent_card_id` linking them to a card. The
   column is a foreign key to `cards` with `ON DELETE CASCADE`, so a sub-board is deleted
@@ -1248,10 +1287,13 @@ left unread, differences found), which is what the tests assert on. A restore ru
 and 6 again on what it brought in.
 
 A migration file may hold a one-off change to stored data as well as structure, as 0053
-ends every session once and 0054 every invite not yet used. Such a statement comes after the structural ones, under a header
+ends every session once, 0054 every invite not yet used, and 0055 gives every task request
+a new link. Such a statement comes after the structural ones, under a header
 comment that says what it changes, why, that it runs once on each database and what people
 will see; it does nothing harmful on an empty table; and it is declared, by file and table,
-in `tests/rehearsal/one-offs.ts`, so that the rehearsal reports the loss as expected. A
+in `tests/rehearsal/one-offs.ts`, so that the rehearsal reports the loss as expected. One
+that rewrites values and keeps every row, as 0055 does, is declared with `keepsRows`: the
+rehearsal then excuses no loss from its table, and notes the change. A
 unit test fails on any file from 0053 on that loses rows undeclared: a `DELETE`, a
 `DROP TABLE`, a `REPLACE`, a statement that opens with `WITH`, an `INSERT OR REPLACE` or
 `UPDATE OR REPLACE`, or a trigger whose body deletes or replaces (a `DROP INDEX` loses no

@@ -10,6 +10,7 @@ import { checkRateLimit } from '$lib/server/rate-limit';
 import { addressToCount } from '$lib/server/client-address';
 import { readBody, readChoice, readEmail, readId, readText } from '$lib/server/request-body';
 import { requireBoard } from '$lib/server/route-guards';
+import { UNVERIFIED_LIFETIME_DAYS, requesterAddress } from '$lib/server/request-access';
 import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
@@ -77,7 +78,11 @@ export const GET: RequestHandler = async ({ locals }) => {
 			}
 		}
 
-		return { ...publicRequest(r), targetName, targetEmoji, resolvedBoardId, desiredBoardName, desiredBoardEmoji };
+		// The requester's address as their mail goes to it: the account's email
+		// as it is now, for a request made signed in (card 2171).
+		const requesterEmail = requesterAddress(r);
+
+		return { ...publicRequest(r), requesterEmail, targetName, targetEmoji, resolvedBoardId, desiredBoardName, desiredBoardEmoji };
 	});
 
 	return json(enriched);
@@ -93,8 +98,6 @@ function limit(key: string, max: number, windowMs: number): void {
 
 const MINUTE = 60 * 1000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-/** How long a request may sit unconfirmed before it is cleared away. */
-const UNVERIFIED_LIFETIME_DAYS = 7;
 
 /**
  * POST — Create a new task request. Works signed in or not.

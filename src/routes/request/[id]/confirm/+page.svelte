@@ -8,6 +8,7 @@
 	 * with somebody else's address confirm itself.
 	 */
 	import { page } from '$app/stores';
+	import NewRequestLink from '$lib/components/NewRequestLink.svelte';
 
 	let requestId = $derived(Number($page.params.id));
 	let token = $derived($page.url.searchParams.get('token') || '');
@@ -17,6 +18,12 @@
 	let confirming = $state(false);
 	let outcome = $state<Outcome | null>(null);
 	let errorMsg = $state('');
+	/**
+	 * Refused as a link that is not valid: wrong, or replaced (card 2158), or
+	 * for a request that is not there. Under the refusal the page offers to
+	 * mail the current link.
+	 */
+	let linkGone = $state(false);
 
 	async function confirm() {
 		confirming = true;
@@ -32,6 +39,7 @@
 			} else {
 				const failure = await res.json().catch(() => ({}));
 				errorMsg = failure.message || 'This confirmation link is not valid.';
+				linkGone = res.status === 404;
 			}
 		} catch {
 			errorMsg = 'Could not reach the server. Check your connection and try again.';
@@ -70,9 +78,13 @@
 			{#if errorMsg}
 				<div class="error-msg">{errorMsg}</div>
 			{/if}
-			<button class="btn-primary" onclick={confirm} disabled={confirming}>
-				{confirming ? 'Confirming…' : 'Confirm my request'}
-			</button>
+			{#if linkGone}
+				<NewRequestLink {requestId} />
+			{:else}
+				<button class="btn-primary" onclick={confirm} disabled={confirming}>
+					{confirming ? 'Confirming…' : 'Confirm my request'}
+				</button>
+			{/if}
 		{/if}
 	</div>
 </div>

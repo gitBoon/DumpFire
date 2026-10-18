@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.34
+version: 1.35
 status: As-Built
 date: 2026-10-18
 tags:
@@ -132,7 +132,7 @@ no other:
 | `/docs` | The API's documents |
 | `/invite/[token]` | The page an invite links to |
 | `/request`, `/request/[id]/confirm`, `/request/[id]/reply` | The public request form, and the two pages its mails link to |
-| `/api/requests`, `/api/requests/[id]`, `/api/requests/[id]/confirm`, `/api/requests/[id]/messages`, `/api/requests/targets` | The form's routes. Each handler asks for itself what it needs: a session, the token the form was given, or a request's link (see [The Public Request Form](#the-public-request-form)) |
+| `/api/requests`, `/api/requests/[id]`, `/api/requests/[id]/confirm`, `/api/requests/[id]/link`, `/api/requests/[id]/messages`, `/api/requests/targets` | The form's routes. Each handler asks for itself what it needs: a session, the token the form was given, or a request's link. The new link (card 2158) asks for nothing, answers everyone alike and mails only the request's address, an account's as it is now for a request made signed in (see [The Public Request Form](#the-public-request-form)) |
 | `/api/v1/openapi.json` | The API's description, answered with no key |
 
 `/setup` is the one page there is before there is a user, and is never served once there
@@ -323,7 +323,7 @@ backup, and the one-off would be spent. Both are in the same release.
 | Sessions | None: each browser is sent to the sign-in page at its next request, and signs in again |
 | API keys | Untouched |
 | Invites | Untouched by 0053. Every invite not yet used is ended by 0054, in the same release: see below |
-| Requesters' links | Untouched |
+| Requesters' links | Untouched by 0053. Every one is replaced by 0055 (card 2158): see below |
 | The log | One `WARN` line, "token not in DB", for each request that carries a cookie whose session is gone, until that browser signs in again |
 
 `tests/migrations.test.ts` holds it: 0053 empties `sessions` and leaves every other table as
@@ -356,6 +356,32 @@ The owner lists the waiting invites before the deploy, with the read-only comman
 done. `tests/migrations.test.ts` holds it: 0054 deletes every unused invite and keeps the
 used ones and every other table as it was, a later start deletes nothing, and an invite
 issued after it survives. The rehearsal notes the loss as a declared one-off.
+
+### Every Request Link Replaced Once, by Migration 0055
+
+`0055_replace_request_links.sql` (card 2158) ends the last thing older backups hold that
+opens something: a request's link. Its one statement is
+`UPDATE task_requests SET access_token = lower(hex(randomblob(32)))`, under a header comment
+saying so, run once on each database.
+
+Every backup made before card 2158 holds every request's token as it was mailed, open or
+settled. A token is the whole of the key to its thread: whoever holds it reads every
+message, the ones written since the copy was made included, replies as the requester and
+confirms a request not yet confirmed, and it never expires. Replacing every token once makes
+the tokens in those copies worthless. A backup made since holds none, and every restore
+gives every request a new one, so nothing repeats the one-off.
+
+| What | After the start that applies 0055 |
+|---|---|
+| Every request link mailed before the deploy (confirm, reply, progress) | Stops working. Its page says "This link no longer works" and asks for the address the request was made with, and the current link is mailed there (see [The Public Request Form](#the-public-request-form)) |
+| Requests, their messages, the inbox | Untouched |
+| The key the form signs with | Untouched: it lets nobody do more than opening the form does |
+
+It is declared to the rehearsal as a one-off that keeps every row (`keepsRows` in
+`tests/rehearsal/one-offs.ts`): the rehearsal still fails if `task_requests` loses a row,
+and notes the change. `tests/migrations.test.ts` holds it: every token replaced, 64 hex
+characters, all different, none the old; every other column and table as it was; harmless
+on an empty table; recorded once, and a later start replaces nothing.
 
 ### An Open Stream and Its Session
 
@@ -875,7 +901,7 @@ Each failed sign-in is one `WARN` line under `AUTH`, and holds nothing that was 
   left as it is, with the name as typed; those age out of the log (30 days or 50,000 lines)
   but stay in backups made before then. It is the third rule of `maskSecretsInLog()` in
   `src/lib/server/secret-paths.ts`, which `maskLiveLog()` runs at every start and
-  `withoutSignIns()` over every backup's copy; a line in the new form does not begin as the
+  `withoutSecrets()` over every backup's copy; a line in the new form does not begin as the
   old did, so a second start changes nothing. Backups made before the deploy keep the
   names.
 
@@ -946,7 +972,7 @@ not remembered keeps card 2177's rule that the right password clears the account
 **The key: 32 random bytes in `settings`, key `known_browser_secret`.** Made by the first
 browser remembered (a check of a cookie never makes one: with no key no cookie is good), read
 once into memory, as the request form's key is. **Never in a backup and never restored**:
-`withoutSignIns()` deletes the row from every backup's copy, and `rowsToRestore()` leaves it
+`withoutSecrets()` deletes the row from every backup's copy, and `rowsToRestore()` leaves it
 out of a restore, which clears the live row with every other; so the restored server makes a
 new key, and every browser is forgotten, as every session already is. Whoever held the key and
 an account's hash (which a backup holds) could make a cookie for that account. Reset and both
@@ -1312,7 +1338,7 @@ superadmin...", for everybody else who is not the superadmin, an administrator i
 
 | Route | What an administrator could do with it |
 |-------|----------------------------------------|
-| `GET /api/admin/export` | Download every password hash, the mail password and every backup destination's credentials. It held every session id and unused invite token too |
+| `GET /api/admin/export` | Download every password hash and email and every webhook's address. It held every session id and unused invite token too, and until card 2169 the mail password, every backup destination's credentials and every webhook's signing secret. It carries a seal made with a key no backup holds, so that only this server fills its secrets back into it, unchanged |
 | `POST /api/admin/import` | Replace every account with accounts of their own |
 | `POST /api/admin/reset` | Clear every account, and be the superadmin of the installation they then set up |
 | `GET`, `PUT`, `POST /api/admin/backup` | Add a destination of their own and have the whole database sent to it |
@@ -1353,17 +1379,18 @@ its account's password. A backup that held them signed in whoever read it, as an
 was signed in when it was made, for as long as that session went on being used: a
 session's expiry moves on every time it is used.
 
-| | Sessions | Invites not yet used | Password hashes |
-|---|----------|----------------------|-----------------|
-| The file an export downloads | none | none | all |
-| The copy a scheduled backup, or "Run Now", uploads | none | none | all |
-| The running database, after a backup | as they were | as they were | as they were |
-| The running database, after a restore of any backup | none: everybody is signed out | none: of the backup's invites, only those already used come in | the backup's |
+| | Sessions | Invites not yet used | Request links | The request form's key | Password hashes |
+|---|----------|----------------------|---------------|------------------------|-----------------|
+| The file an export downloads | none | none | none: every request is there, with no link | none | all |
+| The copy a scheduled backup, or "Run Now", uploads | none | none | none | none | all |
+| The running database, after a backup | as they were | as they were | as they were | as it was | as they were |
+| The running database, after a restore of any backup | none: everybody is signed out | none: of the backup's invites, only those already used come in | every request given a new one: every link mailed before stops working | none: a new one is made at first use | the backup's |
 
 - **One function makes both copies**, `generateBackupData()` in `src/lib/server/backup.ts`:
   the copy is made with `VACUUM INTO`, opened with no journal, cleared of every session and
-  every invite with `used = 0`, its system log masked, **written out again** with a second
-  `VACUUM INTO`, and only that second file is read.
+  every invite with `used = 0`, every request's link set to `NULL` and the form's key
+  deleted, its system log masked, every secret taken out (below), **written out again** with a second `VACUUM INTO`, and
+  only that second file is read.
 - **The system log is masked too.** An invite's token is the last part of its address, and
   the gate wrote that address down for every request to it, where any administrator could
   read it from `GET /api/logs`. The gate now writes `/invite/[token]` in its place (only the
@@ -1394,14 +1421,38 @@ session's expiry moves on every time it is used.
   restore back, and nothing is changed.
 - **Password hashes stay.** A backup that cannot restore its users is not a backup. It is
   still a file to keep where few can read it.
-- **"Signs nobody in" is true of accounts, and of nothing else.** A backup holds no session
-  and no unused invite, so it opens no account. It does still hold two other secrets: the
-  link of every public request (`task_requests.access_token`), which lets whoever holds it
-  read and reply to that request's thread and confirm it, and the key the public request
-  form signs its tokens with (`request_form_secret` in `settings`). Taking those out is
-  another card's work. Until then a backup is to be kept as carefully as the server.
+- **No request's link, and not the form's key** (card 2158). A request's link
+  (`task_requests.access_token`) lets whoever holds it read every message of that request's
+  thread, the ones written after the copy was made included, reply as the requester and
+  confirm it, and it never expires. `withoutSecrets()` sets every one to `NULL` in the copy
+  (the unique index on the column takes any number of NULLs) and deletes the key the public
+  request form signs its tokens with (`request_form_secret` in `settings`), which lets
+  nobody do more than opening the form does but is a secret all the same.
+- **A restore gives every request a new link, whatever the backup's age**, inside its
+  transaction, once the rows are copied: a backup made before card 2158 holds every link as
+  it was mailed, and one made since holds none. A request's link is not kept even where the
+  database being replaced has the same request id: a backup of another installation, whose
+  request 5 is somebody else's, would give one requester's link to another person's thread.
+  So after any restore every request link mailed before it stops working, and its requester
+  asks for the current one from the page it opens. The import's answer and log line say
+  "N request link(s) replaced: a link mailed before this restore no longer works, and its
+  requester can have a new one sent from the page it opens." (`requestLinksReplaced` in its
+  figures), when there were any. A restore that rolls back leaves every link as it was.
+  `rowsToRestore()` never brings the form's key in; the restored server makes a new one at
+  first use, and a form open during the restore fails once and is reloaded. A backup with no
+  links restored by an image from before this change, or put in place by hand as the
+  database file, has them filled in by the start's backfill.
+- **What a backup still holds that is worth guarding** (card 2169, decision 3). Every user's
+  password hash and email, API keys as hashes, the mail server and its user name, each
+  backup destination's fields other than its secrets, the system log (masked, above), and
+  **every webhook's address**. An address can itself be a key: a Slack or Teams incoming
+  webhook's address is all anyone needs to post to that channel. It is kept, because a
+  webhook restored without its address could not be put back by anybody who did not know
+  it. If a copy may have been read by somebody who should not have, re-issue any
+  incoming-webhook address at its service. A backup is still to be kept where few can read
+  it.
 - **The key remembered browsers are signed with is in no backup** (`known_browser_secret` in
-  `settings`, card 2194): `withoutSignIns()` deletes its row from every copy, and
+  `settings`, card 2194): `withoutSecrets()` deletes its row from every copy, and
   `rowsToRestore()` never brings it in, from a backup of any age, while the restore clears
   the live one. Whoever held it and an account's hash, which a backup does hold, could make a
   cookie that lets a browser past sign-in's throttling for that account. So a restore forgets
@@ -1413,13 +1464,195 @@ session's expiry moves on every time it is used.
   see [Every Session Ended Once](#every-session-ended-once-by-migration-0053). They also hold
   the invites not yet used on their day, which 0053 does not end and migration 0054 does,
   once, on the update that brings it: see
-  [Every Unused Invite Ended Once](#every-unused-invite-ended-once-by-migration-0054). The safety
+  [Every Unused Invite Ended Once](#every-unused-invite-ended-once-by-migration-0054). And they
+  hold every request's link as it was mailed, which migration 0055 replaces, once: see
+  [Every Request Link Replaced Once](#every-request-link-replaced-once-by-migration-0055). And
+  they hold the mail password, every destination's credentials and every webhook's signing
+  secret (card 2169). Nothing can reach a copy at a destination or a downloaded export, so
+  nothing is done to them: they go as each destination's retention removes them, the oldest
+  first at each successful run. If one of them may have been read by somebody who should not
+  have, change the mail password and each destination's credentials at their services and
+  enter them again, and set new webhook secrets with their receivers. They carry no seal
+  either (below): Import Backup of one fills nothing from this server, which changes nothing,
+  since they hold their own secrets. The safety
   copy an import writes before it replaces anything (`.pre-restore-safety.json`, in the
-  server's working directory) holds every table as it was, sessions included, and is not
-  deleted; it leaves out only the key remembered browsers are signed with, as a backup does,
-  since the restore forgets that key anyway: see [How Large an Import Can Be](deployment.md#how-large-an-import-can-be).
+  server's working directory, which in the image is `/app`: inside the container's own
+  storage, off the volume, never read back by the server and never sent anywhere) holds every
+  table as it was, sessions, secrets and the seal's key included, and is not deleted; it leaves out only the key remembered browsers are signed with, as a
+  backup does, since the restore forgets that key anyway: see [How Large an Import Can Be](deployment.md#how-large-an-import-can-be).
 
-Covered by `tests/backups.test.ts`.
+#### The Secrets a Backup Does Not Hold (card 2169)
+
+A backup held the mail password, every backup destination's credentials and every
+webhook's signing secret. Whoever read one copy could send mail as the server's mail
+account, read, replace or delete the copies at every destination (a replaced copy, restored
+later, hands them the superadmin), reach the whole Google Drive of the account that
+connected a Drive destination, and sign forged deliveries to every webhook's receiver. A
+backup now holds none of them, and a restore keeps this server's own where they are for the
+same account, and only into a backup this server made and nobody has changed since: every
+backup is sealed with a key this server keeps and no backup holds (the review's S1).
+
+| | The mail password | A backup destination's credentials | A webhook's signing secret |
+|---|---|---|---|
+| The file an export downloads, and the copy a scheduled backup or "Run Now" uploads | none: its row is deleted | none: each secret field `''`, every other field kept | none: `''`, and a webhook that had one is switched off and listed in `webhook_secrets_left_out` with whether it was on |
+| The running database, after a backup | as it was | as they were | as they were |
+| After Import Backup "as it is" on the server the backup came from, the file unchanged | kept from this server, if its mail settings name the same host, port, "Use SSL/TLS" and user | kept from this server, if exactly one destination here is the same in every field that is not secret | kept, if a webhook here has the same id, board and address, and the webhook on or off as it was |
+| After Import Backup "as it is" on another server or a fresh one, of a backup changed since it was made, or of a file that fails `PRAGMA integrity_check` or holds an object named as SQLite's own that no backup of this server's holds | to enter again: there is no seal this server can check, or it does not verify, or the file failed a check made first | to enter again | to enter again. Off until it is set |
+| After Import Backup as a working copy | removed with the other mail settings, as before | removed with the destinations, as before | filled where it can be, and off with every webhook. Those not filled are listed |
+| A backup file put in place by hand as the database | none, named at every start | none, named at every start | none, the webhook off, named at every start |
+
+```mermaid
+flowchart TD
+    Live["The running database:<br/>mail password, destination credentials,<br/>webhook secrets"] -->|"VACUUM INTO, then withoutSecrets"| Copy["The copy: none of the three.<br/>A webhook that had a secret is off<br/>and listed in webhook_secrets_left_out"]
+    Copy -->|"sealCopy: HMAC-SHA256 with<br/>this server's backup_seal_key"| Sealed["The copy carries backup_seal"]
+    Sealed --> How{"How is it put back?"}
+    How -->|"Import Backup"| Seal{"The seal made again<br/>with this server's key matches?"}
+    Seal -->|"yes: this server's own, unchanged"| Fill["In the restore's transaction:<br/>each gap filled from this server,<br/>only from one entry the same<br/>in every field that is not secret"]
+    Seal -->|"no: another server's, or changed"| Listed
+    Fill --> Left{"Anything left without its secret?"}
+    Left -->|"no: the same server"| Works["Works as before. The answer<br/>says what was kept"]
+    Left -->|"yes"| Listed["The answer, a WARN line and the page<br/>list what to enter again"]
+    How -->|"By hand: the file becomes the database"| Start["One WARN line at every start<br/>lists what is still to enter"]
+    Listed --> Start
+```
+
+- **The copy is cleared before it is written out again.** `clearSecrets()` in
+  `src/lib/server/backup-secrets.ts`, called by `withoutSecrets()` before the second
+  `VACUUM INTO`, deletes the `smtp_pass` row; sets each destination's secret fields to `''`
+  (SFTP `password` and `privateKey`, S3 `secretAccessKey`, Google Drive `clientSecret` and
+  `refreshToken`, a Drive service account's `private_key` inside `serviceAccountJson`, OneDrive
+  `clientSecret`; every one of these on every destination, whatever its type, so that a field
+  left over from a change of type is cleared too), keeping its name, host, bucket, folder,
+  user names and ids; deletes the key this server seals its backups with (`backup_seal_key`)
+  and any seal already in the copy; leaves out a
+  destination of a type this version does not know, and a `backup_config` that is not JSON;
+  and sets each webhook's secret to `''` and switches it off. A webhook is switched off because
+  the file can become a database without a restore, by hand or in an older image: left on with
+  no secret it would send every event unsigned, refused by a receiver that checks and accepted
+  by one that checks only when a signature is sent. The `webhook_secrets_left_out` setting
+  lists each such webhook as `{"id":3,"active":true}`, which is how a restore tells it from a
+  webhook made without a secret; an entry already in the copy whose webhook still has no
+  secret is kept. `clearSecrets()` throws before it writes anything when handed the running
+  database.
+- **Every backup is sealed, and only a backup this server made, unchanged since, has anything
+  filled** (the review's S1). Matching the fields beside a secret is not enough on its own: a
+  backup that is this server's own in every field but one added superadmin would have every
+  secret filled on this server, and the superadmin it added would then hold them (the review's
+  probe: the real mail password, a Drive refresh token and a webhook secret filled back).
+  So once the copy is cleared, `sealCopy()` writes an HMAC-SHA256 of it into it as the
+  `backup_seal` setting, stored as the seal's form number, a colon and 64 hex characters
+  (`2:…`), and the file stays one `.db`. A seal of any other form, the bare 64 characters
+  included, is one this build cannot check, and is taken as no seal. The key is 32 random bytes kept as the
+  `backup_seal_key` setting, made by the first backup the server takes (`backupSealKey()`);
+  `clearSecrets()` deletes it from every copy, and a restore never brings one in and puts this
+  server's back after it clears `settings`, so that the backups made before a restore still
+  verify after it. A restore never changes the key, so every backup this server has sealed
+  goes on verifying; to revoke every old seal at once, delete `backup_seal_key` (the command
+  in the rollback note of [the update that brings migration 0055](deployment.md#the-update-that-brings-migration-0055-secrets-out-of-backups-and-request-mail-to-the-accounts-address)),
+  and the next backup makes a new key. The HMAC is taken over a logical dump, the same from the same rows whatever
+  file they are in (`sealOf()`): the structure (every row of `sqlite_master`, by type and name,
+  as written, SQLite's own included: the index it makes for a UNIQUE column, `sqlite_stat1`
+  once ANALYZE has run, and anything named as SQLite's own put there by hand); then every table
+  but `sqlite_sequence`, the `sqlite_stat1` to `sqlite_stat4` tables that steer how a query
+  reads included, by name, with its columns' names and every row read from the table's own
+  storage (`NOT INDEXED`) in rowid order (primary key order for a table without one), each
+  value written as its type and its bytes, text and blobs with their length first, so that
+  `'1'` and `1`, or `'ab'`+`'c'` and `'a'`+`'bc'`, are told apart; the seal's own row is left
+  out. `VACUUM INTO` moves rows to other pages and changes none of them, so the seal written
+  before it holds for the file after it. A restore makes the seal again from the backup with
+  this server's key, before it writes anything, and compares it in constant time
+  (`sealVerifies()`): a backup made by another server, or by this one and then changed by a
+  single value (a superadmin added, a card changed, a table or an index added, ANALYZE run on
+  it, its seal taken out), has nothing filled, and every gap listed to enter again. Measured on
+  a development machine: sealing a made-up 59 MB copy of 115,000 rows took 0.2 s, and
+  verifying it as much; 177 MB and 345,000 rows, 0.56 s and 0.54 s. Both are synchronous,
+  inside the time a backup or an import already stops the server answering.
+- **What the seal covers and what a restore copies are the same rows** (the second review's
+  B1). A query can read an index in place of its table, and in a file made by hand an index can
+  hold rows its table does not: a covering index named `sqlite_cover`, with one more superadmin
+  in it than the table, and a `sqlite_stat1` row saying the index is the smaller, had a bare
+  `SELECT *` copy the index's rows while the seal, which left `sqlite_` names out, read the
+  table's. Three things close it, each on its own. The seal covers every `sqlite_master` row
+  and the `sqlite_stat*` tables, as above. Before the seal is asked, a backup that carries one,
+  restored on a server with a key, is checked (`backupFailsCheck()`, called by
+  `unsealedBecause()`): it is treated as unsealed when it holds any object named as SQLite's own
+  other than `sqlite_sequence`, `sqlite_stat1` to `sqlite_stat4` and the
+  `sqlite_autoindex_<table>_<n>` indexes of its own tables (`strayInternalObjects()`), or when
+  `PRAGMA integrity_check`, which compares every index with its table, answers anything but
+  `ok`. The restore itself goes ahead as it does for any unsealed backup; only the filling is
+  withheld, and the import writes one `WARN` line naming the check: "Nothing was kept from this
+  server, because the backup failed a check made before its seal is checked: … The restore
+  itself went ahead." The integrity check took 0.12 s on a made-up 59 MB database. And the seal,
+  `rowsToRestore()` read each table `NOT INDEXED`, in rowid order (`fromTableStorage()`), and
+  the backup's settings the restore reads (`settingOf()`, so `readListed()` and the seal
+  itself) read `settings` `NOT INDEXED` and take the one row for its primary key, so that the
+  rows copied come from the storage the seal hashed. `lacksSuperadmin()`'s two counts of the
+  backup's users read `NOT INDEXED` too. And every read of the backup, from its list and its
+  checks to the rows copied, is made inside one read transaction on its connection
+  (`BEGIN`, and `ROLLBACK` in a `finally`), so that all of them see one snapshot.
+- **A restore fills each gap from this server, and only from the same account in the same
+  place.** For a backup whose seal verified, inside the restore's transaction, `readSecretsHere()` reads this server's secrets
+  before the first table is cleared, and `fillSecretGaps()` fills the restored rows after the
+  copy. The mail password is filled when the restored host (trimmed, any case), port, "Use
+  SSL/TLS" and user are all this server's: a backup that named this server's host and user on
+  port 587 with the box unticked would otherwise have the password sent where the certificate
+  is not checked. A destination is filled from the one destination here of its type that is
+  the same in every field that is not secret, the name and the place included (SFTP name,
+  host, port, user name and remote path; S3 name, region, bucket, prefix, endpoint and access
+  key id; Drive name, method, folder and client id, a service account also by its JSON's
+  `client_email` and `private_key_id`, its JSON then taken whole; OneDrive name, tenant,
+  client id and folder path). None, or more than one, and nothing is filled: every field
+  beside a secret is the backup's word, and a destination matched on its connection alone
+  would upload this server's database, with this server's credentials, to a bucket or folder
+  the backup chose, and have retention delete backups there. A Drive OAuth destination is
+  filled only when both its client secret and its refresh token are empty. A webhook listed
+  in the backup's `webhook_secrets_left_out` is filled from the webhook here with the same id,
+  board and address, and switched on or off as the list says it was. A value the backup has is
+  never replaced, so a backup made before this change restores as it always did. A restore
+  that rolls back leaves this server's secrets as they were.
+- **The list is never brought in as it is.** `rowsToRestore()` leaves `webhook_secrets_left_out`
+  out; the restore reads it from the backup, as the backup's word: a list that is not a JSON
+  list, or an entry without a whole-number id and a true-or-false `active`, is ignored and said
+  among the import's problems. A restore "as it is" that leaves listed webhooks unfilled writes
+  the list again, trimmed to those, so that every start names them; a working copy writes
+  none, since its webhooks are off on purpose.
+- **What is left to enter is said three ways.** The import's answer, its log line and the
+  admin page's report add "Kept from this server, because a backup does not hold them: …" and
+  "To enter again, because a backup does not hold them: …", each only when there is something
+  to say (`secretsKept` and `secretsToEnter` in its figures); the second is also written as a
+  `WARN` line of its own. For a backup whose seal did not verify, or whose file failed a check
+  made before it, that line ends "None was kept from this server, because this backup was not
+  made by this server, or was changed since."; for one with no seal this server can check (a
+  backup made before seals, or a server that has made no backup yet), "None was kept from this
+  server, because this backup carries no seal this server can check." (the second review's N7).
+  A restore committed with foreign keys left off says the same, and the request links it
+  replaced, in its `500` answer and log line (the review's O8). Each place is named as the
+  admin page names it: the mail password in "📧 Email / SMTP". At every start, `reportSecretsToEnter()` in
+  `src/lib/server/startup-checks.ts` writes one `[WARN] [STARTUP]` line while the mail settings
+  name a host and a user and hold no password, a destination lacks its credentials, or a webhook
+  the database's own list names is still off with no secret; it reads and writes nothing. And a
+  scheduled backup or Run Now does not try a destination that lacks its credentials
+  (`credentialsMissing()`): Backup History and the failure mail say "This destination's
+  credentials are not entered: …". An SFTP destination with neither password nor key is the
+  exception at start and in the backup run, because a server that allows `none`
+  authentication accepts it; the restore's answer still lists one it could not fill. After a
+  restore onto another server, then, an SFTP destination left with neither password nor key is
+  tried against the real host at every scheduled run, and its failed logins may trip a lockout
+  there: enter its credentials, or remove it (the review's S5).
+- **A backup alone no longer rebuilds a lost server.** On a server that still runs, restore
+  with Import Backup, which keeps this server's secrets. A server rebuilt from nothing needs
+  the mail password, every destination's credentials and every webhook's secret from
+  somewhere else: keep the first two outside DumpFire (a password manager), and know who
+  holds each webhook's secret at its receiver.
+- **Not encrypted, not kept.** Encrypting them in the copy with a key kept outside it would
+  add a key that must be kept apart from both the server and its backups and is lost with
+  either; keeping this server's secrets on a restore to the same server gives the same result
+  with nothing more to keep outside the server. The seal's key is in the running database,
+  beside the secrets it guards: whoever can read it can read them already. Lost with the
+  database, it costs only the fill: a backup made before is restored with its gaps listed. A webhook is re-armed by the board's owner or an administrator with
+  `PUT /api/v1/webhooks/{id}` and `{ "secret": "…", "active": true }`.
+
+Covered by `tests/backups.test.ts` and `tests/import-working-copy.test.ts`.
 
 ### Where a Mailed Link's Address Comes From
 
@@ -2046,7 +2279,7 @@ sign-in they do not have, both in `src/lib/server/request-tokens.ts`.
 | Secret | Issued | Lifetime | Opens |
 |--------|--------|----------|-------|
 | **Form token** | with the form page, by `issueFormToken()`; HMAC-SHA256 over an expiry and a nonce, signed with a key kept in `settings.request_form_secret` | 2 hours | `GET /api/requests/targets` and `POST /api/requests`, sent as `X-Form-Token` |
-| **Request token** | when a request is created; 32 random bytes in `task_requests.access_token` | the life of the request | that one request's thread: read, reply, confirm |
+| **Request token** | when a request is created; 32 random bytes in `task_requests.access_token` | the life of the request, or until it is replaced: once by migration 0055, and for every request at every restore | that one request's thread: read, reply, confirm |
 
 A signed-in user needs neither: their session is checked, and `request-access.ts`
 decides which requests are theirs.
@@ -2074,6 +2307,13 @@ sequenceDiagram
     T->>S: reply in the inbox
     S->>M: reply email (link carries the same token)
     P->>S: GET /api/requests/:id/messages?token=…
+    Note over S: a restore, or migration 0055, replaces every token
+    P->>S: GET /api/requests/:id?token=old
+    S-->>P: 404, and the page offers the address field
+    P->>S: POST /api/requests/:id/link with the address
+    S-->>P: 202, one sentence, the same either way
+    S->>S: afterwards, the request's address? within the limits?
+    S->>M: A new link to your request, only if it matches
 ```
 
 What each control is for:
@@ -2095,8 +2335,9 @@ What each control is for:
 - **The form is not a relay to the team.** Every submission used to email the whole
   team at once. An anonymous submission is now held as `unverified`, hidden from the
   inbox, and the only email it sends goes to the address the requester gave. The team
-  is notified when the requester confirms. Unconfirmed requests are deleted after 7
-  days.
+  is notified when the requester confirms. An unconfirmed request more than 7 days old is
+  deleted when the next anonymous request is made (the form clears them as it takes one);
+  until then it is still in the table, and no new link is ever mailed for it.
 - **Confirmation is a button, not a link.** The emailed link opens a page; the request
   is confirmed by the POST the button makes. Mail scanners open links before the
   recipient does, and a link that confirmed on sight would let a request made with
@@ -2113,8 +2354,72 @@ What each control is for:
   a request that is not theirs. A token that is not text is answered as a wrong one is.
   Until card 2117 it reached the comparison and threw, a `500` for a request that is there
   and a `404` for one that is not, which told the ids of real requests from the rest. The
-  reply page reads any failure as a link that is no longer valid. A confirmation's body that is
-  missing, is not JSON or is not an object is `400`, where it was read as no token.
+  reply page reads any failure as a link that no longer works, and starts its five-second
+  poll only once a thread has loaded, stopping it at the first `403` or `404`: with a dead
+  link it used to be refused every five seconds, a `WARN` line each time, for as long as the
+  tab was open. A confirmation's body that is missing, is not JSON or is not an object is
+  `400`, where it was read as no token.
+- **A link that no longer works can be replaced by its requester** (card 2158). A link stops
+  working when its token is replaced: every request's once by migration 0055, and every
+  request's again at each restore. The reply page, in place of the thread, and the confirm
+  page, under its refusal, say "This link no longer works. Enter the email address you made
+  the request with (if you made it while signed in to DumpFire, your account's email address
+  as it is now), and a new link will be sent to it.", with an address field and "Send me
+  a new link" (`src/lib/components/NewRequestLink.svelte`). `POST /api/requests/[id]/link`
+  takes `{ email }`. When the request is there and the address is the request's address
+  (case and surrounding spaces ignored), the current link is mailed to that address: the
+  request's address is `requesterAddress()`'s (card 2171, the next point), so for a request
+  made signed in it is the account's email as it is now, and whoever gives the address the
+  account had before is answered the same sentence and sent nothing. The link mailed is
+  the confirmation link for a request not yet confirmed, the thread's link otherwise ("A new
+  link to your request", with "Confirm my request" or "View the conversation"). The answer
+  is `202` "If that is the address the request was made with, a new link has been sent to
+  it." whatever was found: for a wrong address, a request that is not there, an id that is
+  not a number, an unconfirmed request more than 7 days old and a mail past a limit, as
+  for a link sent. Everything a match leads to (the limits counted, the mail settings read,
+  the mail made and handed on, the `INFO` line) is done after the answer has gone
+  (`setImmediate`, the review's S3), so the answer is the same work either way: the same
+  answer, at about the same time. The page adds "It can take a few minutes to arrive." The
+  only other answers come before any request is looked up: `429` past five asks in 15
+  minutes from one address, counted first, whatever is asked; `400` "Enter the email address
+  you made the request with" for a body with no `email` text; `503` "New links cannot be sent
+  just now. Please contact the team that sent you the link." when mail is not set up, when
+  the mail settings name a user and hold no password (as a restore leaves them, so that a
+  requester is not told a link was sent when every mail would fail, O6), or when the server
+  has no address to make a link from ([Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)).
+  The `503` is in plain words for somebody with no account; why is the superadmin's, and is
+  said only in a `WARN` line under `REQUESTS` ("A new link to a request was asked for, and
+  none can be sent: …", O7). At most three new-link mails an hour go to one address,
+  whichever requests they are for, counted only when a mail is about to be sent: anyone can
+  make requests with somebody else's address, and a limit per request would let them have
+  the server mail that person three times an hour for each, while counting every ask would
+  let wrong addresses use up a real requester's three. A new link to a request not yet
+  confirmed is a confirmation mail too, and also counts against the form's three an hour to
+  that address (`request-email:`), so that the form and the new link together send no more
+  than either; and at most 30 new-link mails an hour go out in all, the form's own figure
+  for anonymous requests (S2). Nothing is written; one `INFO` line under `REQUESTS` when a
+  link is mailed ("mailed to its requester's address"), naming the request and not the
+  address. The
+  route answers no `403` and no `404`, so card 2132's rule holds: a caller without a link
+  cannot tell a request from no request.
+- **A requester's mail goes to the address the request has now, not the one stored when it
+  was made** (card 2171). A request made while signed in stores the account's email in
+  `task_requests.requester_email` as it was then; an account's email can change since, and
+  a changed address is one that may be in other hands. Every mail to a requester, and every
+  address the team is shown, asks one function, `requesterAddress()` in
+  `src/lib/server/request-access.ts`, when the mail is sent: the team's reply, "Request
+  accepted" and "Request declined", the progress and completion mails, and the new link
+  above; and `requesterEmail` in `GET /api/requests` (the inbox), `GET /api/requests/[id]`
+  and the accept and decline answers. For a request whose `requester_user_id` is set it is
+  that account's `users.email` as it is now; for one with none, the stored
+  `requester_email`; and none, so nothing is sent, when there is neither or when the account
+  named is not there. When an account is deleted, `deleteUser()` first writes its email as
+  it is then onto every request it made (in the delete's transaction), so that the request,
+  whose `requester_user_id` the foreign key then sets to NULL, is mailed at the account's
+  last address and not at the one it had when the request was made. A request whose account
+  was deleted before this change keeps the address stored when it was made. No board or All
+  Tasks page is sent a requester's address at all (card 2128's review): a card made from a
+  request shows only the requester's name.
 
 Rate limits on anonymous callers (`rate-limit.ts`, in memory, per process):
 
@@ -2126,6 +2431,10 @@ Rate limits on anonymous callers (`rate-limit.ts`, in memory, per process):
 | 30 target listings | 15 minutes | caller address |
 | 20 confirmation attempts | 15 minutes | caller address |
 | 20 replies as the requester | 1 hour | the request |
+| 5 asks for a new link | 15 minutes | caller address |
+| 3 new-link mails | 1 hour | the request's address (`requesterAddress()`, card 2171), in lower case |
+| 3 submissions and new links to a request not yet confirmed, together | 1 hour | that address, in lower case (`request-email:`, card 2169's S2) |
+| 30 new-link mails | 1 hour | all of them together (`request-link-mails-in-all`, a key no client address or mail address can make) |
 
 A requester's replies are limited because each one mails every member the request is
 addressed to, from the server's own sender, and the link that lets someone reply can be
@@ -2571,8 +2880,9 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/list-access.ts` | What a list answers a caller, decided in one place and filtered before any limit: `recentActivityFor()`, `listUsersFor()`, `listTeamsFor()`, `boardCategoryRule()` and `boardCategoriesFor()`, `categoryRule()` and `cardCategoriesFor()`, `subBoardsFor()`. See [What a List Gives](#what-a-list-gives) |
 | `src/lib/server/planning.ts` | Besides the plan: the viewer every reader of a dependency or a plan must pass, and `withhold()`, which shows work on a board the viewer cannot open as "A card on a board you cannot open" |
 | `src/lib/server/webhooks.ts` | `presentWebhook(hook, reveal)`, which leaves a webhook's `url` and `secret` out of every answer but the owner's, an administrator's and the one to the request that made it |
-| `src/lib/server/request-access.ts` | Who may read, answer and resolve a task request |
+| `src/lib/server/request-access.ts` | Who may read, answer and resolve a task request; `requesterAddress()`, the one address a requester is mailed at and the team is shown (card 2171) |
 | `src/lib/server/request-tokens.ts` | Form tokens and per-request tokens for callers without an account |
+| `src/routes/api/requests/[id]/link/+server.ts` | The new link a requester asks for when theirs no longer works (card 2158): one answer for every ask, the link mailed only to the request's address (`requesterAddress()`, card 2171), after the answer and within three limits (`mayMail()`); a `503` in plain words, its reason in the log |
 | `src/hooks.server.ts` | Request-level auth guard and the list of public routes, the v1 rate limit, the JSON answer to every failure under `/api/v1/`, and `handleError` |
 | `src/lib/server/gate-answers.ts` | The gate's own answers: whether a request is a navigation, the `401` for an internal route with no session, its redirects in the form SvelteKit gives them, and the security headers with `secured()`, which moves a page's Content-Security-Policy to report only while `cspMode()` says `CSP_MODE=report-only` (card 2162) |
 | `svelte.config.js` | `kit.csp`: the pages' Content-Security-Policy, each directive with why it is there. See [The Content-Security-Policy](#the-content-security-policy) |
@@ -2588,8 +2898,9 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/body-limits.ts` | How large a request's body may be, route by route and caller by caller; the gate's `413` for a body that declares more, and the count that holds a body with no length to the same limit as it is read |
 | `src/lib/server/client-address.ts` | The caller's address, asked so that it cannot throw, and the `'unknown'` count a request with no readable address is held to; `addressKey()`, what a count by address counts, an IPv6 address by its /64 (card 2195) |
 | `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]`, written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
-| `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites and the key remembered browsers are signed with |
-| `src/lib/server/db/restore.ts` | What a restore brings in and what it never does; `backupLacksSuperadmin()` |
+| `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites, the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
+| `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
+| `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
 | `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it; and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194) |

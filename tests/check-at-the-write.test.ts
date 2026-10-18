@@ -114,6 +114,9 @@ const ALLOWED: Record<string, string> = {
 		'The public request form: the form token and the rate limits are asked before the body. They read no row.',
 	'src/routes/api/requests/[id]/confirm/+server.ts POST':
 		'The confirmation link: the rate limit is asked before the body. It reads no row.',
+	'src/routes/api/requests/[id]/link/+server.ts POST':
+		'The new link a requester asks for (card 2158): the rate limit per address is asked before the body, so that every ask ' +
+		'is counted. It reads no row.',
 	'src/routes/api/admin/import/+server.ts POST':
 		'The import settles `outside` and the media type before it reads the upload, and answers either before any of it is read. ' +
 		'Who may import is requireSuperadmin, the session.'

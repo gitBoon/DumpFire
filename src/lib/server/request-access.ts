@@ -1,5 +1,6 @@
 /**
- * request-access.ts — who may read and act on a task request.
+ * request-access.ts — who may read and act on a task request, and the address
+ * its requester is mailed at.
  *
  * A request is addressed to one user or one team. The inbox only ever listed a
  * person's own, but the routes that read, answer, accept and reject a request
@@ -9,9 +10,16 @@
 import { error } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
 import { db } from './db';
-import { taskRequests, teamMembers, type TaskRequest } from './db/schema';
+import { taskRequests, teamMembers, users, type TaskRequest } from './db/schema';
 import { isAdmin } from './board-access';
 import type { SessionUser } from './auth';
+
+/**
+ * How long a request may sit unconfirmed. The form clears older ones as it
+ * takes a new anonymous request, and a new link is never mailed for one
+ * (card 2158, R3): it is treated as not there.
+ */
+export const UNVERIFIED_LIFETIME_DAYS = 7;
 
 /**
  * True if the request is addressed to this user — directly, or through a team
@@ -29,6 +37,25 @@ export function canHandleRequest(user: SessionUser, request: TaskRequest): boole
 		.where(and(eq(teamMembers.teamId, request.targetId), eq(teamMembers.userId, user.id)))
 		.get();
 	return !!membership;
+}
+
+/**
+ * The address a mail to the request's requester goes to, and the one shown to
+ * the team (card 2171). For a request made signed in, the account's email as
+ * it is now; for one made without an account, the address given, or the one
+ * `deleteUser` wrote when the account that made it was deleted. `null` when
+ * there is neither, or when the account named is not there (only a restore
+ * that reported the row can leave one so), and then nothing is sent.
+ *
+ * Asked when the mail is worked out, never stored: every mail went to the
+ * address stored when the request was made, so after an account's email
+ * changed, the team's replies, the acceptance and every progress mail went to
+ * an address that may be somebody else's now.
+ */
+export function requesterAddress(request: Pick<TaskRequest, 'requesterUserId' | 'requesterEmail'>): string | null {
+	if (request.requesterUserId === null) return request.requesterEmail || null;
+	const account = db.select({ email: users.email }).from(users).where(eq(users.id, request.requesterUserId)).get();
+	return account?.email ?? null;
 }
 
 /** True if this signed-in user is the one who raised the request. */

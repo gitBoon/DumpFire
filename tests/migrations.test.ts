@@ -362,6 +362,9 @@ const INDEXES_0053 = [
  */
 const FILE_0054 = '0054_index_user_time_end_unused_invites.sql';
 
+/** The file of card 2158: every task request given a new link, once. */
+const FILE_0055 = '0055_replace_request_links.sql';
+
 /**
  * The indexes the model declares that a database from before 0053 lacks:
  * 0053's 39, with 0054's index on user_id and created_at in place of 0053's on
@@ -3847,7 +3850,10 @@ describe('restoring a backup taken before the latest migrations', () => {
 
 		const result = restoreFromBackup(live, backup);
 
-		expect(result.backfilled).toEqual({ firstCompletedAt: 2, accessTokens: 2 });
+		// The links are given inside the restore, as every request's is at every
+		// restore (card 2158), so the backfill after it has none to give.
+		expect(result.backfilled).toEqual({ firstCompletedAt: 2, accessTokens: 0 });
+		expect(result.requestLinksReplaced).toBe(2);
 		expect(live.prepare('SELECT id, first_completed_at FROM cards ORDER BY id').all()).toEqual([
 			{ id: 1, first_completed_at: '2026-09-01 10:00:00' },
 			{ id: 2, first_completed_at: '2026-09-01 10:00:00' },
@@ -4280,8 +4286,10 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(logged[0]).toMatch(
 				new RegExp(
 					`^\\[INFO\\] \\[IMPORT\\] Database restored from an uploaded backup \\(${size.replace('.', '\\.')}\\)\\. ` +
-						'Rows: .*\\bcards: 6\\b.*\\. Filled in: first_completed_at on 2 card\\(s\\), access_token on 2 request\\(s\\), ' +
-						'the default \\(0\\) in place of NULL in columns\\.wip_limit on 2 row\\(s\\)\\.$'
+						'Rows: .*\\bcards: 6\\b.*\\. Filled in: first_completed_at on 2 card\\(s\\), access_token on 0 request\\(s\\), ' +
+						'the default \\(0\\) in place of NULL in columns\\.wip_limit on 2 row\\(s\\)\\. ' +
+						'2 request link\\(s\\) replaced: a link mailed before this restore no longer works, and its requester can have ' +
+						'a new one sent from the page it opens\\.$'
 				)
 			);
 			expect(logged[1]).toBe(`[ERROR] [IMPORT] Restore committed, with 1 problem(s): ${problem}`);
@@ -4317,8 +4325,10 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(logged[0]).toMatch(
 				new RegExp(
 					`^\\[INFO\\] \\[IMPORT\\] Database restored from an uploaded backup \\(${size.replace('.', '\\.')}\\)\\. ` +
-						'Rows: .*\\bcards: 5\\b.*\\. Filled in: first_completed_at on 2 card\\(s\\), access_token on 2 request\\(s\\), ' +
-						'the default \\(0\\) in place of NULL in columns\\.wip_limit on 2 row\\(s\\)\\.$'
+						'Rows: .*\\bcards: 5\\b.*\\. Filled in: first_completed_at on 2 card\\(s\\), access_token on 0 request\\(s\\), ' +
+						'the default \\(0\\) in place of NULL in columns\\.wip_limit on 2 row\\(s\\)\\. ' +
+						'2 request link\\(s\\) replaced: a link mailed before this restore no longer works, and its requester can have ' +
+						'a new one sent from the page it opens\\.$'
 				)
 			);
 			expect(sqlite.prepare('SELECT id, wip_limit FROM columns ORDER BY id').all()).toEqual([
@@ -4352,19 +4362,32 @@ describe('restoring a backup taken before the latest migrations', () => {
 
 		it('does not call it a failed restore when the backup is in and it is the connection that is wrong', async () => {
 			const { backup } = liveAndBackup();
+			// Mail settings with no password, from a backup with no seal: listed to enter again (card 2169).
+			backup.exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('smtp_host', 'mail.example.test'), ('smtp_user', 'dumpfire')");
+			backup.exec("DELETE FROM settings WHERE key = 'smtp_pass'");
 			let real: Database.Database['pragma'] | null = null;
 
 			const { response, logged } = await upload(backup, () => {
 				real = ignoringPragma(sqlite, 'ON');
 			});
 
+			const toEnter =
+				'To enter again, because a backup does not hold them: the mail password (Admin, 📧 Email / SMTP). None was ' +
+				// No seal at all, so this reason and not the other (the second review's N7).
+				'kept from this server, because this backup carries no seal this server can check.';
 			const message =
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
-				'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.';
+				'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it. ' +
+				// It replaced every request's link, and listed the secrets, as a restore that succeeded does, and says so (O8).
+				'2 request link(s) replaced: a link mailed before this restore no longer works, and its requester can have ' +
+				`a new one sent from the page it opens. ${toEnter}`;
 			expect(response.status).toBe(500);
 			// The page reloads its data on this, and not on any other failure.
 			expect(response.body.committed).toBe(true);
 			expect(response.body.message).toBe(message);
+			expect(response.body.requestLinksReplaced).toBe(2);
+			expect(response.body.secretsToEnter).toBe(toEnter);
+			expect(response.body).not.toHaveProperty('secretsKept');
 			expect(logged).toEqual([`[CRITICAL] [IMPORT] Database restore: ${message}`]);
 			expect(`${response.body.message} ${logged[0]}`).not.toMatch(/failed|nothing was changed/i);
 			// Both halves of it are true.
@@ -4791,13 +4814,14 @@ describe('the database the runner leaves, against the model', () => {
 			'0051_add_request_access_token.sql',
 			'0052_drop_time_entries.sql',
 			'0053_index_foreign_keys_end_sessions.sql',
-			FILE_0054
+			FILE_0054,
+			FILE_0055
 		]);
 		expect(report.tolerated).toEqual([]);
 		expect(report.rebuilt.map((r) => r.table)).toEqual(['columns', 'categories', 'settings', 'user_xp', 'invite_tokens']);
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(recordedIn(database)).toHaveLength(60);
+		expect(recordedIn(database)).toHaveLength(61);
 		expect(sequenceIn(database, 'categories')).toBe(3);
 		expect(foreignKeysOn(database)).toBe(true);
 		expect(differencesIn(database)).toEqual(NONE);
@@ -4842,7 +4866,7 @@ describe('the database the runner leaves, against the model', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054]);
+		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055]);
 		expect(report.rebuilt).toEqual([
 			{ table: 'boards', rows: 3, defaulted: [], differences: differed.boards },
 			{ table: 'categories', rows: 3, defaulted: [], differences: differed.categories }
@@ -4963,7 +4987,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0053, FILE_0054]);
+		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055]);
 		expect(report.schemaDifferences).toEqual([]);
 		const after = contentsOf(database);
 		expect(after.sessions).toEqual([]);
@@ -5059,6 +5083,12 @@ describe('a migration file that loses rows (card 2106, decision 3)', () => {
 			})
 			.map((statement) => statement.text);
 
+	/** The tables a migration file's UPDATE statements name, read as the runner reads them. */
+	const updatesOf = (sql: string) =>
+		sqlStatements(sql)
+			.filter((statement) => statement.keyword === 'UPDATE')
+			.map((statement) => /^\s*UPDATE\s+(?:OR\s+\w+\s+)?[`"[]?(\w+)/i.exec(statement.text)?.[1] ?? '');
+
 	/** Each file from 0053 on that can lose rows and is not declared, with its first such statement. */
 	function undeclared(dir: string, oneOffs: readonly OneOff[] = ONE_OFFS): string[] {
 		const found: string[] = [];
@@ -5081,7 +5111,15 @@ describe('a migration file that loses rows (card 2106, decision 3)', () => {
 		for (const oneOff of ONE_OFFS) {
 			expect(realFiles, oneOff.file).toContain(oneOff.file);
 			expect(oneOff.file >= ONE_OFFS_FROM).toBe(true);
-			expect(losingRows(readFileSync(join(REAL_MIGRATIONS, oneOff.file), 'utf-8')), oneOff.file).not.toEqual([]);
+			const sql = readFileSync(join(REAL_MIGRATIONS, oneOff.file), 'utf-8');
+			if (oneOff.keepsRows) {
+				// One that rewrites values in the rows it keeps (0055): it loses
+				// none, and updates the table it names.
+				expect(losingRows(sql), oneOff.file).toEqual([]);
+				expect(updatesOf(sql), oneOff.file).toContain(oneOff.table);
+				continue;
+			}
+			expect(losingRows(sql), oneOff.file).not.toEqual([]);
 			expect(EXPECTED_SCHEMA.some((statement) => statement.startsWith(`CREATE TABLE \`${oneOff.table}\` (`)), oneOff.table).toBe(
 				true
 			);
@@ -5173,6 +5211,28 @@ describe('a migration file that loses rows (card 2106, decision 3)', () => {
 			compare(state(5, 52), { ...state(5, 53), rows: { ...state(5, 53).rows, users: 1 } }, [FILE_0053], found);
 			expect(found.problems).toEqual(['users had 2 row(s) and has 1']);
 		});
+
+		// Card 2158: a one-off that rewrites values and keeps every row, as 0055 does.
+		const KEEPS: OneOff = { file: '0055_sample.sql', table: 'users', change: 'every name rewritten', keepsRows: true };
+
+		it('of a one-off that keeps its rows, excuses no loss from its table', () => {
+			const found: Findings = { problems: [], notes: [] };
+			compare(state(5, 52), { ...state(5, 53), rows: { ...state(5, 53).rows, users: 1 } }, ['0055_sample.sql'], found, [KEEPS]);
+			expect(found.problems).toEqual(['users had 2 row(s) and has 1']);
+		});
+
+		it('of a one-off that keeps its rows, is a note of what it changed in a run that applied it, and none in a run that did not', () => {
+			const ran: Findings = { problems: [], notes: [] };
+			compare(state(5, 52), state(5, 53), ['0055_sample.sql'], ran, [KEEPS]);
+			expect(ran).toEqual({
+				problems: [],
+				notes: ['users: every name rewritten in its 2 row(s) by 0055_sample.sql, a one-off declared in tests/rehearsal/one-offs.ts']
+			});
+
+			const other: Findings = { problems: [], notes: [] };
+			compare(state(5, 52), state(5, 53), ['0055_other.sql'], other, [KEEPS]);
+			expect(other).toEqual({ problems: [], notes: [] });
+		});
 	});
 });
 
@@ -5238,8 +5298,8 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 		}
 	});
 
-	it('is the one file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
-		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054]);
+	it('is the file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
+		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055]);
 		const sql = sqlStatements(readFileSync(join(REAL_MIGRATIONS, FILE_0054), 'utf-8')).map((s) => s.text);
 		expect(sql).toEqual([
 			'DROP INDEX IF EXISTS `idx_activity_log_user_id`;',
@@ -5380,7 +5440,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0054]);
+		expect(report.applied).toEqual([FILE_0054, FILE_0055]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect((database.prepare('SELECT token FROM invite_tokens').all() as { token: string }[]).map((r) => r.token)).toEqual([
 			'used-long-ago'
@@ -5411,5 +5471,108 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 		const later = contentsOf(database);
 		expect(runMigrations({ database, migrationsDir: REAL_MIGRATIONS }).applied).toEqual([]);
 		expect(contentsOf(database)).toEqual(later);
+	});
+});
+
+// ─── 0055: every task request a new link ─────────────────────────────────────
+
+describe('0055, which gives every task request a new link once (card 2158)', () => {
+	/** The links mailed before the deploy: what every backup made before card 2158 holds. */
+	const MAILED = ['1'.repeat(64), '2'.repeat(64), '3'.repeat(64)];
+
+	/** A database with every migration before 0055 applied and, unless `empty`, three requests: open, settled and unconfirmed. */
+	function beforeIt(empty = false): Database.Database {
+		const database = memoryDb();
+		const before = Object.fromEntries(
+			realFiles.filter((f) => f < FILE_0055).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+		);
+		applyFilesOnly(database, migrationsDir(before));
+		database.exec("INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x')");
+		if (!empty) {
+			const insert = database.prepare(
+				"INSERT INTO task_requests (target_type, target_id, title, requester_name, requester_email, status, access_token) VALUES ('user', 1, ?, 'Rita', 'rita@example.test', ?, ?)"
+			);
+			insert.run('Open', 'pending', MAILED[0]);
+			insert.run('Settled', 'accepted', MAILED[1]);
+			insert.run('Unconfirmed', 'unverified', MAILED[2]);
+		}
+		return database;
+	}
+
+	const linksIn = (database: Database.Database) =>
+		(database.prepare('SELECT access_token FROM task_requests ORDER BY id').all() as { access_token: string }[]).map((r) => r.access_token);
+
+	it('is one UPDATE of every access_token, in the backfill’s form, after a header comment', () => {
+		const sql = readFileSync(join(REAL_MIGRATIONS, FILE_0055), 'utf-8');
+		expect(sqlStatements(sql).map((s) => s.text)).toEqual(['UPDATE `task_requests` SET `access_token` = lower(hex(randomblob(32)));']);
+		// What it changes, why, that it runs once and what people see (card 2106, decision 3).
+		for (const said of ['A one-off change to data', 'What people see:', 'Harmless where it finds nothing', 'Runs once.']) {
+			expect(sql, said).toContain(said);
+		}
+	});
+
+	it('replaces every request’s link, open, settled or unconfirmed, and changes nothing else', () => {
+		const database = beforeIt();
+		const before = contentsOf(database);
+		const state = stateOf(database);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0055]);
+		expect(report.schemaDifferences).toEqual([]);
+		const links = linksIn(database);
+		expect(links).toHaveLength(3);
+		for (const link of links) expect(link).toMatch(/^[0-9a-f]{64}$/);
+		expect(new Set(links).size).toBe(3);
+		for (const mailed of MAILED) expect(links).not.toContain(mailed);
+		// Every other column of every request, and every other table, as it was.
+		const without = (rows: string[]) => rows.map((row) => row.replace(/"access_token":"[0-9a-f]{64}"/, '')).sort();
+		const after = contentsOf(database);
+		expect(without(after.task_requests)).toEqual(without(before.task_requests));
+		for (const table of Object.keys(before)) {
+			// The migration record, and its id counter, gain the file.
+			if (['task_requests', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
+			expect(after[table], table).toEqual(before[table]);
+		}
+
+		// The rehearsal: every row kept, and the change noted as the one-off declared for it.
+		const found: Findings = { problems: [], notes: [] };
+		compare(state, stateOf(database), report.applied, found);
+		expect(found).toEqual({
+			problems: [],
+			notes: [
+				`task_requests: every access_token replaced in its 3 row(s) by ${FILE_0055}, a one-off declared in tests/rehearsal/one-offs.ts`
+			]
+		});
+	});
+
+	it('is harmless on an empty table, as a new installation has', () => {
+		const database = beforeIt(true);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0055]);
+		expect(linksIn(database)).toEqual([]);
+	});
+
+	it('is recorded once, and the next start applies nothing and replaces no link given since', () => {
+		const database = beforeIt();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		const given = linksIn(database);
+		expect(recordedIn(database).filter((name) => name === FILE_0055)).toHaveLength(1);
+
+		const again = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(again.applied).toEqual([]);
+		expect(linksIn(database)).toEqual(given);
+	});
+
+	it('is declared to the rehearsal as a one-off that keeps every row of task_requests', () => {
+		expect(ONE_OFFS).toContainEqual({
+			file: FILE_0055,
+			table: 'task_requests',
+			change: 'every access_token replaced',
+			keepsRows: true
+		});
 	});
 });

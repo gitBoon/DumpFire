@@ -15,9 +15,9 @@
  * sent. It also checks, on the run that succeeds, that nothing was sent while
  * the transaction was still open.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import {
 	activityLog,
 	cardAssignees,
@@ -25,12 +25,15 @@ import {
 	cards,
 	requestMessages,
 	taskRequests,
+	users,
 	type Card,
 	type TaskRequest
 } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
-import { issueFormToken, resetFormSecretCache } from '$lib/server/request-tokens';
+import { requesterAddress } from '$lib/server/request-access';
+import { issueFormToken, newRequestToken, resetFormSecretCache } from '$lib/server/request-tokens';
+import { pageLoad } from './helpers/actions';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects, type RecordedEffect } from './helpers/effects';
@@ -612,5 +615,251 @@ describe('POST /api/requests', () => {
 
 		expect(res.body.message).toMatch(/^Too many requests/);
 		expect(titles().map((row) => row.title)).toContain('Not confirmed yet');
+	});
+});
+
+// ─── Mail to a requester who made the request signed in ─────────────────────
+
+/**
+ * A request made signed in is mailed at the account's email as it is when the
+ * mail is sent (card 2171). Every mail to the requester went to the address
+ * stored when the request was made, so once the account's email changed, the
+ * team's reply, the acceptance and every progress mail, a completion report
+ * among them, went to an address that may be somebody else's now.
+ */
+describe('mail to a requester who made the request signed in', () => {
+	/** The account's email when it makes its requests. */
+	const OLD = 'requester@example.test';
+	/** And after the superadmin changes it. */
+	const NEW = 'requester.now@example.test';
+
+	type Signed = Scene & { root: SessionUser; requester: SessionUser };
+
+	function signedIn(): Signed {
+		const s = scene();
+		const root = makeUser({ username: 'root', role: 'superadmin' });
+		const requester = makeUser({ username: 'requester' });
+		return { ...s, root, requester };
+	}
+
+	const ok = (res: ApiResult) => {
+		expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+		return res;
+	};
+
+	/** A request `user` makes signed in, to the owner: its id. */
+	const ask = async (s: Scene, user: SessionUser, title: string): Promise<number> =>
+		ok(
+			await api('POST', '/api/requests', {
+				user,
+				body: { targetType: 'user', targetId: s.owner.id, title, priority: 'medium' }
+			})
+		).body.id;
+
+	/** A request made without an account, from Pat: its id. */
+	const anonymous = (s: Scene, title: string): number =>
+		db
+			.insert(taskRequests)
+			.values({
+				targetType: 'user',
+				targetId: s.owner.id,
+				requesterName: 'Pat',
+				requesterEmail: 'pat@example.test',
+				title,
+				accessToken: newRequestToken()
+			})
+			.returning()
+			.get().id;
+
+	/** The account's email changed by the superadmin, through the route that changes it. */
+	const changeEmail = async (s: Signed, email: string) =>
+		ok(await api('PUT', `/api/users/${s.requester.id}`, { user: s.root, body: { email } }));
+
+	const accept = (s: Scene, id: number) =>
+		api('PATCH', `/api/requests/${id}`, {
+			user: s.owner,
+			body: { action: 'accept', boardId: s.A.board.id, columnId: s.A.cols['To Do'].id }
+		});
+	const decline = (s: Scene, id: number) =>
+		api('PATCH', `/api/requests/${id}`, { user: s.owner, body: { action: 'reject', rejectReason: 'Not now' } });
+
+	const titleOf = (id: number) => requestRow(id).title;
+
+	/**
+	 * Every mail a requester is sent once a request is waiting: the team's
+	 * reply, `first` accepted, `second` declined, a comment on the card and the
+	 * card moved to Complete, which waits for its report.
+	 */
+	async function everyMail(s: Scene, first: number, second: number, sent: Effects): Promise<void> {
+		ok(await api('POST', `/api/requests/${first}/messages`, { user: s.owner, body: { message: 'Which format?' } }));
+		const cardId = ok(await accept(s, first)).body.resolvedCardId;
+		ok(await decline(s, second));
+		ok(await api('POST', `/api/cards/${cardId}/comments`, { user: s.owner, body: { content: 'Started on it' } }));
+		ok(await api('PUT', `/api/v1/cards/${cardId}/move`, { user: s.owner, body: { columnId: s.A.cols['Complete'].id } }));
+		await vi.waitFor(
+			() => expect(sent.emails.map((e) => e.subject)).toContain(`Your request is complete: ${titleOf(first)} ✅`),
+			{ timeout: 10_000 }
+		);
+	}
+
+	/** What `everyMail` sends the requester, in order. */
+	const subjects = (first: string, second: string) => [
+		`Message on request: ${first}`,
+		`Request accepted: ${first}`,
+		`Request declined: ${second}`,
+		`New comment on your request: ${first}`,
+		`Your request is complete: ${first} ✅`
+	];
+
+	it("sends the reply, the acceptance, the decline and every progress mail to the account's email as it is now", async () => {
+		const s = signedIn();
+
+		await recording(async (sent) => {
+			const first = await ask(s, s.requester, 'Please add a report');
+			const second = await ask(s, s.requester, 'And a dark theme');
+			// Stored as the account's address at the time.
+			expect(requestRow(first).requesterEmail).toBe(OLD);
+			await changeEmail(s, NEW);
+
+			await everyMail(s, first, second, sent);
+
+			expect(sent.emails.filter((e) => e.to === OLD).map((e) => e.subject)).toEqual([]);
+			expect(sent.emails.filter((e) => e.to === NEW).map((e) => e.subject)).toEqual(
+				subjects('Please add a report', 'And a dark theme')
+			);
+			const report = sent.emails.find((e) => e.to === NEW && e.subject.startsWith('Your request is complete'));
+			expect(report!.attachments).toHaveLength(1);
+			expect(sent.duringTransaction).toEqual([]);
+		});
+	});
+
+	it('sends every mail of a request made without an account to the address given, as before', async () => {
+		const s = signedIn();
+
+		await recording(async (sent) => {
+			const first = anonymous(s, 'Please add a report');
+			const second = anonymous(s, 'And a dark theme');
+
+			await everyMail(s, first, second, sent);
+
+			expect(sent.emails.filter((e) => e.to === 'pat@example.test').map((e) => e.subject)).toEqual(
+				subjects('Please add a report', 'And a dark theme')
+			);
+		});
+	});
+
+	it('mails a request whose account was deleted at the address the account had when it was deleted', async () => {
+		const s = signedIn();
+
+		await recording(async (sent) => {
+			const id = await ask(s, s.requester, 'Please add a report');
+			await changeEmail(s, NEW);
+			ok(await api('DELETE', `/api/users/${s.requester.id}`, { user: s.root }));
+
+			// The key forgets the account; the address it had stays with the request.
+			expect(requestRow(id)).toMatchObject({ requesterUserId: null, requesterEmail: NEW });
+
+			ok(await api('POST', `/api/requests/${id}/messages`, { user: s.owner, body: { message: 'Which format?' } }));
+			expect(sent.emails.filter((e) => e.to.startsWith('requester')).map((e) => `${e.to}: ${e.subject}`)).toEqual([
+				`${NEW}: Message on request: Please add a report`
+			]);
+		});
+	});
+
+	it("requesterAddress: the account's email now, the address given without one, and null with neither", () => {
+		const s = signedIn();
+		const row = (values: Partial<TaskRequest>) =>
+			db
+				.insert(taskRequests)
+				.values({ targetType: 'user', targetId: s.owner.id, title: 'A request', ...values })
+				.returning()
+				.get();
+
+		// The stored address is not the account's, to tell which is read.
+		const mine = row({ requesterUserId: s.requester.id, requesterEmail: 'stored@example.test' });
+		expect(requesterAddress(mine)).toBe(OLD);
+		db.update(users).set({ email: NEW }).where(eq(users.id, s.requester.id)).run();
+		expect(requesterAddress(mine)).toBe(NEW);
+
+		expect(requesterAddress(row({ requesterEmail: 'pat@example.test' }))).toBe('pat@example.test');
+		expect(requesterAddress(row({ requesterEmail: null }))).toBeNull();
+		expect(requesterAddress(row({ requesterEmail: '' }))).toBeNull();
+
+		// An account named that is not there: only a restore that reported the
+		// row can leave one so. Nothing is sent, and never the stored address.
+		sqlite.pragma('foreign_keys = OFF');
+		try {
+			expect(requesterAddress(row({ requesterUserId: 99999, requesterEmail: 'stored@example.test' }))).toBeNull();
+		} finally {
+			sqlite.pragma('foreign_keys = ON');
+		}
+	});
+
+	it('sends no progress mail for a request whose account is not there, and never to the stored address', async () => {
+		const s = signedIn();
+
+		await recording(async (sent) => {
+			const id = anonymous(s, 'Please add a report');
+			const cardId = ok(await accept(s, id)).body.resolvedCardId;
+			sqlite.pragma('foreign_keys = OFF');
+			try {
+				db.update(taskRequests).set({ requesterUserId: 99999 }).where(eq(taskRequests.id, id)).run();
+			} finally {
+				sqlite.pragma('foreign_keys = ON');
+			}
+
+			ok(await api('POST', `/api/cards/${cardId}/comments`, { user: s.owner, body: { content: 'Started on it' } }));
+
+			expect(sent.emails.filter((e) => e.to === 'pat@example.test').map((e) => e.subject)).toEqual([
+				'Request accepted: Please add a report'
+			]);
+		});
+	});
+
+	it("shows the team and the author the account's current address, and the address given for a request made without one", async () => {
+		const s = signedIn();
+		const [first, second] = await recording(async () => [
+			await ask(s, s.requester, 'Please add a report'),
+			await ask(s, s.requester, 'And a dark theme')
+		]);
+		await changeEmail(s, NEW);
+
+		const inbox = ok(await api('GET', '/api/requests', { user: s.owner })).body as { id: number; requesterEmail: string }[];
+		const listed = (id: number) => inbox.find((r) => r.id === id)!.requesterEmail;
+		expect([listed(first), listed(second), listed(s.request.id)]).toEqual([NEW, NEW, 'rita@example.test']);
+
+		for (const user of [s.owner, s.requester]) {
+			expect(ok(await api('GET', `/api/requests/${first}`, { user })).body.requesterEmail, user.username).toBe(NEW);
+		}
+		expect(ok(await api('GET', `/api/requests/${s.request.id}`, { user: s.owner })).body.requesterEmail).toBe(
+			'rita@example.test'
+		);
+
+		// The answers to an accept and a decline (the plan review's R5).
+		const accepted = ok(await recording(() => accept(s, first)));
+		const declined = ok(await recording(() => decline(s, second)));
+		expect([accepted.body.requesterEmail, declined.body.requesterEmail]).toEqual([NEW, NEW]);
+	});
+
+	it("gives a viewer of the board the requester's name and the request's title, and no address", async () => {
+		// The board and All Tasks loads stopped sending the address (card
+		// 2128's review): no page shows it, and every viewer was sent it.
+		const s = signedIn();
+		const viewer = makeUser({ username: 'viewer' });
+		addBoardMember(s.A.board, viewer, 'viewer');
+		const cardId = await recording(
+			async () => ok(await accept(s, await ask(s, s.requester, 'Please add a report'))).body.resolvedCardId
+		);
+		const origin = { requesterName: 'requester', requestTitle: 'Please add a report' };
+
+		const board = await pageLoad(`/board/${s.A.board.id}`, { user: viewer });
+		if (board.type !== 'data') throw new Error(`The board answered ${JSON.stringify(board)}`);
+		const onBoard = board.data.columns.flatMap((c: any) => c.cards).find((c: any) => c.id === cardId);
+		expect(onBoard.requestOrigin).toEqual(origin);
+
+		const all = await pageLoad('/all', { user: viewer });
+		if (all.type !== 'data') throw new Error(`All Tasks answered ${JSON.stringify(all)}`);
+		const inAll = all.data.buckets.flatMap((b: any) => b.cards).find((c: any) => c.id === cardId);
+		expect(inAll.requestOrigin).toEqual(origin);
 	});
 });

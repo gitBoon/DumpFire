@@ -28,6 +28,7 @@ import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTe
 import { eq, and, inArray } from 'drizzle-orm';
 import { createLogger } from './logger';
 import { requestReplyUrl } from './request-tokens';
+import { requesterAddress } from './request-access';
 import { canViewBoard, type Actor } from './board-access';
 
 const log = createLogger('NOTIFY');
@@ -544,6 +545,37 @@ export function notifyRequesterMessage(email: string, requestTitle: string, send
 	sendEmail(email, `Message on request: ${requestTitle}`, html).catch(err => log.error(`Requester-message notification failed for ${email}`, err));
 }
 
+/**
+ * Mail a requester the current link to their request, which they asked for
+ * from the page a link that no longer works opens (card 2158). Sent only to
+ * the request's address, `requesterAddress(request)` (card 2171: the account's
+ * email as it is now for a request made signed in), and only by
+ * `POST /api/requests/[id]/link`, which has made sure the address given
+ * matches it and counted the mail.
+ *
+ * @param link The confirmation link for a request not yet confirmed
+ * (`requestConfirmUrl`), the thread's link otherwise (`requestReplyUrl`).
+ * @param unconfirmed Which of the two it is: the button says so.
+ */
+export function notifyRequesterNewLink(email: string, requestTitle: string, link: string, unconfirmed: boolean) {
+	if (!isSmtpConfigured() || !email) return;
+
+	const html = emailTemplate('A New Link to Your Request', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #6366f1;">
+			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(requestTitle)}</p>
+			<p style="margin: 0 0 16px; font-size: 13px; color: #475569;">
+				A new link to this request was asked for with your email address. Use the button below
+				from now on. If you did not ask for it, you can ignore this message: the link was sent to you alone.
+			</p>
+			<a href="${escapeHtml(link)}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">${unconfirmed ? 'Confirm my request' : 'View the conversation'}</a>
+		</div>
+	`);
+
+	sendEmail(email, `A new link to your request: ${requestTitle}`, html).catch((err) =>
+		log.error(`New-link mail to the requester of "${requestTitle}" failed`, err)
+	);
+}
+
 /** Notify admin/team when the requester replies. */
 export function notifyAdminMessage(targetType: string, targetId: number, requestTitle: string, requesterName: string, message: string, baseUrl: string | null) {
 	if (!isSmtpConfigured()) return;
@@ -615,7 +647,9 @@ interface RequesterProgressEvent {
  * Notify the original task requester about progress on their accepted request.
  *
  * Looks up the task_requests table for a request with resolvedCardId = cardId.
- * Sends a styled email with event-specific content.
+ * Sends a styled email with event-specific content, to `requesterAddress` as
+ * it is when the row is read, after the commit: for a request made signed in,
+ * the account's email as it is then (card 2171).
  * Automatically stops if the card already has completedAt set (unless this IS the completion event).
  * Skips if the actor is the requester themselves.
  *
@@ -646,7 +680,11 @@ async function sendRequesterProgress(event: RequesterProgressEvent): Promise<voi
 	.where(and(eq(taskRequests.resolvedCardId, cardId), eq(taskRequests.status, 'accepted')))
 	.get();
 
-	if (!request || !request.requesterEmail) return;
+	if (!request) return;
+	// The requester's address as it is now: the account's email for a request
+	// made signed in (card 2171). None, and nothing is sent.
+	const address = requesterAddress(request);
+	if (address === null) return;
 
 	// Skip self-notifications — don't email the requester about their own actions
 	if (actorUserId && request.requesterUserId && actorUserId === request.requesterUserId) return;
@@ -761,12 +799,12 @@ async function sendRequesterProgress(event: RequesterProgressEvent): Promise<voi
 				const filename = `dumpfire-task-report-${safeTitle}-${new Date().toISOString().split('T')[0]}.pdf`;
 
 				sendEmailWithAttachment(
-					request.requesterEmail,
+					address,
 					config.subject,
 					html,
 					{ filename, content: pdfBuffer, contentType: 'application/pdf' }
 				).catch(err =>
-					log.error(`Requester completion PDF email failed for ${request.requesterEmail}`, err)
+					log.error(`Requester completion PDF email failed for ${address}`, err)
 				);
 				return;
 			}
@@ -776,8 +814,8 @@ async function sendRequesterProgress(event: RequesterProgressEvent): Promise<voi
 		}
 	}
 
-	sendEmail(request.requesterEmail, config.subject, html).catch(err =>
-		log.error(`Requester progress notification (${action}) failed for ${request.requesterEmail}`, err)
+	sendEmail(address, config.subject, html).catch(err =>
+		log.error(`Requester progress notification (${action}) failed for ${address}`, err)
 	);
 }
 

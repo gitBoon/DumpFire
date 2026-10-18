@@ -53,7 +53,9 @@ export function stateOf(database: Database.Database): State {
  *
  * `applied` is the files the run applied. A table that lost rows is a problem
  * unless a one-off in `oneOffs` names it and its file is among them: then the
- * loss is what the file was written to do, and is a note.
+ * loss is what the file was written to do, and is a note. A one-off that keeps
+ * its rows (`keepsRows`) excuses no loss; a run that applied it to a table
+ * with rows notes what it changed.
  */
 export function compare(
 	before: State,
@@ -72,7 +74,7 @@ export function compare(
 		}
 		const expected = had + (table === '__drizzle_migrations' ? applied.length : 0);
 		if (has < expected) {
-			const declared = oneOffs.filter((oneOff) => oneOff.table === table);
+			const declared = oneOffs.filter((oneOff) => oneOff.table === table && !oneOff.keepsRows);
 			const ran = declared.find((oneOff) => applied.includes(oneOff.file));
 			if (ran) {
 				found.notes.push(
@@ -88,6 +90,14 @@ export function compare(
 			}
 		} else if (has > expected) {
 			found.notes.push(`${table} had ${had} row(s) and has ${has}: a migration put the others there`);
+		}
+	}
+	for (const oneOff of oneOffs) {
+		if (oneOff.keepsRows && applied.includes(oneOff.file) && (after.rows[oneOff.table] ?? 0) > 0) {
+			found.notes.push(
+				`${oneOff.table}: ${oneOff.change} in its ${after.rows[oneOff.table]} row(s) by ${oneOff.file}, ` +
+					'a one-off declared in tests/rehearsal/one-offs.ts'
+			);
 		}
 	}
 	for (const [name, was] of Object.entries(before.sequences)) {

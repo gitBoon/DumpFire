@@ -48,7 +48,11 @@ export const GET: RequestHandler = async ({ locals }) => {
 		if ('serviceAccountJson' in masked && masked.serviceAccountJson) {
 			try {
 				const parsed = JSON.parse(masked.serviceAccountJson as string);
-				masked.serviceAccountJson = JSON.stringify({ ...parsed, private_key: '••••••••' });
+				// Masked only where there is a key: one a restore left empty (card
+				// 2169) shows empty, as the other secret fields do (the review's O2).
+				masked.serviceAccountJson = parsed?.private_key
+					? JSON.stringify({ ...parsed, private_key: '••••••••' })
+					: masked.serviceAccountJson;
 			} catch {
 				masked.serviceAccountJson = '••••••••';
 			}

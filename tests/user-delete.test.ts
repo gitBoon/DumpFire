@@ -28,6 +28,7 @@ import {
 	milestones,
 	reportSchedules,
 	sessions,
+	taskRequests,
 	users,
 	userXp,
 	workDependencies,
@@ -231,6 +232,25 @@ function full(): Full {
 	assignCard(s.first, s.owner);
 	makeBoard({ owner: s.leaver, name: 'Made by the leaver' });
 
+	// Two requests the leaver made signed in, stored with the address the
+	// account had then, and one of the owner's. The leaver's email changed since.
+	const request = (user: SessionUser, title: string) =>
+		db
+			.insert(taskRequests)
+			.values({
+				targetType: 'user',
+				targetId: s.admin.id,
+				requesterUserId: user.id,
+				requesterName: user.username,
+				requesterEmail: user.email,
+				title
+			})
+			.run();
+	request(s.leaver, 'First of the leaver');
+	request(s.leaver, 'Second of the leaver');
+	request(s.owner, 'Of the owner');
+	db.update(users).set({ email: 'leaver.now@example.test' }).where(eq(users.id, s.leaver.id)).run();
+
 	return { ...s, ids, ownersKey, ownersSchedule };
 }
 
@@ -281,17 +301,32 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 					{ name: 'Made by the leaver', createdBy: null }
 				]);
 				expect(db.select().from(cards).all()).toHaveLength(2);
+
+				// Their requests carry the address the account had at the delete,
+				// and are mailed there as a request made without an account is
+				// (card 2171): the key forgets the account. Nobody else's is touched.
+				expect(
+					db
+						.select({ title: taskRequests.title, userId: taskRequests.requesterUserId, email: taskRequests.requesterEmail })
+						.from(taskRequests)
+						.all()
+				).toEqual([
+					{ title: 'First of the leaver', userId: null, email: 'leaver.now@example.test' },
+					{ title: 'Second of the leaver', userId: null, email: 'leaver.now@example.test' },
+					{ title: 'Of the owner', userId: s.owner.id, email: 'owner@example.test' }
+				]);
 			}
 		});
 
-		// The five, in the order of the list, and then the user. Nothing else is
-		// written: the rest is the keys' doing.
+		// The five, in the order of the list, the requests' address, and then
+		// the user. Nothing else is written: the rest is the keys' doing.
 		expect(run.writes).toEqual([
 			'UPDATE card_attachments SET uploaded_by = NULL WHERE uploaded_by = ?',
 			'UPDATE card_templates SET created_by = NULL WHERE created_by = ?',
 			'UPDATE milestones SET created_by = NULL WHERE created_by = ?',
 			'UPDATE work_dependencies SET created_by_user_id = NULL WHERE created_by_user_id = ?',
 			'UPDATE card_dependencies SET created_by_user_id = NULL WHERE created_by_user_id = ?',
+			'UPDATE task_requests SET requester_email = (SELECT email FROM users WHERE id = ?) WHERE requester_user_id = ?',
 			'DELETE FROM users WHERE id = ?'
 		]);
 		expect(run.effects).toEqual([]);
@@ -324,7 +359,7 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 
 		try {
 			// The last write of all: the user.
-			writes.failNth(6);
+			writes.failNth(7);
 			await expect(remove(s)).rejects.toThrow(/made to fail/);
 			expect(writes.fired).toBe(true);
 		} finally {

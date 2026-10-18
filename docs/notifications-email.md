@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.15
+version: 1.16
 status: As-Built
-date: 2026-10-15
+date: 2026-10-18
 tags:
   - notifications
   - email
@@ -112,6 +112,19 @@ SMTP settings are stored in the `settings` table and configured via the Admin pa
 | `smtp_from_address` | string | — | Sender email address |
 | `smtp_from_name` | string | DumpFire | Sender display name |
 
+**The password is in no backup** (card 2169). A backup's copy has no `smtp_pass` row; the
+other mail settings are in it. An Import Backup keeps this server's password when the
+backup is one this server made and nobody has changed since (its seal, made with a key this
+server keeps) and its `smtp_host` (trimmed, any case), `smtp_port`, `smtp_secure` and
+`smtp_user` are all this server's, and otherwise lists the mail password to enter again in
+**Admin → 📧 Email / SMTP**: with the port or "Use SSL/TLS" compared too, a backup cannot have this server's
+password sent over a connection whose certificate is not checked. Until it is entered, mail
+is tried with the user name and an empty password, which a mail server that asks for one
+refuses, the backup failure mail included; a requester who asks for a new link is told
+"New links cannot be sent just now. Please contact the team that sent you the link." rather
+than that one was sent, with the reason in a `[WARN] [REQUESTS]` line; and every start writes
+one `[WARN] [STARTUP]` line saying so. See [The Secrets a Backup Does Not Hold](authentication-security.md#the-secrets-a-backup-does-not-hold-card-2169).
+
 ### Connection Handling
 
 ```mermaid
@@ -143,6 +156,7 @@ Key transport settings:
 | User Mentioned | Mentioned user | `email_mentions` | `{author} mentioned you: {title}` |
 | Board Shared | Target user | `email_board_shared` | `Board shared: {boardName}` |
 | Request Confirmation | Requester (no account) | — | `Confirm your request: {title}` |
+| A New Link (card 2158) | Requester, at the request's address (for a request made signed in, the account's email as it is now: card 2171), when they ask for it from a link that no longer works: at most three an hour to one address, and for a request not yet confirmed within the form's three confirmation mails an hour to it; at most 30 an hour in all; worked out and sent after the answer. See [The Public Request Form](authentication-security.md#the-public-request-form) | — | `A new link to your request: {title}` |
 | Task Request | Target user/team | `email_requests` | `New request: {title}` |
 | Request Accepted | Requester | — | `Request accepted: {title}` |
 | Request Rejected | Requester | — | `Request declined: {title}` |
@@ -322,6 +336,29 @@ sequenceDiagram
         A->>S: Move to Complete
         S->>R: Completion email + PDF report
     end
+```
+
+**Which address a requester is mailed at** (card 2171). Every mail to a requester, these
+and "Request accepted", "Request declined", the team's reply and a new link, goes to
+`requesterAddress()` in `src/lib/server/request-access.ts`, asked when the mail is sent: for
+a request made while signed in (`requester_user_id` set), the account's `users.email` as it
+is then; for one made without an account, the address given on the form
+(`requester_email`); and to nobody, with nothing sent, when the account named is not there
+or there is no address at all. The address stored when a request is made is still written,
+but a requester who changes their account's email is mailed at the new one from then on.
+"When it is sent" is when the action is taken, inside its transaction, for a reply, an
+acceptance or a decline, and after the commit, when the row is read, for the progress and
+completion mails. When an account is deleted, its email is written onto each of its
+requests first, so they go on being mailed at its last address. The inbox shows the same
+address.
+
+```mermaid
+flowchart TD
+    Mail["A mail to a requester"] --> Who{"requester_user_id set?"}
+    Who -->|"yes"| Account{"Is the account there?"}
+    Account -->|"yes"| Now["users.email as it is now"]
+    Account -->|"no"| None["No address: nothing sent"]
+    Who -->|"no"| Stored["requester_email: the address given,<br/>or the one deleteUser wrote"]
 ```
 
 On card completion, a **PDF task report** is automatically generated and attached to the completion email. A request accepted straight into a Complete or Done column makes a card that is completed as it is created (see [Data Model](data-model.md#one-completion-however-a-card-arrives)), so the requester is sent "Request accepted" and then the completion email with its report (card 2134). A subtask ticked through the API mails the requester as one ticked on the page does (card 2108). No progress email goes to a requester who made the change themselves, and none but the completion email once the card is complete.
@@ -658,6 +695,19 @@ Board-level webhooks fire HTTP POST requests to configured URLs when events occu
 | `secret` | string | Shared secret for signature verification |
 | `events` | JSON array | Event types to subscribe to |
 | `active` | boolean | Enable/disable toggle |
+
+**A webhook's secret is in no backup** (card 2169). In a backup's copy every webhook that had
+a secret has `secret` empty and `active` off, and is listed in the `webhook_secrets_left_out`
+setting with whether it was on: switched off so that a backup put in place as the database
+by hand sends nothing unsigned. Its address and events are kept. An Import Backup on the
+server the backup came from, of the file as that server made it, puts each secret back from
+the webhook here with the same id, board and address, and switches the webhook on or off as
+it was. A backup changed since, or made by another server, has none put back: its seal does
+not verify. Anywhere else such a webhook
+stays off with no secret, the import's result lists it with its board, and every start says
+so, until the board's owner or an administrator sets its secret and switches it on with
+`PUT /api/v1/webhooks/{id}` and `{ "secret": "…", "active": true }`, or deletes it. A webhook
+made without a secret is in a backup as it is.
 
 ### Who Can See the Secret
 

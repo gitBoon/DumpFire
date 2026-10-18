@@ -1,0 +1,32 @@
+-- Every task request given a new link, once (card 2158, 2026-10-18).
+--
+-- A one-off change to data, the file's only statement. A request's
+-- access_token is the whole of the key to its thread, carried in every link
+-- mailed to its requester: whoever holds it reads every message, the ones
+-- written since included, replies as the requester and confirms a request
+-- not yet confirmed. It never expires. Every backup made before card 2158
+-- holds every request's token, open or settled, and those copies (at a
+-- backup destination, or an export on somebody's disk) cannot be called back.
+-- Replacing every token once makes the tokens in them worthless. Backups made
+-- from this build on hold no token, and every restore gives every request a
+-- new one (restoreFromBackup), so nothing has to repeat this. The key the
+-- request form signs with is not replaced: it lets nobody do more than
+-- opening the form does.
+--
+-- What people see: every request link mailed before the deploy (confirm,
+-- reply, progress) stops working. Its page says "This link no longer works"
+-- and asks for the email address the request was made with; given the right
+-- one, the current link is mailed to that address (POST
+-- /api/requests/[id]/link). Requests, their messages and everything else are
+-- untouched, and the team sees no change.
+--
+-- Harmless where it finds nothing: a new database has no requests. It is
+-- declared to the rehearsal in tests/rehearsal/one-offs.ts as a one-off that
+-- keeps every row, so the rehearsal still expects `task_requests` to keep all
+-- of its rows, and notes the change.
+--
+-- Runs once. The runner records this file by name and never runs it again,
+-- and nothing repeats it at start-up. The new token has the form the
+-- backfill gives one (runBackfills): 32 random bytes as 64 hex characters.
+
+UPDATE `task_requests` SET `access_token` = lower(hex(randomblob(32)));

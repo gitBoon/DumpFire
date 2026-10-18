@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
 	import { parseStamp } from '$lib/timestamps';
+	import NewRequestLink from '$lib/components/NewRequestLink.svelte';
 
 	type Message = {
 		id: number;
@@ -30,9 +31,13 @@
 	 */
 	let token = $derived($page.url.searchParams.get('token') || '');
 
-	const LINK_NOT_VALID = 'This link is no longer valid. Use the link in the most recent email about your request.';
-
 	let request = $state<RequestInfo | null>(null);
+	/**
+	 * The link does not open the thread: wrong, replaced (card 2158), or for a
+	 * request that is not there, which the server answers alike (card 2132).
+	 * The page then offers to mail the current link instead.
+	 */
+	let linkGone = $state(false);
 	let messages = $state<Message[]>([]);
 	let newMessage = $state('');
 	let loading = $state(true);
@@ -41,20 +46,33 @@
 	let threadEl: HTMLDivElement | undefined = $state();
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-	onMount(async () => {
-		await loadData();
-		// Poll for new messages every 5 seconds
-		pollInterval = setInterval(pollMessages, 5000);
-	});
+	onMount(loadData);
 
-	onDestroy(() => {
+	onDestroy(stopPolling);
+
+	function stopPolling() {
 		if (pollInterval) clearInterval(pollInterval);
-	});
+		pollInterval = null;
+	}
+
+	/**
+	 * The link has stopped opening the thread: the poll stops, and the page
+	 * shows the form that asks for the current link. A poll that went on would
+	 * be refused every five seconds for as long as the tab is open, each a
+	 * WARN line in the server's log.
+	 */
+	function showLinkGone() {
+		stopPolling();
+		request = null;
+		linkGone = true;
+	}
 
 	async function pollMessages() {
 		try {
 			const msgRes = await fetch(`/api/requests/${requestId}/messages?token=${encodeURIComponent(token)}`);
-			if (msgRes.ok) {
+			if (msgRes.status === 403 || msgRes.status === 404) {
+				showLinkGone();
+			} else if (msgRes.ok) {
 				const fresh: Message[] = await msgRes.json();
 				if (fresh.length !== messages.length) {
 					messages = fresh;
@@ -75,14 +93,15 @@
 		try {
 			// Load request info (public endpoint — opened by the token in the link)
 			const reqRes = await fetch(`/api/requests/${requestId}?token=${encodeURIComponent(token)}`);
-			if (reqRes.ok) {
-				request = await reqRes.json();
-			} else {
+			if (!reqRes.ok) {
 				// Any failure reads as a link that does not work. A link that is
 				// wrong and a request that is not there are both answered 404
 				// (card 2132); a wrong link was 403, and only that was read so.
-				errorMsg = LINK_NOT_VALID;
+				showLinkGone();
+				loading = false;
+				return;
 			}
+			request = await reqRes.json();
 
 			// Load messages
 			const msgRes = await fetch(`/api/requests/${requestId}/messages?token=${encodeURIComponent(token)}`);
@@ -90,6 +109,9 @@
 				messages = await msgRes.json();
 				scrollToBottom();
 			}
+			// Polled for new messages every 5 seconds, once a thread has loaded,
+			// and never for a link that opens none (card 2158).
+			if (!pollInterval) pollInterval = setInterval(pollMessages, 5000);
 		} catch (e) {
 			errorMsg = 'Failed to load conversation';
 		}
@@ -116,7 +138,7 @@
 			newMessage = '';
 			await loadData();
 		} else if (res.status === 404) {
-			errorMsg = LINK_NOT_VALID;
+			showLinkGone();
 		} else {
 			const data = await res.json().catch(() => ({}));
 			errorMsg = data.message || 'Failed to send message';
@@ -153,6 +175,10 @@
 
 		{#if loading}
 			<div class="loading-state">Loading...</div>
+		{:else if linkGone}
+			<div class="link-gone">
+				<NewRequestLink {requestId} />
+			</div>
 		{:else if !request}
 			<div class="error-state">
 				<span>❌</span>
@@ -344,6 +370,7 @@
 		border-radius: var(--radius-md); padding: 8px 12px;
 		color: var(--accent-rose); font-size: 0.8rem; margin-bottom: var(--space-sm);
 	}
+	.link-gone { padding: var(--space-lg) 0; }
 	.loading-state, .error-state { text-align: center; padding: var(--space-xl); color: var(--text-secondary); }
 	.error-state span { font-size: 2rem; display: block; margin-bottom: var(--space-sm); }
 </style>

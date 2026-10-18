@@ -19,6 +19,8 @@ import { join } from 'node:path';
 import { createLogger } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { KNOWN_BROWSER_SECRET_KEY } from './known-browsers';
+import { REQUEST_FORM_SECRET_KEY } from './request-tokens';
+import { backupSealKey, clearSecrets, credentialsMissing, sealCopy } from './backup-secrets';
 
 const log = createLogger('BACKUP');
 
@@ -100,7 +102,7 @@ export function saveBackupConfig(config: BackupConfig): void {
 
 /**
  * Write to `to` the database file at `from` with everything taken out of it
- * that signs somebody in by being held: every session, and every invite that
+ * that signs somebody in by being held, and every secret: every session, and every invite that
  * has not been used, wherever it is written; and the key remembered browsers
  * are signed with (known-browsers.ts), which a restore is meant to lose.
  *
@@ -109,6 +111,18 @@ export function saveBackupConfig(config: BackupConfig): void {
  * in whoever read it, as anybody who was signed in when it was made, for as
  * long as that session went on being used. Password hashes stay: a backup that
  * cannot restore its users is not a backup.
+ *
+ * Nor does it hold a task request's link (card 2158). A request's
+ * `access_token` is the whole of the key to its thread: whoever has it reads
+ * every message, the ones written after the copy was made included, replies
+ * as the requester and confirms a request not yet confirmed, and it never
+ * expires. So every token is NULL in the copy; the request rows themselves
+ * stay. A restore gives every request a new token whatever the backup holds
+ * (`restoreFromBackup`), and a backup with no tokens restored by an older
+ * build has them filled in by its backfill. The key the public request form
+ * signs its tokens with (`request_form_secret`, request-tokens.ts) is left out
+ * too: it lets nobody do more than opening the form does, but it is a secret,
+ * and a restore makes a new one at first use.
  *
  * An invite's token is also the last part of its address, and the system log
  * wrote that address down for every request to it until the gate masked it
@@ -130,12 +144,31 @@ export function saveBackupConfig(config: BackupConfig): void {
  * a Backup Holds"). For the same reason `from` keeps no journal at all while
  * its rows are deleted: nothing of it is kept, so nothing of it needs undoing.
  *
- * `from` is a copy. This is never given the running database.
+ * Nor does it hold a secret (card 2169): not the mail password, not a backup
+ * destination's credentials, not a webhook's signing secret (`clearSecrets`,
+ * in backup-secrets.ts). Whoever read one copy could send mail as the server,
+ * read, replace or delete the copies at every destination, and sign forged
+ * deliveries to every webhook's receiver. A webhook that had a secret is
+ * switched off in the copy and listed in `webhook_secrets_left_out`: the file
+ * can become a database without a restore, by hand or in an older image, and
+ * left on with no secret it would send every event unsigned. A restore keeps
+ * this server's own secrets where they are for the same account, and says
+ * what is to be entered again.
+ *
+ * And it is sealed (the review's S1): once cleared, an HMAC-SHA256 over every
+ * row of the copy, with this server's key (`backupSealKey`, made the first
+ * time and held by no backup), is written into it as the `backup_seal`
+ * setting (`sealCopy`). A restore fills this server's secrets only into a
+ * backup whose seal it can make again with its own key: one this server made,
+ * changed by nobody since. `key` is this server's unless a test gives another.
+ *
+ * `from` is a copy. This is never given the running database, and
+ * `clearSecrets` refuses it if it is.
  *
  * A table that is not there is skipped. Anything else that goes wrong is
  * thrown: a copy that could not be cleared is not one to hand on.
  */
-export function withoutSignIns(from: string, to: string): void {
+export function withoutSecrets(from: string, to: string, key: Buffer = backupSealKey()): void {
 	const copy = new Database(from);
 	try {
 		// better-sqlite3 opens every connection in SQLite's defensive mode,
@@ -157,6 +190,17 @@ export function withoutSignIns(from: string, to: string): void {
 		// it could make a cookie that skips sign-in's throttling for any account
 		// whose hash they also hold, and a backup holds every hash.
 		if (has('settings')) copy.prepare('DELETE FROM settings WHERE key = ?').run(KNOWN_BROWSER_SECRET_KEY);
+		// Every request's link, and the key the request form signs with (card
+		// 2158): see above. The unique index on the token takes any number of NULLs.
+		if (has('task_requests')) copy.prepare('UPDATE task_requests SET access_token = NULL').run();
+		if (has('settings')) copy.prepare('DELETE FROM settings WHERE key = ?').run(REQUEST_FORM_SECRET_KEY);
+		// The mail password, the destinations' credentials and the webhooks'
+		// secrets (card 2169): see above.
+		clearSecrets(copy);
+		// Sealed last, over the copy as it is written out: `VACUUM INTO` moves
+		// rows to other pages and changes none of them, and the seal is taken
+		// over the rows (see above).
+		sealCopy(copy, key);
 
 		copy.exec(`VACUUM INTO '${to.replace(/'/g, "''")}'`);
 	} finally {
@@ -165,14 +209,17 @@ export function withoutSignIns(from: string, to: string): void {
 }
 
 /**
- * Generate a consistent SQLite backup file, with no session and no unused
- * invite in it.
+ * Generate a consistent SQLite backup file, with no session, no unused
+ * invite, no request link and no secret in it.
  *
  * Uses VACUUM INTO to create a complete, self-contained .db copy that includes
  * all WAL data — readFileSync alone would miss unflushed WAL entries. The copy
- * is then cleared of what signs somebody in and written out again
- * (`withoutSignIns`), and that second file is read. The running database is
- * not touched by any of it: its sessions are as they were.
+ * is then cleared of what signs somebody in and of every secret, and written
+ * out again (`withoutSecrets`), sealed, and that second file is read. The
+ * running database is not touched by any of it: its sessions, its mail
+ * password, its destinations' credentials and its webhooks are as they were.
+ * The one thing written to it is the key backups are sealed with, by the
+ * first backup the server makes, and never again.
  *
  * The export the superadmin downloads and the copy a schedule uploads are
  * both made here, so that neither can hold what the other does not.
@@ -185,7 +232,9 @@ export function withoutSignIns(from: string, to: string): void {
  * on a development machine: 0.7 to 1.5 s for the first copy and 0.5 to 1.3 s
  * for the second, so about 1.2 to 2.8 s for the two added together, and the
  * rest on top, unmeasured (docs/deployment.md, "How long the server stops
- * answering"). Expect more on a larger database.
+ * answering"). Expect more on a larger database. The seal (card 2169's S1)
+ * reads every row of the copy once more: 0.2 s for a made-up 59 MB copy of
+ * 115,000 rows, 0.56 s for 177 MB and 345,000, on the same kind of machine.
  *
  * The two files are written beside the database, which is where there is room
  * for them. A database in memory has nothing beside it, so they go to a
@@ -213,7 +262,7 @@ export function generateBackupData(): Buffer<ArrayBuffer> {
 		// VACUUM INTO creates a fresh, complete copy including all WAL data
 		sqlite.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
 
-		withoutSignIns(backupPath, clearedPath);
+		withoutSecrets(backupPath, clearedPath);
 
 		return readFileSync(clearedPath);
 	} finally {
@@ -327,18 +376,81 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 		return [{ destination: targetDestinationName || 'none', status: 'failed', message: 'Destination not found', durationMs: 0 }];
 	}
 
-	// Generate backup data (SQLite snapshot)
-	const buffer = generateBackupData();
 	const filename = `dumpfire-backup-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.db`;
 
-	const results: Array<{
-		destination: string;
-		status: 'success' | 'failed';
-		message: string;
-		durationMs: number;
-	}> = [];
+	type Result = { destination: string; status: 'success' | 'failed'; message: string; durationMs: number };
+	/** Each destination's result, given in the order the destinations are. */
+	const outcome = new Map<DestinationConfig, Result>();
 
+	/**
+	 * A destination that failed: its `backup_log` row, its result, the ERROR
+	 * line, and the failure mail if one is configured. The error is whatever
+	 * the destination's server answered, so it and the destination's name and
+	 * type are escaped where they are put in the mail (card 2149).
+	 */
+	const failed = async (destConfig: DestinationConfig, errMsg: string, durationMs: number, sizeBytes: number) => {
+		logBackup({
+			destinationType: destConfig.type,
+			destinationName: destConfig.name,
+			filename,
+			sizeBytes,
+			status: 'failed',
+			error: errMsg,
+			durationMs
+		});
+
+		outcome.set(destConfig, {
+			destination: destConfig.name,
+			status: 'failed',
+			message: errMsg,
+			durationMs
+		});
+
+		log.error(`Backup failed: ${destConfig.name} → ${errMsg}`);
+
+		if (config.notifyOnFailure && config.notifyEmail && isSmtpConfigured()) {
+			try {
+				await sendEmail(
+					config.notifyEmail,
+					'⚠️ DumpFire Backup Failed',
+					`<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+						<h2 style="color: #f43f5e;">Scheduled Backup Failed</h2>
+						<p style="color: #64748b; line-height: 1.6;">
+							A scheduled backup to <strong>${escapeHtml(String(destConfig.name))}</strong> (${escapeHtml(String(destConfig.type))}) failed.
+						</p>
+						<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 16px 0;">
+							<strong style="color: #991b1b;">Error:</strong>
+							<p style="color: #991b1b; margin: 4px 0 0;">${escapeHtml(String(errMsg))}</p>
+						</div>
+						<p style="color: #94a3b8; font-size: 12px;">Check your Admin Panel → Scheduled Backups for details.</p>
+					</div>`
+				);
+			} catch {
+				log.error('Failed to send backup failure notification email');
+			}
+		}
+	};
+
+	// A destination whose credentials are not entered is not tried (card 2169,
+	// decision 8): a backup does not hold them, so after a restore onto
+	// another server they are entered again, and until then Backup History
+	// says so where it would have shown a library's error. Asked before the
+	// copy is made, which stops the server answering for seconds: a run with
+	// no destination that can take it makes none (the plan's N2).
+	const ready: DestinationConfig[] = [];
 	for (const destConfig of destinations) {
+		const missing = credentialsMissing(destConfig);
+		if (missing === null) ready.push(destConfig);
+		else await failed(destConfig, missing, 0, 0);
+	}
+
+	const inOrder = () => destinations.flatMap((destConfig) => outcome.get(destConfig) ?? []);
+	if (ready.length === 0) return inOrder();
+
+	// Generate backup data (SQLite snapshot)
+	const buffer = generateBackupData();
+
+	for (const destConfig of ready) {
 		const start = Date.now();
 		try {
 			const dest = createDestination(destConfig);
@@ -357,7 +469,7 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 			// Run retention cleanup
 			await cleanupRetention(destConfig, config.retention);
 
-			results.push({
+			outcome.set(destConfig, {
 				destination: destConfig.name,
 				status: 'success',
 				message: `Uploaded ${filename} (${(buffer.length / 1024).toFixed(1)} KB)`,
@@ -366,56 +478,11 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 
 			log.warn(`Backup succeeded: ${destConfig.name} → ${filename} (${durationMs}ms, ${(buffer.length / 1024).toFixed(1)} KB)`);
 		} catch (err: any) {
-			const durationMs = Date.now() - start;
-			const errMsg = err.message || 'Unknown error';
-
-			logBackup({
-				destinationType: destConfig.type,
-				destinationName: destConfig.name,
-				filename,
-				sizeBytes: buffer.length,
-				status: 'failed',
-				error: errMsg,
-				durationMs
-			});
-
-			results.push({
-				destination: destConfig.name,
-				status: 'failed',
-				message: errMsg,
-				durationMs
-			});
-
-			log.error(`Backup failed: ${destConfig.name} → ${errMsg}`);
-
-			// Send failure notification if configured. The error is whatever the
-			// destination's server answered, so it and the destination's name
-			// and type are escaped where they are put (card 2149).
-			if (config.notifyOnFailure && config.notifyEmail && isSmtpConfigured()) {
-				try {
-					await sendEmail(
-						config.notifyEmail,
-						'⚠️ DumpFire Backup Failed',
-						`<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
-							<h2 style="color: #f43f5e;">Scheduled Backup Failed</h2>
-							<p style="color: #64748b; line-height: 1.6;">
-								A scheduled backup to <strong>${escapeHtml(String(destConfig.name))}</strong> (${escapeHtml(String(destConfig.type))}) failed.
-							</p>
-							<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 16px 0;">
-								<strong style="color: #991b1b;">Error:</strong>
-								<p style="color: #991b1b; margin: 4px 0 0;">${escapeHtml(String(errMsg))}</p>
-							</div>
-							<p style="color: #94a3b8; font-size: 12px;">Check your Admin Panel → Scheduled Backups for details.</p>
-						</div>`
-					);
-				} catch {
-					log.error('Failed to send backup failure notification email');
-				}
-			}
+			await failed(destConfig, err.message || 'Unknown error', Date.now() - start, buffer.length);
 		}
 	}
 
-	return results;
+	return inOrder();
 }
 
 // ─── Scheduler ───────────────────────────────────────────────────────────────

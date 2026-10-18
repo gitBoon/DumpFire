@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.34
+version: 1.35
 status: As-Built
 date: 2026-10-18
 tags:
@@ -180,6 +180,7 @@ After the delete:
 - **Templates they created, and milestones of theirs that belong to no board, can be managed by administrators only.** A milestone that belongs to a board is still managed by whoever can edit that board.
 - **A board they created stays, and its other members and teams keep their access.** The user was its owner: a board's creator is its owner. Unless another member is stored as an owner of the board, the board then has no owner, and only an administrator can change who it is shared with, delete it, or put it under a card. No screen can make someone an owner now (the sharing dialog offers Owner only on a row already stored as one); a member shared as Owner before 14 October 2026 keeps it.
 - **Requests addressed to them stay in the system**, and only an administrator can then accept, reject or reply to them.
+- **Requests they made stay, and their mail goes to the address the account had when it was deleted** (card 2171). While the account was there, a request made signed in was mailed at the account's email as it was at the time of each mail. The delete writes the account's email onto each of its requests first, in the same all-or-nothing step, so the team's replies and the progress mails go on reaching the person at their last address, as for a request made without an account. Requests of an account deleted before this change keep the address stored when they were made.
 - **Activity entries they made keep their name**, without a link to an account.
 
 The delete is all or nothing. If it fails, the user and everything of theirs is as it was, and the page says the delete failed.
@@ -228,7 +229,7 @@ Every link in a mail begins with the **App URL**, which is set under **Applicati
 
 ### Setup Steps
 
-1. Go to **Admin → Email / SMTP**, as the superadmin
+1. Go to **Admin → 📧 Email / SMTP**, as the superadmin
 2. Fill in your SMTP details:
 
 | Field | Example | Notes |
@@ -240,7 +241,7 @@ Every link in a mail begins with the **App URL**, which is set under **Applicati
 | **From Address** | `noreply@company.com` | Sender email: an address, with no space and none of `, ; < > " ( )` |
 | **From Name** | `DumpFire` | Display name in inbox |
 
-3. Click **Send Test Email** to verify
+3. Click **🧪 Send Test** to verify
 4. Save the configuration
 
 A save that holds a field the server cannot use is refused with the field named, under the buttons, and nothing is saved: `port must be from 1 to 65535`, `fromAddress must be an email address`. The Host and the Username are at most 2,048 characters and the From Name at most 200. A Port left empty is refused, `port must be a whole number`, as is a save of none of the fields (`No valid fields to update`). Only these fields, the security choice and the App URL are kept. The App URL is an `http://` or `https://` address, or empty for none; one written without its scheme, `kanban.example.com`, is saved with `http://` in front, as it was always read, and one that is still no address after that is refused. A value saved before these rules, sent back unchanged, is kept (card 2117).
@@ -266,19 +267,28 @@ Everything in this section is the superadmin's: the export, the import, the sche
 
 ### What a Backup Holds
 
-A backup is the whole database, as one `.db` file, with two things taken out:
+A backup is the whole database, as one `.db` file, with these things taken out:
 
 | In a backup | Not in a backup |
 |-------------|-----------------|
 | Every board, card, comment, user, team and setting | **Sessions.** Nobody is signed in by a backup, whoever reads it |
 | Every user's password hash, so that a restore can sign them in again | **Invites that have not been used.** An invite's link sets a password |
-| The mail password and the backup destinations' own credentials | Attachment files: see [Attachments](#attachments) |
-| Invites that have been used, API keys (as hashes), the system log, with every invite's token in it masked | |
-| Every public request's link, and the key the public request form signs with | **The key remembered browsers are signed with** (card 2194). A restore forgets every remembered browser |
+| The mail server, port and user name, and each backup destination's name, type, host, bucket, folder, user names and ids | Attachment files: see [Attachments](#attachments) |
+| Invites that have been used, API keys (as hashes), the system log, with every invite's token in it masked | **The key remembered browsers are signed with** (card 2194). A restore forgets every remembered browser |
+| Every task request and its messages | **Every request's link** (card 2158). A link opens its request's thread, replies as the requester and confirms the request, and never expires: every request is in the backup with no link, and a restore gives each a new one |
+| Every webhook, with its address | **The key the public request form signs with** (card 2158). A restore makes a new one |
+| | **The mail password** (card 2169) |
+| | **Each backup destination's credentials** (card 2169): an SFTP password or private key, an S3 secret access key, a Google Drive client secret and refresh token or a service account's private key, a OneDrive client secret |
+| | **Each webhook's signing secret** (card 2169). A webhook that had one is switched off in the backup, so that a file put in place by hand sends nothing unsigned |
+| **Its seal** (card 2169): a check of every row in it, made with a key this server keeps, so that only this server fills its secrets back in, and only into the file it made, unchanged | **The key backups are sealed with** (card 2169). It stays on the server, and a restore keeps the server's own |
 
-So a backup is still a file to keep where few can read it, and it no longer signs in whoever does: that is true of accounts. A request's link in it still opens that request's thread, and the form's key is still the one the server signs with. That is true of the file **Export Backup** downloads and of every copy a schedule or **Run Now** uploads: both are made the same way. Taking a backup signs nobody out. The sessions are removed from the copy, never from the running database.
+So a backup is still a file to keep where few can read it, and it no longer opens anything for whoever does: no account, no request's thread, no mailbox, no backup store, no webhook receiver. That is true of the file **Export Backup** downloads and of every copy a schedule or **Run Now** uploads: both are made the same way. Taking a backup signs nobody out and changes no link. The sessions, links and secrets are removed from the copy, never from the running database: mail, backups and webhooks go on working.
 
-A backup made before this version does hold the sessions of whoever was signed in when it was made. Restoring one does not bring them back, but the file itself is as it was: delete the old copies that are not needed.
+**What it still holds that is worth guarding.** Every user's password hash and email, API keys as hashes, the mail server and its user name, each destination's other fields, the system log (masked), and every webhook's address. A webhook's address can itself be a key: a Slack or Teams incoming webhook's address is all anyone needs to post to that channel. If a copy may have been read by somebody who should not have, make a new incoming-webhook address at its service and put it on the webhook.
+
+**A backup alone no longer rebuilds a lost server** (card 2169). Restored on the server it came from, with Import Backup, nothing has to be entered again: the restore keeps this server's mail password, credentials and webhook secrets wherever they are for the same account, as long as the file is the one this server made, unchanged since (its seal: see [Restoring from Backup](#restoring-from-backup)). Restored anywhere else, changed in anything a restore brings in, or put in place by hand, they are entered again. So keep the mail password and each destination's credentials outside DumpFire, in a password manager, and know who holds each webhook's secret at its receiver. An S3 secret key cannot be read again from AWS (a new one is made), a Google Drive OAuth destination needs its client secret from the Google Cloud console and a new Connect, and a webhook's secret is known only at its receiver.
+
+A backup made before this version does hold the sessions of whoever was signed in when it was made, and one made before card 2158 holds every request's link as it was mailed. Restoring one brings back neither, and the update that brings migration 0055 replaces every request's link once, so the links in those copies open nothing: see [Every Request Link Replaced Once](authentication-security.md#every-request-link-replaced-once-by-migration-0055). One made before card 2169 holds the mail password, every destination's credentials and every webhook's secret, and nothing can take them out of a copy already made: they go as retention removes the old copies. Such a copy carries no seal either, so Import Backup of it keeps nothing from this server, which changes nothing: it holds its own secrets. If one of them may have been read by somebody who should not have, change the mail password and each destination's credentials at their services and enter them again, and set new webhook secrets with their receivers. The files themselves are as they were: delete the old copies that are not needed.
 
 ### Configuring Backups
 
@@ -295,7 +305,7 @@ Each setting is checked when it is saved, and one the server cannot use is refus
 
 ### Manual Backup
 
-Click **Run Backup Now** in the admin panel to trigger an immediate backup to all configured destinations.
+Click **▶ Run Now** under **☁️ Scheduled Backups** in the admin panel to trigger an immediate backup to all configured destinations.
 
 ### Backup History
 
@@ -304,6 +314,8 @@ The last 10 backup attempts are shown with:
 - File size
 - Duration
 - Status (success or failed with error message)
+
+A destination whose credentials are not entered is not tried, and its row says "This destination's credentials are not entered: a backup does not hold them, so they are entered again after a restore. Enter them in Admin, Scheduled Backups." (for a Google Drive destination connected with OAuth: "… enter its client secret and connect it again."), with the failure mail any failure sends (card 2169). It is what a destination shows after a backup is restored onto another server, until its credentials are typed in again with **Edit**. An SFTP destination with neither a password nor a key is tried as before, since some servers accept it. After a restore onto another server, then, such a destination is tried against the real host at every scheduled run, and its failed logins may lock the account out there: enter its credentials, or remove it.
 
 ### Restoring from Backup
 
@@ -314,7 +326,7 @@ flowchart TD
     Download["Download the backup .db file"] --> How{"Is the server running\nand can you sign in?"}
     How -->|"Yes"| Import["Admin panel:\nImport Backup"]
     Import --> Choice{"As it is, or\na working copy?"}
-    Choice -->|"As it is"| Rows["Rows replaced.\nStructure and migration record kept"]
+    Choice -->|"As it is"| Rows["Rows replaced.\nStructure and migration record kept.\nThis server's secrets kept for the same accounts,\nif the backup is this server's own, unchanged"]
     Choice -->|"Working copy"| Quiet["Rows replaced, then report schedules and webhooks\nswitched off, backup destinations and mail removed"]
     Quiet --> Verify
     How -->|"No"| Stop["Stop container"]
@@ -322,13 +334,21 @@ flowchart TD
     Replace --> Start["Start container:\nmigrations run"]
     Rows --> Verify["Verify data"]
     Start --> Verify
+    Verify --> Enter["Enter any secret the result\nor the start-up line lists"]
 ```
 
 **In the application** (Admin → Backup & Restore → **Import Backup**, as the superadmin). No restart is needed.
 
-Four things are true of every import, whichever way it is restored:
+On a server that still runs, restore this way, not by hand: it keeps this server's secrets, which a file put in place by hand cannot. Six things are true of every import, whichever way it is restored:
 
 - **It signs everybody out, you included.** No session is restored, whatever the backup holds, and the ones there were are cleared with everything else. When the result is dismissed the page reloads at the login page: sign in with an account the backup has, and its password as it was when the backup was made. The result names the backup's superadmin, which is the account that can export, import or reset again. Invites that had not been used stop working, and are sent again from User Management. Every browser remembered for sign-in is forgotten too, since no backup holds the key they are signed with: each is remembered again at its next sign-in.
+- **Every request link mailed before it stops working** (card 2158). Every task request is given a new link, whatever the backup holds, and the result says so: "N request link(s) replaced: a link mailed before this restore no longer works, and its requester can have a new one sent from the page it opens." A requester who opens an old link is asked for the address they made the request with, and the current link is mailed to that address, if mail is set up here with its password. Until it is, the requester is told "New links cannot be sent just now. Please contact the team that sent you the link.", and the reason is a `[WARN] [REQUESTS]` line on the Live Console. The result shows the line about the links on the page too, below the files put back. The key the public request form signs with is not brought in either: a form open during the import fails once, and works when it is reloaded.
+- **This server's secrets are kept where they are for the same account, from a backup this server made and nobody has changed** (card 2169). A backup holds no mail password, destination credential or webhook secret, so the restore fills each gap from this server, in the same transaction, but only when the backup's seal checks out: every backup carries a check of every row in it, made with a key this server keeps and no backup holds, and the restore makes it again with its own key. A backup made by another server, or changed since it was made in anything a restore brings in (one user added, one card edited, an index added, ANALYZE run on it), has nothing filled and every gap listed. The check leaves out only what a restore never brings in: SQLite's hidden row numbers in a table that does not show them as a column (their order is checked), its AUTOINCREMENT counters, the file's header and its free space; so a change there changes nothing restored. The check covers the file's whole structure, SQLite's own objects and statistics included, and the restore copies each table's rows as stored, the same rows the check was made over. A file that fails SQLite's own integrity check, or holds an object named as SQLite's own that no backup of this server's holds, is treated as changed before the seal is even asked: the restore goes ahead, nothing is filled, and the system log has one `WARN` line naming the check it failed. When the seal checks out, the restore fills:
+  - the mail password, when the backup's mail host, port, "Use SSL/TLS" and user name are all this server's;
+  - a destination's credentials, from the one destination here of the same type that is the same in every other field, its name, host, bucket, folder or path included. None that matches, or more than one, and nothing is filled: a backup is not trusted to say where this server's credentials are used;
+  - a webhook's secret, from the webhook here with the same id, board and address, and the webhook is switched on or off as it was when the backup was made.
+
+  A value the backup has is never replaced, so a backup made before this change restores as it always did. Restored on the server it came from, nothing is to enter, unless a destination's name, folder, bucket or path, or the mail port or "Use SSL/TLS", has been changed since the backup. The result adds up to two lines, only when there is something to say: "Kept from this server, because a backup does not hold them: …" and "To enter again, because a backup does not hold them: …", which names the mail password (Admin, 📧 Email / SMTP), each destination with what it needs (Admin, Scheduled Backups) and each webhook with its board. For a backup whose seal did not check out, or whose file failed a check, the second line ends "None was kept from this server, because this backup was not made by this server, or was changed since."; for one with no seal this server can check (made before seals, or restored on a server that has never made a backup), it ends "None was kept from this server, because this backup carries no seal this server can check." A webhook named there stays switched off until the board's owner or an administrator sets its secret and switches it on with `PUT /api/v1/webhooks/{id}` and `{ "secret": "…", "active": true }`. The second line is also written to the system log at `WARN`, and from then on every start of the server writes one `[WARN] [STARTUP]` line while anything on it is still to enter.
 - **A backup with users and no superadmin among them is refused**, before anything is changed: "This backup has user accounts and none of them is the superadmin." Restoring it would leave nobody able to export, import, reset or change the mail settings. A backup with no users at all is accepted: DumpFire then asks to be set up, and whoever does it is the superadmin. A backup that has a superadmin whose row cannot be copied is refused the same way, after the copy and before it is committed: the restore is rolled back and nothing is changed.
 - **A backup that is too large says so.** See [When an Import Is Not Accepted](#when-an-import-is-not-accepted).
 - **It takes a `.db` backup only.** The file picker offers `.db`, `.sqlite` and `.sqlite3` files, and the page refuses any other file itself, sending nothing. The JSON export DumpFire wrote in its first week, from 1 to 7 April 2026, is no longer imported: its import left twelve tables of the data it replaced in place, so that a live API key could then answer as an imported account. If such a file is ever wanted, import it into an empty installation of an image built before 14 October 2026 and export a `.db` from there.
@@ -337,15 +357,16 @@ The dialog asks how to restore, every time:
 
 | Choice | For | What it does |
 |--------|-----|--------------|
-| **Restore everything as it is** | Putting this installation back | Backup destinations, report schedules, mail settings and webhooks come back exactly as the backup has them, and act as they did |
+| **Restore everything as it is** | Putting this installation back | Backup destinations, report schedules, mail settings and webhooks come back as the backup has them. A backup holds no mail password, destination credential or webhook secret: the ones this server has for the same accounts are kept, and the result lists any to enter again; a webhook that had a secret stays off until it is set |
 | **Restore as a working copy** | A copy that must not reach outside: a development instance, a rehearsal, a look at older data | Report schedules and webhooks are switched off. The backup schedule is switched off and its destinations removed. The mail settings are removed. Everything else is restored, users and API keys included |
 
 A backup of production restored as it is into another instance is as able to email people, call webhooks and change the backup store as production is. That is what the working copy is for.
 
 - **Which is preselected.** The working copy, when this instance's schedulers are off: under the development server, or with `SCHEDULERS=off`. Otherwise "as it is". Either can be chosen wherever the dialog opens.
 - **It is part of the restore.** The switching off happens in the same transaction as the copy, so a restore that fails leaves everything as it was.
-- **The result says what was done**, and stays on the page until it is dismissed: how many report schedules and webhooks were switched off, whether the backup schedule was on, and how many destinations and mail settings were removed.
-- **Getting them back.** A report schedule or a webhook is switched on again one at a time in the admin panel. Mail settings and backup destinations were removed and have to be entered again, or restored by importing the backup once more as it is.
+- **The result says what was done**, and stays on the page until it is dismissed: how many report schedules and webhooks were switched off, whether the backup schedule was on, and how many destinations and mail settings were removed. The webhooks count every one the backup had on, a webhook switched off in the backup for want of its secret included. A backup made since card 2169 has no mail password, so it removes one mail setting fewer than an older one did.
+- **Its webhooks with no secret are listed.** A working copy names no mail password and no destination to enter, since it removes them, but its "To enter again" line names each webhook that lost its secret in the backup and has none here: whoever switches one on in the copy sets its secret first. No start-up line names them afterwards: a working copy's webhooks are off on purpose.
+- **Getting them back.** A report schedule is switched on again by its owner on the **Reports** page, one at a time (only its owner sees it there). A webhook is switched on with `PUT /api/v1/webhooks/{id}` and `{ "active": true }`, by somebody with edit access to its board (no page switches a webhook on). Mail settings and backup destinations were removed and have to be entered again, or restored by importing the backup once more as it is.
 - **Reload before looking.** The Scheduled Backups and mail panels are read when the page opens. After an import, use "Dismiss and reload", and do not save from a panel that was open before it.
 - **By request.** `POST /api/admin/import` takes the same choice as `?outside=keep` or `?outside=off`, with the same default when it is not given. Any other value is refused and nothing is changed.
 
@@ -353,12 +374,12 @@ Whichever is chosen:
 
 - It replaces rows, not structure. The rows of every table in the running database are replaced with the backup's rows. The tables and columns stay as the running version's migrations made them: a column or table that exists only in the backup is not brought across, and a table the backup does not have is left empty.
 - It keeps the running database's own record of applied migrations. That record describes the structure of the running database, which a restore does not change.
-- It fills in what an older backup lacks: a first-completion date for cards that were complete, an access token for each task request that has none, and the contents of `work_dependencies` when the backup was taken before that table existed.
+- It fills in what an older backup lacks: a first-completion date for cards that were complete, and the contents of `work_dependencies` when the backup was taken before that table existed. Every task request is given a new access token in any case (see above).
 - A value the backup leaves empty, in a column where the running database requires one, is given that column's default. A column's WIP limit that was never set becomes 0, which means no limit. The server log says how many rows that was.
 - A row that cannot be copied is left out, and the restore is still committed, unless it leaves user accounts and no superadmin among them. The message on screen says how many problems there were and lists them, the first hundred where there are more. The list also carries anything else worth knowing, such as a card in the backup whose column is not in the backup either; that card is copied as it is.
 - It will not leave rows pointing, through a foreign key, at a row it left out. If a row that could not be copied is one that other rows refer to in that way, the whole restore is refused and nothing has been changed. References that have no foreign key are not covered by that check: a card's milestone, a board's category, the two ends of a dependency, a task request's target and a report schedule's scope.
 - The copy runs in one transaction. If it fails, nothing has been changed.
-- No session and no unused invite is brought in, from a backup of any age. Everybody signs in again.
+- No session, no unused invite, no request link and no form key is brought in, from a backup of any age. Everybody signs in again, and every request has a new link.
 - It puts attachment files back from the trash. A backup holds the database and not the files. When a card is deleted its files are kept in a trash for 30 days, so after an import of a backup taken before the delete, each restored attachment whose file is in the trash has it moved back. The result adds a line, for example "3 attachment files put back from the trash.", when there were any. A file that could not be put back is in the list of problems.
 - It does not bring back a file that is not on this server. An attachment restored from a backup of another installation, or deleted more than 30 days ago, shows on its card and cannot be opened unless the file is copied into the uploads folder. See [Attachment Files](deployment.md#attachment-files).
 
@@ -382,12 +403,13 @@ Anything else DumpFire refuses is shown in its own words. Nothing is changed by 
 2. Stop the DumpFire container
 3. Replace `/app/data/dumpfire.db` with the backup file, and delete `dumpfire.db-wal` and `dumpfire.db-shm` from the same directory if they are there
 4. Start the container
+5. Enter what a backup does not hold (card 2169): the mail password in **Admin → Email / SMTP**, each destination's credentials with **Edit** in **Admin → Scheduled Backups** (a Google Drive destination connected with OAuth: its client secret, then **Connect**), and each signed webhook's secret, switching it on, with `PUT /api/v1/webhooks/{id}`. The server's log says what is missing: one `[WARN] [STARTUP]` line at every start, "To enter again, because a backup does not hold them: … A database put in place by hand from a backup has none of them: see docs/admin-guide.md, Restoring from Backup.", until each is entered, or, for a webhook no longer wanted, deleted
 
 The database runs in SQLite's WAL mode, which keeps recent changes in the `-wal` file beside the database. Those two files belong to the database that was there before. Left beside the backup, SQLite would try to apply the old database's changes to it.
 
 Replacing the file brings back the backup's structure and its migration record along with its data. When the container starts, the migration runner applies whatever migrations the backup has not had.
 
-Nothing checks a file put back by hand. A backup made by this version holds no session, so everybody signs in again; one made before it brings its sessions back with it. And if its users have no superadmin among them, the server starts, says so in the log at `CRITICAL`, and has nobody who can use what is the superadmin's: see [If Nobody Can Sign In as the Superadmin](deployment.md#if-nobody-can-sign-in-as-the-superadmin).
+Nothing checks a file put back by hand. A backup made by this version holds no session, so everybody signs in again; one made before it brings its sessions back with it. A backup made since card 2169 comes up with no mail password, no destination credentials and its signed webhooks off, and nothing can fill them from the database that was there before: that is why step 5 is there, and why a server that still runs is restored with Import Backup instead. The same is true of an Import Backup into an image from before card 2169, after going back to one. And if its users have no superadmin among them, the server starts, says so in the log at `CRITICAL`, and has nobody who can use what is the superadmin's: see [If Nobody Can Sign In as the Superadmin](deployment.md#if-nobody-can-sign-in-as-the-superadmin).
 
 > ⚠️ **After an update, if you have gone back to an older image, do not use Import Backup while the older image is running.** An older image can overwrite the migration record with the backup's, and the newer image will then refuse to start. See [Going Back to the Previous Image](deployment.md#going-back-to-the-previous-image).
 
