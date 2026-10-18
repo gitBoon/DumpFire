@@ -415,7 +415,7 @@ describe('the card window’s own messages and Escape, src/lib/components/CardMo
 		const confirmation = readFileSync(join(ROOT, 'src/lib/components/ConfirmModal.svelte'), 'utf8');
 		expect(confirmation).toContain('<div class="confirm-modal"');
 		expect(confirmation).toContain("if (e.key === 'Escape') onCancel();");
-		for (const file of ['src/routes/all/+page.svelte', 'src/routes/board/[id]/+page.svelte']) {
+		for (const file of ['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte', 'src/routes/board/[id]/+page.svelte']) {
 			const page = readFileSync(join(ROOT, file), 'utf8');
 			expect(page, file).toContain('<CardModal');
 			expect(page, file).toContain('<ConfirmModal');
@@ -1725,6 +1725,11 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'restoreArchivedCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)', "toasts.add('Card restored')"] },
 		{ name: 'permanentlyDeleteArchivedCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)'] }
 	],
+	// Card 2240: All To Do opens the card window as All Tasks does, with no Move window.
+	'src/routes/todo/+page.svelte': [
+		{ name: 'saveCard', reads: 'failureMessage', done: ["toasts.add('Card updated')", 'showCardModal = false'] },
+		{ name: 'deleteCard', reads: 'deleteFailure', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'showCardModal = false'] }
+	],
 	'src/routes/teams/+page.svelte': [
 		{ name: 'createTeam', reads: 'failureMessage', done: ['showCreateTeam = false', "showToast('Team created')"] },
 		{ name: 'deleteTeam', reads: 'deleteFailure', done: ["showToast('Team deleted')"] },
@@ -2165,7 +2170,7 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 		expect(zIndexes('src/routes/archived/+page.svelte')).toContain(9999);
 	});
 
-	it.each(['src/routes/admin/+page.svelte', 'src/routes/teams/+page.svelte', 'src/routes/reports/+page.svelte', 'src/routes/all/+page.svelte'])(
+	it.each(['src/routes/admin/+page.svelte', 'src/routes/teams/+page.svelte', 'src/routes/reports/+page.svelte', 'src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])(
 		'%s shows its toasts through the shared one, and no toast of its own',
 		(file) => {
 			const source = readFileSync(join(ROOT, file), 'utf8');
@@ -2210,8 +2215,10 @@ describe('a page whose session has ended, for the seven pages of card 2109', () 
 	});
 });
 
-describe('archiving a card from All Tasks, src/routes/all/+page.svelte', () => {
-	const page = scriptOf('src/routes/all/+page.svelte');
+// All To Do (card 2240) carries its own copy of All Tasks' card window
+// handlers, held to the same rules here until card 2012 merges them.
+describe.each(['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])('archiving a card from %s', (file) => {
+	const page = scriptOf(file);
 	const board = scriptOf('src/routes/board/[id]/+page.svelte');
 
 	it('asks first, in the board page’s words, and sends the archive only once it is confirmed', () => {
@@ -2242,12 +2249,13 @@ describe('archiving a card from All Tasks, src/routes/all/+page.svelte', () => {
 	});
 
 	it('has the confirmation and the toast in its markup', () => {
-		const source = readFileSync(join(ROOT, 'src/routes/all/+page.svelte'), 'utf8');
+		const source = readFileSync(join(ROOT, file), 'utf8');
 		const markup = source.slice(source.indexOf('</script>'));
 
 		expect(markup).toContain('{#if confirmState.show}');
 		expect(markup).toContain('onConfirm={() => { confirmState.show = false; confirmState.onConfirm(); }}');
-		expect(callsOf(functionNamed(page, 'permanentlyDeleteArchivedCard'), 'showConfirm')).toHaveLength(1);
+		// All Tasks' Archived Cards panel deletes for good; All To Do has no such panel.
+		if (file === 'src/routes/all/+page.svelte') expect(callsOf(functionNamed(page, 'permanentlyDeleteArchivedCard'), 'showConfirm')).toHaveLength(1);
 		expect(page.getText()).not.toMatch(/window\.(alert|confirm)\(/);
 	});
 });
@@ -2257,8 +2265,8 @@ describe('archiving a card from All Tasks, src/routes/all/+page.svelte', () => {
 // Reporting section empty on a card with values, and showed no "Created from
 // request by ..."; and its save sent none of the five, so what was typed
 // there was dropped. The route itself is run in `tests/card-updates.test.ts`.
-describe('the card window on All Tasks, src/routes/all/+page.svelte (card 2186)', () => {
-	const page = scriptOf('src/routes/all/+page.svelte');
+describe.each(['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])('the card window on %s (card 2186)', (file) => {
+	const page = scriptOf(file);
 	const REPORTING = ['summary', 'theme', 'customerImpact', 'closeReason', 'releaseState'];
 
 	it('hands the window the row as loaded, with its fall-backs, so the reporting fields and requestOrigin come with it', () => {
@@ -3016,6 +3024,7 @@ describe('the user badge, the update bar, the avatar and the subtask window’s 
 			['src/routes/board/[id]/+page.svelte', /\.column-cards \{([^}]*)\}/, 'padding: 0 var(--space-md) var(--user-badge-space);'],
 			['src/lib/components/board/ColumnListView.svelte', /\.list-view \{([^}]*)\}/, 'padding: var(--space-lg) var(--space-lg) var(--user-badge-space);'],
 			['src/routes/all/+page.svelte', /\.card-list \{([^}]*)\}/, 'padding: 0 var(--space-md) var(--user-badge-space);'],
+			['src/routes/todo/+page.svelte', /\.todo-page \{([^}]*)\}/, 'padding: 0 var(--space-xl) var(--user-badge-space);'],
 			['src/routes/plan/[id]/+page.svelte', /\.plan-body \{([^}]*)\}/, 'padding: var(--space-xl) var(--space-xl) var(--user-badge-space);'],
 			['src/routes/archived/+page.svelte', /\.archived-page \{([^}]*)\}/, 'padding: 0 var(--space-xl) var(--user-badge-space);'],
 			['src/routes/admin/+page.svelte', /\.admin-content \{([^}]*)\}/, 'padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);'],

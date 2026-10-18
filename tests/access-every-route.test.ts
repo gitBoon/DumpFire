@@ -3363,12 +3363,13 @@ describe('what the lists give (card 2128)', () => {
 			empty = db.insert(boardCategories).values({ name: 'Nothing filed yet' }).returning().get();
 		});
 
-		/** Every list of groupings a caller is given: the two routes and three pages. */
+		/** Every list of groupings a caller is given: the two routes and four pages. */
 		const everyList = async (who: Exclude<Who, 'nobody'>): Promise<Record<string, Row[]>> => ({
 			'GET /api/board-categories': await answered('/api/board-categories', who),
 			'GET /api/v1/board-categories': await answered('/api/v1/board-categories', who),
 			dashboard: (await pageData('/', who)).allCategories as Row[],
 			'All Tasks': (await pageData('/all', who)).boardCategories as Row[],
+			'All To Do': (await pageData('/todo', who)).boardCategories as Row[],
 			Reports: (await pageData('/reports', who)).categories as Row[]
 		});
 
@@ -3444,8 +3445,9 @@ describe('what the lists give (card 2128)', () => {
 
 			const boardPage = (await pageData(`/board/${w.A.board.id}`, 'viewer')).categories as Row[];
 			const allTasks = (await pageData('/all', 'viewer')).categories as Row[];
+			const allToDo = (await pageData('/todo', 'viewer')).categories as Row[];
 			const context = (await api('GET', `/api/cards/${w.A.card.id}/context`, { user: w.viewer })).body.categories as Row[];
-			for (const [where, listed] of Object.entries({ boardPage, allTasks, context })) {
+			for (const [where, listed] of Object.entries({ boardPage, allTasks, allToDo, context })) {
 				expect(listed.find((row) => row.id === w.B.category.id), where).toMatchObject(carried);
 				// The board's own and the shared one are the caller's, and not marked.
 				expect(names(listed.filter((row) => !row.carried)), where).toEqual([`${MARK} category`, 'Shared category'].sort());
@@ -3706,6 +3708,11 @@ describe('the other end of a dependency, to a caller who cannot open its board (
 			read: async (who) => chips(await pageData('/all', who))
 		},
 		{
+			what: 'All To Do',
+			hidden: 'viewer',
+			read: async (who) => chips(await pageData('/todo', who))
+		},
+		{
 			what: 'the plan page',
 			hidden: 'viewer',
 			read: async (who) => plan((await pageData(`/plan/${w.A.milestone.id}`, who)).summary)
@@ -3933,7 +3940,8 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		'page /reports': { paths: () => ['/reports'] },
 		'page /request': { none: 'gives a token for the form, or none to a signed-in caller' },
 		'page /setup': { none: 'gives nothing, and sends every caller on once there is an account' },
-		'page /teams': { paths: () => ['/teams'] }
+		'page /teams': { paths: () => ['/teams'] },
+		'page /todo': { paths: (w) => ['/todo', `/todo?board=${w.A.board.id}`] }
 	};
 
 	/** What each caller of the sweep cannot open: `outsider` board A, and `viewer` board B and the sub-board. */

@@ -30,7 +30,16 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { boardCategories, boards, type Card } from '$lib/server/db/schema';
+import {
+	boardCategories,
+	boards,
+	cardLabels,
+	cards as cardsTable,
+	categories,
+	taskRequests,
+	users as usersTable,
+	type Card
+} from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { boardAncestry } from '$lib/server/board-tree';
 import {
@@ -47,7 +56,21 @@ import {
 } from '$lib/board-tree';
 import { pageLoad } from './helpers/actions';
 import { api } from './helpers/api';
-import { addBoardMember, makeBoard, makeCard, makeSubBoard, makeUser, resetDb, type BoardFixture, type SubBoardFixture } from './helpers/fixtures';
+import {
+	addBoardMember,
+	assignCard,
+	makeBoard,
+	makeCard,
+	makeDependency,
+	makeLabel,
+	makeMilestone,
+	makeSubBoard,
+	makeSubtask,
+	makeUser,
+	resetDb,
+	type BoardFixture,
+	type SubBoardFixture
+} from './helpers/fixtures';
 import { readBudget } from './helpers/reads';
 
 beforeEach(resetDb);
@@ -486,5 +509,112 @@ describe('the review of card 1990', () => {
 
 		const filtered = new Map(data.boards.map((b: any) => [b.id, b.filterCategoryId]));
 		expect([T, M, L].map((f) => filtered.get(f.board.id))).toEqual([null, null, null]);
+	});
+});
+
+// ─── The answer, pinned before its reading moved (card 2240) ───────────────
+
+/**
+ * Card 2240 moved the reading of All Tasks into `readCrossBoardCards`, which
+ * All To Do shares. The answer was to be the same afterwards, key for key and
+ * value for value, so this was written and passing on the load as it stood
+ * before the move, and guards it since.
+ */
+describe('the All Tasks answer, pinned (card 2240)', () => {
+	it('keeps its keys, its bucket order, every To Do-titled column in To Do, and each card and board as they were', async () => {
+		const owner = makeUser({ username: 'pinned' });
+		const helper = makeUser({ username: 'helper' });
+		const groupingId = db.insert(boardCategories).values({ name: 'Grouping', color: '#123456' }).returning().get().id;
+		const { board, cols } = makeBoard({ owner, name: 'Pinned board', columns: ['Backlog', ' TODO ', 'To Do', 'Done'] });
+		db.update(boards).set({ categoryId: groupingId }).where(eq(boards.id, board.id)).run();
+		addBoardMember(board, helper, 'editor');
+		const category = db.insert(categories).values({ boardId: board.id, name: 'Bug' }).returning().get();
+
+		const backlog = makeCard(cols['Backlog'], { title: 'In the backlog', position: 0 });
+		const upper = makeCard(cols[' TODO '], { title: 'In TODO', position: 1, priority: 'high' });
+		const todo = makeCard(cols['To Do'], { title: 'In To Do', position: 2, categoryId: category.id });
+		const done = makeCard(cols['Done'], { title: 'Finished', position: 3, completedAt: '2026-10-16 09:00:00' });
+		makeCard(cols['To Do'], { title: 'Archived', position: 4, archivedAt: '2026-10-15 00:00:00' });
+		const step = makeSubtask(todo, { title: 'A step' });
+		const label = makeLabel(board, 'A label');
+		db.insert(cardLabels).values({ cardId: todo.id, labelId: label.id }).run();
+		assignCard(todo, helper);
+		db.insert(taskRequests)
+			.values({ targetType: 'user', targetId: owner.id, requesterName: 'Someone', requesterEmail: 'someone@example.test', title: 'Please', status: 'accepted', resolvedCardId: todo.id })
+			.run();
+		const milestone = makeMilestone({ board, name: 'Goal', cards: [todo] });
+		makeDependency({ blocked: todo, blocker: upper });
+
+		const data = await allTasks(owner);
+
+		expect(Object.keys(data).sort()).toEqual([
+			'allTokenSummary',
+			'allUsers',
+			'boardCategories',
+			'boards',
+			'blockedState',
+			'buckets',
+			'cardTokens',
+			'categories',
+			'columns',
+			'completedCards',
+			'completedLimit',
+			'hasMoreCompleted',
+			'labels',
+			'milestoneNames',
+			'totalCards',
+			'totalCompletedCount'
+		].sort());
+
+		// Both To Do-titled columns in one To Do bucket, first; any other title a bucket of its own.
+		expect(data.buckets.map((b: any) => b.title)).toEqual(['To Do', 'Backlog', 'On Hold', 'In Progress', 'Complete']);
+		const inBucket = (title: string) => data.buckets.find((b: any) => b.title === title).cards.map((c: any) => c.id);
+		expect(inBucket('To Do')).toEqual([upper.id, todo.id]);
+		expect(inBucket('Backlog')).toEqual([backlog.id]);
+		expect(inBucket('On Hold')).toEqual([]);
+		expect(inBucket('In Progress')).toEqual([]);
+		expect(inBucket('Complete')).toEqual([done.id]);
+
+		// A card, every field of it.
+		const row = db.select().from(cardsTable).where(eq(cardsTable.id, todo.id)).get()!;
+		const helperRow = db.select().from(usersTable).where(eq(usersTable.id, helper.id)).get()!;
+		const card = data.buckets[0].cards.find((c: any) => c.id === todo.id);
+		expect(card).toEqual({
+			...row,
+			subtasks: [step],
+			labelIds: [label.id],
+			assignees: [{ id: helper.id, username: 'helper', emoji: helperRow.emoji }],
+			requestOrigin: { requesterName: 'Someone', requestTitle: 'Please' },
+			boardName: 'Pinned board',
+			boardEmoji: '📋',
+			boardId: board.id,
+			boardCategoryName: 'Grouping',
+			boardCategoryColor: '#123456',
+			columnTitle: 'To Do',
+			bucket: 'To Do'
+		});
+		expect(data.buckets[0].cards.find((c: any) => c.id === upper.id)).toMatchObject({ columnTitle: ' TODO ', bucket: 'To Do' });
+
+		// A board, every field of it.
+		expect(data.boards).toEqual([{ id: board.id, name: 'Pinned board', emoji: '📋', parentId: null, hiddenAbove: false, filterCategoryId: groupingId }]);
+
+		// The rest of the answer.
+		expect(Object.keys(data.blockedState).map(Number)).toEqual([todo.id]);
+		expect(data.blockedState[todo.id].map((n: any) => [n.kind, n.id, n.withheld])).toEqual([['card', upper.id, false]]);
+		expect(data.milestoneNames).toEqual({ [milestone.id]: 'Goal' });
+		expect(data.columns.map((c: any) => c.id)).toEqual([cols['Backlog'].id, cols[' TODO '].id, cols['To Do'].id, cols['Done'].id]);
+		expect(data.labels.map((l: any) => l.id)).toEqual([label.id]);
+		expect(data.categories.map((c: any) => c.id)).toContain(category.id);
+		expect(data.boardCategories.map((c: any) => c.id)).toEqual([groupingId]);
+		expect(data.allUsers).toEqual(expect.arrayContaining([{ id: helper.id, username: 'helper', emoji: helperRow.emoji || '👤' }]));
+		expect(data).toMatchObject({
+			cardTokens: {},
+			allTokenSummary: null,
+			totalCards: 4,
+			completedCards: 1,
+			hasMoreCompleted: false,
+			totalCompletedCount: 1,
+			completedLimit: 50
+		});
 	});
 });

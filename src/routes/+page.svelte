@@ -629,6 +629,13 @@
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 				All Tasks
 			</a>
+			<a href="/todo" class="nav-pill" id="todo-link">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+					<rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/>
+					<path d="M4.8 6.2l1.2 1.2 2-2.2M9.6 6.4h2M4.8 10.2h6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+				All To Do
+			</a>
 			<a href="/inbox" class="nav-pill">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 					<path d="M2 4l6 5 6-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>

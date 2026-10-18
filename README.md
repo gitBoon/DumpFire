@@ -65,6 +65,10 @@ Built with SvelteKit 5 (Runes), Drizzle ORM, and better-sqlite3.
 - Consolidated view of every card across all boards in one place
 - Filter and manage tasks without switching between boards
 
+### All To Do View
+- Every board's To Do column as one sortable table, with the filters kept in the address so a view can be bookmarked or shared
+- Reached from the dashboard, from All Tasks, and from any board's header already filtered to that board and its sub-boards
+
 ### Themes
 - 17 built-in themes: Light, Dark, Solarized, Coffee, Rosé, Cappuccino, Midnight, Ocean, Forest, Lavender, Sunset, Nord, Dracula, Monokai, Cherry, Arctic, Hacker
 - Live preview on hover before committing
@@ -411,6 +415,7 @@ src/
 │   ├── +page.svelte                # Dashboard
 │   ├── board/[id]/+page.svelte     # Kanban board view
 │   ├── all/+page.svelte            # All Tasks view
+│   ├── todo/+page.svelte           # All To Do view
 │   ├── inbox/+page.svelte          # Task request inbox
 │   ├── request/+page.svelte        # Submit a task request
 │   ├── admin/+page.svelte          # Admin panel

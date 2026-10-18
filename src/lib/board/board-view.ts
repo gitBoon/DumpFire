@@ -13,6 +13,7 @@
 
 import type { CardType, CategoryType, ColumnType } from '$lib/types';
 import { matchesSearch, sortCards } from '$lib/utils/card-utils';
+import { isTodoColumnTitle } from '$lib/column-role';
 
 export type BoardViewName = 'board' | 'list';
 
@@ -112,12 +113,13 @@ export function openingView(
 	return remembered ?? { ...BOARD_VIEW };
 }
 
-/** The column the list opens on: the first titled "To Do" or "Todo" (any case, spaces trimmed), else the first. */
+/**
+ * The column the list opens on: the first To Do column (`isTodoColumnTitle`:
+ * "To Do" or "Todo", any case, spaces trimmed), else the first. The list must
+ * show some column, so it falls back where the All To Do page does not.
+ */
 export function defaultListColumn(columns: Pick<ColumnType, 'id' | 'title'>[]): number | null {
-	const todo = columns.find((c) => {
-		const title = c.title.trim().toLowerCase();
-		return title === 'to do' || title === 'todo';
-	});
+	const todo = columns.find((c) => isTodoColumnTitle(c.title));
 	return (todo ?? columns[0])?.id ?? null;
 }
 
