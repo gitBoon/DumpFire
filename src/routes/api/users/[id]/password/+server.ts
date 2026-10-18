@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { endAccountAccess } from '$lib/server/auth';
+import { endAccountAccess, namingIds } from '$lib/server/auth';
 import { makePasswordHash } from '$lib/server/passwords';
 import { isAdmin } from '$lib/server/board-access';
 import { requireManagedAccount } from '$lib/server/route-guards';
@@ -67,22 +67,28 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		// A reset is meant to take an account back from whoever held its password
 		// or a session, so it ends what lets them in as that user: every session,
 		// every invite not yet used, which would set the password again, and every
-		// API key, which outlived a reset until it was revoked by hand. It does
-		// not end all they could have left behind. A webhook has no owner, so the
-		// ones registered with the account's keys keep receiving their boards'
-		// events, and the account's report schedules keep mailing their
-		// recipients. Those are looked over by hand after a reset.
-		const access = endAccountAccess(userId, { apiKeys: true });
+		// API key, which outlived a reset until it was revoked by hand. It also
+		// stops what they could have left sending things out (card 2168): every
+		// webhook the account set is switched off, and every report schedule of
+		// it paused. A webhook nobody is recorded as having set, one made before
+		// that was recorded, is left on, and is looked over by hand after a reset.
+		const access = endAccountAccess(userId, { apiKeys: true, reportSchedules: true });
 		afterCommit(() =>
 			log.info(
 				`Password reset for user ${userId} ("${target.username}") by "${actor.username}" — ended ` +
-					`${access.sessions} session(s), ${access.invites} invite(s) and ${access.apiKeys} API key(s)`,
+					`${access.sessions} session(s), ${access.invites} invite(s) and ${access.apiKeys} API key(s), ` +
+					`switched off ${access.webhooks} webhook(s) they set up${namingIds(access.webhookIds)} and ` +
+					`paused ${access.reportSchedules} report schedule(s)${namingIds(access.reportScheduleIds)}`,
 				{
 					targetUserId: userId,
 					resetBy: actor.id,
 					sessionsEnded: access.sessions,
 					invitesEnded: access.invites,
-					apiKeysEnded: access.apiKeys
+					apiKeysEnded: access.apiKeys,
+					webhooksSwitchedOff: access.webhooks,
+					webhookIds: access.webhookIds,
+					reportSchedulesPaused: access.reportSchedules,
+					reportScheduleIds: access.reportScheduleIds
 				},
 				{ userId: actor.id }
 			)
@@ -90,5 +96,11 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		return access;
 	});
 
-	return json({ success: true, sessionsEnded: ended.sessions, apiKeysEnded: ended.apiKeys });
+	return json({
+		success: true,
+		sessionsEnded: ended.sessions,
+		apiKeysEnded: ended.apiKeys,
+		webhooksSwitchedOff: ended.webhooks,
+		reportSchedulesPaused: ended.reportSchedules
+	});
 };

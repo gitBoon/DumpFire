@@ -35,6 +35,7 @@ import {
 	type Card
 } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
+import { userDeleteWarning } from '$lib/api';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { failingWrite } from './helpers/failing-write';
@@ -47,6 +48,7 @@ import {
 	makeDependency,
 	makeMilestone,
 	makeUser,
+	makeWebhook,
 	resetDb,
 	testUploadsDir,
 	type BoardFixture
@@ -83,6 +85,9 @@ function scene(): Scene {
 const remove = (s: Scene, by: SessionUser = s.admin) => api('DELETE', `/api/users/${s.leaver.id}`, { user: by });
 
 const userRow = (id: number) => db.select().from(users).where(eq(users.id, id)).get();
+
+/** Every webhook's switch and setter, as stored. */
+const hookRows = () => sqlite.prepare('SELECT id, active, set_by AS setBy FROM webhooks ORDER BY id').all();
 
 /** The five references, each made alone and read back alone. */
 const REFERENCES: {
@@ -191,13 +196,20 @@ describe('DELETE /api/users/:id, for a user named by a key that has no ON DELETE
 
 // ─── Everything at once ─────────────────────────────────────────────────────
 
-type Full = Scene & { ids: number[]; ownersKey: number; ownersSchedule: number };
+type Full = Scene & {
+	ids: number[];
+	ownersKey: number;
+	ownersSchedule: number;
+	/** Webhooks on board A: one the leaver set, one the owner set, one nobody is recorded as having set. */
+	hooks: { leavers: number; owners: number; nobodys: number };
+};
 
 /**
  * The leaver with all five references, and with everything else a user has:
  * XP, a session, an API key, a report schedule, a comment, an assignment, a
- * board of their own. Beside the key and the schedule, one each of somebody
- * else's.
+ * board of their own, a webhook they set. Beside the key, the schedule and the
+ * webhook, one each of somebody else's, and a webhook nobody is recorded as
+ * having set.
  */
 function full(): Full {
 	const s = scene();
@@ -231,6 +243,11 @@ function full(): Full {
 	assignCard(s.first, s.leaver);
 	assignCard(s.first, s.owner);
 	makeBoard({ owner: s.leaver, name: 'Made by the leaver' });
+	const hooks = {
+		leavers: makeWebhook(s.A.board, { setBy: s.leaver }).id,
+		owners: makeWebhook(s.A.board, { setBy: s.owner }).id,
+		nobodys: makeWebhook(s.A.board).id
+	};
 
 	// Two requests the leaver made signed in, stored with the address the
 	// account had then, and one of the owner's. The leaver's email changed since.
@@ -251,7 +268,7 @@ function full(): Full {
 	request(s.owner, 'Of the owner');
 	db.update(users).set({ email: 'leaver.now@example.test' }).where(eq(users.id, s.leaver.id)).run();
 
-	return { ...s, ids, ownersKey, ownersSchedule };
+	return { ...s, ids, ownersKey, ownersSchedule, hooks };
 }
 
 describe('DELETE /api/users/:id, for a user with everything', () => {
@@ -283,7 +300,16 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 					{ id: s.ownersSchedule }
 				]);
 
-				// So do their session, their comments and their assignments.
+				// A webhook they set is switched off before they go, and then names
+				// nobody (card 2168): left on, it would go on sending with no setter
+				// for a reset to reach. Nobody else's is touched.
+				expect(hookRows()).toEqual([
+					{ id: s.hooks.leavers, active: 0, setBy: null },
+					{ id: s.hooks.owners, active: 1, setBy: s.owner.id },
+					{ id: s.hooks.nobodys, active: 1, setBy: null }
+				]);
+
+				// Their session, their comments and their assignments go with them too.
 				expect(db.select().from(sessions).all()).toEqual([]);
 				expect(db.select({ content: cardComments.content }).from(cardComments).all()).toEqual([
 					{ content: 'Not mine' }
@@ -318,8 +344,9 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 			}
 		});
 
-		// The five, in the order of the list, the requests' address, and then
-		// the user. Nothing else is written: the rest is the keys' doing.
+		// The five, in the order of the list, the requests' address, the
+		// webhooks they set switched off (card 2168), and then the user. Nothing
+		// else is written: the rest is the keys' doing.
 		expect(run.writes).toEqual([
 			'UPDATE card_attachments SET uploaded_by = NULL WHERE uploaded_by = ?',
 			'UPDATE card_templates SET created_by = NULL WHERE created_by = ?',
@@ -327,6 +354,7 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 			'UPDATE work_dependencies SET created_by_user_id = NULL WHERE created_by_user_id = ?',
 			'UPDATE card_dependencies SET created_by_user_id = NULL WHERE created_by_user_id = ?',
 			'UPDATE task_requests SET requester_email = (SELECT email FROM users WHERE id = ?) WHERE requester_user_id = ?',
+			'UPDATE webhooks SET active = 0 WHERE set_by = ? AND active = 1 RETURNING id',
 			'DELETE FROM users WHERE id = ?'
 		]);
 		expect(run.effects).toEqual([]);
@@ -346,7 +374,8 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 				userId: s.admin.id,
 				message:
 					`User ${s.leaver.id} "leaver" was deleted by admin: 2 API key(s), 1 report schedule(s) and ` +
-					'1 comment(s) went with them; 5 row(s) they had uploaded, created or recorded were kept and name nobody now'
+					`1 comment(s) went with them; 1 webhook(s) they set up were switched off (id ${s.hooks.leavers}); 5 row(s) they had uploaded, ` +
+					'created or recorded were kept and name nobody now'
 			}
 		]);
 	});
@@ -359,7 +388,7 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 
 		try {
 			// The last write of all: the user.
-			writes.failNth(7);
+			writes.failNth(8);
 			await expect(remove(s)).rejects.toThrow(/made to fail/);
 			expect(writes.fired).toBe(true);
 		} finally {
@@ -368,6 +397,14 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 
 		expect(sqlite.prepare("SELECT message FROM system_logs WHERE context = 'DELETE'").all()).toEqual([]);
 		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
+	});
+});
+
+describe('the confirmation an administrator is shown before a user is deleted', () => {
+	it("says the webhooks they set up are switched off, and who can switch one on again (card 2168)", () => {
+		expect(userDeleteWarning('leaver')).toContain(
+			"Webhooks they set up are switched off; the board's owner or an administrator can switch one on again through the API."
+		);
 	});
 });
 

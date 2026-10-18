@@ -559,6 +559,7 @@ describe('comments and assigned work do not outlive board access', () => {
  * A webhook's secret, and its address (card 2133), are for the board's owner
  * and an administrator. The address can name a server inside the network, or
  * carry credentials before the host: it was given to every viewer of the board.
+ * So are changing them, and switching a webhook on (card 2154).
  */
 describe('webhook secrets and addresses', () => {
 	const ADDRESS = 'https://deliver:p4ss@hooks.internal.example.test/hook';
@@ -590,7 +591,7 @@ describe('webhook secrets and addresses', () => {
 		}
 	});
 
-	it('does not return either to an editor who updates the webhook, the address they have just sent included', async () => {
+	it('does not return either to an editor who updates the webhook', async () => {
 		const hook = makeHook();
 		const paused = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: editor, body: { active: false } });
 
@@ -599,13 +600,98 @@ describe('webhook secrets and addresses', () => {
 		expect(JSON.stringify(paused.body)).not.toContain('s3cret');
 		expect(JSON.stringify(paused.body)).not.toContain('hooks.internal.example.test');
 		expect(paused.body).toMatchObject({ hasSecret: true, active: false });
+	});
 
-		// An editor may still set a new address (found nearby 5 of the plan), and is not answered it.
-		const moved = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: editor, body: { url: 'https://elsewhere.example.test/hook' } });
-		expect(moved.status).toBe(200);
-		expect(moved.body).not.toHaveProperty('url');
-		expect(JSON.stringify(moved.body)).not.toContain('elsewhere.example.test');
-		expect(db.select().from(webhooks).where(eq(webhooks.id, hook.id)).get()!.url).toBe('https://elsewhere.example.test/hook');
+	/**
+	 * Card 2154: the address and the secret are changed by the people who may
+	 * read them. An editor who changed the address could not see what they
+	 * replaced, and the owner had no reason to look.
+	 */
+	const ADDRESS_OR_SECRET = "Only the board's owner or an administrator can change a webhook's address or secret. Ask the board's owner.";
+	const SWITCH_ON = "Only the board's owner or an administrator can switch a webhook on. Ask the board's owner.";
+	const rowOf = (id: number) => db.select().from(webhooks).where(eq(webhooks.id, id)).get()!;
+
+	it('refuses an editor who sends an address or a secret, whatever the value, and writes nothing (card 2154)', async () => {
+		const hook = makeHook();
+		const before = rowOf(hook.id);
+
+		for (const body of [
+			{ url: 'https://elsewhere.example.test/hook' },
+			{ secret: 'mine now' },
+			{ url: 'https://elsewhere.example.test/hook', secret: 'mine now' },
+			// The value stored, sent back unchanged: accepting it would let an
+			// editor test guesses at an address they may not read.
+			{ url: ADDRESS },
+			{ secret: 's3cret', events: ['card.moved'] },
+			{ url: null }
+		]) {
+			const res = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: editor, body });
+			expect(res.status, JSON.stringify(body)).toBe(403);
+			expect(res.body.message).toBe(ADDRESS_OR_SECRET);
+		}
+		expect(rowOf(hook.id)).toEqual(before);
+	});
+
+	it('lets an editor change the events and switch a webhook off', async () => {
+		const hook = makeHook();
+
+		expect((await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: editor, body: { events: ['card.moved'] } })).status).toBe(200);
+		expect((await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: editor, body: { active: false } })).status).toBe(200);
+		expect(rowOf(hook.id)).toMatchObject({ url: ADDRESS, secret: 's3cret', events: '["card.moved"]', active: false });
+	});
+
+	it('refuses an editor who switches a webhook on, and accepts on for one already on (decision 15)', async () => {
+		const hook = makeHook();
+		// Already on: an unchanged value.
+		expect((await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: editor, body: { active: true } })).status).toBe(200);
+
+		db.update(webhooks).set({ active: false }).where(eq(webhooks.id, hook.id)).run();
+		const on = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: editor, body: { active: true, events: ['card.moved'] } });
+
+		expect(on.status).toBe(403);
+		expect(on.body.message).toBe(SWITCH_ON);
+		expect(rowOf(hook.id)).toMatchObject({ active: false, events: '[]' });
+	});
+
+	it('lets the owner and an administrator change the address and the secret, and switch a webhook on', async () => {
+		for (const user of [owner, admin]) {
+			const hook = makeHook();
+			db.update(webhooks).set({ active: false }).where(eq(webhooks.id, hook.id)).run();
+
+			const res = await api('PUT', `/api/v1/webhooks/${hook.id}`, {
+				user,
+				body: { url: 'https://elsewhere.example.test/hook', secret: 'new', active: true }
+			});
+
+			expect(res.status).toBe(200);
+			expect(rowOf(hook.id)).toMatchObject({ url: 'https://elsewhere.example.test/hook', secret: 'new', active: true, setBy: user.id });
+		}
+	});
+
+	it('makes whoever switches a webhook on its setter, and nobody who sends on for one already on (the review, S2)', async () => {
+		for (const user of [owner, admin]) {
+			// Set by somebody else, and switched off: by that account's reset, say.
+			const hook = makeHook();
+			db.update(webhooks).set({ active: false, setBy: editor.id }).where(eq(webhooks.id, hook.id)).run();
+
+			expect((await api('PUT', `/api/v1/webhooks/${hook.id}`, { user, body: { active: true } })).status).toBe(200);
+			expect(rowOf(hook.id)).toMatchObject({ active: true, setBy: user.id });
+		}
+
+		// On already: `active: true` sent back changes nothing, and sets nothing.
+		const on = makeHook();
+		db.update(webhooks).set({ setBy: editor.id }).where(eq(webhooks.id, on.id)).run();
+		expect((await api('PUT', `/api/v1/webhooks/${on.id}`, { user: owner, body: { active: true } })).status).toBe(200);
+		expect(rowOf(on.id)).toMatchObject({ active: true, setBy: editor.id });
+	});
+
+	it('refuses a viewer any change, as before', async () => {
+		const hook = makeHook();
+		for (const body of [{ active: false }, { url: 'https://elsewhere.example.test/hook' }]) {
+			const res = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: viewer, body });
+			expect(res.status).toBe(403);
+			expect(res.body.message).toBe('No edit access to this board');
+		}
 	});
 
 	it('returns both to the board owner and to an administrator, on both reads and an update', async () => {

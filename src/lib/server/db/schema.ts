@@ -322,9 +322,15 @@ export const webhooks = sqliteTable('webhooks', {
 	active: integer('active', { mode: 'boolean' }).notNull().default(true),
 	createdAt: text('created_at')
 		.notNull()
-		.default(sql`(datetime('now'))`)
+		.default(sql`(datetime('now'))`),
+	// The account that last set the address or the secret (card 2168, migration
+	// 0056): the caller of the create, and of an update that changes either.
+	// NULL for a webhook made before 0056, and once its setter's account is
+	// deleted. Never in an answer: presentWebhook leaves it out.
+	setBy: integer('set_by').references(() => users.id, { onDelete: 'set null' })
 }, (table) => [
-	index('idx_webhooks_board_id').on(table.boardId)
+	index('idx_webhooks_board_id').on(table.boardId),
+	index('idx_webhooks_set_by').on(table.setBy)
 ]);
 
 // ─── Card Dependencies ──────────────────────────────────────────────────────

@@ -120,6 +120,20 @@ const spec = {
 			'is the whole of that day, to 23:59:59 UTC, in the audit log as in the report, where the audit log left that day out. ' +
 			'(55) PUT /api/v1/cards/{cardId} reads an archivedAt that is text as the moment it names, so the archivedAt a GET answered, sent back, is the stamp the card holds and changes nothing, ' +
 			'in ISO 8601 with any fraction or offset or as YYYY-MM-DD HH:MM:SS; null still restores the card, and any other value, true and a number included, is still answered 400. ' +
+			'(56) a webhook\'s url, on POST /api/v1/boards/{boardId}/webhooks and PUT /api/v1/webhooks/{webhookId}, may not point inside the network as written, and is answered 400 ' +
+			'"Webhook url points inside the network: <why>" for one that does, where it was stored: a loopback, private, shared (carrier NAT), link-local (the cloud metadata service at 169.254.169.254 among them), ' +
+			'reserved, documentation or multicast address, in IPv4 or IPv6, an IPv4 address written another way (2130706433, 127.1) or inside an IPv6 form (::ffff:127.0.0.1), and the name localhost, any name ending .localhost, a name with no dot, ' +
+			'and any name ending .local, .internal or .home.arpa; one that carries a user name or password is answered 400 "Webhook url must not carry a user name or password". No name is looked up then: ' +
+			'a name is judged at each delivery by every address it resolves to, and a delivery to one that resolves inside is not made. Redirects are not followed. The server\'s operator may let named receivers inside the network be sent to; ' +
+			'a stored url sent back unchanged is accepted, and is refused at each delivery until it is changed or let in; ' +
+			'(57) PUT /api/v1/webhooks/{webhookId} answers 403 "Only the board\'s owner or an administrator can change a webhook\'s address or secret. Ask the board\'s owner." to an editor who sends url or secret at all, whatever the value, ' +
+			'and 403 "Only the board\'s owner or an administrator can switch a webhook on. Ask the board\'s owner." to one who sends active true for a webhook that is off, and writes nothing, where an editor could change both and switch one on; ' +
+			'an editor still changes events, switches a webhook off, and may send active true for one already on; ' +
+			'whoever creates a webhook, changes its url or secret, or switches it on is the one whose password reset switches it off; ' +
+			'a create or a change of a webhook whose key is ended while its body is still arriving (a password reset of the key\'s user, committed meanwhile) ' +
+			'is answered 401 "Invalid or expired API key" and writes nothing; ' +
+			'(58) a board has at most 10 webhooks, switched-off ones counted: POST /api/v1/boards/{boardId}/webhooks answers 409 "This board has 10 webhooks, and a board may have at most 10: delete 1 before adding another." ' +
+			'after every other check, and creates nothing, where any number could be made; a board that already has more keeps them all, and every active one is still sent. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -511,6 +525,12 @@ const spec = {
 			},
 			Webhook: {
 				type: 'object',
+				description:
+					'A webhook of a board: every event of the board that it asks for is sent to its url as a POST. Where it may send: not inside the network, as written or as resolved. ' +
+					'An address that is loopback, private, shared, link-local (the cloud metadata service among them), reserved, documentation or multicast, in IPv4 or IPv6, ' +
+					'and the names localhost, *.localhost, a name with no dot, *.local, *.internal and *.home.arpa, are refused when the webhook is created or its url changed; ' +
+					'a name is judged again at each delivery by every address it resolves to, and a delivery to one that resolves inside is not made. Redirects are not followed, ' +
+					'and an address with a user name or password is refused. The server\'s operator may let named receivers inside the network be sent to. A board has at most 10 webhooks.',
 				properties: {
 					id: { type: 'integer' },
 					boardId: { type: 'integer' },
@@ -4747,6 +4767,10 @@ const spec = {
 				tags: ['Webhooks'],
 				summary: 'Create a webhook',
 				operationId: 'createWebhook',
+				description:
+					'Needs edit access to the board. The url may not point inside the network as written, nor carry a user name or password (see Webhook); no name is looked up here. ' +
+					'A board has at most 10 webhooks, switched-off ones counted: an 11th is answered 409, after every other check. The key\'s user is recorded as the one who set the webhook\'s address, ' +
+					'which no answer gives.',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
 				requestBody: {
 					required: true,
@@ -4773,7 +4797,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'No url, a url that is not an http or https address, a secret over 256 characters, an event that is not one of the six, boardId not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was created.',
+						description: 'No url, a url that is not an http or https address, one that points inside the network as written ("Webhook url points inside the network: 127.0.0.1 is a loopback address"), one that carries a user name or password, a secret over 256 characters, an event that is not one of the six, boardId not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was created.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'URL is required' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -4781,6 +4805,15 @@ const spec = {
 					'404': {
 						description: 'There is no such board',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'409': {
+						description: 'The board already has 10 webhooks, switched off ones included. Nothing was created. The message gives the count and how many to delete.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { message: 'This board has 10 webhooks, and a board may have at most 10: delete 1 before adding another.' }
+							}
+						}
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -4823,6 +4856,11 @@ const spec = {
 				tags: ['Webhooks'],
 				summary: 'Update a webhook',
 				operationId: 'updateWebhook',
+				description:
+					'Needs edit access to the board. Changing the url or the secret, and switching a webhook on, need the board\'s owner or an administrator: an editor who sends url or secret at all, ' +
+					'whatever the value, or active true for a webhook that is off, is answered 403 and nothing is written. An editor changes events, switches a webhook off, and may send active true for one already on. ' +
+					'Send only the fields that change. A new url is held to the rules of Webhook; the stored one sent back unchanged is accepted. ' +
+					'The key\'s user is recorded as the one who set the webhook when the url or the secret changes, or the webhook is switched on, which no answer gives.',
 				parameters: [{ $ref: '#/components/parameters/webhookId' }],
 				requestBody: {
 					required: true,
@@ -4849,11 +4887,34 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'None of the four fields was sent, a field that is not what it may hold (a url that is not an http or https address, a secret over 256 characters, an event that is not one of the six, active that is not true or false), webhookId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'None of the four fields was sent, a field that is not what it may hold (a url that is not an http or https address, one that points inside the network as written, one that carries a user name or password, a secret over 256 characters, an event that is not one of the six, active that is not true or false), webhookId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { $ref: '#/components/responses/Forbidden' },
+					'403': {
+						description:
+							'No access to the board, or view access where edit access is needed; or a caller who is not the board\'s owner or an administrator sent url or secret, whatever the value, ' +
+							'or active true for a webhook that is off. Nothing was written.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								examples: {
+									addressOrSecret: {
+										summary: 'An editor sent url or secret',
+										value: { message: 'Only the board\'s owner or an administrator can change a webhook\'s address or secret. Ask the board\'s owner.' }
+									},
+									switchOn: {
+										summary: 'An editor switched a webhook on',
+										value: { message: 'Only the board\'s owner or an administrator can switch a webhook on. Ask the board\'s owner.' }
+									},
+									viewer: {
+										summary: 'View access only',
+										value: { message: 'No edit access to this board' }
+									}
+								}
+							}
+						}
+					},
 					'404': {
 						description: 'There is no such webhook',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Webhook not found' } } }

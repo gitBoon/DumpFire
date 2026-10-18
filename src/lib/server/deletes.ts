@@ -25,7 +25,7 @@
  *
  * A user is deleted here too (`deleteUser`). The keys take what was theirs,
  * except for five columns that name a user with no `ON DELETE` action, which
- * are cleared first.
+ * are cleared first. The webhooks they set are switched off before they go.
  *
  * Every function here opens its own `inTransaction`. A route calls it inside
  * the one in which it read the row and checked the caller, and that makes
@@ -41,6 +41,7 @@
  */
 import { sqlite } from './db';
 import { afterCommit, inTransaction } from './db/transaction';
+import { namingIds } from './auth';
 import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
 import { createLogger } from './logger';
@@ -698,6 +699,8 @@ export type UserRemoved = {
 	apiKeys: number;
 	reportSchedules: number;
 	comments: number;
+	/** Webhooks they set that were on, switched off before they went (card 2168). */
+	webhooksSwitchedOff: number;
 };
 
 /**
@@ -713,14 +716,21 @@ export type UserRemoved = {
  * is: falling back to the address stored when it was made would send the
  * team's answers to an address the account had given up.
  *
- * Nothing else is written here (card 2007's rule, amended by card 2171's
- * statement). What the keys cascade goes with the user:
+ * Every webhook they set that is on is switched off, before the account goes
+ * (card 2168): deleting an account is the strongest way of taking it back, and
+ * the key then sets `webhooks.set_by` to NULL, which would leave a webhook an
+ * intruder set sending with nobody named for a reset to reach. The board's
+ * owner or an administrator can switch one on again through the API.
+ *
+ * Nothing else is written here (card 2007's rule, amended by the statements of
+ * cards 2171 and 2168). What the keys cascade goes with the user:
  * their sessions, API keys, report schedules, comments, memberships and
  * assignments. Their XP is kept: `user_xp` is keyed by name and has no key
  * to a user.
  *
  * One line goes to the system log once the delete is committed, saying who
- * deleted whom.
+ * deleted whom, and naming by id the webhooks switched off, for the board's
+ * owner to find.
  */
 export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | null {
 	return inTransaction(() => {
@@ -732,7 +742,7 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 					(SELECT COUNT(*) FROM card_comments WHERE user_id = users.id) AS comments
 				FROM users WHERE id = ?`
 			)
-			.get(userId) as Omit<UserRemoved, 'referencesCleared'> | undefined;
+			.get(userId) as Omit<UserRemoved, 'referencesCleared' | 'webhooksSwitchedOff'> | undefined;
 		if (!user) return null;
 
 		let referencesCleared = 0;
@@ -746,17 +756,26 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 		sqlite
 			.prepare('UPDATE task_requests SET requester_email = (SELECT email FROM users WHERE id = ?) WHERE requester_user_id = ?')
 			.run(userId, userId);
+		// The webhooks they set, switched off while they still name them. By id,
+		// for the log line, as a reset names them (the review, O5).
+		const webhookIds = (
+			sqlite.prepare('UPDATE webhooks SET active = 0 WHERE set_by = ? AND active = 1 RETURNING id').all(userId) as { id: number }[]
+		)
+			.map((row) => row.id)
+			.sort((a, b) => a - b);
+		const webhooksSwitchedOff = webhookIds.length;
 		sqlite.prepare('DELETE FROM users WHERE id = ?').run(userId);
 
 		afterCommit(() =>
 			log.info(
 				`User ${userId} "${user.username}" was deleted by ${actor.username}: ${user.apiKeys} API key(s), ` +
 					`${user.reportSchedules} report schedule(s) and ${user.comments} comment(s) went with them; ` +
+					`${webhooksSwitchedOff} webhook(s) they set up were switched off${namingIds(webhookIds)}; ` +
 					`${referencesCleared} row(s) they had uploaded, created or recorded were kept and name nobody now`,
 				undefined,
 				{ userId: actor.id }
 			)
 		);
-		return { ...user, referencesCleared };
+		return { ...user, referencesCleared, webhooksSwitchedOff };
 	});
 }

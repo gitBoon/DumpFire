@@ -444,8 +444,10 @@ const MAIL_SETTINGS = [
  * when a card is assigned or moved, and a backup run by hand still uploads to
  * production's destination and prunes the backups there.
  *
- * Where there is a flag it is cleared, so that it can be set again in the
- * admin panel: `report_schedules.enabled` and `webhooks.active`. Where there
+ * Where there is a flag it is cleared, so that it can be set again:
+ * `report_schedules.enabled`, by the schedule's owner on the Reports page,
+ * and `webhooks.active`, by the board's owner or an administrator through the
+ * API (`PUT /api/v1/webhooks/{id}`), since no screen shows webhooks. Where there
  * is none the setting is removed: the backup destinations, and the mail
  * settings. The backup schedule is set to disabled. `app_url` and every other
  * setting are left alone, and so is every other table.

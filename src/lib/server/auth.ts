@@ -9,8 +9,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { db, sqlite } from './db';
 import { afterCommit, inTransaction } from './db/transaction';
-import { users, sessions, apiKeys, type Session, type User } from './db/schema';
-import { eq } from 'drizzle-orm';
+import { users, sessions, apiKeys, webhooks, reportSchedules, type Session, type User } from './db/schema';
+import { and, eq } from 'drizzle-orm';
 import { error, type Cookies } from '@sveltejs/kit';
 import { endUnusedInvites } from './invites';
 import {
@@ -343,15 +343,34 @@ export function deleteSession(token: string, reason = 'unspecified'): void {
 
 // ─── What Setting a Password Ends ───────────────────────────────────────────
 
-/** How many of each `endAccountAccess` ended. */
-export type AccessEnded = { sessions: number; invites: number; apiKeys: number };
+/**
+ * What `endAccountAccess` ended: how many of each, and the ids of the webhooks
+ * it switched off and the report schedules it paused, for the log line.
+ */
+export type AccessEnded = {
+	sessions: number;
+	invites: number;
+	apiKeys: number;
+	/** Webhooks the account set that were on, switched off. */
+	webhooks: number;
+	/** The account's report schedules that were on, paused. */
+	reportSchedules: number;
+	webhookIds: number[];
+	reportScheduleIds: number[];
+};
+
+/** ` (id 4)`, ` (ids 4, 7)`, or nothing for none: the ids a log line names. */
+export const namingIds = (ids: number[]): string =>
+	ids.length === 0 ? '' : ` (${ids.length === 1 ? 'id' : 'ids'} ${ids.join(', ')})`;
 
 /**
  * End what setting an account's password ends, in the transaction that sets
  * it, so that the password and all of this change together: every session of
  * the account, every invite of it that has not been used, and, when `apiKeys`
- * is true, every API key it has. In that order. Returns how many of each were
- * deleted.
+ * is true, every API key it has and every webhook it set that is on, which is
+ * switched off; when `reportSchedules` is true, every report schedule of it
+ * that is on, which is paused. In that order. Returns how many of each, and
+ * which webhooks and schedules.
  *
  * Every way of setting a password ends the sessions and the waiting invites:
  * a waiting invite would let whoever holds it set the password again. The keys
@@ -361,17 +380,29 @@ export type AccessEnded = { sessions: number; invites: number; apiKeys: number }
  * when the holder asks: a routine change is not about an intruder, and ending
  * keys stops every script that uses them.
  *
+ * A webhook goes with the keys (card 2168): it is made with a key, and keeps
+ * sending a board's events to its address after the key has gone. "The
+ * account set it" is `webhooks.set_by`, the account that last set its address
+ * or secret. It is switched off, not deleted, so that the board's owner or an
+ * administrator can switch on again one they recognise (`PUT
+ * /api/v1/webhooks/{id}`), and it keeps naming its setter. A report schedule
+ * is paused on an administrator's reset and when an invite is used, and not on
+ * the holder's own change: it is made with a session, which every change
+ * ends, and its owner sees it, and switches it on again, on the Reports page.
+ * Each statement runs only under its option, whether or not a row matches.
+ *
  * An invite that was used is left, marked used: that is how the invite page
  * and the backup tell a spent invite from a waiting one. The invites end
  * through `endUnusedInvites`, in invites.ts, which a change of the account's
  * email address or role calls too.
  *
- * It ends nothing else. Webhooks registered with the account's keys (a webhook
- * has no owner) and the account's report schedules outlive it.
+ * It ends nothing else. A webhook nobody is recorded as having set, one made
+ * before migration 0056 or whose setter's account was deleted, is left on, and
+ * so is one somebody else set since.
  *
  * It throws if no transaction is open.
  */
-export function endAccountAccess(userId: number, opts: { apiKeys: boolean }): AccessEnded {
+export function endAccountAccess(userId: number, opts: { apiKeys: boolean; reportSchedules: boolean }): AccessEnded {
 	if (!sqlite.inTransaction) {
 		throw new Error(
 			'endAccountAccess must be called inside the transaction that sets the password: wrap the change ' +
@@ -381,7 +412,36 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean }): Ac
 	const sessionsEnded = db.delete(sessions).where(eq(sessions.userId, userId)).run().changes;
 	const invitesEnded = endUnusedInvites(userId);
 	const apiKeysEnded = opts.apiKeys ? db.delete(apiKeys).where(eq(apiKeys.userId, userId)).run().changes : 0;
-	return { sessions: sessionsEnded, invites: invitesEnded, apiKeys: apiKeysEnded };
+	const ids = (rows: { id: number }[]) => rows.map((row) => row.id).sort((a, b) => a - b);
+	const webhookIds = opts.apiKeys
+		? ids(
+				db
+					.update(webhooks)
+					.set({ active: false })
+					.where(and(eq(webhooks.setBy, userId), eq(webhooks.active, true)))
+					.returning({ id: webhooks.id })
+					.all()
+			)
+		: [];
+	const reportScheduleIds = opts.reportSchedules
+		? ids(
+				db
+					.update(reportSchedules)
+					.set({ enabled: false, updatedAt: stamp() })
+					.where(and(eq(reportSchedules.userId, userId), eq(reportSchedules.enabled, true)))
+					.returning({ id: reportSchedules.id })
+					.all()
+			)
+		: [];
+	return {
+		sessions: sessionsEnded,
+		invites: invitesEnded,
+		apiKeys: apiKeysEnded,
+		webhooks: webhookIds.length,
+		reportSchedules: reportScheduleIds.length,
+		webhookIds,
+		reportScheduleIds
+	};
 }
 
 /**
@@ -479,40 +539,75 @@ export function generateApiKey(): { plaintextKey: string; keyHash: string; keyPr
  * asked before anything is counted.
  */
 export function findApiKey(key: string): { id: number; user: SessionUser } | null {
-	const hash = hashApiKey(key);
-	const now = stamp();
-
 	const apiKey = db.select()
 		.from(apiKeys)
-		.where(eq(apiKeys.keyHash, hash))
+		.where(eq(apiKeys.keyHash, hashApiKey(key)))
 		.get();
 
-	if (!apiKey) return null;
+	const user = apiKey ? keyHolder(apiKey) : null;
+	return apiKey && user ? { id: apiKey.id, user: sessionUserOf(user) } : null;
+}
 
+/**
+ * The account an API key's row acts as, if the key is open: it has not
+ * expired, and its account still exists. Null if not. `findApiKey` and
+ * `stillAuthenticated` both ask it, so that what counts as an open key is
+ * decided in one place.
+ */
+function keyHolder(apiKey: typeof apiKeys.$inferSelect): User | null {
 	// An expiry is read as the moment it names, and one that names none has
 	// passed (the P6 review, S2), as a session's is in `findSession`.
 	if (apiKey.expiresAt !== null) {
 		const expires = toStamp(apiKey.expiresAt);
-		if (expires === null || expires < now) return null;
+		if (expires === null || expires < stamp()) return null;
 	}
 
-	const user = db.select()
+	return db.select()
 		.from(users)
 		.where(eq(users.id, apiKey.userId))
-		.get();
+		.get() ?? null;
+}
 
-	if (!user) return null;
+/**
+ * What the gate let a request in with, kept in `locals.credential` beside the
+ * account it acts as: the API key's row id under /api/v1/, or the session's
+ * token. Null where it let a request in with neither.
+ */
+export type Credential = { kind: 'api key'; id: number } | { kind: 'session'; token: string };
 
-	return {
-		id: apiKey.id,
-		user: {
-			id: user.id,
-			username: user.username,
-			email: user.email,
-			emoji: user.emoji || '👤',
-			role: user.role
-		}
-	};
+/**
+ * Refuse 401, in the gate's own words, when the API key or session the gate
+ * let this request in with is no longer open: deleted, expired, or its
+ * account gone. Called inside the transaction that writes, so that the answer
+ * holds for the write.
+ *
+ * The gate decides who is calling before the body is read, and a body can
+ * take as long as the caller likes to arrive. A password reset committed
+ * meanwhile ends the key or the session (`endAccountAccess`), and switches
+ * off the webhooks and pauses the schedules the account had; a create or a
+ * change that went on to write after it would make one again, running, for
+ * the account that has just been taken back (the review of card 2168, S1).
+ * Asked in the transaction, with nothing awaited between this and the write,
+ * no reset can come between them.
+ *
+ * A request no gate let in, a test that calls a handler directly, has no
+ * credential at all (`undefined`), and is not asked: the gate gives every
+ * request it lets through one or null.
+ *
+ * It throws if no transaction is open.
+ */
+export function stillAuthenticated(locals: App.Locals): void {
+	if (!sqlite.inTransaction) {
+		throw new Error('stillAuthenticated must be called inside the transaction that writes: call it in inTransaction.');
+	}
+	const credential = locals.credential;
+	if (credential === undefined) return;
+	if (credential?.kind === 'api key') {
+		const apiKey = db.select().from(apiKeys).where(eq(apiKeys.id, credential.id)).get();
+		if (!apiKey || !keyHolder(apiKey)) error(401, 'Invalid or expired API key');
+		return;
+	}
+	if (credential?.kind !== 'session' || !findSession(credential.token).open) error(401, 'Not authenticated');
 }
 
 /** Record that the API key with this row id was used, now. */

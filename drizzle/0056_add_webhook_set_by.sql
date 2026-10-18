@@ -1,0 +1,34 @@
+-- Who last set each webhook's address or secret (card 2168, 2026-10-18).
+--
+-- webhooks.set_by holds the account that last set the webhook's address or
+-- its secret: the caller of POST /api/v1/boards/{boardId}/webhooks, and the
+-- caller of a PUT /api/v1/webhooks/{webhookId} that changes either (since
+-- card 2154, the board's owner or an administrator). A password reset, or an
+-- invite used, switches off the webhooks its account set, so that whatever an
+-- intruder registered stops sending the board's events out (slice 4 of the
+-- plan does that; this file only adds the column). It is the last setter and
+-- not the creator: an administrator's key that re-points somebody else's
+-- webhook makes the administrator its setter, and resetting the administrator
+-- switches it off. No answer gives it (presentWebhook leaves it out).
+--
+-- ON DELETE SET NULL: deleting an account empties the column, after
+-- deleteUser has switched the account's webhooks off. The index is card
+-- 2106's rule, that every foreign key column leads an index, named
+-- idx_<table>_<column> and declared in src/lib/server/db/schema.ts under the
+-- same name. IF NOT EXISTS, as every index migration since 0040.
+--
+-- Changes no row. Every webhook already stored has no setter (NULL), because
+-- nothing recorded who made it: a reset leaves those alone, and the deploy
+-- checks list them for one look. So nothing is declared to the rehearsal in
+-- tests/rehearsal/one-offs.ts. SQLite takes ADD COLUMN with a foreign key
+-- when the column's default is NULL.
+--
+-- Runs once. The runner records this file by name and never runs it again,
+-- and it would not survive a second run: "duplicate column" is tolerated only
+-- in a fixed list of older files, and this is not one of them. A backup made
+-- before this file has no column, and its webhooks are restored with no
+-- setter.
+
+ALTER TABLE `webhooks` ADD COLUMN `set_by` integer REFERENCES `users`(`id`) ON DELETE SET NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `idx_webhooks_set_by` ON `webhooks` (`set_by`);

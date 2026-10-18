@@ -111,7 +111,8 @@ const TEST_FILES = [
 	'transaction.test.ts',
 	'uploads-sweep.test.ts',
 	'uploads.test.ts',
-	'user-delete.test.ts'
+	'user-delete.test.ts',
+	'webhooks.test.ts'
 ];
 
 describe('the suite', () => {

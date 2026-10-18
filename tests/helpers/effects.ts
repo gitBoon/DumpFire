@@ -11,8 +11,12 @@
  *
  * Three things are replaced while it is installed:
  *
- *   - `fetch`, which is how a webhook is delivered. Every call is recorded and
- *     answered 200. Nothing else in a route under test should be calling it.
+ *   - `http.request` and `https.request`, which is how a webhook is delivered
+ *     (card 2161). A request that carries `X-DumpFire-Event` is recorded when
+ *     it is ended and answered 200; any other is handed to the `request` this
+ *     replaced, the refusal in tests/setup.ts, so a backup upload or a stray
+ *     request is not passed off as a webhook. `fetch` is not replaced: nothing
+ *     on the server calls it, and the setup's refusal fails a test that does.
  *   - nodemailer's `createTransport`, which every mail goes through. The
  *     transport it hands back records the message and reports it sent. Mail is
  *     only attempted when SMTP is configured: see `makeSmtp` in the fixtures.
@@ -46,10 +50,13 @@
  * out, as another request would. A mail it refuses is in `refusedMail`, as
  * one in `refuseMailTo` is.
  */
+import http from 'node:http';
+import https from 'node:https';
 import nodemailer from 'nodemailer';
 import { vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
 import { subscribeGlobal } from '$lib/server/events';
+import { requestOf, StandInRequest } from './stand-in-request';
 
 export type RecordedEffect =
 	| {
@@ -100,7 +107,7 @@ export type Effects = {
 	settle(): Promise<void>;
 	/** Forget what has been recorded so far. */
 	clear(): void;
-	/** Put `fetch` and nodemailer back and stop listening. Call it in `afterEach`. */
+	/** Put `http.request`, `https.request` and nodemailer back and stop listening. Call it in `afterEach`. */
 	restore(): void;
 };
 
@@ -128,26 +135,35 @@ export function effects(
 		started.push(effect);
 	};
 
-	const realFetch = globalThis.fetch;
-	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-		const headers: Record<string, string> = {};
-		new Headers(init?.headers).forEach((value, name) => (headers[name] = value));
-		let body: unknown = init?.body;
-		try {
-			body = JSON.parse(String(init?.body));
-		} catch {
-			// Not JSON: kept as it was sent.
-		}
-		record({
-			kind: 'webhook',
-			url: String(input instanceof Request ? input.url : input),
-			event: headers['x-dumpfire-event'] ?? '',
-			headers,
-			body,
-			inTransaction: sqlite.inTransaction
-		});
-		return new Response('ok', { status: 200 });
-	}) as typeof fetch;
+	type Requests = { request: (...args: unknown[]) => unknown };
+	const modules = [http, https] as unknown as Requests[];
+	const replaced = modules.map((module) => module.request);
+	modules.forEach((module, i) => {
+		module.request = (...args: unknown[]) => {
+			const { url, headers } = requestOf(args);
+			if (headers['x-dumpfire-event'] === undefined) return replaced[i](...args);
+			const request = new StandInRequest((sent, self) => {
+				let body: unknown = sent;
+				try {
+					body = JSON.parse(sent);
+				} catch {
+					// Not JSON: kept as it was sent.
+				}
+				record({
+					kind: 'webhook',
+					url,
+					event: headers['x-dumpfire-event'],
+					headers,
+					body,
+					inTransaction: sqlite.inTransaction
+				});
+				self.answer(200);
+			});
+			const respond = args.at(-1);
+			if (typeof respond === 'function') request.once('response', respond as (...a: unknown[]) => void);
+			return request;
+		};
+	});
 
 	const transport = vi.spyOn(nodemailer, 'createTransport').mockImplementation((() => ({
 		sendMail: async (mail: {
@@ -206,7 +222,7 @@ export function effects(
 			started.length = 0;
 		},
 		restore() {
-			globalThis.fetch = realFetch;
+			modules.forEach((module, i) => (module.request = replaced[i]));
 			transport.mockRestore();
 			unsubscribe();
 			installed = false;

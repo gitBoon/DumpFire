@@ -514,10 +514,13 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`events` text DEFAULT '[]' NOT NULL,",
 		"\t`active` integer DEFAULT true NOT NULL,",
 		"\t`created_at` text DEFAULT (datetime('now')) NOT NULL,",
-		"\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade",
+		"\t`set_by` integer,",
+		"\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade,",
+		"\tFOREIGN KEY (`set_by`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null",
 		");"
 	].join('\n'),
 	"CREATE INDEX `idx_webhooks_board_id` ON `webhooks` (`board_id`);",
+	"CREATE INDEX `idx_webhooks_set_by` ON `webhooks` (`set_by`);",
 	[
 		"CREATE TABLE `work_dependencies` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",

@@ -10,10 +10,25 @@
 	let isOriginError = $state(false);
 
 	/**
-	 * How many API keys the account holds. Setting a password with an invite
-	 * ends every one of them, and the page says so before the form is sent.
+	 * How many API keys the account holds, how many webhooks it set up that
+	 * are on, and how many of its report schedules are on. Setting a password
+	 * with an invite ends every key, switches off every such webhook and pauses
+	 * every such schedule (card 2168), and the page says so before the form is
+	 * sent.
 	 */
 	let apiKeys = $derived(data.apiKeys ?? 0);
+	let webhooks = $derived(data.webhooks ?? 0);
+	let reportSchedules = $derived(data.reportSchedules ?? 0);
+	/** What setting a password here ends, switches off and pauses, in words: empty for none. */
+	let whatItEnds = $derived(
+		[
+			apiKeys > 0 ? `ends this account's ${apiKeys} API key${apiKeys === 1 ? '' : 's'}` : '',
+			webhooks > 0 ? `switches off the ${webhooks} webhook${webhooks === 1 ? '' : 's'} it set up` : '',
+			reportSchedules > 0 ? `pauses its ${reportSchedules} report schedule${reportSchedules === 1 ? '' : 's'}` : ''
+		]
+			.filter(Boolean)
+			.join(', ')
+	);
 </script>
 
 <svelte:head>
@@ -35,9 +50,9 @@
 		</div>
 
 		{#if data.valid}
-			{#if apiKeys > 0}
+			{#if whatItEnds}
 				<div class="keys-notice">
-					<p>Setting a password here ends this account's {apiKeys} API key{apiKeys === 1 ? '' : 's'} and signs it out everywhere else.</p>
+					<p>Setting a password here {whatItEnds} and signs it out everywhere else.</p>
 				</div>
 			{/if}
 

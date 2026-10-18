@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.17
+version: 1.18
 status: As-Built
 date: 2026-10-18
 tags:
@@ -13,7 +13,9 @@ tags:
   - real-time
   - invites
   - mail-failures
-description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks, and user preferences"
+  - ssrf
+  - webhook-allow-list
+description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), and user preferences"
 ---
 
 # Notifications & Email System
@@ -962,13 +964,22 @@ Board-level webhooks fire HTTP POST requests to configured URLs when events occu
 | `events` | JSON array | Event types to subscribe to |
 | `active` | boolean | Enable/disable toggle |
 
+Each webhook also records `set_by` (card 2168, migration 0056): the account that last set its
+address or its secret, the caller of the `POST` that made it, or of a `PUT` that changed
+either. No answer gives it. It is what taking an account back reads: see
+[Who May Change a Webhook](#who-may-change-a-webhook). Every webhook is sent through the
+rules of [Where a Webhook May Send](#where-a-webhook-may-send), and a board holds at most 10
+([How Many Webhooks a Board May Have](#how-many-webhooks-a-board-may-have)).
+
 **A webhook's secret is in no backup** (card 2169). In a backup's copy every webhook that had
 a secret has `secret` empty and `active` off, and is listed in the `webhook_secrets_left_out`
 setting with whether it was on: switched off so that a backup put in place as the database
 by hand sends nothing unsigned. Its address and events are kept. An Import Backup on the
 server the backup came from, of the file as that server made it, puts each secret back from
-the webhook here with the same id, board and address, and switches the webhook on or off as
-it was. A backup changed since, or made by another server, has none put back: its seal does
+the webhook here with the same id, board, address and setter (`set_by`, none and none alike),
+and switches the webhook on or off as it was. A secret here set by another account than the
+one the backup's row names was set again since the backup: it is not filled, and the webhook
+is listed to enter again, as one whose address has changed is. A backup changed since, or made by another server, has none put back: its seal does
 not verify. Anywhere else such a webhook
 stays off with no secret, the import's result lists it with its board, and every start says
 so, until the board's owner or an administrator sets its secret and switches it on with
@@ -990,8 +1001,8 @@ Every other caller — board editors and viewers included — gets the webhook w
 editor's own update of the address included. The keys are left out, not set to null.
 `hasSecret` (boolean) is always present and says whether a secret is set, and `events` and
 `active` are given as before. Before October 2026 the secret was returned to anyone who
-could view the board, and until 2026-10-14 the address was. An editor may still change the
-address without being able to read it, which card 2154 is to settle.
+could view the board, and until 2026-10-14 the address was. Since card 2154 an editor cannot
+change either: see [Who May Change a Webhook](#who-may-change-a-webhook).
 
 ```mermaid
 flowchart TD
@@ -1005,7 +1016,267 @@ flowchart TD
 
 All webhook responses are built by `presentWebhook(hook, reveal)` in
 `src/lib/server/webhooks.ts`, which leaves out `url` and `secret` together unless `reveal`
-is true, so no route can return the raw row.
+is true, so no route can return the raw row. It leaves out `setBy` for every caller.
+
+### Who May Change a Webhook
+
+The people who may read a webhook's address and secret are the ones who may change them, and
+the ones who may switch a webhook on (card 2154):
+
+| On a board, through `/api/v1/` | Editor | Board owner or administrator |
+|-------------------------------|--------|------------------------------|
+| Create a webhook (`POST /boards/{boardId}/webhooks`), with the address they type | ✅ | ✅ |
+| Change its `events` | ✅ | ✅ |
+| Switch it off (`PUT /webhooks/{id}`, `{"active": false}`) | ✅ | ✅ |
+| Send `"active": true` for a webhook that is already on (a value unchanged) | ✅ | ✅ |
+| Switch it on: `"active": true` for a webhook that is off | ❌ `403` | ✅ |
+| Send `url` or `secret` at all, whatever the value: a new one, the stored one, `null` | ❌ `403` | ✅ |
+| Delete it | ✅ | ✅ |
+
+An editor's refusals are `403` `Only the board's owner or an administrator can change a
+webhook's address or secret. Ask the board's owner.` and `403` `Only the board's owner or an
+administrator can switch a webhook on. Ask the board's owner.`, and nothing in the request is
+written. An editor whose own webhook their own password reset switched off asks the owner too,
+or deletes it and creates it again. A viewer is `403` `No edit access to this
+board`, as before. The stored address sent back unchanged is refused to an editor too, because
+accepting it would let them test guesses at an address they cannot read. Switching a webhook
+on is choosing again to send the board's events to an address the editor cannot see, perhaps
+an intruder's that a password reset switched off. A script that sends back the whole answer of
+the `POST` (it carries `url` and `secret`) with a changed `events` is now refused: send only the
+fields that change.
+
+```mermaid
+flowchart TD
+    Put["PUT /api/v1/webhooks/{id}"] --> Found{"Is there such a webhook?"}
+    Found -->|"No"| N404["404 Webhook not found"]
+    Found -->|"Yes"| Edit{"Edit access to its board?"}
+    Edit -->|"No"| E403["403 No edit access"]
+    Edit -->|"Yes"| Who{"Board owner or administrator?"}
+    Who -->|"No, and url or secret is sent"| A403["403: address or secret"]
+    Who -->|"No, and active true for one that is off"| S403["403: switch a webhook on"]
+    Who -->|"Yes, or neither of those"| Fields["Each field read: 400 for a bad value,<br/>an address inside the network included"]
+    Fields --> Write["Written. set_by is the caller<br/>when the url or the secret changed,<br/>or the webhook was switched on"]
+```
+
+**Who set it.** `set_by` is the account that last set the webhook's address or secret, or
+switched it on: the `POST`'s caller, and the caller of a `PUT` whose `url` or `secret` differs
+from what is stored, or that switches the webhook on (after the rule above, the board's owner or
+an administrator). Sent back unchanged, and `"active": true` for one already on, they set
+nothing. The `POST` and the `PUT` ask again, in the transaction that writes, that the caller's
+key is still there: a key a reset ended while the request's body was arriving is `401` `Invalid
+or expired API key`, with nothing written. Taking an account back switches off every webhook it set that is on: an
+administrator's password reset, an invite used, the holder's own change with "End my API keys
+too" (or "Switch off the N webhooks I set up") ticked, and deleting the account. A webhook with
+no setter (made before migration 0056, or whose setter's account was deleted) is left on. A
+webhook switched off this way keeps naming its setter, and is switched on again by the board's
+owner or an administrator with `PUT /api/v1/webhooks/{id}` and `{"active": true}`; no page
+shows webhooks. See [What Setting a Password Ends](authentication-security.md#what-setting-a-password-ends).
+
+### Where a Webhook May Send
+
+A webhook is a request this server makes to an address a caller typed. With no rule it would
+send a board's events to anything the server can reach and the caller cannot: the server itself
+(loopback), the Docker host and its other containers, the office or cloud network, and the cloud
+metadata service at `169.254.169.254`. So **an address inside the network is refused** (card
+2161): when a webhook is registered or its address changed, as written, and at every delivery,
+as written and as resolved. `src/lib/server/webhook-address.ts` holds the rule; `insideReason()`
+is the one judgement of an address for both.
+
+An address is inside if it is in these tables, the IANA special-purpose addresses that are not
+globally reachable, condensed. Everything else is outside. The words are the ones the refusals
+use.
+
+| IPv4 | Refused as |
+|------|------------|
+| `0.0.0.0/8` | a "this network" address, which reaches this server |
+| `10.0.0.0/8`, `172.16.0.0/12` (Docker's own networks), `192.168.0.0/16` | a private network address |
+| `100.64.0.0/10` | a shared address (carrier NAT, Tailscale) |
+| `127.0.0.0/8` | a loopback address |
+| `169.254.0.0/16` | a link-local address, where the cloud metadata service is |
+| `192.0.0.0/24` | an IETF protocol address |
+| `192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24` | a documentation address |
+| `192.88.99.0/24` | a 6to4 relay address |
+| `198.18.0.0/15` | a benchmarking address |
+| `224.0.0.0/4` | a multicast address |
+| `240.0.0.0/4` | a reserved address |
+
+| IPv6 | Refused as |
+|------|------------|
+| `::ffff:0:0/96` (mapped), `64:ff9b::/96` (NAT64), `2002::/16` (6to4) | judged by the IPv4 address it holds: `[::ffff:7f00:1] is a loopback address (it holds 127.0.0.1)` |
+| `::/128` | the unspecified address, which reaches this server |
+| `::1/128` | a loopback address |
+| `64:ff9b:1::/48` | a local-use NAT64 address |
+| the rest of `::/8` | a reserved address (the retired IPv4-compatible form, and SIIT's `::ffff:0:0:0/96`) |
+| `100::/64` | a discard-only address |
+| `2001::/23` | an IETF protocol address (Teredo and benchmarking among it) |
+| `2001:db8::/32`, `3fff::/20` | a documentation address |
+| `5f00::/16` | an SRv6 identifier |
+| `fc00::/7` | a unique local address (a private network) |
+| `fe80::/10` | a link-local address |
+| `fec0::/10` | a site-local address |
+| `ff00::/8` | a multicast address |
+
+Names refused whatever they resolve to, with case ignored and every final dot removed
+(`LOCALHOST..` is `localhost`):
+
+| Name | Refused as |
+|------|------------|
+| `localhost`, and any name ending `.localhost` | `localhost is this server` |
+| A name with no dot, such as `n8n` | `n8n is a name with no dot, which is looked up inside the network` (a Docker service on the same network, an office host) |
+| A name ending `.local` | `printer.local is a name on the local link (.local)` |
+| A name ending `.internal` | `host.docker.internal is a name kept for private networks (.internal)` |
+| A name ending `.home.arpa` | `x.home.arpa is a home network name (.home.arpa)` |
+| A name with an empty label | `a..b is a name with an empty label` |
+
+IPv4 written another way (`2130706433`, `0x7f.1`, `127.1`, `0177.0.0.1`) is read the way the URL
+parser reads it, `127.0.0.1` for all four. An address with a user name or password is always
+refused: `http.request` would send the pair as Basic authentication, and a receiver that wants a
+credential reads the signature.
+
+**When it is registered** (`POST /api/v1/boards/{boardId}/webhooks`, and a `PUT` that sends a
+`url`): the address as written. One inside is `400` `Webhook url points inside the network:
+<why>`, for example `Webhook url points inside the network: 127.0.0.1 is a loopback address`; one
+with credentials is `400` `Webhook url must not carry a user name or password`. Nothing is
+written. **No name is looked up then**: a lookup's answer can differ a second later, and proves
+nothing. The stored address sent back unchanged in a `PUT` is accepted, so a webhook stored
+before this rule can still be saved.
+
+**At every delivery**: the address as written again, then every address its name resolves to,
+judged at the moment the connection is made. The webhooks have an `http.Agent` and an
+`https.Agent` of their own, with `keepAlive: false` and `guardedLookup` as their lookup, so each
+delivery is a new connection made through it, and the address judged is the address connected
+to. Each agent holds at most 20 connections to one host and port at once (`maxSockets: 20`);
+a delivery past that waits for one to close, and every request says `Connection: close`, so the
+one that waits is given a connection of its own, with its lookup. A name that resolved outside when it was registered and resolves inside now is refused at
+this send; so is one that answers one address outside and one inside (DNS rebinding). An
+address written as an IP makes no lookup, and is judged as written. **Redirects are not
+followed**: `http.request` never follows one.
+
+```mermaid
+flowchart TD
+    Event["afterCommit: dispatchWebhook(board, event, payload)"] --> Select["Read the board's active webhooks,<br/>build the body once"]
+    Select --> Each["For each webhook, in its own try"]
+    Each --> List{"events a JSON list?"}
+    List -->|"No"| W1["WARN: its events are not a list"]
+    List -->|"Yes, without this event"| Skip["Next webhook"]
+    List -->|"Yes, with it, or empty"| Written{"As written: not a URL, not http or https,<br/>credentials, an inside address or name?"}
+    Written -->|"Yes, and not allowed"| W2["WARN: not sent, and why"]
+    Written -->|"No, or allowed"| Req["http(s).request through the webhooks' own agent"]
+    Req --> IsIp{"Host written as an IP?"}
+    IsIp -->|"Yes: no lookup"| Connect["Connect"]
+    IsIp -->|"No"| Lookup["guardedLookup: every address of the name"]
+    Lookup --> Any{"Any address inside and not allowed?<br/>(a listed name: any in 0.0.0.0/8 or ::)"}
+    Any -->|"Yes"| W3["EWEBHOOKINSIDE: WARN, no connection"]
+    Any -->|"No"| Connect
+    Connect --> Status{"A status line within 10 s?"}
+    Status -->|"300 to 399"| W4["WARN: a redirect, not followed"]
+    Status -->|"Any other"| Done["Nothing logged.<br/>The answer is destroyed unread"]
+    Status -->|"An error, or none in time"| E1["ERROR: delivery failed,<br/>host and port only"]
+```
+
+What the system log says, under `Webhooks`. Each line names the webhook, its board and its
+host, never the path or the query, which can carry a token (a Slack address's path is its
+secret):
+
+| Line | Level | When |
+|------|-------|------|
+| `Webhook 4 on board 3 not sent: 127.0.0.1 is a loopback address` | `WARN` | The address as written is inside, or a name of the table above. Also `… not sent: the address for <host> carries a user name or password`, `… not sent: its address is not an http or https address (ftp:)` (a row stored before such addresses were refused) and `… not sent: its address is not a URL` |
+| `Webhook 4 on board 3 not sent: localtest.me resolves to 127.0.0.1, a loopback address` | `WARN` | A name resolved, at the connection, to an address inside. No connection is made |
+| `Webhook 4 on board 3: hooks.example.com answered 307, a redirect, which is not followed` | `WARN` | A status from 300 to 399 |
+| `Webhook 4 on board 3: delivery to hooks.example.com failed: <Node's message>` | `ERROR` | An error before the status line, or none within 10 seconds (`no answer within 10 s`). It named the whole address, path and query included, until card 2161 |
+| `Webhook 4 on board 3 not sent: its events are not a list` | `WARN` | Its stored `events` is not a JSON list (card 2145). Every other webhook of the board is still sent |
+
+Each `WARN` is written **one line per webhook and kind of refusal per hour** (refused as
+written, resolves inside, a redirect, events not a list): the first at once, then none of that
+kind for that webhook for an hour, however its words change (another address resolved, another
+status), each counted, and the next after the hour, in its words then, ends `(12 more like this
+since the last such line were not logged)`. It was one line for each event, so a bulk move of
+100 cards wrote 100, and a busy board with a stopped receiver pushed out of the system log,
+which keeps 50,000 rows, what else it held. The count is kept in memory, so a restart writes
+the next one at once; at most 10,000 webhook and kind pairs are kept, and past that the oldest
+is forgotten, its next line written at once. An `ERROR` is written every time. At `LOG_LEVEL=ERROR` no `WARN` is
+written at all. **Rows already stored
+that the rules refuse are kept**, and accepted when sent back unchanged: each is refused at every
+delivery, with its `WARN`, until its address is changed or `WEBHOOK_ALLOW_INSIDE` names it, and
+every start names each one that is on and refused as written, by webhook and board, with why,
+in one `[WARN] [STARTUP]` line: `2 webhook(s) that are on are not sent, whatever their names
+resolve to: webhook 4 on board 3 (127.0.0.1 is a loopback address); webhook 9 on board 3 (n8n is
+a name with no dot, which is looked up inside the network). Each is refused at every event until
+its address is changed or it is switched off; one inside the network can instead be named in
+WEBHOOK_ALLOW_INSIDE.` (the first 20, then `; and N more`). No name is looked up for it.
+
+**A receiver inside the network** (a self-hosted automation tool beside DumpFire) is let in by
+whoever runs the server, with the environment variable `WEBHOOK_ALLOW_INSIDE`: a list,
+separated by commas, of host names (exact, case ignored, final dots removed), addresses and
+ranges (`n8n`, `host.docker.internal`, `10.0.5.20`, `10.0.5.0/24`, `fd00::/8`, `[fd00::1]`).
+
+- A name in it is allowed whatever it resolves to inside, and passes the name rules: `n8n` lets
+  `http://n8n:5678/…` through. **A listed name is never let reach `0.0.0.0` or `::`**: a DNS
+  filter answers `0.0.0.0` (or `::`) for a name it blocks, which would reach this server, so an
+  answer in `0.0.0.0/8` or `::` is refused at the connection with the `resolves to` `WARN`, and
+  an address written in `0.0.0.0/8` is refused whatever range is listed.
+- An address or range lets in any address inside it, written in the address or resolved from a
+  name, of its own family; a range of the mapped, NAT64 or 6to4 forms is the IPv4 range it holds.
+- An entry is kept only if it lies **wholly inside one row of the tables**. `0.0.0.0/0`, `::/0`,
+  `::ffff:0:0/96` and a slip such as `10.0.0.0/2` for `/24` would let every webhook reach this
+  server and the metadata service, so each is ignored, and so is an entry outside the network
+  (`8.8.8.0/24`, which would allow nothing), an IPv4 address not written as four decimal numbers
+  (`127.1`), and a port, a path or a wildcard. The rest of the list applies.
+- Nor may an entry hold `0.0.0.0` or `::`, which reach this server whatever it listens on, or a
+  row listed before the row that holds it, though one row holds it all: `0.0.0.0/8` and
+  `0.0.0.0` lie inside the "this network" row, and `::/8`, `::/96` and `::1/8` inside `::/8`,
+  yet each held this server. Anything else inside `::/8` is ignored too (it is reserved), and so
+  is an IPv4-mapped or NAT64 range written with a prefix under 96: `::ffff:10.0.5.0/24` is
+  `::/24`, not `10.0.5.0/24`, and held `::1`. These rules shut out `0.0.0.0`, `::` and the
+  reserved forms only (see the trust point below). An entry that names this server on purpose, `127.0.0.1`, `::1` or
+  `localhost`, is taken: a development installation's receiver is one.
+- Each ignored entry is one `[WARN] [STARTUP]` line at every start: `WEBHOOK_ALLOW_INSIDE:
+  "10.0.0.0/2" ignored: wider than one inside range`, or `… ignored: not inside the network, so
+  it allows nothing`, `an IPv4 address not written as four decimal numbers`, `its range is not a
+  number of bits`, `not a host name, an address or a range (a port, a path or a wildcard is not
+  taken)`, `it holds 0.0.0.0, a "this network" address, which reaches this server`, `it holds ::,
+  the unspecified address, which reaches this server`, `it holds 64:ff9b:1::/48, a local-use
+  NAT64 address`, `an IPv4-mapped range needs /96 or more`, `a NAT64 range needs /96 or more`,
+  `a reserved range inside ::/8 (an IPv4-mapped range needs /96 or more)`.
+- **An entry trusts every account with every port and path on that host**: anyone who can
+  register a webhook, an editor of any board, may send to any of them, and a port cannot be
+  named. Name a dedicated host or address for the receiver. Do not list `host.docker.internal`,
+  or the Docker host's address, while anything else listens on the host. Nor list a range that
+  holds this container's own address: its Docker network (`172.16.0.0/12`, or the narrower
+  network it is on) opens this server too. Name the receiver's single address or name instead.
+- It is not a setting on the admin page: an administrator's session, or a stolen one, could then
+  open the internal network, and a restore would bring an old list back. See
+  [Deployment](deployment.md#where-a-webhook-may-send).
+
+**No proxy.** A webhook is delivered directly, never through `HTTP_PROXY` or `HTTPS_PROXY`:
+through a proxy the lookup would judge the proxy's address, not the receiver's. An installation
+whose only way out is a proxy could not deliver before (Node's `fetch` went direct too) and
+cannot now.
+
+**What is left.** A webhook to this server's own public address, or to a name that resolves to
+it, leaves the container, turns at the host and reaches what listens there. The tables cannot
+name that address. See
+[Webhook Destinations](authentication-security.md#webhook-destinations).
+
+### How Many Webhooks a Board May Have
+
+**At most 10** (card 2201, `MAX_WEBHOOKS_PER_BOARD` in `src/lib/server/webhooks.ts`), switched-off
+ones counted: one is a single `PUT {"active": true}` away from being sent. Every event of a board
+is sent to each of its webhooks, each a connection of its own held up to 10 seconds, so the cap
+bounds what one event sends. The 11th `POST /api/v1/boards/{boardId}/webhooks` is `409` `This
+board has 10 webhooks, and a board may have at most 10: delete 1 before adding another.`, with
+nothing created. It is the create's last check, after the 404, the 403 and every field's 400,
+made in the same transaction as the insert, so two creates sent together cannot both take the
+tenth place. Deleting one makes room. A `PUT` adds no row, and nothing else makes one.
+
+**A board that already has more** keeps them all, and every active one is still sent: which to
+drop would be a guess. No webhook can be added to it until it has fewer than 10, and the `409`
+gives its own count (`This board has 14 webhooks, … delete 5 before adding another.`). Every
+start names such boards in one `[WARN] [STARTUP]` line, by id and count, never an address:
+`2 board(s) have more webhooks than the 10 a board may have: board 12 has 14, board 40 has 11.
+All of them are still sent, and none can be added to such a board until it has fewer than 10.`,
+the first 20 named and the rest counted (`, and N more`). It is a constant, not a setting: a
+large value would remove the protection.
 
 ### Webhook Flow
 
@@ -1022,7 +1293,7 @@ sequenceDiagram
     W-->>S: 200 OK
 ```
 
-A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column is one entry, so at most one delivery to each of the board's webhooks: a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no answer within 10 seconds, is logged at `ERROR`. The receiver's status code is not read, so an answer of 500 from a receiver is not logged as a failure.
+A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column is one entry, so at most one delivery to each of the board's webhooks: a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no status line within 10 seconds, is logged at `ERROR`, naming the host and port and never the path. The receiver's status is read only to log a redirect, which is not followed, so an answer of 500 from a receiver is not logged as a failure. The board's webhooks are read once, and the body built once, for each event: every webhook of one event is sent the same body and timestamp, signed for each, and each webhook is handled on its own, so a row that cannot be sent stops no other (card 2145). See [Where a Webhook May Send](#where-a-webhook-may-send).
 
 ### Events and Payload
 
@@ -1035,7 +1306,7 @@ A webhook is dispatched by the activity entry for the action, once that entry is
 | `card.deleted` | `card_deleted`: a card deleted for good |
 | `comment.added` | `comment_added` |
 
-The same event is sent whether the action was made in the web UI or through the API. The request carries the headers `X-DumpFire-Event` and `X-DumpFire-Signature` (`sha256=` and the HMAC-SHA256 of the body under the webhook's secret, or empty when no secret is set), and a body of this shape:
+The same event is sent whether the action was made in the web UI or through the API. The request is a `POST` made with `node:http` or `node:https` (card 2161; it was `fetch`), and carries the headers `X-DumpFire-Event` and `X-DumpFire-Signature` (`sha256=` and the HMAC-SHA256 of the body under the webhook's secret, or empty when no secret is set), with `Content-Type: application/json`, `Content-Length` (the body is sent whole, never chunked, as `fetch` sent it), `Accept: */*`, `User-Agent: DumpFire-Webhook/1.0` and `Connection: close`, and a body of this shape:
 
 ```json
 {
@@ -1073,7 +1344,9 @@ What is not sent:
 | `src/lib/server/reports.ts` | `takeReportMail()` and `REPORT_MAILS_PER_DAY`: the day's 100 addresses an account's report mail may reach; the scheduler, which switches off a schedule kept with more than 10 |
 | `src/lib/server/events.ts` | SSE event emitter with board and global subscriptions |
 | `src/lib/board/sse.ts`, `src/routes/board/[id]/+layout.svelte` | The board page's stream, opened as the page mounts and closed as it goes; the layout makes the page afresh for each board, so the stream follows the board shown (card 2184) |
-| `src/lib/server/webhooks.ts` | Webhook dispatch on board events |
+| `src/lib/server/webhooks.ts` | Webhook dispatch on board events: `dispatchWebhook()`, each webhook in its own `try` (card 2145); `deliver()` on the webhooks' own agents (card 2161), its `WARN`s one line per webhook and kind of refusal per hour; `refusalAsWritten()` and `activeWebhooksRefused()`, for delivery and the start-up line; `presentWebhook()`; `MAX_WEBHOOKS_PER_BOARD`, `refuseWebhookOverCap()` and `boardsOverWebhookCap()` (card 2201) |
+| `src/lib/server/webhook-address.ts` | Where a webhook may send (card 2161): `insideReason()`, `addressRefusal()`, `allowInside()` and `parseAllowInside()` for `WEBHOOK_ALLOW_INSIDE`, `guardedLookup()`, `readWebhookUrl()` |
+| `src/lib/server/startup-checks.ts` | Among its twelve start-up lines, the ignored entries of `WEBHOOK_ALLOW_INSIDE`, the boards over the webhook cap, and the webhooks that are on and refused as written |
 | `src/lib/server/logActivity.ts` | Writes the activity entry and queues the webhook for it |
 | `src/lib/server/db/transaction.ts` | `afterCommit()`: holds every notification until the write it reports is committed |
 | `src/lib/server/mentions.ts` | Extract @mentions from comment text |

@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.16
+version: 1.17
 status: As-Built
 date: 2026-10-18
 tags:
@@ -72,7 +72,8 @@ credentials, not a webhook's signing secret. Each destination is in it with its 
 fields, and a webhook that had a secret is in it switched off, listed in the
 `webhook_secrets_left_out` setting. Every backup is sealed: an HMAC of every row, made with
 a key this server keeps and no backup holds. A restore keeps this server's own where they are
-for the same account, and only into a backup this server made and nobody has changed since,
+for the same account (for a webhook, the same id, board, address and setter), and only into a
+backup this server made and nobody has changed since,
 and says which are to enter again; a destination still without its
 credentials is not tried by a backup run (below). So a backup alone no longer rebuilds a lost
 server: keep the mail password and each destination's credentials outside DumpFire. What it
@@ -235,7 +236,12 @@ sequenceDiagram
   left on with no secret would send every event unsigned. It throws before writing anything
   if handed the running database. A restore fills each gap from this server only from an
   entry the same in every field that is not secret (`fillSecretGaps()`), and only into a
-  backup whose seal verifies: see
+  backup whose seal verifies. For a webhook that is the webhook here with the same id, board,
+  address and setter (`set_by`, the account that last set its address or secret, or switched it on, card 2168;
+  none and none alike, and none on a database from before migration 0056): a secret here set
+  by another account than the backup's row names was set again since, and is listed to enter
+  again rather than filled under the backup's setter, where that account's password reset
+  would not reach it. See
   [The Secrets a Backup Does Not Hold](authentication-security.md#the-secrets-a-backup-does-not-hold-card-2169).
 - **Sealed** (card 2169's review, S1): `sealCopy()` writes into the cleared copy, as the
   `backup_seal` setting, an HMAC-SHA256 of a dump of it that is the same from the same rows

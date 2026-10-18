@@ -972,6 +972,7 @@ const MIRRORS: Record<string, Mirror> = {
 		// board's owner, to an administrator, and to whoever has just created the webhook.
 		adds: { hasSecret: 'presentWebhook says whether a secret is set, to callers it does not show the secret to' },
 		retyped: { events: 'stored as JSON text, and answered by presentWebhook as the array of event names it holds' },
+		withholds: { setBy: 'presentWebhook leaves it out for every caller: it is what a password reset reads (card 2168)' },
 		sometimesAbsent: {
 			secret: 'presentWebhook leaves it out unless the caller is the board owner or an administrator, or has just created the webhook',
 			url: 'presentWebhook leaves the address out with the secret, for the same callers (card 2133)'

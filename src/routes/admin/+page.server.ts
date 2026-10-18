@@ -36,18 +36,22 @@ export const load: PageServerLoad = async ({ locals }) => {
 		};
 	});
 
-	// All users, each with how many API keys they hold. A reset of a user's
-	// password ends every one of them, and the reset dialog says how many
-	// before it is confirmed. The count only: never a key's name or prefix.
+	// All users, each with how many API keys they hold, how many webhooks they
+	// set that are on, and how many of their report schedules are on. A reset
+	// of a user's password ends every key, switches off every such webhook and
+	// pauses every such schedule (card 2168), and the reset dialog says how
+	// many before it is confirmed. The counts only: never a key's name or
+	// prefix, nor a webhook's address.
 	// Written out with the table names: Drizzle writes a column of a query on
 	// one table without its table's name, and inside the sub-select a bare
 	// "id" is the key's.
 	//
-	// The count goes only with an account whose password the caller may
-	// reset, and is null for any other: the caller's own, which the reset
+	// The counts go only with an account whose password the caller may
+	// reset, and are null for any other: the caller's own, which the reset
 	// route refuses, and the superadmin's or another administrator's, which
 	// requireManagedAccount refuses an ordinary administrator. There is no
-	// reset there to warn of, and nobody else's keys are the caller's to count.
+	// reset there to warn of, and nobody else's keys, webhooks or schedules
+	// are the caller's to count.
 	// The rule is the one the route asks, from $lib/account-rule.ts.
 	const caller = locals.user;
 	const mayReset = (target: { id: number; role: string }) => target.id !== caller.id && mayManageAccount(caller, target);
@@ -58,9 +62,19 @@ export const load: PageServerLoad = async ({ locals }) => {
 		emoji: users.emoji,
 		role: users.role,
 		createdAt: users.createdAt,
-		apiKeys: sql<number>`(SELECT COUNT(*) FROM "api_keys" WHERE "api_keys"."user_id" = "users"."id")`
+		apiKeys: sql<number>`(SELECT COUNT(*) FROM "api_keys" WHERE "api_keys"."user_id" = "users"."id")`,
+		webhooks: sql<number>`(SELECT COUNT(*) FROM "webhooks" WHERE "webhooks"."set_by" = "users"."id" AND "webhooks"."active" = 1)`,
+		reportSchedules: sql<number>`(SELECT COUNT(*) FROM "report_schedules" WHERE "report_schedules"."user_id" = "users"."id" AND "report_schedules"."enabled" = 1)`
 	}).from(users).all()
-		.map((user) => ({ ...user, apiKeys: mayReset(user) ? user.apiKeys : null }));
+		.map((user) => {
+			const counted = mayReset(user);
+			return {
+				...user,
+				apiKeys: counted ? user.apiKeys : null,
+				webhooks: counted ? user.webhooks : null,
+				reportSchedules: counted ? user.reportSchedules : null
+			};
+		});
 
 	// All teams with member counts
 	const allTeams = db.select().from(teams).all();

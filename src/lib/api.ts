@@ -206,9 +206,13 @@ export function clearCardsWarning(boardName: string): string {
  * owner of has none. Its sharing, its deletion and putting it under a card
  * (`requireSubBoardLink`) are an owner's or an administrator's, and what its
  * other members and teams could do, they still can.
+ *
+ * A webhook they set is switched off before they go, and then names nobody
+ * (card 2168). No screen shows webhooks, so switching one on again is by the
+ * API, which the board's owner or an administrator may do.
  */
 export function userDeleteWarning(username: string): string {
-	return `Delete user "${username}"? Their comments, API keys and report schedules are deleted, and so are their team and board memberships and their card assignments. Files they uploaded and the milestones, templates and dependencies they created are kept. Boards they created are kept, and each board's other members and teams keep their access. A board with no other owner then has no owner, and only an administrator can change who it is shared with, put it under a card or delete it. Templates they created, and milestones of theirs that belong to no board, can then be managed by administrators only. Requests addressed to them are kept, and only an administrator can then accept, reject or reply to them. Their XP stays on the leaderboard.`;
+	return `Delete user "${username}"? Their comments, API keys and report schedules are deleted, and so are their team and board memberships and their card assignments. Webhooks they set up are switched off; the board's owner or an administrator can switch one on again through the API. Files they uploaded and the milestones, templates and dependencies they created are kept. Boards they created are kept, and each board's other members and teams keep their access. A board with no other owner then has no owner, and only an administrator can change who it is shared with, put it under a card or delete it. Templates they created, and milestones of theirs that belong to no board, can then be managed by administrators only. Requests addressed to them are kept, and only an administrator can then accept, reject or reply to them. Their XP stays on the leaderboard.`;
 }
 
 /** What a reset clears and what it keeps (`api/admin/reset`). */
