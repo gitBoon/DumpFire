@@ -412,7 +412,9 @@ describe('PUT /api/account/password', () => {
 		expectHashedOutsideTransaction();
 	});
 
-	it("keeps the superadmin's keys on their own change unless they ask, and nothing else ends them", async () => {
+	// It runs the change several times over, each with its own failing write, so it
+	// takes over a second alone and can pass five under the whole suite's load.
+	it("keeps the superadmin's keys on their own change unless they ask, and nothing else ends them", { timeout: 20_000 }, async () => {
 		const chief = withPassword(makeUser({ username: 'chief', role: 'superadmin' }));
 		const key = makeApiKey(chief, 'the automation');
 
@@ -722,9 +724,12 @@ describe('POST /api/users', () => {
 					username: 'newbie',
 					email: 'newbie@example.test',
 					role: 'user',
-					invited: true
+					invited: true,
+					// Card 2196: the mail was waited for, and went.
+					mailSent: true
 				});
 				expect(res.body).not.toHaveProperty('passwordHash');
+				expect(res.body).not.toHaveProperty('inviteUrl');
 
 				const invites = db.select().from(inviteTokens).all();
 				expect(invites).toHaveLength(1);
@@ -854,6 +859,8 @@ describe('POST /api/users/:id/invite', () => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
 					success: true,
+					// Card 2196: the mail was waited for, and went.
+					mailSent: true,
 					message: 'Invite sent to invitee@example.test. Any earlier invite to this account no longer works.'
 				});
 

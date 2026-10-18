@@ -12,8 +12,9 @@
  * made signed in, the account's email as it is now (card 2171), without the
  * answer telling anyone whether a request exists or whose it is.
  *
- * No email is sent by these tests. `sendEmail` is replaced with a recorder, and
- * "is SMTP configured" is a switch the test sets.
+ * No email is sent by these tests. `trySendEmail`, which every notification
+ * is sent through (card 2196), is replaced with a recorder, and "is SMTP
+ * configured" is a switch the test sets.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
@@ -31,9 +32,9 @@ vi.mock('$lib/server/email', async (importOriginal) => {
 		...actual,
 		isSmtpConfigured: () => mail.configured,
 		linkBaseUrl: (...args: Parameters<typeof actual.linkBaseUrl>) => (mail.noAddress ? null : actual.linkBaseUrl(...args)),
-		sendEmail: async (to: string, subject: string, html: string) => {
+		trySendEmail: async (to: string, subject: string, html: string) => {
 			mail.sent.push({ to, subject, html });
-			return true;
+			return { sent: true } as const;
 		}
 	};
 });

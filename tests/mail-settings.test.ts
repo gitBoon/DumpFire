@@ -304,7 +304,9 @@ describe('the way out on the SMTP route (test 17)', () => {
 			pass: MASK,
 			fromAddress: 'board@example.test',
 			fromName: 'The Board',
-			appUrl: ''
+			appUrl: '',
+			// What mail has done since the server started (card 2196).
+			mailStatus: { since: expect.any(String), sent: 0, failed: 0, lastSentAt: null, lastFailure: null }
 		});
 
 		setMail({ smtp_allow_insecure: 'true' });

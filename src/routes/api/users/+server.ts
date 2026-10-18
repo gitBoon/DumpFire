@@ -4,10 +4,11 @@ import { inTransaction } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { makePasswordHash } from '$lib/server/passwords';
 import { issueInvite } from '$lib/server/invites';
+import { inviteMailAnswer } from '$lib/server/invite-link';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
 import { readBody } from '$lib/server/request-body';
 import { listUsersFor } from '$lib/server/list-access';
-import { NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl } from '$lib/server/email';
+import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
 import { sendInviteEmail } from '$lib/server/notifications';
 import type { RequestHandler } from './$types';
 
@@ -23,8 +24,20 @@ export const GET: RequestHandler = async ({ locals }) => {
 	return json(listUsersFor(locals.user));
 };
 
-/** POST — Create a new user (admin only). Password optional if SMTP configured. */
-export const POST: RequestHandler = async ({ request, locals, url }) => {
+/** What a user with no password is refused with while the mail settings name a user and hold no password. */
+const NO_MAIL_PASSWORD = `Password must be at least 8 characters (${MAIL_PROBLEM_WORDS['no-password']})`;
+
+/**
+ * POST — Create a new user (admin only). Password optional if SMTP configured.
+ *
+ * `201`, the user, and `invited`. With no password an invite is issued and
+ * its mail sent once the user is committed, and waited for (card 2196): the
+ * answer adds `mailSent`, and when that is false, `mailProblem` (in words)
+ * and `inviteUrl`, the link for the caller to pass on by hand, left out when
+ * the checks of invite-link.ts no longer hold. `invited` used to be the whole
+ * answer, and the page said "invite email sent!" whether or not it went.
+ */
+export const POST: RequestHandler = async ({ request, locals, url, cookies }) => {
 	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
 		throw error(403, 'Forbidden');
 	}
@@ -46,6 +59,13 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 
 	if (password && password.length < 8) {
 		throw error(400, 'Password must be at least 8 characters');
+	}
+
+	// A mail user with no password, as a restore leaves the settings (card
+	// 2169): an invite's mail would fail, and that is known before the user is
+	// made, so it is refused as no mail host is (the review-fix pass's item 2).
+	if (!password && smtpPasswordMissing()) {
+		throw error(400, NO_MAIL_PASSWORD);
 	}
 
 	// A role is exactly `user` or `admin`, and only the superadmin makes an
@@ -84,6 +104,9 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 		if (!password && !isSmtpConfigured()) {
 			throw error(400, 'Password must be at least 8 characters (SMTP not configured for invite emails)');
 		}
+		if (!password && smtpPasswordMissing()) {
+			throw error(400, NO_MAIL_PASSWORD);
+		}
 
 		// An invite is a link, and the address it begins with is this server's
 		// configuration and never what the request says: see linkBaseUrl. With
@@ -105,21 +128,30 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 			.returning({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt })
 			.get();
 
-		let invited = false;
+		// If no password was provided and SMTP is ready, issue an invite, mailed
+		// below. A new user has no earlier invite to end, but an invite is issued
+		// one way, in invites.ts, so its lifetime and its rule are written once.
+		const invite = inviteFrom !== null ? { token: issueInvite(user.id), baseUrl: inviteFrom } : null;
 
-		// If no password was provided and SMTP is ready, send invite. A new user
-		// has no earlier invite to end, but an invite is issued one way, in
-		// invites.ts, so its lifetime and its rule are written once.
-		if (inviteFrom !== null) {
-			const token = issueInvite(user.id);
-
-			sendInviteEmail(user.email, user.username, token, inviteFrom);
-			invited = true;
-		}
-
-		return { ...user, invited };
+		return { user, invite };
 	});
 
-	return json(created, { status: 201 });
+	const { user, invite } = created;
+	if (invite === null) return json({ ...user, invited: false }, { status: 201 });
+
+	// After the commit, and awaited: an effect never starts inside a
+	// transaction, and the answer says whether the mail went.
+	const outcome = await sendInviteEmail(user.email, user.username, invite.token, invite.baseUrl);
+	const mail = inviteMailAnswer({ outcome, cookies, actorId: actor.id, accountId: user.id, token: invite.token, baseUrl: invite.baseUrl });
+
+	if (mail.mailSent) return json({ ...user, invited: true, mailSent: true }, { status: 201 });
+	if (mail.inviteUrl === null) {
+		return json({ ...user, invited: true, mailSent: false, mailProblem: mail.mailProblem }, { status: 201 });
+	}
+	return json(
+		{ ...user, invited: true, mailSent: false, mailProblem: mail.mailProblem, inviteUrl: mail.inviteUrl },
+		// The answer holds a credential: kept by nothing on the way (N5).
+		{ status: 201, headers: { 'Cache-Control': 'no-store' } }
+	);
 };
 

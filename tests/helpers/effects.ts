@@ -33,6 +33,18 @@
  * does when the server refuses it. The mail is not in `emails` or `all`:
  * it is in `refusedMail`. A refused mail is still an effect that started,
  * so one started inside a transaction is in `duringTransaction` too.
+ *
+ * A refusal of its own, for a test of what is said and logged of it (card
+ * 2196):
+ *
+ *     const sent = effects({ mailRefusal: (mail) => refused('EAUTH', `535 ${linkIn(mail.html)}`) });
+ *
+ * `mailRefusal` is asked about every mail, as the transport is handed it,
+ * and the error it returns is what the transport throws; `undefined` lets the
+ * mail through. It is called after the commit, inside the send, so it can
+ * quote the mail's own link, and can change the database while the mail is
+ * out, as another request would. A mail it refuses is in `refusedMail`, as
+ * one in `refuseMailTo` is.
  */
 import nodemailer from 'nodemailer';
 import { vi } from 'vitest';
@@ -78,7 +90,7 @@ export type Effects = {
 	readonly emails: Of<'email'>[];
 	/** The ones that started while a transaction was open, refused mail included. Should be empty. */
 	readonly duringTransaction: RecordedEffect[];
-	/** The mail the transport refused, with `refuseMailTo`, in the order it was tried. */
+	/** The mail the transport refused, with `refuseMailTo` or `mailRefusal`, in the order it was tried. */
 	readonly refusedMail: Of<'email'>[];
 	/**
 	 * Let effects that start on a later turn of the event loop start. A mail
@@ -97,7 +109,12 @@ let installed = false;
 /** The text the recorded transport throws for an address in `refuseMailTo`. */
 export const REFUSED_MAIL = '550 Mailbox unavailable (refused by the recorded transport)';
 
-export function effects(options: { refuseMailTo?: string[] } = {}): Effects {
+/** What `mailRefusal` is shown of a mail. */
+export type OfferedMail = { to: string; subject: string; html: string };
+
+export function effects(
+	options: { refuseMailTo?: string[]; mailRefusal?: (mail: OfferedMail) => Error | undefined } = {}
+): Effects {
 	if (installed) throw new Error('effects() is already installed: call restore() on the last one first');
 	installed = true;
 
@@ -147,10 +164,11 @@ export function effects(options: { refuseMailTo?: string[] } = {}): Effects {
 				attachments: (mail.attachments ?? []).map((a) => a.filename ?? ''),
 				inTransaction: sqlite.inTransaction
 			};
-			if (refuse.has(recorded.to)) {
+			const refusal = options.mailRefusal?.({ to: recorded.to, subject: recorded.subject, html: recorded.html });
+			if (refusal || refuse.has(recorded.to)) {
 				refusedMail.push(recorded);
 				started.push(recorded);
-				throw new Error(REFUSED_MAIL);
+				throw refusal ?? new Error(REFUSED_MAIL);
 			}
 			record(recorded);
 			return { messageId: `<recorded-${all.length}@example.test>` };

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.36
+version: 1.37
 status: As-Built
 date: 2026-10-18
 tags:
@@ -1077,8 +1077,8 @@ Every request that changes who can sign in makes its writes in one transaction (
 |---------|---------------------------------|------------------------------------|------------------------|
 | Change your own password (`PUT /api/account/password`) | The new password, the end of every session the user has, and the new session that keeps this browser signed in | All end | Kept, unless the body says `endApiKeys: true`, which the Account page's box sends |
 | An administrator sets a user's password (`PUT /api/users/:id/password`) | The new password and the end of every session that user has. Nobody sets their own password by this route, an administrator included: the caller's own id is answered 403 and told to use the Account page | All end | All end |
-| Create a user (`POST /api/users`) | The user and, where no password was given, their invite. The invite email is sent after the commit | A new account has none | A new account has none |
-| Send an invite again (`POST /api/users/:id/invite`) | The new invite. The email is sent after the commit | All earlier ones end | Kept |
+| Create a user (`POST /api/users`) | The user and, where no password was given, their invite. The invite email is sent after the commit, and waited for (card 2196) | A new account has none | A new account has none |
+| Send an invite again (`POST /api/users/:id/invite`) | The new invite. The email is sent after the commit, and waited for (card 2196) | All earlier ones end | Kept |
 | An administrator changes an account's email or role (`PUT /api/users/:id`) | The change, and the end of the account's invites when its email or role is changed | All end, when the email or role written differs from the one stored | Kept |
 | Change your own email (`PUT /api/account/email`) | The new address and the end of the account's invites | All end, when the address differs from the one stored | Kept |
 | Use an invite (`/invite/:token`) | The password, the invite marked used, the end of every session the account had, and the first session | All others end | All end |
@@ -1146,8 +1146,46 @@ nobody recognises.
   call it, inside the transaction that checks the account may be invited, and it throws if
   no transaction is open. So an account has at most one invite that works, the newest, and
   the administrator who sends one is told "Invite sent to {email}. Any earlier invite to
-  this account no longer works." An invite that was used is never deleted: `used` is how the
-  invite page and the backup tell a spent invite from a waiting one.
+  this account no longer works." when its mail went (below for when it did not). An invite
+  that was used is never deleted: `used` is how the invite page and the backup tell a spent
+  invite from a waiting one.
+- **An invite whose mail did not go: its link to the administrator who issued it** (card
+  2196). Both routes wait for the invite's mail after their commit. When the mail server
+  refused it or did not answer, the invite is kept (its earlier one was deleted at the commit)
+  and the answer carries `mailSent: false`, the problem in words, and `inviteUrl`, the mail's
+  own link, with `Cache-Control: no-store`, for the issuer to pass on by hand; the admin page
+  shows it once, in a dialog cleared on Done. A mail host cleared between the commit and the
+  send counts as a mail not sent. See
+  [When a Mail Fails](notifications-email.md#when-a-mail-fails).
+
+  *Why it grants nothing new.* The link goes only to the administrator whose request issued
+  it, and `requireManagedAccount` has already let that administrator manage the account,
+  which is the rule that lets them reset its password (`PUT /api/users/:id/password`). A reset
+  ends what an invite's use ends, sessions, invites and keys, and signs nobody in as the
+  user; what the link adds is that the person sets a password the administrator never knows.
+  No administrator is given a link for another administrator or for the superadmin: the
+  caller's own account is refused first, an administrator's account is managed only by the
+  superadmin, the superadmin's by nobody, and a superadmin's invite never works. An API key
+  reaches no internal route, so the link is never answered to a key.
+
+  *Asked again before it is given.* The mail takes seconds, and meanwhile the issuer may be
+  made an ordinary user or signed out (a reset of their password ends their sessions), and
+  another administrator may send a newer invite. So before the link is put in the answer,
+  `inviteMailAnswer` (`src/lib/server/invite-link.ts`) reads, without writing: the caller's
+  session is still open and still an administrator's (`openSessionUser`, as the live console
+  asks it); `mayManageAccount` still holds between the caller and the account, both read
+  afresh; and the token is still a usable invite (`usableInvite`, moved to `invites.ts` and
+  imported by the invite page). Any failing, no link is given, and the answer says to send a
+  new invite once mail works.
+
+  *The trail.* Either way one `WARN` line under `AUTH`, with the issuer as the row's user,
+  names the account and the issuer by id, says whether the link was given and, if not, which
+  check failed; it holds no link and no token. The answer is in no log (the gate writes the
+  method, the path and the status), no activity entry and no backup. A link handed over works
+  for seven days whether or not its holder stays an administrator, and 📧 is offered on every
+  account they manage, in use or not: when an administrator leaves, search the log for "its
+  link was given" naming them, and send each account named a new invite, which ends the old
+  link.
 - **An invite for the superadmin's account is refused.** Nobody may set the superadmin's
   password but the superadmin, and no route issues an invite for that account, but one
   written before that rule could still be waiting. The invite page reads the account's role

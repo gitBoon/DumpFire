@@ -89,6 +89,7 @@ const TEST_FILES = [
 	'internal-refusals.test.ts',
 	'live-streams.test.ts',
 	'mail-escaping.test.ts',
+	'mail-failures.test.ts',
 	'mail-links.test.ts',
 	'mail-settings.test.ts',
 	'markdown.test.ts',

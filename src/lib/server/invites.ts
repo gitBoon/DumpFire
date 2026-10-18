@@ -19,10 +19,10 @@
  * the account was made an administrator. All of them end through
  * `endUnusedInvites`, so "an invite that has not been used" is written once.
  */
-import { and, eq } from 'drizzle-orm';
+import { and, eq, gt } from 'drizzle-orm';
 import { db, sqlite } from './db';
-import { inviteTokens } from './db/schema';
-import { stamp } from '$lib/timestamps';
+import { inviteTokens, users } from './db/schema';
+import { stamp, toStamp } from '$lib/timestamps';
 
 /** How long an invite works for once it is issued: seven days. */
 export const INVITE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
@@ -76,4 +76,43 @@ export function endUnusedInvites(userId: number): number {
 		.delete(inviteTokens)
 		.where(and(eq(inviteTokens.userId, userId), eq(inviteTokens.used, false)))
 		.run().changes;
+}
+
+/**
+ * The invite, if it can set a password: it has not been used, it has not
+ * expired (and its expiry names a moment), and its account is not the
+ * superadmin's.
+ *
+ * Nobody may set the superadmin's password but the superadmin, who does so on
+ * the Account page with the current one, and no route issues an invite for
+ * that account. One written before that rule would otherwise set the only
+ * superadmin's password and end every session and key they have, with no way
+ * back but a command on the host. An administrator's invite is not refused:
+ * the superadmin sends those.
+ *
+ * The invite page asks it, its form too, so that the page and the form agree
+ * on which links work; and an invite route asks it before it hands the link
+ * of an invite whose mail did not go to the administrator who issued it
+ * (card 2196, R-S1): a newer invite sent meanwhile has deleted this one.
+ */
+export function usableInvite(token: string) {
+	// The stored form, as `issueInvite` writes the expiry (card 2095).
+	const now = stamp();
+	const found = db.select({ invite: inviteTokens, role: users.role })
+		.from(inviteTokens)
+		.innerJoin(users, eq(users.id, inviteTokens.userId))
+		.where(and(
+			eq(inviteTokens.token, token),
+			eq(inviteTokens.used, false),
+			gt(inviteTokens.expiresAt, now)
+		))
+		.get();
+	if (!found || found.role === 'superadmin') return undefined;
+	// The query compares text, which lets through an expiry that names no
+	// moment (`zzz` sorts after every stamp) and ISO with its `T` on the day
+	// itself; so the expiry is read as the moment it names as well, and one
+	// that names none has passed (the P6 review, S2).
+	const expires = toStamp(found.invite.expiresAt);
+	if (expires === null || expires <= now) return undefined;
+	return found.invite;
 }

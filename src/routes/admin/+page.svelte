@@ -893,7 +893,39 @@
 	let newUserEmoji = $state('👤');
 	let creatingUser = $state(false);
 
+	/**
+	 * The one invite out at a time (card 2196, R-S5): the account a 📧 was
+	 * pressed for, or 'new' for Create User with no password. While it is set
+	 * every 📧 and Create User are disabled, and the pressed 📧 reads "…". An
+	 * invite now waits for its mail, a second or two, and a second press used
+	 * to issue a second invite, which ends the first one's link.
+	 */
+	let inviteInFlight = $state<number | 'new' | null>(null);
 
+	/**
+	 * The link of an invite whose mail was not sent, shown once in its dialog
+	 * to the administrator who issued it (card 2196, decision 9). A credential:
+	 * whoever opens it sets the account's password. It lives here alone, never
+	 * in a toast, the address, history or storage, and is cleared on Done.
+	 */
+	let inviteLink = $state<{ url: string; username: string; message: string } | null>(null);
+	/** What 📋 Copy did: said on the button, so the link is never put in a toast. */
+	let inviteLinkCopy = $state<'idle' | 'copied' | 'failed'>('idle');
+
+	function closeInviteLink() {
+		inviteLink = null;
+		inviteLinkCopy = 'idle';
+	}
+
+	async function copyInviteLink() {
+		if (!inviteLink) return;
+		try {
+			await navigator.clipboard.writeText(inviteLink.url);
+			inviteLinkCopy = 'copied';
+		} catch {
+			inviteLinkCopy = 'failed';
+		}
+	}
 
 	async function createUser() {
 		if (!newUsername.trim() || !newEmail.trim()) return;
@@ -902,7 +934,11 @@
 			showToast('Password must be at least 8 characters', 'error');
 			return;
 		}
+		if (inviteInFlight !== null || inviteLink !== null) return;
+		const started = toasts.navigation();
 		creatingUser = true;
+		// With no password an invite is issued, and its mail waited for.
+		if (!newPassword) inviteInFlight = 'new';
 		try {
 			const body: Record<string, unknown> = {
 				username: newUsername.trim(),
@@ -925,11 +961,26 @@
 			if (!res) return;
 			const result = await answerBody(res);
 			showCreateUser = false;
+			const made = typeof result?.username === 'string' ? result.username : newUsername.trim();
 			newUsername = ''; newEmail = ''; newPassword = ''; newUserRole = 'user'; newUserEmoji = '👤';
 			await invalidateAll();
+			// The user was made either way. Its invite mail not sent: the link,
+			// for the caller to pass on (card 2196), and never "invite email sent!".
+			if (result?.mailSent === false) {
+				const said = `User ${made} was made, but the invite mail could not be sent: ${result.mailProblem}.`;
+				if (typeof result.inviteUrl === 'string') {
+					inviteLink = { url: result.inviteUrl, username: made, message: said };
+				} else {
+					showToast(`${said} Send a new invite with 📧 once mail works.`, 'error', started);
+				}
+				return;
+			}
 			showToast(result?.invited ? 'User created — invite email sent!' : 'User created');
 		} finally {
 			creatingUser = false;
+			inviteInFlight = null;
+			// The panel the dialog points to, read again so it shows this mail.
+			if (isSuperadmin) loadMailStatus();
 		}
 	}
 
@@ -1077,11 +1128,43 @@
 		showToast('User deleted');
 	}
 
+	/**
+	 * 📧: a new invite, which ends the account's earlier one. The server waits
+	 * for its mail and says whether it went (card 2196): sent, the toast; not
+	 * sent, the dialog with the link to pass on, or, where the server could no
+	 * longer show it, the server's words in a toast that stays. "Invite sent"
+	 * only for an answer that says `mailSent: true`. Either way the mail panel
+	 * is read again, for the superadmin, so it shows this mail.
+	 */
 	async function resendInvite(userId: number) {
-		const res = await sent(() => fetch(`/api/users/${userId}/invite`, { method: 'POST' }), 'Failed to send invite');
-		if (!res) return;
-		const said = (await answerBody(res))?.message;
-		showToast(typeof said === 'string' && said ? said : 'Invite sent!');
+		if (inviteInFlight !== null || inviteLink !== null) return;
+		const started = toasts.navigation();
+		inviteInFlight = userId;
+		try {
+			const res = await sent(() => fetch(`/api/users/${userId}/invite`, { method: 'POST' }), 'Failed to send invite');
+			if (!res) return;
+			const result = await answerBody(res);
+			const said = typeof result?.message === 'string' ? result.message : '';
+			if (result?.mailSent === false) {
+				if (typeof result.inviteUrl === 'string') {
+					const username = data.users.find((u) => u.id === userId)?.username ?? 'this user';
+					inviteLink = { url: result.inviteUrl, username, message: said };
+				} else {
+					showToast(said || 'The invite was made, but its mail could not be sent.', 'error', started);
+				}
+				return;
+			}
+			if (result?.mailSent === true) {
+				showToast(said || 'Invite sent!');
+				return;
+			}
+			// An answer that says neither is not taken as a mail that went.
+			showToast('The invite was made, but the answer did not say whether its mail was sent.', 'error', started);
+		} finally {
+			inviteInFlight = null;
+			// The panel the dialog points to, read again so it shows this mail.
+			if (isSuperadmin) loadMailStatus();
+		}
 	}
 
 	// ─── Team Management ──────────────────────────────────────────────────
@@ -1171,12 +1254,46 @@
 		loadSmtpConfig();
 	});
 
+	/** What mail has done since the server started, as `GET /api/admin/smtp` answers it (card 2196). */
+	type MailStatus = {
+		since: string;
+		sent: number;
+		failed: number;
+		lastSentAt: string | null;
+		lastFailure: { at: string; subject: string; problem: string; detail: string } | null;
+	};
+	let mailStatus = $state<MailStatus | null>(null);
+
+	/** The record as answered, or null for an answer without one (a server from before card 2196). */
+	function readMailStatus(value: unknown): MailStatus | null {
+		if (value === null || typeof value !== 'object') return null;
+		const record = value as MailStatus;
+		return typeof record.since === 'string' && typeof record.sent === 'number' && typeof record.failed === 'number' ? record : null;
+	}
+
+	/** A moment of the record, in the reader's own time. */
+	function when(stamp: string | null): string {
+		return stamp ? new Date(stamp).toLocaleString() : '';
+	}
+
+	/** The record read again: after Save and Send Test, each of which may have changed it. */
+	async function loadMailStatus() {
+		try {
+			const res = await fetch('/api/admin/smtp');
+			if (res.ok) {
+				const data = await res.json();
+				mailStatus = readMailStatus(data.mailStatus);
+			}
+		} catch {}
+	}
+
 	async function loadSmtpConfig() {
 		smtpLoading = true;
 		try {
 			const res = await fetch('/api/admin/smtp');
 			if (res.ok) {
 				const data = await res.json();
+				mailStatus = readMailStatus(data.mailStatus);
 				if (data.configured) {
 					smtpHost = data.host || '';
 					smtpPort = data.port || 587;
@@ -1220,6 +1337,7 @@
 			smtpIsError = true;
 		}
 		smtpSaving = false;
+		await loadMailStatus();
 		// A failure stays until the next save or test, as a failure toast does.
 		if (!smtpIsError) setTimeout(() => { if (!smtpIsError) smtpMessage = ''; }, 5000);
 	}
@@ -1247,6 +1365,7 @@
 			smtpIsError = true;
 		}
 		smtpTesting = false;
+		await loadMailStatus();
 		if (!smtpIsError) setTimeout(() => { if (!smtpIsError) smtpMessage = ''; }, 8000);
 	}
 </script>
@@ -1832,7 +1951,7 @@
 							<option value="user">User</option>
 							{#if isSuperadmin}<option value="admin">Admin</option>{/if}
 						</select>
-						<button class="btn-primary btn-sm" onclick={createUser} disabled={creatingUser || !newUsername || !newEmail}>
+						<button class="btn-primary btn-sm" onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail}>
 							{creatingUser ? 'Creating...' : 'Create'}
 						</button>
 						<button class="btn-ghost btn-sm" onclick={() => (showCreateUser = false)}>Cancel</button>
@@ -1866,7 +1985,7 @@
 								{/if}
 								<button class="btn-ghost btn-sm" onclick={() => openResetDialog(u.id)} title="Reset password">🔑</button>
 								{#if u.id !== data.currentUser.id}
-									<button class="btn-ghost btn-sm" onclick={() => resendInvite(u.id)} title="Resend invite email">📧</button>
+									<button class="btn-ghost btn-sm" onclick={() => resendInvite(u.id)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? '…' : '📧'}</button>
 									<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete User', userDeleteWarning(u.username), () => deleteUser(u.id))} title="Delete user">🗑️</button>
 								{/if}
 							{:else}
@@ -2006,6 +2125,19 @@
 					{#if smtpMessage}
 						<p class="smtp-msg" class:smtp-error={smtpIsError} class:smtp-success={!smtpIsError}>{smtpMessage}</p>
 					{/if}
+					<!-- What mail has done since the server started (card 2196): kept in memory, so a restart starts it again -->
+					{#if mailStatus}
+						<div class="mail-status">
+							<p class="smtp-hint">Since the server started ({when(mailStatus.since)}): {mailStatus.sent} sent, {mailStatus.failed} failed.</p>
+							{#if mailStatus.lastFailure}
+								<p class="smtp-msg smtp-warning">⚠️ Last failure, {when(mailStatus.lastFailure.at)}: "{mailStatus.lastFailure.subject}": {mailStatus.lastFailure.problem}. The mail error was: {mailStatus.lastFailure.detail}.
+									{#if mailStatus.lastSentAt && mailStatus.lastSentAt > mailStatus.lastFailure.at}Mail has been sent since then, last at {when(mailStatus.lastSentAt)}.{:else}No mail has been sent since then.{/if}
+									Every failure is also in the system log, on the Audit page, with its recipient.</p>
+							{:else}
+								<p class="smtp-hint">✅ No mail has failed since then.</p>
+							{/if}
+						</div>
+					{/if}
 				</div>
 			{/if}
 		</section>
@@ -2099,6 +2231,27 @@
 				{:else}
 					<button class="btn-ghost" onclick={() => (resetNotice = null)}>Close</button>
 				{/if}
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- The link of an invite whose mail was not sent (card 2196, decision 9): shown once, to the administrator who issued it, and gone on Done. No way out of it but Done. -->
+{#if inviteLink}
+	<div class="modal-overlay" role="alertdialog" aria-modal="true" aria-label="The invite mail was not sent" aria-describedby="invite-link-said invite-link-warning">
+		<div class="modal-content confirm-modal" role="document" style="max-width: 560px">
+			<h2>📧 The invite mail was not sent</h2>
+			<p id="invite-link-said" style="margin-bottom: var(--space-sm)">{inviteLink.message}</p>
+			<p id="invite-link-warning" style="margin-bottom: var(--space-sm)">Give this link to {inviteLink.username} yourself, by a way only they read. Whoever opens it can set the password of {inviteLink.username}'s account and is then signed in as them. It works once, for seven days, and stops working if another invite is sent to this account. Do not open it yourself.</p>
+			<div class="invite-link-row">
+				<code>{inviteLink.url}</code>
+				<!-- Focused as the dialog opens: what the reader is there to do, and away from the page behind it -->
+				<!-- svelte-ignore a11y_autofocus -->
+				<button class="btn-ghost btn-sm" onclick={copyInviteLink} autofocus>{inviteLinkCopy === 'copied' ? '✅ Copied!' : inviteLinkCopy === 'failed' ? 'Select it and copy it yourself' : '📋 Copy'}</button>
+			</div>
+			<p>It is not shown again. If it is lost, send a new invite with 📧. {#if isSuperadmin}Why it failed is under Email / SMTP below.{:else}The superadmin can see why under Email / SMTP.{/if}</p>
+			<div class="modal-actions">
+				<button class="btn-primary" onclick={closeInviteLink}>Done</button>
 			</div>
 		</div>
 	</div>
@@ -2527,6 +2680,18 @@
 	/* While the way out is ticked (card 2189) */
 	.smtp-warning { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); color: var(--accent-amber); }
 	.smtp-hint { font-size: 0.68rem; color: var(--text-tertiary); margin: 0 0 var(--space-xs); }
+	/* What mail has done since the server started (card 2196) */
+	.mail-status { margin-top: var(--space-md); }
+	.mail-status .smtp-msg { overflow-wrap: anywhere; }
+
+	/* The link of an invite whose mail was not sent (card 2196) */
+	.invite-link-row {
+		display: flex; align-items: center; gap: var(--space-sm);
+		margin: 0 0 var(--space-md); padding: var(--space-sm) var(--space-md);
+		background: var(--bg-base); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+	}
+	.invite-link-row code { flex: 1; font-size: 0.78rem; overflow-wrap: anywhere; user-select: all; }
+	.invite-link-row button { flex: none; }
 
 	/* Scheduled Backups */
 	.sched-config {
