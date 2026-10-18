@@ -1,7 +1,7 @@
 ---
 title: "SBOM Analysis: DumpFire"
 category: "Identity & Security"
-version: 1.3
+version: 1.4
 status: As-Built
 date: 2026-10-18
 tags:
@@ -15,7 +15,9 @@ tags:
   - jsdom
   - dompurify
   - nodemailer
-description: "Software Bill of Materials and open-source posture analysis for the DumpFire Kanban board application, with the changes of 2026-10-15 (jsdom for the tests, dompurify raised to 3.4.17, the Inter font bundled under the SIL Open Font License 1.1) and of 2026-10-18 (nodemailer 8.0.7 to 10.1.1, @types/nodemailer removed)"
+  - sveltekit
+  - devalue
+description: "Software Bill of Materials and open-source posture analysis for the DumpFire Kanban board application, with the changes of 2026-10-15 (jsdom for the tests, dompurify raised to 3.4.17, the Inter font bundled under the SIL Open Font License 1.1) and of 2026-10-18 (nodemailer 8.0.7 to 10.1.1, @types/nodemailer removed; @sveltejs/kit 2.60.1 to 2.70.3, svelte 5.55.7 to 5.57.2, @sveltejs/adapter-node 5.5.4 to 5.5.7, devalue 5.8.1 to 5.9.4, qs 6.15.1 to 6.16.0 by an override)"
 ---
 
 # SBOM Analysis: DumpFire
@@ -94,10 +96,10 @@ The following tables list all 237 production-scoped packages compiled into the p
 
 | Package | Version | Integration |
 |---|---|---|
-| svelte | 5.56.4 | Bundled — reactive UI framework |
-| @sveltejs/acorn-typescript | 1.0.9 | Bundled — TypeScript parser for Svelte |
-| acorn | 8.16.0 | Bundled — JavaScript parser |
-| esrap | 2.2.4 | Bundled — code generation |
+| svelte | 5.57.2 | Bundled — reactive UI framework (5.55.7 until 2026-10-18: section 10) |
+| @sveltejs/acorn-typescript | 1.0.13 | Bundled — TypeScript parser for Svelte |
+| acorn | 8.19.0 | Bundled — JavaScript parser |
+| esrap | 2.4.0 | Bundled — code generation |
 | esm-env | 1.2.2 | Bundled — environment detection |
 | locate-character | 3.0.0 | Bundled — source location |
 | zimmerframe | 1.1.4 | Bundled — AST walker |
@@ -105,7 +107,7 @@ The following tables list all 237 production-scoped packages compiled into the p
 | is-reference | 3.0.3 | Bundled — AST reference detection |
 | aria-query | 5.3.1 | Bundled — a11y role mapping (Apache-2.0) |
 | axobject-query | 4.1.0 | Bundled — a11y object mapping (Apache-2.0) |
-| devalue | 5.1.1 | Bundled — data serialisation |
+| devalue | 5.9.4 | Bundled — data serialisation (5.8.1 until 2026-10-18: section 10) |
 | clsx | 2.1.1 | Bundled — class name utility |
 
 ### Data Access — SQLite + Drizzle (MIT + Apache-2.0)
@@ -277,7 +279,7 @@ All `@aws-sdk/*`, `@smithy/*`, and `@aws-crypto/*` packages are Apache-2.0, publ
 | fast-deep-equal | 3.1.3 | MIT | Linked — deep equality |
 | json-bigint | 1.0.0 | MIT | Linked — BigInt JSON |
 | bignumber.js | 9.3.1 | MIT | Linked — arbitrary precision |
-| qs | 6.15.0 | BSD-3-Clause | Linked — query string parsing |
+| qs | 6.16.0 | BSD-3-Clause | Linked — query string parsing, through googleapis-common; held at 6.16.0 by an override since 2026-10-18 (6.15.1 before: section 10) |
 | bowser | 2.14.1 | MIT | Linked — browser detection |
 | buffer | 5.7.1 | MIT | Linked — Buffer polyfill |
 | readable-stream | 3.6.2 | MIT | Linked — streams polyfill |
@@ -300,7 +302,7 @@ The following packages are used exclusively for development and build tooling. T
 
 | Category | Key Packages | Licence |
 |---|---|---|
-| **SvelteKit Tooling** | @sveltejs/kit 2.60.1, @sveltejs/adapter-node 5.5.4, @sveltejs/adapter-auto 7.0.1, @sveltejs/vite-plugin-svelte 7.1.2 | MIT |
+| **SvelteKit Tooling** | @sveltejs/kit 2.70.3, @sveltejs/adapter-node 5.5.7 (2.60.1 and 5.5.4 until 2026-10-18: section 10), @sveltejs/adapter-auto 7.0.1, @sveltejs/vite-plugin-svelte 7.1.2 | MIT |
 | **Build System** | vite 8.0.13, rollup 4.60.4, rolldown 1.0.1, esbuild (0.25.12, 0.28.0), @rollup/plugin-* | MIT |
 | **CSS Processing** | lightningcss 1.32.0, postcss 8.5.14 | MPL-2.0 / MIT |
 | **TypeScript** | typescript 5.9.3, svelte-check 4.4.8, tsx 4.22.0 | Apache-2.0 / MIT |
@@ -345,12 +347,13 @@ All 15 advisories identified in the pre-update scan have been resolved:
 
 **Security Posture:** The application implements defence-in-depth with security headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, X-XSS-Protection), CSRF protection via SvelteKit's ORIGIN checking, rate limiting on API endpoints (60 req/min), and bcrypt password hashing.
 
-**Dependency Overrides:** Two npm `overrides` are configured in `package.json` to address upstream lag in transitive dependencies:
+**Dependency Overrides:** Three npm `overrides` are configured in `package.json` to address upstream lag in transitive dependencies:
 
 - `@sveltejs/kit → cookie: ^0.7.2` — SvelteKit still pins `cookie@^0.6.0`; the override forces the patched version.
 - `@esbuild-kit/core-utils → esbuild: ^0.25.0` — `drizzle-kit` uses a deprecated `@esbuild-kit` chain with an old esbuild; the override forces the patched version.
+- `qs: 6.16.0` (since 2026-10-18, card 2227) — `googleapis-common` 8.0.x asks for `qs@^6.7.0`, which a fresh resolution would answer with 6.16.1, four days old on the day; the override holds it at 6.16.0, past the three advisories `npm audit` listed against 6.15.x (section 10).
 
-These overrides are safe because both packages maintain backwards-compatible APIs across these minor version ranges.
+These overrides are safe because the packages maintain backwards-compatible APIs across these minor version ranges.
 
 ## 8. Conclusion
 
@@ -488,5 +491,158 @@ Severity: moderate
 2 vulnerabilities (1 moderate, 1 high)
 ```
 
-No `nodemailer` entry. `devalue` and `qs` are not this card's, and each has `npm audit fix`
-available.
+No `nodemailer` entry. `devalue` and `qs` were the second part of the card, below.
+
+### SvelteKit, Svelte, devalue and qs (card 2227, second part)
+
+The rest of card 2227: `devalue` (high, through `@sveltejs/kit` and `svelte`), `qs` (moderate,
+through `googleapis` → `googleapis-common`), and the unauthenticated denial of service in
+SvelteKit's reading of the `Accept` header that the card names, fixed after 2.70.1. Every
+release taken was published at least seven days before the build (2026-10-18), checked with
+`npm view <package> time --json`; the transitive releases the install brought in are
+1.0.13 of `@sveltejs/acorn-typescript` (2026-08-13), `acorn` 8.19.0 (2026-10-05), `esrap`
+2.4.0 (2026-09-26), `es-object-atoms` 1.1.2 (2026-05-22), `side-channel` 1.1.1 (2026-06-08)
+and, new, `@rollup/plugin-replace` 6.0.3 (2025-10-29, dev, the adapter's).
+
+| Package | Before → after | Published | `package.json` | Lock integrity |
+|---|---|---|---|---|
+| `@sveltejs/kit` | 2.60.1 → 2.70.3 | 2026-08-18 | `^2.60.1` → `^2.70.3` (dev: bundled at build) | `sha512-UDvEYuZqAMbfB/oXIoqKvbKcb7YczK5zYrzmsGV1zRJk03jntwp8dXiYoIJotxAndsKvcPFtx9H1GRSKFdSHgg==` |
+| `svelte` | 5.55.7 → 5.57.2 | 2026-10-06 | `^5.55.0` → `^5.57.2` | `sha512-1YiPCAXT0Ct6g1vOMmSLa0Nsc3QRMvtDF32ihgglGVrugIuIK38RyDiFNXVDhtQ81TJjSO57NdMw6DyYLqSGDQ==` |
+| `@sveltejs/adapter-node` | 5.5.4 → 5.5.7 | 2026-06-24 | `^5.5.4` → `^5.5.7` (dev) | `sha512-uOfc9eVlI3A37RRSaKcgrheBYPrfJwC9VMqDp8x/O6tlKdcLLvHThSWD0KNIbjQ/d+7bwLGx3vx6aowAcRfd2g==` |
+| `devalue` | 5.8.1 → 5.9.4 | 2026-09-18 | none: what kit (`^5.8.1`) and svelte (`^5.9.2`) resolve to | `sha512-sPAT4pztbu6586/hrhOnMKS17IJrvg12mXiSPSS3W5qDeN2RGgvZ0diZCm31dBbnevfVmujNO3IM2wrS4Y2Rhg==` |
+| `qs` | 6.15.1 → 6.16.0 | 2026-08-29 | `overrides`: `"qs": "6.16.0"` | `sha512-h6fhOIaRrID2CbEY2fqs+7t+UXZo+MLAnU5gRIq85uFtdiUPCdsApMlHhXogKVM4HM2DVbIjGNTTYH2OcmP1vA==` |
+
+- **SvelteKit stays on 2.x** and the adapter on 5.x: 3.0.0 came out on 2026-10-01 and 3.1.0 on
+  2026-10-14, a major version each for another card. 2.70.3 is the newest 2.x.
+- **devalue needed no override.** Both ranges resolve to 5.9.4, past every advisory
+  `npm audit` listed (its range ends at 5.9.2; 5.9.3 holds the fixes and 5.9.4 adds only a
+  tree-shaking annotation), and a month old. devalue 6.x is not asked for by either.
+- **qs by an override, and not by moving googleapis.** No `googleapis-common` 8.x asks for
+  more than `qs@^6.7.0`, so no update within googleapis 171 moves `qs`; `npm update` would
+  have taken 6.16.1, published on 2026-10-14, four days before the build. googleapis's
+  major is unchanged. The override is exact, so a fresh resolution cannot move it unread.
+  That cuts both ways: it also blocks every later `qs` fix, which `npm update` and
+  `npm audit fix` will not take while it stands. Revisit it with the next googleapis update.
+- The overrides already there are kept: kit's `cookie` (`^0.7.2`, still needed: kit 2.70.3
+  asks for `cookie@^0.6.0`) and drizzle-kit's `esbuild`.
+
+**Changelogs read** (SvelteKit and adapter-node from the `version-2` branch's
+`CHANGELOG.md`, svelte's, devalue's, and `qs`'s shipped `CHANGELOG.md`), for what DumpFire
+uses:
+
+- **SvelteKit 2.61.0** removes `.run()` from remote queries (DumpFire has no remote
+  functions), and **prefers the default error page when it cannot decode a URL's path**:
+  it now calls `handle` for such an address, with no route, where up to 2.60 it answered
+  `400` "Malformed URI" before calling it. `routedPath()` in `src/hooks.server.ts` decoded
+  the path with `decodeURI`, which threw: every malformed address became a `500`. Fixed in
+  the gate (below).
+- **SvelteKit 2.70.0** makes the cross-site form check (`csrf.checkOrigin`) in any build,
+  and keys it on `__SVELTEKIT_DEV__` and not `DEV`; under vitest the check is now made, as
+  in a built server. Nothing changes in production, which always made it. Tests that post a
+  form or `text/plain` now send `origin: 'http://localhost'`, as a browser does.
+- **SvelteKit 2.70.2** is the `Accept` fix ("prevent quadratic backtracking in `Accept`
+  header content negotiation"); 2.70.3 stops `$app/state` being read eagerly at module
+  start. Measured on SvelteKit's own `negotiate`, with an `Accept` of 15,000 `a`s and a
+  comma: 79.6 ms in 2.60.1, 0.1 ms in 2.70.3; with 50,000, 850 ms and 0.0 ms. **The gate had
+  the same fault of its own:** `preferredType()` in `src/lib/server/gate-answers.ts` is
+  SvelteKit's `negotiate` copied line for line, so that the gate chooses between JSON and a
+  page as SvelteKit does, and it is asked on every request before anybody is identified.
+  The upgrade alone left it quadratic (about 90 ms for 15,000 letters on `/api/boards` in
+  the built server, 0.9 s for 50,000 under vitest); its pattern is now anchored as 2.70.2's
+  is, and `tests/gate.test.ts` holds it to SvelteKit's answers and to a hostile header.
+- **Read and unaffected:** `$app/state` (`updated`, `page`), `goto(…, { replaceState })`
+  and shallow `replaceState`, `version.pollInterval` (card 2167's update bar), `kit.csp`
+  with `mode: 'auto'` and `%sveltekit.nonce%` (card 2162: 2.66.0 only adds `ws:`/`wss:`
+  and `trusted-types-eval` sources), `json`/`error`/`text`, hooks (2.61.0 only drops a build
+  warning), `MAX_COOKIE_SIZE` aligned with RFC 6265bis (2.69.3), and 2.66.0's blur of the
+  focused element before a navigation updates the page.
+- **adapter-node 5.5.5 to 5.5.7**: 5.5.5 builds the handler alongside the application
+  instead of with copies of its own, so a request is now made by SvelteKit's
+  `getRequest` (`@sveltejs/kit/node`): a body with no `Content-Length` is held to
+  `BODY_SIZE_LIMIT` (it was held to nothing), and there is one `SvelteKitError` class in the
+  built server, not two. `parse_as_bytes` moved to `files/utils.js`, unchanged. 5.5.6
+  ensures `ENV_PREFIX` is defined; 5.5.7 adds `X-Accel-Buffering: no` to event streams and
+  removes a stale socket file at start. The variables DumpFire sets (`BODY_SIZE_LIMIT`,
+  `PROTOCOL_HEADER`, `HOST_HEADER`, `ADDRESS_HEADER`, `ORIGIN`, `PORT`) read as before.
+  `tests/body-limits.test.ts`, which reads these rules from the source, was pointed at
+  the new places and states the new rule; the gate's own count of a chunked body against
+  its route's limit is unchanged and still needed, the route limits being smaller.
+- **svelte 5.55.8 to 5.57.2**: patch and minor releases, nothing marked breaking. Runes,
+  `$effect` and `untrack` as used here are unaffected; among the fixes are effect teardowns
+  given the value from before the first write in a flush (5.56.10) and untracked derived
+  reads no longer retaining disconnected dependencies (5.57.2). New compile-time errors
+  (a second `{:else}`, a snippet parameter redeclared, `let:` beside a `children` snippet)
+  are found by `npm run check`, which gives 0 errors and 0 warnings.
+- **devalue 5.8.2 to 5.9.4** and **qs 6.15.2 to 6.16.0**: fixes and additive options only.
+  DumpFire calls neither directly.
+
+**What broke, and how it was fixed.** After the upgrade, `npx vitest run` had 10 failures
+in `tests/gate.test.ts` and `tests/access-every-route.test.ts`, and
+`tests/body-limits.test.ts` failed to collect; once it did, 9 more failed there. Each came
+from a change above. `tests/error-shape.test.ts` then asked for the gate's new plain-text
+`400` to be put on its allow-list, with the reason, as SvelteKit's own words:
+
+- The malformed-address `500`: `routedPath()` returns null where the address cannot be
+  decoded, and `handle` answers it first, `400` `Malformed URI` in plain text, word for word
+  what SvelteKit answered before, with nothing logged and now with the five security
+  headers (`secured()`); `handleError` falls back to the address as sent.
+- The cross-site check now made under vitest: the tests that post a form as a page does
+  send the page's `Origin`.
+- adapter-node's moved source: the test that reads `parse_as_bytes` and `get_raw_body`
+  reads them from `files/utils.js` and SvelteKit's `getRequest`.
+- And, found in the build check rather than by a failing test, the gate's copy of the
+  quadratic `Accept` pattern (above), anchored.
+
+The suite is then 61 files and 5,574 tests, all passing (5,572 before: one test for the
+adapter's use of `getRequest`, one for a hostile `Accept` header), and `npm run check`
+gives 0 errors and 0 warnings.
+
+**`npm audit --omit=dev`, before** (2026-10-18, after the nodemailer part):
+
+```
+devalue  <=5.9.2
+Severity: high
+(8 advisories: GHSA-9rgm-9g3h-6x36 DoS via malformed input; GHSA-j22f-vq7h-c4qm shared memory
+serialised; GHSA-hx4r-w6wj-j8fg, GHSA-mcm9-63f2-9j32 and GHSA-wf3x-273g-mvxv uneval CPU and
+memory amplification; GHSA-x5rw-q4pp-hg5g unhandled rejection in stringifyAsync;
+GHSA-4q55-j62x-fr9h __proto__ check bypass; GHSA-r9w8-h9r3-54w4 typed-array reviver bypass)
+qs  2.2.5 - 6.15.3
+Severity: moderate
+(3 advisories: GHSA-q8mj-m7cp-5q26 stringify crash; GHSA-x5fp-wj9c-mxmx arrayLimit bypass;
+GHSA-4mjr-xmp4-gh2g isBuffer DoS)
+2 vulnerabilities (1 moderate, 1 high)
+```
+
+**After:**
+
+```
+found 0 vulnerabilities
+```
+
+The full `npm audit`, dev packages included, lists five, none in what the image ships and
+none moved by this card: `esbuild` 0.27.3–0.28.0 (low, the dev server on Windows), `nanoid`
+≤3.3.17, `postcss` ≤8.5.22, `source-map-js` 1.0.0–1.2.1 and `vite` 8.0.0–8.0.15 (high), all
+build or test tooling.
+
+**Checked in a production build**, on a scratch database and never `dumpfire.db`
+(`DB_PATH` a new file in a temporary folder, `SCHEDULERS=off`): `npm run build` passed
+(its `prebuild` runs the schema check and `npm run check`, 0 errors, 0 warnings), and
+`node build` on port 4399 with `ORIGIN=http://localhost:4399` started, applied every
+migration to the empty database and listened. `/login` answered `303` to `/setup` (no users)
+with the security headers; `/setup` answered `200` with a `content-security-policy` whose
+`script-src` is `'self' 'nonce-…'`, both inline scripts carrying that nonce, and the start
+and app scripts and both stylesheets it names each answered `200`. Hostile `Accept`
+headers (15,000 `a`s and a comma, 3,000 `a/a;`, 15,000 `;`, 2,000 `a/a;q=`, 7,000 ` ,`) on
+`/setup`, `/api/boards`, `/api/v1/me` and a path that is no route were each answered in
+under 100 ms, the slowest `/api/boards` at 92 ms, which is how the gate's own copy of the
+pattern was found; one of 50,000 characters is refused `431` by Node itself, whose header
+limit is 16 KB, before SvelteKit sees it. The server was stopped by its process id and the
+scratch database, with its `-wal` and `-shm`, deleted.
+
+After the gate's pattern was anchored the build and the checks were run again, on a new
+scratch database: the same answers for `/login`, `/setup` and its four files; 15,000 `a`s
+answered in 27 ms on `/api/boards`, 4 ms on `/setup` and `/api/v1/me`, 10 ms on a path that
+is no route; and `/%zz`, sent as it is (`curl --path-as-is`), answered `400` `Malformed URI`
+in plain text with the five security headers, and nothing written to the log for it. The
+server was stopped by its process id, nothing was left listening on port 4399, and the
+database and its `-wal` and `-shm` were deleted.

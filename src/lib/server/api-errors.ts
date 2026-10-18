@@ -13,7 +13,7 @@
  *     form that was not sent as one. `guardBody` is the one place that says
  *     so, for every handler.
  *   - A body over the size limit made the read throw the node adapter's 413,
- *     which SvelteKit does not know for one of its own and answered 500.
+ *     which SvelteKit did not know for one of its own and answered 500.
  *     `guardBody` throws it again as SvelteKit's, and throws the gate's own
  *     count of a body (`BodyOverLimit`) as a 413 with the limit.
  *   - An answer SvelteKit makes without asking a handler, a wrong method
@@ -39,9 +39,10 @@ const LONGEST_KEPT_TEXT = 200;
  *
  * A body that runs past the length it declared is the node adapter's to
  * refuse: it fails the body's stream with a 413, and the read throws that.
- * The adapter is built with a copy of SvelteKit's error class of its own, and
- * SvelteKit takes an error's status only from one it knows by `instanceof`,
- * so the adapter's 413 was answered 500. It is known here by its `status`,
+ * Up to adapter-node 5.5.4 the adapter was built with a copy of SvelteKit's
+ * error class of its own, and SvelteKit takes an error's status only from one
+ * it knows by `instanceof`, so the adapter's 413 was answered 500. Since 5.5.5
+ * the build has one copy (card 2227). It is still known here by its `status`,
  * whatever class it is, and thrown again as SvelteKit's own, which is
  * answered 413 `{ message }`.
  *

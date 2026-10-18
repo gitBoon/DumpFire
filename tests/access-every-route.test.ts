@@ -2078,7 +2078,9 @@ for (const [key, entry] of Object.entries(TABLE)) {
 				const { path, body, headers } = parts(c.req(w));
 				const before = snapshotDb();
 
-				const res = await gate(method, path, { body, headers });
+				// Sent as from DumpFire's own page (Origin), as a browser sends
+				// it: a form from anywhere else is SvelteKit's 403 before the gate.
+				const res = await gate(method, path, { body, headers: { origin: 'http://localhost', ...headers } });
 				const text = await res.text();
 
 				if (pattern.startsWith('/api/v1/')) {

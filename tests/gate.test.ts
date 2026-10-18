@@ -162,6 +162,32 @@ describe('the harness', () => {
 		expectJson(res, 200, { id: user.id, username: user.username, email: user.email, emoji: user.emoji, role: 'user' });
 		expect(res.headers.get('x-content-type-options')).toBe('nosniff');
 	});
+
+	// SvelteKit refuses a form posted with no matching `Origin` before it
+	// calls `handle`, in a built server and, since SvelteKit 2.70 (card 2227),
+	// here too. docs/testing.md says the harness makes that check, and every
+	// test that posts a form sends `origin: 'http://localhost'` because of it;
+	// this holds both. If an upgrade stops the check under vitest, this fails,
+	// and the tests that send the header no longer show what a built server does.
+	it('makes SvelteKit’s own check of a form’s Origin, as a built server does', async () => {
+		const form = { 'content-type': 'application/x-www-form-urlencoded', accept: 'text/html' };
+		for (const origin of [undefined, 'http://evil.example']) {
+			const res = await send('POST', '/login', {
+				headers: origin === undefined ? form : { ...form, origin },
+				body: 'identity=&password='
+			});
+			expect({ origin, status: res.status, text: res.text }).toEqual({
+				origin,
+				status: 403,
+				text: 'Cross-site POST form submissions are forbidden'
+			});
+		}
+
+		const res = await send('POST', '/login', { headers: { ...form, origin: 'http://localhost' }, body: 'identity=&password=' });
+		// Through to the login form's action, which answers an empty name.
+		expect(res.status).toBe(400);
+		expect(res.text).toContain('Please enter your username or email');
+	});
 });
 
 describe('a request to /api/v1/ with no key the gate accepts', () => {
@@ -1469,9 +1495,10 @@ describe('an address with a letter percent-encoded', () => {
 		60_000
 	);
 
-	// Which is why the gate can decode an address without a catch. That it is
-	// SvelteKit's answer and not the gate's is shown with the log, below.
-	it('is answered 400 by SvelteKit when it cannot be decoded, to anybody', async () => {
+	// SvelteKit answered this itself up to 2.60; since 2.61 it hands it to the
+	// gate with no route, where decodeURI threw, a 500 (card 2227). The gate
+	// now answers it first, as SvelteKit did, and writes nothing down (below).
+	it('is answered 400 when it cannot be decoded, to anybody', async () => {
 		for (const path of ['/%zz', '/admin%E0%A4%A', '/api/v1/%E0%A4%A']) {
 			for (const headers of [{}, asUser, { ...asAdmin, ...withKey }]) {
 				const res = await answered('GET', path, { headers });
@@ -1652,7 +1679,12 @@ describe('a body that is not a form, sent where a form is read', () => {
 			// A form up to its first `;`, and not to undici, which reads the whole header.
 			['application/x-www-form-urlencoded;a=b, text/plain', 'file=x']
 		]) {
-			const res = await send('POST', `/api/cards/${card.id}/attachments`, { headers: { ...asUser, accept: '*/*', 'content-type': type }, body });
+			// From the page, which a browser says it is from (Origin): SvelteKit
+			// refuses text/plain and a form posted from anywhere else, 403, first.
+			const res = await send('POST', `/api/cards/${card.id}/attachments`, {
+				headers: { ...asUser, origin: 'http://localhost', accept: '*/*', 'content-type': type },
+				body
+			});
 
 			expectJson(res, 400, NOT_A_FORM);
 		}
@@ -1664,7 +1696,8 @@ describe('a body that is not a form, sent where a form is read', () => {
 		// Set-up is open only while there are no users.
 		if (path === '/setup') resetDb();
 		const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
-		const sent = { 'content-type': 'text/plain' };
+		// Posted from the page itself: see the attachment upload above.
+		const sent = { 'content-type': 'text/plain', origin: 'http://localhost' };
 
 		const asPage = await send('POST', path, { headers: { ...sent, accept: 'text/html' }, body: 'password=x' });
 		const asScript = await send('POST', path, { headers: { ...sent, accept: 'application/json' }, body: 'password=x' });
@@ -1714,7 +1747,7 @@ describe('a body over the size limit', () => {
 		{
 			name: 'the attachment upload, read as a form',
 			path: () => `/api/cards/${makeCard(makeBoard({ owner: user }).cols['To Do']).id}/attachments`,
-			caller: () => ({ ...asUser, accept: '*/*' }),
+			caller: () => ({ ...asUser, origin: 'http://localhost', accept: '*/*' }),
 			type: 'multipart/form-data; boundary=----dumpfire'
 		},
 		{
@@ -1947,14 +1980,15 @@ describe('the security headers', () => {
 		}
 	});
 
-	it('are on the gate’s own refusals: its 401s, its 404 for a remote call, its 413s and its 429', async () => {
+	it('are on the gate’s own refusals: its 400 for an address that cannot be decoded, its 401s, its 404 for a remote call, its 413s and its 429', async () => {
 		const answers: [string, Answer][] = [
+			['400, an address that cannot be decoded', await send('GET', '/%zz')],
 			['401, /api/v1/ with no key', await send('GET', '/api/v1/me')],
 			['401, an internal route with no session', await send('GET', '/api/boards', { headers: { accept: '*/*' } })],
 			[
 				'413, a form posted to /login',
 				await send('POST', '/login', {
-					headers: { 'content-type': 'application/x-www-form-urlencoded', 'content-length': String(10 * 1024 * 1024) },
+					headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'http://localhost', 'content-length': String(10 * 1024 * 1024) },
 					body: 'identity=x'
 				})
 			],
@@ -2290,7 +2324,7 @@ describe('a redirect the gate gives', () => {
 
 	it('is, for a form a page’s script posts, the JSON SvelteKit sends; and for a browser’s, a 303', async () => {
 		const { action_json_redirect } = await kit();
-		const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
+		const FORM = { 'content-type': 'application/x-www-form-urlencoded', origin: 'http://localhost' };
 		const byScript = { ...FORM, accept: 'application/json', 'x-sveltekit-action': 'true' };
 
 		// Signed in, posting the login form; and posting set-up once there are users.
@@ -2322,12 +2356,24 @@ describe('a redirect the gate gives', () => {
 			'text/*',
 			'application/*;q=0.2, text/html;q=0.1',
 			'nonsense',
-			'text/html;q=0'
+			'text/html;q=0',
+			// A type is read from the start of its part only, since SvelteKit 2.70.2.
+			'nonsense text/html',
+			' \ttext/html'
 		];
 
 		for (const accept of accepts) {
 			expect({ accept, ours: preferredType(accept, TYPES) }).toEqual({ accept, ours: negotiate(accept, TYPES) });
 		}
+	});
+
+	// Card 2227: the pattern was tried from every position of a part with no
+	// `/`, in time the square of its length. Unanchored it took most of a second
+	// on 50,000 letters; anchored, well under a millisecond.
+	it('reads a hostile Accept header at once', () => {
+		const started = performance.now();
+		expect(preferredType('a'.repeat(50_000) + ',', ['application/json', 'text/html'])).toBeUndefined();
+		expect(performance.now() - started).toBeLessThan(100);
 	});
 });
 
@@ -2573,7 +2619,7 @@ describe('what the gate writes to the system log', () => {
 		expect(lines).toEqual([{ level: 'WARN', message: 'GET /_app/remote/abc123 → 404', status: 404 }]);
 	});
 
-	it('is nothing for an address that cannot be decoded: SvelteKit answers it before the gate is called', async () => {
+	it('is nothing for an address that cannot be decoded: it is answered before anything else', async () => {
 		const lines = await logged(async () => {
 			expect((await gate('GET', '/admin%E0%A4%A', { headers: asUser })).status).toBe(400);
 			expect((await gate('GET', '/api/v1/%zz', { headers: withKey })).status).toBe(400);
