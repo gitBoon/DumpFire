@@ -3526,3 +3526,158 @@ describe('the check itself', () => {
 		]);
 	});
 });
+
+describe('the admin page’s invite whose mail was not sent, src/routes/admin/+page.svelte (card 2196)', () => {
+	const file = 'src/routes/admin/+page.svelte';
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const tree = scriptOf(file);
+	// The page is CRLF in the working copy: lines are joined with \n to read the markup.
+	const markup = source.slice(source.indexOf('</script>')).replace(/\r\n/g, '\n');
+	const opens = markup.indexOf('<!-- The link of an invite whose mail was not sent');
+	/** The dialog's markup, to the next comment at the start of a line after its own (its own inside are indented). */
+	const dialog = opens === -1 ? '' : markup.slice(opens, markup.indexOf('\n<!--', opens + 4));
+
+	/** Every `inviteLink = <something>` in a function, the clearing `= null` left out. */
+	const linkSet = (fn: ts.Node) => {
+		const found: ts.BinaryExpression[] = [];
+		const visit = (node: ts.Node) => {
+			if (
+				ts.isBinaryExpression(node) &&
+				node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+				node.left.getText() === 'inviteLink' &&
+				node.right.getText() !== 'null'
+			) {
+				found.push(node);
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(fn);
+		return found;
+	};
+
+	it.each(['resendInvite', 'createUser'])('%s sets the link only from an answer that is a success and says mailSent: false', (name) => {
+		const set = linkSet(functionNamed(tree, name));
+
+		expect(set.length).toBeGreaterThan(0);
+		for (const assignment of set) {
+			expect(sideOf(assignment)).toBe('ok');
+			const under = ts.findAncestor(assignment, (node) => ts.isIfStatement(node) && node.expression.getText().includes('mailSent === false'));
+			expect(under, assignment.getText()).toBeDefined();
+			expect(assignment.right.getText()).toContain('inviteUrl');
+		}
+	});
+
+	it('sets the link nowhere else, puts it in no toast and in no storage, and clears it with Done', () => {
+		const touching = tree.statements
+			.filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && !!statement.name)
+			.filter((fn) => /\binviteLink\b/.test(fn.getText()))
+			.map((fn) => fn.name!.text)
+			.sort();
+		expect(touching).toEqual(['closeInviteLink', 'copyInviteLink', 'createUser', 'resendInvite']);
+		expect(linkSet(functionNamed(tree, 'closeInviteLink'))).toEqual([]);
+		expect(statementsOf(functionNamed(tree, 'closeInviteLink'), 'inviteLink = null')).toHaveLength(1);
+
+		for (const call of callsOf(tree, 'showToast')) {
+			expect(call.getText(), call.getText()).not.toMatch(/inviteLink|inviteUrl/);
+		}
+		expect(tree.getText()).not.toMatch(/(localStorage|sessionStorage|history\.|goto\()[^\n]*invite/i);
+
+		expect(dialog.split('onclick={closeInviteLink}>Done</button>')).toHaveLength(2);
+		expect(markup.split('{#if inviteLink}')).toHaveLength(2);
+	});
+
+	it('copies the link with the clipboard, as the Account page copies a new key', () => {
+		expect(functionNamed(tree, 'copyInviteLink').getText()).toContain('navigator.clipboard.writeText(inviteLink.url)');
+		expect(dialog).toContain('onclick={copyInviteLink}');
+	});
+
+	it('says what decision 9 says, word for word', () => {
+		for (const words of [
+			'📧 The invite mail was not sent',
+			'Give this link to {inviteLink.username} yourself, by a way only they read. Whoever opens it can set the password of ' +
+				"{inviteLink.username}'s account and is then signed in as them. It works once, for seven days, and stops working if " +
+				'another invite is sent to this account. Do not open it yourself.',
+			'It is not shown again. If it is lost, send a new invite with 📧.',
+			'Why it failed is under Email / SMTP below.',
+			'The superadmin can see why under Email / SMTP.'
+		]) {
+			expect(dialog, words).toContain(words);
+		}
+		expect(functionNamed(tree, 'createUser').getText()).toContain(
+			'`User ${made} was made, but the invite mail could not be sent: ${result.mailProblem}.`'
+		);
+	});
+
+	it('gates every 📧 and Create User on one flag, inviteInFlight, set before the request and cleared in finally (R-S5)', () => {
+		for (const name of ['resendInvite', 'createUser']) {
+			const fn = functionNamed(tree, name);
+			const tried = fn.body!.statements.find((statement): statement is ts.TryStatement => ts.isTryStatement(statement));
+			expect(tried, name).toBeDefined();
+			expect(tried!.finallyBlock?.statements.map((statement) => statement.getText()), name).toContain('inviteInFlight = null;');
+			expect(fn.body!.statements.slice(0, fn.body!.statements.indexOf(tried!)).map((statement) => statement.getText()), name).toContain(
+				'if (inviteInFlight !== null || inviteLink !== null) return;'
+			);
+		}
+		expect(statementsOf(functionNamed(tree, 'resendInvite'), 'inviteInFlight = userId')).toHaveLength(1);
+		expect(functionNamed(tree, 'createUser').getText()).toContain("if (!newPassword) inviteInFlight = 'new';");
+
+		expect(markup).toContain(
+			'<button class="btn-ghost btn-sm" onclick={() => resendInvite(u.id)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? \'…\' : \'📧\'}</button>'
+		);
+		expect(markup).toContain('onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail}>');
+	});
+
+	it('reads the mail panel again once an invite is answered, so the panel the dialog points to shows the failure (review fixes, item 1)', () => {
+		for (const name of ['resendInvite', 'createUser']) {
+			const tried = functionNamed(tree, name).body!.statements.find((statement): statement is ts.TryStatement => ts.isTryStatement(statement));
+			expect(tried!.finallyBlock?.statements.map((statement) => statement.getText()), name).toContain('if (isSuperadmin) loadMailStatus();');
+		}
+	});
+
+	it('focuses Copy when the dialog opens, and describes the dialog by its words (review fixes, item 3)', () => {
+		expect(dialog).toMatch(/role="alertdialog"[^>]*aria-describedby="invite-link-said invite-link-warning"/);
+		expect(dialog).toContain('<p id="invite-link-said"');
+		expect(dialog).toContain('<p id="invite-link-warning"');
+		expect(dialog).toMatch(/<!-- svelte-ignore a11y_autofocus -->\s*<button class="btn-ghost btn-sm" onclick=\{copyInviteLink\} autofocus>/);
+	});
+
+	it('says "Invite sent!" only for an answer that says mailSent: true, and an answer that says neither is not taken as sent (review fixes, item 4)', () => {
+		const fn = functionNamed(tree, 'resendInvite');
+		const toasts = callsOf(fn, 'showToast');
+		const sentToasts = toasts.filter((call) => call.getText().includes('Invite sent'));
+		expect(sentToasts).toHaveLength(1);
+		const under = ts.findAncestor(sentToasts[0], (node) => ts.isIfStatement(node) && node.expression.getText() === 'result?.mailSent === true');
+		expect(under, sentToasts[0].getText()).toBeDefined();
+		expect(toasts.map((call) => call.getText())).toContain(
+			"showToast('The invite was made, but the answer did not say whether its mail was sent.', 'error', started)"
+		);
+	});
+
+	it('reads the mail panel’s record only from an answer that is a success, when the panel loads and after Save and Send Test', () => {
+		for (const name of ['loadSmtpConfig', 'loadMailStatus']) {
+			const set = statementsOf(functionNamed(tree, name), 'mailStatus = readMailStatus(data.mailStatus)');
+			expect(set, name).toHaveLength(1);
+			expect(branchOf(set[0]), name).toBe('ok');
+		}
+		expect(callsOf(functionNamed(tree, 'saveSmtp'), 'loadMailStatus')).toHaveLength(1);
+		expect(callsOf(functionNamed(tree, 'testSmtp'), 'loadMailStatus')).toHaveLength(1);
+	});
+
+	it('shows decision 11’s block in the mail panel, under Send Test, to the superadmin alone', () => {
+		const panel = markup.slice(markup.indexOf('<h2>📧 Email / SMTP</h2>'), markup.indexOf('<!-- Danger zone -->'));
+		const block = panel.slice(panel.indexOf('{#if mailStatus}'));
+		expect(panel.indexOf('{#if mailStatus}')).toBeGreaterThan(panel.indexOf('onclick={testSmtp}'));
+		for (const words of [
+			'Since the server started ({when(mailStatus.since)}): {mailStatus.sent} sent, {mailStatus.failed} failed.',
+			'✅ No mail has failed since then.',
+			'⚠️ Last failure, {when(mailStatus.lastFailure.at)}: "{mailStatus.lastFailure.subject}": {mailStatus.lastFailure.problem}. The mail error was: {mailStatus.lastFailure.detail}.',
+			'Mail has been sent since then, last at {when(mailStatus.lastSentAt)}.',
+			'No mail has been sent since then.',
+			'Every failure is also in the system log, on the Audit page, with its recipient.'
+		]) {
+			expect(block, words).toContain(words);
+		}
+		const at = source.indexOf('{#if mailStatus}');
+		expect(blocksAround(source, at).some((b) => b.condition === 'isSuperadmin' && !b.inElse)).toBe(true);
+	});
+});

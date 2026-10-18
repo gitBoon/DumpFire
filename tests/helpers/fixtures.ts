@@ -42,6 +42,7 @@ import {
 	type WorkDependency
 } from '$lib/server/db/schema';
 import { createSession, generateApiKey, type SessionUser } from '$lib/server/auth';
+import { resetMailStatus } from '$lib/server/email';
 
 let seq = 0;
 const next = () => ++seq;
@@ -69,7 +70,8 @@ export function resetUploads(): void {
 
 /**
  * Empty every table, keeping the schema and the migration record, and remove
- * every attachment file.
+ * every attachment file. What mail has done since the server started, which
+ * `email.ts` keeps in memory, is started again too.
  *
  * Call from `beforeEach`. Foreign keys are switched off for the wipe so table
  * order does not matter, and back on before the test runs — the application
@@ -95,6 +97,9 @@ export function resetDb(): void {
 	}
 	seq = 0;
 	resetUploads();
+	// What mail has done is kept in memory since the server started (card
+	// 2196): each test starts as a server does.
+	resetMailStatus();
 }
 
 export type Role = 'user' | 'admin' | 'superadmin';

@@ -10,7 +10,7 @@ import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { cardComments, cards, sessions, settings, users, workDependencies } from '$lib/server/db/schema';
 import { getCompletionBlocker } from '$lib/server/card-completion';
-import { sendEmail } from '$lib/server/email';
+import { mailStatus, sendEmail, trySendEmail } from '$lib/server/email';
 import { emit } from '$lib/server/events';
 import { logUiActivity } from '$lib/server/logActivity';
 import { createLogger } from '$lib/server/logger';
@@ -305,6 +305,33 @@ describe('effects()', () => {
 		expect(sent.refusedMail).toEqual([]);
 	});
 
+	it('refuses with the error mailRefusal returns, shown the mail, and keeps that mail apart (card 2196)', async () => {
+		sent.restore();
+		const shown: { to: string; subject: string; html: string }[] = [];
+		const refusal = Object.assign(new Error('535 5.7.8 Username and Password not accepted'), { code: 'EAUTH', responseCode: 535 });
+		sent = effects({
+			mailRefusal: (mail) => {
+				shown.push(mail);
+				return mail.to === 'refused@example.test' ? refusal : undefined;
+			}
+		});
+		makeSmtp();
+
+		expect(await trySendEmail('refused@example.test', 'One', '<p>1</p>')).toEqual({
+			sent: false,
+			problem: 'sign-in',
+			detail: '535 5.7.8 Username and Password not accepted'
+		});
+		expect(await trySendEmail('taken@example.test', 'Two', '<p>2</p>')).toEqual({ sent: true });
+
+		expect(shown).toEqual([
+			{ to: 'refused@example.test', subject: 'One', html: '<p>1</p>' },
+			{ to: 'taken@example.test', subject: 'Two', html: '<p>2</p>' }
+		]);
+		expect(sent.all.map((e) => e.kind === 'email' && e.to)).toEqual(['taken@example.test']);
+		expect(sent.refusedMail.map((e) => e.to)).toEqual(['refused@example.test']);
+	});
+
 	it('notes an effect that starts while a transaction is open', async () => {
 		// Sent straight from inside one, which no application code may do.
 		sqlite.transaction(() => {
@@ -543,6 +570,25 @@ describe('the builders', () => {
 
 		expect(db.select().from(cardComments).all()).toEqual([comment]);
 		expect(comment).toMatchObject({ cardId: card.id, userId: owner.id, content: 'Looks right to me' });
+	});
+
+	it('resetDb starts again what mail has done since the server started (card 2196)', async () => {
+		const sent = effects({ refuseMailTo: ['refused@example.test'] });
+		try {
+			makeSmtp();
+			await sendEmail('taken@example.test', 'One', '<p>1</p>');
+			await sendEmail('refused@example.test', 'Two', '<p>2</p>');
+			expect(mailStatus()).toMatchObject({ sent: 1, failed: 1, lastFailure: { subject: 'Two' } });
+			const since = mailStatus().since;
+			await new Promise((resolve) => setTimeout(resolve, 5));
+
+			resetDb();
+
+			expect(mailStatus()).toEqual({ since: expect.any(String), sent: 0, failed: 0, lastSentAt: null, lastFailure: null });
+			expect(mailStatus().since > since).toBe(true);
+		} finally {
+			sent.restore();
+		}
 	});
 
 	it('makeSubBoard hangs a board with cards off a card, to any depth', () => {

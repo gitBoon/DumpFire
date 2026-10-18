@@ -3,12 +3,12 @@ import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { apiKeys, inviteTokens, users } from '$lib/server/db/schema';
-import { eq, and, gt, count } from 'drizzle-orm';
+import { eq, count } from 'drizzle-orm';
 import { createSession, setSessionCookie, endAccountAccess } from '$lib/server/auth';
 import { CheckNotMade, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
 import { rememberBrowser } from '$lib/server/known-browsers';
 import { createLogger } from '$lib/server/logger';
-import { stamp, toStamp } from '$lib/timestamps';
+import { usableInvite } from '$lib/server/invites';
 
 const log = createLogger('AUTH');
 
@@ -52,40 +52,6 @@ export const load: PageServerLoad = async ({ params }) => {
 		apiKeys: keys?.count ?? 0
 	};
 };
-
-/**
- * The invite, if it can set a password: it has not been used, it has not
- * expired (and its expiry names a moment), and its account is not the
- * superadmin's.
- *
- * Nobody may set the superadmin's password but the superadmin, who does so on
- * the Account page with the current one, and no route issues an invite for
- * that account. One written before that rule would otherwise set the only
- * superadmin's password and end every session and key they have, with no way
- * back but a command on the host. An administrator's invite is not refused:
- * the superadmin sends those.
- */
-function usableInvite(token: string) {
-	// The stored form, as `issueInvite` writes the expiry (card 2095).
-	const now = stamp();
-	const found = db.select({ invite: inviteTokens, role: users.role })
-		.from(inviteTokens)
-		.innerJoin(users, eq(users.id, inviteTokens.userId))
-		.where(and(
-			eq(inviteTokens.token, token),
-			eq(inviteTokens.used, false),
-			gt(inviteTokens.expiresAt, now)
-		))
-		.get();
-	if (!found || found.role === 'superadmin') return undefined;
-	// The query compares text, which lets through an expiry that names no
-	// moment (`zzz` sorts after every stamp) and ISO with its `T` on the day
-	// itself; so the expiry is read as the moment it names as well, and one
-	// that names none has passed (the P6 review, S2).
-	const expires = toStamp(found.invite.expiresAt);
-	if (expires === null || expires <= now) return undefined;
-	return found.invite;
-}
 
 export const actions: Actions = {
 	default: async ({ params, request, cookies, platform }) => {

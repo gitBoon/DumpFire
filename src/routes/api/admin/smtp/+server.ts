@@ -1,13 +1,15 @@
 import { json, error } from '@sveltejs/kit';
 import { SECRET_MASK, keepMailPassword, readMailHere, trimHost } from '$lib/server/backup-secrets';
 import {
+	MailNotSent,
+	TLS_FAULT_HINT,
 	asSentence,
 	getSmtpConfig,
+	mailStatus,
 	saveSmtpConfig,
 	sendTestEmail,
 	getAppUrl,
 	setAppUrl,
-	tlsFaultHint,
 	type SmtpConfig
 } from '$lib/server/email';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -26,13 +28,21 @@ const log = createLogger('SMTP');
 /**
  * GET — Return current SMTP config (password masked). `allowInsecure` is the
  * way out of card 2189; "Use SSL/TLS" (`secure`) is no longer answered.
+ *
+ * `mailStatus`, configured or not (card 2196): what mail has done since the
+ * server started, as `mailStatus()` in email.ts keeps it. How many mails were
+ * sent and how many failed, when the last was sent, and the last failure:
+ * when, its subject, the problem in words and the mail server's own words,
+ * masked. The superadmin's alone, as the rest of this answer is: the mail
+ * server's words can name the mail host and its user name. Both answers are
+ * `no-store`, so nothing on the way keeps them (the review-fix pass's item 7).
  */
 export const GET: RequestHandler = async ({ locals }) => {
 	requireSuperadmin(locals.user);
 
 	const config = getSmtpConfig();
 	if (!config) {
-		return json({ configured: false });
+		return json({ configured: false, mailStatus: mailStatus() }, { headers: { 'Cache-Control': 'no-store' } });
 	}
 
 	return json({
@@ -44,8 +54,9 @@ export const GET: RequestHandler = async ({ locals }) => {
 		pass: config.pass ? SECRET_MASK : '',
 		fromAddress: config.fromAddress,
 		fromName: config.fromName,
-		appUrl: getAppUrl() || ''
-	});
+		appUrl: getAppUrl() || '',
+		mailStatus: mailStatus()
+	}, { headers: { 'Cache-Control': 'no-store' } });
 };
 
 /**
@@ -142,7 +153,12 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 	return json({ success: true });
 };
 
-/** POST — Send a test email. */
+/**
+ * POST — Send a test email. A failure is logged once, by `deliverMail` in
+ * email.ts, with the mail server's words masked; this route used to write a
+ * line of its own beside it, unmasked (card 2196's N2). The gate's line for
+ * the `500` stays.
+ */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const caller = requireSuperadmin(locals.user);
 
@@ -154,10 +170,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		await sendTestEmail(recipient);
 		return json({ success: true, message: `Test email sent to ${recipient}` });
 	} catch (err: any) {
-		log.error(`Test email to ${recipient} failed: ${err.message}`);
 		// A certificate that cannot be checked, or a server with no STARTTLS,
-		// is answered with the two ways to put it right (card 2189).
-		const hint = tlsFaultHint(err);
+		// is answered with the two ways to put it right (card 2189): the
+		// problem `deliverMail` read with the same test as `tlsFaultHint`.
+		const hint = err instanceof MailNotSent && err.problem === 'secure-connection' ? TLS_FAULT_HINT : null;
 		throw error(500, hint ? `Failed to send test email: ${asSentence(err.message)} ${hint}` : `Failed to send test email: ${err.message}`);
 	}
 };

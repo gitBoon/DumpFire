@@ -9,7 +9,9 @@
  * created" mail would have told them twice; nothing called it, and it was
  * removed (card 2010).
  * All functions silently no-op if SMTP is not configured.
- * Notifications are fire-and-forget — they never block API responses.
+ * Notifications are fire-and-forget — they never block API responses. The
+ * invite is the one exception: its route awaits it after its commit, and
+ * says whether it went (card 2196).
  *
  * Every text put into a mail's HTML here goes through `escapeHtml` where it is
  * put, each link in an `href` included (the rule is in `$lib/escape-html`).
@@ -21,7 +23,7 @@
 
 import { escapeHtml } from '$lib/escape-html';
 import { MASTER_PREF, type NotificationPref } from '$lib/notification-prefs';
-import { sendEmail as sendEmailNow, sendEmailWithAttachment, isSmtpConfigured } from './email';
+import { MAIL_PROBLEM_WORDS, sendEmailWithAttachment, isSmtpConfigured, trySendEmail, type MailOutcome } from './email';
 import { db } from './db';
 import { afterCommit } from './db/transaction';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams, taskRequests } from './db/schema';
@@ -34,18 +36,24 @@ import { canViewBoard, type Actor } from './board-access';
 const log = createLogger('NOTIFY');
 
 /**
- * Send an email once the write it follows from is committed.
+ * Send an email once the write it follows from is committed, and resolve with
+ * whether it went (`trySendEmail` in `email.ts`, card 2196).
  *
  * Every mail in this file tells somebody about a write. Called inside a
  * transaction, the send waits for the commit and never happens if the
  * transaction rolls back, in which case the promise returned here is never
  * settled. Outside a transaction it is sent at once, as `sendEmail` in
  * `email.ts` does. Callers that await a result (the SMTP test, the scheduled
- * reports) use that one directly and are not inside a transaction.
+ * reports) use that one directly and are not inside a transaction; the
+ * invite routes await `sendInviteEmail` after theirs.
+ *
+ * A mail that fails resolves `sent: false` and is logged, once, by
+ * `email.ts`. The `.catch` beside each send below is for an error before the
+ * send, never for a mail that failed.
  */
-function sendEmail(to: string, subject: string, html: string): Promise<boolean> {
+function sendEmail(to: string, subject: string, html: string): Promise<MailOutcome> {
 	return new Promise((resolve, reject) => {
-		afterCommit(() => sendEmailNow(to, subject, html).then(resolve, reject));
+		afterCommit(() => trySendEmail(to, subject, html).then(resolve, reject));
 	});
 }
 
@@ -301,9 +309,20 @@ export function notifyUserAssigned(boardId: number, cardId: number, cardTitle: s
 	sendEmail(assigneeEmail, `Assigned: ${cardTitle}`, html).catch(err => log.error(`Assignment notification failed for ${assigneeEmail}`, err));
 }
 
-/** Send an invite email to a new user with a password-set link. */
-export function sendInviteEmail(email: string, username: string, inviteToken: string, baseUrl: string) {
-	if (!isSmtpConfigured()) return;
+/**
+ * Send an invite email to a new user with a password-set link, and say
+ * whether it went (card 2196): `not-configured` when no mail host is set by
+ * the time it is sent.
+ *
+ * Called by both routes that issue an invite once the transaction that
+ * issued it has committed, and awaited, so that the route can say whether the
+ * mail went and, when it did not, hand the link to the administrator who
+ * issued it. Called inside a transaction, it would wait for the commit.
+ */
+export function sendInviteEmail(email: string, username: string, inviteToken: string, baseUrl: string): Promise<MailOutcome> {
+	if (!isSmtpConfigured()) {
+		return Promise.resolve({ sent: false, problem: 'not-configured', detail: MAIL_PROBLEM_WORDS['not-configured'] });
+	}
 
 	const inviteUrl = `${baseUrl}/invite/${inviteToken}`;
 	const html = emailTemplate('Welcome to DumpFire!', `
@@ -320,8 +339,7 @@ export function sendInviteEmail(email: string, username: string, inviteToken: st
 		</p>
 	`);
 
-	sendEmail(email, 'You\'re invited to DumpFire!', html)
-		.catch(err => log.error(`Invite email failed for ${email}`, err));
+	return sendEmail(email, 'You\'re invited to DumpFire!', html);
 }
 
 /** Notify a user when they are added to a board. */

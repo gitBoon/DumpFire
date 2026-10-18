@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.16
+version: 1.17
 status: As-Built
 date: 2026-10-18
 tags:
@@ -11,12 +11,14 @@ tags:
   - sse
   - webhooks
   - real-time
+  - invites
+  - mail-failures
 description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks, and user preferences"
 ---
 
 # Notifications & Email System
 
-DumpFire notifies users through three channels: email notifications via SMTP, real-time browser updates via SSE, and external webhooks. All channels are fire-and-forget — they never block API responses.
+DumpFire notifies users through three channels: email notifications via SMTP, real-time browser updates via SSE, and external webhooks. All channels are fire-and-forget — they never block API responses — but for an invite's mail, which its route waits for after its commit so that it can say whether the mail went (card 2196, [When a Mail Fails](#when-a-mail-fails)).
 
 All three are sent only after the change they report has been committed to the database. A change that is rolled back sends nothing on any channel.
 
@@ -157,16 +159,18 @@ next mail. A save that changes the way out writes, once committed, one `WARN` li
 
 ### Connection Handling
 
-Every mail goes through `createTransporter` in `src/lib/server/email.ts`, built afresh for each
-send from the stored settings: `sendEmail` (invites, notifications, request mail and its
-confirmation, the new-link mail, the backup failure mail), `sendEmailWithAttachment` (reports,
-the requester's completion PDF) and `sendTestEmail` (Send Test). Card 2189 made the connection
-a checked, encrypted one by default.
+Every mail goes through `deliverMail` in `src/lib/server/email.ts` (card 2196), the one place a
+mail is handed to the mail server, and so through `createTransporter`, built afresh for each
+send from the stored settings: `sendEmail` and `trySendEmail` (invites, notifications, request
+mail and its confirmation, the new-link mail, the backup failure mail), `sendEmailWithAttachment`
+(reports, the requester's completion PDF) and `sendTestEmail` (Send Test). Card 2189 made the
+connection a checked, encrypted one by default. What `deliverMail` answers, records and logs
+is under [When a Mail Fails](#when-a-mail-fails), below.
 
 ```mermaid
 flowchart TD
-    Mail["Any mail: notification, invite, report, test"] --> Configured{"A host saved?"}
-    Configured -->|"no"| NoOp["Nothing sent, false"]
+    Mail["Any mail: notification, invite, report, test<br/>deliverMail"] --> Configured{"A host saved?"}
+    Configured -->|"no"| NoOp["Nothing sent: not-configured,<br/>not counted, not logged"]
     Configured -->|"yes"| Port{"Port 465?"}
     Port -->|"yes"| Implicit["TLS from the first byte,<br/>certificate checked<br/>(the way out changes nothing here)"]
     Port -->|"no"| WayOut{"Way out ticked?<br/>smtp_allow_insecure"}
@@ -178,9 +182,10 @@ flowchart TD
     Old --> Auth
     Cert -->|"no"| Refused["Refused before AUTH"]
     CA["NODE_EXTRA_CA_CERTS:<br/>a private authority's certificate"] -.->|"adds to what is trusted"| Cert
-    Auth -->|"failure"| Fail["ERROR line, false"]
+    Auth -->|"accepted"| Sent["sent: true, counted, lastSentAt"]
+    Auth -->|"failure"| Fail["deliverMail: sent false, problem, detail masked,<br/>counted, kept as the last failure,<br/>one ERROR line, the error not handed to the logger"]
     Refused --> Fail
-    Fail -->|"ETLS, or a certificate or STARTTLS message"| Warn["WARN Mail is not being sent,<br/>at most once in 10 minutes"]
+    Fail -->|"secure-connection, not Send Test"| Warn["WARN Mail is not being sent,<br/>at most once in 10 minutes"]
 ```
 
 The options handed to nodemailer (10.1.1):
@@ -213,9 +218,13 @@ The options handed to nodemailer (10.1.1):
   without signing in, so it tells what the first mail will meet. `createTransporter`'s comment
   names it: change the two together.
 
-**What a failure says.** Send Test's `500` is `Failed to send test email: <the error>`. When the
-error is the certificate or STARTTLS (`tlsFaultHint`: the code `ETLS`, or a message matching
-`certificate`, `altnames`, `self-signed` or `STARTTLS`), the error is ended as a sentence and followed by:
+**What a failure says.** Send Test's `500` is `Failed to send test email: <the error>`, the error
+being the mail server's words masked as the log has them (`MailNotSent`, thrown by
+`sendTestEmail`; card 2196). When the error is the certificate or STARTTLS (the problem
+`secure-connection`, read by the one test `tlsFaultHint` and `mailProblem` share: the code `ETLS`
+or `EREQUIRETLS`, or nodemailer's or Node's own words matching `certificate`, `altnames`,
+`self-signed` or `STARTTLS`, the mail server's reply left out of that reading), the error is
+ended as a sentence and followed by:
 
 > The mail server's certificate could not be checked, or the server does not offer STARTTLS.
 > For a certificate from a private authority, see docs/deployment.md, Mail Server Certificates;
@@ -227,11 +236,181 @@ certificate refused during STARTTLS comes back `ESOCKET` with Node's message
 ("self-signed certificate", "Hostname/IP does not match certificate's altnames: …"); and a server
 that answers neither EHLO nor STARTTLS comes back `ECONNECTION` "EHLO failed but HELO does not
 support required STARTTLS", which nodemailer 10 names so (the review-fix pass's S6). A sign-in
-failure or a timeout says what it says, with no sentence. Every other mail is sent after its
-write commits, and a failure is an `ERROR` line (`Failed to send email to …`); when it is the
-certificate or STARTTLS, `sendEmail` and `sendEmailWithAttachment` also write one `WARN` line
-under `EMAIL`, `Mail is not being sent: <the error>. <the sentence above>`, at most once in ten
-minutes in a process, so the Audit page says why invites and notifications stopped.
+failure or a timeout says what it says, with no sentence. Every mail's failure, Send Test's
+included, is one `ERROR` line under `EMAIL` written by `deliverMail` (`Failed to send email to
+<to>: <subject>`); the SMTP route's own line for Send Test is gone (card 2196's N2). When it is
+the certificate or STARTTLS, `deliverMail` also writes one `WARN` line under `EMAIL`, `Mail is
+not being sent: <the error, masked>. <the sentence above>`, at most once in ten minutes in a
+process, so the Audit page says why invites and notifications stopped. Send Test does not
+write it: its answer already says the same to the superadmin who pressed it.
+
+### When a Mail Fails
+
+Card 2196. An invite whose mail failed was answered "Invite sent", a user made with no password
+while mail failed was answered `invited: true` (which the admin page read as "invite email
+sent!"), and every other mail that failed was one `ERROR` line and nothing else. The line was the
+error itself, so a mail server's refusal that quoted the mail's link put a live invite token in
+front of every administrator in the live console.
+
+**One place a mail is sent from.** `deliverMail(message)` in `email.ts` answers `{ sent: true }`
+or `{ sent: false, problem, detail }`. "Sent" means the mail server accepted it; a bounce
+afterwards goes to the From address and is not known here. "Not sent" means "not confirmed
+sent": a mail server can take the whole message after `DATA` and the connection then drop
+before its answer arrives, and then the mail is delivered all the same. So an invite's link
+given to its issuer may reach a person who also has the mail; either works, once. `trySendEmail(to, subject, html)`
+answers the whole outcome; `sendEmail` and `sendEmailWithAttachment` still answer a boolean,
+which the report routes read; `sendTestEmail` still throws. The `.catch(log.error(…))` beside
+each send in `notifications.ts`, and the backup failure mail's `catch`, are for an error before
+the send: a mail that fails resolves, and its one line is `deliverMail`'s.
+
+`problem` is read from nodemailer's error by `mailProblem(err)`:
+
+| `problem` | Words (in an answer and on the panel) | From |
+|---|---|---|
+| `not-configured` | mail is not set up on this server | No mail host when the mail was sent. Not counted as a failure, not logged |
+| `no-password` | the mail password has not been entered on this server; the superadmin enters it under 📧 Email / SMTP | `EAUTH` with `command` `'API'`: nodemailer's own "Missing credentials for …", for a mail user name saved with no password (what a restore leaves, card 2169). Nothing was asked of the mail server |
+| `secure-connection` | the mail server's certificate could not be checked, or it does not offer STARTTLS | `ETLS`, `EREQUIRETLS`, or nodemailer's or Node's own words matching `certificate`, `altnames`, `self-signed` or `STARTTLS` (an altnames mismatch comes back `ESOCKET`; nodemailer 10's "EHLO failed but HELO does not support required STARTTLS" comes back `ECONNECTION`). The mail server's reply is not read for the words: a refusal saying "certificate" is the server's answer, `refused` or `failed` |
+| `unreachable` | the mail server could not be reached | `ECONNECTION`, `EDNS`, `ETIMEDOUT`, `ESOCKET` otherwise |
+| `sign-in` | the mail server refused the sign-in | `EAUTH` otherwise |
+| `refused` | the mail server did not accept the message | `EENVELOPE`, `EMESSAGE` |
+| `failed` | the mail could not be sent | Anything else |
+
+**What an invite answers.** Both routes that issue an invite, `POST /api/users/{id}/invite` and
+`POST /api/users` with no password, issue it in their transaction and then send its mail,
+after the commit, and wait for it: usually a second or two; each step of the conversation with
+the mail server can wait up to 15 seconds (`socketTimeout`), after 10 to connect and 10 for the
+greeting. The invite is kept whatever the mail did: the account's earlier invite was deleted
+at the commit, so deleting this one too would leave it no link at all.
+
+Both refuse in the transaction, before any invite is made, when the mail cannot go and that is
+known beforehand: no mail host (`400`, as before), or a mail user name saved with no password
+(`smtpPasswordMissing()`, as card 2158's new-link route asks; the review-fix pass of card 2196).
+The second is `400` with `The invite was not made: <no-password's words>. Any earlier invite to
+this account still works.` from the resend, and `Password must be at least 8 characters
+(<no-password's words>)` from a user made with no password. So the account's earlier invite is
+not ended for a mail certain to fail, and no link is put on a screen for it: decision 8 offers
+the link only for a mail that was tried.
+
+| | `POST /api/users/{id}/invite` (`200`) | `POST /api/users`, no password (`201`) |
+|---|---|---|
+| Sent | `{ success: true, mailSent: true, message: "Invite sent to ana@example.com. Any earlier invite to this account no longer works." }` | the user, `invited: true`, `mailSent: true` |
+| Not sent | `{ success: true, mailSent: false, mailProblem, inviteUrl, message: "The invite was made, but its mail to ana@example.com could not be sent: <mailProblem>. Give ana the link yourself. Any earlier invite to this account no longer works." }` | the user, `invited: true`, `mailSent: false`, `mailProblem`, `inviteUrl` |
+| Not sent, link not shown | `{ success: true, mailSent: false, mailProblem, message: "The invite was made, but its mail could not be sent, and its link cannot be shown to you now. Send a new invite with 📧 once mail works." }` | the user, `invited: true`, `mailSent: false`, `mailProblem` |
+
+A user made with a password is answered `invited: false` and no `mailSent`. `mailProblem` is the
+problem's words, never the mail server's, which can name the mail host and its user name (the
+superadmin's settings; any administrator may send an invite). Every outcome but `sent: true` is
+a mail not sent, `not-configured` included: the superadmin cleared the mail host between the
+commit and the send, and the invite exists all the same. An answer that carries `inviteUrl` has
+`Cache-Control: no-store`.
+
+`inviteUrl` is the mail's own link, `<base>/invite/<token>`, which works once, for seven days,
+and ends as any invite ends. It goes only to the administrator whose request issued it, whom
+the account rule already lets reset that account's password. Because the mail takes seconds,
+`inviteMailAnswer` in `src/lib/server/invite-link.ts` reads three things again before the link
+is put in the answer, by reads only, and gives no link if any fails: the caller's session is
+still open and still an administrator's (`openSessionUser`), `mayManageAccount` still holds
+between the caller and the account, both read afresh, and the token is still a usable invite
+(`usableInvite`, now in `invites.ts`; a newer invite sent meanwhile has deleted it).
+
+```mermaid
+sequenceDiagram
+    participant P as Admin page (📧 or Create User)
+    participant R as Invite route
+    participant DB as Database
+    participant M as deliverMail (email.ts)
+    participant S as Mail server
+    P->>R: POST, every 📧 and Create User disabled, the pressed 📧 reads "…"
+    R->>DB: one transaction: the account rule, issueInvite
+    DB-->>R: committed: the token
+    R->>M: await the invite mail, after the commit
+    M->>S: send
+    alt accepted
+        S-->>M: accepted
+        M-->>R: sent, counted
+        R-->>P: mailSent true, "Invite sent to …"
+        P->>P: toast
+    else refused, or no answer in time
+        S-->>M: error
+        M-->>R: not sent, problem and masked detail, recorded, one ERROR line
+        R->>DB: reads again: the session, the account rule, the invite
+        R->>R: WARN line: issuer and account ids, no link
+        R-->>P: mailSent false, the problem's words, inviteUrl (no-store)
+        P->>P: dialog with the link and Copy, gone on Done
+    end
+```
+
+**The mail panel's record.** `deliverMail` keeps, in memory since the server started, how many
+mails were sent and how many failed, when the last was sent, and the last failure: when, its
+subject (not its recipient, which the system log has), the problem's words and `detail`, the
+error's message masked and cut at 500 characters (it can still name the recipient, from a
+refusal at `RCPT TO`). The subject is the mail's own, so a request mail's subject holds the
+request's title, which a member of the public typed on the request form. `detail` is the mail
+server's reply when it answered, and this server's own words when it never did: `Connection
+timeout`, `Greeting never received`, `connect ECONNREFUSED 203.0.113.5:587`, `getaddrinfo
+ENOTFOUND smtp.example.com` (the code, `ETIMEDOUT`, `ECONNECTION`, `ESOCKET` or `EDNS`, is in the
+`ERROR` line). The panel puts it after "The mail error was:". Every mail counts, whatever sent it: notifications, invites, the request
+mails, the backup failure mail, reports scheduled and sent by hand, and Send Test. A mail not
+sent for want of a host is not counted. `GET /api/admin/smtp` answers it as `mailStatus`,
+configured or not, to the superadmin alone, with `Cache-Control: no-store` on both answers. The
+admin page reads it when the panel opens, after Save and Send Test, and, for the superadmin, as
+each invite is answered, so the panel the invite's dialog points to shows that mail:
+
+```json
+"mailStatus": {
+  "since": "2026-10-14T08:00:03.112Z",
+  "sent": 40,
+  "failed": 3,
+  "lastSentAt": "2026-10-14T09:58:40.006Z",
+  "lastFailure": {
+    "at": "2026-10-14T10:02:11.481Z",
+    "subject": "Assigned: Deploy v2.1",
+    "problem": "the mail server refused the sign-in",
+    "detail": "Invalid login: 535-5.7.8 Username and Password not accepted"
+  }
+}
+```
+
+It is never written to the database: a write after every mail would land at a moment no request
+controls, and every backup would carry it. A restart starts it again; the system log keeps each
+failure for 30 days. The panel shows it under Send Test (see the admin guide's SMTP
+Configuration).
+
+**Nothing secret is logged.** `deliverMail` never hands the error to the logger: an `Error`'s
+stack, and nodemailer's `response`, hold the mail server's words unmasked, and the logger stores
+an `Error` as its message and stack. It writes
+
+```text
+[ERROR] [EMAIL] Failed to send email to <to>: <subject> | {"code":"EMESSAGE","command":"DATA","responseCode":554,"problem":"refused","detail":"Message failed: 554 5.7.1 rejected, listed URL https://kanban.example.com/invite/[token]"}
+```
+
+where `detail` is `maskMailText(err.message)`: a hyphen encoded as `%2D`, `&#45;` or `&#x2D;`
+(any case) is read back as `-`, which would otherwise break a UUID into runs of 12 or fewer;
+then `maskSecretPaths` (an invite's `/invite/<token>` and a request link's `?token=` become
+`[token]`); then every run of 16 or more hex digits and hyphens, in any case, becomes `[token]`. A refusal can quote the link URL-encoded, in capitals,
+with HTML entities, or split across two reply lines after `/invite/`; each leaves the token's own
+characters as they are, which the second rule finds (an invite's token is a UUID, a request's 64
+hex digits). The cost is the odd queue id. The second rule is not in `maskSecretPaths`, which is
+run over the whole log at every start: it would mask every UUID there. The same `detail` is the
+panel's, Send Test's `500` and the `WARN` line's. When an invite's link is handed over, or not,
+the route writes one `WARN` line under `AUTH`, with the issuer as the row's user and no link or
+token:
+
+```text
+[WARN] [AUTH] Invite for user 12 was issued by user 3; its mail was not sent (the mail server could not be reached), and its link was given in the answer to their request
+[WARN] [AUTH] Invite for user 12 was issued by user 3; its mail was not sent (the mail server could not be reached), and its link was not given to them: the invite no longer works
+```
+
+The other reasons a link is not given are "the caller's session has ended, or is no longer an
+administrator's" and "the caller may no longer manage the account".
+
+So one failed mail is one `ERROR` line. Beside it, the first failure in ten minutes for the
+certificate or STARTTLS adds the `WARN` "Mail is not being sent" above, and an invite adds the
+`WARN` of its link; neither repeats the other.
+
+**A public request whose confirmation mail fails** is answered as before: the form would
+otherwise wait on the mail server, and tell anyone on the internet when this server's mail is
+down. The failure shows on the panel and in the log.
 
 ### Email Types
 
@@ -885,7 +1064,8 @@ What is not sent:
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/email.ts` | SMTP config, transporter creation, sendEmail |
+| `src/lib/server/email.ts` | SMTP config, transporter creation; `deliverMail`, the one place a mail is sent from, with `mailProblem`, `maskMailText` and the in-memory `mailStatus()` (card 2196); `sendEmail`, `trySendEmail`, `sendEmailWithAttachment`, `sendTestEmail` |
+| `src/lib/server/invite-link.ts` | `inviteMailAnswer()`: what an invite route answers about its mail, the checks read again before its link is given, and the `WARN` line (card 2196) |
 | `src/lib/server/notifications.ts` | All email notification functions with preference filtering |
 | `src/lib/notification-prefs.ts` | The one list of mail preferences: `MASTER_PREF`, `NOTIFICATION_PREFS`, `defaultPrefs()`. Read by the account page, the preferences route and the mail alike (card 2146) |
 | `src/lib/escape-html.ts` | `escapeHtml()`: the one function every mail puts its texts and links through |
