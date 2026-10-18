@@ -90,6 +90,7 @@ const TEST_FILES = [
 	'live-streams.test.ts',
 	'mail-escaping.test.ts',
 	'mail-links.test.ts',
+	'mail-settings.test.ts',
 	'markdown.test.ts',
 	'migrations.test.ts',
 	'openapi-document.test.ts',

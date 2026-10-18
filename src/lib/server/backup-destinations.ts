@@ -10,11 +10,13 @@
 
 import SftpClient from 'ssh2-sftp-client';
 import { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { google } from 'googleapis';
+import { google, type drive_v3 } from 'googleapis';
 import { Client as GraphClient } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
 import { Readable } from 'node:stream';
 import { readChoice, readNumber, readText, type RequestBody } from './request-body';
+import { trimHost } from './backup-secrets';
+import { dumpfireFolderName } from '$lib/drive-scope';
 
 // ─── Common Interface ────────────────────────────────────────────────────────
 
@@ -70,6 +72,12 @@ export interface GDriveDestinationConfig {
 	clientId?: string;           // Google OAuth Client ID (oauth mode)
 	clientSecret?: string;       // Google OAuth Client Secret (oauth mode)
 	refreshToken?: string;       // Stored after OAuth consent flow (oauth mode)
+	/**
+	 * The scope Google granted the refresh token, as Connect recorded it (card
+	 * 2188); none for a connection made before, or where Google named none.
+	 * `driveScopeIsNarrow` in `$lib/drive-scope` reads it.
+	 */
+	grantedScope?: string;
 	folderId: string;
 }
 
@@ -289,6 +297,13 @@ export class GDriveDestination implements BackupDestination {
 		try {
 			const drive = await this.getDrive();
 			if (this.config.folderId) {
+				// The folder fetched first, as an upload would meet it (card 2188,
+				// decision 8): a listing of a folder the account cannot see answers
+				// "0 existing files", as if it were empty.
+				const reached = await reachFolder(drive, this.config.folderId);
+				if (!reached.reached) {
+					return { success: false, message: `Google Drive cannot reach the folder "${this.config.folderId}": ${reached.reason}` };
+				}
 				// List files in the folder to verify access
 				const res = await drive.files.list({
 					q: `'${this.config.folderId}' in parents and trashed = false`,
@@ -422,6 +437,42 @@ export class GDriveDestination implements BackupDestination {
 /** The most pages of 1,000 files a Google Drive listing reads before it gives up. */
 const GDRIVE_MAX_PAGES = 100;
 
+/** What Google Drive calls a folder. */
+const GDRIVE_FOLDER_TYPE = 'application/vnd.google-apps.folder';
+
+/** The name of the folder Connect makes: in `$lib/drive-scope`, so the admin page names it too. */
+export { dumpfireFolderName };
+
+/**
+ * Whether the account `drive` is signed in as can reach the folder `folderId`
+ * (card 2188, decision 8): it is fetched (`files.get`), and must be a folder
+ * that is not in the trash. Any error Google answers is "cannot reach", with
+ * its message. With `drive.file`, a folder DumpFire did not make may be one
+ * Google does not let it see; this reads what Google answers rather than
+ * depending on it. Used by Connect and by `GDriveDestination.test()`.
+ */
+export async function reachFolder(
+	drive: drive_v3.Drive,
+	folderId: string
+): Promise<{ reached: true } | { reached: false; reason: string }> {
+	try {
+		const res = await drive.files.get({ fileId: folderId, fields: 'id, name, mimeType, trashed', supportsAllDrives: true });
+		if (res.data.mimeType !== GDRIVE_FOLDER_TYPE) return { reached: false, reason: 'it is not a folder' };
+		if (res.data.trashed) return { reached: false, reason: 'it is in the trash' };
+		return { reached: true };
+	} catch (err: any) {
+		return { reached: false, reason: err?.message || 'Google Drive did not find it' };
+	}
+}
+
+/** Make the folder Connect gives a destination whose Folder ID is empty, in the account's My Drive, and answer its id (card 2188). */
+export async function makeDumpfireFolder(drive: drive_v3.Drive, now: Date = new Date()): Promise<{ id: string; name: string }> {
+	const name = dumpfireFolderName(now);
+	const res = await drive.files.create({ requestBody: { name, mimeType: GDRIVE_FOLDER_TYPE }, fields: 'id' });
+	if (!res.data.id) throw new Error('Google Drive made the folder but did not answer its id');
+	return { id: res.data.id, name };
+}
+
 /** A backup in a Google Drive folder, and what the account may do to it. */
 interface GDriveBackupFile {
 	id: string;
@@ -513,12 +564,6 @@ const DESTINATION_FIELDS: Record<DestinationConfig['type'], readonly string[]> =
 	onedrive: ['tenantId', 'clientId', 'clientSecret', 'folderPath']
 };
 
-/** How GET /api/admin/backup sends a secret: one sent back so is the one stored. */
-export const MASKED_SECRET = '••••••••';
-
-/** The secrets that are sent masked, and so may come back masked. */
-const SECRETS = ['password', 'privateKey', 'secretAccessKey', 'clientSecret'];
-
 /** The most a destination's text may hold, its name among them. */
 const LONGEST_TEXT = 2048;
 
@@ -542,9 +587,11 @@ const PASTED_FILES: Record<string, number> = { privateKey: 20000, serviceAccount
  * `at` names the destination in a refusal (`destinations[2].port must be a
  * whole number from 1 to 65535`); none for a body that is one destination.
  * `stored` finds the destination saved under the name sent: a value it holds,
- * sent back unchanged, is kept as it is (decision 8), and a secret sent back
- * masked, as the settings' GET sends it, is its. `missing` is the text for a
- * name or a type not sent, where a route has its own.
+ * sent back unchanged, is kept as it is (decision 8). A secret sent back
+ * masked, as the settings' GET sends it, is left as the mask here: whether it
+ * is kept, and from which stored destination, is `keepMaskedSecrets`'s (in
+ * backup-secrets.ts, card 2190), which both routes call next. `missing` is
+ * the text for a name or a type not sent, where a route has its own.
  */
 export function readDestination(
 	entry: RequestBody,
@@ -600,13 +647,14 @@ export function readDestination(
 				keep,
 				says: { type: `${prefix}${field} must be text`, invalid: `${prefix}${field} must be at most ${max} characters` }
 			});
+			// An SFTP host is saved trimmed of ASCII spaces and tabs only, as
+			// keepMaskedSecrets compares it, so that the host compared is the host
+			// connected to (the review-fix pass's S1). One sent back as stored is
+			// kept as it is.
+			if (field === 'host' && typeof value === 'string' && value !== keep) value = trimHost(value);
 		}
 		if (value === undefined) continue;
-		// Sent back masked: the secret stored under this name, as before.
-		const masked =
-			(SECRETS.includes(field) && value === MASKED_SECRET) ||
-			(field === 'serviceAccountJson' && typeof value === 'string' && value.includes(MASKED_SECRET));
-		destination[field] = masked && saved ? saved[field] || '' : value;
+		destination[field] = value;
 	}
 	return destination as unknown as DestinationConfig;
 }

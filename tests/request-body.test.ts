@@ -2778,7 +2778,7 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		// PUT /api/admin/smtp: the body was handed on whole, and a port of "abc" stored.
 		['PUT /api/admin/smtp', 'chief', at('/api/admin/smtp'), () => ({ port: 'abc' }), 'port must be a whole number'],
 		['PUT /api/admin/smtp', 'chief', at('/api/admin/smtp'), () => ({ port: 70000 }), 'port must be from 1 to 65535'],
-		['PUT /api/admin/smtp', 'chief', at('/api/admin/smtp'), () => ({ secure: 'true' }), 'secure must be true or false'],
+		['PUT /api/admin/smtp', 'chief', at('/api/admin/smtp'), () => ({ allowInsecure: 'true' }), 'allowInsecure must be true or false'],
 		['PUT /api/admin/smtp', 'chief', at('/api/admin/smtp'), () => ({ host: 5 }), 'host must be text'],
 		['PUT /api/admin/smtp', 'chief', at('/api/admin/smtp'), () => ({ fromAddress: 'the board' }), 'fromAddress must be an email address'],
 		['PUT /api/admin/smtp', 'chief', at('/api/admin/smtp'), () => ({ appUrl: 'ftp://kanban.example.test' }), 'appUrl must be an http or https address'],
@@ -2980,12 +2980,13 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		expect(config()).toEqual({ ...stored, retention: 3 });
 
 		// The page sends the destinations as it was given them: the secret masked, and a field of its own that is not kept.
+		// The host in other case and spacing, and the port as text, are the same destination, so the secret is kept (card 2190).
 		const page = await api('GET', '/api/admin/backup', { user: w.chief });
 		const shown = page.body.destinations[0];
 		expect(shown.password).toBe('••••••••');
 		const saved = await api('PUT', '/api/admin/backup', {
 			user: w.chief,
-			body: { scheduleTime: '', destinations: [{ ...shown, host: ' other.example.test ', port: '2222', extra: 'not kept' }] }
+			body: { scheduleTime: '', destinations: [{ ...shown, host: ' BOX.example.test ', port: '22', extra: 'not kept' }] }
 		});
 		expect(saved.status, JSON.stringify(saved.body)).toBe(200);
 		expect(config()).toEqual({
@@ -2993,7 +2994,8 @@ describe('the accounts, administration, teams, reports and requests that card 21
 			retention: 3,
 			// Empty is 02:00, as it was.
 			scheduleTime: '02:00',
-			destinations: [{ ...box, host: ' other.example.test ', port: 2222 }]
+			// The host as it was saved with the secret, which is kept (the review-fix pass's S1).
+			destinations: [{ ...box, port: 22 }]
 		});
 	});
 
@@ -3008,14 +3010,14 @@ describe('the accounts, administration, teams, reports and requests that card 21
 
 		const res = await api('PUT', '/api/admin/smtp', {
 			user: w.chief,
-			body: { host: 'smtp.example.test', port: '587', secure: false, fromAddress: 'board', fromName: 'The Board', evil: 'x', appUrl: 'https://kanban.example.test/' }
+			body: { host: 'smtp.example.test', port: '587', allowInsecure: false, fromAddress: 'board', fromName: 'The Board', evil: 'x', appUrl: 'https://kanban.example.test/' }
 		});
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(stored()).toEqual({
 			smtp_host: 'smtp.example.test',
 			smtp_port: '587',
-			smtp_secure: 'false',
+			smtp_allow_insecure: 'false',
 			smtp_from_address: 'board',
 			smtp_from_name: 'The Board',
 			app_url: 'https://kanban.example.test'

@@ -138,11 +138,11 @@ flowchart TD
 `docker build` runs the same files with the same command, on the image's own Linux and Node (`node:22-slim`) instead of the workstation's. The step is a plain `RUN npm run verify`. It needs no network and no special builder, because the tests refuse the network themselves: `tests/setup.ts` refuses every `fetch` and every DNS lookup, and fails the test that attempted one. Docker does not cut the step off from the network as well. For part of 2026-10-13 the `Dockerfile` said `RUN --network=none`, under a `# syntax=docker/dockerfile:1` line; that was never built, and was taken out, because the flag works only under BuildKit and the Docker version of the production host is not known. A pass ends the step with the same two lines as on the workstation, every test file passed and every test counted. With the suite as it was on 2026-10-18, where none is expected to fail and none is skipped, they read:
 
 ```
-Test Files  58 passed (58)
-     Tests  5276 passed (5276)
+Test Files  61 passed (61)
+     Tests  5572 passed (5572)
 ```
 
-- **On a builder with fewer than three CPUs, two tests are skipped**, and the second line reads `5274 passed | 2 skipped (5276)`, which is a pass. They are the two tests of `tests/password-checks.test.ts` that time the server's thread while real worker threads check passwords (card 2191): the thread stays free while six checks are made at once, and an unrelated request is answered meanwhile. Each runs two threads against bounds of 60 ms and 100 ms, and with fewer than three CPUs the two threads share them with the test's own, which could fail the build for a fault that is not there. Before a build, `docker info --format '{{.NCPU}}'` on the host that builds says how many it has. The other fourteen tests of the file run anywhere.
+- **On a builder with fewer than three CPUs, two tests are skipped**, and the second line reads `5570 passed | 2 skipped (5572)`, which is a pass. They are the two tests of `tests/password-checks.test.ts` that time the server's thread while real worker threads check passwords (card 2191): the thread stays free while six checks are made at once, and an unrelated request is answered meanwhile. Each runs two threads against bounds of 60 ms and 100 ms, and with fewer than three CPUs the two threads share them with the test's own, which could fail the build for a fault that is not there. Before a build, `docker info --format '{{.NCPU}}'` on the host that builds says how many it has. The other fourteen tests of the file run anywhere.
 
 - **What it adds to a build.** About as long as the suite takes outside Docker on the same machine. The first build with the step, on 2026-10-13, spent 18.5 seconds in it on a 28-core workstation, when the suite was 2220 tests and took 20 seconds on that workstation outside Docker. The second build, later that day on the same workstation, when the suite was 2624 tests and took 28 seconds there, spent 23.7 seconds in the step, of which vitest counted 22.5 as its own. The suite has grown since (43 seconds there on 2026-10-15) and has not been built in Docker at that size. A smaller Docker host will take longer.
 - **What it adds to the image.** Nothing. The suite runs in the builder stage, which is thrown away. The production stage is copied from `build/`, `node_modules/` (reinstalled without dev dependencies after the build), `package.json` and `drizzle/` alone. An image built with the step and one built without it from the same tree held the same 27,933 files, apart from the content hashes in the names under `build/` that differ between any two builds, and no `tests/` folder and no vitest. The image of the second build, of the suite as it was then, was listed in the same way and came to the same 27,933: `/app` holds `build/`, `drizzle/`, `node_modules/`, `package.json` and an empty `data/`, with no `tests/`, no `src/`, no database file, and no package the lock file marks as a dev dependency (no vitest, vite, TypeScript, `svelte-check` or `drizzle-kit`). Two names from `devDependencies` in `package.json` are in it all the same, because a production dependency names each as a peer and `npm ci --omit=dev` therefore keeps it: `svelte`, for `svelte-dnd-action`, and `@types/better-sqlite3`, for `drizzle-orm`.
@@ -205,6 +205,7 @@ On the Docker host itself there is usually no Node to run the suite with outside
 | `PASSWORD_THREADS` | not set: two, or one on a machine with one or two CPUs | No: **leave it unset** | How many worker threads hash and check passwords, so that the server's own thread is never held by one (card 2191). Unset, it is `min(2, max(1, CPUs - 1))`. A whole number from `0` to `8` is taken as it is; `0` checks every password on the server's own thread, as the tests do, which holds every other request for about a fifth of a second each time, and is not for a server. Anything else is one `[WARN] [AUTH]` line, `PASSWORD_THREADS="…" is not a whole number from 0 to 8: password checks run on N worker thread(s)`, and the default. Read once, at the first check. See [Password Hashing](authentication-security.md#password-hashing) |
 | `SIGN_IN_ONE_AT_A_TIME` | not set, which is `on` | No: **set it only as** [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out) **says, and remove it after** | `on` or `off`, in any case, trimmed; empty is `on`. `off` turns off the rule that holds sign-ins from browsers not remembered for an account to one at a time while the account is being guessed at (card 2194): every browser is then let in after the account's wait. While it is `off`, one `[WARN] [STARTUP]` line at every start says so, to the console whatever `LOG_LEVEL` is. Anything else is one `[WARN] [AUTH]` line, `SIGN_IN_ONE_AT_A_TIME is "…", which is neither on nor off: sign-ins from browsers not remembered are held to one at a time`, and `on`. Read once, at start. See [Browsers That Have Signed In Before](authentication-security.md#browsers-that-have-signed-in-before) |
 | `CSP_MODE` | not set, which is `enforce` | No: **set it only for the first deploy of the policy**, as [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy) says, **and remove it after** | `enforce` or `report-only`, written exactly so. `report-only` sends every page its Content-Security-Policy as `Content-Security-Policy-Report-Only`: the browser names in its console what the policy would refuse, and refuses nothing. While it is set, one `[WARN] [STARTUP]` line at every start says so, to the console whatever `LOG_LEVEL` is. Any other value, `REPORT-ONLY` and ` report-only` among them, is enforced, and one `[WARN] [STARTUP]` line at every start names it: `CSP_MODE is "…", which is neither enforce nor report-only: the Content-Security-Policy is enforced.` Read at every request. See [The Content-Security-Policy](authentication-security.md#the-content-security-policy) |
+| `NODE_EXTRA_CA_CERTS` | not set | Only for a mail server whose certificate comes from a private authority, or is self-signed | The path, inside the container, of a PEM file of certificates Node trusts beside its own, for every TLS connection of the process: mail, webhook deliveries and backup destinations (card 2189). Read once, when the process starts: set it, with the file mounted read-only, when the container is created; a restart applies neither. See [Mail Server Certificates](#mail-server-certificates) |
 
 > ⚠️ **CRITICAL**: `ORIGIN` must be set to your actual public URL (e.g. `https://dumpfire.example.com`). Leaving it as localhost will cause CSRF token validation failures on all form submissions.
 
@@ -221,6 +222,84 @@ No request header is read for it: not `Host`, and not `X-Forwarded-Host`. With n
 The image is built with `ORIGIN=http://localhost:3000`. A server that really is reached there is right as it is. One behind a proxy that was started without `ORIGIN` mails links that begin with `http://localhost:3000`, and says so once at every start: `[WARN] [STARTUP] ORIGIN is http://localhost:3000, the address the image is built with, and no App URL is set...`. Set `ORIGIN`, or the App URL.
 
 A server started with no `ORIGIN` at all, which the image never is, and given no App URL has no address. Then two things are refused with `503` and "This server has no address configured to make the link from", before anything is saved: an invite, which is a link, and a public request made by somebody who is not signed in, when SMTP is configured, because that request waits on a mailed link to be confirmed. A user added with a password, a request made by somebody signed in, and any request made while no SMTP is configured have no link to mail, and are accepted. A notification is not sent: each one skipped is a `[WARN] [NOTIFY]` line.
+
+### Mail Server Certificates
+
+Since card 2189 every mail is sent over a checked, encrypted connection. Port 465 is TLS from the first byte; any other port must offer STARTTLS, and a server that does not is refused (`ETLS`) before the password is sent; and on every port the mail server's certificate must be one Node trusts for the host's name as it is entered in **Admin → 📧 Email / SMTP**. Until then mail on any port but 465 went without requiring STARTTLS and without checking the certificate, so anyone on the network path to the mail server, or who could answer for its name, could read the mail password and every message, invites (whose link sets a password) included. How the connection is made: [Connection Handling](notifications-email.md#connection-handling).
+
+```mermaid
+flowchart TD
+    Mail["Any mail"] --> Port{"Port 465?"}
+    Port -->|"yes"| Implicit["TLS from the first byte"]
+    Port -->|"no"| Start["STARTTLS required"]
+    Implicit --> Cert{"Certificate trusted<br/>for the host's name?"}
+    Start --> Cert
+    Cert -->|"yes"| Send["Sign in and send"]
+    Cert -->|"no"| Refused["Refused: Send Test says why<br/>and names the two ways out"]
+    CA["NODE_EXTRA_CA_CERTS<br/>set when the container is created"] -.->|"adds to what is trusted"| Cert
+    Way["The way out, ticked on the panel"] -.->|"any port but 465"| Old["STARTTLS if offered,<br/>certificate not checked"]
+```
+
+**A certificate from a private authority, or a self-signed one.** Mount the authority's certificate (or a self-signed server's own certificate), in PEM form, read-only into the container, and name it in `NODE_EXTRA_CA_CERTS`. Node reads it once, when the process starts, and adds it to what every TLS connection of the process trusts; the check stays on. There is no setting for it on the panel: one there would be kept in the database and in every backup, a second place that decides trust, set by a web session. **A restart does not apply it**: an environment variable and a mount are fixed when a container is created, and `docker restart` keeps both as they were. Create the container again with them:
+
+```bash
+docker run -d \
+  --name dumpfire \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -v dumpfire-data:/app/data \
+  -v /srv/dumpfire/mail-ca.pem:/ca/mail-ca.pem:ro \
+  -e NODE_EXTRA_CA_CERTS=/ca/mail-ca.pem \
+  -e DB_PATH=/app/data/dumpfire.db \
+  -e ORIGIN=https://dumpfire.example.com \
+  -e NODE_ENV=production \
+  dumpfire:latest
+```
+
+Under Docker Compose, beside the lines of [Docker Compose](#docker-compose), then `docker compose up -d`:
+
+```yaml
+    volumes:
+      - dumpfire-data:/app/data
+      - /srv/dumpfire/mail-ca.pem:/ca/mail-ca.pem:ro
+    environment:
+      - NODE_EXTRA_CA_CERTS=/ca/mail-ca.pem
+```
+
+`/srv/dumpfire/mail-ca.pem` stands for wherever the file is kept on the host. The process trusts that authority for every TLS connection it makes, not only mail: webhook deliveries and backup destinations trust it too. A file that cannot be read is said by Node on the console at start, and the server starts without it.
+
+**The way out.** "Allow mail without a checked, encrypted connection", on the panel, off by default, gives back the behaviour from before card 2189 on any port but 465: STARTTLS when offered, the certificate not checked. It is for a relay on this server's own network that cannot use TLS. Turning it on or off from the panel needs the mail password typed again, and writes one `[WARN] [SMTP]` line naming who did it. Two other ways set it with neither: the one-row write of [check 0i](#before-the-deploy-checks-0i-to-0k), which the mailer reads at the next mail with no restart, before or after the deploy; and a restore, which brings in the backup's setting with the backup's other mail settings. A restore keeps this server's mail password only where the backup's setting is this server's, and where it differs its "To enter again" line names the box: "the mail password (Admin, 📧 Email / SMTP, where the backup brought in "Allow mail without a checked, encrypted connection" ticked and this server had it unticked)". Port 465 is checked either way. See [SMTP Configuration](admin-guide.md#smtp-configuration).
+
+**Check the mail server from the container.** Read-only: it reads the mail settings, prints names and flags and never the password, and makes the connection `createTransporter` (in `src/lib/server/email.ts`) makes, signing in to nothing and sending nothing (`verify()` with no `auth` connects, upgrades, checks the certificate and quits). It honours `NODE_EXTRA_CA_CERTS` as the container has it. Its options are `createTransporter`'s, which names this check in a comment: the two are changed together. It connects to the host exactly as stored, as `createTransporter` does, untrimmed: since the review-fix pass a host is saved trimmed of ASCII spaces and tabs, and one saved before with spaces is checked with them, as mail is sent. It prints `way out set` when "Allow mail without a checked, encrypted connection" is on. It holds no `!`, `$` or backtick:
+
+```bash
+docker exec dumpfire node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+const get = (k) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) || {}).value || '';
+const host = get('smtp_host');
+const port = Number(get('smtp_port') || '587');
+console.log('mail host', JSON.stringify(host), '| port', port, '| way out ticked', get('smtp_allow_insecure') === 'true', '| user set', get('smtp_user').length > 0, '| password set', get('smtp_pass').length > 0, '| NODE_EXTRA_CA_CERTS', process.env.NODE_EXTRA_CA_CERTS || 'not set');
+if (host.length > 0 && get('smtp_allow_insecure') === 'true') { console.log('way out set: mail goes on after the deploy as it goes today, whatever the check below prints.'); }
+db.close();
+if (host === '') { console.log('No mail host is set: nothing to check.'); } else {
+  require('nodemailer').createTransport({ host: host, port: port, secure: port === 465, requireTLS: port === 465 ? false : true, tls: { rejectUnauthorized: true }, name: 'dumpfire.app', connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000 }).verify()
+    .then(() => console.log('PASS: the mail server gives an encrypted connection with a certificate this server trusts.'))
+    .catch((e) => console.log('FAIL:', e.code || '', e.message));
+}
+"
+```
+
+It checks the connection without the way out, whatever the panel has, so it says whether the way out could be turned off. With the way out set, mail goes as it did before card 2189 whatever the check says, and `way out set` is printed above it. What it prints:
+
+| It prints | It means | What to do |
+|---|---|---|
+| `PASS` | Mail goes over a checked, encrypted connection | Nothing |
+| `way out set` | "Allow mail without a checked, encrypted connection" is on: mail goes without the check | Nothing for mail to go on. The line below it says whether the way out could be turned off |
+| `FAIL: ETLS Error upgrading connection with STARTTLS…`, or `FAIL: ECONNECTION EHLO failed but HELO does not support required STARTTLS…` | The mail server offers no STARTTLS | Ask the provider for its TLS port (often 465) and enter it, or, for a relay on this server's own network that cannot use TLS, tick the way out, **with the mail password at hand**. Without the password, set it with the one-row write of [check 0i](#before-the-deploy-checks-0i-to-0k): it works after the deploy as well as before, and the mailer reads it at the next mail, with no restart |
+| `FAIL:` … `self-signed certificate`, `unable to verify the first certificate`, `unable to get local issuer certificate` | Its certificate is from an authority this server does not trust | Try the authority first in the running container: `docker cp mail-ca.pem dumpfire:/tmp/mail-ca.pem`, then this check as `docker exec -e NODE_EXTRA_CA_CERTS=/tmp/mail-ca.pem dumpfire node -e …`. On `PASS`, mount the file read-only and set the variable when the container is created, as above. A restart applies neither. That `PASS`, with check 0k's run with `-e` and `-v`, is the go-ahead |
+| `FAIL:` … `does not match certificate's altnames` | The host is entered as an address, or a name that is not on the certificate | Enter the certificate's name as the host, with the password typed again |
+| `FAIL:` … `certificate has expired` | The mail server's certificate is out of date | The provider's to renew. Mail stops until it is; the way out meanwhile |
+| `FAIL: ESOCKET connect…`, `EDNS`, or a timeout | The server cannot be reached from the container | Unrelated to certificates: mail is not working now either |
 
 ## Running
 
@@ -1914,6 +1993,132 @@ Nothing is done to the database but the one row below, deleted with the containe
 - **Backups made by the newer image hold no secret.** Imported into the older image, they come up with no mail password, no destination credentials and their signed webhooks off, and the older image says nothing of it: enter them as in [Restoring from Backup](admin-guide.md#restoring-from-backup), step 5. The running database's own secrets are not touched by going back, and the older image's backups hold them again.
 - **Request mail goes back to the address stored on each request.** The addresses `deleteUser` wrote for accounts deleted meanwhile stay, and are the accounts' last.
 
+### The Update That Checks the Mail Server's Certificate
+
+Four cards and one upgrade go out in one image, and this is the one note for them. No migration and no schema change.
+
+- **Card 2189** sends every mail over a checked, encrypted connection: port 465 TLS from the first byte, any other port STARTTLS required, and on every port the certificate checked for the host's name. The "Use SSL/TLS" box is gone (its `smtp_secure` row is left and no longer read), and "Allow mail without a checked, encrypted connection" is the one way out, a new `smtp_allow_insecure` row written when the panel first saves it. See [Mail Server Certificates](#mail-server-certificates). **Mail stops at the deploy** if production's mail server cannot give such a connection: run checks 0i and 0k first.
+- **Card 2190** keeps a saved secret only for the settings it was saved with: the mail password only while the host, port, user name and the way out are as saved; a backup destination's secret only for the one saved destination that is the same in type, name and every setting that is not secret. Otherwise a save or a test is refused, `400`, naming what to type again.
+- **Card 2187** masks every backup destination secret in the admin page's answer, the Google Drive refresh token included, which it carried as stored; one list of secret fields serves the answer, the save and the test.
+- **Card 2188** has Google Drive asked for `drive.file` (DumpFire's own files) in place of the whole of Drive. Connections made before keep working, with the whole of Drive, until narrowed by hand (below). Connect makes a folder of its own for a destination with no Folder ID, checks one that is set, and records the scope Google granted; the row shows `⚠️ Connected · all of Drive` for every connection made before.
+- **Card 2227's nodemailer upgrade**: nodemailer 8.0.7 to 10.1.1, which needs Node 20 or newer (the image is `node:22-slim`). See [the SBOM analysis](sbom-analysis.md).
+
+```mermaid
+flowchart TD
+    I["0i: the mail server checked<br/>from the running container"] --> Pass{"PASS, or way out set?"}
+    Pass -->|"yes"| Build["Build the new image"]
+    Pass -->|"no: no STARTTLS, or a name<br/>not on the certificate"| Fix["Before the deploy: a new host or port,<br/>or the way out set by its one-row write"]
+    Fix --> I
+    Pass -->|"no: a private authority"| CA["0i again under<br/>docker exec -e NODE_EXTRA_CA_CERTS"]
+    CA -->|"PASS"| Build
+    CA -->|"FAIL"| Fix
+    J["0j: the backup destinations,<br/>read-only"] --> Build
+    Build --> K["0k: the same check in the new image,<br/>on production's network,<br/>with -e and -v for an authority"]
+    K -->|"PASS, or way out set<br/>and the server reached"| Deploy["Deploy as in Updating a Running Installation"]
+    K -->|"a connection failure, or FAIL<br/>without the way out"| Stop["Do not switch"]
+    Deploy --> After["Checks 38 to 46 on production,<br/>47 to 50 on another instance"]
+```
+
+#### Before the deploy: checks 0i to 0k
+
+**Check 0i: will mail go on after the deploy** (card 2189). On the host, against the running container, read-only: the command in [Mail Server Certificates](#mail-server-certificates), which reads the mail settings, prints names and flags, never the password, and makes the connection the new code makes, signing in to nothing and sending nothing. It runs in the image being replaced, whose nodemailer is 8.0.7: the connection it makes is what the new code asks for, and check 0k makes it again in the new image. Read it by the table under it, with these two ways to keep mail going through the deploy, for its `ETLS`, altnames and authority rows:
+
+- **A change of host or port made before the deploy needs no password.** The code before this change keeps the stored password for any host and port, so the certificate's name as the host, or port 465, can be saved now with the password left masked. After the deploy it needs the password typed.
+- **For a relay that cannot use TLS, the way out can be set before the deploy** with one write you choose to run. It changes one row: the code before this change does not read it, the new code reads it at the first mail, and the panel then shows the box ticked. No `WARN` line is written for it, since it is not set through the panel. With the container running:
+
+  ```bash
+  docker exec dumpfire node -e "
+  const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { fileMustExist: true });
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('smtp_allow_insecure', 'true');
+  console.log('smtp_allow_insecure:', db.prepare('SELECT value FROM settings WHERE key = ?').get('smtp_allow_insecure').value);
+  db.close();
+  "
+  ```
+
+  It prints `smtp_allow_insecure: true`. Mail and its password then go as they do today: unencrypted wherever the relay offers no STARTTLS. The same write works after the deploy, with no password and no restart: the mailer reads the setting at every mail. Check 0i, run again, then prints `way out set`.
+
+The go-ahead for mail is any one of these:
+
+- `PASS` in both 0i and 0k;
+- `way out set` printed by 0i, and 0k, given `wayOut = true`, not a connection failure;
+- for a certificate from a private authority, `PASS` in 0i run under `docker exec -e NODE_EXTRA_CA_CERTS=/tmp/mail-ca.pem` (its table's authority row) and `PASS` in 0k run with `-e` and `-v`. The plain 0i goes on failing until the container is created with the variable, which is the deploy itself.
+
+**Check 0j: which backup destinations decisions on Google Drive apply to** (cards 2188 and 2190). On the host, read-only; it prints types, names, flags and counts, never a secret:
+
+```bash
+docker exec dumpfire node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('backup_config');
+let c = {};
+try { c = JSON.parse((row || {}).value || '{}'); } catch (e) { console.log('backup_config is not JSON'); }
+const list = Array.isArray(c.destinations) ? c.destinations : [];
+const names = list.map((d) => String(d.name));
+list.forEach((d, i) => console.log(i, d.type, JSON.stringify(d.name), '| name used', names.filter((n) => n === String(d.name)).length, 'time(s) | sign-in', d.authMethod || '-', '| folder set', Boolean(d.folderId), '| connected', Boolean(d.refreshToken), '| scope recorded', d.grantedScope || 'none'));
+console.table(db.prepare('SELECT destination_name, destination_type, status, COUNT(*) AS runs, MAX(created_at) AS last FROM backup_log GROUP BY 1, 2, 3 ORDER BY 1, 3').all());
+db.close();
+"
+```
+
+A `gdrive` line with `sign-in oauth` and `connected true` is a connection made with the whole of Drive: it keeps working after the deploy, shows `⚠️ Connected · all of Drive`, and is narrowed when you choose (check 46). Production's log of 2026-10-18 shows one, "GoogleDriveTest", backing up at every run. `name used 2 time(s)` is two destinations of one name: Connect takes the first of them, and after the deploy **no save of the backup settings goes through while they are there**, the schedule's included: a list naming two destinations alike is refused, "Two backup destinations are named "<name>"." The way out, which the refusal gives: remove the destinations named "<name>" (the page's Remove removes every one of that name) and add it once with its secret typed. Where the two are the same in every other setting, a save or a test of one with its secret left masked is refused with the same way out. `sign-in service_account` and `folder set false` on a `gdrive` line whose runs fail are each a card of their own. `backup_log` keeps the last ten runs.
+
+**Check 0k: the same check in the new image.** Once the new image is built and before the switch, with the host and port 0i printed in place of `HOST` and `587`, and `wayOut` set to `true` where 0i printed `way out set`. No volume and no database: it opens one connection and signs in to nothing. It runs on production's own network (`--network container:dumpfire`, the running container's), so it reaches the mail server as the new container will; under Docker Compose, put the running container's name in place of `dumpfire` (`docker compose ps` shows it). When an authority's certificate is used, add `-e NODE_EXTRA_CA_CERTS=/ca/mail-ca.pem -v /srv/dumpfire/mail-ca.pem:/ca/mail-ca.pem:ro` before the image name. The image's Node carries its own root certificates, and the `node:22-slim` tag moves, so the new image may trust otherwise than the running one:
+
+```bash
+docker run --rm --network container:dumpfire dumpfire:candidate node -e "
+const host = 'HOST';
+const port = 587;
+const wayOut = false;
+if (wayOut) { console.log('way out set: the go-ahead for mail, unless the check below cannot reach the server.'); }
+require('nodemailer').createTransport({ host: host, port: port, secure: port === 465, requireTLS: port === 465 ? false : true, tls: { rejectUnauthorized: true }, name: 'dumpfire.app', connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000 }).verify()
+  .then(() => console.log('PASS: the mail server gives an encrypted connection with a certificate this image trusts.'))
+  .catch((e) => console.log('FAIL:', e.code || '', e.message));
+"
+```
+
+`dumpfire:candidate` is the image as built for the switch, under whatever tag it was given. Read it on its own:
+
+- `PASS`: the go-ahead.
+- `FAIL` for the certificate or STARTTLS (`ETLS`, `ECONNECTION … STARTTLS`, a certificate message): the go-ahead only with `way out set` printed above it. Without the way out, where 0i said `PASS` the new image does not trust the certificate: do not switch until it does.
+- A connection failure (`ESOCKET connect…`, `EDNS`, a timeout) where 0i reached the mail server: **do not switch**, whether or not the way out is set. It runs on production's network, so the new image cannot reach a mail server the running one can; find why first. Where 0i failed the same way, mail is not working today either: this update neither causes nor mends that, and it does not hold the deploy back.
+
+#### What changes at the first start
+
+- **Mail goes over a checked, encrypted connection**, unless the way out is set. Nothing is written at start. A mail that fails for the certificate or STARTTLS is an `[ERROR] [EMAIL] Failed to send email …` line, and one `[WARN] [EMAIL] Mail is not being sent: <the error>. <how to put it right>` at most once in ten minutes, on the Audit page's Live Console.
+- **The mail panel** has no "Use SSL/TLS"; it has "Allow mail without a checked, encrypted connection", unticked unless set in check 0i, with a line under the host and port and one under the password. Changing the host, port, user name or the box needs the mail password typed again.
+- **Scheduled Backups** shows every secret as `••••••••`, and the answer it loads holds none. Changing any setting of a destination, its name included, needs its secret typed again; a connected Google Drive destination is removed, added again and connected. A list naming two destinations alike is not saved (check 0j). Backups run as before: they read the stored settings, never the masked answer.
+- **A Google Drive OAuth destination connected before the deploy** shows `⚠️ Connected · all of Drive` with a line saying how to narrow it, and no button to connect it again. It goes on backing up as it did. New connections ask only for DumpFire's own files.
+- `smtp_secure` is left in the database and no longer read. A working copy removes it and `smtp_allow_insecure` with the other mail settings.
+
+**Owner to know.** Mail stops at the deploy if production's mail server fails checks 0i and 0k and neither of their ways was taken. Changing the mail host, port, user name or the way out now needs the mail password; changing any backup destination's settings, its name included, needs its password, key or secret. Keep them outside DumpFire. A Google Drive connection made before the deploy still reaches the whole of that Google account's Drive until it is narrowed: [To narrow a connection made before this change](admin-guide.md#configuring-backups), removing DumpFire's access in the Google account first, with the client secret at hand from the Google Cloud console. A new connection's backups go to a folder DumpFire makes, "DumpFire backups (made <date>)"; the copies in the old folder are no longer cleared by retention and are deleted by hand when not needed (they are from before card 2169, with every secret in them).
+
+#### After the deploy
+
+Checks 38 to 46 run on production, as the superadmin, and change nothing unless said. **Checks 47 to 50 run on an instance that is not production, with a database of its own**: a fresh data volume, set up with a superadmin of its own, `SCHEDULERS=off`, and outbound mail allowed. Never on production.
+
+| # | Card | Do | Account and data | Expect | A fault if |
+|---|---|---|---|---|---|
+| 38 | 2189 | Admin, 📧 Email / SMTP | The superadmin | No "Use SSL/TLS"; "Allow mail without a checked, encrypted connection" unticked (ticked only where check 0i set it); the port line and the password line. 🧪 Send Test arrives | It fails: run check 0i again and take its table's way. For a relay with no STARTTLS and the password not at hand, check 0i's one-row write sets the way out now, with no restart: the mailer reads it at the next mail |
+| 39 | 2189 | Straight after the deploy, and again the next day: the Audit page's Live Console since the deploy. It reads what mail has been sent: check 38's Send Test is the first, so run 38 first; the next day's reading needs a mail sent meanwhile (a notification, an invite) | The superadmin | No `Mail is not being sent` `WARN` and no `Failed to send email` `ERROR` | Either: follow check 0i's table at once. The one-row write of check 0i sets the way out with no password and no restart, read at the next mail |
+| 40 | 2190 | Change the SMTP host to `smtp.invalid` without typing the password, Save; reload | The superadmin | Refused, "Type the mail password again. … and this changes the host."; after the reload the host is as before | "SMTP settings saved!": set the host back at once |
+| 41 | 2187 | Admin, ☁️ Scheduled Backups, with the browser's developer tools on Network: the answer of `/api/admin/backup` | The superadmin | Every secret field reads `••••••••`, a Google Drive OAuth destination's `refreshToken` included; its row still shows it connected | A long token value in the answer |
+| 42 | 2190 | Edit a destination, change its host (or folder, or bucket) to `backup.invalid` without typing its secret, Save; then Cancel | The superadmin; any destination | Refused in a toast naming what changed and every secret still masked, "Backup destination "…": type its … again. …"; the list as before; the form still open until Cancel | Saved: set it back at once |
+| 43 | 2190 | Edit a destination, change nothing, Save; then 🧪 Test | The superadmin | Saved; Test as before | Refused |
+| 44 | 2187, 2188 | ▶ Run Now | The superadmin | Success at every destination, a Google Drive OAuth one connected before the deploy included | Any new failure |
+| 45 | 2188 | A Google Drive OAuth destination connected before the deploy: its row | The superadmin | `⚠️ Connected · all of Drive`, the line under it beginning "Connected with access to all of this Google account's Drive. To narrow it: first remove DumpFire's access in the Google account", and no button to connect it again | `✅ Connected`, or a button to connect it again |
+| 46 | 2188 | **When you choose to narrow it:** the three steps of [To narrow a connection made before this change](admin-guide.md#configuring-backups), removing access first; then ▶ Run Now and 🧪 Test | The superadmin; the Google account; the client secret | Google's consent screen asks only for "the specific Google Drive files you use with this app"; Connect says it made the folder "DumpFire backups (made <today>)"; `✅ Connected`; that folder in the account's My Drive holds the new copy; Test says "Connected to Google Drive folder (1 existing file)" | A consent screen asking for all of Drive; Connect refused for the new empty Folder ID; the backup fails |
+| 47 | 2189 | On the other instance: mail host the IP address of `smtp.gmail.com` (`nslookup smtp.gmail.com`), port 587, user `x`, password `y`; Save; 🧪 Send Test | Its superadmin | Refused, "Hostname/IP does not match certificate's altnames", followed by "The mail server's certificate could not be checked, or the server does not offer STARTTLS. …" | A sign-in error: the certificate was not checked |
+| 48 | 2189, 2190 | Tick the way out without typing the password; Save | | Refused, "… and this changes the "Allow mail without a checked, encrypted connection" setting." | Saved |
+| 49 | 2189 | Tick it, type `y`, Save; 🧪 Send Test; read the Live Console | | The warning shows under the box; the test fails at sign-in (`535`), past the certificate; one `[WARN] [SMTP] Mail is now sent without a checked, encrypted connection (set by …)` | The certificate error again, or no `WARN` |
+| 50 | 2189 | Untick it, host `smtp.gmail.com`, type `y`, Save; 🧪 Send Test | | Fails at sign-in (`535`), not at the certificate; one `[WARN] [SMTP] Mail is now sent with a checked, encrypted connection (set by …)` | A certificate error |
+
+#### Going back to the previous image
+
+Nothing is done to the database.
+
+- **The mail settings.** The older image reads `smtp_secure` again, which this image left as it was, and never reads `smtp_allow_insecure`: mail on any port but 465 goes as before this change, STARTTLS only if offered and the certificate checked only where "Use SSL/TLS" was ticked. A mail host, port or user changed meanwhile stays. A password typed meanwhile stays.
+- **The backup settings.** The older image masks the secrets it knew and shows the Google Drive refresh token again; it takes a masked secret by its place in the list again. A `grantedScope` recorded by a Connect meanwhile stays in the destination and is not read. A destination connected meanwhile keeps its `drive.file` token and the folder DumpFire made, and backs up there.
+- **nodemailer** goes back to 8.0.7 with the older image.
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -2142,6 +2347,10 @@ A backup opens no request's thread either (card 2158): every request is in it wi
 **How long the server stops answering.** The server waits for the whole of a backup, not only for the first copy, and that whole has never been measured. Added together from the separate figures above, the two `VACUUM INTO`s alone came to about 1.2 to 2.8 s on the 196 MB made-up database on the development machine (0.7 to 1.5 s for the first copy, 0.5 to 1.3 s for the second); the masking of the log, the deletes and the reading of the file come on top of that, unmeasured. The seal (card 2169) reads every row of the copy once more: measured on made-up copies on a development machine, 0.2 s for 59 MB and 115,000 rows, 0.56 s for 177 MB and 345,000; an Import Backup spends as long again making it afresh from the file it is given. It is an estimate from parts, on a machine that is not the server. Expect it to be longer on a larger database or a slower disk, and schedule backups for an hour when few people use DumpFire.
 
 Backups made before this version do hold the sessions of whoever was signed in when they were made, and a session goes on being good for as long as it is used. Restoring one no longer brings them back: a restore brings in no session whatever the backup holds. Those made before card 2158 hold every request's link as it was mailed, which migration 0055 replaces once and every restore replaces again. Those made before card 2169 hold the mail password, every destination's credentials and every webhook's secret, and carry no seal, so Import Backup of one keeps nothing from this server (it needs nothing kept); nothing can take the secrets out of a copy already made, and they go as each destination's retention removes them. If one of them may have been read by somebody who should not have, change the mail password and each destination's credentials at their services and enter them again, and set new webhook secrets with their receivers. The copies themselves, at a destination or downloaded, are unchanged: treat them as you would a password file, and delete the ones that are not needed.
+
+**What the admin page is told of the secrets, and when a saved one is used** (cards 2187 and 2190). `GET /api/admin/backup` answers every secret field masked, `••••••••`, whatever the destination's type: an SFTP password and private key, an S3 secret access key, a client secret, a Google Drive refresh token and a service account's private key (a service account JSON that cannot be read as an object is masked whole). A save or a test that sends a secret masked uses the saved one only from the one saved destination that is the same in type, name and every setting that is not secret; otherwise it is refused `400`, naming what to type again, with nothing written. See [Configuring Backups](admin-guide.md#configuring-backups).
+
+**Google Drive with OAuth** (card 2188). Connect asks Google for `https://www.googleapis.com/auth/drive.file`, the files DumpFire makes, and records the scope Google granted as `grantedScope` in the destination. With the Folder ID empty it makes a folder, "DumpFire backups (made YYYY-MM-DD)", in the account's My Drive and saves its id; with one set it fetches it and refuses the Connect, saving nothing, when Google does not let it reach it. Connections made before this change asked for the whole of Drive and keep it until they are narrowed by hand, removing DumpFire's access in the Google account first: see [Configuring Backups](admin-guide.md#configuring-backups). A token refreshes with the scopes it was granted, so the deploy stops no Drive backup.
 
 Backup destinations, the schedule and "Run Now" are the superadmin's: see [The Superadmin](#the-superadmin). See [Restoring from Backup](admin-guide.md#restoring-from-backup) for the two ways to put one back.
 

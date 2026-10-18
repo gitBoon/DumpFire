@@ -1,9 +1,9 @@
 ---
 title: "SBOM Analysis: DumpFire"
 category: "Identity & Security"
-version: 1.2
+version: 1.3
 status: As-Built
-date: 2026-10-15
+date: 2026-10-18
 tags:
   - sbom
   - licensing
@@ -14,12 +14,13 @@ tags:
   - fonts
   - jsdom
   - dompurify
-description: "Software Bill of Materials and open-source posture analysis for the DumpFire Kanban board application, with the changes of 2026-10-15: jsdom for the tests, dompurify raised to 3.4.17, and the Inter font bundled under the SIL Open Font License 1.1"
+  - nodemailer
+description: "Software Bill of Materials and open-source posture analysis for the DumpFire Kanban board application, with the changes of 2026-10-15 (jsdom for the tests, dompurify raised to 3.4.17, the Inter font bundled under the SIL Open Font License 1.1) and of 2026-10-18 (nodemailer 8.0.7 to 10.1.1, @types/nodemailer removed)"
 ---
 
 # SBOM Analysis: DumpFire
 
-Based on production dependency analysis via `license-checker` and `npm audit` (scanned 2026-05-15, post-update), here is an architectural summary and open-source posture analysis of the DumpFire application. The counts and tables of sections 2 to 6 are that scan's. What changed on 2026-10-15 (cards 2202 and 2203) is in [section 9](#9-changes-on-2026-10-15), and is folded into the rows it touches below.
+Based on production dependency analysis via `license-checker` and `npm audit` (scanned 2026-05-15, post-update), here is an architectural summary and open-source posture analysis of the DumpFire application. The counts and tables of sections 2 to 6 are that scan's. What changed on 2026-10-15 (cards 2202 and 2203) is in [section 9](#9-changes-on-2026-10-15), and what changed on 2026-10-18 (card 2227) in [section 10](#10-changes-on-2026-10-18); each is folded into the rows it touches below.
 
 ## 1. Application Summary
 
@@ -81,7 +82,7 @@ Eight packages use dual/multi-licence or non-standard SPDX identifiers. Each has
 | tweetnacl | 0.14.5 | Unlicense | ✅ Compliant | Public domain dedication. No restrictions whatsoever. Used by `ssh2` for cryptographic primitives. |
 | png-js | 1.1.0 | MIT* | ✅ Compliant | The asterisk indicates the licence was inferred from the LICENSE file rather than package metadata. Confirmed MIT on GitHub. |
 | url-template | 2.0.8 | BSD* | ✅ Compliant | Inferred BSD-3-Clause from the LICENSE file. Used by `googleapis-common`. |
-| nodemailer | 8.0.7 | MIT-0 | ✅ Compliant | MIT No Attribution — even more permissive than standard MIT. No attribution requirement. |
+| nodemailer | 10.1.1 | MIT-0 | ✅ Compliant | MIT No Attribution — even more permissive than standard MIT. No attribution requirement. |
 | lightningcss | 1.32.0 | MPL-2.0 | ✅ Dev-only | Mozilla Public Licence 2.0 (file-level copyleft). Dev-only CSS build tool, **not bundled** into production. No compliance impact. |
 | lightningcss-win32-x64-msvc | 1.32.0 | MPL-2.0 | ✅ Dev-only | Native binary for lightningcss. Same MPL-2.0, same dev-only status. |
 
@@ -131,7 +132,7 @@ The following tables list all 237 production-scoped packages compiled into the p
 
 | Package | Version | Licence | Integration |
 |---|---|---|---|
-| nodemailer | 8.0.7 | MIT-0 | Linked — SMTP email transport |
+| nodemailer | 10.1.1 | MIT-0 | Linked — SMTP email transport, with its own type declarations (8.0.7 until 2026-10-18: section 10) |
 
 ### Markdown & Sanitisation (MIT + MPL-2.0/Apache-2.0)
 
@@ -288,7 +289,6 @@ All `@aws-sdk/*`, `@smithy/*`, and `@aws-crypto/*` packages are Apache-2.0, publ
 | @types/better-sqlite3 | 7.6.13 | Types — SQLite bindings |
 | @types/node | 25.8.0 | Types — Node.js |
 | @types/estree | 1.0.9 | Types — ESTree AST |
-| @types/nodemailer | 8.0.0 | Types — Nodemailer |
 | @types/pdfkit | 0.17.6 | Types — PDFKit |
 | @types/trusted-types | 2.0.7 | Types — Trusted Types |
 | @nodable/entities | 2.1.0 | Types — XML entity parsing |
@@ -418,3 +418,75 @@ sanitising, `setConfig()` and `clearConfig()`, a hook that changes `data.allowed
 instance with `RETURN_DOM_FRAGMENT`, and its one hook sets only `keepAttr` and `attrValue`.
 After the raise to 3.4.17, `npm audit` lists nine, 1 low, 2 moderate and 6 high, none of
 them in `dompurify`: the other nine packages above, as before.
+
+## 10. Changes on 2026-10-18
+
+Card 2227 (nodemailer's advisories), built with card 2189 (mail over a checked, encrypted
+connection), whose rework of `src/lib/server/email.ts` it shares.
+
+**`nodemailer` 8.0.7 → 10.1.1** (`package.json` `^8.0.4` → `10.1.1`, pinned exactly; MIT-0 as
+before; no dependencies). 10.1.1 was published on 2026-10-14 and is the first release card
+2227 names as fixed. The build first took 10.1.6, the newest on `npm view`, published at
+12:55 UTC on 2026-10-18, the day of the build and the fourth release that day (10.1.3 at
+10:40); it was replaced with 10.1.1, which had been out four days, so that a release only
+hours old does not go into the image. `npm audit`'s range for every advisory listed ends at
+10.0.5, so 10.1.1 is past all of them. Pinned without a caret, so that a fresh resolution
+cannot take a newer release unread. The lock's `node_modules/nodemailer` is 10.1.1, integrity
+`sha512-pbqZRoeYUO+1E8TJ/11WeY4D2EVujj1hsYjz3qff/vUFDtGnmi7p3iqzTFslYOfQ6PnjVcWxx/CIUSHCSrO/QA==`,
+`engines.node` `>=20.0.0`: the image is `node:22-slim`.
+
+**`@types/nodemailer` 8.0.0 removed.** nodemailer 10 is written in TypeScript and ships its
+own declarations (`dist/esm/nodemailer.d.ts`), which TypeScript takes through the package's
+`exports`; there is no `@types/nodemailer` for 10. With it gone, `npm run check` gives 0
+errors and 0 warnings, and `email.ts` no longer needs the `as any` it had on the transport's
+options.
+
+**Breaking changes read** (nodemailer's `CHANGELOG.md`, 8.0.8 to 10.1.1):
+
+- **9.0.0**: HTTPS requests made while fetching remote content (attachment URLs, OAuth2
+  token endpoints, an HTTP proxy) check the server's certificate by default. DumpFire uses
+  none of them: every attachment is a `Buffer`, there is no OAuth2 transport and no proxy.
+- **10.0.0**: Node.js 20 or newer; rewritten in TypeScript with ESM and CommonJS builds.
+  `import nodemailer from 'nodemailer'` takes the ESM build's default export, an object with
+  `createTransport`, so the tests' spy on it still stands in for every mail.
+- **Not marked breaking, read for card 2189**: 9.0.3 and 10.0.12 harden the STARTTLS upgrade
+  and honour `requireTLS`; 10.1.0 ends a session on any `421` and counts the wait for the
+  greeting against `connectionTimeout`; 10.1.1 strips credentials on a cross-origin redirect
+  while fetching (unused here). nodemailer 10's SMTP connection reads no `family` option, so
+  `createTransporter`'s `family: 4` ("force IPv4") was taken out: nodemailer looks up the
+  host's IPv4 and IPv6 addresses itself and tries them in turn
+  ([Connection Handling](notifications-email.md#connection-handling)).
+
+Every mail goes through three functions in `email.ts`, and the suite sends through all three
+on each port and setting. Outside the suite, with the real nodemailer against a stand-in relay
+on `127.0.0.1` and a throwaway certificate, a missing STARTTLS came back `ETLS` and a
+certificate refused `ESOCKET`, in no refused case did the password cross, and
+`NODE_EXTRA_CA_CERTS` was honoured. That run was made with 10.1.6, the release first
+installed, and was not repeated with 10.1.1; the suite was.
+
+**`npm audit --omit=dev`, before** (nodemailer 8.0.7):
+
+```
+nodemailer  <=10.0.5
+Severity: high
+(11 advisories: GHSA-268h-hp4c-crq3 List-* header injection; GHSA-wqvq-jvpq-h66f,
+GHSA-p6gq-j5cr-w38f and GHSA-8m3c-c648-2xjj file and URL access bypasses; GHSA-2x7j-588g-ccc2,
+GHSA-v53p-9fqp-m79j and GHSA-8vvx-rff5-p5rq address-parser denial of service;
+GHSA-wmmp-3585-3rmp and GHSA-cc9r-2j5m-2m83 recipient-domain bypasses; GHSA-6vj9-mwq6-2f5v TLS
+servername reused across transports; GHSA-r7g4-qg5f-qqm2 OAuth2 token fetch unchecked)
+fix available via `npm audit fix --force`
+3 vulnerabilities (1 moderate, 2 high)
+```
+
+**After** (nodemailer 10.1.1, run 2026-10-18):
+
+```
+devalue  <=5.9.2
+Severity: high
+qs  2.2.5 - 6.15.3
+Severity: moderate
+2 vulnerabilities (1 moderate, 1 high)
+```
+
+No `nodemailer` entry. `devalue` and `qs` are not this card's, and each has `npm audit fix`
+available.

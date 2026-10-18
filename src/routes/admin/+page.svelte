@@ -28,6 +28,7 @@
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { parseStamp } from '$lib/timestamps';
+	import { driveScopeIsNarrow, dumpfireFolderName } from '$lib/drive-scope';
 
 	let { data }: { data: PageData } = $props();
 
@@ -1149,7 +1150,9 @@
 
 	let smtpHost = $state('');
 	let smtpPort = $state(587);
-	let smtpSecure = $state(false);
+	// The way out of card 2189: mail without a checked, encrypted connection. It replaces the old SSL/TLS box,
+	// which only switched the certificate check on, and that is now always on.
+	let smtpAllowInsecure = $state(false);
 	let smtpUser = $state('');
 	let smtpPass = $state('');
 	let smtpFromAddress = $state('');
@@ -1177,7 +1180,7 @@
 				if (data.configured) {
 					smtpHost = data.host || '';
 					smtpPort = data.port || 587;
-					smtpSecure = data.secure || false;
+					smtpAllowInsecure = data.allowInsecure === true;
 					smtpUser = data.user || '';
 					smtpPass = data.pass || '';
 					smtpFromAddress = data.fromAddress || '';
@@ -1197,7 +1200,9 @@
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					host: smtpHost, port: smtpPort, secure: smtpSecure,
+					// A change of host, port, user name or the way out needs the password typed:
+					// the server's 400 says so, and is shown below the panel.
+					host: smtpHost, port: smtpPort, allowInsecure: smtpAllowInsecure,
 					user: smtpUser, pass: smtpPass,
 					fromAddress: smtpFromAddress, fromName: smtpFromName
 				})
@@ -1498,8 +1503,13 @@
 							<span class="dest-name">{dest.name}</span>
 							<div class="dest-actions">
 								{#if dest.type === 'gdrive' && dest.authMethod === 'oauth'}
+									<!-- By the scope Google granted, recorded at Connect: none recorded is a connection made before card 2188, with all of Drive. No button to connect it over again: narrowing starts in the Google account (the line under the row). -->
 									{#if dest.refreshToken}
-										<span style="font-size: 0.68rem; color: var(--accent-emerald)">✅ Connected</span>
+										{#if driveScopeIsNarrow(dest.grantedScope)}
+											<span style="font-size: 0.68rem; color: var(--accent-emerald)">✅ Connected</span>
+										{:else}
+											<span style="font-size: 0.68rem; color: var(--accent-amber)">⚠️ Connected · all of Drive</span>
+										{/if}
 									{:else}
 										<button class="btn-ghost btn-xs" style="color: var(--accent-indigo)" onclick={() => connectGDriveOAuth(dest.name)}>🔗 Connect</button>
 									{/if}
@@ -1523,6 +1533,11 @@
 								<span>{dest.folderPath}</span>
 							{/if}
 						</div>
+						{#if dest.type === 'gdrive' && dest.authMethod === 'oauth' && dest.refreshToken && !driveScopeIsNarrow(dest.grantedScope)}
+							<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
+								Connected with access to all of this Google account's Drive. To narrow it: first remove DumpFire's access in the Google account (Google Account, Security, Your connections to third-party apps and services), then remove this destination, add it again with the Folder ID left empty, and connect it. See the admin guide, Configuring Backups.
+							</p>
+						{/if}
 
 						<!-- Inline edit form -->
 						{#if editingDest === dest.name}
@@ -1559,7 +1574,7 @@
 											<option value="oauth">🔑 OAuth (Personal)</option>
 											<option value="service_account">🏢 Service Account</option>
 										</select>
-										<input type="text" placeholder="Folder ID" bind:value={destFolderId} class="form-input" />
+										<input type="text" placeholder={destGdriveAuthMethod === 'oauth' ? 'Folder ID (leave empty: DumpFire makes one when you connect)' : 'Folder ID'} bind:value={destFolderId} class="form-input" />
 									</div>
 									{#if destGdriveAuthMethod === 'oauth'}
 										<div class="form-row">
@@ -1569,6 +1584,9 @@
 										{#if destGdriveRefreshToken}
 											<p style="font-size: 0.72rem; color: var(--accent-emerald)">✅ Google account connected</p>
 										{:else}
+											<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
+												DumpFire asks Google only for the files it makes. Leave the Folder ID empty: when you connect, DumpFire makes a folder of its own, "{dumpfireFolderName()}". A folder you made yourself may not be reachable. To keep using a folder DumpFire made, give its Folder ID again (shown on the destination as Folder:); Connect checks it can reach it.
+											</p>
 											<p style="font-size: 0.68rem; color: var(--text-tertiary)">Save first, then use "Connect Google Account" on the destination card.</p>
 										{/if}
 									{:else}
@@ -1586,6 +1604,10 @@
 										<input type="text" placeholder="Folder path" bind:value={destFolderPath} class="form-input" />
 									</div>
 								{/if}
+								<!-- A refused save leaves this form open as typed, with the server's reason in the toast (card 2190). -->
+								<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
+									A saved password, key or secret is kept only while the destination's name and settings stay as they were saved: type it again when you change them. A connected Google Drive destination is removed, added again and connected.
+								</p>
 								<div class="form-row" style="justify-content: flex-end">
 									<button class="btn-ghost btn-sm" onclick={() => { editingDest = null; resetDestForm(); }}>Cancel</button>
 									<button class="btn-primary btn-sm" onclick={updateDestination} disabled={!destName.trim()}>Save</button>
@@ -1642,13 +1664,16 @@
 								<option value="oauth">🔑 OAuth (Personal)</option>
 								<option value="service_account">🏢 Service Account</option>
 							</select>
-							<input type="text" placeholder="Google Drive Folder ID" bind:value={destFolderId} class="form-input" />
+							<input type="text" placeholder={destGdriveAuthMethod === 'oauth' ? 'Folder ID (leave empty: DumpFire makes one when you connect)' : 'Google Drive Folder ID'} bind:value={destFolderId} class="form-input" />
 						</div>
 						{#if destGdriveAuthMethod === 'oauth'}
 							<div class="form-row">
 								<input type="text" placeholder="OAuth Client ID" bind:value={destGdriveClientId} class="form-input" />
 								<input type="password" placeholder="OAuth Client Secret" bind:value={destGdriveClientSecret} class="form-input" />
 							</div>
+							<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
+								DumpFire asks Google only for the files it makes. Leave the Folder ID empty: when you connect, DumpFire makes a folder of its own, "{dumpfireFolderName()}". A folder you made yourself may not be reachable. To keep using a folder DumpFire made, give its Folder ID again (shown on the destination as Folder:); Connect checks it can reach it.
+							</p>
 							<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
 								1. Go to <strong>Google Cloud Console → APIs &amp; Services → Credentials</strong><br/>
 								2. Create an <strong>OAuth 2.0 Client ID</strong> — select <strong>"Desktop app"</strong> as type<br/>
@@ -1954,21 +1979,26 @@
 						<input type="text" placeholder="SMTP Host" bind:value={smtpHost} class="form-input" />
 						<input type="number" placeholder="Port" bind:value={smtpPort} class="form-input" style="width: 80px; flex: none" />
 					</div>
+					<p class="smtp-hint">Port 465 is encrypted from the start; any other port must offer STARTTLS. The mail server's certificate is checked either way.</p>
 					<div class="form-row">
 						<input type="text" placeholder="Username" bind:value={smtpUser} class="form-input" />
 						<input type="password" placeholder="Password" bind:value={smtpPass} class="form-input" />
 					</div>
+					<p class="smtp-hint">The saved password is kept only while the host, port, user name and the box below stay as they are: type it again when you change them.</p>
 					<div class="form-row">
 						<input type="email" placeholder="From Email" bind:value={smtpFromAddress} class="form-input" />
 						<input type="text" placeholder="From Name" bind:value={smtpFromName} class="form-input" />
 					</div>
 					<div class="form-row">
 						<label style="display: flex; align-items: center; gap: var(--space-xs); font-size: 0.78rem; color: var(--text-secondary); cursor: pointer">
-							<input type="checkbox" bind:checked={smtpSecure} /> Use SSL/TLS
+							<input type="checkbox" bind:checked={smtpAllowInsecure} /> Allow mail without a checked, encrypted connection
 						</label>
 						<div style="flex: 1"></div>
 						<button class="btn-primary btn-sm" onclick={saveSmtp} disabled={!smtpHost || smtpSaving}>{smtpSaving ? 'Saving...' : 'Save SMTP'}</button>
 					</div>
+					{#if smtpAllowInsecure}
+						<p class="smtp-msg smtp-warning">⚠️ Mail, and the mail password, can then be read and changed by anyone on the network between this server and the mail server. Use it only for a relay on this server's own network that cannot use TLS. For a mail server whose certificate comes from a private authority, set NODE_EXTRA_CA_CERTS instead: see docs/deployment.md, Mail Server Certificates.</p>
+					{/if}
 					<div class="form-row" style="margin-top: var(--space-sm)">
 						<input type="email" placeholder="Test recipient (defaults to your email)" bind:value={smtpTestTo} class="form-input" />
 						<button class="btn-ghost btn-sm" onclick={testSmtp} disabled={!smtpHost || smtpTesting} style="flex: none">🧪 {smtpTesting ? 'Sending...' : 'Send Test'}</button>
@@ -2494,6 +2524,9 @@
 	}
 	.smtp-success { background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: var(--accent-emerald); }
 	.smtp-error { background: rgba(244, 63, 94, 0.1); border: 1px solid rgba(244, 63, 94, 0.3); color: var(--accent-rose); }
+	/* While the way out is ticked (card 2189) */
+	.smtp-warning { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); color: var(--accent-amber); }
+	.smtp-hint { font-size: 0.68rem; color: var(--text-tertiary); margin: 0 0 var(--space-xs); }
 
 	/* Scheduled Backups */
 	.sched-config {
