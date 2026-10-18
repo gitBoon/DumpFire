@@ -18,6 +18,22 @@ import { putBackFromTrash, type UploadFile } from '../uploads';
 import { defaultsForNull, orDefault, runBackfills, type Backfill } from './migrate';
 import { normaliseTimestamps, unreadableList, type TimestampNormalisation } from './timestamps';
 import { KNOWN_BROWSER_SECRET_KEY } from '../known-browsers';
+import { REQUEST_FORM_SECRET_KEY } from '../request-tokens';
+import {
+	BACKUP_SEAL,
+	BACKUP_SEAL_KEY,
+	WEBHOOK_SECRETS_LEFT_OUT_KEY,
+	fillSecretGaps,
+	fromTableStorage,
+	keepSealKey,
+	nothingHere,
+	readListed,
+	readSecretsHere,
+	sealKeyHere,
+	unsealedBecause,
+	type SecretsAccount,
+	type Unsealed
+} from '../backup-secrets';
 
 /** The runner's record of which migration files this database has applied. */
 const MIGRATION_RECORD = '__drizzle_migrations';
@@ -25,7 +41,11 @@ const MIGRATION_RECORD = '__drizzle_migrations';
 /**
  * What a restore does with the parts of a backup that reach outside the
  * instance: `keep` restores them as the backup has them, and `off` switches
- * them off or removes them. See `switchOffOutside`.
+ * them off or removes them. See `switchOffOutside`. A backup made since card
+ * 2169 holds no mail password, destination credential or webhook secret:
+ * either way, the ones this server has for the same accounts are filled in
+ * first (`fillSecretGaps`), and `keep` leaves a webhook that had a secret off
+ * until it is set, where none is filled.
  */
 export type Outside = 'keep' | 'off';
 
@@ -82,7 +102,39 @@ export type RestoreResult = {
 	 * kept it all.
 	 */
 	outside: OutsideSwitchedOff | null;
+	/**
+	 * Task requests given a new link inside the restore's transaction: every
+	 * request there is now (card 2158). A link mailed before the restore no
+	 * longer works.
+	 */
+	requestLinksReplaced: number;
+	/**
+	 * The secrets a backup does not hold (card 2169): those kept from this
+	 * server, where they were for the same account, and those to enter again.
+	 * A working copy names only webhooks: its mail settings and destinations
+	 * are removed. Both empty for a backup made before card
+	 * 2169, which holds its secrets.
+	 */
+	secrets: SecretsAccount;
+	/**
+	 * Whether the backup's seal verified with this server's key (the review's
+	 * S1): it was made by this server and nobody has changed it since. Only
+	 * then is anything kept from this server; otherwise every gap is in
+	 * `secrets.toEnter`. False for a backup made before seals, which holds its
+	 * secrets and has no gap.
+	 */
+	sealVerified: boolean;
+	/**
+	 * Why nothing was kept from this server, or null where the seal verified:
+	 * no seal this server can check, or a seal that does not verify or a file
+	 * that failed the checks made before it, which `check` names (the second
+	 * review's B1 and N7). The restore goes ahead either way.
+	 */
+	unsealed: Unsealed | null;
 };
+
+/** What a restore that committed had done, for a `RestoreError` thrown after the commit. */
+export type CommittedRestore = Pick<RestoreResult, 'requestLinksReplaced' | 'secrets' | 'sealVerified' | 'unsealed'>;
 
 /**
  * A restore that went wrong in a way the caller has to be told about, as
@@ -100,16 +152,25 @@ export type RestoreResult = {
  * `errors` is what had already gone wrong, row by row and table by table, when
  * it stopped. The caller would otherwise never see that list: it is built up
  * inside `restoreFromBackup`, which is throwing rather than returning.
+ *
+ * `done`, for the one that committed, is what it did that the import's answer
+ * says of every restore that commits (the review's O8): the request links it
+ * replaced, and the secrets it kept and those to enter again.
  */
 export class RestoreError extends Error {
 	readonly errors: string[];
 	readonly committed: boolean;
+	readonly done: CommittedRestore | null;
 
-	constructor(message: string, detail: { errors: readonly string[]; committed: boolean; cause?: unknown }) {
+	constructor(
+		message: string,
+		detail: { errors: readonly string[]; committed: boolean; cause?: unknown; done?: CommittedRestore }
+	) {
 		super(message, detail.cause ? { cause: detail.cause } : undefined);
 		this.name = 'RestoreError';
 		this.errors = [...detail.errors];
 		this.committed = detail.committed;
+		this.done = detail.done ?? null;
 	}
 }
 
@@ -137,6 +198,12 @@ const CARRY_CARD_DEPENDENCIES = `
 	SELECT 'card', card_id, 'card', depends_on_card_id, created_by_user_id, created_at
 	FROM card_dependencies
 `;
+
+/**
+ * Every task request given a new link (card 2158), in the form the runner's
+ * backfill and migration 0055 give one: 32 random bytes as 64 hex characters.
+ */
+const REPLACE_REQUEST_LINKS = 'UPDATE task_requests SET access_token = lower(hex(randomblob(32)))';
 
 function messageOf(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
@@ -252,19 +319,21 @@ export function backupLacksSuperadmin(backup: Database.Database): boolean {
 /**
  * Whether `database` has user accounts and none of them is the superadmin:
  * `backupLacksSuperadmin`, asked of any database. `restoreFromBackup` asks it
- * of the restored rows before it commits.
+ * of the restored rows before it commits. Both counts read the table's own
+ * rows, never an index (`NOT INDEXED`), as the restore copies them: in a
+ * backup an index can hold rows its table does not (the second review's B1).
  */
 export function lacksSuperadmin(database: Database.Database): boolean {
 	const hasUsers = !!database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
 	if (!hasUsers) return false;
-	const users = (database.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n;
+	const users = (database.prepare('SELECT COUNT(*) AS n FROM users NOT INDEXED').get() as { n: number }).n;
 	if (users === 0) return false;
 
 	const hasRole = (database.prepare('PRAGMA table_info("users")').all() as { name: string }[]).some(
 		(column) => column.name === 'role'
 	);
 	if (!hasRole) return true;
-	const superadmins = (database.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'superadmin'").get() as { n: number }).n;
+	const superadmins = (database.prepare("SELECT COUNT(*) AS n FROM users NOT INDEXED WHERE role = 'superadmin'").get() as { n: number }).n;
 	return superadmins === 0;
 }
 
@@ -298,7 +367,7 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
  * every table but three.
  *
  * No session is brought in, and no invite that has not been used. A backup
- * made by this version holds neither (`withoutSignIns`, in `backup.ts`). One
+ * made by this version holds neither (`withoutSecrets`, in `backup.ts`). One
  * made before it holds the session of everybody who was signed in when it was
  * made, and a session's expiry moves on every time it is used, so those are as
  * good today as they were then: restored, each would sign in whoever has read
@@ -309,9 +378,23 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
  *
  * Nor is the key remembered browsers are signed with (card 2194), which a
  * backup made by this version does not hold either: the restored server makes
- * a new one, and every browser is forgotten, as every session is.
+ * a new one, and every browser is forgotten, as every session is. Nor the key
+ * the public request form signs its tokens with (card 2158), which a backup
+ * made since does not hold: the restored server makes a new one at first use,
+ * and a form open during the restore fails once and is reloaded. Nor the list
+ * of webhooks a backup left without their secrets (card 2169): the restore
+ * reads it from the backup (`readListed`), and writes it again itself only
+ * for the webhooks it could not fill (`fillSecretGaps`). Nor the backup's
+ * seal, which is about the file and not the data, nor any key to seal with
+ * that a backup holds (the review's S1): this server keeps its own, and
+ * puts it back itself (`keepSealKey`).
+ *
+ * Every table is read from its own storage, never through an index, in rowid
+ * order (`fromTableStorage`), as the seal is made: an index in a backup can
+ * hold rows its table does not, and a bare `SELECT *` that a `sqlite_stat1`
+ * row steers to it would copy rows the seal never saw (the second review's B1).
  */
-function rowsToRestore(backup: Database.Database, table: string): Record<string, unknown>[] {
+export function rowsToRestore(backup: Database.Database, table: string): Record<string, unknown>[] {
 	const name = table.toLowerCase();
 	if (name === 'sessions') return [];
 	if (name === 'settings') {
@@ -319,10 +402,10 @@ function rowsToRestore(backup: Database.Database, table: string): Record<string,
 			(column) => column.name === 'key'
 		);
 		if (hasKey) {
-			return backup.prepare(`SELECT * FROM "${table}" WHERE key IS NOT ?`).all(KNOWN_BROWSER_SECRET_KEY) as Record<
-				string,
-				unknown
-			>[];
+			const leftOut = [KNOWN_BROWSER_SECRET_KEY, REQUEST_FORM_SECRET_KEY, WEBHOOK_SECRETS_LEFT_OUT_KEY, BACKUP_SEAL, BACKUP_SEAL_KEY];
+			return backup
+				.prepare(fromTableStorage(backup, table, leftOut.map(() => 'key IS NOT ?').join(' AND ')))
+				.all(...leftOut) as Record<string, unknown>[];
 		}
 	}
 	if (name === 'invite_tokens') {
@@ -330,9 +413,9 @@ function rowsToRestore(backup: Database.Database, table: string): Record<string,
 			(column) => column.name === 'used'
 		);
 		if (!hasUsed) return [];
-		return backup.prepare(`SELECT * FROM "${table}" WHERE used != 0`).all() as Record<string, unknown>[];
+		return backup.prepare(fromTableStorage(backup, table, 'used != 0')).all() as Record<string, unknown>[];
 	}
-	return backup.prepare(`SELECT * FROM "${table}"`).all() as Record<string, unknown>[];
+	return backup.prepare(fromTableStorage(backup, table)).all() as Record<string, unknown>[];
 }
 
 /**
@@ -493,11 +576,13 @@ export function defaultOutside(
  *   happens here and nowhere else. `card_dependencies` is kept after 0043 and
  *   nothing removes a row from it when a dependency is deleted, so the same
  *   copy at every start would bring deleted dependencies back.
- * - A backup taken before `cards.first_completed_at` or
- *   `task_requests.access_token` existed has no values for them. The runner's
- *   backfills are repeated once the restore has committed. If they fail, the
- *   restore has still succeeded: the failure is reported in `errors`, and the
- *   backfills run again at the next start.
+ * - A backup taken before `cards.first_completed_at` existed has no values
+ *   for it. The runner's backfills are repeated once the restore has
+ *   committed. If they fail, the restore has still succeeded: the failure is
+ *   reported in `errors`, and the backfills run again at the next start. One
+ *   taken before `task_requests.access_token` existed has none either, and
+ *   every request is given one inside the transaction, as every request is
+ *   at every restore (below), so that backfill finds nothing to do.
  * - A backup taken before card 2095 holds timestamps in two forms. They are
  *   brought to the stored one after the backfills, as at every start
  *   (`normaliseTimestamps`), and the count is in `timestamps`. A failure, or a
@@ -524,6 +609,46 @@ export function defaultOutside(
  * cleared like any other, so a restore signs everybody out, whoever started
  * it included, and ends every invite that was waiting here.
  *
+ * Every task request is given a new link (card 2158). Once the rows are
+ * copied, inside the transaction, every `task_requests.access_token` is
+ * replaced with a new random one, whatever the backup's age: a backup made
+ * before card 2158 holds every request's token as it was mailed, and one made
+ * since holds none. A link mailed before the restore stops working, and its
+ * requester can have the new one sent from the page it opens
+ * (`POST /api/requests/[id]/link`). The count is `requestLinksReplaced`. This
+ * is the restore's own rule, made at every restore, and not migration 0055's
+ * one-off repeated. A request's token is not kept even where the same id is
+ * in the database being replaced: a backup of another installation, whose
+ * request 5 is somebody else's, would give one requester's link to another
+ * person's thread.
+ *
+ * A backup made since card 2169 holds no mail password, destination
+ * credential or webhook secret, and a webhook that had a secret is off in it
+ * and listed in its `webhook_secrets_left_out`. A restore clears `settings`
+ * and `webhooks` with the rest, so on its own it would leave this server with
+ * no mail, no backups and its signed webhooks off, a restore of its own backup
+ * included. So this server's secrets are read before anything is cleared
+ * (`readSecretsHere`), and once the rows are copied each gap is filled from
+ * them where it is for the same account, inside the transaction
+ * (`fillSecretGaps`): only from an entry that is the same in every field that
+ * is not secret, and only when exactly one is. A value the backup has is never
+ * replaced, so a backup made before card 2169 restores as it did. What was
+ * kept and what is to enter again is `secrets`. A restore that rolls back
+ * leaves this server's secrets as they were.
+ *
+ * And only into a backup whose seal verifies (the review's S1): every backup
+ * this server makes carries an HMAC of its rows made with a key this server
+ * keeps and no backup holds, and it is made again here, from the backup, with
+ * this server's key, before anything is written (`sealVerifies`). A backup
+ * made by another server, or changed since, by one added superadmin or one
+ * changed card, has nothing filled, and every gap is listed to enter again;
+ * `sealVerified` says which, and `unsealed` why. A file that fails
+ * `PRAGMA integrity_check`, or holds an object named as SQLite's own that no
+ * backup of this server's holds, is unsealed before its seal is asked (the
+ * second review's B1). This server's key stays this server's: it is read
+ * before the clear and put back after the copy (`keepSealKey`), so that the
+ * backups it made before the restore still verify after it.
+ *
  * Nor is a restore committed whose rows would have user accounts and no
  * superadmin among them (`lacksSuperadmin`): it is rolled back and throws.
  * The backup can have a superadmin and the restore still lose it, when that
@@ -531,7 +656,8 @@ export function defaultOutside(
  *
  * `outside` says what the restore is for. `'keep'`, the default, puts an
  * installation back: its backup destinations, report schedules, mail settings
- * and webhooks return as the backup has them. `'off'` makes a working copy. A
+ * and webhooks return as the backup has them, with the secrets filled as above
+ * and a webhook not filled left off. `'off'` makes a working copy. A
  * copy of production's data is as able to mail people, call webhooks and
  * change the backup store as production is, so once the tables are copied all
  * four are switched off or removed (`switchOffOutside`) and the result says
@@ -549,11 +675,34 @@ export function restoreFromBackup(
 	backup: Database.Database,
 	options: { outside?: Outside } = {}
 ): RestoreResult {
+	// Every read of the backup, from its list and its seal (and the file's
+	// checks before it) to the rows copied, inside one read transaction on its
+	// connection, so that all of them see the one snapshot: the rows copied are
+	// the rows the seal was checked over, even were the file written to
+	// meanwhile. It writes nothing, so it is always rolled back, whether the
+	// restore returns or throws. A transaction the caller already has open is
+	// the caller's to end.
+	const began = !backup.inTransaction;
+	if (began) backup.exec('BEGIN');
+	try {
+		return restoreInOneSnapshot(live, backup, options);
+	} finally {
+		if (began && backup.inTransaction) backup.exec('ROLLBACK');
+	}
+}
+
+/** `restoreFromBackup`, inside its read transaction on the backup: see there. */
+function restoreInOneSnapshot(live: Database.Database, backup: Database.Database, options: { outside?: Outside }): RestoreResult {
 	const tables = restorableTables(live);
 	const errors: string[] = [];
 	const restored: Record<string, number> = {};
 	const defaulted: RestoreResult['defaulted'] = [];
 	let outside: OutsideSwitchedOff | null = null;
+	let requestLinksReplaced = 0;
+	let secrets: SecretsAccount = {
+		kept: { mailPassword: false, destinations: [], webhooks: [] },
+		toEnter: { mailPassword: false, destinations: [], webhooks: [] }
+	};
 	/**
 	 * Tables that do not hold everything the backup had for them, by name in
 	 * lower case, with what `errors` says about each.
@@ -578,6 +727,24 @@ export function restoreFromBackup(
 	const inBackup = (table: string) =>
 		!!backup.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table);
 
+	// The webhooks the backup lists as left without their secrets (card 2169),
+	// read from the backup, whose word it is: what cannot be read is ignored
+	// and said, and the restore goes on (the plan's N4).
+	const { listed, problems } = readListed(backup);
+	errors.push(...problems);
+
+	// Whether this server made the backup, and nobody has changed it since
+	// (S1): its seal made again with this server's key. Asked before anything
+	// is written, and of the backup alone, after the file's own checks (the
+	// second review's B1): one that holds an object named as SQLite's own
+	// that no backup of this server's holds, or fails its integrity check, is
+	// unsealed whatever its seal says. The restore goes ahead either way; only
+	// the filling is withheld. The key is read now, to be put back once the
+	// restore has cleared the settings it is in.
+	const sealKey = sealKeyHere(live);
+	const unsealed = unsealedBecause(backup, sealKey);
+	const sealVerified = unsealed === null;
+
 	// Off, and read back as off. With them on, clearing a table would delete
 	// the rows of every table that refers to it, and a row copied in before the
 	// row it refers to would be refused: left out, in a restore that then
@@ -600,6 +767,10 @@ export function restoreFromBackup(
 	let failure: unknown = null;
 	try {
 		live.transaction(() => {
+			// This server's secrets, read before anything is cleared, for the
+			// gaps a backup leaves (card 2169): see above.
+			const here = readSecretsHere(live);
+
 			// Clear every table first, so the order of the copy does not matter.
 			for (const table of tables) {
 				try {
@@ -685,6 +856,22 @@ export function restoreFromBackup(
 				}
 			}
 
+			// This server's key for sealing its backups, as it was before the
+			// clear: see above. Not caught: a restore that lost it is rolled back.
+			if (sealKey !== null) keepSealKey(live, sealKey);
+
+			// Every request a new link: see above. Not caught, so that a restore
+			// that could not replace them is rolled back, and brings in no link
+			// a backup held.
+			if (
+				tables.includes('task_requests') &&
+				(live.prepare('PRAGMA table_info("task_requests")').all() as { name: string }[]).some(
+					(column) => column.name === 'access_token'
+				)
+			) {
+				requestLinksReplaced = live.prepare(REPLACE_REQUEST_LINKS).run().changes;
+			}
+
 			// Nothing is committed that leaves a row pointing at a row this
 			// restore left out. Foreign keys are off, so nothing has objected
 			// until now; this is where it is asked.
@@ -725,9 +912,35 @@ export function restoreFromBackup(
 				);
 			}
 
+			// The secrets the backup does not hold, filled from this server
+			// where they are for the same account, and before a working copy
+			// switches off what reaches outside, so that it lists no mail
+			// password and no destination. Not caught: a restore that could
+			// not fill them is rolled back, and leaves this server's secrets
+			// as they were.
+			// Only for a backup whose seal verified (S1): for any other, from
+			// nothing, so that nothing is filled and every gap is listed.
+			const working = options.outside === 'off';
+			const filled = fillSecretGaps(live, sealVerified ? here : nothingHere(), listed, { writeMarker: !working });
+
 			// A working copy: see above. Not caught, so that a failure here rolls
 			// the restore back like any other.
-			if (options.outside === 'off') outside = switchOffOutside(live);
+			if (working) {
+				const done = switchOffOutside(live);
+				// What the backup had on, as before card 2169: a webhook that
+				// had a secret is off in a backup made since, and is counted
+				// from the list, where it was not switched on above (R3).
+				outside = { ...done, webhooks: done.webhooks + filled.listedOnLeftOff };
+			}
+			// A working copy has removed its mail settings and destinations, so
+			// it says nothing of their secrets, kept or to enter: only of its
+			// webhooks, which stay, switched off.
+			secrets = working
+				? {
+						kept: { mailPassword: false, destinations: [], webhooks: filled.kept.webhooks },
+						toEnter: { mailPassword: false, destinations: [], webhooks: filled.unfilled.webhooks }
+					}
+				: { kept: filled.kept, toEnter: filled.unfilled };
 		})();
 	} catch (e) {
 		failure = e;
@@ -749,7 +962,7 @@ export function restoreFromBackup(
 			throw new RestoreError(
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
 					'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.',
-				{ errors, committed: true, cause }
+				{ errors, committed: true, cause, done: { requestLinksReplaced, secrets, sealVerified, unsealed } }
 			);
 		}
 		throw new RestoreError(
@@ -797,5 +1010,5 @@ export function restoreFromBackup(
 		);
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, secrets, sealVerified, unsealed };
 }

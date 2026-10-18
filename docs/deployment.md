@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.28
+version: 1.29
 status: As-Built
 date: 2026-10-18
 tags:
@@ -473,6 +473,7 @@ What stops a start, and what is only reported:
 | `SIGN_IN_ONE_AT_A_TIME=off` | `[WARN] [STARTUP]`, at every start while it is set, on the console whatever `LOG_LEVEL` is: `SIGN_IN_ONE_AT_A_TIME=off: sign-ins from browsers not remembered are not held to one at a time. Remove it and restart once the sign-in it was set for is made: see docs/deployment.md, under "If an Attack Keeps an Owner Out".` | Yes. A guesser who sends many attempts at once at one account is slowed by its waits alone. Remove it and restart: see [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out) |
 | `CSP_MODE=report-only` | `[WARN] [STARTUP]`, at every start while it is set, on the console whatever `LOG_LEVEL` is: `CSP_MODE=report-only: pages are sent the Content-Security-Policy to report only, not to enforce; remove CSP_MODE once the trial is over. See docs/deployment.md.` | Yes. Pages are not protected by the policy: a browser reports what it would refuse and refuses nothing. Remove it and make the container again: see [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy) |
 | `CSP_MODE` holds anything but `enforce` or `report-only` | `[WARN] [STARTUP]`, at every start while it does, on the console whatever `LOG_LEVEL` is: `CSP_MODE is "<value>", which is neither enforce nor report-only: the Content-Security-Policy is enforced.` | Yes, with the policy enforced. Correct the value or remove it |
+| A secret a backup does not hold is still to be entered (card 2169): the mail settings name a host and a user and hold no password; an S3, Google Drive or OneDrive destination lacks its credentials; or a webhook the database's `webhook_secrets_left_out` lists is still off with no secret | `[WARN] [STARTUP]`, at every start while it is so: `To enter again, because a backup does not hold them: <the mail password (Admin, 📧 Email / SMTP); backup destination(s) "…" (…) (Admin, Scheduled Backups); the signing secret(s) of webhook(s) N (board "…"), which stay switched off until the board's owner or an administrator sets each one's secret and switches it on with PUT /api/v1/webhooks/{id}, or deletes it if it is no longer wanted>. A database put in place by hand from a backup has none of them: see docs/admin-guide.md, Restoring from Backup.` A list that cannot be read is said on the console alone | Yes. Mail is not sent, those destinations are not tried, and those webhooks send nothing, until each is entered: see [Restoring from Backup](admin-guide.md#restoring-from-backup) |
 
 How the runner, the rebuild and the comparison work is described in [Data Model](data-model.md#migrations-and-schema-reconciliation).
 
@@ -505,7 +506,7 @@ What acts on the whole installation is the superadmin's alone. An administrator 
 
 | The superadmin only | Why it is not an administrator's |
 |---------------------|----------------------------------|
-| Export Backup | The file holds every user's password hash, the mail password and every backup destination's credentials |
+| Export Backup | The file holds every user's password hash and email and every webhook's address. Since card 2169 it holds no mail password, destination credential or webhook secret, and carries a seal made with a key this server keeps, so that only this server fills its secrets back into it, and only unchanged; files exported before then hold the secrets and no seal |
 | Import Backup | It replaces every account with the backup's |
 | Reset Everything | Whoever sets up afterwards is the superadmin |
 | Scheduled Backups: the schedule, the destinations, "Test" and "Run Now" | A destination is sent the whole database, and a test connects with a stored password to whatever host it is given |
@@ -1470,7 +1471,7 @@ loads the font from Google; it does not read `CSP_MODE`.
 
 ### The Update That Brings Migration 0053, One Timestamp Form and the Attachment File Sweep
 
-Three cards go out together: card 2106 brings migration `0053_index_foreign_keys_end_sessions.sql`, which indexes every foreign key column and **signs everybody out once**; card 2095 stores every timestamp in one form and **converts the timestamps production holds**, at the first start; card 2107 **sweeps attachment files that no row names** into the trash, and the first sweep moves a backlog. Each changes what the owner or users see. The review of the three brought migration `0054_index_user_time_end_unused_invites.sql` into the same release: it makes the log's index on `user_id` one on `user_id` and `created_at`, and **ends every invite not yet used, once**.
+Three cards go out together: card 2106 brings migration `0053_index_foreign_keys_end_sessions.sql`, which indexes every foreign key column and **signs everybody out once**; card 2095 stores every timestamp in one form and **converts the timestamps production holds**, at the first start; card 2107 **sweeps attachment files that no row names** into the trash, and the first sweep moves a backlog. Each changes what the owner or users see. The review of the three brought migration `0054_index_user_time_end_unused_invites.sql` into the same release: it makes the log's index on `user_id` one on `user_id` and `created_at`, and **ends every invite not yet used, once**. Card 2158's migration 0055, which replaces every request link once, may go out in the same image: see [The Update That Brings Migration 0055](#the-update-that-brings-migration-0055-secrets-out-of-backups-and-request-mail-to-the-accounts-address) for its own checks.
 
 > ⚠️ **0053 must not be deployed before card 2135**, which takes sessions out of backups. Both are in this tree: one image carrying both is fine. An image with 0053 and without card 2135 would let sessions made after the deploy leave in the next backup, and the one sign-out would be spent. The sweep needs card 2007's trash, which is in this tree too.
 
@@ -1674,7 +1675,7 @@ Rule on the two lists before the deploy. The sweep leaves each of them alone and
 
 **Check 0c: the rehearsal.** `npm run rehearse -- <export.db>`, on the same export, with the new code (see [Testing](testing.md#rehearsing-the-runner-against-a-copy-of-a-real-database)). Expect:
 
-- `Migration files applied` lists `0053_index_foreign_keys_end_sessions.sql` and `0054_index_user_time_end_unused_invites.sql`, and `PASSED`.
+- `Migration files applied` lists `0053_index_foreign_keys_end_sessions.sql` and `0054_index_user_time_end_unused_invites.sql` (and `0055_replace_request_links.sql`, in an image that carries it: see [its section](#the-update-that-brings-migration-0055-secrets-out-of-backups-and-request-mail-to-the-accounts-address)), and `PASSED`.
 - `Timestamps converted to the stored form (YYYY-MM-DD HH:MM:SS, UTC): N`, with a line for each column and its count: the conversion the first start will make, measured by the code that will make it. The second run converts none.
 - No `Timestamps in no form the conversion can read` lines. Any there is the same finding as a non-zero `neither` in check 0a, and is ruled on before the deploy.
 - `The first run took …`: what the first start adds before it listens, index creation and conversion included. Measured in memory, the 39 indexes took 30 ms on 20,000 cards.
@@ -1696,7 +1697,7 @@ It prints one row for each invite not yet used, expired or not: the account's na
 
 #### What changes at the first start
 
-- **Everybody is signed out, once, the owner included.** 0053's last statement deletes every session. Each browser goes to the sign-in page at its next request. API keys, invites and requesters' links are untouched. Until a browser signs in again, each request it makes with its old cookie writes one `[WARN] [AUTH]` line, `Session validation failed — token not in DB (deleted or never issued)`: a few lines a browser, one for each open tab's next call and one for the sign-in page. A later start deletes nothing. Why: [Every Session Ended Once](authentication-security.md#every-session-ended-once-by-migration-0053).
+- **Everybody is signed out, once, the owner included.** 0053's last statement deletes every session. Each browser goes to the sign-in page at its next request. API keys, invites and requesters' links are untouched by 0053 (0054 ends unused invites, and 0055 replaces requesters' links). Until a browser signs in again, each request it makes with its old cookie writes one `[WARN] [AUTH]` line, `Session validation failed — token not in DB (deleted or never issued)`: a few lines a browser, one for each open tab's next call and one for the sign-in page. A later start deletes nothing. Why: [Every Session Ended Once](authentication-security.md#every-session-ended-once-by-migration-0053).
 - **Every invite not yet used is ended, once.** 0054's last statement deletes them. A backup made before card 2135 holds every unused invite of its day, and an unused invite sets its account's password until it expires, at most seven days after it was made; ending them all makes the tokens in those copies worthless. Each link then shows the page for a link that no longer works. Send again, from User Management, the invites check 0d listed that are still wanted. Used invites, accounts and API keys are untouched, and a later start deletes nothing. Why: [Every Unused Invite Ended Once](authentication-security.md#every-unused-invite-ended-once-by-migration-0054).
 - **39 indexes are created**, one of them as 0054 makes it. It adds little to the first start (30 ms on 20,000 cards, in memory), and a permanent delete of a large board takes milliseconds instead of seconds (48 ms against 9.4 s, measured on a board of 2,000 cards).
 - **A person's log entries are indexed by person and time.** 0054 drops 0053's index on `activity_log.user_id` and creates one on `user_id` and `created_at`. The audit routes filtered by a person (`/api/audit`, `/api/v1/audit-log`) read that person's newest entries straight from it and stop at the page, where they sorted every entry of the person's (with a board or a card filtered as well, they read that board's or card's entries by its own index instead); `/api/v1/me/stats` reads only the last 7 or 30 days of them. The activity report filtered by a person looks each card's entries and comments up by card: with an index on `user_id`, SQLite had read every entry of the person's once for each card (4,215 ms against 9 ms on 2,000 cards and 60,000 entries). No answer changes.
@@ -1741,6 +1742,177 @@ Nothing is done to the database: start the previous image on it as it is ([Going
 
   It writes ISO 8601 again. The next start of the newer image converts what it wrote, with one `[WARN] [DB]` line.
 - **The sweep** stops with the newer image. Files it moved stay in the trash, which an image from before card 2007 never reads or empties: see [The Update That Brings Transactions and the Uploads Trash](#the-update-that-brings-transactions-and-the-uploads-trash).
+
+### The Update That Brings Migration 0055, Secrets Out of Backups and Request Mail to the Account's Address
+
+Three cards go out in one image, and this is the one note for them.
+
+- **Card 2158** brings migration `0055_replace_request_links.sql`, which **replaces every task request's link once**, and changes what a backup holds and what a restore does: a backup holds no request link and not the key the public request form signs with, and every restore gives every request a new link. A requester whose link no longer works asks for the current one from the page it opens. If it goes out in the same image as [migration 0053](#the-update-that-brings-migration-0053-one-timestamp-form-and-the-attachment-file-sweep), everybody is signed out and every request link is replaced on that one deploy.
+- **Card 2169** takes the mail password, every backup destination's credentials and every webhook's signing secret out of every backup, and seals every backup with a key the server keeps. A restore keeps this server's own where they are for the same account, only into a backup this server made and nobody has changed since, and lists any to enter again; a scheduled backup does not try a destination that lacks its credentials; and the server says at every start what is still to enter. No migration. The one thing written to the running database is the key, a `backup_seal_key` setting the first backup after the deploy makes: mail, backups and webhooks go on as they are.
+- **Card 2171** sends every mail to a requester who made the request while signed in to the account's email as it is when the mail is sent, not the address stored when the request was made, and the inbox shows that address. Deleting an account writes its email onto its requests first. No migration.
+
+> ⚠️ **Never card 2158 without card 2171.** The new route that mails a requester the current link (`POST /api/requests/[id]/link`) would otherwise compare the address given with the one stored when the request was made. For a request made while signed in, whose account's email has changed since, whoever holds the old mailbox could have the thread's link mailed there whenever they liked. Card 2171 makes the route, and every other mail to a requester, use the account's address as it is now. An image carrying both is fine; one with card 2158 and without card 2171 is not to be deployed.
+
+```mermaid
+flowchart TD
+    G["0g: which secrets production holds,<br/>on the host, read-only"] --> Deploy
+    H["0h: whose request mail changes address,<br/>on the host, read-only"] --> Deploy
+    E["0e: count the requests and see that mail is set up,<br/>on the host, read-only"] --> R["0c: the rehearsal lists 0055,<br/>and notes the links it replaced"]
+    K["0f: make a request to yourself,<br/>confirm it, keep the reply mail"] --> Deploy
+    R --> Deploy["Deploy as in Updating a Running Installation"]
+    Deploy --> First["First start: 0055 applied,<br/>every request link replaced"]
+    First --> After["Checks 17 to 21, then 22 to 37"]
+```
+
+#### Before the deploy: checks 0e to 0h
+
+**Check 0e: who will meet a dead link, and whether they can be sent a new one.** On the host, against the live database, read-only. It prints no token, no key and no credential, the backup destinations by type and name only, and it holds no `!` or `$`:
+
+```bash
+docker exec dumpfire node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+console.table(db.prepare('SELECT status, COUNT(*) AS requests, SUM(requester_email IS NOT NULL) AS with_email, MAX(created_at) AS newest FROM task_requests GROUP BY status ORDER BY status').all());
+const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('backup_config');
+const c = row ? JSON.parse(row.value) : {};
+console.log('backup schedule:', c.schedule || 'none', '| destinations:', (c.destinations || []).map((d) => d.type + ' ' + d.name).join(', ') || 'none');
+console.table(db.prepare('SELECT destination_type, status, COUNT(*) AS runs, MIN(created_at) AS first, MAX(created_at) AS last FROM backup_log GROUP BY destination_type, status').all());
+console.log('mail set up:', Boolean((db.prepare('SELECT value FROM settings WHERE key = ?').get('smtp_host') || {}).value));
+db.close();
+"
+```
+
+Each request counted has a link that stops working at the deploy. A requester who opens one is asked for the address the request was made with, and the current link is mailed there, so **mail must be set up** (`mail set up: true`) for anyone to be sent one; with none, set it up before the deploy. `backup_log` keeps the last ten runs, so an empty table does not prove that no copy ever left: the replacement does not depend on it.
+
+**Check 0f: a link to try afterwards.** In a private window, make a request on `/request` to yourself, with a second `+` alias of a mailbox you can read as its address, and confirm it from the mail. Then, signed in as yourself, reply to it in the Inbox, and keep the reply mail: its "View & Reply" opens the thread now, and check 17 opens it after the deploy.
+
+**Check 0g: which secrets production holds, and what a restore elsewhere would ask for** (card 2169). On the host, against the live database, read-only. It prints flags, counts, the mail port and "Use SSL/TLS" setting (neither is secret) and the destinations by type and name, never a secret, and it holds no `!` or `$`:
+
+```bash
+docker exec dumpfire node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+const get = (k) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) || {}).value || '';
+const has = (v) => Boolean(v && String(v).length > 0);
+console.log('mail: host set', has(get('smtp_host')), '| port', get('smtp_port'), '| secure', get('smtp_secure'), '| user set', has(get('smtp_user')), '| password set', has(get('smtp_pass')));
+let c = {};
+try { c = JSON.parse(get('backup_config') || '{}'); } catch (e) { console.log('backup_config is not JSON'); }
+for (const d of (c.destinations || [])) { let sa = {}; try { sa = JSON.parse(d.serviceAccountJson || '{}'); } catch (e) {} console.log('destination', d.type, JSON.stringify(d.name), '| password', has(d.password), '| private key', has(d.privateKey), '| S3 secret', has(d.secretAccessKey), '| client secret', has(d.clientSecret), '| refresh token', has(d.refreshToken), '| service account key', has(sa.private_key)); }
+console.table(db.prepare('SELECT active, length(secret) > 0 AS signed, COUNT(*) AS webhooks FROM webhooks GROUP BY 1, 2 ORDER BY 1, 2').all());
+console.table(db.prepare('SELECT destination_type, status, COUNT(*) AS runs, MIN(created_at) AS first, MAX(created_at) AS last FROM backup_log GROUP BY destination_type, status').all());
+db.close();
+"
+```
+
+Read it for three things. What is `true` there is what a restore of a backup onto another server, or a server rebuilt from one, would ask to be entered again: have each of those, and each webhook receiver's secret, somewhere outside DumpFire before the deploy (see [Backup Destinations](#backup-destinations)). An SFTP destination with `password false` and `private key false` whose recent runs succeed is one whose server accepts no password at all; it goes on being tried as it is (it is not stopped as "credentials are not entered"). And `port 587` (or 25) with `secure` empty or `false` is mail sent with the certificate not checked: that is a card of its own, and not changed by this release. `backup_log` keeps the last ten runs, so it cannot show that no copy ever left the server: every copy made before this deploy holds the secrets, as below.
+
+**Check 0h: whose request mail changes address at the deploy** (card 2171). On the host, read-only; it prints counts, never an address:
+
+```bash
+docker exec dumpfire node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+console.table(db.prepare('SELECT tr.status, COUNT(*) AS made_signed_in, SUM(lower(trim(tr.requester_email)) <> lower(u.email)) AS address_since_changed FROM task_requests tr JOIN users u ON u.id = tr.requester_user_id GROUP BY tr.status ORDER BY tr.status').all());
+console.table(db.prepare('SELECT status, COUNT(*) AS requests, SUM(requester_email IS NOT NULL) AS with_address FROM task_requests WHERE requester_user_id IS NULL GROUP BY status ORDER BY status').all());
+db.close();
+"
+```
+
+`address_since_changed` is how many requests made signed in are mailed at a different address from the deploy on: the account's address as it is now. The second table is the requests made without an account, or whose account was deleted before the deploy, which keep the address stored on them.
+
+**In the rehearsal (check 0c)**, `Migration files applied` lists `0055_replace_request_links.sql` too, and, for an export that holds requests, a note under `Worth knowing`: `task_requests: every access_token replaced in its N row(s) by 0055_replace_request_links.sql, a one-off declared in tests/rehearsal/one-offs.ts`. Expected, not a failure. The rehearsal still fails if `task_requests` loses a row.
+
+#### What changes at the first start
+
+- **Every request link mailed before the deploy stops working, once.** 0055's one statement gives every request a new token, open, settled or unconfirmed. Copies of backups made before this, at a destination or downloaded, hold every link as it was mailed; replacing them all makes those copies open no thread. A later start replaces nothing. Why: [Every Request Link Replaced Once](authentication-security.md#every-request-link-replaced-once-by-migration-0055).
+- **The page an old link opens** says "This link no longer works. Enter the email address you made the request with (if you made it while signed in to DumpFire, your account's email address as it is now), and a new link will be sent to it.", with an address field and "Send me a new link"; the confirm page shows the same under its refusal. Whatever is entered, the answer is the same sentence; only the request's address is sent the link (for a request made signed in, the account's email as it is now), at most three times an hour, and the reply page no longer asks the server every five seconds for a thread it cannot open.
+- **Backups made from now on hold no request link** and not the request form's key, and **every Import Backup replaces every request's link**: its answer says how many, and the requesters of those links ask for new ones the same way.
+- **Backups made from now on hold no mail password, no destination credential and no webhook secret**, and a webhook that has a secret is switched off in them (card 2169). The running server is not changed: its mail, its backups and its webhooks work as before, and Backup History shows the next run succeed at every destination. An Import Backup keeps this server's secrets for the same accounts, and its result lists any to enter again. **Every backup is sealed** from now on: a `backup_seal` setting in the file, the seal's form number `2:` and an HMAC of every row made with the `backup_seal_key` the first backup makes in the running database, which no backup holds. Import Backup fills this server's secrets only into a backup whose seal it makes again with its own key: one made by another server, or changed since in anything a restore brings in, has every gap listed, and its "To enter again" line ends "None was kept from this server, because this backup was not made by this server, or was changed since." The seal covers the file's whole structure, SQLite's own objects and the statistics ANALYZE writes included, and the import reads every table's rows as stored (`NOT INDEXED`), the rows the seal was made over. Before the seal is asked, a file that fails `PRAGMA integrity_check`, or holds an object named as SQLite's own that no backup of this server's holds, is treated as changed: the restore goes ahead, nothing is filled, and the import writes one `[WARN] [IMPORT]` line beginning "Nothing was kept from this server, because the backup failed a check made before its seal is checked" that names the check. **Copies made before this deploy carry no seal**: restoring one fills nothing from this server, which changes nothing, since they hold their own secrets; a line with anything to enter would end "None was kept from this server, because this backup carries no seal this server can check." Sealing adds about 0.2 s to a backup of a 59 MB database (0.56 s at 177 MB, measured on a development machine), and verifying as much to an import, with about 0.12 s more for the integrity check. Nothing new is written at start on production, where every secret is entered; a `[WARN] [STARTUP]` line beginning "To enter again, because a backup does not hold them" would mean something already lacks one.
+- **Every mail to a requester who made the request signed in goes to the account's email as it is now** (card 2171): the team's reply, "Request accepted", "Request declined", the progress and completion mails, and a new link. The inbox shows that address. Check 0h counted the requests this changes. Deleting a user writes the account's email onto every request it made, so its requests go on being mailed at its last address.
+- Requests, their messages and the inbox are otherwise untouched, and the team sees nothing new.
+
+**Owner to know.** From this deploy on a backup is not enough to rebuild a lost server: restored anywhere but the server it came from, or put in place by hand, it needs the mail password, every destination's credentials and every webhook's secret entered again (see [Backup Destinations](#backup-destinations)). Restored on the server it came from it needs nothing entered, as long as it is the file that server made, unchanged: a restore keeps nothing from this server for a backup changed since, by anyone, in anything a restore brings in, its structure, SQLite's own objects and statistics included, nor for a file that fails SQLite's integrity check. The seal leaves out only what a restore never brings in (the hidden rowids of a table with no `INTEGER PRIMARY KEY`, though not their order; `sqlite_sequence`; the file's header and free space), so a change there restores nothing different. Copies made before this deploy still hold them, and carry no seal, and nothing can take them out: they go as each destination's retention removes them. If one of them may have been read by somebody who should not have, change the mail password and each destination's credentials at their services and enter them again, and set new webhook secrets with their receivers.
+
+#### After the deploy
+
+| # | Do | Account and data | Expect | A fault if |
+|---|---|---|---|---|
+| 17 | Open the reply mail kept in check 0f | A private window | "This link no longer works" and the address field | The thread |
+| 18 | Enter a wrong address; then the right one | | The same sentence both times; one mail, for the right one, whose link opens the thread | A different answer for the wrong one, no mail, or two |
+| 19 | Leave a page from check 17 open for a minute, then read Admin, Logs | The superadmin | At most a line or two for that request | A line every five seconds |
+| 20 | Export a backup. Search the file for the token in check 18's link, and for `request_form_secret` | The superadmin | Neither found | Either found |
+| 21 | On an instance that is not production, Import Backup of that export **as a working copy**; open check 18's link with its address changed to that instance's, and ask for a new link | That instance's superadmin | The import's answer, and the report on the page, say how many request links were replaced; the link no longer works; the ask is answered "New links cannot be sent just now. Please contact the team that sent you the link.", and that instance's log has a `[WARN] [REQUESTS]` line saying mail is not set up (unless that instance's own test mail was set up first) | The link opens the thread, or the import restored as it is |
+
+Checks 22 to 24 and 31 to 37 run on production. **Checks 25 to 30 restore a backup, so they run on an instance that is not production, with a database of its own**: a fresh data volume, set up with a superadmin of its own and no mail settings or destinations, started with `--network none` and `SCHEDULERS=off` as in [Rehearsing an Update Against a Copy](#rehearsing-an-update-against-a-copy). Never on production, and never on a copy of production's live database: the restore would rightly keep that copy's secrets, and the checks would show nothing. Importing production's export there signs you out; sign in again as production's superadmin. The instance is never given a network afterwards: the restore "as it is" brings production's unsigned webhooks and report schedules back on there. Checks 31 to 37 use a throwaway ordinary account, `rq-check`, made for them, with a password you know and an email that is a `+` alias of a mailbox you can read; mail must be set up and an App URL set. Delete `rq-check`, its request and its card at the end.
+
+| # | Card | Do | Account and data | Expect | A fault if |
+|---|---|---|---|---|---|
+| 22 | 2169 | Export Backup, save it in the repository folder on a workstation as `dumpfire-export.db`, and run check 0g's command on it from that folder, as below | The superadmin | The mail line's "password set" is `false`; on every destination line "password", "private key", "S3 secret", "client secret", "refresh token" and "service account key" are `false`; every webhook row is `signed 0`, and those that were signed in 0g are `active 0`; "left out:" lists them; and `sealed: true`, `seal key in it: false` | Any of them `true`, or `sealed: false` |
+| 23 | 2169 | Admin, ☁️ Scheduled Backups, ▶ Run Now | The superadmin | Success at every destination: the running server keeps its credentials | "credentials are not entered", or any new failure |
+| 24 | 2169 | Admin, 📧 Email / SMTP, 🧪 Send Test | The superadmin | It arrives | It fails |
+| 25 | 2169 | On the instance, Import Backup of check 22's file, "Restore everything as it is" | That instance's superadmin | The result's "To enter again" line names the mail password, each destination by name with what it needs, and each signed webhook with its board, and ends "None was kept from this server, because this backup was not made by this server, or was changed since." (production's backup, another server's key), or, where the instance has never taken a backup and so has no key, "None was kept from this server, because this backup carries no seal this server can check." The mail panel's password is empty; each destination's Edit shows its secret fields empty; a Google Drive OAuth destination shows Connect | No such line, or a secret present |
+| 26 | 2169 | Straight after, restart the instance and read its log | | One `[WARN] [STARTUP]` line naming the mail password, each destination with what it needs but an SFTP one, and each signed webhook with its board; and, from the import, one `WARN` line with the same list and an SFTP destination too, which the start-up line leaves out | The webhooks missing from either line |
+| 27 | 2169 | On it, ▶ Run Now | | Backup History shows each destination failed with "This destination's credentials are not entered…", at once (an SFTP destination is tried, and fails to connect with no network) | A connection or authentication error at an S3, Drive or OneDrive destination |
+| 28 | 2169 | On it, type a made-up mail password and save; export; Import Backup of that export as it is | | The result says "Kept from this server, because a backup does not hold them: the mail password"; the mail panel shows the password as set | The mail password listed to enter again |
+| 28a | 2169 | On a workstation, in the repository folder, change one card's title in that export as below; on the instance, Import Backup of the changed file as it is | | The result's "To enter again" line names the mail password and ends "None was kept from this server, because this backup was not made by this server, or was changed since."; the mail panel's password is empty | "Kept from this server" |
+| 29 | 2169 | On it, Import Backup of check 22's file as a working copy; then restart it | | The working-copy sentence counts as switched off every webhook production had on, signed or not, and one mail setting fewer removed than before this change (no password); a "To enter again" line names only the signed webhooks; after the restart, no start-up line names a webhook | The mail password or a destination listed, or "0 webhook(s) switched off" where production had webhooks on |
+| 30 | 2169 | On it, by hand: stop it, put check 22's file in place as its database (deleting `-wal` and `-shm`), start it; read its log | | One `[WARN] [STARTUP]` line naming the mail password, each destination but an SFTP one (which is tried as before, and named by no start-up line), and each signed webhook | No line |
+| 31 | 2171 | Sign in as `rq-check` in a private window; make a request on `/request` addressed to yourself | `rq-check` | Made, with no confirmation step | |
+| 32 | 2171 | In that window, Account, change `rq-check`'s email to a second alias | `rq-check`'s password | Changed | |
+| 33 | 2171 | As yourself, open Inbox | Yourself | The request shows the second alias | The first alias |
+| 34 | 2171 | Reply in the Inbox; then accept the request into a board and comment on its card | Yourself | The reply, "Request accepted" and the comment's progress mail arrive at the second alias, and nothing at the first | Any at the first alias |
+| 35 | 2171 | In another private window open `/request/<id>/reply?token=x`; enter the first alias; then the second | No account | The words "…(if you made it while signed in to DumpFire, your account's email address as it is now)…"; the same sentence both times; one mail, at the second alias, whose link opens the thread | A mail at the first alias, or a different answer |
+| 36 | 2171 | Delete `rq-check`; comment on the card again | The superadmin | The progress mail arrives at the second alias | At the first alias, or none |
+| 37 | 2171 | In a private window, make a request on `/request` with a third alias, confirm it from the mail, then reply to it from the Inbox | No account, then yourself | Both mails at the third alias, as before | Anything changed |
+
+Check 22's command is check 0g's with `docker exec dumpfire` taken off, the file's path as its argument, and two lines more. Save the export in the repository folder as `dumpfire-export.db` and run it from that folder, so that `better-sqlite3` is found and the plain relative path `./dumpfire-export.db` names the file in PowerShell 5.1 as well as in a POSIX shell. Write it with a forward slash: PowerShell takes either, but a POSIX shell reads `.\dumpfire-export.db` as `.dumpfire-export.db`, another file, and a path that begins with `~` is not expanded for a program in PowerShell 5.1. It prints flags only:
+
+```bash
+node -e "
+const db = require('better-sqlite3')(process.argv[1], { readonly: true, fileMustExist: true });
+const get = (k) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) || {}).value || '';
+const has = (v) => Boolean(v && String(v).length > 0);
+console.log('mail: host set', has(get('smtp_host')), '| port', get('smtp_port'), '| secure', get('smtp_secure'), '| user set', has(get('smtp_user')), '| password set', has(get('smtp_pass')));
+let c = {};
+try { c = JSON.parse(get('backup_config') || '{}'); } catch (e) { console.log('backup_config is not JSON'); }
+for (const d of (c.destinations || [])) { let sa = {}; try { sa = JSON.parse(d.serviceAccountJson || '{}'); } catch (e) {} console.log('destination', d.type, JSON.stringify(d.name), '| password', has(d.password), '| private key', has(d.privateKey), '| S3 secret', has(d.secretAccessKey), '| client secret', has(d.clientSecret), '| refresh token', has(d.refreshToken), '| service account key', has(sa.private_key)); }
+console.table(db.prepare('SELECT active, length(secret) > 0 AS signed, COUNT(*) AS webhooks FROM webhooks GROUP BY 1, 2 ORDER BY 1, 2').all());
+console.log('left out:', get('webhook_secrets_left_out'));
+console.log('sealed:', has(get('backup_seal')), '| seal key in it:', has(get('backup_seal_key')));
+db.close();
+" ./dumpfire-export.db
+```
+
+Check 28a's change, on the export check 28 made, saved in the repository folder as `dumpfire-export-28.db`; it copies the file and changes the copy, `dumpfire-export-28-changed.db`, which is the one to import:
+
+```bash
+node -e "
+require('fs').copyFileSync(process.argv[1], process.argv[2]);
+const db = require('better-sqlite3')(process.argv[2], { fileMustExist: true });
+console.log('cards changed:', db.prepare('UPDATE cards SET title = title || ? WHERE id = (SELECT MIN(id) FROM cards)').run(' (changed)').changes);
+db.close();
+" ./dumpfire-export-28.db ./dumpfire-export-28-changed.db
+```
+
+#### Going back to the previous image
+
+Nothing is done to the database but the one row below, deleted with the container stopped before the older image starts.
+
+- **0055 stays applied.** An older image with the runner logs one `[ERROR] [DB]` line for the recorded files it has no file for, 0055 among them, and starts. No link is replaced a second time.
+- **The new route goes with it.** An old link's page says "This link is no longer valid. Use the link in the most recent email about your request." again, and polls; a requester can then be sent a new link only by the team's next reply.
+- **Backups made by the newer image** hold no links; restored by the older image, or put in place by hand, every request is given one by the start's backfill. The older image's own backups hold links again.
+- **The seal's key stays in the running database, and the older image does not know to leave it out of a backup.** Delete it with the container stopped, after the newer image's last start and before the older image's first, so that no copy the older image makes holds it: a one-off container on the same volume, from the newer image (any image that has `better-sqlite3` will do), writes to the database file while nothing else has it open. Going forward again, the newer image makes a new key, and its backups made before then are restored with every gap listed:
+
+  ```bash
+  docker stop dumpfire
+  docker run --rm --network none -v dumpfire-data:/app/data dumpfire:latest node -e "
+  const db = require('better-sqlite3')('/app/data/dumpfire.db', { fileMustExist: true });
+  console.log('keys removed:', db.prepare('DELETE FROM settings WHERE key = ?').run('backup_seal_key').changes);
+  db.close();
+  "
+  ```
+
+  It prints `keys removed: 1` (or `0` where no backup was taken since the deploy). Then start the older image as above. For a container, a volume or a `DB_PATH` other than the [Production](#production) command's, put those in place of `dumpfire` (after `docker stop`), `dumpfire-data` and `/app/data/dumpfire.db`: under Docker Compose the container is not called `dumpfire` unless the compose file sets `container_name`, so take its name from `docker compose ps` (such as `dumpfire-dumpfire-1`), and the volume is `<project>_dumpfire-data`.
+
+- **Backups made by the newer image hold no secret.** Imported into the older image, they come up with no mail password, no destination credentials and their signed webhooks off, and the older image says nothing of it: enter them as in [Restoring from Backup](admin-guide.md#restoring-from-backup), step 5. The running database's own secrets are not touched by going back, and the older image's backups hold them again.
+- **Request mail goes back to the address stored on each request.** The addresses `deleteUser` wrote for accounts deleted meanwhile stay, and are the accounts' last.
 
 ## Changing the Schema
 
@@ -1948,22 +2120,28 @@ flowchart LR
 ```
 
 The scheduler checks once a minute whether a backup is due. Each backup:
-1. Writes a complete copy of the database to a temporary file beside it with `VACUUM INTO`, which includes changes still in the write-ahead log. It then opens the copy with no journal, deletes every session, every unused invite and the key remembered browsers are signed with from it, masks every invite's token, any request link's token and the name typed at an old failed sign-in in its system log, and writes it out again with a second `VACUUM INTO` to a second temporary file, so that nothing of what was deleted is left in the file. It reads that second file and deletes both. The running database is not touched: nobody is signed out by a backup, and its own log is as it was. Every step of this is synchronous, so **the server answers no request from the start of the first `VACUUM INTO` until the second file has been read**: both copies, the masking, the deletes and the read, and not only the first copy. "Export Backup" stops it the same way. See "How long the server stops answering", below. Both temporary files are beside the database, on the volume, so it needs room for two copies while a backup is made, and none for a journal.
+1. Writes a complete copy of the database to a temporary file beside it with `VACUUM INTO`, which includes changes still in the write-ahead log. It then opens the copy with no journal, deletes every session, every unused invite, the key remembered browsers are signed with and the key the request form signs with from it, sets every request's link to `NULL`, masks every invite's token, any request link's token and the name typed at an old failed sign-in in its system log, deletes the mail password and the key backups are sealed with, empties every destination's secret fields and every webhook's secret, switching each such webhook off (card 2169), seals it (an HMAC of every row, written into it as `backup_seal`), and writes it out again with a second `VACUUM INTO` to a second temporary file, so that nothing of what was deleted is left in the file. It reads that second file and deletes both. The running database is not touched: nobody is signed out by a backup, and its own log is as it was; the first backup writes the seal's key into it (`backup_seal_key`), and none after. Every step of this is synchronous, so **the server answers no request from the start of the first `VACUUM INTO` until the second file has been read**: both copies, the masking, the deletes and the read, and not only the first copy. "Export Backup" stops it the same way. See "How long the server stops answering", below. Both temporary files are beside the database, on the volume, so it needs room for two copies while a backup is made, and none for a journal.
 2. Uploads the copy as it is, not compressed, to each configured destination as `dumpfire-backup-<UTC date and time>.db`
 3. Records the result for each destination in the `backup_log` table, which keeps the last 10 entries
 4. After a successful upload, deletes the oldest backups at that destination beyond the retention count (a retention of 0 keeps them all). On Google Drive only the files the connected account may delete or trash are counted, and one it may not is left with one `WARN` line a run: see [Configuring Backups](admin-guide.md#configuring-backups)
 
 A failed upload is not retried. It is logged at `ERROR`, recorded in `backup_log` with the error, and emailed to the alert address if failure alerts are switched on and SMTP is configured. The destination is tried again at the next scheduled backup.
 
-A backup file is a whole database: its data, its structure and its own record of applied migrations, with two things taken out. It holds no session, and no invite that has not been used: either would sign in whoever read the file. Its system log names no invite's token either: the server wrote an invite's address into the log with the token in it until 2026-10-14, and a backup masks those lines. The server masks the same lines in its own log once at every start, so `GET /api/logs` shows none of those tokens either from the first start on this version. Every user is in it with their password hash, and so are the mail password and the destinations' own credentials, so it is still a file to keep where few can read it. The file "Export Backup" downloads is made the same way and holds the same.
+**A destination whose credentials are not entered is not tried** (card 2169): an S3 destination with no secret access key, a Google Drive one with no client secret or refresh token (OAuth) or whose service account JSON holds no private key, a OneDrive one with no client secret. It is asked before the copy is made, and such a destination fails at once, recorded, logged and mailed as any failure is, with "This destination's credentials are not entered: a backup does not hold them, so they are entered again after a restore. Enter them in Admin, Scheduled Backups." (a Google Drive OAuth one: "… enter its client secret and connect it again."). A run in which no destination can be tried makes no copy at all, so the server does not stop answering for a copy nobody takes. An SFTP destination with neither a password nor a key is tried as before: a server that allows `none` authentication accepts it. So after a restore onto another server, such a destination is tried against the real host at every scheduled run, and its failed logins may trip a lockout there: enter its credentials, or remove it.
 
-That a backup signs nobody in is true of **accounts**, and of nothing else. Two secrets are still in it: every public request's link (`task_requests.access_token`), which lets whoever holds it read and reply to that request's thread and confirm it, and the key the public request form signs its tokens with (`request_form_secret` in `settings`). Taking those out is another card's work. The key remembered browsers are signed with (`known_browser_secret` in `settings`, card 2194) is taken out of every copy and never restored, so a restore forgets every remembered browser and the restored server makes a new key. A backup's system log holds no name typed at a failed sign-in at a name that was no account either: those lines are rewritten in the copy, and in the running log at every start (card 2193).
+A backup file is a whole database: its data, its structure and its own record of applied migrations, with what would open something taken out. It holds no session, and no invite that has not been used: either would sign in whoever read the file. Its system log names no invite's token either: the server wrote an invite's address into the log with the token in it until 2026-10-14, and a backup masks those lines. The server masks the same lines in its own log once at every start, so `GET /api/logs` shows none of those tokens either from the first start on this version. Every user is in it with their password hash and email, and every webhook with its address, so it is still a file to keep where few can read it: a Slack or Teams incoming webhook's address is all anyone needs to post to that channel, so if a copy may have been read, make a new one at its service. The file "Export Backup" downloads is made the same way and holds the same.
+
+**No secret is in a backup** (card 2169): not the mail password, not a destination's credentials (an SFTP password or private key, an S3 secret access key, a Google Drive client secret and refresh token or a service account's private key, a OneDrive client secret), not a webhook's signing secret. Each destination's other fields stay, and a webhook that had a secret is switched off in the copy and listed in `webhook_secrets_left_out`, so that a file put in place by hand sends nothing unsigned. An Import Backup fills each gap from this server where it is for the same account, in every field that is not secret, and only into a backup this server made and nobody has changed since (its seal, made again with this server's key), and its result lists any to enter again; a file put in place by hand comes up with none of them, and every start writes one `[WARN] [STARTUP]` line naming what is still to enter. See [What a Backup Holds, and What a Restore Brings In](authentication-security.md#what-a-backup-holds-and-what-a-restore-brings-in).
+
+**So a backup alone no longer rebuilds a lost server.** On a server that still runs, restore with Import Backup, which keeps this server's secrets; put a file in place by hand only when it cannot start. A server rebuilt from nothing needs every secret entered again, so keep the mail password and each destination's credentials outside DumpFire (a password manager), and know who holds each webhook's secret. An S3 secret key cannot be read again from AWS (a new one is made); a Google Drive OAuth destination needs its client secret from the Google Cloud console, then Connect; a webhook's secret is known only at its receiver.
+
+A backup opens no request's thread either (card 2158): every request is in it with its link (`task_requests.access_token`) empty, and the key the public request form signs its tokens with (`request_form_secret` in `settings`) is not in it. A restore gives every request a new link, whatever the backup holds, and its answer says how many it replaced; it never brings the form's key in, and the restored server makes a new one. The key remembered browsers are signed with (`known_browser_secret` in `settings`, card 2194) is taken out of every copy and never restored, so a restore forgets every remembered browser and the restored server makes a new key. A backup's system log holds no name typed at a failed sign-in at a name that was no account either: those lines are rewritten in the copy, and in the running log at every start (card 2193).
 
 **What clearing the copy costs.** The copy used to be vacuumed in place, which needs a rollback journal on the volume as large as the copy. Writing it out again with `VACUUM INTO` needs no journal, and is quicker. Measured once by the reviewer, on a 154 MB copy: 2.7 s for the vacuum in place, 1.3 s for `VACUUM INTO`, with no planted session id or token left and the integrity check passing. Measured again for this change, on a 196 MB database made up for the purpose (never a real one) on a Windows development machine, six runs of each: the vacuum in place took 1.7 to 3.1 s, `VACUUM INTO` 0.5 to 1.3 s, and the first copy 0.7 to 1.5 s. Neither has been measured on the production server; expect the figures to grow with the database.
 
-**How long the server stops answering.** The server waits for the whole of a backup, not only for the first copy, and that whole has never been measured. Added together from the separate figures above, the two `VACUUM INTO`s alone came to about 1.2 to 2.8 s on the 196 MB made-up database on the development machine (0.7 to 1.5 s for the first copy, 0.5 to 1.3 s for the second); the masking of the log, the deletes and the reading of the file come on top of that, unmeasured. It is an estimate from parts, on a machine that is not the server. Expect it to be longer on a larger database or a slower disk, and schedule backups for an hour when few people use DumpFire.
+**How long the server stops answering.** The server waits for the whole of a backup, not only for the first copy, and that whole has never been measured. Added together from the separate figures above, the two `VACUUM INTO`s alone came to about 1.2 to 2.8 s on the 196 MB made-up database on the development machine (0.7 to 1.5 s for the first copy, 0.5 to 1.3 s for the second); the masking of the log, the deletes and the reading of the file come on top of that, unmeasured. The seal (card 2169) reads every row of the copy once more: measured on made-up copies on a development machine, 0.2 s for 59 MB and 115,000 rows, 0.56 s for 177 MB and 345,000; an Import Backup spends as long again making it afresh from the file it is given. It is an estimate from parts, on a machine that is not the server. Expect it to be longer on a larger database or a slower disk, and schedule backups for an hour when few people use DumpFire.
 
-Backups made before this version do hold the sessions of whoever was signed in when they were made, and a session goes on being good for as long as it is used. Restoring one no longer brings them back: a restore brings in no session whatever the backup holds. The copies themselves, at a destination or downloaded, are unchanged: treat them as you would a password file, and delete the ones that are not needed.
+Backups made before this version do hold the sessions of whoever was signed in when they were made, and a session goes on being good for as long as it is used. Restoring one no longer brings them back: a restore brings in no session whatever the backup holds. Those made before card 2158 hold every request's link as it was mailed, which migration 0055 replaces once and every restore replaces again. Those made before card 2169 hold the mail password, every destination's credentials and every webhook's secret, and carry no seal, so Import Backup of one keeps nothing from this server (it needs nothing kept); nothing can take the secrets out of a copy already made, and they go as each destination's retention removes them. If one of them may have been read by somebody who should not have, change the mail password and each destination's credentials at their services and enter them again, and set new webhook secrets with their receivers. The copies themselves, at a destination or downloaded, are unchanged: treat them as you would a password file, and delete the ones that are not needed.
 
 Backup destinations, the schedule and "Run Now" are the superadmin's: see [The Superadmin](#the-superadmin). See [Restoring from Backup](admin-guide.md#restoring-from-backup) for the two ways to put one back.
 

@@ -758,6 +758,82 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		expect(source).not.toContain('unless the backup holds your current session');
 	});
 
+	it('says in the import dialog that a backup holds no secret, and no longer that the outside comes back exactly (card 2169)', () => {
+		const dialog = markup.slice(markup.indexOf('<h2>Import Database</h2>'));
+		const asItIs = dialog.slice(dialog.indexOf('<strong>Restore everything as it is</strong>'));
+		const said = /<span class="import-choice-desc">([^<]*)<\/span>/.exec(asItIs)?.[1];
+
+		expect(said).toBe(
+			'For putting this installation back. Backup destinations, report schedules, mail settings and webhooks come ' +
+				'back as the backup has them. A backup holds no mail password, destination credential or webhook secret: ' +
+				'the ones this server has for the same accounts are kept, and the result lists any to enter again; a ' +
+				'webhook that had a secret stays off until it is set.'
+		);
+		expect(source).not.toContain('come back exactly as the backup has them');
+	});
+
+	it('shows what an import kept from this server and what is to enter again, each a line after the working copy’s (card 2169)', () => {
+		const js = ts.transpileModule(functionNamed(page, 'accountOf').getText(), {
+			compilerOptions: { target: ts.ScriptTarget.ES2022 }
+		}).outputText;
+		const accountOf = new Function('count', `${js}\nreturn accountOf;`)((n: number) => String(n)) as (
+			result: Record<string, unknown>
+		) => Record<string, unknown>;
+		const KEPT = 'Kept from this server, because a backup does not hold them: the mail password.';
+		const TO_ENTER = 'To enter again, because a backup does not hold them: the mail password (Admin, Email Settings).';
+
+		expect(accountOf({ restored: {}, secretsKept: KEPT, secretsToEnter: TO_ENTER })).toMatchObject({
+			secretsKept: KEPT,
+			secretsToEnter: TO_ENTER
+		});
+		// A backup from before card 2169, or one that needed nothing, says neither.
+		const quiet = accountOf({ restored: {} });
+		expect(quiet.secretsKept).toBeUndefined();
+		expect(quiet.secretsToEnter).toBeUndefined();
+
+		const report = markup.slice(markup.indexOf('{#if importReport}'));
+		const lines = [
+			'{#if importReport.workingCopy}',
+			'{#if importReport.secretsKept}\n',
+			'{#if importReport.secretsToEnter}\n',
+			'{#if importReport.superadmin}'
+		].map((line) => report.replace(/\r\n/g, '\n').indexOf(line));
+		expect(lines.every((at) => at > -1)).toBe(true);
+		expect([...lines].sort((a, b) => a - b)).toEqual(lines);
+		expect(report).toMatch(/\{#if importReport\.secretsKept\}\s*<p class="import-report-detail">\{importReport\.secretsKept\}<\/p>/);
+		expect(report).toMatch(
+			/\{#if importReport\.secretsToEnter\}\s*<p class="import-report-detail">\{importReport\.secretsToEnter\}<\/p>/
+		);
+	});
+
+	it('shows how many request links an import replaced, a line beside the files put back (card 2158, the review’s O1)', () => {
+		const js = ts.transpileModule(functionNamed(page, 'accountOf').getText(), {
+			compilerOptions: { target: ts.ScriptTarget.ES2022 }
+		}).outputText;
+		const accountOf = new Function('count', `${js}\nreturn accountOf;`)((n: number) => String(n)) as (
+			result: Record<string, unknown>
+		) => Record<string, unknown>;
+
+		expect(accountOf({ restored: {}, requestLinksReplaced: 2 }).requestLinks).toBe(
+			'2 request links replaced: a link mailed before this restore no longer works, and its requester can have a new ' +
+				'one sent from the page it opens.'
+		);
+		expect(accountOf({ restored: {}, requestLinksReplaced: 1 }).requestLinks).toBe(
+			'1 request link replaced: a link mailed before this restore no longer works, and its requester can have a new ' +
+				'one sent from the page it opens.'
+		);
+		expect(accountOf({ restored: {}, requestLinksReplaced: 0 }).requestLinks).toBeUndefined();
+		expect(accountOf({ restored: {} }).requestLinks).toBeUndefined();
+
+		const report = markup.slice(markup.indexOf('{#if importReport}')).replace(/\r\n/g, '\n');
+		const lines = ['{#if importReport.putBack}', '{#if importReport.requestLinks}', '{#if importReport.workingCopy}'].map((line) =>
+			report.indexOf(line)
+		);
+		expect(lines.every((at) => at > -1)).toBe(true);
+		expect([...lines].sort((a, b) => a - b)).toEqual(lines);
+		expect(report).toMatch(/\{#if importReport\.requestLinks\}\s*<p class="import-report-detail">\{importReport\.requestLinks\}<\/p>/);
+	});
+
 	it('says after a change of role that an invite sent earlier no longer works, when the answer says one ended', () => {
 		const changing = functionNamed(page, 'changeUserRole');
 
@@ -1031,6 +1107,125 @@ describe('the invite page, src/routes/invite/[token]/+page.svelte', () => {
 			{ condition: 'apiKeys > 0', inElse: false }
 		]);
 		expect(scriptOf(file).getText()).toContain('let apiKeys = $derived(data.apiKeys ?? 0);');
+	});
+});
+
+// ─── A request link that no longer works (card 2158) ─────────────────────────
+
+describe('a request’s pages, for a link that no longer works (card 2158)', () => {
+	const REPLY = 'src/routes/request/[id]/reply/+page.svelte';
+	const CONFIRM = 'src/routes/request/[id]/confirm/+page.svelte';
+	const FORM = 'src/lib/components/NewRequestLink.svelte';
+
+	type Answer = { status: number; body?: unknown };
+	type Page = {
+		loadData: () => Promise<void>;
+		pollMessages: () => Promise<void>;
+		readonly state: { request: unknown; linkGone: boolean; polling: unknown };
+		asked: string[];
+		started: unknown[][];
+		stopped: unknown[];
+	};
+
+	/**
+	 * The reply page's loading and polling, as written, run with a stand-in
+	 * `fetch` that answers each address from `answers` and a stand-in timer:
+	 * the page's state is plain variables here.
+	 */
+	function replyPage(answers: (url: string) => Answer): Page {
+		const tree = scriptOf(REPLY);
+		const functions = ['loadData', 'pollMessages', 'showLinkGone', 'stopPolling']
+			.map((name) => functionNamed(tree, name).getText())
+			.join('\n');
+		const js = ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+		const asked: string[] = [];
+		const started: unknown[][] = [];
+		const stopped: unknown[] = [];
+		const fetch = async (url: string) => {
+			asked.push(url);
+			const { status, body } = answers(url);
+			return { status, ok: status >= 200 && status < 300, json: async () => body };
+		};
+		const setInterval = (...args: unknown[]) => {
+			started.push(args);
+			return `timer ${started.length}`;
+		};
+		const clearInterval = (handle: unknown) => stopped.push(handle);
+		const page = new Function(
+			'fetch',
+			'setInterval',
+			'clearInterval',
+			"let request = null, messages = [], loading = true, errorMsg = '', linkGone = false, pollInterval = null;\n" +
+				"const requestId = 5, token = 'the-link';\nfunction scrollToBottom() {}\n" +
+				`${js}\n` +
+				'return { loadData, pollMessages, get state() { return { request, linkGone, polling: pollInterval }; } };'
+		)(fetch, setInterval, clearInterval);
+		return Object.assign(page, { asked, started, stopped }) as Page;
+	}
+
+	const THREAD = { status: 200, body: { id: 5, title: 'A request', status: 'pending' } };
+
+	it.each([403, 404])('does not poll a link that opens no thread (%i), and shows the form that asks for a new one', async (status) => {
+		const page = replyPage(() => ({ status, body: { message: 'Request not found' } }));
+
+		await page.loadData();
+
+		expect(page.state).toEqual({ request: null, linkGone: true, polling: null });
+		// Not even the messages are asked for, and nothing is polled.
+		expect(page.asked).toEqual(['/api/requests/5?token=the-link']);
+		expect(page.started).toEqual([]);
+	});
+
+	it.each([403, 404])('polls once a thread has loaded, and stops at the first %i, showing the form', async (status) => {
+		let gone = false;
+		const page = replyPage((url) => (gone ? { status } : url.includes('/messages') ? { status: 200, body: [] } : THREAD));
+
+		await page.loadData();
+
+		expect(page.started).toEqual([[page.pollMessages, 5000]]);
+		expect(page.state).toEqual({ request: THREAD.body, linkGone: false, polling: 'timer 1' });
+
+		// Loaded again after a reply is sent: still one poll.
+		await page.loadData();
+		expect(page.started).toHaveLength(1);
+
+		// The link is replaced while the page is open (a restore).
+		gone = true;
+		await page.pollMessages();
+
+		expect(page.stopped).toEqual(['timer 1']);
+		expect(page.state).toEqual({ request: null, linkGone: true, polling: null });
+	});
+
+	it('shows the form in place of the thread on the reply page, and under the refusal on the confirm page', () => {
+		const reply = readFileSync(join(ROOT, REPLY), 'utf8');
+		expect(reply).toMatch(/\{:else if linkGone\}\s*<div class="link-gone">\s*<NewRequestLink \{requestId\} \/>/);
+		expect(reply).not.toContain('Use the link in the most recent email');
+
+		const confirm = readFileSync(join(ROOT, CONFIRM), 'utf8');
+		expect(confirm).toMatch(
+			/\{#if errorMsg\}\s*<div class="error-msg">\{errorMsg\}<\/div>\s*\{\/if\}\s*\{#if linkGone\}\s*<NewRequestLink \{requestId\} \/>/
+		);
+		// A refusal for what the link is, and no other, is a link that no longer works.
+		expect(scriptOf(CONFIRM).getText()).toContain('linkGone = res.status === 404;');
+	});
+
+	it('says what card 2171’s decision 13 says, asks the one route, and shows its answer and when to expect the mail', () => {
+		const form = readFileSync(join(ROOT, FORM), 'utf8');
+		const markup = form.slice(form.indexOf('</script>'));
+
+		// A request made signed in is mailed at the account's address as it is
+		// now (card 2171), so the page says which address to give.
+		expect(form).toContain(
+			'"This link no longer works. Enter the email address you made the request with (if you made it while signed ' +
+				'in to DumpFire, your account\'s email address as it is now), and a new link will be sent to it."'
+		);
+		expect(form).toContain('fetch(`/api/requests/${requestId}/link`');
+		expect(form).toContain('body: JSON.stringify({ email: email.trim() })');
+		expect(markup).toContain('Send me a new link');
+		expect(markup).toMatch(/\{#if answered\}\s*<p class="new-link-text">\{answered\}<\/p>\s*<p class="new-link-hint">It can take a few minutes to arrive\.<\/p>/);
+		// A refusal (a 429, a 503) is said in the server's words.
+		expect(callsOf(scriptOf(FORM), 'failureMessage')).toHaveLength(1);
 	});
 });
 

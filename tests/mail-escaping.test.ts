@@ -261,6 +261,12 @@ describe('every mail in notifications.ts', () => {
 			send: () => notifications.notifyRequesterMessage(REQUESTER, MARKER, MARKER, MARKER, `${BASE}/request/1/reply?token=${TOKEN}`)
 		},
 		{
+			// Card 2158: the link a requester asks for, to replace one that no longer works.
+			name: 'notifyRequesterNewLink',
+			link: true,
+			send: () => notifications.notifyRequesterNewLink(REQUESTER, MARKER, `${BASE}/request/1/reply?token=${TOKEN}`, false)
+		},
+		{
 			name: 'notifyAdminMessage',
 			link: true,
 			send: () => notifications.notifyAdminMessage('user', recipient.id, MARKER, MARKER, MARKER, BASE)

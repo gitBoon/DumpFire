@@ -4,7 +4,7 @@ import { requestMessages, type TaskRequest } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { notifyRequesterMessage, notifyAdminMessage } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
-import { canHandleRequest, canReadRequest, requireRequest } from '$lib/server/request-access';
+import { canHandleRequest, canReadRequest, requesterAddress, requireRequest } from '$lib/server/request-access';
 import { requestReplyUrl, requestTokenMatches } from '$lib/server/request-tokens';
 import { checkRateLimit, resetRateLimit } from '$lib/server/rate-limit';
 import { createLogger } from '$lib/server/logger';
@@ -151,11 +151,13 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 
 	const baseUrl = linkBaseUrl(url);
 
-	// Send email notifications
-	if (sType === 'admin' && taskReq.requesterEmail) {
+	// Send email notifications. The requester's address as it is now: the
+	// account's, for a request made signed in (card 2171).
+	const requester = sType === 'admin' ? requesterAddress(taskReq) : null;
+	if (sType === 'admin' && requester !== null) {
 		// Admin replied → email the requester with a reply link
 		notifyRequesterMessage(
-			taskReq.requesterEmail,
+			requester,
 			taskReq.title,
 			sName,
 			message,

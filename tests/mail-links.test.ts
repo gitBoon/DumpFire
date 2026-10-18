@@ -29,7 +29,7 @@ import { NO_LINK_ADDRESS, PLACEHOLDER_ORIGIN, configuredOrigin, linkBaseUrl } fr
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { issueFormToken } from '$lib/server/request-tokens';
 import { reportInstallation, reportPlaceholderOrigin } from '$lib/server/startup-checks';
-import { api } from './helpers/api';
+import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import { addBoardMember, makeBoard, makeCard, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -173,6 +173,18 @@ const MAILS: {
 				user: owner,
 				headers: FORGED_HEADERS,
 				body: { message: 'Which export do you mean?', senderType: 'admin' }
+			}),
+		to: 'rita@example.test',
+		link: /^\/request\/\d+\/reply\?token=b{64}$/
+	},
+	{
+		// Card 2158: asked for from the page a dead link opens, by someone with
+		// no session, and mailed to the address on the request.
+		name: 'a new link to a request, asked for by its requester',
+		send: () =>
+			api('POST', at(`/api/requests/${pendingRequest().id}/link`), {
+				headers: FORGED_HEADERS,
+				body: { email: 'rita@example.test' }
 			}),
 		to: 'rita@example.test',
 		link: /^\/request\/\d+\/reply\?token=b{64}$/
@@ -336,19 +348,33 @@ describe('a server with no address configured', () => {
 					headers: { ...FORGED_HEADERS, 'x-form-token': issueFormToken() },
 					body: asking()
 				})
+		},
+		{
+			name: 'a new link to a request (card 2158), which is nothing but its link',
+			send: (id?: number) =>
+				api('POST', at(`/api/requests/${id}/link`), {
+					headers: FORGED_HEADERS,
+					body: { email: 'rita@example.test' }
+				}),
+			// The request it asks about is there before the snapshot.
+			arrange: () => pendingRequest().id,
+			// Its requester has no account: told in plain words, and why is in the log (card 2169's O7).
+			said: 'New links cannot be sent just now. Please contact the team that sent you the link.'
 		}
-	])('refuses $name, before anything is written, and says why', async ({ send }) => {
+	])('refuses $name, before anything is written, and says why', async ({ send, arrange, said }: { send: (id?: number) => Promise<ApiResult>; arrange?: () => number; said?: string }) => {
 		// The key the form's tokens are signed with is made, and kept in the
 		// settings, the first time one is needed: made now, so that it is not
 		// taken for a row the refused request wrote.
 		issueFormToken();
+		const id = arrange?.();
 		const before = snapshotDb();
 
-		const res = await send();
+		const res = await send(id);
 		await sent.settle();
 
 		expect(res.status).toBe(503);
-		expect(res.body.message).toBe(NO_LINK_ADDRESS);
+		expect(res.body.message).toBe(said ?? NO_LINK_ADDRESS);
+		if (said) expect(warnings().map((line) => line.message)).toContain(`A new link to a request was asked for, and none can be sent: ${NO_LINK_ADDRESS}.`);
 		expect(NO_LINK_ADDRESS).toContain('no address configured');
 		expectUnchanged(before);
 		expect(db.select().from(inviteTokens).all()).toEqual([]);

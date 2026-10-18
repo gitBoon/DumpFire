@@ -83,6 +83,15 @@ export function isSmtpConfigured(): boolean {
 	return !!getSetting('smtp_host');
 }
 
+/**
+ * Whether the mail settings name a user and hold no password: every mail
+ * would fail to sign in. What a restore leaves until the password is entered
+ * again, since a backup does not hold it (card 2169).
+ */
+export function smtpPasswordMissing(): boolean {
+	return !!getSetting('smtp_user') && !getSetting('smtp_pass');
+}
+
 // ─── App URL ─────────────────────────────────────────────────────────────────
 
 /**

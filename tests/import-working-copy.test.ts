@@ -25,10 +25,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { and, eq } from 'drizzle-orm';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getBackupConfig } from '$lib/server/backup';
+import { getBackupConfig, withoutSecrets } from '$lib/server/backup';
 import { db, sqlite } from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
 import {
@@ -246,6 +246,29 @@ function armedBackup(): Database.Database {
 }
 
 /**
+ * The armed backup as a backup made since card 2169 holds it: written out by
+ * `withoutSecrets`, with no mail password, the destinations' secrets empty, and
+ * its three webhooks, every one signed, switched off and listed in
+ * `webhook_secrets_left_out` (1 and 3 as on, 2 as off).
+ */
+function armedBackupMadeNow(): Database.Database {
+	const dir = mkdtempSync(join(tmpdir(), 'dumpfire-working-copy-'));
+	tempDirs.push(dir);
+	writeFileSync(join(dir, 'from.db'), armedBackup().serialize());
+	withoutSecrets(join(dir, 'from.db'), join(dir, 'to.db'));
+	const backup = new Database(readFileSync(join(dir, 'to.db')));
+	opened.push(backup);
+	return backup;
+}
+
+/** The webhooks of the armed backup, as a working copy of one made now lists them to enter. */
+const ARMED_HOOKS_TO_ENTER = [
+	{ id: 1, boardId: 1, board: 'A' },
+	{ id: 2, boardId: 1, board: 'A' },
+	{ id: 3, boardId: 2, board: 'B' }
+];
+
+/**
  * A running database with rows of its own that reach outside, none of them
  * the backup's: one enabled report schedule, one active webhook, one backup
  * destination on an hourly schedule and a mail host.
@@ -347,6 +370,31 @@ describe('restoring as a working copy', () => {
 		expect(contentsOf(backup)).toEqual(backupBefore);
 		expect(live.pragma('foreign_keys', { simple: true })).toBe(1);
 		expect(live.inTransaction).toBe(false);
+	});
+
+	it('counts what a backup made since card 2169 had on, and lists its webhooks to enter and neither mail nor a destination (R3)', () => {
+		const live = armedLive();
+		const backup = armedBackupMadeNow();
+		expect(settingsIn(backup)['webhook_secrets_left_out']).toBe('[{"id":1,"active":true},{"id":2,"active":false},{"id":3,"active":true}]');
+
+		const result = restoreFromBackup(live, backup, { outside: 'off' });
+
+		expect(result.errors).toEqual([]);
+		// Webhooks 1 and 3 were on, and are off in the backup for want of a
+		// secret: still counted. One mail setting fewer: there is no password.
+		expect(result.outside).toEqual({ ...SWITCHED_OFF, mailSettings: 6 });
+		expect(reachingOutside(live)).toEqual(NOTHING);
+		expect(rowsOf(live, 'webhooks').map((row) => [row.id, row.secret, row.active])).toEqual([
+			[1, '', 0],
+			[2, '', 0],
+			[3, '', 0]
+		]);
+		expect(result.secrets).toEqual({
+			kept: { mailPassword: false, destinations: [], webhooks: [] },
+			toEnter: { mailPassword: false, destinations: [], webhooks: ARMED_HOOKS_TO_ENTER }
+		});
+		// No list written: its webhooks are off on purpose.
+		expect(settingsIn(live)['webhook_secrets_left_out']).toBeUndefined();
 	});
 
 	it.each<[string, (live: Database.Database, backup: Database.Database) => ReturnType<typeof restoreFromBackup>]>([
@@ -828,6 +876,23 @@ describe('through the route', () => {
 		for (const table of OUTSIDE_TABLES) expect(contentsOf(sqlite)[table]).toEqual(contentsOf(backup)[table]);
 	});
 
+	it('says what a working copy of a backup made since card 2169 had on, and the webhooks to enter', async () => {
+		const { response } = await upload('?outside=off', armedBackupMadeNow());
+
+		const sentence = SENTENCE.replace('7 mail setting(s) removed', '6 mail setting(s) removed');
+		expect(response.status).toBe(200);
+		expect(response.body.outside).toEqual({ ...SWITCHED_OFF, mailSettings: 6 });
+		expect(response.body.workingCopy).toBe(sentence);
+		expect(response.body.secretsToEnter).toBe(
+			'To enter again, because a backup does not hold them: the signing secret(s) of webhook(s) 1 (board "A"), 2 ' +
+				`(board "A"), 3 (board "B"), which stay switched off until the board's owner or an administrator sets each ` +
+				'one and switches it on with PUT /api/v1/webhooks/{id}.'
+		);
+		expect(response.body).not.toHaveProperty('secretsKept');
+		// The working copy's sentence is still the last thing it says.
+		expect(response.body.message.endsWith(`${response.body.secretsToEnter} ${sentence}`)).toBe(true);
+	});
+
 	it('restores a working copy for ?outside=off on an instance that would have kept everything', async () => {
 		process.env.SCHEDULERS = 'on';
 		expect(defaultOutside()).toBe('keep');
@@ -980,7 +1045,7 @@ describe('through the route', () => {
 		expect(sqlite.inTransaction).toBe(false);
 	});
 
-	it('forgets the key the public request form signs with, so a form token made before the import is refused after it', async () => {
+	it('forgets the key the public request form signs with and brings in none, so a form token made before the import is refused after it', async () => {
 		// As a process that has just started: nothing cached by an earlier test.
 		resetFormSecretCache();
 		const before = issueFormToken();
@@ -991,20 +1056,23 @@ describe('through the route', () => {
 		const { response } = await upload('?outside=keep', backup);
 
 		expect(response.status).toBe(200);
-		// The key is a setting, and the backup's is in its place. The copy in
-		// memory of the one it replaced used to stay, and went on accepting
-		// this token.
-		expect(settingsIn(sqlite)['request_form_secret']).toBe('the-key-in-the-backup');
+		// The key is a setting, and no restore brings one in (card 2158): the
+		// backup's is left out, and the one that was here went with the rest.
+		// The copy in memory of the one it replaced used to stay, and went on
+		// accepting this token.
+		expect(settingsIn(sqlite)['request_form_secret']).toBeUndefined();
 		expect(verifyFormToken(before)).toBe(false);
 
-		// A token made now is signed with the key that is in the settings: a
-		// process starting now agrees with this one.
+		// A token made now is signed with a key made at first use and kept in
+		// the settings: a process starting now agrees with this one.
 		const after = issueFormToken();
 		expect(verifyFormToken(after)).toBe(true);
+		const made = settingsIn(sqlite)['request_form_secret'];
+		expect(made).toMatch(/^[0-9a-f]{64}$/);
 		resetFormSecretCache();
 		expect(verifyFormToken(after)).toBe(true);
 		expect(verifyFormToken(before)).toBe(false);
-		expect(settingsIn(sqlite)['request_form_secret']).toBe('the-key-in-the-backup');
+		expect(settingsIn(sqlite)['request_form_secret']).toBe(made);
 	});
 
 	// The import of the old JSON export was removed (card 2157), and with it

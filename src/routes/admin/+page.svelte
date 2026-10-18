@@ -72,8 +72,14 @@
 		detail?: string;
 		/** What a working copy switched off and removed. */
 		workingCopy?: string;
+		/** The secrets a backup does not hold that this server's were kept for (card 2169). */
+		secretsKept?: string;
+		/** The secrets a backup does not hold that are to be entered again, and where (card 2169). */
+		secretsToEnter?: string;
 		/** Attachment files the import had back from the uploads trash, when there were any. */
 		putBack?: string;
+		/** Request links the import replaced, when there were any (card 2158). */
+		requestLinks?: string;
 		/** Who the superadmin is now: who can sign in to export, import or reset again. */
 		superadmin?: string;
 		/** Every table restored, with its rows, for whoever wants all of it. */
@@ -95,7 +101,10 @@
 		sizeBytes?: number;
 		restored?: Record<string, number>;
 		workingCopy?: string;
+		secretsKept?: string;
+		secretsToEnter?: string;
 		attachmentsPutBack?: number;
+		requestLinksReplaced?: number;
 		superadmins?: string[];
 	}) {
 		const restored = result.restored ?? {};
@@ -122,9 +131,18 @@
 		// Rows the import brought back can name files that a delete since the
 		// backup had moved to the uploads trash. The import puts those back.
 		const putBack = typeof result.attachmentsPutBack === 'number' ? result.attachmentsPutBack : 0;
+		// Every request is given a new link by an import (card 2158), so a link
+		// mailed before it no longer works: said beside the files put back.
+		const links = typeof result.requestLinksReplaced === 'number' ? result.requestLinksReplaced : 0;
 		return {
 			detail: parts.length > 0 ? `${from}: ${parts.join(', ')}.` : `${from}. It held no rows.`,
 			workingCopy: result.workingCopy,
+			// A backup holds no mail password, destination credential or webhook
+			// secret (card 2169). The server's two sentences say which of this
+			// server's were kept and which are to enter again; each is absent when
+			// there is nothing to say, as for a backup made before that card.
+			secretsKept: result.secretsKept,
+			secretsToEnter: result.secretsToEnter,
 			// The import signed everybody out, and the backup's accounts are the
 			// ones there are now: this is the one to sign in as to undo it.
 			superadmin: !Array.isArray(result.superadmins)
@@ -137,6 +155,11 @@
 			putBack:
 				putBack > 0
 					? `${count(putBack)} attachment ${putBack === 1 ? 'file' : 'files'} put back from the trash.`
+					: undefined,
+			requestLinks:
+				links > 0
+					? `${count(links)} request ${links === 1 ? 'link' : 'links'} replaced: a link mailed before this restore no ` +
+						'longer works, and its requester can have a new one sent from the page it opens.'
 					: undefined,
 			tables: Object.entries(restored)
 				.filter(([, rows]) => rows > 0)
@@ -1356,8 +1379,17 @@
 					{#if importReport.putBack}
 						<p class="import-report-detail">{importReport.putBack}</p>
 					{/if}
+					{#if importReport.requestLinks}
+						<p class="import-report-detail">{importReport.requestLinks}</p>
+					{/if}
 					{#if importReport.workingCopy}
 						<p class="import-report-detail">{importReport.workingCopy}</p>
+					{/if}
+					{#if importReport.secretsKept}
+						<p class="import-report-detail">{importReport.secretsKept}</p>
+					{/if}
+					{#if importReport.secretsToEnter}
+						<p class="import-report-detail">{importReport.secretsToEnter}</p>
 					{/if}
 					{#if importReport.superadmin}
 						<p class="import-report-detail">{importReport.superadmin}</p>
@@ -2055,7 +2087,7 @@
 					<input type="radio" name="import-outside" value="keep" bind:group={importOutside} />
 					<span>
 						<strong>Restore everything as it is</strong>
-						<span class="import-choice-desc">For putting this installation back. Backup destinations, report schedules, mail settings and webhooks come back exactly as the backup has them, and act as they did.</span>
+						<span class="import-choice-desc">For putting this installation back. Backup destinations, report schedules, mail settings and webhooks come back as the backup has them. A backup holds no mail password, destination credential or webhook secret: the ones this server has for the same accounts are kept, and the result lists any to enter again; a webhook that had a secret stays off until it is set.</span>
 					</span>
 				</label>
 				<label class="import-choice" class:selected={importOutside === 'off'}>

@@ -1,5 +1,5 @@
 /**
- * startup-checks.ts — eight things about an installation that are said in the
+ * startup-checks.ts — nine things about an installation that are said in the
  * system log when the server starts, because nothing else would say them.
  *
  * None stops the server and none changes anything. They are looked for by
@@ -21,6 +21,10 @@
  * the eighth, that pages are sent their Content-Security-Policy to report only
  * (`CSP_MODE=report-only`, card 2162), or that `CSP_MODE` holds a value that
  * is neither mode: it is meant for the policy's first deploy, and removed.
+ * The ninth is the secrets a backup does not hold and this installation still
+ * lacks (card 2169): a database put in place by hand from a backup, or one an
+ * import restored onto another server, has no mail password, no destination
+ * credentials and its signed webhooks off until they are entered.
  *
  * And one that does stop the server, after the migrations and before it
  * listens: `refuseUserlessBesideAnother`, when the database in use has no
@@ -39,6 +43,7 @@ import { maskSecretsInLog } from './secret-paths';
 import { signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
+import { secretsToEnter, secretsToEnterSentence } from './backup-secrets';
 
 const log = createLogger('STARTUP');
 
@@ -378,7 +383,34 @@ export function reportCspMode(value: string | undefined = process.env.CSP_MODE):
 }
 
 /**
- * Say all eight, if they are so. Called once, from hooks.server.ts, as the
+ * One WARN line at every start while anything a backup does not hold is
+ * still to enter (card 2169, decision 7): the mail settings name a host and a
+ * user and hold no password; a destination lacks its credentials (as
+ * `runBackup` asks it, so not an SFTP one); a webhook listed in this
+ * database's `webhook_secrets_left_out` is still there, off and with no
+ * secret. Returns whether it was said.
+ *
+ * A database put in place by hand from a backup has none of them, and nothing
+ * else would say so until a backup failed or a receiver noticed. A list that
+ * cannot be read is said on the console alone. It reads and it logs, and
+ * writes nothing: what to do about a database put in place by hand is the
+ * operator's, and the line says where it is written down.
+ */
+export function reportSecretsToEnter(): boolean {
+	const { toEnter, problems } = secretsToEnter(sqlite);
+	for (const problem of problems) console.error(`[STARTUP] ${problem}.`);
+	const sentence = secretsToEnterSentence(toEnter, true);
+	if (sentence === null) return false;
+
+	log.warn(
+		`${sentence} A database put in place by hand from a backup has none of them: see docs/admin-guide.md, ` +
+			'Restoring from Backup.'
+	);
+	return true;
+}
+
+/**
+ * Say all nine, if they are so. Called once, from hooks.server.ts, as the
  * server loads.
  *
  * It never throws, whatever goes wrong in looking: a fault here must not be
@@ -394,7 +426,8 @@ export function reportInstallation(): void {
 		() => reportDatabaseOffVolume(),
 		() => reportOtherDatabase(),
 		() => reportSignInsNotOneAtATime(),
-		() => reportCspMode()
+		() => reportCspMode(),
+		reportSecretsToEnter
 	]) {
 		try {
 			check();

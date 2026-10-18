@@ -27,7 +27,7 @@
  * which the rest are treated as from a browser not remembered (R2). So a
  * copied cookie buys five guesses a quarter of an hour, never a volley.
  *
- * The secret is never in a backup and never restored (`withoutSignIns` in
+ * The secret is never in a backup and never restored (`withoutSecrets` in
  * backup.ts, `rowsToRestore` in db/restore.ts), so a restore forgets every
  * browser, as it signs everybody out.
  *

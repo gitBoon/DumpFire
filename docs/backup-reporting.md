@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.15
+version: 1.16
 status: As-Built
 date: 2026-10-18
 tags:
@@ -60,6 +60,26 @@ deleted card are not removed with it. They are moved to a trash folder inside `u
 and kept for 30 days, and Import Backup puts back any file in the trash that a restored
 attachment names.
 
+Nor does the file hold what opens something for whoever reads it: no session, no invite
+that has not been used, no task request's link and not the key the public request form
+signs with (card 2158). Every request is in it, with its link empty, and a restore gives
+every request a new link, so a link mailed before a restore stops working and its
+requester asks for the current one from the page it opens. See
+[What a Backup Holds](authentication-security.md#what-a-backup-holds-and-what-a-restore-brings-in).
+
+Nor does it hold a secret (card 2169): not the mail password, not a destination's
+credentials, not a webhook's signing secret. Each destination is in it with its other
+fields, and a webhook that had a secret is in it switched off, listed in the
+`webhook_secrets_left_out` setting. Every backup is sealed: an HMAC of every row, made with
+a key this server keeps and no backup holds. A restore keeps this server's own where they are
+for the same account, and only into a backup this server made and nobody has changed since,
+and says which are to enter again; a destination still without its
+credentials is not tried by a backup run (below). So a backup alone no longer rebuilds a lost
+server: keep the mail password and each destination's credentials outside DumpFire. What it
+does still hold that is worth guarding: every user's password hash and email, and every
+webhook's address, which for a Slack or Teams incoming webhook is all anyone needs to post to
+that channel.
+
 ### Schedule Options
 
 | Schedule | Mechanism | Description |
@@ -104,7 +124,8 @@ is a whole number from 1 to 65535, or `null`, which connects to 22.
 `generateBackupData()` in `src/lib/server/backup.ts` makes the one copy that both a
 scheduled backup and "Export Backup" send. It uses SQLite's `VACUUM INTO` twice: once to
 take a self-contained snapshot of the running database, and once to write out again a copy
-that has been cleared of what signs somebody in (`withoutSignIns()`):
+that has been cleared of what signs somebody in or opens a request's thread, and of every
+secret (`withoutSecrets()`, which was `withoutSignIns()` until card 2169):
 
 ```mermaid
 sequenceDiagram
@@ -121,6 +142,12 @@ sequenceDiagram
     Copy->>Copy: DELETE FROM sessions
     Copy->>Copy: DELETE FROM invite_tokens WHERE used = 0
     Copy->>Copy: DELETE FROM settings WHERE key = 'known_browser_secret'
+    Copy->>Copy: UPDATE task_requests SET access_token = NULL
+    Copy->>Copy: DELETE FROM settings WHERE key = 'request_form_secret'
+    Copy->>Copy: clearSecrets - the mail password deleted, destination secrets emptied
+    Copy->>Copy: signed webhooks emptied, switched off and listed in webhook_secrets_left_out
+    Copy->>Live: backupSealKey - the key, made by the first backup
+    Copy->>Copy: sealCopy - HMAC-SHA256 of every row, written as backup_seal
     Backup->>Copy: VACUUM INTO '<db>.backup-temp-cleared'
     Note over Copy: Written out again, so nothing<br/>deleted is left in the file
     Backup->>FS: readFileSync '<db>.backup-temp-cleared'
@@ -139,9 +166,38 @@ sequenceDiagram
   backup of any age (`rowsToRestore()` in `src/lib/server/db/restore.ts`). Whoever held it
   and an account's password hash, which a backup does hold, could make a cookie that lets a
   browser past sign-in's throttling for that account. So a restore forgets every remembered
-  browser, and the restored server makes a new key. The running database is
-  not touched by a backup. Deleting the rows alone is not enough, because the pages they
+  browser, and the restored server makes a new key.
+- **No request's link and not the form's key** (card 2158): every `task_requests.access_token`
+  is `NULL` in the file, and the `request_form_secret` row of `settings` is gone. A restore
+  gives every request a new link inside its transaction, whatever the backup's age, and
+  never brings the form's key in; the import's answer says how many links were replaced.
+  The running database is not touched by a backup. Deleting the rows alone is not enough, because the pages they
   were on stay in the file until it is written again; hence the second `VACUUM INTO`.
+- **No secret** (card 2169): `clearSecrets()` in `src/lib/server/backup-secrets.ts` deletes the
+  `smtp_pass` row, sets each destination's secret fields in `backup_config` to `''` (SFTP
+  `password` and `privateKey`, S3 `secretAccessKey`, Google Drive `clientSecret` and
+  `refreshToken`, a service account's `private_key` inside `serviceAccountJson`, OneDrive
+  `clientSecret`; every one of them on every destination, whatever its type), deletes the
+  `backup_seal_key` row, leaves out a destination of a type this version does not know and a
+  `backup_config` that is not JSON, and sets each webhook's secret to `''` with the webhook
+  switched off and listed, as `[{"id":3,"active":true}]`, in `webhook_secrets_left_out`. A
+  webhook is switched off because the file can become a database without a restore, and one
+  left on with no secret would send every event unsigned. It throws before writing anything
+  if handed the running database. A restore fills each gap from this server only from an
+  entry the same in every field that is not secret (`fillSecretGaps()`), and only into a
+  backup whose seal verifies: see
+  [The Secrets a Backup Does Not Hold](authentication-security.md#the-secrets-a-backup-does-not-hold-card-2169).
+- **Sealed** (card 2169's review, S1): `sealCopy()` writes into the cleared copy, as the
+  `backup_seal` setting, an HMAC-SHA256 of a dump of it that is the same from the same rows
+  whatever file they are in (`sealOf()`: every row of `sqlite_master` by type and name, SQLite's own included; every
+  table but `sqlite_sequence`, `sqlite_stat1` to `sqlite_stat4` included, by name, every row
+  read `NOT INDEXED` in rowid order, each value typed and its length given; the seal's own row
+  left out; the second review's B1), so the seal written before the second `VACUUM INTO` holds for the
+  file after it. It is stored as its form number, a colon and the 64 hex characters (`2:…`); a
+  restore takes a seal of any other form as none. The key is the `backup_seal_key` setting of the running database, made by the
+  first backup (`backupSealKey()`): the one thing a backup writes there. `withoutSecrets(from,
+  to, key)` takes it, this server's unless a test gives another. Measured on made-up copies on
+  a development machine: 0.2 s for 59 MB and 115,000 rows, 0.56 s for 177 MB and 345,000.
 - **The server answers nothing while it runs.** Every step is synchronous, from the first
   `VACUUM INTO` to the read: see "How long the server stops answering" under
   [Backup Destinations](deployment.md#backup-destinations) in the deployment guide for the
@@ -188,9 +244,28 @@ After each successful upload, the system:
 
 On Google Drive the listing reads every page of the folder (up to 100 pages of 1,000 files; past that it stops with an error rather than follow a page token for ever) and each file's `capabilities.canDelete` and `canTrash` (card 2238), through the destination's optional `listForRetention()`. A file the account may delete is deleted by the id it was listed under; one it may only trash is moved to the trash, and logged `Retention cleanup: moved to the trash <name>` rather than `deleted` (its `delete()` answers `'trashed'`); one it may do neither to is set aside, not counted towards the retention number and not tried, and each run that finds any writes one `WARN` line saying how many and naming the oldest. The other destinations have no `listForRetention()` and are counted from `list()` as before. See [Configuring Backups](admin-guide.md#configuring-backups) for what to do about files set aside.
 
+### A Destination Without Its Credentials
+
+`runBackup()` asks `credentialsMissing()` (in `src/lib/server/backup-secrets.ts`) of each
+destination before it makes the copy (card 2169). One that lacks its credentials is not
+handed to `createDestination()`: an S3 destination with no secret access key, a Google Drive
+one with no client secret or no refresh token (OAuth) or whose service account JSON holds no
+private key, a OneDrive one with no client secret. Its result and its `backup_log` row are
+`failed`, with the `ERROR` line and the failure mail any failure has, and the error is
+"This destination's credentials are not entered: a backup does not hold them, so they are
+entered again after a restore. Enter them in Admin, Scheduled Backups." (Google Drive OAuth:
+"… In Admin, Scheduled Backups, enter its client secret and connect it again."). That is
+what Backup History shows after a restore onto another server, where it would have shown a
+library's error. The copy is made only when at least one destination can be tried, so a run
+with none makes no copy and does not stop the server answering for it. An SFTP destination
+with neither a password nor a key is tried as before, since a server that allows `none`
+authentication accepts it; after a restore onto another server such a destination is tried
+against the real host at every run, and its failed logins may trip a lockout there, so its
+credentials are entered or it is removed. The results are given in the destinations' order.
+
 ### Failure Notifications
 
-If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details. The destination's name and type and the error text, which is whatever the destination's server answered, are escaped where they are put into the mail, so markup in them is shown as text and never drawn (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
+If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details, a destination not tried for want of its credentials included. The destination's name and type and the error text, which is whatever the destination's server answered, are escaped where they are put into the mail, so markup in them is shown as text and never drawn (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
 
 ---
 
@@ -497,7 +572,8 @@ Individual card reports can be generated for completion notifications. These inc
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/lib/server/backup.ts` | ~490 | Backup scheduling, data generation (`withoutSignIns()`: no session, no unused invite, no key remembered browsers are signed with), upload orchestration |
+| `src/lib/server/backup.ts` | ~570 | Backup scheduling, data generation (`withoutSecrets()`: no session, no unused invite, no key remembered browsers are signed with, no request link or form key, no secret, and sealed), upload orchestration (`runBackup()`, which does not try a destination without its credentials) |
+| `src/lib/server/backup-secrets.ts` | ~930 | What a backup leaves out because it is a secret (card 2169): `clearSecrets()`, `readSecretsHere()` and `fillSecretGaps()` for a restore, `credentialsMissing()`, `secretsToEnter()` for the start-up line, and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
 | `src/lib/server/backup-destinations.ts` | ~400 | SFTP, S3, Google Drive, OneDrive destination implementations |
 | `src/lib/server/reports.ts` | ~1,700 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()` and the timer's `runDueReportSchedulesOnce()`; `takeReportMail()`, the day's 100 addresses (card 2182) |
 | `src/routes/api/reports/email/+server.ts` | ~170 | A report emailed on demand, and its answer |

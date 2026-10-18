@@ -2062,6 +2062,8 @@ describe('the routes a caller who is not signed in is let through to', () => {
 		'/api/requests',
 		'/api/requests/[id]',
 		'/api/requests/[id]/confirm',
+		// Card 2158: the new link, asked for by a requester whose link no longer works.
+		'/api/requests/[id]/link',
 		'/api/requests/[id]/messages',
 		'/api/requests/targets',
 		'/api/v1/openapi.json'

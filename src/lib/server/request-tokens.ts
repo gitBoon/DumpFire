@@ -71,7 +71,12 @@ export function requestConfirmUrl(baseUrl: string, request: Pick<TaskRequest, 'i
 
 /** How long a rendered form stays usable. Long enough to write a careful request. */
 const FORM_TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
-const FORM_SECRET_KEY = 'request_form_secret';
+/**
+ * The setting the form's key is kept in. Never in a backup, and never brought
+ * in by a restore (card 2158): `withoutSecrets` in backup.ts, `rowsToRestore`
+ * in db/restore.ts. A restored server makes a new one at first use.
+ */
+export const REQUEST_FORM_SECRET_KEY = 'request_form_secret';
 
 let cachedSecret: string | null = null;
 
@@ -84,17 +89,17 @@ let cachedSecret: string | null = null;
 function formSecret(): string {
 	if (cachedSecret) return cachedSecret;
 
-	const existing = db.select().from(settings).where(eq(settings.key, FORM_SECRET_KEY)).get();
+	const existing = db.select().from(settings).where(eq(settings.key, REQUEST_FORM_SECRET_KEY)).get();
 	if (existing) {
 		cachedSecret = existing.value;
 		return cachedSecret;
 	}
 
 	const created = randomBytes(32).toString('hex');
-	db.insert(settings).values({ key: FORM_SECRET_KEY, value: created }).onConflictDoNothing().run();
+	db.insert(settings).values({ key: REQUEST_FORM_SECRET_KEY, value: created }).onConflictDoNothing().run();
 	// Read back rather than trust what we wrote: if another process got there
 	// first, theirs is the one in the table.
-	cachedSecret = db.select().from(settings).where(eq(settings.key, FORM_SECRET_KEY)).get()!.value;
+	cachedSecret = db.select().from(settings).where(eq(settings.key, REQUEST_FORM_SECRET_KEY)).get()!.value;
 	return cachedSecret;
 }
 

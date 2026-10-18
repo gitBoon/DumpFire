@@ -706,7 +706,15 @@ export type UserRemoved = {
  * What they uploaded, the templates and milestones they made and the
  * dependencies they recorded stay, with nobody named as having made them. A
  * milestone or template with no creator is an administrator's to change.
- * Nothing else is written here. What the keys cascade goes with the user:
+ *
+ * Every request they made signed in is given the account's email as it is
+ * now, before the account goes (card 2171). Its key then forgets the account,
+ * and the request is mailed at that address as one made without an account
+ * is: falling back to the address stored when it was made would send the
+ * team's answers to an address the account had given up.
+ *
+ * Nothing else is written here (card 2007's rule, amended by card 2171's
+ * statement). What the keys cascade goes with the user:
  * their sessions, API keys, report schedules, comments, memberships and
  * assignments. Their XP is kept: `user_xp` is keyed by name and has no key
  * to a user.
@@ -733,6 +741,11 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 				.prepare(`UPDATE ${table} SET ${column} = NULL WHERE ${column} = ?`)
 				.run(userId).changes;
 		}
+		// The address their requests are mailed at from now on: the account's,
+		// read before its row goes (card 2171).
+		sqlite
+			.prepare('UPDATE task_requests SET requester_email = (SELECT email FROM users WHERE id = ?) WHERE requester_user_id = ?')
+			.run(userId, userId);
 		sqlite.prepare('DELETE FROM users WHERE id = ?').run(userId);
 
 		afterCommit(() =>

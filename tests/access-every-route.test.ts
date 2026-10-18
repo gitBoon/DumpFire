@@ -1206,6 +1206,12 @@ const TABLE: Record<string, Case | Case[]> = {
 	'POST /api/requests/[id]/confirm': link((w) => json(`/api/requests/${w.unconfirmed.id}/confirm`, {}), {
 		withLink: (w) => json(`/api/requests/${w.unconfirmed.id}/confirm`, { token: UNCONFIRMED_LINK })
 	}),
+	// Card 2158: anyone may ask, and the answer is the same whatever is asked;
+	// the link goes only to the address the request was made with. Mail is set
+	// up, or the route answers 503 before it looks anything up.
+	'POST /api/requests/[id]/link': open((w) => json(`/api/requests/${w.request.id}/link`, { email: 'rita@example.test' }), {
+		setup: makeSmtp
+	}),
 	'GET /api/requests/[id]/messages': [
 		link((w) => `/api/requests/${w.request.id}/messages`, {
 			withLink: (w) => `/api/requests/${w.request.id}/messages?token=${LINK}`,

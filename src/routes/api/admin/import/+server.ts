@@ -18,6 +18,16 @@
  * settings removed. Without it, the choice follows whether this instance runs
  * its schedulers — see defaultOutside.
  *
+ * A backup holds no mail password, destination credential or webhook secret
+ * (card 2169): either way, the ones this server has for the same accounts are
+ * kept, and the answer and the log say which, and which are to enter again; a
+ * webhook that had a secret stays off until it is set. What is to enter is
+ * also logged at WARN, beside the start-up line that says it at every start.
+ * Only a backup this server made, and nobody changed since, has anything kept
+ * (its seal, the review's S1); for any other the same WARN line says why none
+ * was. A restore committed with foreign keys left off says the same, and the
+ * request links it replaced, as one that succeeded does (O8).
+ *
  * The superadmin's alone. A backup that has users and no superadmin among
  * them is refused before anything is written, and a restore whose rows would
  * leave users and no superadmin, because the superadmin's row could not be
@@ -25,6 +35,10 @@
  * invite is brought in, whatever the backup holds, so every import signs
  * everybody out, whoever sent it included, and the answer says so, and names
  * the superadmin there is now (`superadmins`).
+ *
+ * Every task request is given a new link (card 2158), whatever the backup
+ * holds, and the key the request form signs with is not brought in. The
+ * answer and the log line say how many links were replaced.
  *
  * A backup taken before card 2141 can bring back a board beneath one of its
  * own cards. Once the restore is committed, the line the server writes about
@@ -58,6 +72,7 @@ import { resetFormSecretCache } from '$lib/server/request-tokens';
 import { KNOWN_BROWSER_SECRET_KEY, resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { reportBoardLoops } from '$lib/server/startup-checks';
+import { failedCheckSentence, secretsKeptSentence, secretsToEnterSentence } from '$lib/server/backup-secrets';
 
 const log = createLogger('IMPORT');
 
@@ -76,6 +91,18 @@ function workingCopySentence(done: OutsideSwitchedOff): string {
 		`Restored as a working copy: ${done.reportSchedules} report schedule(s) and ${done.webhooks} webhook(s) ` +
 		`switched off, the backup schedule ${done.backupScheduleWasOn ? 'switched off' : 'was already off'}, ` +
 		`${done.backupDestinations} backup destination(s) removed, ${done.mailSettings} mail setting(s) removed.`
+	);
+}
+
+/**
+ * How many request links the restore replaced (card 2158): every request is
+ * given a new one, whatever the backup holds, so a link mailed before the
+ * import goes nowhere now. Said only when there were any.
+ */
+function requestLinksSentence(count: number): string {
+	return (
+		`${count} request link(s) replaced: a link mailed before this restore no longer works, and its requester ` +
+		'can have a new one sent from the page it opens.'
 	);
 }
 
@@ -196,10 +223,12 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// No session came in with the backup, and the one this request was
 			// made with went with the rest: its cookie names nothing now.
 			cookies.delete(SESSION_COOKIE_NAME, { path: '/' });
-			// The settings are the backup's now, and the key the public request
-			// form signs with is one of them. The copy of it in memory is
-			// forgotten, as a reset does, or it would go on signing and
-			// accepting form tokens with the key the restore replaced. So is
+			// The settings are the backup's now, less the key the public
+			// request form signs with, which no restore brings in (card 2158):
+			// the row that was here went with the rest. The copy of it in
+			// memory is forgotten, as a reset does, or it would go on signing
+			// and accepting form tokens with the key the restore cleared, and a
+			// new one is made at first use. So is
 			// the key remembered browsers are signed with, which no backup
 			// holds (card 2194): every browser is forgotten.
 			resetFormSecretCache();
@@ -236,9 +265,18 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// A working copy says what it switched off and removed, at the end
 			// of this line and of the answer, with or without a problem.
 			const workingCopy = result.outside ? workingCopySentence(result.outside) : null;
-			// Files put back are said too, before it, and only when there were any.
+			// Request links replaced and files put back are said too, before it,
+			// and only when there were any. So are the secrets a backup does not
+			// hold (card 2169): those kept from this server, and those to enter
+			// again, so that a backup made before it reads as it did.
+			const linksReplaced = result.requestLinksReplaced > 0 ? requestLinksSentence(result.requestLinksReplaced) : null;
+			const secretsKept = secretsKeptSentence(result.secrets.kept);
+			const secretsToEnter = secretsToEnterSentence(result.secrets.toEnter, false, result.unsealed);
 			const ending = (text: string) =>
-				[putBack, workingCopy].reduce<string>((said, sentence) => (sentence ? endingWith(said, sentence) : said), text);
+				[linksReplaced, putBack, secretsKept, secretsToEnter, workingCopy].reduce<string>(
+					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
+					text
+				);
 			// The answer says two things more than the log line does, to whoever
 			// is reading it: that they have been signed out with everybody else,
 			// and who the superadmin is now, which is whoever can sign in to put
@@ -251,13 +289,23 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			const figures = {
 				sizeBytes: buffer.length,
 				restored: result.restored,
+				requestLinksReplaced: result.requestLinksReplaced,
 				attachmentsPutBack: files.putBack,
 				workingCopy: workingCopy ?? undefined,
+				secretsKept: secretsKept ?? undefined,
+				secretsToEnter: secretsToEnter ?? undefined,
 				superadmins
 			};
 			log.info(
 				ending(`Database restored from an uploaded backup (${size}). Rows: ${summary || 'none'}. Filled in: ${filled}.`)
 			);
+			// What is to enter, on a line of its own at WARN as well (R2), so that
+			// it stands out on the log page beside the line every start writes
+			// while it is so, and is not lost among the INFO lines.
+			if (secretsToEnter) log.warn(secretsToEnter);
+			// A file that failed a check made before its seal (the second
+			// review's B1) is said once, at WARN, with the check it failed.
+			if (result.unsealed?.check) log.warn(failedCheckSentence(result.unsealed.check));
 			// A backup made before card 2095 holds timestamps in two forms, and
 			// they were brought to one. Said as a start says it, in a WARN line:
 			// expected after an import of an older backup, and at no other time.
@@ -330,8 +378,32 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 					cookies.delete(SESSION_COOKIE_NAME, { path: '/' });
 				}
 				errors = err.errors;
-				log.critical(`Database restore: ${err.message}`, errors.length > 0 ? { errors } : undefined);
-				return json({ message: err.message, errors, committed: err.committed }, { status: 500 });
+				// The one that committed replaced every request's link and kept
+				// or listed the secrets as one that succeeded does, and says so
+				// the same way (O8): in the message, the log line and the
+				// figures, with what is to enter at WARN on its own line too.
+				const done = err.committed ? err.done : null;
+				const linksReplaced = done && done.requestLinksReplaced > 0 ? requestLinksSentence(done.requestLinksReplaced) : null;
+				const secretsKept = done ? secretsKeptSentence(done.secrets.kept) : null;
+				const secretsToEnter = done ? secretsToEnterSentence(done.secrets.toEnter, false, done.unsealed) : null;
+				const message = [linksReplaced, secretsKept, secretsToEnter].reduce<string>(
+					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
+					err.message
+				);
+				log.critical(`Database restore: ${message}`, errors.length > 0 ? { errors } : undefined);
+				if (secretsToEnter) log.warn(secretsToEnter);
+				if (done?.unsealed?.check) log.warn(failedCheckSentence(done.unsealed.check));
+				return json(
+					{
+						message,
+						errors,
+						committed: err.committed,
+						requestLinksReplaced: done?.requestLinksReplaced,
+						secretsKept: secretsKept ?? undefined,
+						secretsToEnter: secretsToEnter ?? undefined
+					},
+					{ status: 500 }
+				);
 			}
 			log.critical(`Database restore failed: ${err.message}`);
 			return json({ message: `Restore failed: ${err.message}`, errors }, { status: 500 });
