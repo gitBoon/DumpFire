@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.21
+version: 1.22
 status: As-Built
 date: 2026-10-19
 tags:
@@ -384,6 +384,24 @@ person's Google account (with the Folder ID empty, every later backup went to a 
 - The admin page reads `code` and `state` from the whole address pasted, and sends neither for
   a bare code, nor for an address holding Google's `error=` (consent refused is
   `error=access_denied`): it says why instead (the admin guide, Configuring Backups).
+- **The page's side of the `GET`** (cards 2265 and 2266). `connectGDriveOAuth()` shows a
+  refusal in the server's own words, read by `failureMessage()` ("Client ID and Secret
+  required", "Google Drive destination not found", the superadmin guard's `403`), and "Failed to
+  generate auth URL" only where the answer says nothing (a proxy's page); it used to say that for
+  every refusal. The answer is read by `answerBody()`, and an `authUrl` that is not a non-empty
+  string, or not an address on `https://accounts.google.com` (`isGoogleConsent()`, the card 2266
+  review: never a `javascript:` address as the link), opens no window and says "Failed to
+  generate auth URL". The window is opened after the
+  `GET`, which Safari, a strict blocker or an answer slower than a click's activation (about five
+  seconds in Chrome and Firefox) stops: the page reads what `window.open` returns, and the box
+  says "Opening Google's sign-in page…" until the address is known (`gdriveAuthUrl`, the paste
+  box and its ✅ Connect disabled meanwhile), then "Your browser blocked Google's sign-in window."
+  when it returned `null` (`gdriveBlocked`), or "A Google sign-in window has opened." otherwise;
+  both give the address as a link (`rel="noopener noreferrer"`), since a blocker may hand back a
+  window it then closes. Each Connect takes a number, `gdriveAttempt`, which
+  `closeGDriveConnect()` moves on whenever the box closes (Cancel, a refusal, the exchange
+  answered): an answer that comes back after Cancel or a later Connect opens and says nothing,
+  as the server has replaced that Connect's state with the later one's.
 - Connections made before are untouched: a stored refresh token is not checked again.
 
 ### The SFTP Host Key
@@ -431,6 +449,28 @@ flowchart TD
 | A backup run | `runBackup()` | An unconfirmed destination is not tried, beside `credentialsMissing()`; a refused key fails the upload with the class's message, `Backup failed: NAS → …`, with its Backup History row and failure mail, and no line of its own |
 | The start | `reportUnconfirmedHostKeys()` in `startup-checks.ts`, the thirteenth line | `[WARN] [STARTUP] 1 SFTP backup destination(s) have no confirmed host key, and nothing is sent to them until one is confirmed: "NAS". In Admin, Scheduled Backups, press Test on each and confirm the key it shows.`, the first 20 named, then `; and N more` |
 | A restore | `fillSecretGaps()`, `withSecretsOf()` | Every SFTP entry loses the backup's `hostKey` first; one filled, or with neither secret here either, takes the key of the entry here it was matched with, or none. `needs()` reads "SFTP: its password or private key, then Test to confirm its host key" |
+| A save | `hostKeyChanges()` in `backup-secrets.ts`, from `PUT /api/admin/backup` | One `WARN` line under `BACKUP` per SFTP destination whose key as stored (`<type> SHA256:…`, `''` for none or for stored text that does not read) the save changes, filed under the saving account (`user_id`), with the meta `{"destination":"NAS","from":"<key or ''>","to":"<key or ''>"}` (card 2267), and `"fromAt":"oldhost:22"` beside them where the same save moved the destination as well as changing or clearing its key: `SFTP host key of destination "NAS" at nas.example:22 added: ssh-ed25519 SHA256:NEW`, `… changed from ssh-ed25519 SHA256:OLD to ssh-ed25519 SHA256:NEW`, `… cleared: was ssh-ed25519 SHA256:OLD`, and `… removed with the destination: was ssh-ed25519 SHA256:OLD` for a name stored with a key that the save drops or makes another type (decision 2). The host and port are the saved destination's, or the stored one's when it is gone; where a save moves the destination and changes or clears its key, the old key is followed by the place it was for, `… changed from ssh-ed25519 SHA256:OLD (at oldhost:22) to ssh-ed25519 SHA256:NEW` (the card 2267 review); the logger makes the name and host printable. The line is a `WARN`, so it is not written with `LOG_LEVEL` at `ERROR` (the default is `INFO`). A change of type with the same fingerprint is a change (decision 3); the same key sent as `ssh-keygen -l` prints it is stored canonical and is none. Queued with `afterCommit()`, so a save refused or rolled back writes no line: the logger keeps a row logged inside a transaction whichever way it ends |
+
+A save's line, in order (card 2267):
+
+```mermaid
+sequenceDiagram
+    participant P as Admin page
+    participant R as PUT /api/admin/backup
+    participant T as inTransaction
+    participant L as Logger (system_logs)
+    P->>R: destinations (NAS with hostKey)
+    R->>T: read existing, readDestination, keepMaskedSecrets
+    T->>T: hostKeyChanges(existing, saved)
+    T->>T: afterCommit(log.warn … { userId })
+    T->>T: saveBackupConfig
+    alt refused (400) or the write fails
+        T--xR: rolled back, effects dropped: no line
+    else committed
+        T->>L: [WARN] [BACKUP] SFTP host key of destination "NAS" … added: …
+        R-->>P: 200 { success: true }
+    end
+```
 
 **The admin page.** Both SFTP forms have a Host key box (placeholder `Paste the line ssh-keygen
 -lf /etc/ssh/ssh_host_ed25519_key.pub prints, or leave it empty and press Test`), carried by
@@ -459,6 +499,13 @@ the destination as the server now holds it. The card 2250 review added:
 - **No stale box** (S3): `forgetHostKeyCheck(name)` clears a destination's box and moves on its
   number in `hostKeyTests` when it is added, saved or removed; `testDestination()` takes the
   next number, and an answer that comes back after the number has moved on says nothing.
+- **Each Test button waits for its own Test** (card 2268). `testsInFlight` holds, by name, the
+  number of each destination's Test still waiting for its answer; the Test button is disabled,
+  and shows ⏳, while its destination has one. A Test's `finally` clears the entry only where
+  it still holds its own number, so a second destination's Test no longer brings the first's
+  button back when it starts (one `testingDest` name did), nor when it answers. A save moves
+  `hostKeyTests` on and never `testsInFlight`, so a Test whose answer is dropped still clears its
+  own entry when the answer comes.
 
 ### Retention Cleanup
 

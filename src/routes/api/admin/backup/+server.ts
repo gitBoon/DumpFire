@@ -25,8 +25,9 @@ import {
 	type BackupConfig
 } from '$lib/server/backup';
 import { readDestination } from '$lib/server/backup-destinations';
-import { keepMaskedSecrets, maskDestination, twiceNamed } from '$lib/server/backup-secrets';
-import { inTransaction } from '$lib/server/db/transaction';
+import { hostKeyChanges, keepMaskedSecrets, maskDestination, twiceNamed, type HostKeyChange } from '$lib/server/backup-secrets';
+import { afterCommit, inTransaction } from '$lib/server/db/transaction';
+import { createLogger } from '$lib/server/logger';
 import {
 	readBody,
 	readBoolean,
@@ -39,6 +40,24 @@ import {
 } from '$lib/server/request-body';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
+
+const log = createLogger('BACKUP');
+
+/**
+ * The line a save writes for one SFTP host key it adds, changes or removes
+ * (card 2267). It names the destination, its host and the keys, as the Test's
+ * ERROR lines do, and no secret; the logger makes the name and host printable.
+ * Where the same save moved the destination, the old key is named with the
+ * place it was for (the card 2267 review).
+ */
+function hostKeyChangeLine(change: HostKeyChange): string {
+	const at = `SFTP host key of destination "${change.name}" at ${change.host}:${change.port}`;
+	const was = change.fromAt === undefined ? change.from : `${change.from} (at ${change.fromAt})`;
+	if (change.removed) return `${at} removed with the destination: was ${was}`;
+	if (change.from === '') return `${at} added: ${change.to}`;
+	if (change.to === '') return `${at} cleared: was ${was}`;
+	return `${at} changed from ${was} to ${change.to}`;
+}
 
 /** GET — Return backup config and recent history. */
 export const GET: RequestHandler = async ({ locals }) => {
@@ -83,9 +102,14 @@ export const GET: RequestHandler = async ({ locals }) => {
  *                      secret sent masked is kept by keepMaskedSecrets, or
  *                      the save is a 400 naming the destination, what to
  *                      type again and what changed; nothing is written
+ *
+ * Each SFTP host key the save adds, changes, clears or removes with its
+ * destination is one WARN line under BACKUP, filed under the account that
+ * saved it (card 2267), so a key confirmed and later put back leaves both
+ * changes on record.
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
-	requireSuperadmin(locals.user);
+	const caller = requireSuperadmin(locals.user);
 	const body = await readBody(request);
 
 	// One transaction: the settings are read and written in it, so what is
@@ -130,6 +154,20 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 
 		const sent = [schedule, scheduleTime, scheduleDay, retention, notifyOnFailure, notifyEmail, destinations];
 		if (sent.every((value) => value === undefined)) throw error(400, 'No valid fields to update');
+
+		// After the commit, not here: the logger writes a row logged inside a
+		// transaction whichever way it ends, and a save that fails would leave
+		// a line for a key it never saved (card 2267).
+		const changes = destinations === undefined ? [] : hostKeyChanges(existing.destinations, config.destinations);
+		for (const change of changes) {
+			afterCommit(() =>
+				log.warn(
+					hostKeyChangeLine(change),
+					{ destination: change.name, from: change.from, to: change.to, ...(change.fromAt === undefined ? {} : { fromAt: change.fromAt }) },
+					{ userId: caller.id }
+				)
+			);
+		}
 
 		saveBackupConfig(config);
 	});
