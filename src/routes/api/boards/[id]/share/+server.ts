@@ -3,11 +3,11 @@ import { db } from '$lib/server/db';
 import { boards, boardMembers, boardTeams, users, teams, teamMembers } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
-import { inTransaction } from '$lib/server/db/transaction';
 import { notifyBoardShared } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readBoolean, readChoice, readId } from '$lib/server/request-body';
 import { requireBoard, requireBoardOwner, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** GET — List all members and teams with access to this board, plus public status. */
@@ -68,15 +68,18 @@ const SHARE_ROLES = ['viewer', 'editor'] as const;
 
 /** POST — Share board with a user or team. */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
-	const caller = requireUser(locals.user);
+	requireUser(locals.user);
 	const boardId = pathId(params.id, 'board');
 	const body = await readBody(request);
 
 	// The board, the caller's ownership of it, the share and its mail, in one
 	// transaction entered once the body has arrived. The mail is queued until
-	// the commit, and is not sent if the share is not saved.
-	inTransaction(() => {
-		requireBoardOwner(caller, boardId, 'Only board owners and admins can share boards');
+	// the commit, and is not sent if the share is not saved. It asks first
+	// whether the session is still open, and who its account is now (card
+	// 2253): an owner taken off the board meanwhile shares nothing.
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
+		requireBoardOwner(user, boardId, 'Only board owners and admins can share boards');
 
 		const type = readChoice(body, 'type', { from: SHARE_TYPES, required: true, says: SHARE_TYPE_SAYS });
 		const targetId = readId(body, 'targetId', { required: true });
@@ -92,8 +95,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 
 		if (type === 'user') {
 			// Check user exists
-			const user = db.select().from(users).where(eq(users.id, targetId)).get();
-			if (!user) throw error(404, 'User not found');
+			const target = db.select().from(users).where(eq(users.id, targetId)).get();
+			if (!target) throw error(404, 'User not found');
 
 			if (stored) {
 				db.update(boardMembers)
@@ -109,7 +112,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 				const board = db.select({ name: boards.name }).from(boards).where(eq(boards.id, boardId)).get();
 				if (board) {
 					const baseUrl = linkBaseUrl(url);
-					notifyBoardShared(boardId, board.name, user.email, user.username, caller.username, shareRole, baseUrl);
+					notifyBoardShared(boardId, board.name, target.email, target.username, user.username, shareRole, baseUrl);
 				}
 			}
 		} else {
@@ -141,7 +144,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 							if (u) allMemberUsers.push(u);
 						}
 						for (const u of allMemberUsers) {
-							notifyBoardShared(boardId, board.name, u.email, u.username, caller.username, shareRole, baseUrl);
+							notifyBoardShared(boardId, board.name, u.email, u.username, user.username, shareRole, baseUrl);
 						}
 					}
 				}
@@ -154,11 +157,13 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 
 /** PATCH — Toggle public visibility of a board. */
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
-	const caller = requireUser(locals.user);
+	requireUser(locals.user);
 	const boardId = pathId(params.id, 'board');
 	const body = await readBody(request);
 
-	const isPublic = inTransaction(() => {
+	// Asked first: whether the session is still open, and who its account is
+	// now (card 2253).
+	const isPublic = writeAs(locals, (caller) => {
 		const board = requireBoardOwner(caller, boardId, 'Only board owners and admins can change visibility');
 
 		// `true` or `false`, and it must be sent: `{}` made the board private, and
@@ -182,11 +187,13 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
  * second tab's remove of a share already gone was said to be done.
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
-	const caller = requireUser(locals.user);
+	requireUser(locals.user);
 	const boardId = pathId(params.id, 'board');
 	const body = await readBody(request);
 
-	inTransaction(() => {
+	// Asked first: whether the session is still open, and who its account is
+	// now (card 2253).
+	writeAs(locals, (caller) => {
 		requireBoardOwner(caller, boardId, 'Only board owners and admins can manage sharing');
 
 		const type = readChoice(body, 'type', { from: SHARE_TYPES, required: true, says: SHARE_TYPE_SAYS });

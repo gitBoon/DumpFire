@@ -1,12 +1,13 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { afterCommit, inTransaction } from '$lib/server/db/transaction';
+import { afterCommit } from '$lib/server/db/transaction';
 import { deleteUser } from '$lib/server/deletes';
-import { users, sessions, type User } from '$lib/server/db/schema';
+import { users, type User } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
 import { pathId, readBody } from '$lib/server/request-body';
-import { requireManagedAccount } from '$lib/server/route-guards';
+import { requireAdmin, requireManagedAccount } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import { endUnusedInvites } from '$lib/server/invites';
 import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
@@ -30,18 +31,19 @@ const log = createLogger('AUTH');
  * answered 200 and done.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
-		throw error(403, 'Forbidden');
-	}
+	requireAdmin(locals.user);
 
-	const actor = locals.user;
 	const userId = pathId(params.id, 'user');
 	const body = await readBody(request);
 
 	// One transaction: the user is read and the caller checked in the one that
 	// changes the account, so the role that was checked is the role of the row
-	// that is changed. Its fields are read after (card 2117, R1).
-	const answer = inTransaction(() => {
+	// that is changed. Its fields are read after (card 2117, R1). It asks first
+	// whether the session is still open, and who its account is now: the
+	// caller's own role may have been lowered while the body arrived (card 2253).
+	const answer = writeAs(locals, (caller) => {
+		const actor = requireAdmin(caller);
+
 		// The superadmin's account is theirs alone, and only the superadmin
 		// changes an administrator's: the rule is the one for setting a password
 		// and deleting an account, in route-guards.ts.
@@ -138,21 +140,21 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 /** DELETE — Delete a user (admin only). */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
-		throw error(403, 'Forbidden');
-	}
+	requireAdmin(locals.user);
 
-	const actor = locals.user;
 	const userId = pathId(params.id, 'user');
 
-	// Can't delete yourself
-	if (userId === actor.id) {
-		throw error(400, 'Cannot delete your own account');
-	}
-
 	// One transaction: the user is read, checked and deleted together, so the
-	// role that was checked is the role of the row that goes.
-	inTransaction(() => {
+	// role that was checked is the role of the row that goes. It asks first
+	// whether the session is still open, and who its account is now (card 2253).
+	writeAs(locals, (caller) => {
+		const actor = requireAdmin(caller);
+
+		// Can't delete yourself
+		if (userId === actor.id) {
+			throw error(400, 'Cannot delete your own account');
+		}
+
 		// Nobody deletes the superadmin, and only the superadmin deletes an
 		// administrator: the rule is the one for setting a password and
 		// changing an account, in route-guards.ts.

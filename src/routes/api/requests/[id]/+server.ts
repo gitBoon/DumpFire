@@ -1,10 +1,11 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { taskRequests, requestMessages, cards, cardAssignees, cardComments, users, type TaskRequest } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
-import { canViewBoard, isAdmin } from '$lib/server/board-access';
-import { requireColumn } from '$lib/server/route-guards';
+import type { SessionUser } from '$lib/server/auth';
+import { canViewBoard } from '$lib/server/board-access';
+import { requireAdmin, requireColumn, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import { awaitsConfirmation, canHandleRequest, canReadRequest, linkOpens, requesterAddress, requireRequest } from '$lib/server/request-access';
 import { publicRequest } from '$lib/server/request-tokens';
 import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } from '$lib/server/notifications';
@@ -54,8 +55,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	});
 };
 export const PATCH: RequestHandler = async ({ params, request, locals, url }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-	const user = locals.user;
+	requireUser(locals.user);
 
 	const id = pathId(params.id, 'request');
 	const body = await readBody(request);
@@ -70,13 +70,16 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 	// the caller can open that board, as the inbox gives it (card 2153, the
 	// review's N3): the row's own desiredBoardId went to an addressee who could
 	// not. The answer carries no name or emoji of the board.
-	const answered = (row: TaskRequest) => {
+	const answered = (row: TaskRequest, viewer: SessionUser) => {
 		const shown = publicRequest(row);
-		const open = row.desiredBoardId !== null && canViewBoard(user, row.desiredBoardId);
+		const open = row.desiredBoardId !== null && canViewBoard(viewer, row.desiredBoardId);
 		return { ...shown, desiredBoardId: open ? row.desiredBoardId : null };
 	};
 
-	const answer = inTransaction(() => {
+	// It asks first whether the session is still open, and who its account is
+	// now, and decides with that (card 2253).
+	const answer = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const existing = db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
 		// One that awaits confirmation is not there for the team (card 2260):
 		// it was `400 Request already resolved`, which told them it was.
@@ -208,7 +211,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			// the requester's "Your request is complete", which waits for its PDF.
 			announceCardCreated(creation, user, baseUrl);
 
-			return { ...answered(existing), requesterEmail: requester, status: 'accepted', resolvedCardId: newCard.id };
+			return { ...answered(existing, user), requesterEmail: requester, status: 'accepted', resolvedCardId: newCard.id };
 
 		} else {
 			const rejectReason = readText(body, 'rejectReason', { nullable: true, max: 10000 });
@@ -224,7 +227,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 				notifyRequesterRejected(requester, existing.title, user.username, rejectReason || undefined);
 			}
 
-			return { ...answered(existing), requesterEmail: requester, status: 'rejected' };
+			return { ...answered(existing, user), requesterEmail: requester, status: 'rejected' };
 		}
 	});
 
@@ -236,11 +239,16 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
  * `404 Request not found`, where it was answered as deleted.
  */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-	if (!isAdmin(locals.user)) throw error(403, 'Admin only');
+	requireUser(locals.user);
+	requireAdmin(locals.user, 'Admin only');
 
 	const id = pathId(params.id, 'request');
-	const { changes } = db.delete(taskRequests).where(eq(taskRequests.id, id)).run();
-	if (changes === 0) throw error(404, 'Request not found');
+	// Asked first whether the session is still open, and whether its account
+	// is an administrator now (card 2253).
+	writeAs(locals, (caller) => {
+		requireAdmin(requireUser(caller), 'Admin only');
+		const { changes } = db.delete(taskRequests).where(eq(taskRequests.id, id)).run();
+		if (changes === 0) throw error(404, 'Request not found');
+	});
 	return json({ ok: true });
 };

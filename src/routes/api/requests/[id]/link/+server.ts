@@ -10,6 +10,7 @@ import { hasLapsed, requesterAddress } from '$lib/server/request-access';
 import { requestConfirmUrl, requestReplyUrl } from '$lib/server/request-tokens';
 import { readBody, readText } from '$lib/server/request-body';
 import { createLogger } from '$lib/server/logger';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('REQUESTS');
@@ -100,7 +101,7 @@ const comparable = (address: string) => address.trim().toLowerCase();
  * and not the address, and one WARN line for a 503, naming why. Public by its route id (`PUBLIC_ROUTES` in
  * hooks.server.ts).
  */
-export const POST: RequestHandler = async ({ params, request, url, getClientAddress }) => {
+export const POST: RequestHandler = async ({ params, request, locals, url, getClientAddress }) => {
 	const asks = checkRateLimit(`request-link:${addressToCount({ getClientAddress })}`, ASKS_PER_ADDRESS, 15 * MINUTE);
 	if (asks.limited) {
 		throw error(429, `Too many requests. Try again in ${Math.ceil(asks.retryAfterSecs / 60)} minute(s).`);
@@ -126,7 +127,16 @@ export const POST: RequestHandler = async ({ params, request, url, getClientAddr
 
 	// An id that is not a number is no request, and is answered as one that is not there.
 	const id = /^[1-9]\d{0,15}$/.test(params.id) ? Number(params.id) : null;
-	const found = id === null ? undefined : db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
+	// Looked up in a transaction that asks first whether the caller's session,
+	// if they came with one, is still open (card 2253): one that ended while
+	// the body arrived is refused 401, never taken for nobody. Nothing is
+	// written.
+	const found = writeAs(locals, (caller) => {
+		// Anyone may ask, signed in or not: who is calling decides nothing here
+		// beyond that check.
+		void caller;
+		return id === null ? undefined : db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
+	});
 
 	// The address the request's mail goes to, which is the one the link goes
 	// to and the one compared: the account's email as it is now for a request

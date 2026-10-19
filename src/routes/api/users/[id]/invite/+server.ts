@@ -1,12 +1,11 @@
 import { json, error } from '@sveltejs/kit';
-import { inTransaction } from '$lib/server/db/transaction';
-import { isAdmin } from '$lib/server/board-access';
 import { issueInvite } from '$lib/server/invites';
 import { inviteMailAnswer } from '$lib/server/invite-link';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
 import { sendInviteEmail } from '$lib/server/notifications';
-import { requireManagedAccount } from '$lib/server/route-guards';
+import { requireAdmin, requireManagedAccount } from '$lib/server/route-guards';
 import { pathId } from '$lib/server/request-body';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -34,26 +33,26 @@ import type { RequestHandler } from './$types';
  * password, it is refused before the invite is made: `400`.
  */
 export const POST: RequestHandler = async ({ params, locals, url, cookies }) => {
-	if (!locals.user || !isAdmin(locals.user)) {
-		throw error(403, 'Forbidden');
-	}
+	requireAdmin(locals.user);
 
-	const actor = locals.user;
 	const userId = pathId(params.id, 'user');
-
-	// Nobody invites themselves, an administrator included: the link would set
-	// their password without asking for the one they have.
-	if (actor.id === userId) {
-		throw error(
-			403,
-			'An invite sets a password. Change your own password on the Account page, which asks for your current password'
-		);
-	}
 
 	// One transaction: the user is read and the caller checked in the one that
 	// writes the token, so the role that was checked is the role of the account
-	// the token is for. The mail is sent once it is committed.
-	const issued = inTransaction(() => {
+	// the token is for. The mail is sent once it is committed. It asks first
+	// whether the session is still open, and who its account is now (card 2253).
+	const issued = writeAs(locals, (caller) => {
+		const actor = requireAdmin(caller);
+
+		// Nobody invites themselves, an administrator included: the link would set
+		// their password without asking for the one they have.
+		if (actor.id === userId) {
+			throw error(
+				403,
+				'An invite sets a password. Change your own password on the Account page, which asks for your current password'
+			);
+		}
+
 		const target = requireManagedAccount(actor, userId, {
 			superadmin: 'Only superadmin can reset superadmin password, which an invite does',
 			admin: 'Only superadmin can reset an admin\'s password, which an invite does'
@@ -91,14 +90,14 @@ export const POST: RequestHandler = async ({ params, locals, url, cookies }) => 
 		// set the password even after a newer one had been sent and used.
 		const token = issueInvite(target.id);
 
-		return { target, token, baseUrl };
+		return { target, token, baseUrl, actorId: actor.id };
 	});
 
 	// After the commit, and awaited: an effect never starts inside a
 	// transaction, and the answer says whether the mail went.
-	const { target, token, baseUrl } = issued;
+	const { target, token, baseUrl, actorId } = issued;
 	const outcome = await sendInviteEmail(target.email, target.username, token, baseUrl);
-	const mail = inviteMailAnswer({ outcome, cookies, actorId: actor.id, accountId: target.id, token, baseUrl });
+	const mail = inviteMailAnswer({ outcome, cookies, actorId, accountId: target.id, token, baseUrl });
 	const earlier = 'Any earlier invite to this account no longer works.';
 
 	if (mail.mailSent) {

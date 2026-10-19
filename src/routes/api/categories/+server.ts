@@ -3,9 +3,9 @@ import { db } from '$lib/server/db';
 import { categories } from '$lib/server/db/schema';
 import { emit } from '$lib/server/events';
 import { cardCategoriesFor } from '$lib/server/list-access';
-import { inTransaction } from '$lib/server/db/transaction';
 import { readBody, readColour, readId, readText } from '$lib/server/request-body';
 import { requireCategoryCreate, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -31,10 +31,14 @@ export const GET: RequestHandler = async ({ locals }) => {
  * meant none.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const category = inTransaction(() => {
+	// The session is asked again, and who its account is now, in the
+	// transaction that makes the category (card 2253): one of no board is an
+	// administrator's to make, as they are then.
+	const category = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const boardId = requireCategoryCreate(user, readId(body, 'boardId', { nullable: true, says: 'Invalid board ID' }));
 
 		const name = readText(body, 'name', {

@@ -1,6 +1,5 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { boards, columns, boardMembers } from '$lib/server/db/schema';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
@@ -9,6 +8,7 @@ import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { readBody, readId, readText } from '$lib/server/request-body';
 import { requireBoardCategory, requireParentCard, requireUser } from '$lib/server/route-guards';
 import { tooDeepToMake, tooDeepUnder } from '$lib/server/sub-boards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -42,9 +42,8 @@ export const GET: RequestHandler = async ({ locals }) => {
  * was not there was stored as sent: `boards.category_id` has no foreign key.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
-	const userId = user.id;
 
 	const name = readText(body, 'name', {
 		required: true,
@@ -61,8 +60,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// A failure after the first used to leave a board with no columns, or one
 	// that nobody owned. The parent card is read and the caller checked in it.
 	// With them the `board_created` entry `POST /api/v1/boards` writes, and for
-	// a sub-board the live update that shows it on its card (card 2143).
-	const board = inTransaction(() => {
+	// a sub-board the live update that shows it on its card (card 2143). It
+	// asks first whether the session is still open, and who its account is
+	// now (card 2253).
+	const board = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
+		const userId = user.id;
 		// A sub-board hangs under a card, and is shown on it to everybody who
 		// can open that card's board. The id used to be written as it was sent,
 		// so anyone could hang a board under a card of a board they cannot open.

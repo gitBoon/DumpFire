@@ -95,7 +95,18 @@ const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
  * session's cookie, which the routes that ask for a password count wrong
  * ones against.
  */
-const READS_NO_ROW = ['error', 'Number', 'isNaN', 'pathId', 'requireUser', 'requireSuperadmin', 'isAdmin', 'cookies.get'];
+const READS_NO_ROW = [
+	'error',
+	'Number',
+	'isNaN',
+	'pathId',
+	'requireUser',
+	'requireSuperadmin',
+	'requireAdmin',
+	'refuseOwnAccount',
+	'isAdmin',
+	'cookies.get'
+];
 
 /** The request's own methods that read its body. */
 const READER_METHODS = ['json', 'formData', 'arrayBuffer', 'text', 'blob', 'bytes'];
@@ -560,11 +571,13 @@ const STILL_CALLER_NOW: Record<string, { reason: string; guards: RegExp[] }> = {
 
 /**
  * The guards that may take `locals.user` before the body, as a quick refusal
- * in a call that binds no name: the two that read no row, as card 2115's
+ * in a call that binds no name: those that read no row, as card 2115's
  * READS_NO_ROW has them. Any other call given it there decides on the caller
- * as the gate read it.
+ * as the gate read it. `requireAdmin` and `refuseOwnAccount` (slice 2253-4)
+ * keep the 403s the account and request routes gave before their body, in
+ * the same order, where an `if` on `locals.user` gave them.
  */
-const QUICK_CHECKS = ['requireUser', 'requireSuperadmin'];
+const QUICK_CHECKS = ['requireUser', 'requireSuperadmin', 'requireAdmin', 'refuseOwnAccount'];
 
 /** And, by handler, a guard that reads a row and is asked before the body there too, with why. */
 const QUICK_CHECKS_IN: Record<string, { guards: string[]; reason: string }> = {
@@ -573,6 +586,12 @@ const QUICK_CHECKS_IN: Record<string, { guards: string[]; reason: string }> = {
 		reason:
 			'The upload asks before it reads 25 MB, so that a caller with no access is not sent it (card 2115\'s ALLOWED), ' +
 			'and asks again with caller inside the writeAs that attaches it (decision 7).'
+	},
+	'src/routes/api/requests/+server.ts POST': {
+		guards: ['screenAnonymous'],
+		reason:
+			'The public request form asks a caller with no session for the form token, and counts them, before the body ' +
+			"(card 2115's ALLOWED); it reads no row, and the writeAs that saves the request decides with caller === null."
 	}
 };
 
@@ -592,79 +611,9 @@ const CURRENT_PASSWORD = [
  * helper, a `GET`) is let stand only in a file that still has a handler here.
  */
 const NOT_YET: string[] = [
-	// Slice 2253-2: cards and what is on them (internal) (30).
-	'src/routes/api/cards/+server.ts POST',
-	'src/routes/api/cards/[id]/+server.ts PUT',
-	'src/routes/api/cards/[id]/+server.ts DELETE',
-	'src/routes/api/cards/[id]/assignees/+server.ts POST',
-	'src/routes/api/cards/[id]/assignees/+server.ts DELETE',
-	'src/routes/api/cards/[id]/attachments/+server.ts POST',
-	'src/routes/api/cards/[id]/attachments/[attachmentId]/+server.ts DELETE',
-	'src/routes/api/cards/[id]/comments/+server.ts POST',
-	'src/routes/api/cards/[id]/comments/[commentId]/+server.ts PUT',
-	'src/routes/api/cards/[id]/comments/[commentId]/+server.ts DELETE',
-	'src/routes/api/cards/[id]/dependencies/+server.ts POST',
-	'src/routes/api/cards/[id]/dependencies/+server.ts DELETE',
-	'src/routes/api/cards/[id]/restore/+server.ts POST',
-	'src/routes/api/cards/reorder/+server.ts PUT',
-	'src/routes/api/categories/+server.ts POST',
-	'src/routes/api/categories/[id]/+server.ts PUT',
-	'src/routes/api/categories/[id]/+server.ts DELETE',
-	'src/routes/api/columns/+server.ts POST',
-	'src/routes/api/columns/[id]/+server.ts PUT',
-	'src/routes/api/columns/[id]/+server.ts DELETE',
-	'src/routes/api/columns/reorder/+server.ts PUT',
-	'src/routes/api/labels/+server.ts POST',
-	'src/routes/api/labels/+server.ts PATCH',
-	'src/routes/api/labels/+server.ts PUT',
-	'src/routes/api/labels/+server.ts DELETE',
-	'src/routes/api/subtasks/+server.ts POST',
-	'src/routes/api/subtasks/[id]/+server.ts PUT',
-	'src/routes/api/subtasks/[id]/+server.ts DELETE',
-	'src/routes/api/subtasks/[id]/dependencies/+server.ts POST',
-	'src/routes/api/subtasks/[id]/dependencies/+server.ts DELETE',
-	// Slice 2253-3: boards, groupings, teams, goals, templates (internal) (21).
-	'src/routes/api/board-categories/+server.ts POST',
-	'src/routes/api/board-categories/[id]/+server.ts PUT',
-	'src/routes/api/board-categories/[id]/+server.ts DELETE',
-	'src/routes/api/boards/+server.ts POST',
-	'src/routes/api/boards/[id]/+server.ts PUT',
-	'src/routes/api/boards/[id]/+server.ts DELETE',
-	'src/routes/api/boards/[id]/archive/+server.ts POST',
-	'src/routes/api/boards/[id]/favourite/+server.ts POST',
-	'src/routes/api/boards/[id]/share/+server.ts POST',
-	'src/routes/api/boards/[id]/share/+server.ts PATCH',
-	'src/routes/api/boards/[id]/share/+server.ts DELETE',
-	'src/routes/api/milestones/+server.ts POST',
-	'src/routes/api/milestones/[id]/+server.ts PATCH',
-	'src/routes/api/milestones/[id]/+server.ts DELETE',
-	'src/routes/api/teams/+server.ts POST',
-	'src/routes/api/teams/[id]/+server.ts PUT',
-	'src/routes/api/teams/[id]/+server.ts DELETE',
-	'src/routes/api/teams/[id]/members/[userId]/+server.ts POST',
-	'src/routes/api/teams/[id]/members/[userId]/+server.ts DELETE',
-	'src/routes/api/templates/+server.ts POST',
-	'src/routes/api/templates/[id]/+server.ts DELETE',
-	// Slice 2253-4: accounts, users, requests, reports (internal) (19).
-	'src/routes/api/account/api-keys/+server.ts POST',
-	'src/routes/api/account/api-keys/[id]/+server.ts DELETE',
-	'src/routes/api/account/email/+server.ts PUT',
-	'src/routes/api/account/emoji/+server.ts PUT',
-	'src/routes/api/account/notifications/+server.ts PUT',
-	'src/routes/api/account/password/+server.ts PUT',
-	'src/routes/api/reports/+server.ts POST',
-	'src/routes/api/reports/email/+server.ts POST',
-	'src/routes/api/requests/+server.ts POST',
-	'src/routes/api/requests/[id]/+server.ts PATCH',
-	'src/routes/api/requests/[id]/+server.ts DELETE',
-	'src/routes/api/requests/[id]/confirm/+server.ts POST',
-	'src/routes/api/requests/[id]/link/+server.ts POST',
-	'src/routes/api/requests/[id]/messages/+server.ts POST',
-	'src/routes/api/users/+server.ts POST',
-	'src/routes/api/users/[id]/+server.ts PUT',
-	'src/routes/api/users/[id]/+server.ts DELETE',
-	'src/routes/api/users/[id]/invite/+server.ts POST',
-	'src/routes/api/users/[id]/password/+server.ts PUT',
+	// Slice 2253-2 (cards and what is on them, internal): all 30 moved.
+	// Slice 2253-3 (boards, groupings, teams, goals, templates, internal): all 21 moved.
+	// Slice 2253-4 (accounts, users, requests, reports, internal): all 19 moved.
 	// Slice 2253-5: the superadmin's and administrators' routes (13).
 	'src/routes/api/admin/backup/+server.ts PUT',
 	'src/routes/api/admin/backup/+server.ts POST',
@@ -1229,7 +1178,80 @@ describe('every write handler asks who the caller is at the write (card 2253)', 
 			'src/routes/api/report-schedules/[id]/+server.ts DELETE',
 			'src/routes/api/v1/boards/[boardId]/webhooks/+server.ts POST',
 			'src/routes/api/v1/webhooks/[webhookId]/+server.ts PUT',
-			'src/routes/api/v1/webhooks/[webhookId]/+server.ts DELETE'
+			'src/routes/api/v1/webhooks/[webhookId]/+server.ts DELETE',
+			// Slice 2253-2: cards and what is on them (internal).
+			'src/routes/api/cards/+server.ts POST',
+			'src/routes/api/cards/[id]/+server.ts PUT',
+			'src/routes/api/cards/[id]/+server.ts DELETE',
+			'src/routes/api/cards/[id]/assignees/+server.ts POST',
+			'src/routes/api/cards/[id]/assignees/+server.ts DELETE',
+			'src/routes/api/cards/[id]/attachments/+server.ts POST',
+			'src/routes/api/cards/[id]/attachments/[attachmentId]/+server.ts DELETE',
+			'src/routes/api/cards/[id]/comments/+server.ts POST',
+			'src/routes/api/cards/[id]/comments/[commentId]/+server.ts PUT',
+			'src/routes/api/cards/[id]/comments/[commentId]/+server.ts DELETE',
+			'src/routes/api/cards/[id]/dependencies/+server.ts POST',
+			'src/routes/api/cards/[id]/dependencies/+server.ts DELETE',
+			'src/routes/api/cards/[id]/restore/+server.ts POST',
+			'src/routes/api/cards/reorder/+server.ts PUT',
+			'src/routes/api/categories/+server.ts POST',
+			'src/routes/api/categories/[id]/+server.ts PUT',
+			'src/routes/api/categories/[id]/+server.ts DELETE',
+			'src/routes/api/columns/+server.ts POST',
+			'src/routes/api/columns/[id]/+server.ts PUT',
+			'src/routes/api/columns/[id]/+server.ts DELETE',
+			'src/routes/api/columns/reorder/+server.ts PUT',
+			'src/routes/api/labels/+server.ts POST',
+			'src/routes/api/labels/+server.ts PATCH',
+			'src/routes/api/labels/+server.ts PUT',
+			'src/routes/api/labels/+server.ts DELETE',
+			'src/routes/api/subtasks/+server.ts POST',
+			'src/routes/api/subtasks/[id]/+server.ts PUT',
+			'src/routes/api/subtasks/[id]/+server.ts DELETE',
+			'src/routes/api/subtasks/[id]/dependencies/+server.ts POST',
+			'src/routes/api/subtasks/[id]/dependencies/+server.ts DELETE',
+			// Slice 2253-3: boards, groupings, teams, goals, templates (internal).
+			'src/routes/api/board-categories/+server.ts POST',
+			'src/routes/api/board-categories/[id]/+server.ts PUT',
+			'src/routes/api/board-categories/[id]/+server.ts DELETE',
+			'src/routes/api/boards/+server.ts POST',
+			'src/routes/api/boards/[id]/+server.ts PUT',
+			'src/routes/api/boards/[id]/+server.ts DELETE',
+			'src/routes/api/boards/[id]/archive/+server.ts POST',
+			'src/routes/api/boards/[id]/favourite/+server.ts POST',
+			'src/routes/api/boards/[id]/share/+server.ts POST',
+			'src/routes/api/boards/[id]/share/+server.ts PATCH',
+			'src/routes/api/boards/[id]/share/+server.ts DELETE',
+			'src/routes/api/milestones/+server.ts POST',
+			'src/routes/api/milestones/[id]/+server.ts PATCH',
+			'src/routes/api/milestones/[id]/+server.ts DELETE',
+			'src/routes/api/teams/+server.ts POST',
+			'src/routes/api/teams/[id]/+server.ts PUT',
+			'src/routes/api/teams/[id]/+server.ts DELETE',
+			'src/routes/api/teams/[id]/members/[userId]/+server.ts POST',
+			'src/routes/api/teams/[id]/members/[userId]/+server.ts DELETE',
+			'src/routes/api/templates/+server.ts POST',
+			'src/routes/api/templates/[id]/+server.ts DELETE',
+			// Slice 2253-4: accounts, users, requests, reports (internal).
+			'src/routes/api/account/api-keys/+server.ts POST',
+			'src/routes/api/account/api-keys/[id]/+server.ts DELETE',
+			'src/routes/api/account/email/+server.ts PUT',
+			'src/routes/api/account/emoji/+server.ts PUT',
+			'src/routes/api/account/notifications/+server.ts PUT',
+			'src/routes/api/account/password/+server.ts PUT',
+			'src/routes/api/reports/+server.ts POST',
+			'src/routes/api/reports/email/+server.ts POST',
+			'src/routes/api/requests/+server.ts POST',
+			'src/routes/api/requests/[id]/+server.ts PATCH',
+			'src/routes/api/requests/[id]/+server.ts DELETE',
+			'src/routes/api/requests/[id]/confirm/+server.ts POST',
+			'src/routes/api/requests/[id]/link/+server.ts POST',
+			'src/routes/api/requests/[id]/messages/+server.ts POST',
+			'src/routes/api/users/+server.ts POST',
+			'src/routes/api/users/[id]/+server.ts PUT',
+			'src/routes/api/users/[id]/+server.ts DELETE',
+			'src/routes/api/users/[id]/invite/+server.ts POST',
+			'src/routes/api/users/[id]/password/+server.ts PUT'
 		]) {
 			expect(keeps(key), key).toBe(true);
 		}
@@ -1370,7 +1392,7 @@ describe("card 2253's rule itself", () => {
 		].join('\n');
 
 		expect(judged(code)).toEqual([
-			'src/routes/api/example/+server.ts:1 POST reads locals.user at line 3 before the body other than in a quick check that binds no name (requireUser, requireSuperadmin): decide inside writeAs with caller'
+			'src/routes/api/example/+server.ts:1 POST reads locals.user at line 3 before the body other than in a quick check that binds no name (requireUser, requireSuperadmin, requireAdmin, refuseOwnAccount): decide inside writeAs with caller'
 		]);
 	});
 
@@ -1379,20 +1401,32 @@ describe("card 2253's rule itself", () => {
 			'export const POST = async ({ request, locals }) => {',
 			'\trequireUser(locals.user);',
 			'\trequireSuperadmin(locals.user);',
+			'\trequireAdmin(locals.user, "Admin only");',
+			'\trefuseOwnAccount(locals.user, 2, "Not your own");',
 			'\tremember(locals.user);',
 			'\trequireCard(locals.user, 1, "view");',
+			'\tscreenAnonymous(locals.user, null, () => "");',
 			'\tconst body = await readBody(request);',
 			'\twriteAs(locals, (caller) => requireCard(caller, 1, "edit"));',
 			'};'
 		].join('\n');
 		const upload = 'src/routes/api/cards/[id]/attachments/+server.ts';
+		const form = 'src/routes/api/requests/+server.ts';
+		const QUICK = 'requireUser, requireSuperadmin, requireAdmin, refuseOwnAccount';
 
 		expect(judged(code)).toEqual([
-			'src/routes/api/example/+server.ts:1 POST reads locals.user at line 4 before the body other than in a quick check that binds no name (requireUser, requireSuperadmin): decide inside writeAs with caller',
-			'src/routes/api/example/+server.ts:1 POST reads locals.user at line 5 before the body other than in a quick check that binds no name (requireUser, requireSuperadmin): decide inside writeAs with caller'
+			`src/routes/api/example/+server.ts:1 POST reads locals.user at line 6 before the body other than in a quick check that binds no name (${QUICK}): decide inside writeAs with caller`,
+			`src/routes/api/example/+server.ts:1 POST reads locals.user at line 7 before the body other than in a quick check that binds no name (${QUICK}): decide inside writeAs with caller`,
+			`src/routes/api/example/+server.ts:1 POST reads locals.user at line 8 before the body other than in a quick check that binds no name (${QUICK}): decide inside writeAs with caller`
 		]);
 		expect(judged(code, upload)).toEqual([
-			`${upload}:1 POST reads locals.user at line 4 before the body other than in a quick check that binds no name (requireUser, requireSuperadmin, requireCard): decide inside writeAs with caller`
+			`${upload}:1 POST reads locals.user at line 6 before the body other than in a quick check that binds no name (${QUICK}, requireCard): decide inside writeAs with caller`,
+			`${upload}:1 POST reads locals.user at line 8 before the body other than in a quick check that binds no name (${QUICK}, requireCard): decide inside writeAs with caller`
+		]);
+		// The public request form's screen of a caller with no session, there alone (slice 2253-4).
+		expect(judged(code, form)).toEqual([
+			`${form}:1 POST reads locals.user at line 6 before the body other than in a quick check that binds no name (${QUICK}, screenAnonymous): decide inside writeAs with caller`,
+			`${form}:1 POST reads locals.user at line 7 before the body other than in a quick check that binds no name (${QUICK}, screenAnonymous): decide inside writeAs with caller`
 		]);
 	});
 

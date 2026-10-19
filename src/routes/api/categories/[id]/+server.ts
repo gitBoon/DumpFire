@@ -3,19 +3,21 @@ import { db } from '$lib/server/db';
 import { categories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
-import { inTransaction } from '$lib/server/db/transaction';
 import { pathId, readBody, readColour, readText } from '$lib/server/request-body';
 import { requireCategoryEdit, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const id = pathId(params.id, 'category');
 	const body = await readBody(request);
 
-	const updated = inTransaction(() => {
+	const updated = writeAs(locals, (caller) => {
 		// Checked against the board the category belongs to, read from its row,
-		// in the transaction that changes it.
+		// in the transaction that changes it, which asks first whether the
+		// session is still open, and who its account is now (card 2253).
+		const user = requireUser(caller);
 		const category = requireCategoryEdit(user, id);
 
 		const updates: Partial<typeof categories.$inferInsert> = {};
@@ -35,9 +37,15 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	const id = pathId(params.id, 'category');
 
-	const category = requireCategoryEdit(locals.user, id);
+	// The category read, the caller checked and the category deleted in one
+	// transaction that asks first whether the session is still open, and who
+	// its account is now (card 2253). The check and the delete were two steps
+	// with no transaction around them.
+	writeAs(locals, (caller) => {
+		const category = requireCategoryEdit(caller, id);
 
-	db.delete(categories).where(eq(categories.id, id)).run();
-	if (category.boardId) emit(category.boardId, 'update', { type: 'category' });
+		db.delete(categories).where(eq(categories.id, id)).run();
+		if (category.boardId) emit(category.boardId, 'update', { type: 'category' });
+	});
 	return json({ success: true });
 };

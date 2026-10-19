@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
+import type { SessionUser } from '$lib/server/auth';
 import { makePasswordHash } from '$lib/server/passwords';
 import { issueInvite } from '$lib/server/invites';
 import { inviteMailAnswer } from '$lib/server/invite-link';
@@ -10,6 +10,8 @@ import { readBody } from '$lib/server/request-body';
 import { listUsersFor } from '$lib/server/list-access';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
 import { sendInviteEmail } from '$lib/server/notifications';
+import { requireAdmin, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -38,11 +40,7 @@ const NO_MAIL_PASSWORD = `Password must be at least 8 characters (${MAIL_PROBLEM
  * answer, and the page said "invite email sent!" whether or not it went.
  */
 export const POST: RequestHandler = async ({ request, locals, url, cookies }) => {
-	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
-		throw error(403, 'Forbidden');
-	}
-
-	const actor = locals.user;
+	requireAdmin(locals.user);
 
 	// Each text field that was sent is a string, and the username and email
 	// are there and held to their rules, or this is a 400: see
@@ -71,11 +69,15 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 	// A role is exactly `user` or `admin`, and only the superadmin makes an
 	// administrator. What passes is what is written: it used to be compared as
 	// it was sent and then bound, and `["superadmin"]` is bound as `superadmin`.
-	const finalRole =
-		requireAssignableRole(actor, body, {
+	// Asked of the caller as their account is now: here, as a quick refusal
+	// before the hash, and again in the transaction that creates the user,
+	// which decides (card 2253).
+	const roleFor = (caller: SessionUser | null) =>
+		requireAssignableRole(requireAdmin(caller), body, {
 			superadmin: 'Cannot create additional superadmin accounts',
 			promote: 'Only superadmin can create admin users'
 		}) ?? 'user';
+	roleFor(writeAs(locals, (caller) => requireAdmin(caller)));
 
 	// Check uniqueness: one rule, shared with PUT /api/users/[id].
 	const requireUnused = () => requireUnusedAccountFields({ username, email });
@@ -96,7 +98,11 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 	// that creates the user, and the user and their invite are made together.
 	// A failure between the two used to leave a user with a password nobody
 	// knows and no invite to set one. The mail is sent once it is committed.
-	const created = inTransaction(() => {
+	// The hash was awaited, so the session is asked again, and the role
+	// decided again by the account as it is now (card 2253).
+	const created = writeAs(locals, (caller) => {
+		const finalRole = roleFor(caller);
+		const actorId = requireUser(caller).id;
 		requireUnused();
 
 		// Read again in here, as the name and address are: with no password and
@@ -117,7 +123,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			throw error(503, NO_LINK_ADDRESS);
 		}
 
-		const user = db.insert(users)
+		const account = db.insert(users)
 			.values({
 				username,
 				email: email.toLowerCase(),
@@ -131,25 +137,25 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		// If no password was provided and SMTP is ready, issue an invite, mailed
 		// below. A new user has no earlier invite to end, but an invite is issued
 		// one way, in invites.ts, so its lifetime and its rule are written once.
-		const invite = inviteFrom !== null ? { token: issueInvite(user.id), baseUrl: inviteFrom } : null;
+		const invite = inviteFrom !== null ? { token: issueInvite(account.id), baseUrl: inviteFrom } : null;
 
-		return { user, invite };
+		return { account, invite, actorId };
 	});
 
-	const { user, invite } = created;
-	if (invite === null) return json({ ...user, invited: false }, { status: 201 });
+	const { account, invite, actorId } = created;
+	if (invite === null) return json({ ...account, invited: false }, { status: 201 });
 
 	// After the commit, and awaited: an effect never starts inside a
 	// transaction, and the answer says whether the mail went.
-	const outcome = await sendInviteEmail(user.email, user.username, invite.token, invite.baseUrl);
-	const mail = inviteMailAnswer({ outcome, cookies, actorId: actor.id, accountId: user.id, token: invite.token, baseUrl: invite.baseUrl });
+	const outcome = await sendInviteEmail(account.email, account.username, invite.token, invite.baseUrl);
+	const mail = inviteMailAnswer({ outcome, cookies, actorId, accountId: account.id, token: invite.token, baseUrl: invite.baseUrl });
 
-	if (mail.mailSent) return json({ ...user, invited: true, mailSent: true }, { status: 201 });
+	if (mail.mailSent) return json({ ...account, invited: true, mailSent: true }, { status: 201 });
 	if (mail.inviteUrl === null) {
-		return json({ ...user, invited: true, mailSent: false, mailProblem: mail.mailProblem }, { status: 201 });
+		return json({ ...account, invited: true, mailSent: false, mailProblem: mail.mailProblem }, { status: 201 });
 	}
 	return json(
-		{ ...user, invited: true, mailSent: false, mailProblem: mail.mailProblem, inviteUrl: mail.inviteUrl },
+		{ ...account, invited: true, mailSent: false, mailProblem: mail.mailProblem, inviteUrl: mail.inviteUrl },
 		// The answer holds a credential: kept by nothing on the way (N5).
 		{ status: 201, headers: { 'Cache-Control': 'no-store' } }
 	);

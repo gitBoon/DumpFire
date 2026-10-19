@@ -20,10 +20,23 @@
  *   - the four handlers that asked before this card (the report schedules and
  *     the webhooks) deciding with the account as it is now, and refusing an
  *     ended session on the delete that did not ask at all;
+ *   - the cards and what is on them (slice 2253-2): one request of each shape
+ *     moved, its body held through the gate while the session ends; the
+ *     deletes, the restore and the upload with an ended session; and a role
+ *     lowered meanwhile (every route of the slice is walked in slice 2253-8);
+ *   - the boards, groupings, teams, goals and templates (slice 2253-3), the
+ *     same way: one request of each shape held through the gate, the
+ *     requests with no body with an ended session, and an administrator
+ *     lowered meanwhile met by the guards that ask the role;
+ *   - the accounts, users, requests and reports (slice 2253-4), the same
+ *     way, and: the password change, which ends the session it came by;
+ *     a write handed an API key revoked meanwhile; the public request
+ *     routes, for a caller with no session (null) and one whose session
+ *     ended (401); and an administrator lowered to a user, and the
+ *     superadmin to an administrator, met by the account guards;
  *   - no credential at all (R10): refused outside the tests, and never
  *     handed on by the gate;
- *   - the report mail's second check, after its PDF is made (R1), pinned
- *     with `it.fails` until slice 2253-4 moves that route.
+ *   - the report mail's second check, after its PDF is made (R1).
  *
  * The rule that every write handler goes through them is read from the source
  * in `tests/check-at-the-write.test.ts`. The window itself, a body held while
@@ -31,20 +44,55 @@
  * `tests/atomic-accounts.test.ts` ("a create or a change whose body arrives
  * after the reset").
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { readdirSync } from 'node:fs';
 import { isHttpError, json, type RequestEvent } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { apiKeys, reportSchedules, sessions, users, webhooks } from '$lib/server/db/schema';
+import {
+	apiKeys,
+	boardCategories,
+	boardMembers,
+	boards,
+	cardTemplates,
+	categories,
+	reportSchedules,
+	sessions,
+	settings,
+	taskRequests,
+	teamMembers,
+	users,
+	webhooks
+} from '$lib/server/db/schema';
+import { hashSync } from 'bcryptjs';
 import { stillAuthenticated, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { inTransaction } from '$lib/server/db/transaction';
+import { resetAllRateLimits } from '$lib/server/rate-limit';
+import { issueFormToken, newRequestToken } from '$lib/server/request-tokens';
+import { cardDir } from '$lib/server/uploads';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import { stamp } from '$lib/timestamps';
 import { handle } from '../src/hooks.server';
 import { api } from './helpers/api';
 import { effects } from './helpers/effects';
-import { makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
-import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import {
+	makeApiKey,
+	makeAttachment,
+	makeBoard,
+	makeCard,
+	makeComment,
+	makeLabel,
+	makeMilestone,
+	makeSession,
+	makeSmtp,
+	makeSubtask,
+	makeTeam,
+	makeUser,
+	makeWebhook,
+	resetDb
+} from './helpers/fixtures';
+import { sendAround } from './helpers/held-body';
+import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 
 /**
  * What SvelteKit's `getRequestEvent` answers: the request a test names, or,
@@ -401,6 +449,762 @@ describe('the report schedules and the webhooks decide with the account as it is
 	});
 });
 
+// ─── The cards and what is on them (slice 2253-2) ───────────────────────────
+
+describe('the cards and what is on them ask at the write (slice 2253-2)', () => {
+	/**
+	 * A board its owner edits, with a card on it and one beside it, a subtask,
+	 * a label, a comment and a category, and the owner signed in by a session.
+	 */
+	const scene = () => {
+		const owner = makeUser({ username: 'owner' });
+		const { board, cols } = makeBoard({ owner, name: 'Owned' });
+		const card = makeCard(cols['To Do'], { position: 0 });
+		const other = makeCard(cols['To Do'], { position: 1 });
+		const subtask = makeSubtask(card);
+		const label = makeLabel(board);
+		const comment = makeComment(card, owner);
+		const category = db.insert(categories).values({ boardId: board.id, name: 'Kind' }).returning().get();
+		return { owner, board, cols, card, other, subtask, label, comment, category, session: makeSession(owner) };
+	};
+	type Scene = ReturnType<typeof scene>;
+	type Method = 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+	/**
+	 * One request of each shape the slice moved that carries a JSON body, and
+	 * what it answers when nothing ends meanwhile.
+	 */
+	const HELD: { shape: string; method: Method; path: (s: Scene) => string; body: (s: Scene) => unknown; allowed: number }[] = [
+		{
+			shape: 'a create that names its guarded row in the body (POST /api/cards)',
+			method: 'POST',
+			path: () => '/api/cards',
+			body: (s) => ({ columnId: s.cols['To Do'].id, title: 'Late' }),
+			allowed: 201
+		},
+		{
+			shape: "a change and a move by the id in its path, inside the move's catch (PUT /api/cards/:id)",
+			method: 'PUT',
+			path: (s) => `/api/cards/${s.card.id}`,
+			body: (s) => ({ title: 'Renamed late', columnId: s.cols['In Progress'].id }),
+			allowed: 200
+		},
+		{
+			shape: 'a write of many rows (PUT /api/cards/reorder)',
+			method: 'PUT',
+			path: () => '/api/cards/reorder',
+			body: (s) => ({ updates: [{ id: s.card.id, columnId: s.cols['In Progress'].id, position: 0 }] }),
+			allowed: 200
+		},
+		{
+			shape: 'an answer that names the caller (POST /api/cards/:id/comments)',
+			method: 'POST',
+			path: (s) => `/api/cards/${s.card.id}/comments`,
+			body: () => ({ content: 'Late' }),
+			allowed: 201
+		},
+		{
+			shape: "a write in a service's own transaction, a savepoint inside writeAs (POST /api/subtasks/:id/dependencies)",
+			method: 'POST',
+			path: (s) => `/api/subtasks/${s.subtask.id}/dependencies`,
+			body: (s) => ({ dependsOnCardId: s.other.id }),
+			allowed: 201
+		},
+		{
+			shape: 'a delete with a body (DELETE /api/labels)',
+			method: 'DELETE',
+			path: () => '/api/labels',
+			body: (s) => ({ id: s.label.id }),
+			allowed: 200
+		}
+	];
+
+	for (const c of HELD) {
+		it(`refuses 401, and writes nothing, when the session ends while the body arrives: ${c.shape}`, async () => {
+			const s = scene();
+			let before: DbSnapshot | undefined;
+
+			const res = await sendAround(c.method, c.path(s), { session: s.session }, c.body(s), () => {
+				db.delete(sessions).where(eq(sessions.id, s.session)).run();
+				before = snapshotDb();
+			});
+
+			expect(res).toEqual({ status: 401, body: { message: 'Not authenticated' } });
+			expect(before).toBeDefined();
+			expectUnchanged(before!);
+		});
+
+		it(`lets it through, sent the same way, when nothing ended meanwhile: ${c.shape}`, async () => {
+			const s = scene();
+			const res = await sendAround(c.method, c.path(s), { session: s.session }, c.body(s), () => {});
+			expect(res.status).toBe(c.allowed);
+		});
+	}
+
+	/** The deletes and the restore, which have no body to hold, and the upload, whose form body `sendAround` cannot hold, in an order each can run in. */
+	const UNHELD = (s: Scene, archived: number, attachment: number): [Method, string][] => [
+		['DELETE', `/api/cards/${s.card.id}/comments/${s.comment.id}`],
+		['DELETE', `/api/cards/${s.card.id}/attachments/${attachment}`],
+		['DELETE', `/api/subtasks/${s.subtask.id}`],
+		['DELETE', `/api/categories/${s.category.id}`],
+		['DELETE', `/api/columns/${s.cols['On Hold'].id}`],
+		['POST', `/api/cards/${archived}/restore`],
+		['DELETE', `/api/cards/${s.other.id}?permanent=true`],
+		['DELETE', `/api/cards/${s.card.id}`]
+	];
+	const upload = () => {
+		const form = new FormData();
+		form.append('file', new File(['written late'], 'late.txt', { type: 'text/plain' }));
+		return form;
+	};
+
+	it('refuses 401, and changes nothing, a delete, a restore or an upload whose session has ended', async () => {
+		const s = scene();
+		const archived = makeCard(s.cols['To Do'], { archivedAt: stamp() });
+		const attachment = makeAttachment(s.card, { uploadedBy: s.owner });
+		const credential = { kind: 'session' as const, token: s.session };
+		db.delete(sessions).run();
+		const before = snapshotDb();
+
+		for (const [method, path] of UNHELD(s, archived.id, attachment.id)) {
+			const res = await api(method, path, { user: s.owner, credential });
+			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
+		}
+		// The upload asks before it reads the file, as the gate read the
+		// caller, and writes the file; the writeAs then refuses, and the file
+		// is removed again (decision 7). Only the attachment's own is left.
+		const uploaded = await api('POST', `/api/cards/${s.card.id}/attachments`, { user: s.owner, credential, body: upload() });
+		expect(uploaded.status).toBe(401);
+		expect(uploaded.body).toEqual({ message: 'Not authenticated' });
+		expect(readdirSync(cardDir(s.card.id))).toEqual([attachment.filename]);
+
+		expectUnchanged(before);
+	});
+
+	it('lets each of them through when the session is still open', async () => {
+		const s = scene();
+		const archived = makeCard(s.cols['To Do'], { archivedAt: stamp() });
+		const attachment = makeAttachment(s.card, { uploadedBy: s.owner });
+		const credential = { kind: 'session' as const, token: s.session };
+
+		const uploaded = await api('POST', `/api/cards/${s.card.id}/attachments`, { user: s.owner, credential, body: upload() });
+		expect(uploaded.status).toBe(200);
+		for (const [method, path] of UNHELD(s, archived.id, attachment.id)) {
+			const res = await api(method, path, { user: s.owner, credential });
+			expect({ path, status: res.status }).toEqual({ path, status: 200 });
+		}
+	});
+
+	it('decides with the account as it is now: an administrator lowered to user, on a board they are not on, is refused 403, and nothing written', async () => {
+		const s = scene();
+		const admin = makeUser({ username: 'was-admin', role: 'admin' });
+		const credential = { kind: 'session' as const, token: makeSession(admin) };
+		db.update(users).set({ role: 'user' }).where(eq(users.id, admin.id)).run();
+		const before = snapshotDb();
+
+		const changed = await api('PUT', `/api/cards/${s.card.id}`, { user: admin, credential, body: { title: 'By an administrator' } });
+		expect(changed.status).toBe(403);
+		expect(changed.body).toEqual({ message: 'No edit access to this board' });
+
+		const shared = await api('POST', '/api/categories', { user: admin, credential, body: { name: 'Shared' } });
+		expect(shared.status).toBe(403);
+		expect(shared.body).toEqual({ message: 'Only an administrator can create a category that belongs to no board' });
+
+		const removed = await api('DELETE', `/api/categories/${s.category.id}`, { user: admin, credential });
+		expect(removed.status).toBe(403);
+		expect(removed.body).toEqual({ message: 'No edit access to this board' });
+
+		expectUnchanged(before);
+	});
+});
+
+// ─── Boards, groupings, teams, goals and templates (slice 2253-3) ───────────
+
+describe('the boards, groupings, teams, goals and templates ask at the write (slice 2253-3)', () => {
+	/**
+	 * A board its owner owns, filed under a grouping, with a card on it, a
+	 * goal, a template shared on no board, a team the owner owns, someone the
+	 * board is shared with and someone it is not, and the owner signed in by a
+	 * session. Mail is set up, so that a share sends its mail.
+	 */
+	const scene = () => {
+		const owner = makeUser({ username: 'owner' });
+		const guest = makeUser({ username: 'guest' });
+		const member = makeUser({ username: 'member' });
+		const { board, cols } = makeBoard({ owner, name: 'Owned' });
+		const grouping = db.insert(boardCategories).values({ name: 'Grouped' }).returning().get();
+		db.update(boards).set({ categoryId: grouping.id }).where(eq(boards.id, board.id)).run();
+		db.insert(boardMembers).values({ boardId: board.id, userId: member.id, role: 'viewer' }).run();
+		const card = makeCard(cols['To Do']);
+		const milestone = makeMilestone({ board, createdBy: owner });
+		const template = db.insert(cardTemplates).values({ name: 'Shared', createdBy: owner.id }).returning().get();
+		const team = makeTeam([member]);
+		db.insert(teamMembers).values({ teamId: team.id, userId: owner.id, role: 'owner' }).run();
+		makeSmtp();
+		return { owner, guest, member, board, cols, grouping, card, milestone, template, team, session: makeSession(owner) };
+	};
+	type Scene = ReturnType<typeof scene>;
+	type Method = 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+	/**
+	 * One request of each shape the slice moved that carries a JSON body, what
+	 * it answers when nothing ends meanwhile, and the mail it then sends.
+	 */
+	const HELD: { shape: string; method: Method; path: (s: Scene) => string; body: (s: Scene) => unknown; allowed: number; mails?: number }[] = [
+		{
+			shape: 'a create whose owner is the caller (POST /api/boards)',
+			method: 'POST',
+			path: () => '/api/boards',
+			body: () => ({ name: 'Late' }),
+			allowed: 201
+		},
+		{
+			shape: 'a change by the id in its path (PUT /api/boards/:id)',
+			method: 'PUT',
+			path: (s) => `/api/boards/${s.board.id}`,
+			body: () => ({ name: 'Renamed late' }),
+			allowed: 200
+		},
+		{
+			shape: 'a share whose mail is queued until the commit (POST /api/boards/:id/share)',
+			method: 'POST',
+			path: (s) => `/api/boards/${s.board.id}/share`,
+			body: (s) => ({ type: 'user', targetId: s.guest.id, role: 'editor' }),
+			allowed: 200,
+			mails: 1
+		},
+		{
+			shape: 'a delete with a body (DELETE /api/boards/:id/share)',
+			method: 'DELETE',
+			path: (s) => `/api/boards/${s.board.id}/share`,
+			body: (s) => ({ type: 'user', targetId: s.member.id }),
+			allowed: 200
+		},
+		{
+			shape: 'a create that had no transaction (POST /api/board-categories)',
+			method: 'POST',
+			path: () => '/api/board-categories',
+			body: () => ({ name: 'Late' }),
+			allowed: 201
+		},
+		{
+			shape: 'an answer made once it has committed (POST /api/teams/:id/members/:userId)',
+			method: 'POST',
+			path: (s) => `/api/teams/${s.team.id}/members/${s.guest.id}`,
+			body: () => ({ role: 'member' }),
+			allowed: 201
+		},
+		{
+			shape: "a service's own transaction, a savepoint inside writeAs, and the live update after (PATCH /api/milestones/:id)",
+			method: 'PATCH',
+			path: (s) => `/api/milestones/${s.milestone.id}`,
+			body: (s) => ({ cardId: s.card.id }),
+			allowed: 200
+		}
+	];
+
+	for (const c of HELD) {
+		it(`refuses 401, writes nothing and sends nothing, when the session ends while the body arrives: ${c.shape}`, async () => {
+			const s = scene();
+			const sent = effects();
+			let before: DbSnapshot | undefined;
+
+			try {
+				const res = await sendAround(c.method, c.path(s), { session: s.session }, c.body(s), () => {
+					db.delete(sessions).where(eq(sessions.id, s.session)).run();
+					before = snapshotDb();
+				});
+				await sent.settle();
+
+				expect(res).toEqual({ status: 401, body: { message: 'Not authenticated' } });
+				expect(before).toBeDefined();
+				expectUnchanged(before!);
+				expect(sent.emails).toEqual([]);
+				expect(sent.events).toEqual([]);
+			} finally {
+				sent.restore();
+			}
+		});
+
+		it(`lets it through, sent the same way, when nothing ended meanwhile: ${c.shape}`, async () => {
+			const s = scene();
+			const sent = effects();
+			try {
+				const res = await sendAround(c.method, c.path(s), { session: s.session }, c.body(s), () => {});
+				await sent.settle();
+				expect(res.status).toBe(c.allowed);
+				expect(sent.emails).toHaveLength(c.mails ?? 0);
+			} finally {
+				sent.restore();
+			}
+		});
+	}
+
+	/** The requests with no body, in an order each can run in: the board last. */
+	const UNHELD = (s: Scene): [Method, string][] => [
+		['POST', `/api/boards/${s.board.id}/favourite`],
+		['DELETE', `/api/teams/${s.team.id}/members/${s.member.id}`],
+		['DELETE', `/api/teams/${s.team.id}`],
+		['DELETE', `/api/board-categories/${s.grouping.id}`],
+		['DELETE', `/api/templates/${s.template.id}`],
+		['DELETE', `/api/milestones/${s.milestone.id}`],
+		['DELETE', `/api/boards/${s.board.id}`]
+	];
+
+	it('refuses 401, and changes nothing, a request with no body whose session has ended', async () => {
+		const s = scene();
+		const credential = { kind: 'session' as const, token: s.session };
+		db.delete(sessions).run();
+		const before = snapshotDb();
+
+		for (const [method, path] of UNHELD(s)) {
+			const res = await api(method, path, { user: s.owner, credential });
+			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
+		}
+
+		expectUnchanged(before);
+	});
+
+	it('lets each of them through when the session is still open', async () => {
+		const s = scene();
+		const credential = { kind: 'session' as const, token: s.session };
+
+		for (const [method, path] of UNHELD(s)) {
+			const res = await api(method, path, { user: s.owner, credential });
+			expect({ path, status: res.status }).toEqual({ path, status: 200 });
+		}
+	});
+
+	it('decides with the account as it is now: an administrator lowered to user, on nothing of the owner\'s, is refused as a user is, and nothing written', async () => {
+		const s = scene();
+		const admin = makeUser({ username: 'was-admin', role: 'admin' });
+		const credential = { kind: 'session' as const, token: makeSession(admin) };
+		db.update(users).set({ role: 'user' }).where(eq(users.id, admin.id)).run();
+		const before = snapshotDb();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		const refusals: [Method, string, unknown, string][] = [
+			['POST', `/api/boards/${s.board.id}/share`, { type: 'user', targetId: s.guest.id }, 'Only board owners and admins can share boards'],
+			['PATCH', `/api/boards/${s.board.id}/share`, { isPublic: true }, 'Only board owners and admins can change visibility'],
+			['DELETE', `/api/boards/${s.board.id}/share`, { type: 'user', targetId: s.member.id }, 'Only board owners and admins can manage sharing'],
+			['POST', `/api/teams/${s.team.id}/members/${s.guest.id}`, {}, 'Forbidden'],
+			['DELETE', `/api/teams/${s.team.id}/members/${s.member.id}`, undefined, 'Forbidden'],
+			['PUT', `/api/board-categories/${s.grouping.id}`, { name: 'Taken over' }, 'This category groups boards you cannot edit'],
+			['DELETE', `/api/board-categories/${s.grouping.id}`, undefined, 'This category groups boards you cannot edit'],
+			['DELETE', `/api/templates/${s.template.id}`, undefined, 'You can only delete your own templates'],
+			['DELETE', `/api/boards/${s.board.id}`, undefined, 'Only board owners and admins can delete boards']
+		];
+		for (const [method, path, body, message] of refusals) {
+			const res = await api(method, path, { user: admin, credential, ...(body === undefined ? {} : { body }) });
+			expect({ method, path, status: res.status, body: res.body }).toEqual({ method, path, status: 403, body: { message } });
+		}
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(sent.emails).toEqual([]);
+	});
+});
+
+// ─── Accounts, users, requests and reports (slice 2253-4) ───────────────────
+
+describe('the accounts, users, requests and reports ask at the write (slice 2253-4)', () => {
+	const PASSWORD = 'the owner password';
+	const NEW_PASSWORD = 'a long new password';
+	const PERIOD = { periodStart: '2026-10-01', periodEnd: '2026-10-08' };
+
+	/**
+	 * An owner with a board and a password that can be checked, an
+	 * administrator, the superadmin, an ordinary member and a second
+	 * administrator, a request addressed to the owner and one nobody has
+	 * confirmed yet, an API key of the owner's, and a session each for the
+	 * owner and the administrator. Mail and the App URL are set up, so that
+	 * the mails, the invite and the confirmation link can all be made.
+	 */
+	const scene = () => {
+		resetAllRateLimits();
+		const owner = makeUser({ username: 'owner' });
+		db.update(users).set({ passwordHash: hashSync(PASSWORD, 4) }).where(eq(users.id, owner.id)).run();
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const chief = makeUser({ username: 'chief', role: 'superadmin' });
+		const member = makeUser({ username: 'member' });
+		const colleague = makeUser({ username: 'colleague', role: 'admin' });
+		const { board } = makeBoard({ owner, name: 'Reported' });
+		const asked = (status: string) =>
+			db
+				.insert(taskRequests)
+				.values({
+					targetType: 'user',
+					targetId: owner.id,
+					requesterName: 'Rita',
+					requesterEmail: 'rita@example.test',
+					title: 'Asked',
+					status,
+					accessToken: newRequestToken()
+				})
+				.returning()
+				.get();
+		const request = asked('pending');
+		const unconfirmed = asked('unverified');
+		const key = makeApiKey(owner);
+		makeSmtp();
+		db.insert(settings).values({ key: 'app_url', value: 'https://dumpfire.example.test' }).run();
+		return {
+			owner,
+			admin,
+			chief,
+			member,
+			colleague,
+			board,
+			request,
+			unconfirmed,
+			key,
+			sessions: { owner: makeSession(owner), admin: makeSession(admin) }
+		};
+	};
+	type Scene = ReturnType<typeof scene>;
+	type Method = 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+	type Who = 'owner' | 'admin';
+
+	/**
+	 * One request of each shape the slice moved that carries a JSON body, by
+	 * whom, what it answers when nothing ends meanwhile, and the mail it then
+	 * sends (not counted for the new link, which is mailed after the answer).
+	 */
+	const HELD: { shape: string; method: Method; path: (s: Scene) => string; body: (s: Scene) => unknown; who: Who; allowed: number; mails?: number }[] = [
+		{
+			shape: "a change to the caller's own account (PUT /api/account/emoji)",
+			method: 'PUT',
+			path: () => '/api/account/emoji',
+			body: () => ({ emoji: '🦊' }),
+			who: 'owner',
+			allowed: 200,
+			mails: 0
+		},
+		{
+			shape: 'a key made with the current password, refused before the password is checked (POST /api/account/api-keys)',
+			method: 'POST',
+			path: () => '/api/account/api-keys',
+			body: () => ({ name: 'Late', password: PASSWORD }),
+			who: 'owner',
+			allowed: 201,
+			mails: 0
+		},
+		{
+			shape: 'an address changed with the current password (PUT /api/account/email)',
+			method: 'PUT',
+			path: () => '/api/account/email',
+			body: () => ({ newEmail: 'moved@example.test', password: PASSWORD }),
+			who: 'owner',
+			allowed: 200,
+			mails: 0
+		},
+		{
+			shape: 'an account made, its hash awaited between two checks (POST /api/users)',
+			method: 'POST',
+			path: () => '/api/users',
+			body: () => ({ username: 'late', email: 'late@example.test', password: NEW_PASSWORD }),
+			who: 'admin',
+			allowed: 201,
+			mails: 0
+		},
+		{
+			shape: 'another account changed (PUT /api/users/:id)',
+			method: 'PUT',
+			path: (s) => `/api/users/${s.member.id}`,
+			body: () => ({ emoji: '🦊' }),
+			who: 'admin',
+			allowed: 200,
+			mails: 0
+		},
+		{
+			shape: "another account's password set, its hash awaited between two checks (PUT /api/users/:id/password)",
+			method: 'PUT',
+			path: (s) => `/api/users/${s.member.id}/password`,
+			body: () => ({ password: NEW_PASSWORD }),
+			who: 'admin',
+			allowed: 200,
+			mails: 0
+		},
+		{
+			shape: 'the public form, signed in (POST /api/requests)',
+			method: 'POST',
+			path: () => '/api/requests',
+			body: (s) => ({ title: 'Late', targetType: 'user', targetId: s.member.id }),
+			who: 'owner',
+			allowed: 201,
+			mails: 1
+		},
+		{
+			shape: 'a request answered, its mail queued until the commit (PATCH /api/requests/:id)',
+			method: 'PATCH',
+			path: (s) => `/api/requests/${s.request.id}`,
+			body: () => ({ action: 'reject' }),
+			who: 'owner',
+			allowed: 200,
+			mails: 1
+		},
+		{
+			shape: 'a reply from the team, which had no transaction (POST /api/requests/:id/messages)',
+			method: 'POST',
+			path: (s) => `/api/requests/${s.request.id}/messages`,
+			body: () => ({ message: 'Late' }),
+			who: 'owner',
+			allowed: 200,
+			mails: 1
+		},
+		{
+			shape: 'a confirmation link followed by someone signed in, which had no transaction (POST /api/requests/:id/confirm)',
+			method: 'POST',
+			path: (s) => `/api/requests/${s.unconfirmed.id}/confirm`,
+			body: (s) => ({ token: s.unconfirmed.accessToken }),
+			who: 'owner',
+			allowed: 200,
+			mails: 1
+		},
+		{
+			shape: 'a new link asked for by someone signed in, which writes nothing (POST /api/requests/:id/link)',
+			method: 'POST',
+			path: (s) => `/api/requests/${s.request.id}/link`,
+			body: () => ({ email: 'rita@example.test' }),
+			who: 'owner',
+			allowed: 202
+		},
+		{
+			shape: 'a report built after its body, which only reads (POST /api/reports)',
+			method: 'POST',
+			path: () => '/api/reports',
+			body: (s) => ({ scope: 'board', scopeId: s.board.id, ...PERIOD }),
+			who: 'owner',
+			allowed: 200,
+			mails: 0
+		},
+		{
+			shape: 'a report mailed, asked after its body and again before it sends (POST /api/reports/email)',
+			method: 'POST',
+			path: () => '/api/reports/email',
+			body: (s) => ({ scope: 'board', scopeId: s.board.id, ...PERIOD, recipients: ['a@example.test'] }),
+			who: 'owner',
+			allowed: 200,
+			mails: 1
+		}
+	];
+
+	for (const c of HELD) {
+		it(`refuses 401, writes nothing and sends nothing, when the session ends while the body arrives: ${c.shape}`, { timeout: 30_000 }, async () => {
+			const s = scene();
+			const session = s.sessions[c.who];
+			const sent = effects();
+			let before: DbSnapshot | undefined;
+
+			try {
+				const res = await sendAround(c.method, c.path(s), { session }, c.body(s), () => {
+					db.delete(sessions).where(eq(sessions.id, session)).run();
+					before = snapshotDb();
+				});
+				await sent.settle();
+
+				expect(res).toEqual({ status: 401, body: { message: 'Not authenticated' } });
+				expect(before).toBeDefined();
+				expectUnchanged(before!);
+				expect(sent.emails).toEqual([]);
+			} finally {
+				sent.restore();
+			}
+		});
+
+		it(`lets it through, sent the same way, when nothing ended meanwhile: ${c.shape}`, { timeout: 30_000 }, async () => {
+			const s = scene();
+			const sent = effects();
+			try {
+				const res = await sendAround(c.method, c.path(s), { session: s.sessions[c.who] }, c.body(s), () => {});
+				await sent.settle();
+				expect(res.status).toBe(c.allowed);
+				if (c.mails !== undefined) expect(sent.emails).toHaveLength(c.mails);
+			} finally {
+				sent.restore();
+			}
+		});
+	}
+
+	/** The requests with no body, by whom, in an order each can run in: the member's account last. */
+	const UNHELD = (s: Scene): [Method, string, Who][] => [
+		['DELETE', `/api/account/api-keys/${keyRow(s.key).id}`, 'owner'],
+		['POST', `/api/users/${s.member.id}/invite`, 'admin'],
+		['DELETE', `/api/requests/${s.request.id}`, 'admin'],
+		['DELETE', `/api/users/${s.member.id}`, 'admin']
+	];
+	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: { kind: 'session' as const, token: s.sessions[who] } });
+
+	it('refuses 401, and changes nothing and sends nothing, a request with no body whose session has ended', async () => {
+		const s = scene();
+		const requests = UNHELD(s);
+		db.delete(sessions).run();
+		const before = snapshotDb();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		for (const [method, path, who] of requests) {
+			const res = await api(method, path, asWho(s, who));
+			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
+		}
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(sent.emails).toEqual([]);
+	});
+
+	it('lets each of them through when the session is still open', async () => {
+		const s = scene();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		for (const [method, path, who] of UNHELD(s)) {
+			const res = await api(method, path, asWho(s, who));
+			expect({ path, status: res.status }).toEqual({ path, status: 200 });
+		}
+		await sent.settle();
+		// The invite's.
+		expect(sent.emails).toHaveLength(1);
+	});
+
+	it('lets the password change through: its writes ask before the session it came by ends, and nothing in it asks after', { timeout: 30_000 }, async () => {
+		const s = scene();
+
+		const res = await sendAround('PUT', '/api/account/password', { session: s.sessions.owner }, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD }, () => {});
+
+		expect(res.status).toBe(200);
+		expect(res.body).toMatchObject({ success: true });
+		// The session it came by has ended, and one new session replaces it.
+		const left = db.select().from(sessions).where(eq(sessions.userId, s.owner.id)).all();
+		expect(left.map((row) => row.id)).not.toContain(s.sessions.owner);
+		expect(left).toHaveLength(1);
+		// Which is why nothing may ask after the change: a writeAs with the
+		// session the request came by is refused now.
+		expect(outcome(() => writeAs(sessionLocals(s.owner, s.sessions.owner), (caller) => caller))).toEqual({
+			status: 401,
+			message: 'Not authenticated'
+		});
+	});
+
+	it('refuses 401, and changes no password, when the session ends while the body of a password change arrives', { timeout: 30_000 }, async () => {
+		const s = scene();
+		let before: DbSnapshot | undefined;
+
+		const res = await sendAround('PUT', '/api/account/password', { session: s.sessions.owner }, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD }, () => {
+			db.delete(sessions).where(eq(sessions.id, s.sessions.owner)).run();
+			before = snapshotDb();
+		});
+
+		expect(res).toEqual({ status: 401, body: { message: 'Not authenticated' } });
+		expectUnchanged(before!);
+	});
+
+	it('refuses 401, in the words for a key, a write handed an API key revoked meanwhile, and writes nothing', async () => {
+		const s = scene();
+		// The internal routes are reached with a session; a key reaches the
+		// handler only through api(), but writeAs reads either credential alike.
+		const credential = { kind: 'api key' as const, id: keyRow(s.key).id };
+		db.delete(apiKeys).run();
+		const before = snapshotDb();
+
+		const writes: [Method, string, unknown][] = [
+			['PUT', '/api/account/emoji', { emoji: '🦊' }],
+			['PUT', '/api/account/notifications', { email_mentions: false }],
+			['POST', '/api/reports', { scope: 'board', scopeId: s.board.id, ...PERIOD }]
+		];
+		for (const [method, path, body] of writes) {
+			const res = await api(method, path, { user: s.owner, credential, body });
+			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Invalid or expired API key' } });
+		}
+
+		expectUnchanged(before);
+	});
+
+	/** The public request routes, by a caller with no session, each answering as for one. */
+	const PUBLIC = (s: Scene): [string, Record<string, unknown>, number, Record<string, string>?][] => [
+		['/api/requests', { title: 'From outside', targetType: 'user', targetId: s.owner.id, requesterEmail: 'out@example.test' }, 201, { 'x-form-token': issueFormToken() }],
+		[`/api/requests/${s.unconfirmed.id}/confirm`, { token: s.unconfirmed.accessToken }, 200],
+		[`/api/requests/${s.request.id}/link`, { email: 'rita@example.test' }, 202],
+		[`/api/requests/${s.request.id}/messages`, { senderType: 'requester', token: s.request.accessToken, message: 'From outside' }, 200]
+	];
+
+	it('lets a caller with no session through the public request routes, handed null (decision 3)', async () => {
+		const s = scene();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		for (const [path, body, allowed, headers] of PUBLIC(s)) {
+			const res = await api('POST', path, { user: null, credential: null, body, ...(headers ? { headers } : {}) });
+			expect({ path, status: res.status }).toEqual({ path, status: allowed });
+		}
+		await sent.settle();
+	});
+
+	it('refuses 401 on the public request routes a caller whose session ended, never taking them for anonymous (N5), and writes nothing', async () => {
+		const s = scene();
+		const requests = PUBLIC(s);
+		db.delete(sessions).run();
+		const before = snapshotDb();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		for (const [path, body, , headers] of requests) {
+			const res = await api('POST', path, { ...asWho(s, 'owner'), body, ...(headers ? { headers } : {}) });
+			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
+		}
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(sent.emails).toEqual([]);
+	});
+
+	it("decides with the account as it is now: an administrator lowered to user is refused as a user is, and the superadmin lowered to administrator as an administrator is; nothing written, nothing sent", async () => {
+		const s = scene();
+		const lowered = (user: SessionUser, to: string) => {
+			const credential = { kind: 'session' as const, token: makeSession(user) };
+			db.update(users).set({ role: to }).where(eq(users.id, user.id)).run();
+			return { user, credential };
+		};
+		const wasAdmin = lowered(s.admin, 'user');
+		const wasChief = lowered(s.chief, 'admin');
+		const before = snapshotDb();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		const ALL = 'Only admins can generate all-boards reports';
+		const refusals: [typeof wasAdmin, Method, string, unknown, string][] = [
+			[wasAdmin, 'POST', '/api/users', { username: 'made', email: 'made@example.test', password: NEW_PASSWORD }, 'Forbidden'],
+			[wasAdmin, 'PUT', `/api/users/${s.member.id}`, { emoji: '🦊' }, 'Forbidden'],
+			[wasAdmin, 'PUT', `/api/users/${s.member.id}/password`, { password: NEW_PASSWORD }, 'Forbidden'],
+			[wasAdmin, 'POST', `/api/users/${s.member.id}/invite`, undefined, 'Forbidden'],
+			[wasAdmin, 'DELETE', `/api/users/${s.member.id}`, undefined, 'Forbidden'],
+			[wasAdmin, 'DELETE', `/api/requests/${s.request.id}`, undefined, 'Admin only'],
+			[wasAdmin, 'POST', '/api/reports', { scope: 'all', ...PERIOD }, ALL],
+			[wasAdmin, 'POST', '/api/reports/email', { scope: 'all', ...PERIOD, recipients: ['a@example.test'] }, ALL],
+			[wasChief, 'POST', '/api/users', { username: 'made', email: 'made@example.test', password: NEW_PASSWORD, role: 'admin' }, 'Only superadmin can create admin users'],
+			[wasChief, 'PUT', `/api/users/${s.colleague.id}`, { emoji: '🦊' }, 'Only superadmin can modify admin users'],
+			[wasChief, 'PUT', `/api/users/${s.colleague.id}/password`, { password: NEW_PASSWORD }, "Only superadmin can reset an admin's password"],
+			[wasChief, 'POST', `/api/users/${s.colleague.id}/invite`, undefined, "Only superadmin can reset an admin's password, which an invite does"],
+			[wasChief, 'DELETE', `/api/users/${s.colleague.id}`, undefined, 'Only superadmin can delete admin users']
+		];
+		for (const [who, method, path, body, message] of refusals) {
+			const res = await api(method, path, { ...who, ...(body === undefined ? {} : { body }) });
+			expect({ who: who.user.username, method, path, status: res.status, body: res.body }).toEqual({
+				who: who.user.username,
+				method,
+				path,
+				status: 403,
+				body: { message }
+			});
+		}
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(sent.emails).toEqual([]);
+	});
+});
+
 // ─── No credential at all (R10) ─────────────────────────────────────────────
 
 describe('a write that reaches its handler with no credential recorded by the gate', () => {
@@ -553,12 +1357,11 @@ describe('the gate records a credential, or null, on every request it hands on',
 describe("the report mail asks again after its PDF is made, before it sends (R1)", () => {
 	/**
 	 * `POST /api/reports/email` builds its PDF with an await, and only then
-	 * sends: a session ended while the PDF was made must send no mail. Slice
-	 * 2253-4 moves the route to `stillCallerNow` with a second check before
-	 * the send; until then this is pinned as a known fault, and fails the
-	 * suite the day that slice puts it right, when the `.fails` comes off.
+	 * sends: a session ended while the PDF was made must send no mail. The
+	 * route asks `stillCallerNow` after its body and again before the send
+	 * (slice 2253-4); this was pinned with `it.fails` until it did.
 	 */
-	it.fails('sends no mail, and answers 401, when the session ends after the PDF is made', { timeout: 30_000 }, async () => {
+	it('sends no mail, and answers 401, when the session ends after the PDF is made', { timeout: 30_000 }, async () => {
 		const owner = makeUser({ username: 'owner' });
 		const { board } = makeBoard({ owner, name: 'Reported' });
 		const token = makeSession(owner);
@@ -580,5 +1383,117 @@ describe("the report mail asks again after its PDF is made, before it sends (R1)
 		expect(res.status).toBe(401);
 		expect(res.body).toEqual({ message: 'Not authenticated' });
 		expect(sent.emails).toEqual([]);
+	});
+
+	it('sends the mail when the session is still open after the PDF is made (the control)', { timeout: 30_000 }, async () => {
+		const owner = makeUser({ username: 'owner' });
+		const { board } = makeBoard({ owner, name: 'Reported' });
+		const token = makeSession(owner);
+		makeSmtp();
+		const sent = effects();
+
+		let res;
+		try {
+			res = await api('POST', '/api/reports/email', {
+				user: owner,
+				credential: { kind: 'session', token },
+				body: { scope: 'board', scopeId: board.id, periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients: ['a@example.test'] }
+			});
+			await sent.settle();
+		} finally {
+			sent.restore();
+		}
+
+		expect(res.status).toBe(200);
+		expect(sent.emails).toHaveLength(1);
+	});
+
+	/**
+	 * The second check decides again, on the account as it is once the PDF is
+	 * made, everything the mail relies on: an all-boards report by an
+	 * administrator, a board's by someone who can open it, a grouping's by
+	 * someone who can open every board in it that the PDF holds. Each is
+	 * taken away after the PDF is made, as a role change or a removal
+	 * committed meanwhile would; then the same with nothing taken (the
+	 * controls).
+	 */
+	const reportMail = async (opts: {
+		reader: SessionUser;
+		body: Record<string, unknown>;
+		meanwhile?: () => void;
+	}) => {
+		const token = makeSession(opts.reader);
+		// Mail set up once a test, whichever call comes first.
+		if (!db.select().from(settings).where(eq(settings.key, 'smtp_host')).get()) makeSmtp();
+		const sent = effects();
+		pdf.afterMade = opts.meanwhile ?? null;
+		try {
+			const res = await api('POST', '/api/reports/email', {
+				user: opts.reader,
+				credential: { kind: 'session', token },
+				body: { periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients: ['a@example.test'], ...opts.body }
+			});
+			await sent.settle();
+			return { status: res.status, body: res.body, mails: sent.emails.length };
+		} finally {
+			sent.restore();
+		}
+	};
+	/** A board owned by someone else, filed under a grouping, that `reader` views as a member. */
+	const viewed = (reader: SessionUser) => {
+		const owner = makeUser({ username: 'owner' });
+		const { board } = makeBoard({ owner, name: 'Viewed' });
+		const grouping = db.insert(boardCategories).values({ name: 'Grouped' }).returning().get();
+		db.update(boards).set({ categoryId: grouping.id }).where(eq(boards.id, board.id)).run();
+		db.insert(boardMembers).values({ boardId: board.id, userId: reader.id, role: 'viewer' }).run();
+		const takenOff = () => void db.delete(boardMembers).where(eq(boardMembers.userId, reader.id)).run();
+		return { board, grouping, takenOff };
+	};
+	const NO_ACCESS = { message: 'Failed to generate report or no access' };
+
+	it('sends no all-boards report, and answers 403, when the administrator is made a user after the PDF is made', { timeout: 30_000 }, async () => {
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		makeBoard({ owner: admin, name: 'Any' });
+
+		const res = await reportMail({
+			reader: admin,
+			body: { scope: 'all' },
+			meanwhile: () => void db.update(users).set({ role: 'user' }).where(eq(users.id, admin.id)).run()
+		});
+
+		expect(res).toEqual({ status: 403, body: { message: 'Only admins can generate all-boards reports' }, mails: 0 });
+	});
+
+	it("sends no board's report, and answers 403, when the reader is taken off the board after the PDF is made", { timeout: 30_000 }, async () => {
+		const reader = makeUser({ username: 'reader' });
+		const { board, takenOff } = viewed(reader);
+
+		const res = await reportMail({ reader, body: { scope: 'board', scopeId: board.id }, meanwhile: takenOff });
+
+		expect(res).toEqual({ status: 403, body: NO_ACCESS, mails: 0 });
+	});
+
+	it("sends no grouping's report, and answers 403, when the reader is taken off a board in it after the PDF is made", { timeout: 30_000 }, async () => {
+		const reader = makeUser({ username: 'reader' });
+		const { grouping, takenOff } = viewed(reader);
+		// A second board in the grouping that the reader keeps: the PDF still
+		// holds the one they lost.
+		const { board: kept } = makeBoard({ owner: reader, name: 'Kept' });
+		db.update(boards).set({ categoryId: grouping.id }).where(eq(boards.id, kept.id)).run();
+
+		const res = await reportMail({ reader, body: { scope: 'category', scopeId: grouping.id }, meanwhile: takenOff });
+
+		expect(res).toEqual({ status: 403, body: NO_ACCESS, mails: 0 });
+	});
+
+	it('sends each of them when nothing is taken away meanwhile (the controls)', { timeout: 30_000 }, async () => {
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		makeBoard({ owner: admin, name: 'Any' });
+		const reader = makeUser({ username: 'reader' });
+		const { board, grouping } = viewed(reader);
+
+		expect(await reportMail({ reader: admin, body: { scope: 'all' } })).toMatchObject({ status: 200, mails: 1 });
+		expect(await reportMail({ reader, body: { scope: 'board', scopeId: board.id } })).toMatchObject({ status: 200, mails: 1 });
+		expect(await reportMail({ reader, body: { scope: 'category', scopeId: grouping.id } })).toMatchObject({ status: 200, mails: 1 });
 	});
 });

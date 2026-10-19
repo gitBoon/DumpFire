@@ -3,10 +3,10 @@ import { db } from '$lib/server/db';
 import { cardTemplates } from '$lib/server/db/schema';
 import { eq, or, isNull } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
-import { inTransaction } from '$lib/server/db/transaction';
 import { PRIORITIES } from '$lib/server/card-fields';
 import { readBody, readChoice, readId, readIds, readObjects, readQueryId, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** GET — list templates (global + board-specific) */
@@ -53,10 +53,13 @@ export const GET: RequestHandler = async ({ url, locals }) => {
  * priority no rule allows is refused, and the card window says so.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const template = inTransaction(() => {
+	// Asked first: whether the session is still open, and who its account is
+	// now (card 2253).
+	const template = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// A template saved on a board is part of that board. One saved with no
 		// board is shared with everyone and anyone may add to that pool.
 		const boardIdSent = readId(body, 'boardId', { nullable: true, says: 'Invalid board ID' });

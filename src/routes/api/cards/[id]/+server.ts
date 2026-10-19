@@ -1,6 +1,5 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cards, type Card } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
@@ -32,6 +31,7 @@ import {
 	readText
 } from '$lib/server/request-body';
 import { stamp } from '$lib/timestamps';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -64,7 +64,7 @@ import type { RequestHandler } from './$types';
  * All Tasks to tell the mover, and null otherwise (the review's O3).
  */
 export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const id = pathId(params.id, 'card');
 
 	const body = await readBody(request);
@@ -75,10 +75,12 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 	// commit first, with the other fields and their log entry written after
 	// it, so a failure between the two left a card moved with its edits lost.
 	// The card is read in here and not before the body was awaited: another
-	// request could have changed it in between.
+	// request could have changed it in between. So is the caller: the session
+	// is asked again, and who its account is now (card 2253).
 	let updated: Card & { leftMilestone: { id: number; name: string } | null };
 	try {
-		updated = inTransaction(() => {
+		updated = writeAs(locals, (caller) => {
+			const user = requireUser(caller);
 			// The board comes from the card's own row. A `boardId` in the body is
 			// ignored: it names the board the caller wants to be judged against, which
 			// need not be the one this card is on.
@@ -219,10 +221,12 @@ export const DELETE: RequestHandler = async ({ params, url, locals }) => {
 
 	// One transaction: the card is read and the caller checked in the same one
 	// that archives or deletes it. See $lib/server/deletes.ts for what goes
-	// with a permanent delete; an archive touches nothing but the card.
-	inTransaction(() => {
-		const { boardId } = requireCard(locals.user, id, 'edit');
-		const user = locals.user!;
+	// with a permanent delete; an archive touches nothing but the card. It asks
+	// first whether the session is still open, and who its account is now
+	// (card 2253).
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
+		const { boardId } = requireCard(user, id, 'edit');
 
 		if (permanent) deleteCard(id, user, 'ui');
 		else archiveCard(id, user, 'ui');

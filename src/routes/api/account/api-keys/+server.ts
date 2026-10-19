@@ -6,6 +6,8 @@ import { eq } from 'drizzle-orm';
 import { SESSION_COOKIE_NAME, checkCurrentPassword, generateApiKey, whilePasswordHolds } from '$lib/server/auth';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readText, readTimestamp } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
@@ -42,8 +44,8 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	// The wrong passwords are counted against the session that sent them,
 	// which only a session reaches this route with.
 	const session = cookies.get(SESSION_COOKIE_NAME);
-	if (!locals.user || !session) throw error(401, 'Not authenticated');
-	const userId = locals.user.id;
+	requireUser(locals.user);
+	if (!session) throw error(401, 'Not authenticated');
 
 	// Every field is read before a password is checked or counted (card 2117).
 	const body = await readBody(request);
@@ -62,7 +64,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	const expiresAt = readTimestamp(body, 'expiresAt', { future: true, nullable: true }) ?? null;
 
 	/** Limit to 10 keys per user. */
-	const requireRoom = () => {
+	const requireRoom = (userId: number) => {
 		const existing = db.select({ id: apiKeys.id })
 			.from(apiKeys)
 			.where(eq(apiKeys.userId, userId))
@@ -72,19 +74,25 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 		}
 	};
 
+	// Who is asking, as their account is now, once the body has come: a session
+	// that ended while it arrived is refused here, before a password is checked
+	// or counted (card 2253). It decides nothing: the transaction that adds the
+	// key asks again.
+	const me = writeAs(locals, (caller) => requireUser(caller));
+
 	// Looked at first so that a request that will be refused for the limit is
 	// not made to wait for a password check, and counted again in the
 	// transaction that adds the key.
-	requireRoom();
+	requireRoom(me.id);
 
 	// Checking a password takes about a quarter of a second, on a worker
 	// thread, and is awaited, which a transaction cannot do, so it is checked
 	// out here first. Ten wrong ones in 15 minutes from this session, and it
 	// is refused.
-	const user = db.select().from(users).where(eq(users.id, userId)).get();
+	const user = db.select().from(users).where(eq(users.id, me.id)).get();
 	if (!user) throw error(404, 'User not found');
 	const wrong = () => error(403, 'Password is incorrect');
-	if (!(await checkCurrentPassword(session, userId, password, user.passwordHash, 'POST /api/account/api-keys')).matches) {
+	if (!(await checkCurrentPassword(session, user.id, password, user.passwordHash, 'POST /api/account/api-keys')).matches) {
 		wrong();
 	}
 
@@ -95,27 +103,31 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	// ended, nor past the limit by two requests at once. It runs only while the
 	// stored hash is the one the password was checked against; if the user or
 	// an administrator changed it in between, the password is checked again
-	// against the new one, outside, and not counted again: the same guess.
-	const record = await whilePasswordHolds(userId, password, user.passwordHash, () => {
-		requireRoom();
+	// against the new one, outside, and not counted again: the same guess. In
+	// it, the session is asked again, and the account as it is now adds the
+	// key: the password check was awaited, and a session can end meanwhile.
+	const record = await whilePasswordHolds(user.id, password, user.passwordHash, () =>
+		writeAs(locals, (caller) => {
+			const userId = requireUser(caller).id;
+			requireRoom(userId);
 
-		const row = db.insert(apiKeys)
-			.values({
-				keyHash,
-				keyPrefix,
-				name,
-				userId,
-				expiresAt
-			})
-			.returning()
-			.get();
+			const row = db.insert(apiKeys)
+				.values({
+					keyHash,
+					keyPrefix,
+					name,
+					userId,
+					expiresAt
+				})
+				.returning()
+				.get();
 
-		// The key's id and its user only. Every administrator reads the system
-		// log, and every backup holds it: a key's name and prefix are its
-		// holder's, shown on their own Account page.
-		afterCommit(() => log.info(`API key ${row.id} created by user ${userId}`, { keyId: row.id }, { userId }));
-		return row;
-	}, wrong);
+			// The key's id and its user only. Every administrator reads the system
+			// log, and every backup holds it: a key's name and prefix are its
+			// holder's, shown on their own Account page.
+			afterCommit(() => log.info(`API key ${row.id} created by user ${userId}`, { keyId: row.id }, { userId }));
+			return row;
+		}), wrong);
 
 	return json({
 		id: record.id,

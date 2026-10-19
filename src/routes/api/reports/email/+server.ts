@@ -35,17 +35,26 @@ import {
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import { readBody, readChoice, readEmailList, readId, readTimeZone } from '$lib/server/request-body';
 import { isSmtpConfigured, sendEmailWithAttachment } from '$lib/server/email';
+import { canViewBoard, isAdmin } from '$lib/server/board-access';
+import { requireUser } from '$lib/server/route-guards';
+import { stillCallerNow } from '$lib/server/write-as';
 import { escapeHtml } from '$lib/escape-html';
 import { parseStamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ locals, request }) => {
-	const user = locals.user;
-	if (!user) throw error(401, 'Unauthorized');
+	requireUser(locals.user);
 
 	// Each field by its rule (card 2117), as POST /api/reports reads them. A
 	// scope it did not know was read as every board the caller can see.
 	const body = await readBody(request);
+	// Who is asking, as their account is now, once the body has come: a
+	// session that ended while it arrived is refused, and a role lowered
+	// meanwhile is met below (card 2253). Mail leaves the process, after a PDF
+	// built with an await, which no transaction can hold: asked here, and again
+	// before the first mail is sent.
+	const caller = stillCallerNow(locals);
+	const user = requireUser(caller);
 	const MISSING = 'Missing required fields';
 	const SCOPE = 'Invalid scope. Must be: board, category, or all';
 	const scope = readChoice(body, 'scope', { required: true, from: REPORT_SCOPES, says: { missing: MISSING, type: SCOPE, invalid: SCOPE } });
@@ -87,6 +96,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	let reportData;
 	let scopeName = 'Report';
+	// For a grouping's report, the boards in it the caller can open: what the
+	// PDF holds, asked again of the caller before it is sent.
+	let reported: number[] = [];
 
 	if (scope === 'board') {
 		if (scopeId === null) throw error(400, 'scopeId required');
@@ -98,13 +110,17 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId, timeZone);
 		const cat = db.select().from(boardCategories).where(eq(boardCategories.id, scopeId)).get();
 		scopeName = cat?.name || 'Category';
+		reported = db.select({ id: boards.id }).from(boards).where(eq(boards.categoryId, scopeId)).all()
+			.map((b) => b.id)
+			.filter((id) => canViewBoard(user, id));
 	} else {
 		reportData = generateAllBoardsReport(periodStart, periodEnd, user, statusFilter, assigneeUserId, timeZone);
 		scopeName = 'All Boards';
 	}
 
+	const NO_ACCESS = 'Failed to generate report or no access';
 	if (!reportData) {
-		throw error(403, 'Failed to generate report or no access');
+		throw error(403, NO_ACCESS);
 	}
 
 	// Each send would return false and nothing would leave: said before the
@@ -119,6 +135,23 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	takeReportMail(user, recipients.length, 'email');
 
 	const pdfBuffer = await generateReportPdf(reportData, detailLevel);
+	// Asked again now the PDF is made, with nothing awaited between this and
+	// the first send: a session that ended while it was built sends no mail
+	// (the plan's R1). The allowance taken above stays taken: the attempt was
+	// made. The second and later recipients are sent on this check.
+	const sender = requireUser(stillCallerNow(locals));
+	// And everything the mail relies on, decided again on the account as it is
+	// now, in the same words: the PDF was built for the caller as they were
+	// before its await, and a role lowered or a board taken away meanwhile
+	// sends nothing. An all-boards report by an administrator; a board's by
+	// someone who can open it; a grouping's by someone who can still open every
+	// board in it that the PDF holds. The sub-boards a PDF takes in are not
+	// asked again (N4).
+	if (scope === 'all' && !isAdmin(sender)) {
+		throw error(403, 'Only admins can generate all-boards reports');
+	}
+	if (scope === 'board' && scopeId !== null && !canViewBoard(sender, scopeId)) throw error(403, NO_ACCESS);
+	if (scope === 'category' && !reported.every((id) => canViewBoard(sender, id))) throw error(403, NO_ACCESS);
 	const dateStr = new Date().toISOString().split('T')[0];
 	const filename = `dumpfire-report-${scopeName.toLowerCase().replace(/\s+/g, '-')}-${dateStr}.pdf`;
 	// Each bound is in the stored form, which is UTC (card 2095), so it is read
@@ -146,7 +179,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					<p><strong>${escapeHtml(scopeName)}</strong></p>
 					<p style="color: #64748b;">Period: ${escapeHtml(day(periodStart))} — ${escapeHtml(day(periodEnd))}</p>
 					<p>Please find the attached PDF report.</p>
-					<p style="color: #94a3b8; font-size: 12px; margin-top: 20px;">Sent by ${escapeHtml(user.username)} via DumpFire</p>
+					<p style="color: #94a3b8; font-size: 12px; margin-top: 20px;">Sent by ${escapeHtml(sender.username)} via DumpFire</p>
 				</div>`,
 				{ filename, content: pdfBuffer, contentType: 'application/pdf' }
 			);

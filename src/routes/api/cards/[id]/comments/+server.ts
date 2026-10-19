@@ -1,6 +1,5 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cardComments, cards, columns, users } from '$lib/server/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
@@ -9,6 +8,8 @@ import { linkBaseUrl } from '$lib/server/email';
 import { processMentions } from '$lib/server/mentions';
 import { pathId, readBody, readText } from '$lib/server/request-body';
 import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** GET — List all comments for a card (newest first). */
@@ -54,16 +55,18 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * card was told 400 for an empty comment, where they are refused.
  */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-	const user = locals.user;
+	requireUser(locals.user);
 
 	const cardId = pathId(params.id, 'card');
 	const body = await readBody(request);
 
 	// One transaction: the card is read and the caller checked in the one that
 	// writes the comment and its entry. The mail below is worked out in here
-	// and sent once it is committed.
-	const comment = inTransaction(() => {
+	// and sent once it is committed. It asks first whether the session is
+	// still open, and who its account is now (card 2253): the answer names the
+	// author as they are then.
+	const answer = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const card = db.select({ columnId: cards.columnId, title: cards.title }).from(cards).where(eq(cards.id, cardId)).get();
 		if (!card) throw error(404, 'Card not found');
 
@@ -112,13 +115,13 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 			actorUserId: user.id
 		});
 
-		return comment;
+		// With the author's name and emoji
+		return {
+			...comment,
+			username: user.username,
+			userEmoji: user.emoji || '👤'
+		};
 	});
 
-	// Return with user info
-	return json({
-		...comment,
-		username: user.username,
-		userEmoji: user.emoji || '👤'
-	}, { status: 201 });
+	return json(answer, { status: 201 });
 };

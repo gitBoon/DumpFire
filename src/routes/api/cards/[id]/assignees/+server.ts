@@ -1,6 +1,5 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cardAssignees, users, cards, columns } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
@@ -11,6 +10,7 @@ import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import type { SessionUser } from '$lib/server/auth';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** The card and the board it is on, if the caller may edit that board: 404, then 403. */
@@ -44,21 +44,24 @@ function editableCard(caller: SessionUser, cardId: number): { title: string; boa
  * Activity Log and refreshed no other page.
  */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
-	const caller = requireUser(locals.user);
+	requireUser(locals.user);
 	const cardId = pathId(params.id, 'card');
 	const body = await readBody(request);
 
-	inTransaction(() => {
-		const card = editableCard(caller, cardId);
+	// The session is asked again, and who its account is now, in the
+	// transaction that assigns (card 2253).
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
+		const card = editableCard(user, cardId);
 
 		const userId = readId(body, 'userId', { required: true, says: { missing: 'userId is required' } });
 
 		// Check user exists and has access to this board
-		const user = db.select({ id: users.id, email: users.email, username: users.username, role: users.role })
+		const assignee = db.select({ id: users.id, email: users.email, username: users.username, role: users.role })
 			.from(users).where(eq(users.id, userId)).get();
-		if (!user) throw error(404, 'User not found');
+		if (!assignee) throw error(404, 'User not found');
 
-		const targetRole = getBoardRole(user, card.boardId);
+		const targetRole = getBoardRole(assignee, card.boardId);
 		if (!targetRole) throw error(400, 'User does not have access to this board');
 
 		// Upsert
@@ -71,7 +74,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 
 			// Send notification (fire-and-forget)
 			const baseUrl = linkBaseUrl(url);
-			notifyUserAssigned(card.boardId, cardId, card.title, user.email, user.username, caller.username, baseUrl);
+			notifyUserAssigned(card.boardId, cardId, card.title, assignee.email, assignee.username, user.username, baseUrl);
 		}
 
 		emit(card.boardId, 'update', { type: 'card' });
@@ -81,8 +84,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 				boardId: card.boardId,
 				cardId,
 				action: ACTIONS.assigneeAdded,
-				detail: `Assigned ${user.username} to "${card.title}"`,
-				...actorOf(caller)
+				detail: `Assigned ${assignee.username} to "${card.title}"`,
+				...actorOf(user)
 			});
 		}
 	});
@@ -101,12 +104,13 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
  * pages, as the API's route does (card 2143); a refused one does neither.
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
-	const caller = requireUser(locals.user);
+	requireUser(locals.user);
 	const cardId = pathId(params.id, 'card');
 	const body = await readBody(request);
 
-	inTransaction(() => {
-		const card = editableCard(caller, cardId);
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
+		const card = editableCard(user, cardId);
 
 		const userId = readId(body, 'userId', { required: true, says: { missing: 'userId is required' } });
 
@@ -123,7 +127,7 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 			cardId,
 			action: ACTIONS.assigneeRemoved,
 			detail: `Removed ${removedUser?.username || 'user'} from "${card.title}"`,
-			...actorOf(caller)
+			...actorOf(user)
 		});
 	});
 

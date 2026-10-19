@@ -1,6 +1,5 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { subtasks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
@@ -9,6 +8,7 @@ import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
 import { PRIORITIES } from '$lib/server/card-fields';
 import { SUBTASK_ORDER, nextSubtaskPosition } from '$lib/server/subtask-order';
 import { readBody, readChoice, readColour, readDate, readId, readQueryId, readText } from '$lib/server/request-body';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ url, locals }) => {
@@ -37,12 +37,15 @@ export const GET: RequestHandler = async ({ url, locals }) => {
  * gave "New subtask", and every other field was stored as sent.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
 	// One transaction: the card is read, the caller checked and the position
-	// worked out in the one that creates the subtask and writes its entry.
-	const subtask = inTransaction(() => {
+	// worked out in the one that creates the subtask and writes its entry. It
+	// asks first whether the session is still open, and who its account is now
+	// (card 2253).
+	const subtask = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// The board is the parent card's. A `boardId` in the body is ignored.
 		const cardId = readId(body, 'cardId', { required: true, says: 'Invalid card ID' });
 		const { boardId } = requireCard(user, cardId, 'edit');
