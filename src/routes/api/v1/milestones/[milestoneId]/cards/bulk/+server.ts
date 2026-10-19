@@ -129,7 +129,8 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 	// way left some attached under a contract that says nothing is. It asks
 	// first whether the key or session is still open, and who its account is
 	// now (card 2253): once for the whole batch, so a refusal attaches none.
-	// It hands back who attached them, for the mail sent after the commit.
+	// It hands back the name and id of who attached them, for the mail sent
+	// after the commit: those two fields, never the account (card 2012).
 	const outcome = writeAs(locals, (caller) => {
 		const user = requireUser(caller);
 		let milestone;
@@ -220,7 +221,16 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 		const touched = new Set(toAttach.map((c) => c.boardId));
 		for (const boardId of touched) emit(boardId, 'update', { type: 'card' });
 
-		return { rejected: false as const, milestone, toAttach, alreadyIn, movedFromOtherGoal, touched, wasEmpty, actor: user };
+		return {
+			rejected: false as const,
+			milestone,
+			toAttach,
+			alreadyIn,
+			movedFromOtherGoal,
+			touched,
+			wasEmpty,
+			actor: { username: user.username, id: user.id }
+		};
 	});
 
 	if (outcome.rejected) {

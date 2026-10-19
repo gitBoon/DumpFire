@@ -1,8 +1,6 @@
-import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { recordTokenUsageBatch, getCardTokenTotals, TokenError } from '$lib/server/tokens';
-import { emit } from '$lib/server/events';
-import { readBody, readObjects } from '$lib/server/request-body';
+import { recordTokenBatch } from '$lib/server/token-service';
+import { readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -30,53 +28,45 @@ import type { RequestHandler } from './$types';
  * `entries` is a list of objects: an entry that is not one is
  * `400 entries[<n>] must be an object` (decision 18), where it was a 500. Each
  * entry's fields are held to tokens.ts's own rules, and to nothing stricter.
+ *
+ * The work is `recordTokenBatch` in `$lib/server/token-service` (card 2012),
+ * which reads `entries` once the key or session has been asked for.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
 	const body = await readBody(request);
-	const entries = readObjects(body, 'entries', {
-		required: true,
-		says: { missing: 'entries must be an array', type: 'entries must be an array' }
-	});
-	try {
-		// One transaction around the batch writer, which checks each entry's
-		// card or subtask and the caller's access to it before it writes. With
-		// those reads in the same transaction as the writes, what was checked is
-		// what is written to. It asks first whether the key or session is still
-		// open, and who its account is now (card 2253): once for the whole
-		// batch, so a refusal writes none of it.
-		const result = writeAs(locals, (caller) => {
-			const recorded = recordTokenUsageBatch(requireUser(caller), entries);
-			for (const boardId of recorded.boardIds) emit(boardId, 'update', { type: 'card' });
-			return recorded;
-		});
 
-		if (result.problems.length > 0) {
-			return json(
-				{
-					message: 'Batch rejected — nothing was written',
-					written: 0,
-					problems: result.problems
-				},
-				{ status: 409 }
-			);
-		}
+	// One transaction around the batch writer, which checks each entry's
+	// card or subtask and the caller's access to it before it writes. With
+	// those reads in the same transaction as the writes, what was checked is
+	// what is written to. It asks first whether the key or session is still
+	// open, and who its account is now (card 2253): once for the whole
+	// batch, so a refusal writes none of it. Each board written to is told
+	// once it has committed.
+	const result = writeAs(locals, (caller) => recordTokenBatch(caller, {}, body, { source: 'api' }));
 
-		const totals = getCardTokenTotals(result.cardIds);
+	if (result.problems.length > 0) {
 		return json(
 			{
-				written: result.written,
-				boardsTouched: result.boardIds,
-				cardTotals: result.cardIds.map((id) => ({
-					cardId: id,
-					total: totals.get(id)?.total ?? 0,
-					entries: totals.get(id)?.entries ?? 0
-				}))
+				message: 'Batch rejected — nothing was written',
+				written: 0,
+				problems: result.problems
 			},
-			{ status: 201 }
+			{ status: 409 }
 		);
-	} catch (e) {
-		if (e instanceof TokenError) throw error(e.status, e.message);
-		throw e;
 	}
+
+	const { totals } = result;
+	return json(
+		{
+			written: result.written,
+			boardsTouched: result.boardIds,
+			cardTotals: result.cardIds.map((id) => ({
+				cardId: id,
+				total: totals.get(id)?.total ?? 0,
+				entries: totals.get(id)?.entries ?? 0
+			}))
+		},
+		{ status: 201 }
+	);
 };

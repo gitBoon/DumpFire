@@ -3,8 +3,7 @@
  * planning view calls. Mirrors the v1 route; only the auth differs.
  */
 import { error } from '@sveltejs/kit';
-import { requireMilestone, MilestoneError } from '$lib/server/milestones';
-import { getMilestoneSummary } from '$lib/server/planning';
+import { readMilestoneSummary } from '$lib/server/milestone-service';
 import { generateMilestonePdf, milestonePdfFilename } from '$lib/server/milestone-report';
 import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
@@ -14,18 +13,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	const id = pathId(params.id, 'milestone');
 
-	// Exporting a plan is reading it, so it is governed by the same rule.
-	try {
-		requireMilestone(locals.user, id);
-	} catch (e) {
-		if (e instanceof MilestoneError) throw error(e.status, e.message);
-		throw e;
-	}
-
-	// The caller's own view of the plan: a document they take away holds no
-	// more than the page shows them (card 2129).
-	const summary = getMilestoneSummary(id, locals.user);
-	if (!summary) throw error(404, 'Milestone not found');
+	// Exporting a plan is reading it, so it is governed by the same rule, and
+	// it is the caller's own view of the plan: a document they take away holds
+	// no more than the page shows them (card 2129). `readMilestoneSummary`
+	// (card 2012).
+	const summary = readMilestoneSummary(locals.user, { milestoneId: id }, {});
 
 	const pdf = await generateMilestonePdf(summary);
 	return new Response(new Uint8Array(pdf), {

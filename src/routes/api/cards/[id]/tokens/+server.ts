@@ -1,7 +1,5 @@
 import { json, error } from '@sveltejs/kit';
-import { getCardTokenTotal, getCardTokenEntries } from '$lib/server/tokens';
-import { getCardBoardId } from '$lib/server/work-access';
-import { canViewBoard } from '$lib/server/board-access';
+import { readCardTokens } from '$lib/server/token-service';
 import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
@@ -15,21 +13,13 @@ import type { RequestHandler } from './$types';
  *
  * Read-only on purpose: recording cost is a reporting act that belongs to
  * whatever actually observed the usage, not to someone clicking around a card.
+ *
+ * The read is `readCardTokens` in `$lib/server/token-service`, which the v1
+ * route shares (card 2012).
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const cardId = pathId(params.id, 'card');
-
-	const boardId = getCardBoardId(cardId);
-	if (boardId === null) throw error(404, 'Card not found');
-	if (!canViewBoard(locals.user, boardId)) throw error(403, 'No access to this board');
-
-	const total = getCardTokenTotal(cardId);
-	return json({
-		cardId,
-		recorded: total.entries > 0,
-		...total,
-		entryList: getCardTokenEntries(cardId)
-	});
+	return json(readCardTokens(locals.user, { cardId }, {}));
 };

@@ -71,10 +71,12 @@ const ALLOWED: Record<string, string> = {
  * It was 600. Card 2117 moves each handler's refusals of its fields into the
  * readers of `src/lib/server/request-body.ts`, which answer all of them in a
  * few calls between them, so the count falls with each of its slices: 536
- * after the second, 496 after the third. 400 is below where it will end, and
- * far above what a parser that saw nothing would find.
+ * after the second, 496 after the third. 400 was below where card 2117 would
+ * end, and far above what a parser that saw nothing would find. Card 2012
+ * merges the two API trees' call sites into one service each, so the count
+ * falls again (371 after its slice A3): 300.
  */
-const LEAST_ERROR_CALLS = 400;
+const LEAST_ERROR_CALLS = 300;
 /** Likewise for `json(...)` answers that state a status. */
 const LEAST_JSON_WITH_STATUS = 30;
 

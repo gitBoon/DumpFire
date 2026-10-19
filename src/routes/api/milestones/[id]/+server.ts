@@ -3,33 +3,17 @@
  * the planning view. Mirrors /api/v1/milestones/:milestoneId.
  */
 import { json, error } from '@sveltejs/kit';
-import {
-	requireMilestone,
-	updateMilestone,
-	deleteMilestone,
-	setCardMilestone,
-	takeCardOutOfMilestone,
-	MilestoneError
-} from '$lib/server/milestones';
-import { emit } from '$lib/server/events';
-import { pathId, readBody, readBoolean, readChoice, readDate, readId, readText } from '$lib/server/request-body';
+import { changeMilestone, deleteMilestoneFor, readMilestone } from '$lib/server/milestone-service';
+import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
-/** What a milestone's `status` may be. */
-const STATUSES = ['open', 'closed'] as const;
-
+/** The milestone, as `GET /api/v1/milestones/:milestoneId` answers it without its cards: `readMilestone` (card 2012). */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 	const id = pathId(params.id, 'milestone');
-
-	try {
-		return json(requireMilestone(locals.user, id));
-	} catch (e) {
-		if (e instanceof MilestoneError) throw error(e.status, e.message);
-		throw e;
-	}
+	return json(readMilestone(locals.user, { milestoneId: id }, {}));
 };
 
 /**
@@ -54,68 +38,33 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * boards. A value the milestone already holds, sent back unchanged, is
  * accepted as it is. A board sent must be there (404), editable (403), and
  * hold every card of the milestone (400): `updateMilestone`.
+ *
+ * The work is `changeMilestone` in `$lib/server/milestone-service`, which the
+ * v1 route shares (card 2012); this route passes `allowCard`.
  */
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
 	const id = pathId(params.id, 'milestone');
 	const body = await readBody(request);
-	try {
-		// The milestone read, the caller checked and the change made in one
-		// transaction that asks first whether the session is still open, and
-		// who its account is now (card 2253). Each service's own transaction is
-		// a savepoint inside it. The check and the change were two steps with
-		// no transaction around them.
-		const done = writeAs(locals, (caller) => {
-			const user = requireUser(caller);
-			const milestone = requireMilestone(user, id, true);
 
-			// `cardId` in the body means "move this card in or out of the milestone",
-			// which is what the card modal and the planning view both need most.
-			if (body.cardId !== undefined) {
-				const cardId = readId(body, 'cardId', { required: true });
-				const attach = readBoolean(body, 'attach', {}) ?? true;
-				return { moved: attach ? setCardMilestone(user, cardId, id) : takeCardOutOfMilestone(user, cardId, id) };
-			}
+	// The milestone read, the caller checked and the change made in one
+	// transaction that asks first whether the session is still open, and
+	// who its account is now (card 2253). Each helper's own transaction is
+	// a savepoint inside it. A card moved in or out: its board's pages are
+	// told, once it has committed.
+	const done = writeAs(locals, (caller) => changeMilestone(caller, { milestoneId: id }, body, { source: 'ui', allowCard: true }));
 
-			const name = readText(body, 'name', {
-				trim: true,
-				min: 1,
-				max: 200,
-				keep: milestone.name,
-				says: { empty: 'name cannot be empty' }
-			});
-			const description = readText(body, 'description', { max: 50000, keep: milestone.description });
-			const targetDate = readDate(body, 'targetDate', { nullable: true, keep: milestone.targetDate });
-			const status = readChoice(body, 'status', { from: STATUSES, keep: milestone.status, says: 'status must be open or closed' });
-			const boardId = readId(body, 'boardId', { nullable: true, keep: milestone.boardId });
-
-			return { changed: updateMilestone(user, id, { name, description, targetDate, status, boardId }) };
-		});
-
-		// A card moved in or out: its board's pages are told, once it has committed.
-		if (done.moved) {
-			emit(done.moved.boardId, 'update', { type: 'card' });
-			return json(done.moved);
-		}
-		return json(done.changed);
-	} catch (e) {
-		if (e instanceof MilestoneError) throw error(e.status, e.message);
-		throw e;
-	}
+	if (done.moved) return json(done.moved);
+	return json(done.changed);
 };
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	requireUser(locals.user);
 	const id = pathId(params.id, 'milestone');
 
-	try {
-		// `deleteMilestone`'s own transaction is a savepoint inside one that asks
-		// first whether the session is still open, and who its account is now
-		// (card 2253).
-		const { released } = writeAs(locals, (caller) => deleteMilestone(requireUser(caller), id));
-		return json({ success: true, cardsReleased: released });
-	} catch (e) {
-		if (e instanceof MilestoneError) throw error(e.status, e.message);
-		throw e;
-	}
+	// `deleteMilestone`'s own transaction is a savepoint inside one that asks
+	// first whether the session is still open, and who its account is now
+	// (card 2253).
+	const { released } = writeAs(locals, (caller) => deleteMilestoneFor(caller, { milestoneId: id }, null, { source: 'ui' }));
+	return json({ success: true, cardsReleased: released });
 };

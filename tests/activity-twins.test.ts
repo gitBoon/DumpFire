@@ -30,7 +30,7 @@ import ts from 'typescript';
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '$lib/server/db';
-import { activityLog, cardLabels, cards, milestones, taskRequests, type Card, type CardComment } from '$lib/server/db/schema';
+import { activityLog, cardLabels, cards, milestones, taskRequests, tokenUsage, type Card, type CardComment } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { ACTIONS, canonicalAction } from '$lib/server/logActivity';
 import { ACTIVITY_LABELS, activityLabel } from '$lib/utils/activity-labels';
@@ -382,6 +382,28 @@ function subtaskScene(): Scene {
 			accessToken: 'b'.repeat(64)
 		})
 		.run();
+	return s;
+}
+
+/**
+ * As `cardScene`, with a second card on board A and a subtask on the first
+ * card; when `linked`, the first card and its subtask each wait on the second.
+ */
+function linkScene(linked: boolean): Scene {
+	const s = cardScene();
+	const second = makeCard(s.A.cols['To Do'], { title: 'Second' });
+	const subtask = makeSubtask(s.first, { title: 'Draft it' });
+	if (linked) {
+		makeDependency({ blocked: s.first, blocker: second, createdBy: s.owner });
+		makeDependency({ blocked: subtask, blocker: second, createdBy: s.owner });
+	}
+	return s;
+}
+
+/** As `cardScene`, with board A's milestone Launch, which holds the card when `holding`. */
+function goalScene(holding: boolean): Scene {
+	const s = cardScene();
+	makeMilestone({ board: s.A.board, name: 'Launch', createdBy: s.owner, cards: holding ? [s.first] : [] });
 	return s;
 }
 
@@ -744,6 +766,97 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		sources: { internal: ['subtask_deleted ui'], v1: ['api:subtask_deleted api'] },
 		// The event's type per tree (R2).
 		told: { internal: [{ event: 'update', boardId: 1, data: { type: 'subtask' } }], v1: [CARD_UPDATE] }
+	},
+	// Slice A3: dependencies and milestones. Neither tree records an entry for
+	// a milestone changed, deleted, or given or relieved of a card (found
+	// nearby F8), and none tells anyone of a milestone made, changed or deleted.
+	{
+		row: 17,
+		what: 'making a card wait on another',
+		build: () => linkScene(false),
+		internal: (s) => api('POST', `/api/cards/${s.first.id}/dependencies`, { user: s.owner, body: { dependsOnCardId: 2 } }),
+		v1: (s) => api('POST', `/api/v1/cards/${s.first.id}/dependencies`, { user: s.owner, body: { dependsOnCardId: 2 } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: ['dependency_added ui'], v1: ['api:dependency_added api'] }
+	},
+	{
+		row: 17,
+		what: 'a card no longer waiting on another',
+		build: () => linkScene(true),
+		internal: (s) => api('DELETE', `/api/cards/${s.first.id}/dependencies`, { user: s.owner, body: { dependsOnCardId: 2 } }),
+		v1: (s) => api('DELETE', `/api/v1/cards/${s.first.id}/dependencies`, { user: s.owner, body: { dependsOnCardId: 2 } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['dependency_removed ui'], v1: ['api:dependency_removed api'] }
+	},
+	{
+		row: 18,
+		what: 'making a subtask wait on a card',
+		build: () => linkScene(false),
+		internal: (s) => api('POST', '/api/subtasks/1/dependencies', { user: s.owner, body: { dependsOnCardId: 2 } }),
+		v1: (s) => api('POST', '/api/v1/subtasks/1/dependencies', { user: s.owner, body: { dependsOnCardId: 2 } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: ['dependency_added ui'], v1: ['api:dependency_added api'] }
+	},
+	{
+		row: 18,
+		what: 'a subtask no longer waiting on a card',
+		build: () => linkScene(true),
+		internal: (s) => api('DELETE', '/api/subtasks/1/dependencies', { user: s.owner, body: { dependsOnCardId: 2 } }),
+		v1: (s) => api('DELETE', '/api/v1/subtasks/1/dependencies', { user: s.owner, body: { dependsOnCardId: 2 } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['dependency_removed ui'], v1: ['api:dependency_removed api'] }
+	},
+	{
+		row: 21,
+		what: 'making a milestone on a board',
+		build: openScene,
+		internal: (s) => api('POST', '/api/milestones', { user: s.owner, body: { name: 'Launch', boardId: s.A.board.id, targetDate: '2026-12-01' } }),
+		v1: (s) => api('POST', '/api/v1/milestones', { user: s.owner, body: { name: 'Launch', boardId: s.A.board.id, targetDate: '2026-12-01' } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: ['milestone_created ui'], v1: ['api:milestone_created api'] },
+		told: { internal: [], v1: [] }
+	},
+	{
+		row: 22,
+		what: 'renaming and closing a milestone',
+		build: () => goalScene(false),
+		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { name: 'Launched', status: 'closed' } }),
+		v1: (s) => api('PATCH', `/api/v1/milestones/${launch()}`, { user: s.owner, body: { name: 'Launched', status: 'closed' } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] },
+		told: { internal: [], v1: [] }
+	},
+	{
+		row: 22,
+		what: 'deleting a milestone, which releases its card',
+		build: () => goalScene(true),
+		internal: (s) => api('DELETE', `/api/milestones/${launch()}`, { user: s.owner }),
+		v1: (s) => api('DELETE', `/api/v1/milestones/${launch()}`, { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] },
+		told: { internal: [], v1: [] }
+	},
+	{
+		row: 22,
+		what: "putting a card in a milestone (the page's PATCH with cardId, against v1's cards POST)",
+		build: () => goalScene(false),
+		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id } }),
+		v1: (s) => api('POST', `/api/v1/milestones/${launch()}/cards`, { user: s.owner, body: { cardId: s.first.id } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 22,
+		what: "taking a card out of a milestone (the page's PATCH with attach: false, against v1's cards DELETE)",
+		build: () => goalScene(true),
+		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id, attach: false } }),
+		v1: (s) => api('DELETE', `/api/v1/milestones/${launch()}/cards`, { user: s.owner, body: { cardId: s.first.id } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
 	}
 ];
 
@@ -757,10 +870,11 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			expect({ internal: internal.status, v1: v1.status }).toEqual(twin.status);
 			expect({ internal: internal.sources, v1: v1.sources }).toEqual(twin.sources);
 			// Something was written and told, so that the comparison below compares something;
-			// entries too, unless the pair records none and says so (a label on a card).
+			// entries too, unless the pair records none and says so (a label on a card), and told
+			// unless the pair tells nobody and says so (a milestone changed).
 			expect(internal.rows.length).toBeGreaterThan(0);
 			if (!twin.entries) expect(internal.entries.length + v1.entries.length).toBeGreaterThan(0);
-			expect(internal.told.length).toBeGreaterThan(0);
+			if (!twin.told) expect(internal.told.length).toBeGreaterThan(0);
 			for (const part of ['rows', 'entries', 'told'] as const) {
 				const writtenIn = twin[part];
 				if (writtenIn) expect({ internal: internal[part], v1: v1[part] }, part).toEqual(writtenIn);
@@ -1088,10 +1202,331 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		});
 	});
 
-	it('has a case for each pair moved so far that writes in both trees, rows 1 to 7, 9, 10, 12 and 14 to 16', () => {
-		// Rows 8 and 13 are reads and row 11 (a comment deleted) the page's alone:
-		// the cases below hold their words.
-		expect([...new Set(SERVICE_TWINS.map((twin) => twin.row))]).toEqual([1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 16]);
+	it("refuses a viewer in each tree's own words, rows 17 to 22, and writes and tells nothing", async () => {
+		const s = linkScene(true);
+		makeMilestone({ board: s.A.board, name: 'Launch', createdBy: s.owner, cards: [s.first] });
+		const viewer = { user: s.viewer };
+		const before = snapshotDb();
+		const sent = effects();
+		const refusals: Record<string, unknown> = {};
+		try {
+			const ask = async (what: string, res: Promise<ApiResult>) => {
+				const { status, body } = await res;
+				refusals[what] = `${status} ${body?.message}`;
+			};
+			const link = { body: { dependsOnCardId: 2 } };
+			await ask('internal link', api('POST', `/api/cards/${s.first.id}/dependencies`, { ...viewer, ...link }));
+			await ask('v1 link', api('POST', `/api/v1/cards/${s.first.id}/dependencies`, { ...viewer, ...link }));
+			await ask('internal unlink', api('DELETE', `/api/cards/${s.first.id}/dependencies`, { ...viewer, ...link }));
+			await ask('v1 unlink', api('DELETE', `/api/v1/cards/${s.first.id}/dependencies`, { ...viewer, ...link }));
+			await ask('internal subtask link', api('POST', '/api/subtasks/1/dependencies', { ...viewer, ...link }));
+			await ask('v1 subtask link', api('POST', '/api/v1/subtasks/1/dependencies', { ...viewer, ...link }));
+			await ask('internal subtask unlink', api('DELETE', '/api/subtasks/1/dependencies', { ...viewer, ...link }));
+			await ask('v1 subtask unlink', api('DELETE', '/api/v1/subtasks/1/dependencies', { ...viewer, ...link }));
+			const goal = { name: 'Mine', boardId: s.A.board.id };
+			await ask('internal milestone', api('POST', '/api/milestones', { ...viewer, body: goal }));
+			await ask('v1 milestone', api('POST', '/api/v1/milestones', { ...viewer, body: goal }));
+			await ask('internal milestone change', api('PATCH', `/api/milestones/${launch()}`, { ...viewer, body: { name: 'No' } }));
+			await ask('v1 milestone change', api('PATCH', `/api/v1/milestones/${launch()}`, { ...viewer, body: { name: 'No' } }));
+			await ask('internal milestone delete', api('DELETE', `/api/milestones/${launch()}`, viewer));
+			await ask('v1 milestone delete', api('DELETE', `/api/v1/milestones/${launch()}`, viewer));
+			await ask('internal card in', api('PATCH', `/api/milestones/${launch()}`, { ...viewer, body: { cardId: 2 } }));
+			await ask('v1 card in', api('POST', `/api/v1/milestones/${launch()}/cards`, { ...viewer, body: { cardId: 2 } }));
+			await ask('internal card out', api('PATCH', `/api/milestones/${launch()}`, { ...viewer, body: { cardId: s.first.id, attach: false } }));
+			await ask('v1 card out', api('DELETE', `/api/v1/milestones/${launch()}/cards`, { ...viewer, body: { cardId: s.first.id } }));
+			await sent.settle();
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+
+		expect(refusals).toEqual({
+			'internal link': '403 No edit access',
+			'v1 link': "403 No edit access to this card's board",
+			// A viewer may read the card in the address; the link is the waiting end's board's to remove.
+			'internal unlink': '403 No edit access to the board holding #1, the end that waits',
+			'v1 unlink': '403 No edit access to the board holding #1, the end that waits',
+			'internal subtask link': "403 No edit access to this subtask's board",
+			'v1 subtask link': "403 No edit access to this subtask's board",
+			'internal subtask unlink': '403 No edit access to the board holding subtask #1, the end that waits',
+			'v1 subtask unlink': '403 No edit access to the board holding subtask #1, the end that waits',
+			'internal milestone': '403 No edit access to that board',
+			'v1 milestone': '403 No edit access to that board',
+			'internal milestone change': '403 No edit access to this milestone',
+			'v1 milestone change': '403 No edit access to this milestone',
+			'internal milestone delete': '403 No edit access to this milestone',
+			'v1 milestone delete': '403 No edit access to this milestone',
+			'internal card in': '403 No edit access to this milestone',
+			'v1 card in': '403 No edit access to this milestone',
+			'internal card out': '403 No edit access to this milestone',
+			'v1 card out': '403 No edit access to this milestone'
+		});
+		expectUnchanged(before);
+	});
+
+	it("answers what is not there, or not sound, in each tree's own words, rows 17 to 22", async () => {
+		const s = linkScene(false);
+		const outsider = makeUser({ username: 'outsider' });
+		makeMilestone({ board: s.A.board, name: 'Launch', createdBy: s.owner });
+		const as = { user: s.owner };
+		const refusals: Record<string, unknown> = {};
+		const ask = async (what: string, res: Promise<ApiResult>) => {
+			const { status, body } = await res;
+			refusals[what] = `${status} ${body?.message}`;
+		};
+		const card = `/api/cards/${s.first.id}/dependencies`;
+		const v1Card = `/api/v1/cards/${s.first.id}/dependencies`;
+		const both = { dependsOnCardId: 2, blocksCardId: 2 };
+		await ask('internal link, no card', api('POST', '/api/cards/999/dependencies', { ...as, body: { dependsOnCardId: 2 } }));
+		await ask('v1 link, no card', api('POST', '/api/v1/cards/999/dependencies', { ...as, body: { dependsOnCardId: 2 } }));
+		await ask('internal link, no end', api('POST', card, { ...as, body: {} }));
+		await ask('v1 link, no end', api('POST', v1Card, { ...as, body: {} }));
+		await ask('internal link, two ends', api('POST', card, { ...as, body: both }));
+		await ask('v1 link, two ends', api('POST', v1Card, { ...as, body: both }));
+		await ask('internal link, no other end', api('POST', card, { ...as, body: { dependsOnCardId: 999 } }));
+		await ask('v1 link, no other end', api('POST', v1Card, { ...as, body: { dependsOnCardId: 999 } }));
+		await ask('internal link, an id that is none', api('POST', card, { ...as, body: { dependsOnCardId: 'two' } }));
+		await ask('v1 link, an id that is none', api('POST', v1Card, { ...as, body: { dependsOnCardId: 'two' } }));
+		await ask('internal unlink, no card', api('DELETE', '/api/cards/999/dependencies', { ...as, body: { dependsOnCardId: 2 } }));
+		await ask('v1 unlink, no card', api('DELETE', '/api/v1/cards/999/dependencies', { ...as, body: { dependsOnCardId: 2 } }));
+		await ask('internal unlink, an outsider', api('DELETE', card, { user: outsider, body: { dependsOnCardId: 2 } }));
+		await ask('v1 unlink, an outsider', api('DELETE', v1Card, { user: outsider, body: { dependsOnCardId: 2 } }));
+		await ask('internal unlink, no link', api('DELETE', card, { ...as, body: { dependsOnCardId: 2 } }));
+		await ask('v1 unlink, no link', api('DELETE', v1Card, { ...as, body: { dependsOnCardId: 2 } }));
+		await ask('internal unlink, no end', api('DELETE', card, { ...as, body: {} }));
+		await ask('v1 unlink, no end', api('DELETE', v1Card, { ...as, body: {} }));
+		await ask('internal subtask link, no subtask', api('POST', '/api/subtasks/999/dependencies', { ...as, body: { dependsOnCardId: 2 } }));
+		await ask('v1 subtask link, no subtask', api('POST', '/api/v1/subtasks/999/dependencies', { ...as, body: { dependsOnCardId: 2 } }));
+		await ask('internal subtask link, no end', api('POST', '/api/subtasks/1/dependencies', { ...as, body: {} }));
+		await ask('v1 subtask link, no end', api('POST', '/api/v1/subtasks/1/dependencies', { ...as, body: {} }));
+		await ask('internal subtask link, two ends', api('POST', '/api/subtasks/1/dependencies', { ...as, body: both }));
+		await ask('v1 subtask link, two ends', api('POST', '/api/v1/subtasks/1/dependencies', { ...as, body: both }));
+		await ask('internal subtask unlink, an outsider', api('DELETE', '/api/subtasks/1/dependencies', { user: outsider, body: { dependsOnCardId: 2 } }));
+		await ask('v1 subtask unlink, an outsider', api('DELETE', '/api/v1/subtasks/1/dependencies', { user: outsider, body: { dependsOnCardId: 2 } }));
+		await ask('internal subtask unlink, no link', api('DELETE', '/api/subtasks/1/dependencies', { ...as, body: { dependsOnCardId: 2 } }));
+		await ask('v1 subtask unlink, no link', api('DELETE', '/api/v1/subtasks/1/dependencies', { ...as, body: { dependsOnCardId: 2 } }));
+		await ask('internal milestone, no name', api('POST', '/api/milestones', { ...as, body: { boardId: s.A.board.id } }));
+		await ask('v1 milestone, no name', api('POST', '/api/v1/milestones', { ...as, body: { boardId: s.A.board.id } }));
+		await ask('internal milestone, no board', api('POST', '/api/milestones', { ...as, body: { name: 'No', boardId: 999 } }));
+		await ask('v1 milestone, no board', api('POST', '/api/v1/milestones', { ...as, body: { name: 'No', boardId: 999 } }));
+		await ask('internal milestone, a date that is none', api('POST', '/api/milestones', { ...as, body: { name: 'No', targetDate: 'soon' } }));
+		await ask('v1 milestone, a date that is none', api('POST', '/api/v1/milestones', { ...as, body: { name: 'No', targetDate: 'soon' } }));
+		await ask('internal milestone change, no milestone', api('PATCH', '/api/milestones/999', { ...as, body: { name: 'No' } }));
+		await ask('v1 milestone change, no milestone', api('PATCH', '/api/v1/milestones/999', { ...as, body: { name: 'No' } }));
+		await ask('internal milestone change, empty name', api('PATCH', `/api/milestones/${launch()}`, { ...as, body: { name: ' ' } }));
+		await ask('v1 milestone change, empty name', api('PATCH', `/api/v1/milestones/${launch()}`, { ...as, body: { name: ' ' } }));
+		await ask('internal milestone change, a status that is none', api('PATCH', `/api/milestones/${launch()}`, { ...as, body: { status: 'done' } }));
+		await ask('v1 milestone change, a status that is none', api('PATCH', `/api/v1/milestones/${launch()}`, { ...as, body: { status: 'done' } }));
+		await ask('internal milestone change, another board', api('PATCH', `/api/milestones/${launch()}`, { ...as, body: { boardId: 999 } }));
+		await ask('v1 milestone change, another board', api('PATCH', `/api/v1/milestones/${launch()}`, { ...as, body: { boardId: 999 } }));
+		await ask('internal milestone delete, no milestone', api('DELETE', '/api/milestones/999', as));
+		await ask('v1 milestone delete, no milestone', api('DELETE', '/api/v1/milestones/999', as));
+		await ask('internal card in, no milestone', api('PATCH', '/api/milestones/999', { ...as, body: { cardId: 2 } }));
+		await ask('v1 card in, no milestone', api('POST', '/api/v1/milestones/999/cards', { ...as, body: { cardId: 2 } }));
+		await ask('internal card in, a cardId that is none', api('PATCH', `/api/milestones/${launch()}`, { ...as, body: { cardId: null } }));
+		await ask('v1 card in, no cardId', api('POST', `/api/v1/milestones/${launch()}/cards`, { ...as, body: {} }));
+		await ask('v1 card in, a cardId that is none', api('POST', `/api/v1/milestones/${launch()}/cards`, { ...as, body: { cardId: null } }));
+		await ask('internal card in, no card', api('PATCH', `/api/milestones/${launch()}`, { ...as, body: { cardId: 999 } }));
+		await ask('v1 card in, no card', api('POST', `/api/v1/milestones/${launch()}/cards`, { ...as, body: { cardId: 999 } }));
+		await ask('internal card in, attach that is no boolean', api('PATCH', `/api/milestones/${launch()}`, { ...as, body: { cardId: 2, attach: 'false' } }));
+		await ask('internal card out, not in it', api('PATCH', `/api/milestones/${launch()}`, { ...as, body: { cardId: 2, attach: false } }));
+		await ask('v1 card out, not in it', api('DELETE', `/api/v1/milestones/${launch()}/cards`, { ...as, body: { cardId: 2 } }));
+		await ask('v1 card out, no cardId', api('DELETE', `/api/v1/milestones/${launch()}/cards`, { ...as, body: {} }));
+
+		expect(refusals).toEqual({
+			'internal link, no card': '404 Card not found',
+			'v1 link, no card': '404 Card not found',
+			'internal link, no end': '400 Nothing to link',
+			'v1 link, no end':
+				'400 Provide one of dependsOnCardId, dependsOnSubtaskId (this card waits on it), blocksCardId or blocksSubtaskId (it waits on this card)',
+			'internal link, two ends': '400 Provide only one end',
+			'v1 link, two ends': '400 Provide only one of the dependsOn*/blocks* fields',
+			'internal link, no other end': '404 #999 not found',
+			'v1 link, no other end': '404 #999 not found',
+			'internal link, an id that is none': '400 dependsOnCardId must be an id',
+			'v1 link, an id that is none': '400 dependsOnCardId must be an id',
+			'internal unlink, no card': '404 Card not found',
+			'v1 unlink, no card': '404 Card not found',
+			'internal unlink, an outsider': '403 No access',
+			'v1 unlink, an outsider': "403 No access to this card's board",
+			'internal unlink, no link': '404 Dependency not found',
+			'v1 unlink, no link': '404 Dependency not found',
+			'internal unlink, no end': '400 Nothing to link',
+			'v1 unlink, no end':
+				'400 Provide one of dependsOnCardId, dependsOnSubtaskId (this card waits on it), blocksCardId or blocksSubtaskId (it waits on this card)',
+			'internal subtask link, no subtask': '404 Subtask not found',
+			'v1 subtask link, no subtask': '404 Subtask not found',
+			'internal subtask link, no end':
+				'400 Provide one of dependsOnCardId, dependsOnSubtaskId (this subtask waits on it), blocksCardId or blocksSubtaskId (it waits on this subtask)',
+			'v1 subtask link, no end':
+				'400 Provide one of dependsOnCardId, dependsOnSubtaskId (this subtask waits on it), blocksCardId or blocksSubtaskId (it waits on this subtask)',
+			'internal subtask link, two ends': '400 Provide only one end',
+			'v1 subtask link, two ends': '400 Provide only one end',
+			'internal subtask unlink, an outsider': '403 No access',
+			'v1 subtask unlink, an outsider': '403 No access',
+			'internal subtask unlink, no link': '404 Dependency not found',
+			'v1 subtask unlink, no link': '404 Dependency not found',
+			'internal milestone, no name': '400 name is required',
+			'v1 milestone, no name': '400 name is required',
+			'internal milestone, no board': '404 Board not found',
+			'v1 milestone, no board': '404 Board not found',
+			'internal milestone, a date that is none': '400 targetDate must be a date written YYYY-MM-DD',
+			'v1 milestone, a date that is none': '400 targetDate must be a date written YYYY-MM-DD',
+			'internal milestone change, no milestone': '404 Milestone not found',
+			'v1 milestone change, no milestone': '404 Milestone not found',
+			'internal milestone change, empty name': '400 name cannot be empty',
+			'v1 milestone change, empty name': '400 name cannot be empty',
+			'internal milestone change, a status that is none': '400 status must be open or closed',
+			'v1 milestone change, a status that is none': '400 status must be open or closed',
+			'internal milestone change, another board': '404 Board not found',
+			'v1 milestone change, another board': '404 Board not found',
+			'internal milestone delete, no milestone': '404 Milestone not found',
+			'v1 milestone delete, no milestone': '404 Milestone not found',
+			'internal card in, no milestone': '404 Milestone not found',
+			'v1 card in, no milestone': '404 Milestone not found',
+			'internal card in, a cardId that is none': '400 cardId must be an id',
+			'v1 card in, no cardId': '400 cardId is required',
+			'v1 card in, a cardId that is none': '400 cardId must be an id',
+			'internal card in, no card': '404 Card not found',
+			'v1 card in, no card': '404 Card not found',
+			'internal card in, attach that is no boolean': '400 attach must be true or false',
+			'internal card out, not in it': '404 Card is not in this milestone',
+			'v1 card out, not in it': '404 Card is not in this milestone',
+			'v1 card out, no cardId': '400 cardId is required'
+		});
+	});
+
+	it("reads dependencies, a card's cost, a milestone and its plan alike through either tree, and refuses in each tree's words, rows 17 to 19, 22 and 23", async () => {
+		const s = linkScene(true);
+		const outsider = makeUser({ username: 'outsider' });
+		makeMilestone({ board: s.A.board, name: 'Launch', createdBy: s.owner, cards: [s.first] });
+		db.insert(tokenUsage).values({ cardId: s.first.id, tokens: 5000, model: 'claude-opus-5', reportedByUserId: s.owner.id }).run();
+		const viewer = { user: s.viewer };
+		/** A body with every timestamp masked: each tree writes its own form. */
+		const stamped = (body: unknown) => JSON.parse(JSON.stringify(body), (_key, value) => (typeof value === 'string' && STAMP.test(value) ? '<stamp>' : value));
+		const pair = async (internalPath: string, v1Path: string) => {
+			const [internal, v1] = [await api('GET', internalPath, viewer), await api('GET', v1Path, viewer)];
+			expect([internal.status, v1.status]).toEqual([200, 200]);
+			return { internal: stamped(internal.body), v1: stamped(v1.body) };
+		};
+
+		// A card's links: v1 adds each link's id, who made it and when (an option of the read).
+		const links = await pair(`/api/cards/${s.first.id}/dependencies`, `/api/v1/cards/${s.first.id}/dependencies`);
+		expect(links.internal.blockedBy).toHaveLength(1);
+		const bare = (ends: Record<string, unknown>[]) => ends.map(({ id: _id, createdByUserId: _by, createdAt: _at, ...end }) => end);
+		expect({ ...links.v1, blockedBy: bare(links.v1.blockedBy), blocks: bare(links.v1.blocks) }).toEqual(links.internal);
+		expect(links.v1.blockedBy[0]).toMatchObject({ id: 1, createdByUserId: s.owner.id, createdAt: '<stamp>' });
+		const onlyBlocks = await api('GET', `/api/v1/cards/${s.first.id}/dependencies?direction=blocks`, viewer);
+		expect(Object.keys(onlyBlocks.body)).toEqual(['cardId', 'isBlocked', 'blocks']);
+		// A subtask's, the same in both.
+		const subtaskLinks = await pair('/api/subtasks/1/dependencies', '/api/v1/subtasks/1/dependencies');
+		expect(subtaskLinks.internal.blockedBy).toHaveLength(1);
+		expect(subtaskLinks.v1).toEqual(subtaskLinks.internal);
+		// A card's cost, the same in both.
+		const cost = await pair(`/api/cards/${s.first.id}/tokens`, `/api/v1/cards/${s.first.id}/tokens`);
+		expect(cost.internal).toMatchObject({ cardId: s.first.id, recorded: true, total: 5000 });
+		expect(cost.v1).toEqual(cost.internal);
+		// One milestone: v1 adds its cards.
+		const goal = await pair(`/api/milestones/${launch()}`, `/api/v1/milestones/${launch()}`);
+		expect(goal.internal.name).toBe('Launch');
+		const { cards: held, ...row } = goal.v1;
+		expect(row).toEqual(goal.internal);
+		expect(held).toEqual([{ id: s.first.id, title: 'First', priority: 'medium', columnId: s.A.cols['To Do'].id, columnTitle: 'To Do', boardId: s.A.board.id, withheld: false }]);
+		// Its plan, the same in both.
+		const plan = await pair(`/api/milestones/${launch()}/summary`, `/api/v1/milestones/${launch()}/summary`);
+		expect(plan.internal.progress.total).toBe(1);
+		expect(plan.v1).toEqual(plan.internal);
+
+		const said = async (path: string, user = outsider) => {
+			const { status, body } = await api('GET', path, { user });
+			return `${status} ${body?.message}`;
+		};
+		expect({
+			'internal links, an outsider': await said(`/api/cards/${s.first.id}/dependencies`),
+			'v1 links, an outsider': await said(`/api/v1/cards/${s.first.id}/dependencies`),
+			'internal links, no card': await said('/api/cards/999/dependencies', s.owner),
+			'v1 links, no card': await said('/api/v1/cards/999/dependencies', s.owner),
+			'v1 links, a direction that is none': await said(`/api/v1/cards/${s.first.id}/dependencies?direction=up`, s.owner),
+			'v1 links, a direction that is none, no card': await said('/api/v1/cards/999/dependencies?direction=up', s.owner),
+			'internal subtask links, an outsider': await said('/api/subtasks/1/dependencies'),
+			'v1 subtask links, an outsider': await said('/api/v1/subtasks/1/dependencies'),
+			'internal subtask links, no subtask': await said('/api/subtasks/999/dependencies', s.owner),
+			'v1 subtask links, no subtask': await said('/api/v1/subtasks/999/dependencies', s.owner),
+			'internal cost, an outsider': await said(`/api/cards/${s.first.id}/tokens`),
+			'v1 cost, an outsider': await said(`/api/v1/cards/${s.first.id}/tokens`),
+			'internal cost, no card': await said('/api/cards/999/tokens', s.owner),
+			'v1 cost, no card': await said('/api/v1/cards/999/tokens', s.owner),
+			'internal milestone, an outsider': await said(`/api/milestones/${launch()}`),
+			'v1 milestone, an outsider': await said(`/api/v1/milestones/${launch()}`),
+			'internal milestone, none': await said('/api/milestones/999', s.owner),
+			'v1 milestone, none': await said('/api/v1/milestones/999', s.owner),
+			'internal plan, an outsider': await said(`/api/milestones/${launch()}/summary`),
+			'v1 plan, an outsider': await said(`/api/v1/milestones/${launch()}/summary`),
+			'internal plan, none': await said('/api/milestones/999/summary', s.owner),
+			'v1 plan, none': await said('/api/v1/milestones/999/summary', s.owner),
+			'internal plan PDF, an outsider': await said(`/api/milestones/${launch()}/pdf`),
+			'v1 plan PDF, an outsider': await said(`/api/v1/milestones/${launch()}/pdf`)
+		}).toEqual({
+			'internal links, an outsider': '403 No access',
+			'v1 links, an outsider': "403 No access to this card's board",
+			'internal links, no card': '404 Card not found',
+			'v1 links, no card': '404 Card not found',
+			'v1 links, a direction that is none': '400 direction must be one of: blocked-by, blocks, both',
+			'v1 links, a direction that is none, no card': '404 Card not found',
+			'internal subtask links, an outsider': '403 No access',
+			'v1 subtask links, an outsider': '403 No access',
+			'internal subtask links, no subtask': '404 Subtask not found',
+			'v1 subtask links, no subtask': '404 Subtask not found',
+			'internal cost, an outsider': '403 No access to this board',
+			'v1 cost, an outsider': '403 No access to this board',
+			'internal cost, no card': '404 Card not found',
+			'v1 cost, no card': '404 Card not found',
+			'internal milestone, an outsider': '403 No access to this milestone',
+			'v1 milestone, an outsider': '403 No access to this milestone',
+			'internal milestone, none': '404 Milestone not found',
+			'v1 milestone, none': '404 Milestone not found',
+			'internal plan, an outsider': '403 No access to this milestone',
+			'v1 plan, an outsider': '403 No access to this milestone',
+			'internal plan, none': '404 Milestone not found',
+			'v1 plan, none': '404 Milestone not found',
+			'internal plan PDF, an outsider': '403 No access to this milestone',
+			'v1 plan PDF, an outsider': '403 No access to this milestone'
+		});
+	});
+
+	it('records, takes back and records in bulk a cost through v1 alone, as it did, each telling the board once committed, row 20', async () => {
+		const tokens = { tokens: 5000, model: 'claude-opus-5', note: 'the fix' };
+		const withEntry = () => {
+			const s = linkScene(false);
+			db.insert(tokenUsage).values({ cardId: s.first.id, tokens: 5000, model: 'claude-opus-5', reportedByUserId: s.owner.id }).run();
+			return s;
+		};
+		const writes: [string, (s: Scene) => Promise<ApiResult>][] = [
+			['on a card', (s) => api('POST', `/api/v1/cards/${s.first.id}/tokens`, { user: s.owner, body: tokens })],
+			['on a subtask', (s) => api('POST', '/api/v1/subtasks/1/tokens', { user: s.owner, body: tokens })],
+			['an entry taken back', (s) => api('DELETE', '/api/v1/tokens/1', { user: s.owner })],
+			['in bulk', (s) => api('POST', '/api/v1/tokens/bulk', { user: s.owner, body: { entries: [{ cardId: s.first.id, ...tokens }, { subtaskId: 1, ...tokens }] } })],
+			['in bulk, refused', (s) => api('POST', '/api/v1/tokens/bulk', { user: s.owner, body: { entries: [{ cardId: 999, ...tokens }] } })]
+		];
+		const done: Record<string, unknown> = {};
+		for (const [what, request] of writes) {
+			const { status, rows, entries: written, told } = await served(withEntry, request);
+			done[what] = { status, rows: rows.map((r) => `${r.table} ${r.was ? (r.is ? 'changed' : 'removed') : 'added'}`), entries: written.length, told };
+		}
+		expect(done).toEqual({
+			'on a card': { status: 201, rows: ['sqlite_sequence changed', 'token_usage added'], entries: 0, told: [CARD_UPDATE] },
+			'on a subtask': { status: 201, rows: ['sqlite_sequence changed', 'token_usage added'], entries: 0, told: [CARD_UPDATE] },
+			'an entry taken back': { status: 200, rows: ['token_usage removed'], entries: 0, told: [CARD_UPDATE] },
+			'in bulk': { status: 201, rows: ['sqlite_sequence changed', 'token_usage added', 'token_usage added'], entries: 0, told: [CARD_UPDATE] },
+			'in bulk, refused': { status: 409, rows: [], entries: 0, told: [] }
+		});
+	});
+
+	it('has a case for each pair moved so far that writes in both trees, rows 1 to 7, 9, 10, 12, 14 to 18, 21 and 22', () => {
+		// Rows 8, 13, 19 and 23 are reads, row 11 (a comment deleted) the page's
+		// alone and row 20 (the token writes) v1's alone: the cases above hold
+		// their words and what they do.
+		expect([...new Set(SERVICE_TWINS.map((twin) => twin.row))]).toEqual([1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 16, 17, 18, 21, 22]);
 	});
 
 	it('hands each service exactly the options its handler took before it moved, read from the source (R3)', () => {
@@ -1252,6 +1687,94 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	],
 	'src/routes/api/v1/subtasks/[subtaskId]/+server.ts DELETE': [
 		{ service: 'deleteSubtask', args: [code('caller'), { subtaskId: code('subtaskId') }, null, { source: 'api', says: code('NO_EDIT'), eventType: 'card' }] }
+	],
+	// Slice A3: dependencies, a card's cost and the token writes, milestones.
+	// What each does differently today: the card window's words for a link
+	// (`nothingToLink`), v1's card words (`says`) and each link's id, maker and
+	// time in its read (`withLinkDetails`), v1's milestone read with its cards
+	// (`withCards`), and the page's milestone PATCH that also puts a card in or
+	// takes one out (`allowCard`).
+	'src/routes/api/cards/[id]/dependencies/+server.ts GET': [
+		{ service: 'readWorkDependencies', args: [code('locals.user'), { kind: 'card', id: code('cardId') }, {}] }
+	],
+	'src/routes/api/cards/[id]/dependencies/+server.ts POST': [
+		{ service: 'addWorkDependency', args: [code('caller'), { kind: 'card', id: code('cardId') }, code('body'), { source: 'ui', nothingToLink: true }] }
+	],
+	'src/routes/api/cards/[id]/dependencies/+server.ts DELETE': [
+		{ service: 'removeWorkDependency', args: [code('caller'), { kind: 'card', id: code('cardId') }, code('body'), { source: 'ui', nothingToLink: true }] }
+	],
+	'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts GET': [
+		{ service: 'readWorkDependencies', args: [code('locals.user'), { kind: 'card', id: code('cardId') }, { says: code('NO_ACCESS'), withLinkDetails: true }] }
+	],
+	'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts POST': [
+		{ service: 'addWorkDependency', args: [code('caller'), { kind: 'card', id: code('cardId') }, code('body'), { source: 'api', says: code('NO_EDIT') }] }
+	],
+	'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts DELETE': [
+		{ service: 'removeWorkDependency', args: [code('caller'), { kind: 'card', id: code('cardId') }, code('body'), { source: 'api', says: code('NO_ACCESS') }] }
+	],
+	'src/routes/api/subtasks/[id]/dependencies/+server.ts GET': [
+		{ service: 'readWorkDependencies', args: [code('locals.user'), { kind: 'subtask', id: code('id') }, {}] }
+	],
+	'src/routes/api/subtasks/[id]/dependencies/+server.ts POST': [
+		{ service: 'addWorkDependency', args: [code('caller'), { kind: 'subtask', id: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/subtasks/[id]/dependencies/+server.ts DELETE': [
+		{ service: 'removeWorkDependency', args: [code('caller'), { kind: 'subtask', id: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/v1/subtasks/[subtaskId]/dependencies/+server.ts GET': [
+		{ service: 'readWorkDependencies', args: [code('locals.user'), { kind: 'subtask', id: code('id') }, {}] }
+	],
+	'src/routes/api/v1/subtasks/[subtaskId]/dependencies/+server.ts POST': [
+		{ service: 'addWorkDependency', args: [code('caller'), { kind: 'subtask', id: code('id') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/subtasks/[subtaskId]/dependencies/+server.ts DELETE': [
+		{ service: 'removeWorkDependency', args: [code('caller'), { kind: 'subtask', id: code('id') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/cards/[id]/tokens/+server.ts GET': [{ service: 'readCardTokens', args: [code('locals.user'), { cardId: code('cardId') }, {}] }],
+	'src/routes/api/v1/cards/[cardId]/tokens/+server.ts GET': [{ service: 'readCardTokens', args: [code('locals.user'), { cardId: code('cardId') }, {}] }],
+	'src/routes/api/v1/cards/[cardId]/tokens/+server.ts POST': [
+		{ service: 'recordTokens', args: [code('caller'), { kind: 'card', id: code('cardId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/subtasks/[subtaskId]/tokens/+server.ts POST': [
+		{ service: 'recordTokens', args: [code('caller'), { kind: 'subtask', id: code('subtaskId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/tokens/[entryId]/+server.ts DELETE': [
+		{ service: 'removeTokenEntry', args: [code('caller'), { entryId: code('entryId') }, null, { source: 'api' }] }
+	],
+	'src/routes/api/v1/tokens/bulk/+server.ts POST': [{ service: 'recordTokenBatch', args: [code('caller'), {}, code('body'), { source: 'api' }] }],
+	'src/routes/api/milestones/+server.ts POST': [{ service: 'createMilestoneFor', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
+	'src/routes/api/v1/milestones/+server.ts POST': [{ service: 'createMilestoneFor', args: [code('caller'), {}, code('body'), { source: 'api' }] }],
+	'src/routes/api/milestones/[id]/+server.ts GET': [{ service: 'readMilestone', args: [code('locals.user'), { milestoneId: code('id') }, {}] }],
+	'src/routes/api/v1/milestones/[milestoneId]/+server.ts GET': [
+		{ service: 'readMilestone', args: [code('locals.user'), { milestoneId: code('id') }, { withCards: true }] }
+	],
+	'src/routes/api/milestones/[id]/+server.ts PATCH': [
+		{ service: 'changeMilestone', args: [code('caller'), { milestoneId: code('id') }, code('body'), { source: 'ui', allowCard: true }] }
+	],
+	'src/routes/api/v1/milestones/[milestoneId]/+server.ts PATCH': [
+		{ service: 'changeMilestone', args: [code('caller'), { milestoneId: code('id') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/milestones/[id]/+server.ts DELETE': [
+		{ service: 'deleteMilestoneFor', args: [code('caller'), { milestoneId: code('id') }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/v1/milestones/[milestoneId]/+server.ts DELETE': [
+		{ service: 'deleteMilestoneFor', args: [code('caller'), { milestoneId: code('id') }, null, { source: 'api' }] }
+	],
+	'src/routes/api/v1/milestones/[milestoneId]/cards/+server.ts POST': [
+		{ service: 'attachCardToMilestone', args: [code('caller'), { milestoneId: code('milestoneId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/milestones/[milestoneId]/cards/+server.ts DELETE': [
+		{ service: 'detachCardFromMilestone', args: [code('caller'), { milestoneId: code('milestoneId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/milestones/[id]/summary/+server.ts GET': [
+		{ service: 'readMilestoneSummary', args: [code('locals.user'), { milestoneId: code('id') }, {}] }
+	],
+	'src/routes/api/v1/milestones/[milestoneId]/summary/+server.ts GET': [
+		{ service: 'readMilestoneSummary', args: [code('locals.user'), { milestoneId: code('id') }, {}] }
+	],
+	'src/routes/api/milestones/[id]/pdf/+server.ts GET': [{ service: 'readMilestoneSummary', args: [code('locals.user'), { milestoneId: code('id') }, {}] }],
+	'src/routes/api/v1/milestones/[milestoneId]/pdf/+server.ts GET': [
+		{ service: 'readMilestoneSummary', args: [code('locals.user'), { milestoneId: code('id') }, {}] }
 	]
 };
 
