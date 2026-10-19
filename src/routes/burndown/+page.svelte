@@ -4,12 +4,13 @@
 	 * of the workspace: a board, several boards, a board category, a milestone,
 	 * or everything, narrowed by card category, label, assignee or priority.
 	 *
-	 * Every control writes to the query string and the server load re-runs, so
-	 * the URL is the view. The chart, the figures, the breakdown and the table
+	 * Every control writes to the query string and the server load re-runs (but
+	 * for the burndown / burn-up switch, which the load does not read), so the
+	 * URL is the view. The chart, the figures, the breakdown and the table
 	 * are all the same response, so they always agree with each other.
 	 */
 	import { onMount } from 'svelte';
-	import { goto, invalidateAll, replaceState } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { page, navigating } from '$app/stores';
 	import { connectLiveRefresh } from '$lib/live-refresh';
 	import BurndownChart from '$lib/components/board/BurndownChart.svelte';
@@ -194,14 +195,15 @@
 
 	// ─── View ────────────────────────────────────────────────────────────────
 
-	let view = $state<'burndown' | 'burnup'>($page.url.searchParams.get('view') === 'burnup' ? 'burnup' : 'burndown');
+	const view = $derived($page.url.searchParams.get('view') === 'burnup' ? 'burnup' : 'burndown');
 	function setView(v: 'burndown' | 'burnup') {
-		view = v;
-		// Presentation only: no reason to recompute, so the URL changes without a load.
+		// Written into the address in place with goto, so page.url and the
+		// history entry both hold it and Back returns to it (card 2242). The load
+		// reads only the chart's own parameters, so nothing is recomputed.
 		const url = new URL($page.url);
 		if (v === 'burnup') url.searchParams.set('view', 'burnup');
 		else url.searchParams.delete('view');
-		replaceState(url, {});
+		goto(url, { replaceState: true, keepFocus: true, noScroll: true });
 	}
 
 	let showTable = $state(false);

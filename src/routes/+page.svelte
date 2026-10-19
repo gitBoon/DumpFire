@@ -30,6 +30,7 @@
 	import SpendModal from '$lib/components/SpendModal.svelte';
 	import { drawnColour } from '$lib/colours';
 	import { parseStamp } from '$lib/timestamps';
+	import { daysUntilDue, formatDueDate } from '$lib/utils/date-utils';
 
 	let { data }: { data: PageData } = $props();
 
@@ -96,9 +97,11 @@
 		}
 	}
 
-	function formatDueDate(dateStr: string | null): string | null {
+	/** A card's due date in words, counted in calendar days from the viewer's own today (card 2241). */
+	function dueText(dateStr: string | null): string | null {
 		if (!dateStr) return null;
-		const d = Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86400000);
+		const d = daysUntilDue(dateStr);
+		if (d === null) return null;
 		if (d < 0) return `${Math.abs(d)}d overdue`;
 		if (d === 0) return 'Today';
 		if (d === 1) return 'Tomorrow';
@@ -589,13 +592,19 @@
 		{ label: '> 1m', count: a.agingBuckets.stale, color: 'var(--priority-critical)' }
 	]);
 
-	function daysUntilDue(dateStr: string): number {
-		return Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86400000);
+	/** Calendar days to a deadline, from the viewer's own today (card 2241). */
+	function deadlineDays(dateStr: string): number {
+		return daysUntilDue(dateStr) ?? 0;
 	}
 
+	/**
+	 * A deadline in words. The list is chosen by the server's day, so one it
+	 * calls today can be yesterday for the viewer: that reads as overdue.
+	 */
 	function dueLabel(dateStr: string): string {
-		const d = daysUntilDue(dateStr);
-		if (d <= 0) return 'Today';
+		const d = deadlineDays(dateStr);
+		if (d < 0) return `${-d}d overdue`;
+		if (d === 0) return 'Today';
 		if (d === 1) return 'Tomorrow';
 		return `${d} days`;
 	}
@@ -1194,7 +1203,7 @@
 					<h3 class="panel-title">Upcoming Deadlines</h3>
 					<div class="deadlines-list">
 						{#each a.upcomingDeadlines as dl}
-							<div class="deadline-item" class:deadline-urgent={daysUntilDue(dl.dueDate) <= 1} class:deadline-soon={daysUntilDue(dl.dueDate) > 1 && daysUntilDue(dl.dueDate) <= 3}>
+							<div class="deadline-item" class:deadline-urgent={deadlineDays(dl.dueDate) <= 1} class:deadline-soon={deadlineDays(dl.dueDate) > 1 && deadlineDays(dl.dueDate) <= 3}>
 								<div class="deadline-priority">
 									{dl.priority === 'critical' ? '🔴' : dl.priority === 'high' ? '🟠' : dl.priority === 'medium' ? '🟡' : '🟢'}
 								</div>
@@ -1202,7 +1211,7 @@
 									<span class="deadline-title">{dl.title}</span>
 									<span class="deadline-when">{dueLabel(dl.dueDate)}</span>
 								</div>
-								<span class="deadline-date">{new Date(dl.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
+								<span class="deadline-date">{formatDueDate(dl.dueDate, { day: 'numeric', month: 'short' })}</span>
 							</div>
 						{/each}
 					</div>
@@ -1431,7 +1440,7 @@
 											<div class="atm-card-meta">
 												<span class="atm-card-col">{card.columnName}</span>
 												{#if card.dueDate}
-													{@const due = formatDueDate(card.dueDate)}
+													{@const due = dueText(card.dueDate)}
 													{#if due}
 														<span class="atm-card-due" class:overdue={due.includes('overdue')} class:today={due === 'Today'} class:soon={due === 'Tomorrow'}>
 															📅 {due}

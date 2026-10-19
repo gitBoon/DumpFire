@@ -21,7 +21,7 @@
 	import FireworksCelebration from '$lib/components/board/FireworksCelebration.svelte';
 	import type { CardType, ColumnType, CategoryType, SortOption } from '$lib/types';
 	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
-	import { getRelativeAge, getDueRelative, getDueStatus, parseUTC, isNew } from '$lib/utils/date-utils';
+	import { getRelativeAge, getDueRelative, getDueStatus, formatDueDate, parseUTC, isNew } from '$lib/utils/date-utils';
 	import { subtaskProgress, sortCards, getSortLabel } from '$lib/utils/card-utils';
 	import { activityLabel } from '$lib/utils/activity-labels';
 	import { boardOptionLabel, boardOptions, boardPathText, boardPlaces as placesOf, chosenBoardId, inBoardFilter } from '$lib/board-tree';
@@ -869,7 +869,7 @@
 									{/if}
 									{#if card.dueDate}
 										{@const dueStatus = getDueStatus(card.dueDate)}
-										<span class="due-badge" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {new Date(card.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">
+										<span class="due-badge" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {formatDueDate(card.dueDate)}">
 											{#if dueStatus === 'overdue'}⚠️{:else if dueStatus === 'today'}🔥{:else if dueStatus === 'soon'}📅{:else}📅{/if}
 											Due {getDueRelative(card.dueDate, tick)}
 										</span>

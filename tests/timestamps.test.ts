@@ -30,7 +30,7 @@ import { makePasswordHash } from '$lib/server/passwords';
 import { onTheWire } from '$lib/server/v1-json';
 import { dispatchWebhook } from '$lib/server/webhooks';
 import { parseStamp, stamp, toIso, toStamp } from '$lib/timestamps';
-import { parseUTC } from '$lib/utils/date-utils';
+import { daysUntilDue, dueDay, formatDueDate, getDueRelative, getDueStatus, parseUTC } from '$lib/utils/date-utils';
 import { sortCards } from '$lib/utils/card-utils';
 import type { CardType } from '$lib/types';
 import { api, routeMethods } from './helpers/api';
@@ -1287,19 +1287,41 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 		expect(body).not.toMatch(/new Date\(\s*(?!NaN\))[^)\s]/);
 	});
 
+	// A milestone's target date is a day too, read the same wrong way. Card 2259
+	// mends its readers and is not built yet, so these are the ones known today:
+	// the sweep fails on any other, and on one of these once it is gone.
+	const TARGET_DATE_SITES_FOR_2259 = ['src/routes/plan/[id]/+page.svelte parses a target date'];
+	// And the helpers that are handed a target date as `d`, which the sweep cannot see.
+	const TARGET_DATE_HELPERS_FOR_2259: [file: string, name: string][] = [
+		['src/routes/plan/+page.svelte', 'formatDate'],
+		['src/routes/plan/+page.svelte', 'daysUntil'],
+		['src/routes/plan/[id]/+page.svelte', 'formatDate']
+	];
+
 	it('no page, component or shared utility parses a stored moment with new Date(), or patches its zone by hand', () => {
 		const faults: string[] = [];
+		const targetDateSites: string[] = [];
 		for (const file of pageSources()) {
 			const lines = sourceOf(file).split('\n');
 			lines.forEach((line, i) => {
 				// A field that holds a moment, straight into the Date constructor:
 				// card.createdAt, card.archivedAt, a.lastActivity, entry.timestamp.
 				if (/new Date\(\s*[\w.?!]*(?:At|_at|timestamp|lastActivity)\b/.test(line)) faults.push(`${file}:${i + 1} new Date(<a moment>)`);
+				// A due date, which is a day and not a moment: `new Date('2026-10-19')`
+				// is midnight UTC, the day before west of UTC (card 2241).
+				if (/new Date\(\s*[\w.?!]*dueDate\b/.test(line)) faults.push(`${file}:${i + 1} new Date(<a due date>)`);
+				// `Date.parse` reads it the same way.
+				if (/Date\.parse\(\s*[\w.?!]*dueDate\b/.test(line)) faults.push(`${file}:${i + 1} Date.parse(<a due date>)`);
+				if (/(?:new Date|Date\.parse)\(\s*[\w.?!]*targetDate\b/.test(line)) targetDateSites.push(`${file} parses a target date`);
 				// The workarounds of table D, each a guess at the form a value is in.
 				if (/\+\s*['"]Z['"]|endsWith\(\s*['"]Z['"]\s*\)|replace\(\s*['"] ['"]\s*,\s*['"]T['"]\s*\)/.test(line)) faults.push(`${file}:${i + 1} a zone patched by hand`);
 			});
 		}
 		expect(faults).toEqual([]);
+		expect(targetDateSites).toEqual(TARGET_DATE_SITES_FOR_2259);
+		for (const [file, name] of TARGET_DATE_HELPERS_FOR_2259) {
+			expect(bodyOf(sourceOf(file), name), `${file} ${name}: card 2259 mended it, so take it off the list`).toContain('new Date(d)');
+		}
 		// The board page, the card window, the board's statistics and the dashboard read theirs inline.
 		expect(sourceOf('src/routes/board/[id]/+page.svelte')).toContain('parseStamp(card.archivedAt)');
 		expect(sourceOf('src/routes/board/[id]/+page.svelte')).toContain('parseStamp(activity.createdAt)');
@@ -1352,5 +1374,128 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 		const custom = bodyOf(sourceOf('src/routes/reports/+page.svelte'), 'getPeriodDates');
 		expect(custom).toContain('start: genCustomStart || endStr, end: genCustomEnd || endStr');
 		expect(custom).not.toMatch(/new Date\(genCustom/);
+	});
+});
+
+// ─── Due dates are calendar days (card 2241) ─────────────────────────────────
+
+/** Runs `body` with the clock at `iso` and the process in time zone `zone`. */
+function onDayIn<T>(zone: string, iso: string, body: () => T): Promise<T> {
+	clockAt(iso);
+	return inZone(zone, async () => body());
+}
+
+/** What a badge shows for `dueDate`: its words, its colour and the days to it. */
+function badge(dueDate: string) {
+	return [getDueRelative(dueDate, 0), getDueStatus(dueDate), daysUntilDue(dueDate)];
+}
+
+describe('a due date is a calendar day, counted from the viewer’s own today (card 2241)', () => {
+	const LONG = { day: 'numeric', month: 'short', year: 'numeric' } as const;
+
+	it('west of UTC: at 11:00 in New York on 19 October, a card due that day is due today, and its date is the 19th', async () => {
+		// `new Date('2026-10-19')` is midnight UTC, 20:00 on the 18th in New York:
+		// the badge read "1d overdue", red, and its title "18 Oct 2026".
+		await onDayIn('America/New_York', '2026-10-19T15:00:00Z', () => {
+			expect(badge('2026-10-19')).toEqual(['today', 'today', 0]);
+			expect(badge('2026-10-20')).toEqual(['tomorrow', 'soon', 1]);
+			expect(badge('2026-10-18')).toEqual(['1d overdue', 'overdue', -1]);
+			expect(formatDueDate('2026-10-19', LONG)).toBe('19 Oct 2026');
+			expect(formatDueDate('2026-10-19')).toBe('19 Oct 2026');
+		});
+	});
+
+	it('east of UTC and in London, the same day reads the same, and Tokyo’s today is its own', async () => {
+		await onDayIn('Asia/Tokyo', '2026-10-19T10:00:00Z', () => {
+			expect(badge('2026-10-19')).toEqual(['today', 'today', 0]);
+			expect(badge('2026-10-20')).toEqual(['tomorrow', 'soon', 1]);
+			expect(badge('2026-10-18')).toEqual(['1d overdue', 'overdue', -1]);
+			expect(formatDueDate('2026-10-19', LONG)).toBe('19 Oct 2026');
+		});
+		// 01:00 on the 20th in Tokyo, still the 19th in UTC: Tokyo is a day on.
+		await onDayIn('Asia/Tokyo', '2026-10-19T16:00:00Z', () => {
+			expect(badge('2026-10-20')).toEqual(['today', 'today', 0]);
+			expect(badge('2026-10-19')).toEqual(['1d overdue', 'overdue', -1]);
+		});
+		await onDayIn('Europe/London', '2026-10-19T15:00:00Z', () => {
+			expect(badge('2026-10-19')).toEqual(['today', 'today', 0]);
+			expect(badge('2026-10-20')).toEqual(['tomorrow', 'soon', 1]);
+			expect(badge('2026-10-18')).toEqual(['1d overdue', 'overdue', -1]);
+			expect(formatDueDate('2026-10-19', LONG)).toBe('19 Oct 2026');
+		});
+	});
+
+	it('across the October clock change in London, a 25-hour day counts once', async () => {
+		// The clocks go back on Sunday 25 October 2026. Counted in hours over
+		// local midnights, the 26th was "in 3d" and lost its "soon" colour.
+		await onDayIn('Europe/London', '2026-10-24T12:00:00Z', () => {
+			expect(badge('2026-10-25')).toEqual(['tomorrow', 'soon', 1]);
+			expect(badge('2026-10-26')).toEqual(['in 2d', 'soon', 2]);
+			expect(badge('2026-10-27')).toEqual(['in 3d', null, 3]);
+		});
+		// And the 23-hour day in March, which the old count happened to get right.
+		await onDayIn('Europe/London', '2026-03-28T12:00:00Z', () => {
+			expect(badge('2026-03-30')).toEqual(['in 2d', 'soon', 2]);
+		});
+	});
+
+	it('reads the stored YYYY-MM-DD and nothing else: anything that is not a day has no count and no colour', () => {
+		expect(dueDay('2026-10-19')).toEqual({ year: 2026, month: 10, day: 19 });
+		// A time after the day (an older row) is read as that day, as
+		// dueDateToCopy also accepts one.
+		expect(dueDay('2026-10-19 08:00:00')).toEqual({ year: 2026, month: 10, day: 19 });
+		expect(dueDay('2026-10-14T09:00:00Z')).toEqual({ year: 2026, month: 10, day: 14 });
+		// A trailing digit makes it not a day, and so does a year below 1000,
+		// which `Date.UTC` reads as 1900 and on (0024 as 1924), and which no date
+		// input writes.
+		for (const value of ['', 'soon', '19/10/2026', '2026-1-9', '2026-02-30', '2026-13-01', '2026-10-199', '0024-03-01']) {
+			expect(dueDay(value), value).toBeNull();
+			expect(daysUntilDue(value), value).toBeNull();
+			expect(getDueStatus(value), value).toBeNull();
+			// Shown as it is, as All To Do's title always did.
+			expect(formatDueDate(value), value).toBe(value);
+		}
+		// A leap day is a day.
+		expect(dueDay('2028-02-29')).toEqual({ year: 2028, month: 2, day: 29 });
+	});
+
+	it('getDueRelative, getDueStatus and daysUntilDue read the day without the Date constructor', () => {
+		const utils = sourceOf('src/lib/utils/date-utils.ts');
+		for (const name of ['getDueRelative', 'getDueStatus', 'daysUntilDue']) {
+			const body = bodyOf(utils, name);
+			expect(body, name).not.toMatch(/new Date\(\s*[^)\s]/);
+			expect(body, name).not.toContain('setHours');
+		}
+		expect(bodyOf(utils, 'getDueRelative')).toContain('daysUntilDue(');
+		expect(bodyOf(utils, 'getDueStatus')).toContain('daysUntilDue(');
+		expect(bodyOf(utils, 'formatDueDate')).toContain("timeZone: 'UTC'");
+	});
+
+	it('every page shows a due date through the one helper: badges, the card window, the dashboard and All To Do', () => {
+		for (const file of ['src/routes/all/+page.svelte', 'src/routes/board/[id]/+page.svelte', 'src/lib/components/board/CardListRow.svelte', 'src/routes/todo/+page.svelte']) {
+			expect(sourceOf(file), file).toContain('title="Due {formatDueDate(card.dueDate)}"');
+		}
+		// The card window: a subtask is overdue from the day after its due day.
+		const modal = sourceOf('src/lib/components/CardModal.svelte');
+		expect(modal).not.toContain('new Date(subtask.dueDate)');
+		expect(modal).toContain('class:overdue={(daysUntilDue(subtask.dueDate) ?? 0) < 0}');
+		const formatDue = bodyOf(modal, 'formatDue');
+		expect(formatDue).toContain('daysUntilDue(d)');
+		expect(formatDue).toContain('formatDueDate(d, ');
+		expect(formatDue).not.toMatch(/new Date\(/);
+		// The dashboard's own counters, renamed so that they do not hide the helper.
+		const dashboard = sourceOf('src/routes/+page.svelte');
+		expect(dashboard).not.toMatch(/function (daysUntilDue|formatDueDate)\(/);
+		expect(dashboard).not.toContain('new Date(dateStr');
+		expect(bodyOf(dashboard, 'dueText')).toContain('daysUntilDue(');
+		expect(bodyOf(dashboard, 'deadlineDays')).toContain('daysUntilDue(');
+		expect(dashboard).toContain('formatDueDate(dl.dueDate, ');
+		// Upcoming Deadlines is chosen by the server's day, so a deadline it calls
+		// today can already be yesterday for the viewer: that reads as overdue, in
+		// dueText's words, and only the day itself reads "Today".
+		const dueLabel = bodyOf(dashboard, 'dueLabel');
+		expect(dueLabel).toContain('if (d < 0) return `${-d}d overdue`;');
+		expect(dueLabel).toContain("if (d === 0) return 'Today';");
+		expect(dueLabel).not.toContain('d <= 0');
 	});
 });

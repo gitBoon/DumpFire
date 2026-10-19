@@ -29,7 +29,7 @@
 	// Shared utilities
 	import { COLUMN_COLORS, FLIP_DURATION_MS } from '$lib/utils/constants';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
-	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, isStale, isNew } from '$lib/utils/date-utils';
+	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, formatDueDate, isStale, isNew } from '$lib/utils/date-utils';
 	import { parseStamp } from '$lib/timestamps';
 	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel } from '$lib/utils/card-utils';
 	import { isCoverValue } from '$lib/colours';
@@ -1549,7 +1549,7 @@
 									{/if}
 									{#if card.dueDate}
 										{@const dueStatus = getDueStatus(card.dueDate)}
-										<span class="due-badge" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {new Date(card.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">
+										<span class="due-badge" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {formatDueDate(card.dueDate)}">
 											{#if dueStatus === 'overdue'}⚠️{:else if dueStatus === 'today'}🔥{:else if dueStatus === 'soon'}📅{:else}📅{/if}
 											Due {getDueRelative(card.dueDate, tick)}
 										</span>

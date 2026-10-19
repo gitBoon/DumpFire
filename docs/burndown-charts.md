@@ -1,9 +1,9 @@
 ---
 title: "Burndown Charts"
 category: Reporting & Analytics
-version: 1.4
+version: 1.5
 status: As-Built
-date: 2026-10-15
+date: 2026-10-19
 tags:
   - burndown
   - burn-up
@@ -72,6 +72,15 @@ The controls are one row of pills, each stating the current choice —
 `All boards` `Last 30 days` `Filters · 2` `Target 1 Dec` — and each opening a
 panel with the detail. Active filters show as removable chips beside the row.
 
+The **Burndown / Burn-up** switch is part of the address too, as `view=burnup`,
+written in place (no new history entry), so Back to the page, a bookmark and a
+later change of scope all keep it. The chart is not recomputed for it: the
+page's load copies only the parameters the chart reads (`BURNDOWN_PARAMS` in
+`src/lib/server/burndown.ts`) by name, and SvelteKit re-runs a load only when a
+parameter it read changes (card 2242). Until 19 October 2026 the switch was a
+shallow address change that the history entry did not keep, so Back from a card
+or a board showed burndown again.
+
 ## Architecture
 
 ```mermaid
@@ -131,7 +140,7 @@ sequenceDiagram
     G->>G: lifelines → daily series → summary, forecast, target, groups, facets
     G-->>L: BurndownResult
     L-->>U: page with chart, figures, breakdown, notes
-    Note over U: Every control rewrites the URL and the load re-runs.<br/>Burndown / burn-up is a shallow URL change with no reload.
+    Note over U: Every control rewrites the URL and the load re-runs.<br/>Burndown / burn-up is written into the URL in place (view=burnup),<br/>and the load does not re-run for it.
 ```
 
 ## Why card timestamps, not snapshots

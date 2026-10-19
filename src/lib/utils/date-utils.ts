@@ -2,8 +2,8 @@
  * date-utils.ts — Date/time utility functions for the DumpFire application.
  *
  * These functions handle SQLite timestamp parsing, relative time formatting,
- * and due-date status classification. They were previously duplicated across
- * the board page and all-tasks page.
+ * and due dates, which are calendar days read in the viewer's own zone. They
+ * were previously duplicated across the board page and all-tasks page.
  *
  * Functions that accept a `tick` parameter use it as a reactive dependency
  * in Svelte — the `tick` value is read (via `void tick`) to force
@@ -55,6 +55,73 @@ export function getRelativeAge(dateStr: string, tick: number): string {
 	return `${months}mo`;
 }
 
+/** A calendar day: the year, the month (1 to 12) and the day of the month. */
+export interface CalendarDay {
+	year: number;
+	month: number;
+	day: number;
+}
+
+/**
+ * Reads a due date as the calendar day it names (card 2241).
+ *
+ * A due date is stored as `YYYY-MM-DD`: a day, not a moment. `new Date()`
+ * reads that form as midnight UTC, which is the evening before west of UTC,
+ * so every reader of a due date goes through this instead. Any other stored
+ * calendar date (a milestone's target date) reads the same way.
+ *
+ * @param dueDate — The stored value
+ * @returns The day, or null when the value is not a real `YYYY-MM-DD`
+ */
+export function dueDay(dueDate: string | null | undefined): CalendarDay | null {
+	// The day may be followed by a time (an older row written before dates were
+	// checked), but not by another digit: 2026-10-199 is not the 19th.
+	const m = /^(\d{4})-(\d{2})-(\d{2})(?!\d)/.exec(dueDate ?? '');
+	if (!m) return null;
+	const [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+	// `Date.UTC` reads a year below 100 as 1900 and on, and no date input
+	// writes a year below 1000, so one is not a day.
+	if (year < 1000) return null;
+	// Day 0 of the next month is the last day of this one.
+	const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+	if (month < 1 || month > 12 || day < 1 || day > lastDay) return null;
+	return { year, month, day };
+}
+
+/**
+ * Whole calendar days from the viewer's own today to a due date: 0 on the due
+ * day, 1 the day before it, -1 the day after it.
+ *
+ * Both days are placed at midnight UTC before they are subtracted, so a 23- or
+ * 25-hour day at a clock change still counts as one.
+ *
+ * @param dueDate — The stored `YYYY-MM-DD`
+ * @param now — The moment whose local calendar day is today
+ * @returns The days, or null for a value that is not a date
+ */
+export function daysUntilDue(dueDate: string | null | undefined, now: Date = new Date()): number | null {
+	const due = dueDay(dueDate);
+	if (!due) return null;
+	const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+	return (Date.UTC(due.year, due.month - 1, due.day) - today) / 86_400_000;
+}
+
+/**
+ * Prints a due date as the day stored, in any zone (e.g. "19 Oct 2026").
+ *
+ * @param dueDate — The stored `YYYY-MM-DD`
+ * @param options — Which parts to show; day, short month and year by default
+ * @returns The day in words, or the value as it is when it is not a date
+ */
+export function formatDueDate(
+	dueDate: string,
+	options: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' }
+): string {
+	const due = dueDay(dueDate);
+	if (!due) return dueDate;
+	return new Date(Date.UTC(due.year, due.month - 1, due.day)).toLocaleDateString('en-GB', { ...options, timeZone: 'UTC' });
+}
+
 /**
  * Returns a relative string for a due date (e.g. "today", "tomorrow", "3d overdue").
  *
@@ -64,11 +131,8 @@ export function getRelativeAge(dateStr: string, tick: number): string {
  */
 export function getDueRelative(dueDate: string, tick: number): string {
 	void tick;
-	const due = new Date(dueDate);
-	const now = new Date();
-	now.setHours(0, 0, 0, 0);
-	due.setHours(0, 0, 0, 0);
-	const diffDays = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+	const diffDays = daysUntilDue(dueDate);
+	if (diffDays === null) return dueDate;
 	if (diffDays === 0) return 'today';
 	if (diffDays === 1) return 'tomorrow';
 	if (diffDays === -1) return '1d overdue';
@@ -82,14 +146,11 @@ export function getDueRelative(dueDate: string, tick: number): string {
  * Classifies a due date status for colour-coding badges.
  *
  * @param dueDate — The due date string to classify
- * @returns 'overdue' | 'today' | 'soon' | null
+ * @returns 'overdue' | 'today' | 'soon' | null (null for a value that is not a date)
  */
 export function getDueStatus(dueDate: string): 'overdue' | 'today' | 'soon' | null {
-	const due = new Date(dueDate);
-	const now = new Date();
-	now.setHours(0, 0, 0, 0);
-	due.setHours(0, 0, 0, 0);
-	const diff = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+	const diff = daysUntilDue(dueDate);
+	if (diff === null) return null;
 	if (diff < 0) return 'overdue';
 	if (diff === 0) return 'today';
 	if (diff <= 2) return 'soon';

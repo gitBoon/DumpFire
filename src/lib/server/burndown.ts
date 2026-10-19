@@ -145,6 +145,29 @@ function dayParam(params: URLSearchParams, name: string): Day | null {
 }
 
 /**
+ * Every query parameter `parseBurndownQuery` reads, and nothing else. The
+ * burndown page's load copies these by name (card 2242): SvelteKit makes a
+ * parameter read by name a dependency of the load, and the whole address one
+ * when the query is copied whole, so a parameter the chart does not read (the
+ * page's burndown / burn-up `view`) can change without recomputing it.
+ */
+export const BURNDOWN_PARAMS: readonly string[] = [
+	'boardIds',
+	'boardCategoryId',
+	'milestoneId',
+	'categoryIds',
+	'labelIds',
+	'assigneeIds',
+	'priorities',
+	'days',
+	'from',
+	'to',
+	'target',
+	'groupBy',
+	'options'
+];
+
+/**
  * Read a burndown request from a query string. Every problem is a 400 with a
  * message naming the parameter, because a silently ignored filter produces a
  * chart that looks right and answers a different question.

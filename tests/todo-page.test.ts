@@ -789,8 +789,10 @@ describe('the page, src/routes/todo/+page.svelte, read from its source (test 15)
 		expect(source).toContain('Filters{#if foldedOn > 0}&nbsp;({foldedOn}){/if}');
 	});
 
-	it('reads a due date through parseStamp, and no stored value with new Date()', () => {
-		expect(script).toContain('parseStamp(dueDate)');
+	it('prints a due date through formatDueDate, the day stored in any zone, and no stored value with new Date()', () => {
+		// dueOn read it through parseStamp; card 2241 made one formatter for every page.
+		expect(source).toContain('title="Due {formatDueDate(card.dueDate)}"');
+		expect(script).not.toContain('function dueOn(');
 		expect(source).not.toMatch(/new Date\(/);
 	});
 });
