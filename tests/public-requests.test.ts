@@ -44,6 +44,7 @@ import { requestMessages, taskRequests, users } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { issueFormToken, verifyFormToken } from '$lib/server/request-tokens';
+import { hasLapsed, unconfirmedCutoff, UNVERIFIED_LIFETIME_DAYS } from '$lib/server/request-access';
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { makeBoard, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
@@ -188,6 +189,18 @@ describe('submitting without an account', () => {
 		expect(mailTo(staff.email)).toHaveLength(0);
 	});
 
+	it('says in the confirmation mail that its link lasts seven days (card 2243)', async () => {
+		const res = await submitAnonymously();
+
+		expect(res.status).toBe(201);
+		expect(mail.sent).toHaveLength(1);
+		// The mail says it in words; the number it stands for is the one the routes keep to.
+		expect(UNVERIFIED_LIFETIME_DAYS).toBe(7);
+		expect(mail.sent[0].html).toContain(
+			'This link lasts seven days: a request not confirmed by then is no longer kept, and can be made again.'
+		);
+	});
+
 	it('keeps an unverified request out of the inbox', async () => {
 		await submitAnonymously();
 
@@ -285,6 +298,92 @@ describe('confirming a request', () => {
 		const inbox = await api('GET', '/api/requests', { user: staff });
 		expect(inbox.body).toHaveLength(1);
 		expect(inbox.body[0]).not.toHaveProperty('accessToken');
+	});
+
+	// ─── A request nobody confirmed for seven days has lapsed (card 2243) ────
+	//
+	// The confirmation link confirmed a request however old it was, in the
+	// window before the next anonymous request cleared the row: the team was
+	// mailed and it entered the inbox. The link route already treated such a
+	// request as not there (card 2158).
+
+	const MINUTE_MS = 60 * 1000;
+	const DAY_MS = 24 * 60 * MINUTE_MS;
+
+	/** A request submitted without an account, made `ageMs` ago, and its token. */
+	async function submittedAgo(ageMs: number) {
+		const { body } = await submitAnonymously();
+		db.update(taskRequests).set({ createdAt: stamp(new Date(Date.now() - ageMs)) }).where(eq(taskRequests.id, body.id)).run();
+		mail.sent.length = 0;
+		return { id: body.id as number, token: requestRow(body.id).accessToken! };
+	}
+
+	it('is refused for a request made more than seven days ago, as a link that is not valid, and tells the team nothing', async () => {
+		const { id, token } = await submittedAgo(7 * DAY_MS + MINUTE_MS);
+
+		const res = await api('POST', `/api/requests/${id}/confirm`, { body: { token } });
+
+		expect({ status: res.status, body: res.body }).toEqual({ status: 404, body: { message: 'This confirmation link is not valid.' } });
+		// Left for the form's clean-up, which is the one place requests are deleted.
+		expect(requestRow(id).status).toBe('unverified');
+		expect(mail.sent).toEqual([]);
+		expect((await api('GET', '/api/requests', { user: staff })).body).toEqual([]);
+	});
+
+	it('passes a request made a minute inside the seven days to the team, once', async () => {
+		const { id, token } = await submittedAgo(7 * DAY_MS - MINUTE_MS);
+
+		const res = await api('POST', `/api/requests/${id}/confirm`, { body: { token } });
+
+		expect(res.status).toBe(200);
+		expect(res.body).toMatchObject({ confirmed: true, alreadyConfirmed: false });
+		expect(requestRow(id).status).toBe('pending');
+		expect(mailTo(staff.email)).toHaveLength(1);
+	});
+
+	it('still answers a request confirmed long ago as already confirmed: only an unconfirmed request lapses', async () => {
+		const { id, token } = await submittedAgo(30 * DAY_MS);
+		db.update(taskRequests).set({ status: 'pending' }).where(eq(taskRequests.id, id)).run();
+
+		const res = await api('POST', `/api/requests/${id}/confirm`, { body: { token } });
+
+		expect(res.status).toBe(200);
+		expect(res.body).toMatchObject({ confirmed: true, alreadyConfirmed: true });
+		expect(mail.sent).toEqual([]);
+	});
+
+	it('hasLapsed counts strictly older than seven days, in the stored form, for an unconfirmed request alone', () => {
+		const now = Date.UTC(2026, 9, 19, 12, 0, 0);
+		expect(unconfirmedCutoff(now)).toBe('2026-10-12 12:00:00');
+		expect(hasLapsed({ status: 'unverified', createdAt: '2026-10-12 11:59:59' }, now)).toBe(true);
+		expect(hasLapsed({ status: 'unverified', createdAt: '2026-10-12 12:00:00' }, now)).toBe(false);
+		expect(hasLapsed({ status: 'pending', createdAt: '2020-01-01 00:00:00' }, now)).toBe(false);
+		expect(hasLapsed({ status: 'rejected', createdAt: '2020-01-01 00:00:00' }, now)).toBe(false);
+	});
+
+	it("does not open a lapsed request's thread, so the page shows the link as gone and offers no Confirm it", async () => {
+		// In this order: each submission clears the requests that have lapsed before it.
+		const recent = await submittedAgo(6 * DAY_MS);
+		const lapsed = await submittedAgo(7 * DAY_MS + MINUTE_MS);
+		expect(requestRow(lapsed.id).status).toBe('unverified');
+		const NOT_FOUND = { status: 404, body: { message: 'Request not found' } };
+		const opened = async ({ id, token }: { id: number; token: string }) =>
+			[
+				await api('GET', `/api/requests/${id}?token=${token}`),
+				await api('GET', `/api/requests/${id}/messages?token=${token}`),
+				await api('POST', `/api/requests/${id}/messages`, { body: { message: 'Hello?', senderType: 'requester', token } })
+			].map(({ status, body }) => ({ status, body }));
+
+		// The same answers as for a request that is not there, on every route the link opens.
+		expect(await opened(lapsed)).toEqual([NOT_FOUND, NOT_FOUND, NOT_FOUND]);
+		// Within the seven days the thread opens, waiting for confirmation, and a reply is refused as before.
+		const [read, thread, reply] = await opened(recent);
+		expect(read.status).toBe(200);
+		expect(read.body.status).toBe('unverified');
+		expect(thread.status).toBe(200);
+		expect(reply).toEqual({ status: 400, body: { message: 'Request is already resolved' } });
+		expect(db.select().from(requestMessages).all()).toHaveLength(0);
+		expect(mail.sent).toEqual([]);
 	});
 });
 

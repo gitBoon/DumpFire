@@ -518,6 +518,9 @@ export function notifyRequesterRejected(email: string, requestTitle: string, res
  * This is the only email an unconfirmed request sends. The team is told
  * nothing until the link in it is followed, so a form filled in with somebody
  * else's address reaches that one person and no further.
+ *
+ * It says how long the link lasts: `UNVERIFIED_LIFETIME_DAYS`, written in
+ * words, after which the link is refused and the request cleared (card 2243).
  */
 export function notifyRequesterConfirm(email: string, requestTitle: string, confirmUrl: string) {
 	if (!isSmtpConfigured() || !email) return;
@@ -530,6 +533,9 @@ export function notifyRequesterConfirm(email: string, requestTitle: string, conf
 				If it was not, ignore this message and nothing further will happen.
 			</p>
 			<a href="${escapeHtml(confirmUrl)}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Confirm my request</a>
+			<p style="margin: 16px 0 0; font-size: 12px; color: #64748b;">
+				This link lasts seven days: a request not confirmed by then is no longer kept, and can be made again.
+			</p>
 		</div>
 	`);
 

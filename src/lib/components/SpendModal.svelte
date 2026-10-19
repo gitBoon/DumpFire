@@ -73,10 +73,11 @@
 	}: { spend: Record<Period, Row[]>; onclose: () => void } = $props();
 
 	const PERIODS: { key: Period; label: string; hint: string }[] = [
-		{ key: 'today', label: 'Today', hint: 'since midnight' },
-		{ key: 'week', label: 'This week', hint: 'since Monday' },
-		{ key: 'month', label: 'This month', hint: 'since the 1st' },
-		{ key: 'year', label: 'This year', hint: 'since 1 January' },
+		// UTC days, as the ledger groups its entries (card 2255).
+		{ key: 'today', label: 'Today', hint: 'since midnight UTC' },
+		{ key: 'week', label: 'This week', hint: 'since Monday, UTC' },
+		{ key: 'month', label: 'This month', hint: 'since the 1st, UTC' },
+		{ key: 'year', label: 'This year', hint: 'since 1 January, UTC' },
 		{ key: 'all', label: 'All time', hint: 'everything recorded' }
 	];
 
@@ -145,6 +146,8 @@
 				>{p.label}</button>
 			{/each}
 		</div>
+		<!-- Said on the page, since a tooltip is not seen on a touch screen (card 2255). -->
+		<p class="period-note">Days are counted in UTC.</p>
 
 		{#if rows.length === 0}
 			<p class="empty">
@@ -275,7 +278,8 @@
 	}
 	.close:hover { background: var(--glass-hover); color: var(--text-primary); }
 
-	.periods { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: var(--space-md); }
+	.periods { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: var(--space-xs, 4px); }
+	.period-note { margin: 0 0 var(--space-md); font-size: 0.7rem; color: var(--text-tertiary); }
 	.period {
 		padding: 4px 11px; border-radius: var(--radius-full);
 		border: 1px solid var(--glass-border); background: var(--bg-surface);

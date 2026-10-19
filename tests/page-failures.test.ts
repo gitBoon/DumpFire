@@ -1306,6 +1306,20 @@ describe('a request’s pages, for a link that no longer works (card 2158)', () 
 		// A refusal (a 429, a 503) is said in the server's words.
 		expect(callsOf(scriptOf(FORM), 'failureMessage')).toHaveLength(1);
 	});
+
+	it('says, with every state of the form, that a request not confirmed in seven days is gone, and so says nothing of this one (card 2243)', () => {
+		const form = readFileSync(join(ROOT, FORM), 'utf8');
+		const markup = form.slice(form.indexOf('</script>'));
+		const sentence =
+			'<p class="new-link-lapsed">A request not confirmed within seven days is no longer kept; make it again at <a href="/request">/request</a>.</p>';
+
+		// Written once, after the {#if answered} block closes: shown before the
+		// form is used and after its answer alike, on the reply page and the
+		// confirm page alike, so it tells nobody whether this request lapsed.
+		expect(markup.split(sentence)).toHaveLength(2);
+		expect(markup).toMatch(/\{\/if\}\s*\{\/if\}\s*(?:<!--[^]*?-->\s*)?<p class="new-link-lapsed">/);
+		expect(markup.slice(markup.indexOf(sentence) + sentence.length)).toMatch(/^\s*<\/div>/);
+	});
 });
 
 // ─── A session that has ended ────────────────────────────────────────────────

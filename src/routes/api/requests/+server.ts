@@ -11,8 +11,7 @@ import { addressToCount } from '$lib/server/client-address';
 import { readBody, readChoice, readEmail, readId, readText } from '$lib/server/request-body';
 import { requireBoard } from '$lib/server/route-guards';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
-import { UNVERIFIED_LIFETIME_DAYS, requesterAddress } from '$lib/server/request-access';
-import { stamp } from '$lib/timestamps';
+import { requesterAddress, unconfirmedCutoff } from '$lib/server/request-access';
 import type { RequestHandler } from './$types';
 
 const PRIORITIES = ['low', 'medium', 'high', 'critical'] as const;
@@ -213,9 +212,8 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 			limit(`request-email:${email.toLowerCase()}`, 3, 60 * MINUTE);
 
 			// Requests nobody confirmed are dead weight; clear the old ones as we go.
-			const cutoff = stamp(new Date(Date.now() - UNVERIFIED_LIFETIME_DAYS * 24 * 60 * MINUTE));
 			db.delete(taskRequests)
-				.where(and(eq(taskRequests.status, 'unverified'), lt(taskRequests.createdAt, cutoff)))
+				.where(and(eq(taskRequests.status, 'unverified'), lt(taskRequests.createdAt, unconfirmedCutoff())))
 				.run();
 		}
 

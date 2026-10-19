@@ -20,8 +20,10 @@
 	let errorMsg = $state('');
 	/**
 	 * Refused as a link that is not valid: wrong, or replaced (card 2158), or
-	 * for a request that is not there. Under the refusal the page offers to
-	 * mail the current link.
+	 * for a request not confirmed within seven days, which has lapsed and is
+	 * answered as one that is not there (card 2243), or for a request that is
+	 * not there. Under the refusal the page offers to mail the current link,
+	 * and says that a lapsed request is made again at /request.
 	 */
 	let linkGone = $state(false);
 

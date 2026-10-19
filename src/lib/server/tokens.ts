@@ -955,6 +955,33 @@ export interface UserSpendRow {
 }
 
 /**
+ * The first day of each spend window, as `YYYY-MM-DD`; `all` is `''`, no bound.
+ *
+ * UTC days, because the ledger groups its entries by `date(created_at)`, the
+ * UTC day of the stored stamp (card 2255). They were the server's local days:
+ * under a server with `TZ` set, "today" and the day the entries were grouped
+ * under disagreed for hours each day, and in London in the hour after
+ * midnight "today" left out everything recorded since. Production runs in UTC,
+ * so its figures do not change.
+ */
+export function spendPeriodStarts(now: Date = new Date()): Record<SpendPeriod, string> {
+	// `date()` yields YYYY-MM-DD, so a plain string compare is a date compare.
+	const day = (d: Date) => d.toISOString().slice(0, 10);
+	const year = now.getUTCFullYear();
+	const month = now.getUTCMonth();
+	const date = now.getUTCDate();
+	// Week starts Monday — the working week, not the American Sunday.
+	const dow = (now.getUTCDay() + 6) % 7;
+	return {
+		today: day(new Date(Date.UTC(year, month, date))),
+		week: day(new Date(Date.UTC(year, month, date - dow))),
+		month: day(new Date(Date.UTC(year, month, 1))),
+		year: `${year}-01-01`,
+		all: ''
+	};
+}
+
+/**
  * Per-person spend for each time window, from one query.
  *
  * Five windows rather than five queries: the rows come back grouped by user,
@@ -962,10 +989,9 @@ export interface UserSpendRow {
  * count — it cannot grow with the number of entries, only with users x models x
  * days active.
  *
- * Boundaries are calendar periods in the server's local time, converted to the
- * UTC string form the ledger stores. Calendar rather than rolling windows
- * because a fixed-price plan renews on a calendar month, so "this month" is the
- * comparison that actually means something.
+ * Boundaries are calendar periods, from `spendPeriodStarts`. Calendar rather
+ * than rolling windows because a fixed-price plan renews on a calendar month,
+ * so "this month" is the comparison that actually means something.
  */
 export function getUserSpendByPeriod(
 	boardIds: number[]
@@ -1006,22 +1032,7 @@ export function getUserSpendByPeriod(
 		day: string; apiCalls: number | null; withCalls: number; n: number;
 	})[];
 
-	// `date()` yields YYYY-MM-DD, so a plain string compare is a date compare.
-	const localStart = (d: Date) => {
-		const z = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-		return `${z.getFullYear()}-${String(z.getMonth() + 1).padStart(2, '0')}-${String(z.getDate()).padStart(2, '0')}`;
-	};
-	const now = new Date();
-	const startOfToday = localStart(now);
-	// Week starts Monday — the working week, not the American Sunday.
-	const dow = (now.getDay() + 6) % 7;
-	const startOfWeek = localStart(new Date(now.getFullYear(), now.getMonth(), now.getDate() - dow));
-	const startOfMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-	const startOfYear = `${now.getFullYear()}-01-01`;
-
-	const bounds: Record<SpendPeriod, string> = {
-		today: startOfToday, week: startOfWeek, month: startOfMonth, year: startOfYear, all: ''
-	};
+	const bounds = spendPeriodStarts();
 
 	const out = {} as Record<SpendPeriod, UserSpendRow[]>;
 	for (const period of Object.keys(bounds) as SpendPeriod[]) {

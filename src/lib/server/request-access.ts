@@ -13,6 +13,8 @@ import { db } from './db';
 import { taskRequests, teamMembers, users, type TaskRequest } from './db/schema';
 import { isAdmin } from './board-access';
 import type { SessionUser } from './auth';
+import { requestTokenMatches } from './request-tokens';
+import { stamp } from '$lib/timestamps';
 
 /**
  * How long a request may sit unconfirmed. The form clears older ones as it
@@ -20,6 +22,36 @@ import type { SessionUser } from './auth';
  * (card 2158, R3): it is treated as not there.
  */
 export const UNVERIFIED_LIFETIME_DAYS = 7;
+
+/**
+ * The moment before which an unconfirmed request has lapsed, in the stored
+ * form, so that it compares as text with `createdAt`.
+ */
+export function unconfirmedCutoff(now: number = Date.now()): string {
+	return stamp(new Date(now - UNVERIFIED_LIFETIME_DAYS * 24 * 60 * 60 * 1000));
+}
+
+/**
+ * True for a request nobody confirmed within `UNVERIFIED_LIFETIME_DAYS`: one
+ * the form clears as it takes the next anonymous request. Until then it is
+ * still a row, and every route that takes its link treats it as not there
+ * (card 2243): the confirmation link confirmed it, the team was mailed and it
+ * entered the inbox however old the link was. Strictly older, as the form's
+ * delete reads it. Only an unconfirmed request lapses; a settled one keeps its
+ * link for good.
+ */
+export function hasLapsed(request: Pick<TaskRequest, 'status' | 'createdAt'>, now?: number): boolean {
+	return request.status === 'unverified' && request.createdAt < unconfirmedCutoff(now);
+}
+
+/**
+ * True if `token` is the request's own link and the link still opens it: the
+ * link of a lapsed request opens nothing, and is answered as one that is not
+ * there (card 2243).
+ */
+export function linkOpens(request: TaskRequest, token: string | null | undefined): boolean {
+	return requestTokenMatches(request, token) && !hasLapsed(request);
+}
 
 /**
  * True if the request is addressed to this user — directly, or through a team

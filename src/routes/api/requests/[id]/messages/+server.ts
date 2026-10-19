@@ -4,8 +4,8 @@ import { requestMessages, type TaskRequest } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { notifyRequesterMessage, notifyAdminMessage } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
-import { canHandleRequest, canReadRequest, requesterAddress, requireRequest } from '$lib/server/request-access';
-import { requestReplyUrl, requestTokenMatches } from '$lib/server/request-tokens';
+import { canHandleRequest, canReadRequest, linkOpens, requesterAddress, requireRequest } from '$lib/server/request-access';
+import { requestReplyUrl } from '$lib/server/request-tokens';
 import { checkRateLimit, resetRateLimit } from '$lib/server/rate-limit';
 import { createLogger } from '$lib/server/logger';
 import { pathId, readBody, readChoice, readText } from '$lib/server/request-body';
@@ -31,7 +31,8 @@ const replyCount = (requestId: number) => `request-reply:${requestId}`;
 /**
  * GET — Fetch all messages for a request. Requires auth or the request's own
  * token. A caller with no session and without the link is answered 404,
- * whether the request is there or not (card 2132).
+ * whether the request is there or not (card 2132), and so is the link of a
+ * request nobody confirmed within seven days (card 2243).
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const requestId = pathId(params.id, 'request');
@@ -42,7 +43,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	requireRequest(
 		locals.user,
 		requestId,
-		(row) => (!!locals.user && canReadRequest(locals.user, row)) || requestTokenMatches(row, token),
+		(row) => (!!locals.user && canReadRequest(locals.user, row)) || linkOpens(row, token),
 		'Access denied'
 	);
 
@@ -80,9 +81,10 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 	let taskReq: TaskRequest;
 	if (senderType === 'requester') {
 		// Their email address used to be enough, so anyone who knew it could
-		// post as them. A token that is not text is no token: it was a 500.
+		// post as them. A token that is not text is no token: it was a 500. The
+		// link of a lapsed request opens nothing (card 2243).
 		const token = typeof body.token === 'string' ? body.token : null;
-		taskReq = requireRequest(locals.user, requestId, (row) => requestTokenMatches(row, token), 'Invalid or missing link token');
+		taskReq = requireRequest(locals.user, requestId, (row) => linkOpens(row, token), 'Invalid or missing link token');
 	} else {
 		// Admin/user reply — must be signed in, and the request must be theirs
 		// to answer.

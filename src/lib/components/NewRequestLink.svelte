@@ -83,12 +83,18 @@
 			<div class="new-link-error">{refused}</div>
 		{/if}
 	{/if}
+	<!-- Shown in every state, before and after the answer, so it says nothing
+	     of whether this request lapsed: the link route answers a lapsed
+	     request as one that is not there (card 2243). -->
+	<p class="new-link-lapsed">A request not confirmed within seven days is no longer kept; make it again at <a href="/request">/request</a>.</p>
 </div>
 
 <style>
 	.new-link { text-align: center; }
 	.new-link-text { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.5; margin-bottom: var(--space-md); }
 	.new-link-hint { color: var(--text-tertiary); font-size: 0.8rem; }
+	.new-link-lapsed { margin-top: var(--space-md); color: var(--text-tertiary); font-size: 0.8rem; line-height: 1.5; }
+	.new-link-lapsed a { color: var(--accent-indigo); }
 	.new-link-form { display: flex; gap: var(--space-sm); justify-content: center; flex-wrap: wrap; }
 	.new-link-input {
 		flex: 1 1 220px; max-width: 320px; padding: 8px 12px;
