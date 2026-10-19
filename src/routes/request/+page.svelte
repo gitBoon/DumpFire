@@ -172,19 +172,19 @@
 				<!-- Title -->
 				<div class="form-group">
 					<label for="title">Title <span class="required">*</span></label>
-					<input id="title" type="text" bind:value={title} placeholder="Brief summary of your request..." class="form-input" />
+					<input id="title" type="text" bind:value={title} placeholder="Brief summary of your request..." class="form-input" maxlength="500" />
 				</div>
 
 				<!-- Description -->
 				<div class="form-group">
 					<label for="description">Description</label>
-					<textarea id="description" bind:value={description} placeholder="Provide details, context, or steps to reproduce..." rows="5" class="form-textarea"></textarea>
+					<textarea id="description" bind:value={description} placeholder="Provide details, context, or steps to reproduce..." rows="5" class="form-textarea" maxlength="10000"></textarea>
 				</div>
 
 				<!-- Business Value -->
 				<div class="form-group">
 					<label for="business-value">Business Value / Justification</label>
-					<textarea id="business-value" bind:value={businessValue} placeholder="Why is this important? What value does it deliver?" rows="3" class="form-textarea"></textarea>
+					<textarea id="business-value" bind:value={businessValue} placeholder="Why is this important? What value does it deliver?" rows="3" class="form-textarea" maxlength="5000"></textarea>
 				</div>
 
 				<!-- Priority -->

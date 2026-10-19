@@ -250,7 +250,7 @@ describe('POST /api/cards', () => {
 
 		expect((await expectRefused(post(s.owner, 99999), 404)).body.message).toBe('Column not found');
 		expect((await expectRefused(post(s.outsider, s.A.cols['To Do'].id), 403)).body.message).toBe('No edit access to this board');
-		expect((await expectRefused(post(s.owner, s.A.cols['To Do'].id), 400)).body.message).toBe('Title too long (max 500 chars)');
+		expect((await expectRefused(post(s.owner, s.A.cols['To Do'].id), 400)).body.message).toBe('title must be at most 500 characters');
 	});
 });
 

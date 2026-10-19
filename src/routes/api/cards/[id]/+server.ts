@@ -91,14 +91,10 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 				min: 1,
 				max: 500,
 				keep: existingCard.title,
-				says: { empty: 'title cannot be empty', invalid: 'Title too long (max 500 chars)' }
+				says: { empty: 'title cannot be empty' }
 			});
 			if (title !== undefined) updateData.title = title;
-			const description = readText(body, 'description', {
-				max: 50000,
-				keep: existingCard.description,
-				says: { invalid: 'Description too long (max 50000 chars)' }
-			});
+			const description = readText(body, 'description', { max: 50000, keep: existingCard.description });
 			if (description !== undefined) updateData.description = description;
 			const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true, keep: existingCard.priority });
 			if (priority !== undefined) updateData.priority = priority;
@@ -110,11 +106,7 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 			if (dueDate !== undefined) updateData.dueDate = dueDate;
 			const onHoldNote = readText(body, 'onHoldNote', { max: 50000, keep: existingCard.onHoldNote });
 			if (onHoldNote !== undefined) updateData.onHoldNote = onHoldNote;
-			const businessValue = readText(body, 'businessValue', {
-				max: 10000,
-				keep: existingCard.businessValue,
-				says: { invalid: 'Business value too long (max 10000 chars)' }
-			});
+			const businessValue = readText(body, 'businessValue', { max: 10000, keep: existingCard.businessValue });
 			if (businessValue !== undefined) updateData.businessValue = businessValue;
 			const pinned = readBoolean(body, 'pinned', { keep: existingCard.pinned });
 			if (pinned !== undefined) updateData.pinned = pinned;

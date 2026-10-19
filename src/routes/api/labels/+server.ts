@@ -44,8 +44,7 @@ function readLabelFields(body: RequestBody, label?: Label): { name?: string; col
 		keep: label?.name,
 		says: {
 			missing: 'name is required',
-			empty: label ? 'name cannot be empty' : 'name is required',
-			invalid: 'Label name too long (max 200 chars)'
+			empty: label ? 'name cannot be empty' : 'name is required'
 		}
 	});
 	const color = readColour(body, 'color', { keep: label?.color });

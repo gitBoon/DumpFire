@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.44
+version: 1.45
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1957,7 +1957,7 @@ same transaction as the insert.
 | `POST /api/account/api-keys` sent | Answer, in this order |
 |-----------------------------------|-----------------------|
 | No session | `401` `Not authenticated` |
-| No name, one that is not text, or one longer than 100 characters | `400` `Key name is required`, `name must be text`, `Key name too long (max 100 chars)` |
+| No name, one that is not text, or one longer than 100 characters | `400` `Key name is required`, `name must be text`, `name must be at most 100 characters` (card 2218; it was `Key name too long (max 100 chars)`) |
 | No `password`, or one that is not text | `400` `Password is required` |
 | An `expiresAt` that is not `null` and not a timestamp in the future | `400` `expiresAt must be a timestamp, such as 2027-01-01T09:00:00Z`, `expiresAt must be in the future`. Until card 2117 any text was stored, and `"banana"` never expired |
 | The account already has ten keys | `400` `Maximum of 10 API keys per user` |

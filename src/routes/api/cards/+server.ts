@@ -57,14 +57,14 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 			trim: true,
 			min: 1,
 			max: 500,
-			says: { missing: 'title is required', empty: 'title is required', invalid: 'Title too long (max 500 chars)' }
+			says: { missing: 'title is required', empty: 'title is required' }
 		});
-		const description = readText(body, 'description', { max: 50000, says: { invalid: 'Description too long (max 50000 chars)' } });
+		const description = readText(body, 'description', { max: 50000 });
 		const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true });
 		const colorTag = readColour(body, 'colorTag', { allowEmpty: true });
 		const categoryId = readId(body, 'categoryId', { nullable: true });
 		const dueDate = readDate(body, 'dueDate', { nullable: true });
-		const businessValue = readText(body, 'businessValue', { max: 10000, says: { invalid: 'Business value too long (max 10000 chars)' } });
+		const businessValue = readText(body, 'businessValue', { max: 10000 });
 		const position = readNumber(body, 'position', {});
 		// The five reporting fields, each in its own vocabulary, with its own 400.
 		const reporting = normaliseReportingFields(body);

@@ -213,7 +213,7 @@ export function requireMilestoneBoard(user: SessionUser, boardId: number): void 
 export function createMilestone(user: SessionUser, input: CreateMilestoneInput): MilestoneRow {
 	const name = (input.name ?? '').trim();
 	if (!name) throw new MilestoneError(400, 'name is required');
-	if (name.length > 200) throw new MilestoneError(400, 'name too long (max 200 chars)');
+	if (name.length > 200) throw new MilestoneError(400, 'name must be at most 200 characters');
 
 	const boardId = input.boardId ?? null;
 	if (boardId !== null) requireMilestoneBoard(user, boardId);
@@ -282,7 +282,7 @@ function fieldsToUpdate(user: SessionUser, milestone: MilestoneRow, patch: Updat
 	if (patch.name !== undefined) {
 		const name = patch.name.trim();
 		if (!name) throw new MilestoneError(400, 'name cannot be empty');
-		if (name.length > 200) throw new MilestoneError(400, 'name too long (max 200 chars)');
+		if (name.length > 200) throw new MilestoneError(400, 'name must be at most 200 characters');
 		updateData.name = name;
 	}
 	if (patch.description !== undefined) updateData.description = patch.description;

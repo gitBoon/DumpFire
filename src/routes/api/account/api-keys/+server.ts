@@ -52,7 +52,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 		trim: true,
 		min: 1,
 		max: 100,
-		says: { missing: 'Key name is required', empty: 'Key name is required', invalid: 'Key name too long (max 100 chars)' }
+		says: { missing: 'Key name is required', empty: 'Key name is required' }
 	});
 	const password = readText(body, 'password', { required: true, min: 1, says: 'Password is required' });
 	// A moment yet to come, kept in the stored form, `YYYY-MM-DD HH:MM:SS` in

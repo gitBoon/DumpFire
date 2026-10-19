@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.32
+version: 1.33
 status: As-Built
 date: 2026-10-19
 tags:
@@ -403,7 +403,20 @@ flowchart LR
   priority stored before the rules, still saves. A create has no `keep`.
 - **`says`** replaces the reader's texts, all of them or one of `missing`, `type`, `empty`
   and `invalid`. It is how the texts that tests, documents and pages quote were kept:
-  `says: { invalid: 'Title too long (max 500 chars)' }`.
+  `says: { missing: 'Title is required' }`. A length limit is never reworded: since card
+  2218 every one is answered in the reader's own words,
+  `<name> must be at most <max> characters`, in both trees, where 40 readers in 32 route
+  files had said `Title too long (max 500 chars)` and the like. `tests/request-body.test.ts`
+  holds it by the code's shape, not its words: under `src/routes` and `src/lib/server`, a
+  length reader (`readText`, `readUrl`, `readEmailText`, `readReportRecipients`, read from
+  the module) whose rule, written in the call, has a `max` may be given only a `says`
+  written out there as an object, whose `invalid`, if it has one, is a text or template
+  ending `must be at most <max> characters` with the rule's own number (a path in front,
+  as templates and backup destinations write it, is allowed). A constant, a shared or
+  shorthand `says`, a helper's call, a spread and other words or another number each fail,
+  named by file and line. What it does not prove: a route that throws its own `400`
+  (`error(400, 'Title too long')`) without a reader, and a rule handed to a reader by name
+  rather than written in the call (`readWebhookUrl`'s), are outside the check.
 - **Nothing is turned into another type**, but for a number written as text that is exactly
   a number (`"5"`, `"-2.5"`, not `"1e3"`), which is read as that number wherever a number or
   an id is read.

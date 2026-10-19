@@ -59,7 +59,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		trim: true,
 		min: 1,
 		max: 200,
-		says: { missing: 'name is required', empty: 'name is required', invalid: 'Board name too long (max 200 chars)' }
+		says: { missing: 'name is required', empty: 'name is required' }
 	});
 	const emoji = readText(body, 'emoji', { min: 1, max: 32 });
 	const parentCardId = readId(body, 'parentCardId', { nullable: true });

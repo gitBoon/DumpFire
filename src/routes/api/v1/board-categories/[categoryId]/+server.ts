@@ -39,7 +39,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			min: 1,
 			max: 200,
 			keep: grouping.name,
-			says: { empty: 'name cannot be empty', invalid: 'Name too long (max 200 chars)' }
+			says: { empty: 'name cannot be empty' }
 		});
 		if (name !== undefined) updateData.name = name;
 		const color = readColour(body, 'color', { keep: grouping.color });

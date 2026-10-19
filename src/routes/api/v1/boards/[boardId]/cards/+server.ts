@@ -127,9 +127,9 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 			trim: true,
 			min: 1,
 			max: 500,
-			says: { missing: 'title is required', empty: 'title is required', invalid: 'Title too long (max 500 chars)' }
+			says: { missing: 'title is required', empty: 'title is required' }
 		});
-		const description = readText(body, 'description', { max: 50000, says: { invalid: 'Description too long (max 50000 chars)' } });
+		const description = readText(body, 'description', { max: 50000 });
 		const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true });
 		const colorTag = readColour(body, 'colorTag', { allowEmpty: true });
 		const categoryId = readId(body, 'categoryId', { nullable: true });

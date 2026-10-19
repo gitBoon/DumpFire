@@ -300,7 +300,7 @@ describe('a new card the server does not make (the review of cards 2147 and 2163
 		const saved = windowSaves({ ...NEW_TASK, title: 'x'.repeat(501), templateLabels: [bug.id] });
 		const refused = await cardActions.saveCard(null, A.cols['To Do'].id, A.board.id, onThePage(A), saved);
 
-		expect(refused).toEqual({ isNew: false, title: 'x'.repeat(501), failure: 'Title too long (max 500 chars)' });
+		expect(refused).toEqual({ isNew: false, title: 'x'.repeat(501), failure: 'title must be at most 500 characters' });
 		// No label sent for a card that is not there.
 		expect(sent.map((request) => `${request.method} ${request.url}`)).toEqual(['POST /api/cards']);
 		expect(db.select().from(cards).all()).toEqual([]);

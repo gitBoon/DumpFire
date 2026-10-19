@@ -76,7 +76,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 			min: 1,
 			max: 200,
 			keep: milestone.name,
-			says: { empty: 'name cannot be empty', invalid: 'name too long (max 200 chars)' }
+			says: { empty: 'name cannot be empty' }
 		});
 		const description = readText(body, 'description', { max: 50000, keep: milestone.description });
 		const targetDate = readDate(body, 'targetDate', { nullable: true, keep: milestone.targetDate });

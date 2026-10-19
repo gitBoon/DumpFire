@@ -76,7 +76,7 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 			min: 1,
 			max: 500,
 			keep: before.title,
-			says: { empty: 'title cannot be empty', invalid: 'Title too long (max 500 chars)' }
+			says: { empty: 'title cannot be empty' }
 		});
 		if (title !== undefined) updateData.title = title;
 		const description = readText(body, 'description', { max: 50000, keep: before.description });
