@@ -30,6 +30,7 @@ import {
 	hostKeyChanges,
 	keepMaskedSecrets,
 	maskDestination,
+	quotedName as quoted,
 	settingsChanges,
 	twiceNamed,
 	type BackupSettingsChanges,
@@ -51,13 +52,6 @@ import { requireSuperadmin } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('BACKUP');
-
-/**
- * A destination's name in quotation marks for a line, with each `\` and `"`
- * in it escaped (`\\`, `\"`), so that no name can end the quotation early and
- * make the rest of the line read as something else (the card 2270 review).
- */
-const quoted = (name: string) => `"${name.replace(/[\\"]/g, '\\$&')}"`;
 
 /**
  * The line a save writes for one SFTP host key it adds, changes or removes

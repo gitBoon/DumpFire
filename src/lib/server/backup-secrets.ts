@@ -1177,6 +1177,15 @@ function fieldDiffers(a: Entry, b: Entry, field: string): boolean {
 }
 
 /**
+ * A destination's name in quotation marks for a line, with each `\` and `"`
+ * in it escaped (`\\`, `\"`), so that no name can end the quotation early and
+ * make the rest of the line read as something else (the card 2270 review).
+ * Shared by every line about a change to the backup settings: a save's (cards
+ * 2267 and 2270) and a Google Drive Connect's (card 2273).
+ */
+export const quotedName = (name: string) => `"${name.replace(/[\\"]/g, '\\$&')}"`;
+
+/**
  * What a save of the backup settings changes (card 2270), `before` as stored
  * and `after` as it is to be saved, or null where it changes nothing, so that
  * such a save writes no line (decision 5). A destination is matched by name, as

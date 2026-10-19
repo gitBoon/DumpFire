@@ -31,6 +31,8 @@ import { google, type Auth, type drive_v3 } from 'googleapis';
 import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
 import { getBackupConfig, saveBackupConfig } from '$lib/server/backup';
 import { makeDumpfireFolder, reachFolder } from '$lib/server/backup-destinations';
+import { quotedName } from '$lib/server/backup-secrets';
+import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { startConnect, takeConnect } from '$lib/server/gdrive-connect';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { readBody, readText } from '$lib/server/request-body';
@@ -38,6 +40,8 @@ import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 
 const log = createLogger('GDRIVE');
+/** A Connect saved is a change to the backup settings, so its line is beside theirs (card 2273, decision 2). */
+const backupLog = createLogger('BACKUP');
 
 /** What Connect asks Google for: DumpFire's own files, nothing else (card 2188, decision 6). */
 const SCOPES = [DRIVE_FILE_SCOPE];
@@ -73,6 +77,28 @@ const CHANGED_MEANWHILE = 'The destination was changed or removed while it was b
 const NOT_STARTED_HERE =
 	'This connection was not started from this session, or has expired or been used. ' +
 	"Press Connect again, and paste the whole address Google's page leads to.";
+
+/** What a Connect saved: the line's meta (card 2273, decision 3), with no token, code, state, verifier or folder id. */
+interface ConnectSaved {
+	destination: string;
+	/** The scope granted, as the page reads it: `drive.file` alone, anything else, or none named by Google. */
+	scope: 'narrow' | 'wide' | 'none';
+	folder: 'made' | 'reached';
+	/** Whether the destination held a refresh token already, which this Connect replaced (decision 1). */
+	replaced: boolean;
+}
+
+/**
+ * The line a Connect saved writes (card 2273): the destination's name, quoted
+ * as the backup settings' lines quote it, the scope's kind and what was done
+ * for the folder.
+ */
+function connectLine(saved: ConnectSaved): string {
+	const connected = saved.replaced ? 'connected again, replacing the connection it had' : 'connected';
+	const scope = { narrow: 'scope narrow (drive.file)', wide: 'scope wide', none: 'scope none named (read as wide)' }[saved.scope];
+	const folder = saved.folder === 'made' ? 'a folder made' : 'its folder reached';
+	return `Google Drive destination ${quotedName(saved.destination)} ${connected}: ${scope}; ${folder}`;
+}
 
 /**
  * GET — Generate the Google OAuth consent URL, with a new state and PKCE
@@ -126,6 +152,13 @@ export const GET: RequestHandler = async ({ locals, url }) => {
  * follows, and refused unless this session, this account and this destination
  * started it within ten minutes. Nothing is exchanged or written then. The
  * code goes to Google with the Connect's PKCE verifier.
+ *
+ * A Connect saved writes one line under `BACKUP`, filed under the account,
+ * once the write is committed (card 2273): the destination, the scope's kind
+ * and whether a folder was made or reached, never a secret. An `INFO` for a
+ * destination's first connection, a `WARN` for one that replaces a connection
+ * it had, since that can send every later backup to another Google account,
+ * which the server cannot see. A Connect refused, or not saved, writes none.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const caller = requireSuperadmin(locals.user);
@@ -141,8 +174,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!started) {
 		// Filed under the account, and telling a paste with no state (an old page,
 		// or a bare code) from one whose state failed; the answer says neither.
+		// The name quoted as every line of the Connect quotes it (the card 2273 review).
 		log.warn(
-			`Google Drive Connect refused for destination "${destName}": its state was not one this session started, or had expired or been used`,
+			`Google Drive Connect refused for destination ${quotedName(destName)}: its state was not one this session started, or had expired or been used`,
 			{ stateSent: !!state },
 			{ userId: caller.id }
 		);
@@ -163,12 +197,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	/** The folder this Connect made, until it is saved: deleted again if it is not. */
 	let made: { id: string; name: string } | null = null;
 	let drive: drive_v3.Drive | null = null;
+	// Every line of the Connect is filed under the account that pressed it, with
+	// the name quoted as the backup settings' lines quote it (the card 2273 review).
+	const byCaller = { userId: caller.id };
 	const removeMade = async () => {
 		if (!made || !drive) return;
 		try {
 			await drive.files.delete({ fileId: made.id, supportsAllDrives: true });
 		} catch (err: any) {
-			log.warn(`Could not delete the folder ${made.id} made for destination "${destName}" by a Connect that was not saved: ${err?.message ?? err}`);
+			log.warn(
+				`Could not delete the folder ${made.id} made for destination ${quotedName(destName)} by a Connect that was not saved: ${err?.message ?? err}`,
+				undefined,
+				byCaller
+			);
 		}
 	};
 
@@ -183,7 +224,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		if (folderId) {
 			const reached = await reachFolder(drive, folderId);
 			if (!reached.reached) {
-				log.warn(`Connect of destination "${destName}" refused: Google Drive cannot reach its folder ${folderId}: ${reached.reason}`);
+				log.warn(`Connect of destination ${quotedName(destName)} refused: Google Drive cannot reach its folder ${folderId}: ${reached.reason}`, undefined, byCaller);
 				const wide = connectedBefore && !driveScopeIsNarrow(dest.grantedScope);
 				const kept = connectedBefore ? 'Nothing was changed: the destination keeps the connection it had.' : 'Nothing was changed.';
 				return json({ success: false, message: `${CANNOT_REACH} ${kept} ${wide ? REMEDY_WIDE : REMEDY_NARROW}` });
@@ -192,19 +233,38 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			made = await makeDumpfireFolder(drive);
 		}
 
-		// Read again, and written with nothing awaited between (decision 9).
-		const current = getBackupConfig();
-		const index = current.destinations.findIndex(d => d.name === destName && d.type === 'gdrive');
-		const now = index === -1 ? null : (current.destinations[index] as any);
-		if (!now || now.clientId !== clientId || now.clientSecret !== clientSecret || (now.folderId || '') !== folderId) {
+		// Read again, and written with nothing awaited between (decision 9), in
+		// one transaction: the line is queued to follow the commit, since the
+		// logger writes a row logged inside a transaction whichever way it ends,
+		// and a write that fails would leave a line for a Connect never saved
+		// (card 2273, decision 4, as cards 2267 and 2270 have it).
+		const refreshToken = tokens.refresh_token;
+		const grantedScope = typeof tokens.scope === 'string' && tokens.scope.trim() !== '' ? tokens.scope : null;
+		const madeNow = made;
+		const written = inTransaction(() => {
+			const current = getBackupConfig();
+			const index = current.destinations.findIndex(d => d.name === destName && d.type === 'gdrive');
+			const now = index === -1 ? null : (current.destinations[index] as any);
+			if (!now || now.clientId !== clientId || now.clientSecret !== clientSecret || (now.folderId || '') !== folderId) return false;
+			const connected = { ...now, refreshToken, folderId: madeNow ? madeNow.id : folderId };
+			delete connected.grantedScope;
+			if (grantedScope !== null) connected.grantedScope = grantedScope;
+			current.destinations[index] = connected;
+			// Replaced: a token in the settings as read again, so a Connect finished meanwhile counts.
+			const saved: ConnectSaved = {
+				destination: destName,
+				scope: grantedScope === null ? 'none' : driveScopeIsNarrow(grantedScope) ? 'narrow' : 'wide',
+				folder: madeNow ? 'made' : 'reached',
+				replaced: !!now.refreshToken
+			};
+			afterCommit(() => (saved.replaced ? backupLog.warn : backupLog.info)(connectLine(saved), saved, byCaller));
+			saveBackupConfig(current);
+			return true;
+		});
+		if (!written) {
 			await removeMade();
 			return json({ success: false, message: CHANGED_MEANWHILE });
 		}
-		const connected = { ...now, refreshToken: tokens.refresh_token, folderId: made ? made.id : folderId };
-		delete connected.grantedScope;
-		if (typeof tokens.scope === 'string' && tokens.scope.trim() !== '') connected.grantedScope = tokens.scope;
-		current.destinations[index] = connected;
-		saveBackupConfig(current);
 		const saved = made;
 		made = null;
 
@@ -218,7 +278,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// The exchange, a call to Drive, or the write: a folder made and not
 		// saved is deleted again, so a failed Connect leaves nothing behind.
 		await removeMade();
-		log.error(`Google Drive Connect failed for destination "${destName}": ${err.message}`);
+		log.error(`Google Drive Connect failed for destination ${quotedName(destName)}: ${err.message}`, undefined, byCaller);
 		return json({ success: false, message: err.message || 'Failed to exchange auth code' });
 	}
 };
