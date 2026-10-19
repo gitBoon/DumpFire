@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.39
+version: 1.40
 status: As-Built
 date: 2026-10-19
 tags:
@@ -680,6 +680,18 @@ Each line carries a timestamp and its level before the module name:
 [2026-10-12T15:14:16.640Z] [WARN] [BACKUP] Backup scheduler initialized
 [2026-10-12T15:14:21.903Z] [INFO] [HTTP] GET /board/1 → 200 (12ms) | {"method":"GET","path":"/board/1","status":200,"durationMs":12}
 ```
+
+**Every entry is one line** (card 2214). A line break, a tab, ESC or any other control
+character in what a line names, a board's name or a card's title typed with a line break
+among them, is written as a space: on the console, in the stored row and on the Audit
+page's Live Console, where the line's detail shows it on one line. So are the characters
+that change the direction text reads in (U+202A to U+202E, U+2066 to U+2069) and those
+that show as nothing (U+200B to U+200F, U+FEFF), and the same goes for the entry's
+address. So no name can begin a line of its own that reads as another entry
+(`[CRITICAL] [AUTH] ...`), make a line read in another order, or send escape sequences to
+the terminal of whoever reads `docker logs`. Rows the server did not write this way are
+not cleaned: those written before the update that brings this, and those a restored
+backup brings in, can still hold one; they go with the 30-day retention.
 
 **After the update that brings migration 0053, everybody is signed out once**, you
 included (card 2106): see [Every Session Ended Once](authentication-security.md#every-session-ended-once-by-migration-0053).

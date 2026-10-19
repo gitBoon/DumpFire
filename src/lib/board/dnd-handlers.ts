@@ -7,7 +7,8 @@
  * - On Hold note clearing when moving out of On Hold, on the page only: the
  *   server clears the stored note in the move itself (card 2208)
  * - Activity logging for card movements
- * - Position persistence via the API
+ * - Position persistence via the API, for the columns a drop touched alone
+ *   (card 2213)
  *
  * These functions accept board state as parameters and return
  * action descriptors that the board page uses to update its $state.
@@ -23,6 +24,36 @@ import {
 	incompleteCount,
 	subBoardIncompleteCount
 } from '$lib/utils/card-utils';
+
+/**
+ * The positions a drop saves (card 2213): every card of the column dropped
+ * into, and of each column one of `newItems` came from, numbered from 0 in
+ * the order the page holds them, and no card of any other column.
+ *
+ * A drop used to send every card of the board. Each column is sent whole,
+ * not just the cards moved, so that the column dropped into is numbered again
+ * with no gap and no two cards at one position. `columns` already holds
+ * `newItems` in the target column. A card still carries the column it was
+ * read in until the board is read again, which is how the columns it came
+ * from are known.
+ */
+export function touchedUpdates(
+	columns: ColumnType[],
+	targetColumnId: number,
+	newItems: CardType[]
+): { id: number; columnId: number; position: number }[] {
+	const touched = new Set<number>([targetColumnId]);
+	for (const card of newItems) touched.add(card.columnId);
+
+	const updates: { id: number; columnId: number; position: number }[] = [];
+	for (const column of columns) {
+		if (!touched.has(column.id)) continue;
+		for (let i = 0; i < column.cards.length; i++) {
+			updates.push({ id: column.cards[i].id, columnId: column.id, position: i });
+		}
+	}
+	return updates;
+}
 
 /**
  * Result of processing a card DnD finalize event.
@@ -97,14 +128,9 @@ export async function handleCardDndFinalize(
 	if (isOnHoldColumn(targetCol.title)) {
 		for (const card of newItems) {
 			if (card.columnId !== columnId) {
-				// Build the full updates array for later commit
-				const allUpdates: { id: number; columnId: number; position: number }[] = [];
+				// The touched columns, sent once the note is confirmed
 				targetCol.cards = newItems;
-				for (const column of columns) {
-					for (let i = 0; i < column.cards.length; i++) {
-						allUpdates.push({ id: column.cards[i].id, columnId: column.id, position: i });
-					}
-				}
+				const pendingUpdates = touchedUpdates(columns, columnId, newItems);
 				return {
 					action: 'on-hold',
 					onHoldState: {
@@ -112,7 +138,7 @@ export async function handleCardDndFinalize(
 						cardId: card.id,
 						cardTitle: card.title,
 						note: card.onHoldNote || '',
-						pendingUpdates: allUpdates,
+						pendingUpdates,
 						pendingColumnId: columnId
 					},
 					updatedColumns: columns
@@ -125,12 +151,7 @@ export async function handleCardDndFinalize(
 	targetCol.cards = newItems;
 	const movedCards = newItems.filter(card => card.columnId !== columnId);
 
-	const updates: { id: number; columnId: number; position: number }[] = [];
-	for (const column of columns) {
-		for (let i = 0; i < column.cards.length; i++) {
-			updates.push({ id: column.cards[i].id, columnId: column.id, position: i });
-		}
-	}
+	const updates = touchedUpdates(columns, columnId, newItems);
 
 	// The answer is read: a move the server refused (a card it will not
 	// complete, a board the caller may not edit) was shown as done, with its

@@ -47,7 +47,10 @@ import { posix } from 'node:path';
 import { createdAtStart, getDbPath, otherDatabaseAtStart, sqlite } from './db';
 import { DatabaseLocationError, described, heldInContainerLayer, type OtherDatabase } from './db/location';
 import { PLACEHOLDER_ORIGIN, configuredOrigin, getAppUrl } from './email';
-import { createLogger, isLogged } from './logger';
+// `printable` is the logger's cleaner (card 2214), which `emit` applies to
+// every line as well. Names are still put through it where they sit inside
+// quotes, and the line printed past LOG_LEVEL below does not go through `emit`.
+import { createLogger, isLogged, printable } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
@@ -192,13 +195,6 @@ export function reportWebhooksRefused(): boolean {
 }
 
 /**
- * A name or a title as the line prints it: each control character, a line
- * break above all, as a space. Names are printed as stored, and one holding a
- * line break would split the console line and could forge one after it.
- */
-const printable = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, ' ');
-
-/**
  * One WARN line when any board hangs beneath one of its own cards, naming each
  * such board, the card it hangs from and the board that card is on, and the
  * way out. Returns whether it was said.
@@ -253,7 +249,7 @@ const isMemory = (dbPath: string) => dbPath === ':memory:' || dbPath === '';
  */
 function warnOnConsoleAlways(message: string): void {
 	log.warn(message);
-	if (!isLogged('WARN')) console.warn(`[${new Date().toISOString()}] [WARN] [STARTUP] ${message}`);
+	if (!isLogged('WARN')) console.warn(`[${new Date().toISOString()}] [WARN] [STARTUP] ${printable(message)}`);
 }
 
 /**

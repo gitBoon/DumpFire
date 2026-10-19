@@ -18,7 +18,7 @@
 	import { onMount, onDestroy, tick as nextTick, untrack } from 'svelte';
 	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
-	import { dndzone } from 'svelte-dnd-action';
+	import { dndzone, TRIGGERS } from 'svelte-dnd-action';
 	import { flip } from 'svelte/animate';
 	import { theme } from '$lib/stores/theme';
 	import { toasts } from '$lib/stores/toast';
@@ -893,6 +893,16 @@
 		// Clear sort on manual drag
 		if (columnSorts[columnId]) {
 			columnSorts = { ...columnSorts, [columnId]: 'none' };
+		}
+		// A drop into another column fires here twice, in either order: for the
+		// column dropped into, and for the column the card left. The call for
+		// the column dropped into sends both (card 2213), so the other only
+		// takes its items. It used to send the whole board as well, past the On
+		// Hold note and the blocked-card check, so Cancel on the note did not
+		// undo the move.
+		if (e.detail.info?.trigger === TRIGGERS.DROPPED_INTO_ANOTHER) {
+			handleCardDndConsider(columnId, e);
+			return;
 		}
 		const started = toasts.navigation();
 		const result = await dndHandlers.handleCardDndFinalize(

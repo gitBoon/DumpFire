@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.31
+version: 1.32
 status: As-Built
 date: 2026-10-19
 tags:
@@ -820,14 +820,17 @@ the API (`PUT /api/v1/cards/:id/move`). All three call the same three functions 
 `src/lib/server/card-moves.ts`, in the same order and inside one transaction, so a move
 means the same thing however it is made.
 
-The drag is the one that names many cards. The board page's drop sends every card of the
-board that is not archived, in every column, with its column and position, not only the
-cards it moved; a bulk move of selected cards sends those cards. So the reorder is held to
+The drag is the one that names many cards. The board page's drop sends every card that is
+not archived of the column dropped into and of the column the card came from (an archived
+card is not on the page, so it is never sent), with its column and position,
+not only the card it moved, so that both columns are numbered from 0 with no gap (card
+2213; it sent every card of the board, from both columns' drop events); a bulk move of
+selected cards sends those cards. So the reorder is held to
 two caps (card 2209), `MAX_REORDER_ENTRIES = 5000` and `MAX_CARDS_MOVED_AT_ONCE = 100` in
 `card-moves.ts`:
 
 - **At most 5,000 entries**, checked as soon as `updates` is read, before any card is read.
-  It sits above the largest board, because a drop names every card on it.
+  It sits far above any real drop, which names the cards of two columns.
   `400` `A reorder can name at most 5,000 cards, and this names 5,001. Nothing was moved.`
 - **Each card once**, checked next, from the entries' ids alone, before any card is read
   (the review of card 2209). `400` `updates names card 12 more than once`. A card named

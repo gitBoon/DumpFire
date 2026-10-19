@@ -3018,6 +3018,137 @@ describe('a drop out of On Hold, src/lib/board/dnd-handlers.ts (card 2208)', () 
 	});
 });
 
+describe('a drop sends the columns it touched, once, src/lib/board/dnd-handlers.ts and the board page (card 2213)', () => {
+	// A drop sent every card of the board, from both zones: svelte-dnd-action
+	// fires `finalize` on the zone dropped into and then on the zone the card
+	// left. The second call found no card coming in, so it skipped the On Hold
+	// note and the blocked-card check, and still sent the card in its new
+	// column: Cancel on the On Hold note did not undo the move, and a blocked
+	// card dropped onto Complete showed a red toast beside its window.
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	type Entry = { id: number; columnId: number; position: number };
+	const card = (id: number, columnId: number) =>
+		({ id, columnId, title: `Card ${id}`, subtasks: [], subBoards: [], onHoldNote: '' }) as unknown as CardType;
+	/** Three columns of 3, 2 and 4 cards: 1-3 in To Do (1), 4-5 in In Progress (2), 6-9 in the third. */
+	const board = (third = 'Review') =>
+		[
+			{ id: 1, title: 'To Do', cards: [card(1, 1), card(2, 1), card(3, 1)] },
+			{ id: 2, title: 'In Progress', cards: [card(4, 2), card(5, 2)] },
+			{ id: 3, title: third, cards: [card(6, 3), card(7, 3), card(8, 3), card(9, 3)] }
+		] as unknown as ColumnType[];
+
+	/** Each request's method, path and `updates`, with `fetch` answering 200. */
+	function watchRequests() {
+		const sent: { what: string; updates?: Entry[] }[] = [];
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			const body = init.body ? JSON.parse(String(init.body)) : {};
+			sent.push({ what: `${init.method} ${url}`, updates: body.updates });
+			return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+		return sent;
+	}
+
+	it('sends the cards of the column dropped into and of the column the card came from, numbered from 0, and none of any other', async () => {
+		const sent = watchRequests();
+		const columns = board();
+		const moving = columns[0].cards[1];
+		// What the page holds as the target zone fires: the card has left To Do.
+		columns[0].cards = [columns[0].cards[0], columns[0].cards[2]];
+
+		const result = await dndHandlers.handleCardDndFinalize(2, [columns[1].cards[0], moving, columns[1].cards[1]], columns, 9, 'editor', '🦊');
+
+		expect(result.action).toBe('committed');
+		expect(sent.map((s) => s.what)).toEqual(['PUT /api/cards/reorder']);
+		expect(sent[0].updates).toEqual([
+			{ id: 1, columnId: 1, position: 0 },
+			{ id: 3, columnId: 1, position: 1 },
+			{ id: 4, columnId: 2, position: 0 },
+			{ id: 2, columnId: 2, position: 1 },
+			{ id: 5, columnId: 2, position: 2 }
+		]);
+	});
+
+	it('sends a drop within one column as that column’s cards alone', async () => {
+		const sent = watchRequests();
+		const columns = board();
+		const [six, seven, eight, nine] = columns[2].cards;
+
+		await dndHandlers.handleCardDndFinalize(3, [nine, six, seven, eight], columns, 9, 'editor', '🦊');
+
+		expect(sent.map((s) => s.updates)).toEqual([
+			[
+				{ id: 9, columnId: 3, position: 0 },
+				{ id: 6, columnId: 3, position: 1 },
+				{ id: 7, columnId: 3, position: 2 },
+				{ id: 8, columnId: 3, position: 3 }
+			]
+		]);
+	});
+
+	it('holds a drop into On Hold back with the two touched columns alone, and sends them only when the note is confirmed', async () => {
+		const sent = watchRequests();
+		const columns = board();
+		const moving = columns[0].cards[0];
+		columns[0].cards = columns[0].cards.slice(1);
+
+		const result = await dndHandlers.handleCardDndFinalize(2, [moving, ...columns[1].cards], columns.map((c) =>
+			c.id === 2 ? { ...c, title: 'On Hold' } : c
+		), 9, 'editor', '🦊');
+
+		expect(result.action).toBe('on-hold');
+		expect(sent).toEqual([]);
+		const held = result.action === 'on-hold' ? result.onHoldState : null;
+		const expected = [
+			{ id: 2, columnId: 1, position: 0 },
+			{ id: 3, columnId: 1, position: 1 },
+			{ id: 1, columnId: 2, position: 0 },
+			{ id: 4, columnId: 2, position: 1 },
+			{ id: 5, columnId: 2, position: 2 }
+		];
+		expect(held?.pendingUpdates).toEqual(expected);
+
+		await dndHandlers.confirmOnHold({ ...held!, note: 'waiting on X' }, 9, 'editor', '🦊');
+		expect(sent.map((s) => s.what)).toEqual(['PUT /api/cards/1', 'PUT /api/cards/reorder']);
+		expect(sent[1].updates).toEqual(expected);
+	});
+
+	it('called as the zone the card left, with its shadow already in On Hold, names no card outside that zone', async () => {
+		const sent = watchRequests();
+		const columns = board('On Hold');
+		const moving = columns[0].cards[0];
+		// The origin zone's `finalize` comes after the target's: the page's On
+		// Hold column still holds the shadow item, which carries the card's id.
+		columns[0].cards = columns[0].cards.slice(1);
+		columns[2].cards = [{ ...moving, isDndShadowItem: true } as CardType, ...columns[2].cards];
+
+		await dndHandlers.handleCardDndFinalize(1, columns[0].cards, columns, 9, 'editor', '🦊');
+
+		for (const request of sent) {
+			expect(request.updates?.every((u) => u.columnId === 1)).toBe(true);
+			expect(request.updates?.map((u) => u.id)).not.toContain(moving.id);
+		}
+	});
+
+	it('is not called by the board page for the zone the card left: that zone takes its items and sends nothing', () => {
+		const finalize = functionNamed(scriptOf('src/routes/board/[id]/+page.svelte'), 'handleCardDndFinalize');
+		const text = finalize.getText().replace(/\s+/g, ' ');
+
+		const leaving = text.indexOf('if (e.detail.info?.trigger === TRIGGERS.DROPPED_INTO_ANOTHER) {');
+		expect(leaving).toBeGreaterThan(-1);
+		expect(leaving).toBeLessThan(text.indexOf('dndHandlers.handleCardDndFinalize('));
+		const branch = text.slice(leaving, text.indexOf('}', text.indexOf('return;', leaving)) + 1);
+		expect(branch).toContain('handleCardDndConsider(columnId, e);');
+		expect(branch).toContain('return;');
+		expect(branch).not.toMatch(/api\.|dndHandlers\.|toasts\.|invalidateAll/);
+
+		const source = readFileSync(join(ROOT, 'src/routes/board/[id]/+page.svelte'), 'utf8');
+		expect(source).toMatch(/import \{[^}]*\bTRIGGERS\b[^}]*\} from 'svelte-dnd-action';/);
+	});
+});
+
 describe('the share window’s role select, src/lib/components/ShareModal.svelte (card 2115’s review)', () => {
 	// The share route makes nobody an owner now (card 2117's readers, card
 	// 2115's guard): `owner` is refused to anyone not already stored as one.

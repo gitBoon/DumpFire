@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.54
+version: 1.55
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1647,8 +1647,11 @@ API:
   move for every entry, past the cap below); more cards moved is `400`
   `At most 100 cards can be moved to another column at once, and this moves 101. Nothing was moved: move them in groups of 100 or fewer.`,
   checked once every card and column has been read and the caller found able to edit the
-  board. Nothing moves and nothing is sent. The board page's drop sends every card of the
-  board and moves one; only a bulk move of more than 100 selected cards meets the cap, and
+  board. Nothing moves and nothing is sent. The board page's drop sends every card that is
+  not archived of the column dropped into and of the column the card came from, and moves
+  one (card 2213: it
+  sent every card of the board, twice); only a bulk move of more than 100 selected cards
+  meets the cap, and
   the page now says so in an error toast and keeps the selection
   (`No answer from the server. The cards may not have been moved.` when there is none),
   where it read no answer. So one request sends at most 100 deliveries to each webhook of
