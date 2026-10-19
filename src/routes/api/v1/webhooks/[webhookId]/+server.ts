@@ -4,7 +4,7 @@ import { db } from '$lib/server/db';
 import { webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireBoard, requireUser, type Need } from '$lib/server/route-guards';
-import { canSeeWebhookSecret, presentWebhook, storedEvents, WEBHOOK_EVENTS } from '$lib/server/webhooks';
+import { canSeeWebhookSecret, forgetDelivery, presentWebhook, storedEvents, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { inTransaction } from '$lib/server/db/transaction';
 import { pathId, readBody, readBoolean, readChoices, readText } from '$lib/server/request-body';
 import { readWebhookUrl } from '$lib/server/webhook-address';
@@ -107,12 +107,18 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	return json(presentWebhook(updated, reveal));
 };
 
-/** DELETE /api/v1/webhooks/:webhookId — Delete a webhook. */
+/**
+ * DELETE /api/v1/webhooks/:webhookId — Delete a webhook.
+ *
+ * Its last delivery result, held in memory (card 2178), is forgotten once the
+ * delete has committed.
+ */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	const webhookId = pathId(params.webhookId, 'webhook');
 	requireWebhook(locals.user, webhookId, 'edit');
 
 	db.delete(webhooks).where(eq(webhooks.id, webhookId)).run();
+	forgetDelivery(webhookId);
 
 	return json({ success: true });
 };

@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.38
+version: 1.39
 status: As-Built
-date: 2026-10-18
+date: 2026-10-19
 tags:
   - authentication
   - security
@@ -2056,7 +2056,7 @@ until October 2026.
 | Create a card category or template on the board | ✅ | ✅ | ❌ | ✅ |
 | Create a webhook, change its events, switch it off, and delete it | ✅ | ✅ | ❌ | ✅ |
 | Change a webhook's address or secret, or switch it on (since card 2154: an editor who sends `url` or `secret` at all, or `active: true` for one that is off, is `403`) | ✅ | ❌ | ❌ | ✅ |
-| Read a webhook's signing secret and address (the address since card 2133) | ✅ | ❌ | ❌ | ✅ |
+| Read a webhook's signing secret, address and last delivery result (the address since card 2133, `lastDelivery` since card 2178) | ✅ | ❌ | ❌ | ✅ |
 | Read the email addresses in the board's share list (since card 2128) | ✅ | ❌ | ❌ | ✅ |
 | Share board | ✅ | ❌ | ❌ | ✅ |
 | Make the board public or private, by any route | ✅ | ❌ | ❌ | ✅ |
@@ -2633,7 +2633,7 @@ sequenceDiagram
         S->>S: EWEBHOOKINSIDE: WARN, no connection
     else All outside
         S->>R: POST, connected to the address judged
-        R-->>S: Status line, read for a redirect only
+        R-->>S: Status line, kept as lastDelivery, a redirect logged
     end
 ```
 
@@ -2675,7 +2675,9 @@ sequenceDiagram
   with anything else listening on it, `host.docker.internal` above all, is not to be listed;
   name a dedicated host or address. Nor is a range that holds this container's own address:
   its Docker network (`172.16.0.0/12`, or the narrower network it is on) opens this server too;
-  name the receiver's single address or name instead. It is an environment variable, not an admin setting, so neither an administrator's
+  name the receiver's single address or name instead. A board's owner, which any account can
+  be, also reads back what each port of a listed host answers, in the webhook's `lastDelivery`
+  (card 2178): a web server's status, a certificate a TLS server presents, or not reached. It is an environment variable, not an admin setting, so neither an administrator's
   session nor a restore can change it. See [Deployment](deployment.md#where-a-webhook-may-send).
 - **The address goes with the secret.** Only the board's owner and an administrator may read a
   webhook's address (card 2133), and only they may change it or its secret, or switch a webhook
@@ -2701,11 +2703,28 @@ sequenceDiagram
 - **How much a board sends over time.** Nothing limits deliveries per board per minute, or
   across the server: the cap is per event, and a burst of changes on a board of 10 webhooks
   sends 10 for each.
-- **A board's owner is not told a webhook is refused or failing.** The result is in the
-  system log only, which administrators read: one refusal or redirect `WARN` per webhook and
-  kind of refusal per hour (the next one counts those not written), each failure
-  `ERROR` every time, and at every start one line naming each webhook that is on and refused as
-  written. At `LOG_LEVEL=ERROR` neither `WARN` is written.
+- **What a board's owner now reads back** (card 2178). A webhook's answer gives its owner and
+  administrators `lastDelivery`, the last result since the server started (see
+  [Last Delivery](notifications-email.md#last-delivery)). Any signed-in user can own a board and
+  make a key, and until then the requests a webhook made were blind, so two things become
+  readable to a board's owner: whether a host name they typed resolves inside the network
+  (`Not sent: the address is inside the network`, never which address), and the status a
+  service answers on any address a webhook may reach, this server's own public address among
+  them (above). The rest is held to as little as a genuine owner needs. A refused port, a
+  filtered one, a reset, the timeout, something that does not speak HTTP and a TLS error that is
+  not about the certificate all read `The receiver could not be reached, or did not answer
+  within 10 seconds`, and no reason carries a code. Nor does the timing: such a result is
+  recorded no sooner than the timeout after the delivery was given its connection, so a port
+  that refuses at once and one that drops the connection are recorded alike. So the answers
+  cannot map which ports of a host are open beyond those where a web server answers or a TLS
+  server presents a certificate, or fingerprint what listens on the others. Only a name not found and a certificate that fails a check are told apart, since each
+  needs its own fix; a certificate is told only by a TLS server that presents one. A reason never
+  holds the address, its path or query, the secret, an address a name resolved to, or Node's own
+  words. The result is kept in memory, with no row written. The system log keeps each error for
+  administrators: one refusal or redirect `WARN` per webhook and kind of refusal per hour (the
+  next one counts those not written), each failure `ERROR` every time, and at every start one
+  line naming each webhook that is on and refused as written. At `LOG_LEVEL=ERROR` neither
+  `WARN` is written.
 
 Covered by `tests/webhooks.test.ts` and `tests/access-control.test.ts`.
 

@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.18
+version: 1.19
 status: As-Built
-date: 2026-10-18
+date: 2026-10-19
 tags:
   - notifications
   - email
@@ -1009,14 +1009,15 @@ flowchart TD
     Read["GET or PUT a webhook"] --> View{"Can view the board?<br/>(edit, for a PUT)"}
     View -->|"No"| R403["403"]
     View -->|"Yes"| Role{"Board owner or admin?"}
-    Role -->|"Yes"| WithSecret["Webhook + url + secret + hasSecret"]
+    Role -->|"Yes"| WithSecret["Webhook + url + secret + hasSecret<br/>+ lastDelivery"]
     Role -->|"No"| NoSecret["Webhook + hasSecret only:<br/>no url, no secret"]
-    Create["POST a new webhook\n(editor or above)"] --> Once["Webhook + the url and secret just supplied"]
+    Create["POST a new webhook\n(editor or above)"] --> Once["Webhook + the url and secret just supplied,<br/>lastDelivery null"]
 ```
 
 All webhook responses are built by `presentWebhook(hook, reveal)` in
-`src/lib/server/webhooks.ts`, which leaves out `url` and `secret` together unless `reveal`
-is true, so no route can return the raw row. It leaves out `setBy` for every caller.
+`src/lib/server/webhooks.ts`, which leaves out `url`, `secret` and `lastDelivery` (card 2178,
+[Last Delivery](#last-delivery)) together unless `reveal` is true, so no route can return the
+raw row. It leaves out `setBy` for every caller.
 
 ### Who May Change a Webhook
 
@@ -1171,7 +1172,7 @@ flowchart TD
     Connect --> Status{"A status line within 10 s?"}
     Status -->|"300 to 399"| W4["WARN: a redirect, not followed"]
     Status -->|"Any other"| Done["Nothing logged.<br/>The answer is destroyed unread"]
-    Status -->|"An error, or none in time"| E1["ERROR: delivery failed,<br/>host and port only"]
+    Status -->|"An error, none in time,<br/>or closed with no status"| E1["ERROR: delivery failed,<br/>host and port only"]
 ```
 
 What the system log says, under `Webhooks`. Each line names the webhook, its board and its
@@ -1183,7 +1184,7 @@ secret):
 | `Webhook 4 on board 3 not sent: 127.0.0.1 is a loopback address` | `WARN` | The address as written is inside, or a name of the table above. Also `… not sent: the address for <host> carries a user name or password`, `… not sent: its address is not an http or https address (ftp:)` (a row stored before such addresses were refused) and `… not sent: its address is not a URL` |
 | `Webhook 4 on board 3 not sent: localtest.me resolves to 127.0.0.1, a loopback address` | `WARN` | A name resolved, at the connection, to an address inside. No connection is made |
 | `Webhook 4 on board 3: hooks.example.com answered 307, a redirect, which is not followed` | `WARN` | A status from 300 to 399 |
-| `Webhook 4 on board 3: delivery to hooks.example.com failed: <Node's message>` | `ERROR` | An error before the status line, or none within 10 seconds (`no answer within 10 s`). It named the whole address, path and query included, until card 2161 |
+| `Webhook 4 on board 3: delivery to hooks.example.com failed: <Node's message>` | `ERROR` | An error before the status line, or none within 10 seconds of the delivery being given its connection (`no answer within 10 s`). It named the whole address, path and query included, until card 2161. `… failed: the connection closed with no status`: neither a status nor an error came, as for a `101` answer (card 2178's review) |
 | `Webhook 4 on board 3 not sent: its events are not a list` | `WARN` | Its stored `events` is not a JSON list (card 2145). Every other webhook of the board is still sent |
 
 Each `WARN` is written **one line per webhook and kind of refusal per hour** (refused as
@@ -1278,6 +1279,124 @@ All of them are still sent, and none can be added to such a board until it has f
 the first 20 named and the rest counted (`, and N more`). It is a constant, not a setting: a
 large value would remove the protection.
 
+### Last Delivery
+
+Since card 2178 a webhook's answer tells the board's owner what its last delivery came to, as
+`lastDelivery`. Until then the requests a webhook made were blind to everyone but the
+administrators reading the system log, so a broken integration stayed broken until one of them
+happened to look.
+
+```json
+"lastDelivery": {
+  "at": "2026-10-14T10:02:11.481Z",
+  "event": "card.moved",
+  "outcome": "answered",
+  "status": 500,
+  "reason": "The receiver answered 500"
+}
+```
+
+**Who reads it.** Whoever may read the address and the secret: the board's owner and
+administrators, in `GET /api/v1/webhooks/{id}`, the board's list, and the answer to a `PUT`.
+Every other caller, an editor included, gets no `lastDelivery` key, as they get no `url`. The
+answer to the `POST` that made the webhook has `lastDelivery: null`. Card 2154 gives the right
+to change the address to the same people, so the people told a webhook is failing are the
+people who can fix it.
+
+**Read through the API only.** No page shows webhooks, and nothing tells anyone that a
+delivery failed: no mail, no notification, no mark on the board. An owner who wants to know
+polls `GET /api/v1/webhooks/{id}` or the board's list, `GET /api/v1/boards/{boardId}/webhooks`.
+
+**What it is.** One result per attempt, recorded at the first of: a refusal before any
+request, the receiver's status line, an error before the status line, and the request closing
+with none of these (a `101` answer, whose connection Node closes for want of an `upgrade`
+listener, gives neither a status nor an error). An error or the timeout after the status has
+come is not a result: the webhook was delivered. `at` is the moment the dispatch began, the
+body's own `timestamp`. An event the webhook does not ask for, and a webhook switched off,
+record nothing.
+
+**The latest attempt only, not a history.** Each result replaces the one before it: an
+earlier failure followed by a success is not shown, and a receiver that fails one event in
+ten may read `delivered` whenever it is asked. The system log keeps each failure, for
+administrators.
+
+**What the timeout counts.** The 10 seconds run from when the delivery is given its
+connection: the name's lookup and the connect are counted, a wait behind the 20 connections
+already open to the same receiver (the agents' `maxSockets`) is not. A burst of events to a
+slow receiver queues, and each delivery still has its whole 10 seconds once it is sent.
+
+| `outcome` | `status` | `reason`, exactly | When | What to do |
+|---|---|---|---|---|
+| `delivered` | 200 to 299 | `The receiver answered {status}` | A 2xx | Nothing |
+| `answered` | 300 to 399 | `The receiver answered {status}, a redirect, which is not followed` | A redirect | Register the final address, the one the redirect points to |
+| `answered` | any other | `The receiver answered {status}` | 4xx, 5xx (a `100` or `103` is interim, and the final status is the one recorded; a `101` is not reached, below) | A `401` or `403`: check that the receiver holds the same secret and checks `X-DumpFire-Signature` as [Events and Payload](#events-and-payload) describes it. Any other: the receiver's own logs say why |
+| `no-answer` | `null` | `The receiver's host name could not be found` | `ENOTFOUND`, `EAI_AGAIN` | Check the host name's spelling, and that it is published in public DNS |
+| `no-answer` | `null` | `The receiver's certificate could not be checked` | A certificate error: `ERR_TLS_CERT_…`, `CERT_…`, `UNABLE_TO_…`, `DEPTH_ZERO_SELF_SIGNED_CERT`, `SELF_SIGNED_CERT_IN_CHAIN` | The receiver's certificate is expired, self-signed, for another name, or served without its intermediate chain: fix it on the receiver. There is no setting to trust a self-signed certificate |
+| `no-answer` | `null` | `The receiver could not be reached, or did not answer within 10 seconds` | Everything else: a refused or unreachable port, a reset, the timeout, something that does not speak HTTP (the parser's `HPE_…`), a TLS error that is not about the certificate (a listener that does not speak TLS), a `101` | The receiver is down, behind a firewall that drops this server, or slower than the 10 seconds to send its status: answer first, then do the work |
+| `not-sent` | `null` | `Not sent: the address is inside the network` | Inside as written, or a name that resolved inside at the connection | Ask an administrator whether the receiver may be named in `WEBHOOK_ALLOW_INSIDE` |
+| `not-sent` | `null` | `Not sent: the address carries a user name or password` | Credentials before the host | Take them out of the address: put a token in the path, or rely on the signature |
+| `not-sent` | `null` | `Not sent: the address is not an http or https address` | Another scheme, or a stored row that is not a URL | Register an `http://` or `https://` address |
+| `not-sent` | `null` | `Not sent: its events are not a list` | Its stored `events` is not a JSON list (card 2145) | `PUT` the webhook's `events` as a list (`[]` for every event) |
+
+**A reason is fixed words.** One of the sentences above and nothing else: never the address,
+its path or query, a user name, a password, the secret, an address a name resolved to, or
+Node's own message (a connection error names `address:port`). The system log keeps the error
+for administrators, in the lines of [Where a Webhook May Send](#where-a-webhook-may-send).
+**A closed port, a filtered one and a stalled receiver read alike**, in their words and in
+their timing: a not-reached result is recorded no sooner than the timeout after the delivery
+was given its connection, so a port that refuses at once is recorded when a port that drops
+the connection would be. Told apart, they would let any user who owns a board map which ports
+of a host are open, from inside its firewall, with one card move. An owner learns nothing of a
+host beyond the ports where a web server answers or a TLS server presents a certificate. An
+administrator reads which in the log.
+
+**Which result is kept.** Each dispatch takes the next number from a counter, and a result is
+dropped only when its dispatch's number is lower than the one held: of two deliveries in
+flight, the newer attempt's result stays, whichever answers last. A count, not the clock: two
+dispatches in one millisecond, or a clock set back by a time sync, would make a newer attempt
+look older.
+
+**Where it is kept: in the server's memory, never in the database.** A map in
+`src/lib/server/webhooks.ts` from a webhook's id to its last result, at most 10,000, the one
+recorded longest ago forgotten first. Nothing a delivery does writes a row: a write there
+would land at a moment no request controls, and a backup, a restore or a working copy would
+carry another server's results. DumpFire runs one process, so every request reads the same
+map. **A restart, a deploy included, forgets every result**: a webhook answers
+`lastDelivery: null` until its first delivery since the server last started.
+
+**A result follows the address.** It is held with a SHA-256 of the webhook's board, creation
+time and address, never the address itself, and given only while the row still hashes the
+same. A `PUT` that changes `url` answers `lastDelivery: null`, and so does every read until
+the next delivery, or until the address is changed back: an address changed from A to B and
+back to A, with no delivery between, gives A's result again, since the row hashes as it did.
+A change of the secret, the events or `active` keeps it (a receiver that
+refuses a bad signature answers 401, which stays true until the next delivery). A row that
+reuses an id after a reset or a restore, for another address, is given nothing.
+`DELETE /api/v1/webhooks/{id}` forgets the result once the delete has committed.
+
+```mermaid
+flowchart TD
+    Event["afterCommit: dispatchWebhook(board, event, payload)<br/>body built once, with its timestamp: at<br/>the dispatch takes the next number"] --> Each["For each active webhook, in its own try"]
+    Each --> Asks{"events a list?"}
+    Asks -->|"no"| R1["not-sent<br/>its events are not a list"]
+    Asks -->|"yes, and not this event"| Skip["nothing recorded"]
+    Asks -->|"yes, or empty"| Written{"refused as written?<br/>credentials, inside, scheme"}
+    Written -->|"yes"| R2["not-sent, its fixed reason"]
+    Written -->|"no"| Deliver["deliver: http(s).request"]
+    Deliver --> First{"first of"}
+    First -->|"guarded lookup refuses"| R3["not-sent<br/>the address is inside the network"]
+    First -->|"status line"| R4["delivered (2xx)<br/>or answered (any other), with the status"]
+    First -->|"error before the status,<br/>or closed with neither"| R5["no-answer, one of three reasons<br/>not reached: held until the timeout"]
+    R1 --> Keep{"a later dispatch's<br/>result held?"}
+    R2 --> Keep
+    R3 --> Keep
+    R4 --> Keep
+    R5 --> Keep
+    Keep -->|"no"| Store["Map: id to result,<br/>SHA-256 of board, created and url"]
+    Keep -->|"yes"| Drop["dropped"]
+    Store --> Read["presentWebhook, owner and administrators:<br/>lastDelivery if the row hashes the same, else null"]
+```
+
 ### Webhook Flow
 
 ```mermaid
@@ -1293,7 +1412,7 @@ sequenceDiagram
     W-->>S: 200 OK
 ```
 
-A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column is one entry, so at most one delivery to each of the board's webhooks: a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no status line within 10 seconds, is logged at `ERROR`, naming the host and port and never the path. The receiver's status is read only to log a redirect, which is not followed, so an answer of 500 from a receiver is not logged as a failure. The board's webhooks are read once, and the body built once, for each event: every webhook of one event is sent the same body and timestamp, signed for each, and each webhook is handled on its own, so a row that cannot be sent stops no other (card 2145). See [Where a Webhook May Send](#where-a-webhook-may-send).
+A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column is one entry, so at most one delivery to each of the board's webhooks: a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no status line within 10 seconds, is logged at `ERROR`, naming the host and port and never the path. A redirect is logged, and not followed; an answer of 500 from a receiver is not logged as a failure, and is told to the board's owner in the webhook's `lastDelivery` instead, with every other outcome (card 2178, [Last Delivery](#last-delivery)). The board's webhooks are read once, and the body built once, for each event: every webhook of one event is sent the same body and timestamp, signed for each, and each webhook is handled on its own, so a row that cannot be sent stops no other (card 2145). See [Where a Webhook May Send](#where-a-webhook-may-send).
 
 ### Events and Payload
 
@@ -1344,7 +1463,7 @@ What is not sent:
 | `src/lib/server/reports.ts` | `takeReportMail()` and `REPORT_MAILS_PER_DAY`: the day's 100 addresses an account's report mail may reach; the scheduler, which switches off a schedule kept with more than 10 |
 | `src/lib/server/events.ts` | SSE event emitter with board and global subscriptions |
 | `src/lib/board/sse.ts`, `src/routes/board/[id]/+layout.svelte` | The board page's stream, opened as the page mounts and closed as it goes; the layout makes the page afresh for each board, so the stream follows the board shown (card 2184) |
-| `src/lib/server/webhooks.ts` | Webhook dispatch on board events: `dispatchWebhook()`, each webhook in its own `try` (card 2145); `deliver()` on the webhooks' own agents (card 2161), its `WARN`s one line per webhook and kind of refusal per hour; `refusalAsWritten()` and `activeWebhooksRefused()`, for delivery and the start-up line; `presentWebhook()`; `MAX_WEBHOOKS_PER_BOARD`, `refuseWebhookOverCap()` and `boardsOverWebhookCap()` (card 2201) |
+| `src/lib/server/webhooks.ts` | Webhook dispatch on board events: `dispatchWebhook()`, each webhook in its own `try` (card 2145); `deliver()` on the webhooks' own agents (card 2161), its `WARN`s one line per webhook and kind of refusal per hour; `refusalAsWritten()` and `activeWebhooksRefused()`, for delivery and the start-up line; `presentWebhook()`, with `lastDelivery`; each webhook's last result held in memory, `deliveryResultFor()`, `forgetDelivery()` and `deliveryReason()` (card 2178); `MAX_WEBHOOKS_PER_BOARD`, `refuseWebhookOverCap()` and `boardsOverWebhookCap()` (card 2201) |
 | `src/lib/server/webhook-address.ts` | Where a webhook may send (card 2161): `insideReason()`, `addressRefusal()`, `allowInside()` and `parseAllowInside()` for `WEBHOOK_ALLOW_INSIDE`, `guardedLookup()`, `readWebhookUrl()` |
 | `src/lib/server/startup-checks.ts` | Among its twelve start-up lines, the ignored entries of `WEBHOOK_ALLOW_INSIDE`, the boards over the webhook cap, and the webhooks that are on and refused as written |
 | `src/lib/server/logActivity.ts` | Writes the activity entry and queues the webhook for it |

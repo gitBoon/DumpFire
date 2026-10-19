@@ -134,6 +134,10 @@ const spec = {
 			'is answered 401 "Invalid or expired API key" and writes nothing; ' +
 			'(58) a board has at most 10 webhooks, switched-off ones counted: POST /api/v1/boards/{boardId}/webhooks answers 409 "This board has 10 webhooks, and a board may have at most 10: delete 1 before adding another." ' +
 			'after every other check, and creates nothing, where any number could be made; a board that already has more keeps them all, and every active one is still sent. ' +
+			'(59) a webhook answered to the board\'s owner or an administrator carries lastDelivery, what its last delivery since the server started came to: ' +
+			'the moment the event was dispatched, the event, an outcome (delivered for a 2xx, answered for any other status, no-answer, or not-sent when it was refused before any request), ' +
+			'the receiver\'s status or null, and a reason in fixed words that never names an address; null before the first delivery since the server started and after the url changes, ' +
+			'and in the answer to the create; not given to anyone else, as url is not; the latest attempt only, kept in memory, and a not-reached result recorded no sooner than the timeout after the delivery got its connection, so its timing tells nothing. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -551,7 +555,36 @@ const spec = {
 					},
 					events: { type: 'array', items: { type: 'string' } },
 					active: { type: 'boolean' },
-					createdAt: { type: 'string', format: 'date-time' }
+					createdAt: { type: 'string', format: 'date-time' },
+					lastDelivery: {
+						type: ['object', 'null'],
+						description:
+							'What the last delivery came to. Present only when the caller is the board owner or an administrator, as the address is, and null in the response to the request that created the webhook. ' +
+							'null until the webhook\'s first delivery since the server last started, and after its url changes until the next delivery or until the address is changed back: a result is kept in the server\'s memory, never stored, so a restart, a deploy included, forgets it. ' +
+							'The latest attempt only, not a history: an earlier failure followed by a success is not shown; the system log keeps each failure. Read through the API only: nothing else tells anyone that a delivery failed, so poll this webhook or the board\'s list. ' +
+							'An event the webhook does not ask for, and a webhook switched off, record nothing. Of two deliveries in flight the later dispatch\'s result is kept, whichever answers last.',
+						properties: {
+							at: { type: 'string', format: 'date-time', description: 'When the event was dispatched: the timestamp in the body sent' },
+							event: { type: 'string', description: 'The event that was sent, e.g. card.moved' },
+							outcome: {
+								type: 'string',
+								enum: ['delivered', 'answered', 'no-answer', 'not-sent'],
+								description:
+									'delivered: the receiver answered 2xx. answered: it answered any other status, a redirect included, which is not followed. ' +
+									'no-answer: no status came: the name was not found, the certificate could not be checked, or the receiver could not be reached or did not answer in time. ' +
+									'not-sent: no request was made: the address is inside the network, carries a user name or password, or is not http or https, or the webhook\'s events are not a list.'
+							},
+							status: { type: ['integer', 'null'], description: 'The status the receiver answered; null when it answered none' },
+							reason: {
+								type: 'string',
+								description:
+									'One of a fixed set of sentences, e.g. "The receiver answered 500" or "Not sent: the address is inside the network". It never holds the address, its path or query, the secret, or an address a name resolved to. ' +
+									'A closed port, a filtered one and a receiver that does not answer read alike: "The receiver could not be reached, or did not answer within 10 seconds", recorded no sooner than the 10 seconds after the delivery was given its connection, whenever it failed. ' +
+									'The 10 seconds count from that connection, not from a wait behind the 20 connections already open to one receiver. The system log, which administrators read, keeps the error itself.'
+							}
+						},
+						required: ['at', 'event', 'outcome', 'status', 'reason']
+					}
 				},
 				required: ['id', 'boardId', 'hasSecret', 'events', 'active', 'createdAt']
 			},

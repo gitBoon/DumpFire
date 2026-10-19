@@ -970,12 +970,16 @@ const MIRRORS: Record<string, Mirror> = {
 		table: webhooks,
 		// `secret` and `url` are columns and are in the schema: each is sent to the
 		// board's owner, to an administrator, and to whoever has just created the webhook.
-		adds: { hasSecret: 'presentWebhook says whether a secret is set, to callers it does not show the secret to' },
+		adds: {
+			hasSecret: 'presentWebhook says whether a secret is set, to callers it does not show the secret to',
+			lastDelivery: 'presentWebhook gives what the last delivery came to, held in memory and never stored (card 2178)'
+		},
 		retyped: { events: 'stored as JSON text, and answered by presentWebhook as the array of event names it holds' },
 		withholds: { setBy: 'presentWebhook leaves it out for every caller: it is what a password reset reads (card 2168)' },
 		sometimesAbsent: {
 			secret: 'presentWebhook leaves it out unless the caller is the board owner or an administrator, or has just created the webhook',
-			url: 'presentWebhook leaves the address out with the secret, for the same callers (card 2133)'
+			url: 'presentWebhook leaves the address out with the secret, for the same callers (card 2133)',
+			lastDelivery: 'presentWebhook leaves it out with the address, for the same callers: the people told it fails are the people who may change where it sends (card 2178)'
 		}
 	},
 	AuditLogEntry: {

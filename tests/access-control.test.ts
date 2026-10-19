@@ -32,6 +32,7 @@ import {
 	webhooks
 } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
+import { dispatchWebhook } from '$lib/server/webhooks';
 import { api } from './helpers/api';
 import {
 	addBoardMember,
@@ -723,6 +724,45 @@ describe('webhook secrets and addresses', () => {
 		const one = await api('GET', `/api/v1/webhooks/${res.body.id}`, { user: editor });
 		expect(one.body).not.toHaveProperty('url');
 		expect(one.body).not.toHaveProperty('secret');
+	});
+
+	/**
+	 * Card 2178: what the last delivery came to goes with the address, to the
+	 * people who may read it and change it. The address here carries a user
+	 * name and password, so its delivery is refused before any request, and
+	 * the result is held at once.
+	 */
+	it('gives the last delivery to the owner and an administrator, null on creation, and to nobody else (card 2178)', async () => {
+		const hook = makeHook();
+		dispatchWebhook(A.board.id, 'card.moved', { cardId: 1 });
+		const result = {
+			at: expect.any(String),
+			event: 'card.moved',
+			outcome: 'not-sent',
+			status: null,
+			reason: 'Not sent: the address carries a user name or password'
+		};
+
+		for (const user of [viewer, editor]) {
+			const list = await api('GET', `/api/v1/boards/${A.board.id}/webhooks`, { user });
+			const one = await api('GET', `/api/v1/webhooks/${hook.id}`, { user });
+			for (const answer of [list.body[0], one.body]) expect(answer).not.toHaveProperty('lastDelivery');
+		}
+		const edited = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: editor, body: { events: ['card.moved'] } });
+		expect(edited.status).toBe(200);
+		expect(edited.body).not.toHaveProperty('lastDelivery');
+
+		for (const user of [owner, admin]) {
+			const list = await api('GET', `/api/v1/boards/${A.board.id}/webhooks`, { user });
+			const one = await api('GET', `/api/v1/webhooks/${hook.id}`, { user });
+			const changed = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user, body: { active: true } });
+			for (const answer of [list.body[0], one.body, changed.body]) expect(answer.lastDelivery).toEqual(result);
+		}
+
+		// The create's answer, to an editor too: nothing has been delivered.
+		const made = await api('POST', `/api/v1/boards/${A.board.id}/webhooks`, { user: editor, body: { url: 'https://example.test/new' } });
+		expect(made.status).toBe(201);
+		expect(made.body).toHaveProperty('lastDelivery', null);
 	});
 
 	it('refuses someone who cannot open the board at all', async () => {
