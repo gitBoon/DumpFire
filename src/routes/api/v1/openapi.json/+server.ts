@@ -164,6 +164,15 @@ const spec = {
 			'(68) the two activity entries of a move to another board, read by GET /api/v1/audit-log, name neither board: `"<title>" moved to another board (<from column> → <to column>)` ' +
 			'on the board it left and `"<title>" moved from another board (<from column> → <to column>)` on the board it arrived on, where each named the other board; ' +
 			'entries written before are unchanged. ' +
+			'(69) this document lists every property of every answer it describes: GET /api/v1/burndown gives the fields of `filters` (categoryIds, labelIds, ' +
+			'assigneeIds, priorities), of `options` (categories, labels, assignees, priorities, each a list of BurndownOption: id, name, color, count), ' +
+			'of `scope.boardCategory` (id, name, color) and of `scope.milestone` (id, name, targetDate, status, boardId, createdAt), ' +
+			'where each was an object with no fields, and GET /api/v1/openapi.json gives those of `servers` and `tags` and says `security`, `components` and ' +
+			'`paths` are maps; nothing any operation answers has changed. ' +
+			'(70) a token correction takes back no more than was recorded, on POST /api/v1/cards/{cardId}/tokens, POST /api/v1/subtasks/{subtaskId}/tokens and POST /api/v1/tokens/bulk: ' +
+			'on the same card\'s own entries or the same subtask\'s, of the same `model`, a correction with no breakdown takes back at most the tokens recorded without one, and one with a ' +
+			'breakdown no part beyond what is recorded of it; otherwise it is answered 400 (a reason in the 409 of a batch) and nothing is written, where it was taken and, sent as a bare total ' +
+			'against measured work, priced the card below zero; DELETE /api/v1/tokens/{entryId} answers 400 only when removing an entry would take what is recorded of its model on its card or subtask below zero, as removing it before the negative entries that correct it would. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -895,6 +904,17 @@ const spec = {
 				},
 				required: ['date', 'source', 'idealStart', 'onTrack', 'daysLate']
 			},
+			BurndownOption: {
+				type: 'object',
+				description: 'A value offered in a filter, with how many cards in scope carry it',
+				properties: {
+					id: { type: ['integer', 'string'], description: 'The value to filter on: an id, the priority itself (critical, high, medium, low), or "none" for the empty bucket' },
+					name: { type: 'string' },
+					color: { type: ['string', 'null'] },
+					count: { type: 'integer' }
+				},
+				required: ['id', 'name', 'color', 'count']
+			},
 			BurndownResult: {
 				type: 'object',
 				properties: {
@@ -911,12 +931,39 @@ const spec = {
 									required: ['id', 'name', 'emoji']
 								}
 							},
-							boardCategory: { type: ['object', 'null'] },
-							milestone: { type: ['object', 'null'] }
+							boardCategory: {
+								type: ['object', 'null'],
+								description: 'With boardCategoryId: the board category charted',
+								properties: { id: { type: 'integer' }, name: { type: 'string' }, color: { type: 'string' } },
+								required: ['id', 'name', 'color']
+							},
+							milestone: {
+								type: ['object', 'null'],
+								description: 'With milestoneId: the milestone charted',
+								properties: {
+									id: { type: 'integer' },
+									name: { type: 'string' },
+									targetDate: { type: ['string', 'null'], format: 'date', description: 'The day it is meant to be reached, or null' },
+									status: { type: 'string', enum: ['open', 'closed'] },
+									boardId: { type: ['integer', 'null'], description: 'Its board, or null for a goal across boards' },
+									createdAt: { type: 'string', format: 'date-time' }
+								},
+								required: ['id', 'name', 'targetDate', 'status', 'boardId', 'createdAt']
+							}
 						},
 						required: ['kind', 'label', 'boards', 'boardCategory', 'milestone']
 					},
-					filters: { type: 'object', description: 'The filters applied, normalised ("me" resolved to your user id)' },
+					filters: {
+						type: 'object',
+						description: 'The filters applied, normalised ("me" resolved to your user id)',
+						properties: {
+							categoryIds: { type: 'array', items: { type: ['integer', 'string'] }, description: 'Category ids, and "none" for cards with no category' },
+							labelIds: { type: 'array', items: { type: 'integer' } },
+							assigneeIds: { type: 'array', items: { type: ['integer', 'string'] }, description: 'User ids, and "none" for cards with no assignee' },
+							priorities: { type: 'array', items: { type: 'string' } }
+						},
+						required: ['categoryIds', 'labelIds', 'assigneeIds', 'priorities']
+					},
 					range: {
 						type: 'object',
 						properties: { from: { type: 'string', format: 'date' }, to: { type: 'string', format: 'date' }, days: { type: 'integer' } },
@@ -951,7 +998,14 @@ const spec = {
 					},
 					options: {
 						type: 'object',
-						description: 'Only with options=true: filter values present in scope, each counted with every other filter applied.'
+						description: 'Only with options=true: filter values present in scope, each counted with every other filter applied.',
+						properties: {
+							categories: { type: 'array', items: { $ref: '#/components/schemas/BurndownOption' } },
+							labels: { type: 'array', items: { $ref: '#/components/schemas/BurndownOption' } },
+							assignees: { type: 'array', items: { $ref: '#/components/schemas/BurndownOption' } },
+							priorities: { type: 'array', items: { $ref: '#/components/schemas/BurndownOption' } }
+						},
+						required: ['categories', 'labels', 'assignees', 'priorities']
 					},
 					meta: {
 						type: 'object',
@@ -5931,7 +5985,11 @@ const spec = {
 				description:
 					'Adds one entry to the card\'s record of what it cost. It adds and never replaces: report as the work goes and the total climbs, ' +
 					'and two callers on the same card can each report their own without knowing what the other spent. ' +
-					'To correct an over-report send a negative `tokens`, which leaves the first entry to be seen. Sending the same request twice adds the tokens twice.\n\n' +
+					'To correct an over-report send a negative `tokens`, which leaves the first entry to be seen; when the entries it corrects were measured, send the breakdown of what is taken back. ' +
+					'Sending the same request twice adds the tokens twice.\n\n' +
+					'**A correction takes back no more than was recorded**, on the card\'s own entries (not its subtasks\') of the same `model`. One with no breakdown takes back at most the tokens recorded ' +
+					'without one, and one with a breakdown no part beyond what is recorded of it; otherwise it is answered 400, naming what may be taken back, and nothing is written. ' +
+					'A correction sent as a bare total is priced at full input rates, and measured work is mostly cache reads at a tenth of that or less, so taking it from measured work priced the card below zero.\n\n' +
 					'**The breakdown.** `inputTokens`, `outputTokens` and the three cache fields say what the tokens were. They are priced very differently, so the cost is exact only with them. ' +
 					'If any of the five is sent, `inputTokens` and `outputTokens` must both be, and those sent must add up to `tokens`: a cache field left out counts as 0. ' +
 					'For a negative entry they are sent as positive numbers that add up to its size.\n\n' +
@@ -6000,7 +6058,8 @@ const spec = {
 					'400': {
 						description:
 							'`tokens` is missing, is not a number, is not whole, is 0 or is beyond a limit; `model` or `note` is not text or is too long; `apiCalls` or a field of the breakdown is not a whole number or is negative; ' +
-							'the breakdown lacks `inputTokens` or `outputTokens`, or does not add up to `tokens`; cardId is not a whole number of 1 or more; or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+							'the breakdown lacks `inputTokens` or `outputTokens`, or does not add up to `tokens`; a correction takes back more than is recorded on the card for its model, without a breakdown more than ' +
+							'was recorded without one or with one more of a part than is recorded of it; cardId is not a whole number of 1 or more; or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
@@ -6085,7 +6144,8 @@ const spec = {
 					},
 					'400': {
 						description:
-							'As for an entry added to a card: `tokens`, `model`, `note`, `apiCalls` or the breakdown is at fault, subtaskId is not a whole number of 1 or more, ' +
+							'As for an entry added to a card: `tokens`, `model`, `note`, `apiCalls` or the breakdown is at fault, a correction takes back more than is recorded on the subtask for its model, ' +
+							'subtaskId is not a whole number of 1 or more, ' +
 							'or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'tokens must not be zero — omit the call instead' } } }
 					},
@@ -6112,6 +6172,7 @@ const spec = {
 				description:
 					'Removes one entry outright, as if it had never been made. It is for an entry that should not exist, one reported against the wrong card for instance. ' +
 					'For an over-report a negative entry is the better correction, because it leaves the first to be seen. ' +
+					'An entry is refused only when removing it would take what is recorded of its model on its card or subtask below zero, as removing it before the negative entries that correct it would. ' +
 					'Needs edit access to the board of the card the entry counts towards. The answer gives that card\'s totals without the entry.',
 				operationId: 'deleteTokenEntry',
 				parameters: [{ $ref: '#/components/parameters/entryId' }],
@@ -6139,7 +6200,8 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'entryId is not a whole number of 1 or more. Nothing was removed.',
+						description:
+							'entryId is not a whole number of 1 or more, or removing the entry would take what is recorded of its model on its card or subtask below zero, as it would before the negative entries that correct it are removed. Nothing was removed.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid entry ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -6166,7 +6228,8 @@ const spec = {
 					'A card\'s whole cost, step by step, is then one request and not one for each subtask.\n\n' +
 					'**All or nothing.** Every entry is checked before any is written. If one is refused none is written, the entries that were acceptable included, ' +
 					'and the answer is a 409 that lists every entry at fault by its place in the list. A card or subtask that does not exist, and one on a board the key\'s user cannot edit, ' +
-					'are reasons in that 409: this operation answers no 404 and no 403.\n\n' +
+					'are reasons in that 409: this operation answers no 404 and no 403. A correction is held to what is recorded and to the entries before it in the batch, ' +
+					'so +10000 then -10000 on a new card is written, and an over-correction is a reason in the 409.\n\n' +
 					'**Not safe to send twice.** Entries add up, so the same batch sent again adds the tokens again. Report each step once.',
 				operationId: 'addTokenEntries',
 				requestBody: {
@@ -6401,11 +6464,26 @@ const spec = {
 											},
 											required: ['title', 'version', 'description', 'contact']
 										},
-										servers: { type: 'array', items: { type: 'object' } },
-										security: { type: 'array', items: { type: 'object' }, description: 'What every operation needs unless it says otherwise: a key' },
-										components: { type: 'object', description: 'The schemas, parameters and responses the operations refer to, and how a key is sent' },
-										paths: { type: 'object', description: 'Every operation, by path and method' },
-										tags: { type: 'array', items: { type: 'object' }, description: 'The groups the operations are listed under' }
+										servers: {
+											type: 'array',
+											items: { type: 'object', properties: { url: { type: 'string' }, description: { type: 'string' } }, required: ['url', 'description'] }
+										},
+										security: {
+											type: 'array',
+											items: { type: 'object', additionalProperties: true },
+											description: 'What every operation needs unless it says otherwise: a key'
+										},
+										components: {
+											type: 'object',
+											additionalProperties: true,
+											description: 'The schemas, parameters and responses the operations refer to, and how a key is sent'
+										},
+										paths: { type: 'object', additionalProperties: true, description: 'Every operation, by path and method' },
+										tags: {
+											type: 'array',
+											items: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' } }, required: ['name', 'description'] },
+											description: 'The groups the operations are listed under'
+										}
 									},
 									required: ['openapi', 'info', 'servers', 'security', 'components', 'paths', 'tags']
 								}

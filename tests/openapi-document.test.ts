@@ -822,10 +822,41 @@ function missingRequired(schema: Json, value: Json, where: string): string[] {
 }
 
 /**
+ * What `value` has that `schema` does not document, at every depth: one line
+ * for each property of an object that its schema's `properties` does not list
+ * (card 2254). An array's items are held to `items`. A key not listed passes
+ * only where the schema says the object is a map: `additionalProperties: true`
+ * lets any value through, and a schema there holds each value to itself. An
+ * object schema with neither lists nothing, so every key it is given is named:
+ * a field the document leaves out is one a caller cannot know about.
+ */
+function undocumentedProperties(schema: Json, value: Json, where: string): string[] {
+	schema = deref(schema);
+	if (!schema || value === null || typeof value !== 'object') return [];
+	if (Array.isArray(value)) {
+		return schema.items ? value.flatMap((item, i) => undocumentedProperties(schema.items, item, `${where}[${i}]`)) : [];
+	}
+	const types: string[] = [schema.type ?? []].flat();
+	if (!types.includes('object') && !schema.properties && schema.additionalProperties === undefined) {
+		// A schema of another type describes nothing in an object; one with no type is not looked at.
+		return types.length ? [`${where}: is an object, which its schema does not describe`] : [];
+	}
+	const found: string[] = [];
+	for (const [key, item] of Object.entries<Json>(value)) {
+		const property = schema.properties?.[key];
+		if (property) found.push(...undocumentedProperties(property, item, `${where}.${key}`));
+		else if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
+			found.push(...undocumentedProperties(schema.additionalProperties, item, `${where}.${key}`));
+		} else if (schema.additionalProperties !== true) found.push(`${where}: has \`${key}\`, which its schema does not list`);
+	}
+	return found;
+}
+
+/**
  * Where `value` is not of the type its schema gives, at every depth: one line
  * for each value whose JSON type is not among the schema's `type`, or that is
  * not in its `enum`. An integer is a number too. A property the schema does not
- * name is not looked at: check 12 and the key checks are for that.
+ * name is not looked at: `undocumentedProperties` is for that.
  */
 function typeFaults(schema: Json, value: Json, where: string): string[] {
 	schema = deref(schema);
@@ -875,8 +906,9 @@ const heldToRequired = { operations: new Set<string>(), answers: 0 };
  *
  * Whatever a test below asks of an answer, this asks first: every property
  * that the schema documented for this operation and this status lists in a
- * `required`, at every depth, is in the answer. It fails the test that made
- * the call, naming each property that is not there. An answer whose status the
+ * `required`, at every depth, is in the answer; and the answer has no property
+ * the schema does not list (card 2254). It fails the test that made the call,
+ * naming each property that is not there or not documented. An answer whose status the
  * document has no JSON schema for is passed on as it is: the PDF, above all.
  */
 async function api(method: Parameters<typeof call>[0], path: string, opts: ApiOptions = {}): Promise<ApiResult> {
@@ -887,6 +919,7 @@ async function api(method: Parameters<typeof call>[0], path: string, opts: ApiOp
 		heldToRequired.operations.add(op.name);
 		heldToRequired.answers++;
 		expect(missingRequired(schema, res.body, `${op.name} ${res.status}`)).toEqual([]);
+		expect(undocumentedProperties(schema, res.body, `${op.name} ${res.status}`)).toEqual([]);
 	}
 	return res;
 }
@@ -1662,6 +1695,40 @@ describe('what a route answers, against the schema the document gives for it', (
 		const second = makeCard(cols['To Do']);
 		return { admin, board, cols, first, second };
 	}
+
+	it('undocumentedProperties names each property an answer has that its schema does not list, at every depth (card 2254)', () => {
+		const card = {
+			type: 'object',
+			properties: { id: { type: 'integer' }, tags: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' } } } } }
+		};
+		expect(undocumentedProperties(card, { id: 1, tags: [{ name: 'a' }] }, 'card')).toEqual([]);
+		// An extra key, named with the path that leads to it: at the top, and in an array item.
+		expect(undocumentedProperties(card, { id: 1, setBy: 7, tags: [{ name: 'a' }, { name: 'b', colour: 'red' }] }, 'card')).toEqual([
+			'card: has `setBy`, which its schema does not list',
+			'card.tags[1]: has `colour`, which its schema does not list'
+		]);
+		// additionalProperties: true lets any key through; a schema there holds each value to itself.
+		expect(undocumentedProperties({ type: 'object', additionalProperties: true }, { anything: { at: 'all' } }, 'map')).toEqual([]);
+		const byName = { type: 'object', additionalProperties: { type: 'object', properties: { url: { type: 'string' } } } };
+		expect(undocumentedProperties(byName, { a: { url: 'x' }, b: { url: 'y', secret: 's' } }, 'map')).toEqual([
+			'map.b: has `secret`, which its schema does not list'
+		]);
+		// An object schema that lists no properties documents none: every key it is given is a fault.
+		expect(undocumentedProperties({ type: 'object' }, { a: 1, b: 2 }, 'bare')).toEqual([
+			'bare: has `a`, which its schema does not list',
+			'bare: has `b`, which its schema does not list'
+		]);
+		// A null, or a schema that is not of an object, has nothing to list.
+		expect(undocumentedProperties({ type: ['object', 'null'], properties: {} }, null, 'none')).toEqual([]);
+		expect(undocumentedProperties({ type: 'string' }, 'text', 'text')).toEqual([]);
+		// An object where the schema says something else is not skipped: nothing in it is described.
+		expect(undocumentedProperties({ type: 'string' }, { secret: 's' }, 'text')).toEqual([
+			'text: is an object, which its schema does not describe'
+		]);
+		expect(undocumentedProperties({ type: 'array', items: { type: ['integer', 'null'] } }, [1, { id: 2 }], 'ids')).toEqual([
+			'ids[1]: is an object, which its schema does not describe'
+		]);
+	});
 
 	it('GET /me/stats', async () => {
 		const { admin, board, cols } = fixture();
@@ -2440,6 +2507,12 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(await ok('GET', '/api/v1/board-categories')).toHaveLength(1);
 		await ok('GET', `/api/v1/board-categories/${grouping.id}`);
 		await ok('PUT', `/api/v1/board-categories/${grouping.id}`, { name: 'Customers' });
+		// The burndown of a board category, so that its `scope.boardCategory` is not null and is held
+		// to its schema at every depth (card 2254's review).
+		await ok('PUT', `/api/v1/boards/${board.id}`, { categoryId: grouping.id });
+		const ofGrouping = await ok('GET', `/api/v1/burndown?boardCategoryId=${grouping.id}`);
+		expect(ofGrouping.scope.boardCategory).toMatchObject({ id: grouping.id, name: 'Customers' });
+		await ok('PUT', `/api/v1/boards/${board.id}`, { categoryId: null });
 		await ok('DELETE', `/api/v1/board-categories/${grouping.id}`);
 
 		// The one who has just created a webhook, and an administrator, are shown its secret.
@@ -2459,6 +2532,10 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(grouped.target.source).toBe('query');
 		expect(grouped.delivery.method).toBe('slowest-board');
 		expect(grouped.delivery.parts.length).toBeGreaterThan(0);
+		// And of a milestone, so that its `scope.milestone` is not null.
+		const goal = makeMilestone({ board, createdBy: admin, cards: [first] });
+		const ofGoal = await ok('GET', `/api/v1/burndown?milestoneId=${goal.id}`);
+		expect(ofGoal.scope.milestone).toMatchObject({ id: goal.id, name: goal.name, boardId: board.id });
 
 		await ok('DELETE', `/api/v1/cards/${second.id}`);
 		await ok('DELETE', `/api/v1/boards/${board.id}`);
@@ -2466,8 +2543,8 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── Every call above ────────────────────────────────────────────────────
 
-	it('held every answer above to the `required` lists of its schema, in every operation the document has', () => {
-		// `api` in this file asks it of each call. This says that it was asked, and of what: an answer of
+	it('held every answer above to the `required` lists of its schema and to the properties it lists, in every operation the document has', () => {
+		// `api` in this file asks both of each call. This says that it was asked, and of what: an answer of
 		// every operation. For the one that answers a file, the answer held is its 404, which is JSON.
 		// It reads what the tests above it did, so it is run with them and not alone.
 		const notHeld = OPS.map((op) => op.name).filter((name) => !heldToRequired.operations.has(name));

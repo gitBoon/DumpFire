@@ -41,10 +41,14 @@ import {
 	getCardTokenTotal,
 	getCardTokenTotals,
 	getUserSpendByPeriod,
-	recordTokenUsage
+	deleteTokenEntry,
+	recordTokenUsage,
+	recordTokenUsageBatch,
+	TokenError
 } from '$lib/server/tokens';
 import { sqlite } from '$lib/server/db';
-import { makeBoard, makeCard, makeSubtask, makeUser, resetDb } from './helpers/fixtures';
+import { addBoardMember, makeBoard, makeCard, makeSubtask, makeUser, resetDb } from './helpers/fixtures';
+import { api } from './helpers/api';
 
 describe('the 5.5 models', () => {
 	it('each resolves to its own row, at its published rate', () => {
@@ -240,6 +244,206 @@ describe('one entry, priced the same in the card window as in the card total', (
 			// Not every entry is measured, so no figure says it is exact.
 			expect(getCardTokenTotal(card.id).costExact).toBe(false);
 			expect(getCardTokenTotals([card.id]).get(card.id)?.costExact).toBe(false);
+		});
+
+		// ─── A correction is held to what was recorded (card 2220) ───────────────
+		//
+		// A negative entry with no breakdown is priced at the 90/10 blend, at the full
+		// input rate; the measured work it is meant to correct was mostly cache reads at
+		// a twentieth of it. So a correction of measured work sent as a bare total took
+		// the card's cost below zero: -$2.426 for the case below.
+
+		const OPUS = 'claude-opus-5-5';
+		/** 5,000 x $4 + 5,000 x $20 + 990,000 x $0.20, per million. */
+		const MEASURED_USD = 0.318;
+		/** 9,000 x $4 + 1,000 x $20, per million, at the blend. */
+		const TOTAL_ONLY_USD = 0.056;
+
+		/** The review's case: a measured Opus 5.5 entry of 1,000,000 and a total-only one of 10,000. */
+		function reviewCase() {
+			const owner = makeUser();
+			const { board, cols } = makeBoard({ owner });
+			const card = makeCard(cols['To Do']);
+			const onCard = { kind: 'card' as const, id: card.id };
+			recordTokenUsage(owner, onCard, 1_000_000, OPUS, 'measured', { inputTokens: 5000, outputTokens: 5000, cacheReadTokens: 990_000 });
+			recordTokenUsage(owner, onCard, 10_000, OPUS, 'total only');
+			expect(getCardTokenTotal(card.id).costUsd).toBeCloseTo(MEASURED_USD + TOTAL_ONLY_USD, 10);
+			return { owner, board, cols, card, onCard };
+		}
+
+		/** What `fn` was refused with: the TokenError's status and message. */
+		function refusal(fn: () => unknown): { status: number; message: string } {
+			try {
+				fn();
+			} catch (err) {
+				if (err instanceof TokenError) return { status: err.status, message: err.message };
+				throw err;
+			}
+			throw new Error('it was not refused');
+		}
+
+		it('a correction with no breakdown takes back only what was recorded without one, and is refused beyond it with nothing written', () => {
+			const { owner, card, onCard } = reviewCase();
+			const refused = refusal(() => recordTokenUsage(owner, onCard, -500_000, OPUS));
+			expect(refused.status).toBe(400);
+			expect(refused.message).toBe(
+				'A correction without a breakdown can take back at most 10,000 tokens of claude-opus-5-5 on this card, which is what was recorded there without a breakdown. ' +
+					'The rest were measured: send the breakdown of what is taken back, as positive numbers that add up to it, each no more than is recorded ' +
+					'(inputTokens 5,000, outputTokens 5,000, cacheReadTokens 990,000).'
+			);
+			expect(getCardTokenEntries(card.id)).toHaveLength(2);
+			expect(getCardTokenTotal(card.id).costUsd).toBeCloseTo(MEASURED_USD + TOTAL_ONLY_USD, 10);
+
+			// The 10,000 recorded without a breakdown can be taken back without one.
+			recordTokenUsage(owner, onCard, -10_000, OPUS);
+			expect(getCardTokenTotal(card.id).costUsd).toBeCloseTo(MEASURED_USD, 10);
+		});
+
+		it('a correction of measured work with its breakdown is taken, and prices what is left', () => {
+			const { owner, card, onCard } = reviewCase();
+			recordTokenUsage(owner, onCard, -500_000, OPUS, 'half was another card', { inputTokens: 2500, outputTokens: 2500, cacheReadTokens: 495_000 });
+			// 2,500 x $4 + 2,500 x $20 + 495,000 x $0.20 measured, and the total-only entry.
+			const left = getCardTokenTotal(card.id).costUsd!;
+			expect(left).toBeCloseTo(0.159 + TOTAL_ONLY_USD, 10);
+			expect(left).toBeGreaterThanOrEqual(0);
+		});
+
+		it('a correction is refused for a part of its breakdown beyond what is recorded, naming the part', () => {
+			const { owner, card, onCard } = reviewCase();
+			const refused = refusal(() =>
+				recordTokenUsage(owner, onCard, -1_000_000, OPUS, undefined, { inputTokens: 2500, outputTokens: 2500, cacheReadTokens: 995_000 })
+			);
+			expect(refused).toEqual({
+				status: 400,
+				message: 'cacheReadTokens of this correction is 995,000, more than the 990,000 recorded for claude-opus-5-5 on this card.'
+			});
+			expect(getCardTokenEntries(card.id)).toHaveLength(2);
+		});
+
+		it('a card with only total-only entries can be corrected up to their sum, of that model, and no further', () => {
+			const owner = makeUser();
+			const { cols } = makeBoard({ owner });
+			const card = makeCard(cols['To Do']);
+			const onCard = { kind: 'card' as const, id: card.id };
+			recordTokenUsage(owner, onCard, 10_000, OPUS);
+			recordTokenUsage(owner, onCard, 5000, OPUS);
+			expect(refusal(() => recordTokenUsage(owner, onCard, -15_001, OPUS)).message).toBe(
+				'A correction without a breakdown can take back at most 15,000 tokens of claude-opus-5-5 on this card, which is what was recorded there without a breakdown.'
+			);
+			// Another model's entries are not this one's.
+			expect(refusal(() => recordTokenUsage(owner, onCard, -1, 'claude-opus-5')).status).toBe(400);
+			recordTokenUsage(owner, onCard, -15_000, OPUS);
+			expect(getCardTokenTotal(card.id)).toMatchObject({ total: 0, entries: 3, costUsd: 0 });
+		});
+
+		it('entries that come to nothing cost exactly nothing, on the card total and the grouped total alike', () => {
+			const owner = makeUser();
+			const { cols } = makeBoard({ owner });
+			const card = makeCard(cols['To Do']);
+			const onCard = { kind: 'card' as const, id: card.id };
+			// Priced one by one, 1 + 12 - 13 tokens at the blend leave a speck of rounding (about 1e-20)
+			// where the grouped total, summed first, gives 0.
+			recordTokenUsage(owner, onCard, 1, OPUS);
+			recordTokenUsage(owner, onCard, 12, OPUS);
+			recordTokenUsage(owner, onCard, -13, OPUS);
+			expect(getCardTokenTotal(card.id).costUsd).toBe(0);
+			expect(getCardTokenTotals([card.id]).get(card.id)?.costUsd).toBe(0);
+		});
+
+		it("a correction on a card takes back nothing of its subtask's entries, nor one on a subtask anything of the card's", () => {
+			const owner = makeUser();
+			const { cols } = makeBoard({ owner });
+			const card = makeCard(cols['To Do']);
+			const sub = makeSubtask(card);
+			const other = makeCard(cols['To Do']);
+			const otherSub = makeSubtask(other);
+			recordTokenUsage(owner, { kind: 'subtask', id: sub.id }, 10_000, OPUS);
+			// The refusal says where the subtask's entries are corrected.
+			expect(refusal(() => recordTokenUsage(owner, { kind: 'card', id: card.id }, -10_000, OPUS))).toEqual({
+				status: 400,
+				message:
+					'A correction without a breakdown can take back at most 0 tokens of claude-opus-5-5 on this card, which is what was recorded there without a breakdown. ' +
+					"Only the card's own entries count here: an entry on one of its subtasks is corrected on that subtask."
+			});
+			recordTokenUsage(owner, { kind: 'card', id: other.id }, 10_000, OPUS);
+			expect(refusal(() => recordTokenUsage(owner, { kind: 'subtask', id: otherSub.id }, -10_000, OPUS)).message).toBe(
+				'A correction without a breakdown can take back at most 0 tokens of claude-opus-5-5 on this subtask, which is what was recorded there without a breakdown.'
+			);
+			// Each on its own target is taken.
+			recordTokenUsage(owner, { kind: 'subtask', id: sub.id }, -10_000, OPUS);
+			recordTokenUsage(owner, { kind: 'card', id: other.id }, -10_000, OPUS);
+		});
+
+		it('a correction with no model is held to the entries with no model, and its refusal names the models the card does have', () => {
+			const { owner, onCard } = reviewCase();
+			recordTokenUsage(owner, onCard, 2000, null);
+			expect(refusal(() => recordTokenUsage(owner, onCard, -5000, null)).message).toBe(
+				'A correction without a breakdown can take back at most 2,000 tokens of the entries with no model on this card, which is what was recorded there without a breakdown. ' +
+					'This card has entries of claude-opus-5-5: send the model of the entries it corrects.'
+			);
+			expect(refusal(() => recordTokenUsage(owner, onCard, -5000, null, undefined, { inputTokens: 2500, outputTokens: 2500 })).message).toBe(
+				'inputTokens of this correction is 2,500, more than the 0 recorded with no model on this card. ' +
+					'This card has entries of claude-opus-5-5: send the model of the entries it corrects.'
+			);
+			recordTokenUsage(owner, onCard, -2000, null);
+		});
+
+		it('a batch is held to what is recorded and to its own earlier entries, and an over-correction writes nothing', () => {
+			const owner = makeUser();
+			const { cols } = makeBoard({ owner });
+			const card = makeCard(cols['To Do']);
+			const fresh = makeCard(cols['To Do']);
+			expect(recordTokenUsageBatch(owner, [
+				{ cardId: card.id, tokens: 10_000, model: OPUS },
+				{ cardId: card.id, tokens: -10_000, model: OPUS }
+			]).written).toBe(2);
+
+			const rejected = recordTokenUsageBatch(owner, [
+				{ cardId: fresh.id, tokens: 10_000, model: OPUS },
+				{ cardId: fresh.id, tokens: -20_000, model: OPUS }
+			]);
+			expect(rejected.written).toBe(0);
+			expect(rejected.problems).toEqual([
+				{
+					index: 1,
+					reason: 'A correction without a breakdown can take back at most 10,000 tokens of claude-opus-5-5 on this card, which is what was recorded there without a breakdown.'
+				}
+			]);
+			expect(getCardTokenEntries(fresh.id)).toHaveLength(0);
+		});
+
+		it('an entry a correction balances cannot be removed before the correction; the correction can', () => {
+			const owner = makeUser();
+			const { cols } = makeBoard({ owner });
+			const card = makeCard(cols['To Do']);
+			const onCard = { kind: 'card' as const, id: card.id };
+			const first = recordTokenUsage(owner, onCard, 10_000, OPUS);
+			const correction = recordTokenUsage(owner, onCard, -4000, OPUS);
+			expect(refusal(() => deleteTokenEntry(owner, first.entryId))).toEqual({
+				status: 400,
+				message: `Removing entry #${first.entryId} would leave the claude-opus-5-5 entries on this card below zero: remove the negative entries that correct it first.`
+			});
+			expect(getCardTokenEntries(card.id)).toHaveLength(2);
+			deleteTokenEntry(owner, correction.entryId);
+			deleteTokenEntry(owner, first.entryId);
+			expect(getCardTokenEntries(card.id)).toHaveLength(0);
+		});
+
+		it('through the API: a correction beyond what is recorded is a 400 with the message, and a caller who may not edit is refused first', async () => {
+			const { owner, board, card } = reviewCase();
+			const sub = makeSubtask(card);
+			const onCard = await api('POST', `/api/v1/cards/${card.id}/tokens`, { user: owner, body: { tokens: -500_000, model: OPUS } });
+			expect(onCard.status).toBe(400);
+			expect(onCard.body.message).toMatch(/^A correction without a breakdown can take back at most 10,000 tokens of claude-opus-5-5 on this card/);
+			const onSub = await api('POST', `/api/v1/subtasks/${sub.id}/tokens`, { user: owner, body: { tokens: -1, model: OPUS } });
+			expect(onSub.status).toBe(400);
+			expect(onSub.body.message).toMatch(/^A correction without a breakdown can take back at most 0 tokens of claude-opus-5-5 on this subtask/);
+
+			const viewer = makeUser();
+			addBoardMember(board, viewer, 'viewer');
+			expect((await api('POST', `/api/v1/cards/${card.id}/tokens`, { user: viewer, body: { tokens: -500_000, model: OPUS } })).status).toBe(403);
+			expect((await api('POST', `/api/v1/subtasks/${sub.id}/tokens`, { user: viewer, body: { tokens: -1, model: OPUS } })).status).toBe(403);
+			expect(getCardTokenEntries(card.id)).toHaveLength(2);
 		});
 	});
 

@@ -336,6 +336,7 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. No opera
 - **A mention reaches every username, as it is spelled, in any case** (card 2207). A name is the longest username that the text after an `@` begins with, ignoring case, and it must end there: not followed by a letter, a digit or `_`, nor by `.` or `-` and then one of those. So `@Greg`, `@jane.doe`, `@Jane-Doe`, `@Jane Doe` and `@zoë` reach those accounts, where a name was the letters, digits and `_` after the `@`, lower-cased: `@Greg` reached nobody and `@jane.doe` mailed `jane`. An `@` inside a word, as in `bob@example.com`, is not a mention, where it mailed an account called `example`. Where two usernames differ only in case, the one typed exactly is mailed, and neither when the name is typed in neither spelling. Only the first 200 `@` of a comment that could start a name are read, so a mention after them mails nobody. The card window chips a name by the same rule.
 - **`GET /cards/:cardId/board-history` begins with the board a card started on** (card 2199), for a card with no recorded creation (made before entries were written) that has moved: the first span is that board, from the card's `createdAt` to its departure. A move writes its departure and its arrival in the same second, so that board was left out. The entries are read in the order they were written, and no time is compared. A card whose creation was recorded is answered as before.
 - **A move to another board names neither board in its activity entries** (card 2181), as `GET /audit-log` reads them: `"<title>" moved to another board (<from column> → <to column>)` on the board it left and `"<title>" moved from another board (<from column> → <to column>)` on the board it arrived on, where each named the other board to every reader of its own. The first still ends ` and out of milestone "<name>"` when the move took the card out of one (card 2155). Entries written before are unchanged.
+- **A token correction takes back no more than was recorded** (card 2220), on `POST /cards/:cardId/tokens`, `POST /subtasks/:subtaskId/tokens` and `POST /tokens/bulk`: on the same card's own entries or the same subtask's, of the same `model`, a correction with no breakdown takes back at most the tokens recorded without one, and one with a breakdown no part beyond what is recorded of it; otherwise `400` (a line of the `409` in a batch), naming what may be taken back, with nothing written. A correction of measured work sent as a bare total was priced at full input rates and took the card's cost below zero. `DELETE /tokens/:entryId` refuses, `400`, to remove an entry only when that would take what is recorded of its model on its card or subtask below zero, as removing it before the negative entries that correct it would. Entries already stored are unchanged. See [Token Cost](#token-cost).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but reach the keys every caller uses:
 
@@ -1924,7 +1925,24 @@ POST /api/v1/subtasks/{subtaskId}/tokens
 
 - **Entries add. Nothing replaces.** Each request adds an entry, so the same request sent
   twice adds the tokens twice. To correct an over-report send a negative `tokens`, which
-  leaves the first entry to be seen.
+  leaves the first entry to be seen; when the entries it corrects were measured, send the
+  breakdown of what is taken back.
+- **A correction takes back no more than was recorded** (card 2220), on the same card (its
+  own entries, not its subtasks') or the same subtask, for the same `model`. One with no
+  breakdown takes back at most the tokens recorded without one: `400` `A correction without
+  a breakdown can take back at most 10,000 tokens of claude-opus-5-5 on this card, which is
+  what was recorded there without a breakdown. The rest were measured: send the breakdown of
+  what is taken back, as positive numbers that add up to it, each no more than is recorded
+  (inputTokens 5,000, outputTokens 5,000, cacheReadTokens 990,000).` One with a breakdown
+  takes back no part beyond what is recorded of it: `400` `cacheReadTokens of this
+  correction is 600,000, more than the 500,000 recorded for claude-opus-5-5 on this
+  subtask.` Nothing is written. The message adds, for a correction sent to a card whose
+  subtasks hold entries, `Only the card's own entries count here: an entry on one of its
+  subtasks is corrected on that subtask.`; and for one sent with no `model` to a card or
+  subtask whose entries name one, `This card has entries of claude-opus-5-5: send the model
+  of the entries it corrects.` A correction
+  sent as a bare total was priced at full input rates, and measured work is mostly cache
+  reads at a tenth of that or less, so it took the card's cost below zero.
 - **The breakdown is all or nothing.** If any of its five fields is sent, `inputTokens` and
   `outputTokens` must both be sent, and the fields sent must add up to `tokens`. A cache
   field left out counts as 0. For a negative entry they are sent as positive numbers that
@@ -1993,7 +2011,11 @@ DELETE /api/v1/tokens/{entryId}
 
 Removes one entry, as if it had never been made, and answers `200` with `deleted` (the
 entry's id), `cardId` and the totals of the card it counted towards. For an over-report a
-negative entry is the better correction, because it leaves the first to be seen.
+negative entry is the better correction, because it leaves the first to be seen. An entry
+is refused only when removing it would take what is recorded of its model on its card or
+subtask below zero, as removing it before the negative entries that correct it would:
+`400` `Removing entry #312 would leave the claude-opus-5-5 entries on this card below zero:
+remove the negative entries that correct it first.` (card 2220).
 
 #### Add Many Entries
 
@@ -2029,7 +2051,9 @@ refused the answer is `409` and none is written:
 
 `index` is the entry's place in `entries`, from 0. A card or subtask that does not exist,
 and one on a board the key's user cannot edit, are lines in the `409`: this route answers no
-`404` and no `403`. A `400` means `entries` is not an array, is empty or has more than 200
+`404` and no `403`. A correction is held to what is recorded and to the entries before it in
+the same batch, so `+10000` then `-10000` on a new card is written, and an over-correction is
+a line in the `409` (card 2220). A `400` means `entries` is not an array, is empty or has more than 200
 entries, or holds an entry that is not an object (`entries[1] must be an object`, which was
 a `500`).
 
