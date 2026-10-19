@@ -1,7 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { requireMilestone, MilestoneError } from '$lib/server/milestones';
-import { getMilestoneSummary } from '$lib/server/planning';
+import { readMilestoneSummary } from '$lib/server/milestone-service';
 import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
@@ -27,21 +26,16 @@ import type { RequestHandler } from './$types';
  * Made for the key's user: work on a board they cannot open is in it withheld,
  * its title replaced in the nodes and so in both lists of titles, and its
  * board counted in one entry of `progress.boards` with no id (card 2129).
+ *
+ * The read is `readMilestoneSummary` in `$lib/server/milestone-service`, which
+ * the internal route shares (card 2012); `compact` is this route's.
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const id = pathId(params.milestoneId, 'milestone');
 
-	try {
-		requireMilestone(locals.user, id);
-	} catch (e) {
-		if (e instanceof MilestoneError) throw error(e.status, e.message);
-		throw e;
-	}
-
-	const summary = getMilestoneSummary(id, locals.user);
-	if (!summary) throw error(404, 'Milestone not found');
+	const summary = readMilestoneSummary(locals.user, { milestoneId: id }, {});
 
 	if (url.searchParams.get('compact') === 'true') {
 		const { graph, ...rest } = summary;

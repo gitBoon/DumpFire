@@ -744,13 +744,11 @@ function isDeclaredName(id: ts.Identifier): boolean {
 
 /**
  * By handler, a writeAs callback that lets its caller out, with why (card
- * 2012, the re-check of A1). An entry that lets nothing out fails.
+ * 2012, the re-check of A1). An entry that lets nothing out fails. Empty
+ * since slice A3: the one there was, the bulk milestone attach, returns the
+ * name and id its plan-created mail reads, not the account.
  */
-const CALLER_LET_OUT_IN: Record<string, string> = {
-	'src/routes/api/v1/milestones/[milestoneId]/cards/bulk/+server.ts POST':
-		'It returns `actor: user` for the plan-created mail sent after the commit, which reads only its name and id ' +
-		"(notifyPlanCreated). No decision is made on it. Found by the re-check, reported, not changed: it is not part A1's route."
-};
+const CALLER_LET_OUT_IN: Record<string, string> = {};
 
 /** What hands a function on to run later, by the last part of the callee's name. */
 const RUNS_LATER = ['afterCommit', 'setTimeout', 'setImmediate', 'setInterval', 'queueMicrotask', 'then', 'catch', 'finally', 'on', 'once', 'addEventListener'];
@@ -2165,13 +2163,20 @@ describe("card 2253's rule itself", () => {
  * behavioural backstop, run unchanged.
  */
 
-/** The modules both API trees' handlers call for their work, each written to the rule above. Slice A1: the cards; A2: what is on a card. */
+/**
+ * The modules both API trees' handlers call for their work, each written to
+ * the rule above. Slice A1: the cards; A2: what is on a card; A3: dependencies,
+ * a card's cost and the token writes, milestones.
+ */
 const SERVICES = [
 	'src/lib/server/cards.ts',
 	'src/lib/server/card-assignees.ts',
 	'src/lib/server/card-comments.ts',
 	'src/lib/server/card-labels.ts',
-	'src/lib/server/subtasks.ts'
+	'src/lib/server/subtasks.ts',
+	'src/lib/server/work-dependencies.ts',
+	'src/lib/server/token-service.ts',
+	'src/lib/server/milestone-service.ts'
 ];
 
 /**
@@ -2830,7 +2835,14 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/lib/server/card-assignees.ts': { reads: [], writes: ['assignToCard', 'unassignFromCard'] },
 			'src/lib/server/card-comments.ts': { reads: ['listComments'], writes: ['addComment', 'editComment', 'deleteComment'] },
 			'src/lib/server/card-labels.ts': { reads: [], writes: ['toggleCardLabel', 'addCardLabel', 'removeCardLabel'] },
-			'src/lib/server/subtasks.ts': { reads: ['listSubtasks'], writes: ['createSubtask', 'updateSubtask', 'deleteSubtask'] }
+			'src/lib/server/subtasks.ts': { reads: ['listSubtasks'], writes: ['createSubtask', 'updateSubtask', 'deleteSubtask'] },
+			// Slice A3: dependencies, a card's cost and the token writes, milestones.
+			'src/lib/server/work-dependencies.ts': { reads: ['readWorkDependencies'], writes: ['addWorkDependency', 'removeWorkDependency'] },
+			'src/lib/server/token-service.ts': { reads: ['readCardTokens'], writes: ['recordTokens', 'removeTokenEntry', 'recordTokenBatch'] },
+			'src/lib/server/milestone-service.ts': {
+				reads: ['readMilestone', 'readMilestoneSummary'],
+				writes: ['createMilestoneFor', 'changeMilestone', 'deleteMilestoneFor', 'attachCardToMilestone', 'detachCardFromMilestone']
+			}
 		});
 	});
 
@@ -2872,6 +2884,28 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/routes/api/v1/cards/[cardId]/subtasks/+server.ts',
 			'src/routes/api/v1/comments/[commentId]/+server.ts',
 			'src/routes/api/v1/subtasks/[subtaskId]/+server.ts'
+		]);
+		// Slice A3: dependencies, a card's cost and the token writes, milestones.
+		const a3 = routes.filter((file) => /from '\$lib\/server\/(work-dependencies|token-service|milestone-service)'/.test(readFileSync(join(ROOT, file), 'utf8')));
+		expect(a3).toEqual([
+			'src/routes/api/cards/[id]/dependencies/+server.ts',
+			'src/routes/api/cards/[id]/tokens/+server.ts',
+			'src/routes/api/milestones/+server.ts',
+			'src/routes/api/milestones/[id]/+server.ts',
+			'src/routes/api/milestones/[id]/pdf/+server.ts',
+			'src/routes/api/milestones/[id]/summary/+server.ts',
+			'src/routes/api/subtasks/[id]/dependencies/+server.ts',
+			'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts',
+			'src/routes/api/v1/cards/[cardId]/tokens/+server.ts',
+			'src/routes/api/v1/milestones/+server.ts',
+			'src/routes/api/v1/milestones/[milestoneId]/+server.ts',
+			'src/routes/api/v1/milestones/[milestoneId]/cards/+server.ts',
+			'src/routes/api/v1/milestones/[milestoneId]/pdf/+server.ts',
+			'src/routes/api/v1/milestones/[milestoneId]/summary/+server.ts',
+			'src/routes/api/v1/subtasks/[subtaskId]/dependencies/+server.ts',
+			'src/routes/api/v1/subtasks/[subtaskId]/tokens/+server.ts',
+			'src/routes/api/v1/tokens/[entryId]/+server.ts',
+			'src/routes/api/v1/tokens/bulk/+server.ts'
 		]);
 	});
 

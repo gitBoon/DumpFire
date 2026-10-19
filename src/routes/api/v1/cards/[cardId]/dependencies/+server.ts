@@ -1,13 +1,17 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { canViewBoard, canEditBoard } from '$lib/server/board-access';
-import { getWorkDependencies, type WorkKind, type WorkRef } from '$lib/server/planning';
-import { addDependencyLink, cycleAnswer, removeDependencyLink } from '$lib/server/dependency-refusals';
-import { pathId, readBody, readId, type RequestBody } from '$lib/server/request-body';
-import { getCardBoardId } from '$lib/server/work-access';
+import { cycleAnswer } from '$lib/server/dependency-refusals';
+import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { addWorkDependency, readWorkDependencies, removeWorkDependency } from '$lib/server/work-dependencies';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
+
+/** This route's words for a caller who may not read the card in its path, which it keeps (card 2012, R2). */
+const NO_ACCESS = "No access to this card's board";
+
+/** And for one who may not edit it. */
+const NO_EDIT = "No edit access to this card's board";
 
 /**
  * GET /api/v1/cards/:cardId/dependencies — what blocks this card and what it blocks.
@@ -18,85 +22,45 @@ import type { RequestHandler } from './$types';
  * on a board the key's user cannot open is listed withheld: its id, kind and
  * whether it is finished, `withheld: true`, and text in place of its title and
  * board (card 2129).
+ *
+ * The read is `readWorkDependencies` in `$lib/server/work-dependencies`, which
+ * the internal route shares (card 2012); this route asks it for each link's
+ * id, who made it and when (`withLinkDetails`). The card is looked for and the
+ * caller checked (404, then 403) before `direction` is read (400).
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const cardId = pathId(params.cardId, 'card');
 
-	const boardId = getCardBoardId(cardId);
-	if (!boardId) throw error(404, 'Card not found');
-	if (!canViewBoard(locals.user, boardId)) throw error(403, 'No access to this card\'s board');
+	const links = readWorkDependencies(locals.user, { kind: 'card', id: cardId }, { says: NO_ACCESS, withLinkDetails: true });
 
 	const direction = url.searchParams.get('direction') ?? 'both';
 	if (!['blocked-by', 'blocks', 'both'].includes(direction)) {
 		throw error(400, 'direction must be one of: blocked-by, blocks, both');
 	}
 
-	const state = getWorkDependencies({ kind: 'card', id: cardId }, locals.user);
-	const shape = (refs: typeof state.blockedBy) =>
-		refs.map((r) => ({
-			id: r.dependencyId,
-			kind: r.kind,
-			cardId: r.id,
-			parentCardId: r.parentCardId ?? null,
-			title: r.title,
-			boardId: r.boardId,
-			boardName: r.boardName,
-			columnName: r.columnTitle,
-			priority: r.priority,
-			resolved: r.isComplete,
-			withheld: r.withheld,
-			createdByUserId: r.createdByUserId,
-			createdAt: r.createdAt
-		}));
-
 	return json({
 		cardId,
-		isBlocked: state.isBlocked,
-		...(direction !== 'blocks' ? { blockedBy: shape(state.blockedBy) } : {}),
-		...(direction !== 'blocked-by' ? { blocks: shape(state.blocks) } : {})
+		isBlocked: links.isBlocked,
+		...(direction !== 'blocks' ? { blockedBy: links.blockedBy } : {}),
+		...(direction !== 'blocked-by' ? { blocks: links.blocks } : {})
 	});
 };
-
-/**
- * Work out the two ends from the request body.
- *
- * `dependsOnCardId` / `blocksCardId` are the long-standing card-only spellings
- * and keep working untouched. `dependsOnSubtaskId` / `blocksSubtaskId` are their
- * subtask equivalents, so linking to a subtask needs no new endpoint. Each is
- * read as an id; `null` is the same as not sent.
- */
-function resolveEnds(cardId: number, body: RequestBody): { blocked: WorkRef; blocker: WorkRef } {
-	const self: WorkRef = { kind: 'card', id: cardId };
-	const given = [
-		{ id: readId(body, 'dependsOnCardId', { nullable: true }), kind: 'card' as WorkKind, thisCardWaits: true },
-		{ id: readId(body, 'dependsOnSubtaskId', { nullable: true }), kind: 'subtask' as WorkKind, thisCardWaits: true },
-		{ id: readId(body, 'blocksCardId', { nullable: true }), kind: 'card' as WorkKind, thisCardWaits: false },
-		{ id: readId(body, 'blocksSubtaskId', { nullable: true }), kind: 'subtask' as WorkKind, thisCardWaits: false }
-	].filter((g): g is { id: number; kind: WorkKind; thisCardWaits: boolean } => typeof g.id === 'number');
-
-	if (given.length === 0) {
-		throw error(
-			400,
-			'Provide one of dependsOnCardId, dependsOnSubtaskId (this card waits on it), blocksCardId or blocksSubtaskId (it waits on this card)'
-		);
-	}
-	if (given.length > 1) throw error(400, 'Provide only one of the dependsOn*/blocks* fields');
-
-	const g = given[0];
-	const other: WorkRef = { kind: g.kind, id: g.id };
-
-	return g.thisCardWaits ? { blocked: self, blocker: other } : { blocked: other, blocker: self };
-}
 
 /**
  * POST /api/v1/cards/:cardId/dependencies — record that this card waits on
  * something, or that something waits on it.
  *
+ * `dependsOnCardId` / `blocksCardId` are the long-standing card-only spellings
+ * and keep working untouched. `dependsOnSubtaskId` / `blocksSubtaskId` are their
+ * subtask equivalents, so linking to a subtask needs no new endpoint.
+ *
  * Cross-board dependencies are allowed — a migration touches several projects —
  * so edit access is required on both ends. A dependency that would close a loop
- * is rejected with 409 and the offending chain listed.
+ * is rejected with 409 and the offending chain listed. The work is
+ * `addWorkDependency`, which the internal route and both subtask routes share
+ * (card 2012).
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -112,35 +76,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	// whether the key or session is still open, and who its account is now
 	// (card 2253).
 	const outcome = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		const boardId = getCardBoardId(cardId);
-		if (!boardId) throw error(404, 'Card not found');
-		if (!canEditBoard(user, boardId)) throw error(403, 'No edit access to this card\'s board');
-
-		const { blocked, blocker } = resolveEnds(cardId, body);
-
-		// The other end (404, 403), the check, the link, its `api:dependency_added`
-		// entry and the live events, as the session route and both subtask routes
-		// make them: see dependency-refusals.ts. A cycle is answered below, once
-		// the transaction is over. Nothing was written.
-		const added = addDependencyLink(user, blocked, blocker, { at: { kind: 'card', id: cardId }, source: 'api' });
-		if (added.rejected) return added;
-
-		const state = getWorkDependencies({ kind: 'card', id: cardId }, user);
-		return { rejected: false as const, blocked, blocker, isBlocked: state.isBlocked };
+		const added = addWorkDependency(caller, { kind: 'card', id: cardId }, body, { source: 'api', says: NO_EDIT });
+		// A link that would close a loop wrote nothing: it is answered 409, with its chain.
+		if (added.rejected) return cycleAnswer(added);
+		const { blocked, blocker, isBlocked } = added;
+		return { blocked: { kind: blocked.kind, id: blocked.id }, blocker: { kind: blocker.kind, id: blocker.id }, isBlocked };
 	});
 
-	if (outcome.rejected) return cycleAnswer(outcome);
-
-	const { blocked, blocker, isBlocked } = outcome;
-	return json(
-		{
-			blocked: { kind: blocked.kind, id: blocked.id },
-			blocker: { kind: blocker.kind, id: blocker.id },
-			isBlocked
-		},
-		{ status: 201 }
-	);
+	if (outcome instanceof Response) return outcome;
+	return json(outcome, { status: 201 });
 };
 
 /**
@@ -158,26 +102,15 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 
 	// One transaction: the card is read and the caller checked in the one that
 	// removes the link and writes the entry, which asks first whether the key
-	// or session is still open, and who its account is now (card 2253).
-	const removed = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		// The card in the path is whichever end the caller is looking at, so
-		// they must be able to read it. Whether they may remove the link is not
-		// asked of this card's board: it is asked of the board of the end that
-		// waits, in removeDependencyLink.
-		const boardId = getCardBoardId(cardId);
-		if (!boardId) throw error(404, 'Card not found');
-		if (!canViewBoard(user, boardId)) throw error(403, 'No access to this card\'s board');
-
-		const { blocked, blocker } = resolveEnds(cardId, body);
-
-		// Throws 403 for a caller who may not edit the board of the end that
-		// waits, and then 404 for a link that is not there. It writes the
-		// `api:dependency_removed` entry on the board of the end that waits,
-		// naming this card where it is on that board and otherwise the card
-		// that waits, and sends the live event to both ends' boards.
-		return removeDependencyLink(user, blocked, blocker, { at: { kind: 'card', id: cardId }, source: 'api' });
-	});
+	// or session is still open, and who its account is now (card 2253). The
+	// card in the path is whichever end the caller is looking at, so they must
+	// be able to read it; whether they may remove the link is asked of the
+	// board of the end that waits. The `api:dependency_removed` entry goes on
+	// that board, naming this card where it is on that board and otherwise the
+	// card that waits. The work is `removeWorkDependency` (card 2012).
+	const { removed } = writeAs(locals, (caller) =>
+		removeWorkDependency(caller, { kind: 'card', id: cardId }, body, { source: 'api', says: NO_ACCESS })
+	);
 
 	return json({ success: true, removed });
 };

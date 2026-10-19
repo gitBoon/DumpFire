@@ -4,15 +4,9 @@
  * $lib/server/milestones — only the auth differs.
  */
 import { json, error } from '@sveltejs/kit';
-import {
-	listMilestones,
-	createMilestone,
-	milestonesForBoard,
-	requireMilestoneBoard,
-	MilestoneError
-} from '$lib/server/milestones';
-import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
-import { pathId, readBody, readDate, readId, readQueryId, readText } from '$lib/server/request-body';
+import { listMilestones, milestonesForBoard } from '$lib/server/milestones';
+import { createMilestoneFor } from '$lib/server/milestone-service';
+import { pathId, readBody, readQueryId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -48,47 +42,15 @@ export const GET: RequestHandler = async ({ url, locals }) => {
  * other fields are read (card 2117, R1). A milestone of no board has nothing
  * to guard. `name` is text, trimmed, of 1 to 200 characters; `description`
  * text of at most 50,000; `targetDate` a date written `YYYY-MM-DD`, or null.
+ *
+ * The work, with the entry `POST /api/v1/milestones` writes too (card 2143),
+ * is `createMilestoneFor` in `$lib/server/milestone-service` (card 2012).
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
 	const body = await readBody(request);
-	try {
-		// Asked first: whether the session is still open, and who its account
-		// is now (card 2253).
-		const created = writeAs(locals, (caller) => {
-			const user = requireUser(caller);
-			const boardId = readId(body, 'boardId', { nullable: true }) ?? null;
-			if (boardId !== null) requireMilestoneBoard(user, boardId);
-
-			const name = readText(body, 'name', {
-				required: true,
-				trim: true,
-				min: 1,
-				max: 200,
-				says: { missing: 'name is required', empty: 'name is required' }
-			});
-			const description = readText(body, 'description', { max: 50000 });
-			const targetDate = readDate(body, 'targetDate', { nullable: true });
-
-			const created = createMilestone(user, { name, boardId, description, targetDate });
-
-			// The entry `POST /api/v1/milestones` writes (card 2143), on the
-			// milestone's board; one that belongs to no board has no board's log
-			// to go in, there as here.
-			if (created.boardId !== null) {
-				logUiActivity({
-					boardId: created.boardId,
-					action: ACTIONS.milestoneCreated,
-					detail: `Created milestone "${created.name}"`,
-					...actorOf(user)
-				});
-			}
-
-			return created;
-		});
-		return json(created, { status: 201 });
-	} catch (e) {
-		if (e instanceof MilestoneError) throw error(e.status, e.message);
-		throw e;
-	}
+	// Asked first: whether the session is still open, and who its account
+	// is now (card 2253).
+	const created = writeAs(locals, (caller) => createMilestoneFor(caller, {}, body, { source: 'ui' }));
+	return json(created, { status: 201 });
 };

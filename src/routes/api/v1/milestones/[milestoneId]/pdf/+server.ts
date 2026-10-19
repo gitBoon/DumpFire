@@ -5,8 +5,7 @@
  * pulled for a stakeholder pack without opening a browser.
  */
 import { error } from '@sveltejs/kit';
-import { requireMilestone, MilestoneError } from '$lib/server/milestones';
-import { getMilestoneSummary } from '$lib/server/planning';
+import { readMilestoneSummary } from '$lib/server/milestone-service';
 import { generateMilestonePdf, milestonePdfFilename } from '$lib/server/milestone-report';
 import { pathId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
@@ -16,16 +15,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	const id = pathId(params.milestoneId, 'milestone');
 
-	try {
-		requireMilestone(locals.user, id);
-	} catch (e) {
-		if (e instanceof MilestoneError) throw error(e.status, e.message);
-		throw e;
-	}
-
-	// The key's user's own view of the plan, as the summary gives it (card 2129).
-	const summary = getMilestoneSummary(id, locals.user);
-	if (!summary) throw error(404, 'Milestone not found');
+	// The key's user's own view of the plan, as the summary gives it (card
+	// 2129): `readMilestoneSummary`, which the internal route shares (card 2012).
+	const summary = readMilestoneSummary(locals.user, { milestoneId: id }, {});
 
 	const pdf = await generateMilestonePdf(summary);
 	return new Response(new Uint8Array(pdf), {
