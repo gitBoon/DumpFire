@@ -1,9 +1,9 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.18
+version: 1.19
 status: As-Built
-date: 2026-10-19
+date: 2026-10-20
 tags:
   - planning
   - dependencies
@@ -341,7 +341,8 @@ flowchart TD
     Remove -->|"removed"| Removed["dependency_removed entry,<br/>events queued, 200"]
 ```
 
-- **The route's own checks come first.** For a `POST`: the card or subtask in the path and
+- **The route's own checks come first**, made for all four routes by `work-dependencies.ts`
+  since card 2012, each route's words kept. For a `POST`: the card or subtask in the path and
   the caller's edit access to its board, then that the body names exactly one end, by an id.
   The other end, and the caller's edit access to its board, are `addDependencyLink()`'s. A
   `DELETE` checks the card or subtask in the path and the caller's view access to its
@@ -364,7 +365,8 @@ flowchart TD
 - **A cycle is returned, not thrown.** `checkDependencyLink()` throws the `400` and the
   duplicate's `409` with `error()`, which sends a text alone. A cycle carries its chain
   beside the text, so it is handed back to the route, which answers it with
-  `cycleAnswer()`. On the v1 card route that happens once the transaction is over.
+  `cycleAnswer()`. On all four routes that happens inside the `writeAs` callback, which
+  returns the `Response`; the route answers it as it is (card 2012).
 - **What a success answers differs by route.** The v1 card route answers `201` with
   `{ blocked, blocker, isBlocked }` and its `DELETE` answers `{ success, removed }`. The
   session card route and both subtask routes answer the dependencies as they then are.
@@ -857,7 +859,7 @@ cannot disagree about what the critical path is.
 | `drizzle/0042_add_milestones_and_planning.sql` | Milestones table, `cards.milestone_id`, unique dependency pair index |
 | `drizzle/0043_add_work_dependencies.sql` | Polymorphic `work_dependencies`; carries every card dependency across |
 | `src/lib/server/work-access.ts` | Which board a piece of work lives on |
-| `src/lib/server/subtask-dependencies.ts` | Shared handler body for both subtask dependency routes |
+| `src/lib/server/work-dependencies.ts` | The one service all four single-link routes call (card 2012): `readWorkDependencies`, `addWorkDependency` and `removeWorkDependency`, for a card or a subtask (`at: { kind, id }`), each write run inside the route's `writeAs`; it replaced `subtask-dependencies.ts` |
 | `src/lib/server/dependency-refusals.ts` | How one link that cannot be made or removed is answered, and the link written or taken away with its activity entry, for all four single-link routes |
 | `src/lib/server/planning.ts` | Every derived planning fact — graph, cycles, critical path, actionable, unblock hook |
 | `src/lib/server/milestones.ts` | Milestone CRUD, card assignment, access rules |

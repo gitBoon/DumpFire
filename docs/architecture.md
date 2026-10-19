@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.34
+version: 1.35
 status: As-Built
-date: 2026-10-19
+date: 2026-10-20
 tags:
   - architecture
   - sveltekit
@@ -16,7 +16,9 @@ tags:
   - uploads
   - hooks
   - errors
-description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, when its effects are sent, what a delete takes, and how a page left open notices a new version"
+  - services
+  - api-trees
+description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -120,6 +122,8 @@ flowchart TB
         end
 
         subgraph Services["Server Services"]
+            ActionServices["One Service per Action\ncards.ts, subtasks.ts, boards.ts,\ncolumns.ts, labels.ts and eight more\n(card 2012)"]
+            WriteAs["Asked Again at the Write\nwriteAs, inWrite: write-as.ts"]
             Auth["Auth Service"]
             BoardAccess["Board Access Control"]
             ReportEngine["Report Engine"]
@@ -147,6 +151,10 @@ flowchart TB
     Hooks --> ExternalAPI
     InternalAPI --> Services
     ExternalAPI --> Services
+    InternalAPI -->|"inside writeAs"| ActionServices
+    ExternalAPI -->|"inside writeAs"| ActionServices
+    ActionServices -->|"inWrite()"| WriteAs
+    WriteAs --> Tx
     Services --> DB
     Deletes --> Tx
     Deletes --> Uploads
@@ -442,12 +450,13 @@ be refused is not told about the fields first, and a field reader that needs the
 ```mermaid
 sequenceDiagram
     participant H as Handler
-    participant T as writeAs (inTransaction)
+    participant T as writeAs (inTransaction), and a service in it
     participant G as Guard (route-guards.ts)
     participant R as Field readers
     H->>H: readBody(request), pathId(params.x)
     Note over H: 400 for the body or a path id
     H->>T: the write, and everything it depends on
+    Note over T: 401 for a key or session that ended,<br/>then a service asks inWrite() and requireUser(caller)
     T->>G: requireBoard / requireCard / ...
     Note over G: 404 to everyone, then 403
     G-->>T: the row
@@ -459,7 +468,10 @@ sequenceDiagram
 ```
 
 A create with no parent row to look for (`POST /api/boards`, a board grouping, a milestone of
-no board) reads its fields first. The token routes keep `tokens.ts`'s own order, the fields
+no board) reads its fields first. Since card 2012 those reads, as every field read of a handler
+that calls a service, are made inside `writeAs`, after the caller is asked for: a session that
+ended while the body arrived is `401` before any field is read (see
+[One Service per Action, Both Trees](#one-service-per-action-both-trees)). The token routes keep `tokens.ts`'s own order, the fields
 before the card or subtask, and the three batches read every entry before they look for
 what the entries name and report each problem in their `409`.
 
@@ -810,7 +822,7 @@ The whole rule, with the lanes, the bound, the log lines and what the people usi
 
 ## Writes: One Transaction, Then the Effects
 
-A request that writes makes its writes all or none, and checks the caller where it writes. The route awaits the request body, then passes one function to `writeAs(locals, (caller) => …)` in `src/lib/server/write-as.ts`, which runs it in `inTransaction()` (`src/lib/server/db/transaction.ts`) after asking, first in that transaction, whether the key or session the gate let the request in with is still open and who its account is now (card 2253; see [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253)). A route never calls `inTransaction()` itself: `tests/check-at-the-write.test.ts` refuses it in a route file. The function reads what the write depends on, checks `caller` with its guard (`route-guards.ts`), makes every write (the activity entry among them) and returns. Only then does the route set a cookie, redirect or answer. Before the body the route asks only what reads no row: the session the gate read and the id in its path. A request with one write follows the same order, so that the row checked is the row written, and a row taken away while the body was arriving is a 404; until 2026-10-14 twenty-two handlers checked the row first and then awaited the body (card 2115).
+A request that writes makes its writes all or none, and checks the caller where it writes. The route awaits the request body, then passes one function to `writeAs(locals, (caller) => …)` in `src/lib/server/write-as.ts`, which runs it in `inTransaction()` (`src/lib/server/db/transaction.ts`) after asking, first in that transaction, whether the key or session the gate let the request in with is still open and who its account is now (card 2253; see [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253)). A route never calls `inTransaction()` itself: `tests/check-at-the-write.test.ts` refuses it in a route file. The function reads what the write depends on, checks `caller` with its guard (`route-guards.ts`), makes every write (the activity entry among them) and returns. In the 57 route files of the two API trees that card 2012 moved onto shared services, the function is one call of a service, handed `caller`, which does all of that and reads the body's fields as well, so the field reads are inside the transaction too, after the caller is asked for (see [One Service per Action, Both Trees](#one-service-per-action-both-trees)). Only then does the route set a cookie, redirect or answer. Before the body the route asks only what reads no row: the session the gate read and the id in its path. A request with one write follows the same order, so that the row checked is the row written, and a row taken away while the body was arriving is a 404; until 2026-10-14 twenty-two handlers checked the row first and then awaited the body (card 2115).
 
 Nothing leaves the process from inside a transaction. A webhook delivery, a live event, an email and a file move are each queued with `afterCommit()` and start once the outermost transaction has committed. If it rolls back they are dropped, so nobody is told of a change that was not saved.
 
@@ -854,6 +866,7 @@ sequenceDiagram
 |----------|--------------|
 | `inTransaction(fn)` | Runs `fn` in one transaction on the application's connection and returns what it returns. The outermost call is `BEGIN IMMEDIATE`, which takes the write lock at the start, so nothing `fn` reads can be changed under it before it writes. A call made inside another `inTransaction` is a savepoint: if it throws and the code around it catches the error, only that part is rolled back. A call made while a transaction the helper did not open is open on the connection throws before `fn` is run, so the request is answered 500 and writes nothing. |
 | `writeAs(locals, fn)`, `stillCallerNow(locals)` | In `src/lib/server/write-as.ts` (card 2253): `inTransaction(() => fn(stillAuthenticated(locals)))`, the one way a route writes, and the same question asked in a transaction of its own by the eight handlers whose work cannot run in one (the vacuum, the import, the two report routes, the backup run, the Test, the Google Drive Connect and the test mail). See [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253) |
+| `inWrite()` | In `src/lib/server/write-as.ts` (card 2012): the first statement of every write a service exports. It throws a plain error, a `500` if a route reaches it, unless a `writeAs` callback is running: `writeAs` counts its callbacks (`writing`, set after `stillAuthenticated` and taken off in `finally`, so a nested `writeAs` is counted), and nothing else sets the count. A bare `inTransaction`, a job's or a scheduler's, is not a `writeAs`, so a service called from one writes nothing. See [One Service per Action, Both Trees](#one-service-per-action-both-trees) |
 | `afterCommit(effect)` | Queues `effect` until the outermost transaction commits. Called with no transaction open, it runs the effect at once. Whether a transaction is open is read from the connection (`sqlite.inTransaction`), not counted by the helper. |
 
 How the queue behaves:
@@ -981,6 +994,225 @@ flowchart TD
 
 How an operator backs the folder up, and what a restore does with the trash, is in [Deployment](deployment.md#attachment-files).
 
+## One Service per Action, Both Trees
+
+The API has two trees for the reason it always has: the pages call `src/routes/api/**` on a
+session, and other programs call `src/routes/api/v1/**` with a key. The plan's thirty rows
+cover 42 pairs of handlers, one in each tree, that did the same thing, and 15 handlers one tree
+has alone; each pair had the same middle written twice: the
+guard, the field reads, the insert or update, the change check, the activity entry and the live
+event. Two copies drift. Card 2143 found six internal handlers that recorded and told nothing
+their v1 twins did, and the twins refused in different words through copied guards. Since card
+2012 (part A) each pair calls one function, a **service**, in a module of `src/lib/server/`:
+99 handlers (48 internal, 51 v1; 20 of them `GET`s) in 57 route files (27 internal, 30 v1),
+on 13 modules. The move changed nothing either tree answers, records or tells: every status,
+field, answer shape, refusal text, entry text, webhook detail, live event and mail order is as
+it was (R2 of the plan), with one kind of exception, accepted, where a read moved inside
+`writeAs`: a session that ended while its body arrived is now `401` where an empty or
+malformed body was answered `200` or `400` first (see
+[Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253)).
+
+```mermaid
+flowchart LR
+    subgraph Internal["src/routes/api/** handler (session)"]
+        I1["requireUser(locals.user)<br/>pathId, readBody,<br/>linkBaseUrl"] --> I2["writeAs(locals, (caller) =><br/>service(caller, at, body,<br/>{ source: 'ui', ...its options }))"] --> I3["kit json<br/>(stored timestamps)"]
+    end
+    subgraph V1["src/routes/api/v1/** handler (key)"]
+        V11["requireUser(locals.user)<br/>pathId, readBody,<br/>linkBaseUrl"] --> V12["writeAs(locals, (caller) =><br/>service(caller, at, body,<br/>{ source: 'api', says?, ...its options }))"] --> V13["v1-json json<br/>(ISO 8601)"]
+    end
+    subgraph Service["src/lib/server/&lt;area&gt;.ts"]
+        S0["inWrite(): refused unless<br/>a writeAs callback is running"] --> S1["requireUser(caller): 401<br/>require* guard with caller:<br/>404, then 403 in opts.says"]
+        S1 --> S2["request-body readers on body:<br/>400, keep"]
+        S2 --> S3["insert, update, or a shared helper<br/>(applyCardMove, deleteCard,<br/>addDependencyLink, recordTokenUsage, ...)"]
+        S3 --> S4["logActivity (its webhook queued),<br/>emit (queued), notify... (queued)"]
+    end
+    I2 --> S0
+    V12 --> S0
+    S4 -->|"the row or result,<br/>returned through writeAs"| Commit["COMMIT, then each queued<br/>effect starts (afterCommit)"]
+    Commit --> I3
+    Commit --> V13
+```
+
+A handler that calls a service keeps its quick check (`requireUser(locals.user);`, binding no
+name), `pathId`, `readBody`, `linkBaseUrl` where it sends mail, its one `writeAs` and its
+answer. The callback is the service call, and whatever shapes the answer from what the
+transaction holds: v1's board create adds the board's columns, v1's comment edit its author
+(`withAuthor`), and the four dependency adds (`POST`) answer a link that would close a loop with
+`cycleAnswer`, a `Response` the callback returns and the handler answers as it is. A read
+service is called in a `GET`, with `locals.user`, after the same quick check, with no
+`writeAs`. In what order a service refuses, and why, is in [Reading a body](#reading-a-body);
+when its effects leave, in [Writes: One Transaction, Then the Effects](#writes-one-transaction-then-the-effects).
+
+```mermaid
+sequenceDiagram
+    participant H as Handler (either tree)
+    participant W as writeAs (write-as.ts)
+    participant S as Service
+    participant G as Guards and readers
+    participant DB as SQLite
+    participant Q as afterCommit queue
+    H->>H: quick check, pathId, await readBody
+    H->>W: writeAs(locals, (caller) => service(caller, at, body, opts))
+    W->>DB: BEGIN IMMEDIATE, stillAuthenticated(locals)
+    Note over W: 401 if the key or session ended,<br/>and the service is never called
+    W->>S: service(caller, at, body, opts), with writing counted up
+    S->>S: inWrite(), then requireUser(caller)
+    S->>G: requireCard(user, id, 'edit', opts.says)
+    Note over G: 404, then 403 in the tree's words
+    S->>G: readText(body, ...), readId(body, ...)
+    Note over G: 400 naming the field
+    S->>DB: the writes
+    S->>Q: logActivity, emit, notify...
+    S-->>W: the row, or what the answer needs
+    W->>W: writing counted down (finally)
+    W->>DB: COMMIT
+    W->>Q: start each effect, in order
+    W-->>H: what the callback returned
+    H->>H: answer: kit json, or v1-json json
+```
+
+### The shape of a service
+
+Every write a service exports has one shape, and every read another:
+
+```ts
+write(caller: SessionUser | null, at: { …the path's ids }, body: RequestBody | null, opts: ServiceOptions & { …the tree's options })
+read(user: SessionUser | null | undefined, at: { …the path's ids }, opts: { says?: string; …the tree's options })
+```
+
+Both are schematic: some reads take `user: SessionUser` (`readCardTokens`, `readMilestone`,
+`readMilestoneSummary`), and some take no options at all (`opts: Record<string, never>`).
+
+`at` holds the ids of the request's path (`{ cardId }`, `{ kind: 'subtask', id }`, `{}` for
+none), `body` is what `readBody` handed back, `null` for a request with none, and `opts` is an
+object written out at the call. A write:
+
+1. **starts with `inWrite()`**, and is handed its writeAs callback's own `caller`, as it is or
+   through `requireUser(caller)`, never `locals` or a name taken from it;
+2. asks **`requireUser(caller)`** (401), then **its guard with the account** (404 to everyone,
+   then 403, in `opts.says` where the tree has its own words);
+3. reads **every field from `body`** through the readers of `request-body.ts` (400), the ids
+   the body names among them, so a session that ended while the body arrived is refused
+   before any of them is looked for. Where a route names the guarded row in its body and not
+   its path, that id is read first, as the row the guard is asked of: from the page, a new
+   card's column, a new column's, label's or category's board, a new subtask's card, the label
+   changed, deleted or toggled, and the card restored from the board's archive; in both trees,
+   a new milestone's board. The card reorder reads its drop's ids and caps, which read no row,
+   before any card;
+4. **writes**, through the helpers that already exist (`applyCardMove`, `archiveCard`,
+   `deleteCard`, `restoreCard`, `recordCardCreated`, `addDependencyLink`,
+   `removeDependencyLink`, `recordTokenUsage`, `createMilestone`, `setCardMilestone`,
+   `deleteBoard`, `deleteColumn`, …);
+5. **records and tells** itself: `logActivity` and its webhook, `emit` and the `notify…` mail
+   all wait for the commit;
+6. **throws kit `error()`**, as the guards do, so a handler has nothing to catch. A helper's
+   typed error is turned into `error(e.status, e.message)` in one private function of the
+   service: `moved` for `CardMoveError` in `cards.ts`, `refused` for `TokenError` in
+   `token-service.ts` and for `MilestoneError` in `milestone-service.ts`. The one turn written
+   in place is in `cards.ts`: `updateCard` turns the `MilestoneError` of a v1 `milestoneId`
+   change where it catches it.
+
+A read is listed on its module's `READS`, writes nothing, and asks no `inWrite()`.
+
+**Where the contract lives.** `writeAs`, `inWrite` and `ServiceOptions` are all in
+`src/lib/server/write-as.ts`, the module every service already imports. `inWrite` asks the
+count `writeAs` keeps of its running callbacks (`writing`), not merely whether a transaction is
+open, so a job's or a scheduler's bare `inTransaction` cannot call a service; only `writeAs`
+sets the count. It is not in `db/transaction.ts`: that module cannot import `write-as.ts`,
+which imports it, and a setter exported from it would let anything set the count.
+
+| `ServiceOptions` | What it is |
+|---|---|
+| `source` | `'ui'` from the internal tree, `'api'` from v1: the `source` of every entry and webhook the write records, and v1's actions stored with `api:` |
+| `baseUrl?` | `linkBaseUrl(url)`, read before `writeAs` (a setting, no row): the address the mail the write sends links to |
+| `says?` | The tree's own words for a refusal where it has them (`No edit access to this card's board` against `No edit access to this board`), handed to the guard |
+
+**`says` is words written out, never words made.** At the call it is a text literal, or a
+constant of the route file holding one (for example `NO_EDIT`, `NO_ACCESS`, `NO_EDIT_TO_ASSIGN`,
+`NO_EDIT_TO_UNASSIGN`), and a
+service hands it on only as `opts.says`. `tests/check-at-the-write.test.ts` refuses a `says`
+built from data, a computed key and a spread in a service write's options; and
+`tests/openapi-document.test.ts` reads each v1 handler's refusal texts there.
+
+### The tree's options, and why they exist
+
+Part A was a pure move. Where the two trees did something differently, each kept what it did,
+through an option its handler passes, so that the unchanged existing suites prove the move and
+no answer a caller sees changed. An option that changes an entry's words is a boolean named for
+what it says; one that changes an order is named for that order, never a test of `source`; and
+a branch only one tree reaches sits behind that tree's option, so the OpenAPI test, which reads
+a v1 handler through the service with the options it passes, does not count it for v1.
+
+| Option | Service | Passed by | What it keeps |
+|---|---|---|---|
+| `allowMove` | `updateCard` | internal | `columnId` and `position` in a card update move it (with the move's `409`s) |
+| `allowMilestone`, `allowRestore` | `updateCard` | v1 | `milestoneId`; `archivedAt: null` restores |
+| `refuseEmpty` | `updateCard`, `updateBoard` | v1 | `400 No valid fields to update` for a body that changes nothing; the internal tree answers it `200` |
+| `tellBeforeEntry` | `updateCard`, `createSubtask`, `updateBoard` (v1); `updateSubtask` (internal) | as listed | the live event before the entry (and so before its webhook); on `updateSubtask` before the completion's notices too |
+| `permanent` | `removeCard` | both | `?permanent=true`: delete, not archive |
+| `commentedOn`, `mailBeforeEntry` | `addComment` | v1 | `Commented on "<card>"` against `on "<card>"`; the mail before the entry |
+| `namesCard`, `allowPosition` | `createSubtask` | v1 | `Created subtask "<x>" on "<card>"` against the bare title; `position` read |
+| `eventType` | every subtask write | both, required | the live event's `type`: `subtask` internal, `card` v1 |
+| `nothingToLink` | `addWorkDependency`, `removeWorkDependency` | internal card route | `Nothing to link`, `Provide only one end` |
+| `withLinkDetails` | `readWorkDependencies` | v1 card route | each link's id, maker and time |
+| `allowCard` | `changeMilestone` | internal | `cardId` (and `attach`) in a milestone `PATCH` puts a card in or takes it out |
+| `withCards` | `readMilestone` | v1 | the milestone's cards, withheld where the caller cannot open their board |
+| `allowCategory` | `createBoard` | internal | `categoryId`, the dashboard grouping |
+| `allowParent` | `updateBoard` | internal | `parentCardId`: a board moved under a card or back (not combined with `refuseEmpty`) |
+| `placeAfterLast`, `colorBeforePosition` | `createColumn` | v1 | a column with no position after the last (internally at 0); `color` read before `position` |
+| `sendNameOrColor` | `updateLabel` | internal | `400 Send name or color to change` against `No valid fields to update` |
+
+Where a body id stands for a path id the difference is in `at`, not an option: the internal
+comment edit passes `at.cardId` so the comment must be on the path's card, and a create from
+the page passes `{}` and its body names the parent. What one tree accepts that the other does
+not (v1 ignores a new board's `categoryId` and a board update's `parentCardId`) is unchanged;
+each was raised as a card of its own.
+
+### The modules
+
+| Module | Reads (`READS`) | Writes | Called by |
+|---|---|---|---|
+| `cards.ts` | none | `createCard`, `updateCard`, `removeCard`, `moveCard`, `moveCards`, `restoreCardFor` | internal `cards` POST, `cards/[id]` PUT and DELETE, `cards/reorder` PUT (`moveCards`), `cards/[id]/restore` POST and `boards/[id]/archive` POST (`restoreCardFor`); v1 `boards/[boardId]/cards` POST, `cards/[cardId]` PUT and DELETE, `cards/[cardId]/move` PUT (`moveCard`) |
+| `card-assignees.ts` | none | `assignToCard` (answers `{ already }`), `unassignFromCard` | `cards/[id]/assignees` POST and DELETE in both trees |
+| `card-comments.ts` | `listComments` | `addComment`, `editComment`, `deleteComment` | `cards/[id]/comments` GET and POST in both trees; internal `cards/[id]/comments/[commentId]` PUT and DELETE (the delete is the internal tree's alone); v1 `comments/[commentId]` PUT |
+| `card-labels.ts` | none | `toggleCardLabel`, `addCardLabel`, `removeCardLabel` | internal `labels` PUT (the toggle); v1 `cards/[cardId]/labels` POST and DELETE |
+| `subtasks.ts` | `listSubtasks` | `createSubtask`, `updateSubtask`, `deleteSubtask` | internal `subtasks` GET and POST, `subtasks/[id]` PUT and DELETE; v1 `cards/[cardId]/subtasks` GET and POST, `subtasks/[subtaskId]` PUT and DELETE |
+| `work-dependencies.ts` | `readWorkDependencies` | `addWorkDependency`, `removeWorkDependency` (`at: { kind: 'card' \| 'subtask', id }`) | the GET, POST and DELETE of `cards/[id]/dependencies` and `subtasks/[id]/dependencies` in both trees (it replaced `subtask-dependencies.ts`) |
+| `token-service.ts` | `readCardTokens` | `recordTokens` (`at` a card or subtask), `removeTokenEntry`, `recordTokenBatch` | `cards/[id]/tokens` GET in both trees; v1 `cards/[cardId]/tokens` POST, `subtasks/[subtaskId]/tokens` POST, `tokens/[entryId]` DELETE, `tokens/bulk` POST (the internal tree writes no tokens) |
+| `milestone-service.ts` | `readMilestone`, `readMilestoneSummary` | `createMilestoneFor`, `changeMilestone`, `deleteMilestoneFor`, `attachCardToMilestone`, `detachCardFromMilestone` | `milestones` POST, `milestones/[id]` GET, PATCH and DELETE, `.../summary` and `.../pdf` GET, in both trees; v1 `milestones/[milestoneId]/cards` POST and DELETE |
+| `boards.ts` | `listBoardsFor` | `createBoard`, `updateBoard`, `deleteBoardFor` | `boards` GET and POST, `boards/[id]` PUT and DELETE, in both trees |
+| `board-groupings.ts` | none | `createBoardGrouping`, `updateBoardGrouping`, `deleteBoardGrouping` | `board-categories` POST, `board-categories/[id]` PUT and DELETE, in both trees |
+| `columns.ts` | none | `createColumn`, `updateColumn`, `deleteColumnFor`, `reorderColumns` | internal `columns` POST, `columns/[id]` PUT and DELETE, `columns/reorder` PUT (the internal tree's alone); v1 `boards/[boardId]/columns` POST, `columns/[columnId]` PUT and DELETE |
+| `card-categories.ts` | none | `createCardCategory`, `updateCardCategory`, `deleteCardCategory` | internal `categories` POST, `categories/[id]` PUT and DELETE; v1 `boards/[boardId]/categories` POST, `categories/[categoryId]` PUT and DELETE |
+| `labels.ts` | `labelsOfBoard` | `createLabel`, `updateLabel`, `deleteLabel` | internal `labels` GET, POST, PATCH and DELETE; v1 `boards/[boardId]/labels` GET and POST, `labels/[labelId]` PUT and DELETE |
+
+Paths are under `src/routes/api/` (internal) and `src/routes/api/v1/`. Each module's header
+says what its trees do differently and why.
+
+**What is not a service.** `milestones.ts` and `tokens.ts` keep their rules
+(`requireMilestone`, `createMilestone`, `recordTokenUsage`, the totals) as helpers other callers
+use, the bulk routes among them; the services call them, and they stay off the service rule,
+which would otherwise make each of their exports a write needing `inWrite()`. Left in their
+route files, as no pairs: `POST /api/v1/dependencies/bulk` and
+`POST`/`DELETE /api/v1/milestones/{id}/cards/bulk` (v1's alone; the second sends its
+plan-created mail after the commit, which a service would pull inside the transaction); the
+audit-log, activity and personal-stats reads, which answer different questions in each tree;
+the board-cards reads (a picker and a full listing); both trees' grouping lists and the
+internal category list, which call `boardCategoriesFor` and `cardCategoriesFor` in
+`list-access.ts`; the two milestone lists (`GET /api/milestones`, `GET /api/v1/milestones`),
+which call `listMilestones` as before; `GET /api/boards/:id/archive`; and v1's single-row and
+per-board reads (one board, column, category, grouping, label or comment, and the `GET`s of
+`boards/:boardId/columns`, `boards/:boardId/categories`, `cards/:cardId/assignees` and
+`cards/:cardId/labels`), with the other reads of those files.
+
+**How it is held.** `tests/check-at-the-write.test.ts` reads every route file and every module
+of `src/lib/server/` for the service rule (see
+[Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253));
+`tests/activity-twins.test.ts` runs each pair's two requests on the same fixture and compares
+what each tree wrote, recorded and told, and pins every service call's options as read from
+the source; `tests/write-as.test.ts` holds `inWrite`. See
+[Testing](testing.md#tests-that-read-the-source).
+
 ## One Timestamp Form
 
 Every moment DumpFire stores is `YYYY-MM-DD HH:MM:SS`, in UTC, to the whole second (card 2095): what SQLite's `datetime('now')` writes, which 22 columns take as their default. Stored values are compared as text, and text orders moments only within one form, so one form is what makes every date filter right.
@@ -1054,3 +1286,5 @@ stateDiagram-v2
 7. **Attachment files are moved, not deleted** — Backups hold the database only. A deleted card's files go to a trash folder for 30 days, so that restoring an earlier backup can have them back.
 
 8. **One way to read a body, and no schema library** — Every handler reads its body, its path ids and its query through the small readers of `request-body.ts`, which refuse what a field cannot hold with a `400` that names it. A schema library would have been the first validation dependency in the project; checks written into each handler are how the two API trees drifted apart. A value the row already holds is accepted as it is, so rows stored before the rules still save. See [Reading a body](#reading-a-body).
+
+9. **One service per action, both API trees** — The internal tree and `/api/v1/` keep their own paths, bodies, words and answers, and call one function for the work between them, so the two cannot drift apart again. A service writes only inside the `writeAs` callback that hands it the caller, which `inWrite()` checks when it runs and a source test checks on every route. See [One Service per Action, Both Trees](#one-service-per-action-both-trees).
