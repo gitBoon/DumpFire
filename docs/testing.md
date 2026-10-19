@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.84
+version: 1.85
 status: Living
 date: 2026-10-19
 tags:
@@ -420,6 +420,16 @@ So `expect(await heldInTurn([D, D, D].map((ip) => wrongAt(name, ip)))).toEqual([
 reads as what a person would wait, and a test of requests sent together passes them to one
 `heldFor` call. A request that is neither answered nor waiting on a timer after 200 rounds
 fails the test rather than hang it.
+
+The waits take no real time; the password checks do. The account these tests sign in to is
+re-hashed at cost 4, about a millisecond a check, but a sign-in at a name that is no account
+is checked against `DUMMY_HASH`, at cost 12 (card 2192), on the test's own thread: about
+200 ms alone, and more than twice that under the whole suite, where a test making eleven of
+them ran past vitest's 5 s default (card 2279). So a test that makes five or more passes
+`withChecks(n)` as its timeout, `n` the checks it makes: 5 s, and 1.5 s a check on top. A
+timeout asserts nothing, so it is sized for a loaded machine. A test that times out leaves
+its sign-ins still running, counting into the next test's state, so a timeout here can show
+as a wrong wait or a wrong status in the test after it.
 
 **It tests itself.** The harness leans on SvelteKit's internals, which no version promises
 to keep: three modules imported by path and the shape of the manifest. The first test in
