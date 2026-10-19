@@ -35,13 +35,51 @@
  * never a scheduler, a job, or an effect run after a commit. Those have no
  * request, and so no key or session, and are refused (`stillAuthenticated`
  * writes an ERROR line for it); they write with `inTransaction`.
+ *
+ * A service that both API trees call (card 2012, `src/lib/server/cards.ts`
+ * and its siblings) is handed `caller` inside the callback, and starts each
+ * of its writes with `inWrite()`: refused unless a `writeAs` callback is
+ * running, so that a service called outside one, or from a job's bare
+ * `inTransaction`, writes nothing. `tests/check-at-the-write.test.ts` reads
+ * the routes and the services for the same rule.
  */
 import type { SessionUser } from './auth';
 import { stillAuthenticated } from './auth';
 import { inTransaction } from './db/transaction';
+import type { ActivitySource } from './logActivity';
+
+/**
+ * What every service write is handed beside the caller, its path ids and the
+ * body (card 2012): one shape for all of them,
+ *
+ *     service(caller, at: { …the ids in the path }, body, opts: ServiceOptions & { …the tree's options })
+ *
+ * with `null` for the body of a request that has none.
+ */
+export type ServiceOptions = {
+	/** Which tree the request came through, for the entries the write records. */
+	source: ActivitySource;
+	/** The address the mail a write sends links to (`linkBaseUrl`), where it sends any. */
+	baseUrl?: string | null;
+	/**
+	 * The tree's own words for a refusal, where it has its own (R2). Written
+	 * out at the call, or a constant of the route file that holds them: never
+	 * made from data (tests/check-at-the-write.test.ts).
+	 */
+	says?: string;
+};
 
 /** `never` for a promise: a transaction's work cannot await (transaction.ts). */
 type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
+
+/**
+ * How many `writeAs` callbacks are running: set as a callback starts, after
+ * its caller has been asked for, and taken off when it returns or throws.
+ * A count, as a `writeAs` inside another is a savepoint of it. Nothing else
+ * sets it: what `inWrite` asks is whether a `writeAs` is under way, not
+ * merely whether some transaction is open (R4 of card 2012's plan).
+ */
+let writing = 0;
 
 /**
  * Run `write` in one transaction, handed the caller as their account is now,
@@ -59,7 +97,35 @@ type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
  * rolls back what it wrote, and inside another transaction it is a savepoint.
  */
 export function writeAs<T>(locals: App.Locals, write: (caller: SessionUser | null) => NotAPromise<T>): T {
-	return inTransaction<T>(() => write(stillAuthenticated(locals)));
+	return inTransaction<T>(() => {
+		const caller = stillAuthenticated(locals);
+		writing++;
+		try {
+			return write(caller);
+		} finally {
+			writing--;
+		}
+	});
+}
+
+/**
+ * The first statement of every write a service exports (card 2012): refused,
+ * before anything is read, unless it is running inside a `writeAs` callback,
+ * where the caller has just been asked for and the transaction that writes
+ * is open. A transaction opened inside that callback, a savepoint, is still
+ * inside it. A bare `inTransaction` is not: a job or a scheduler has no
+ * request, and so no caller to hand a service.
+ *
+ * A plain error, a 500 if a route reaches it: it can only mean a route or a
+ * job calling a service where it may not, which is a fault, not a refusal.
+ */
+export function inWrite(): void {
+	if (writing === 0) {
+		throw new Error(
+			'A service write was called outside a writeAs callback, and wrote nothing. Call it inside ' +
+				'writeAs(locals, (caller) => …), handing it caller.'
+		);
+	}
 }
 
 /**

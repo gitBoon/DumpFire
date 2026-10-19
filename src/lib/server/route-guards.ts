@@ -101,11 +101,15 @@ export function refuseOwnAccount(user: SessionUser | null | undefined, userId: n
  * Existence is checked first and separately: an administrator passes every
  * access check without the board being looked up, so without this an admin
  * asking about a board that does not exist would be told "yes".
+ *
+ * `says` is the 403's text where a route has words of its own for it, which
+ * it keeps (card 2012, R2): the v1 card routes say "this card's board".
  */
 export function requireBoard(
 	user: SessionUser | null | undefined,
 	boardId: number,
-	need: Need
+	need: Need,
+	says?: string
 ): Board {
 	const caller = requireUser(user);
 	if (!Number.isInteger(boardId)) error(400, 'Invalid board ID');
@@ -115,7 +119,7 @@ export function requireBoard(
 
 	const allowed = need === 'edit' ? canEditBoard(caller, boardId) : canViewBoard(caller, boardId);
 	if (!allowed) {
-		error(403, need === 'edit' ? 'No edit access to this board' : 'No access to this board');
+		error(403, says ?? (need === 'edit' ? 'No edit access to this board' : 'No access to this board'));
 	}
 	return board;
 }
@@ -191,11 +195,12 @@ export function requireColumn(
 	return { column, boardId: column.boardId };
 }
 
-/** The card and the board it is on, resolved through its column. */
+/** The card and the board it is on, resolved through its column; `says` as for `requireBoard`. */
 export function requireCard(
 	user: SessionUser | null | undefined,
 	cardId: number,
-	need: Need
+	need: Need,
+	says?: string
 ): { card: Card; boardId: number } {
 	requireUser(user);
 	if (!Number.isInteger(cardId)) error(400, 'Invalid card ID');
@@ -210,7 +215,7 @@ export function requireCard(
 		.get();
 	if (!column) error(404, 'Card not found');
 
-	requireBoard(user, column.boardId, need);
+	requireBoard(user, column.boardId, need, says);
 	return { card, boardId: column.boardId };
 }
 

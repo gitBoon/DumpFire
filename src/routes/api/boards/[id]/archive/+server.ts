@@ -1,11 +1,10 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { cards, columns } from '$lib/server/db/schema';
 import { eq, and, isNotNull, inArray } from 'drizzle-orm';
-import { restoreCard } from '$lib/server/card-restore';
-import { emit } from '$lib/server/events';
-import { pathId, readBody, readId } from '$lib/server/request-body';
-import { requireBoard, requireCard, requireUser } from '$lib/server/route-guards';
+import { restoreCardFor } from '$lib/server/cards';
+import { pathId, readBody } from '$lib/server/request-body';
+import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -44,23 +43,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const body = await readBody(request);
 
 	// One transaction: the card is read and the caller checked in the one that
-	// restores it. The same routine as POST /api/cards/:id/restore. It asks
-	// first whether the session is still open, and who its account is now
-	// (card 2253).
-	const updated = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		// The card the body names is the row guarded, so its id is read first.
-		const cardId = readId(body, 'cardId', { required: true, says: 'Invalid card ID' });
-
-		// The card decides which board is checked, not the URL: this route used to
-		// restore whichever card was named, on any board, for anyone.
-		const { boardId } = requireCard(user, cardId, 'edit');
-		if (boardId !== pathBoardId) throw error(404, 'Card not found on this board');
-
-		const restore = restoreCard(cardId, user, 'ui');
-		if (!restore) throw error(404, 'Card not found');
-		if (restore.restored) emit(boardId, 'update', { type: 'card' });
-		return restore.card;
-	});
+	// restores it. The same routine as POST /api/cards/:id/restore,
+	// `restoreCardFor` in $lib/server/cards: the card the body names is the row
+	// guarded, so its id is read first, and the card decides which board is
+	// checked, not the URL (this route used to restore whichever card was
+	// named, on any board, for anyone). It asks first whether the session is
+	// still open, and who its account is now (card 2253).
+	const updated = writeAs(locals, (caller) => restoreCardFor(caller, { boardId: pathBoardId }, body, { source: 'ui' }));
 	return json(updated);
 };

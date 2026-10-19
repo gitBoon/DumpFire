@@ -1,20 +1,8 @@
 import { json } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
-import { cards } from '$lib/server/db/schema';
-import { requireColumn, requireUser } from '$lib/server/route-guards';
-import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
+import { requireUser } from '$lib/server/route-guards';
+import { createCard } from '$lib/server/cards';
 import { linkBaseUrl } from '$lib/server/email';
-import { normaliseReportingFields } from '$lib/server/reporting-fields';
-import { PRIORITIES, requireCardCategory } from '$lib/server/card-fields';
-import {
-	readBody,
-	readChoice,
-	readColour,
-	readDate,
-	readId,
-	readNumber,
-	readText
-} from '$lib/server/request-body';
+import { readBody } from '$lib/server/request-body';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -36,6 +24,10 @@ import type { RequestHandler } from './$types';
  * A card created in a Complete column is completed as it is created, as a
  * card moved into one is (card 2134): see `$lib/server/card-create`. The
  * answer is the card as written, with its `completedAt`.
+ *
+ * The work is `createCard` in `$lib/server/cards`, which the v1 create
+ * shares (card 2012). The board is the one the target column is on: a
+ * `boardId` in the body is ignored.
  */
 export const POST: RequestHandler = async ({ request, locals, url }) => {
 	requireUser(locals.user);
@@ -47,57 +39,6 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 	// writes used to leave a card that nobody was recorded as having raised.
 	// It asks first whether the session is still open, and who its account is
 	// now (card 2253).
-	const card = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		// The board is the one the target column is on. A `boardId` in the body is
-		// ignored: it used to be trusted ahead of the column, so naming a board you
-		// could edit let you create a card in a column on a board you could not.
-		const columnId = readId(body, 'columnId', { required: true, says: 'Invalid column ID' });
-		const { column, boardId: resolvedBoardId } = requireColumn(user, columnId, 'edit');
-
-		const title = readText(body, 'title', {
-			required: true,
-			trim: true,
-			min: 1,
-			max: 500,
-			says: { missing: 'title is required', empty: 'title is required' }
-		});
-		const description = readText(body, 'description', { max: 50000 });
-		const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true });
-		const colorTag = readColour(body, 'colorTag', { allowEmpty: true });
-		const categoryId = readId(body, 'categoryId', { nullable: true });
-		const dueDate = readDate(body, 'dueDate', { nullable: true });
-		const businessValue = readText(body, 'businessValue', { max: 10000 });
-		const position = readNumber(body, 'position', {});
-		// The five reporting fields, each in its own vocabulary, with its own 400.
-		const reporting = normaliseReportingFields(body);
-
-		if (categoryId != null) requireCardCategory(categoryId, resolvedBoardId);
-
-		const card = db
-			.insert(cards)
-			.values({
-				columnId,
-				categoryId: categoryId ?? null,
-				title,
-				description: description ?? '',
-				position: position ?? 0,
-				priority: priority ?? 'medium',
-				colorTag: colorTag ?? '',
-				dueDate: dueDate ?? null,
-				businessValue: businessValue ?? '',
-				createdBy: user.id,
-				...reporting
-			})
-			.returning()
-			.get();
-
-		// The `card_created` entry, which once never appeared in ~2,500 scanned
-		// entries, and in a Complete column the completion; then the live update
-		// and, for a completion, the celebration, after the commit.
-		const creation = recordCardCreated({ card, column, actor: user, source: 'ui' });
-		announceCardCreated(creation, user, baseUrl);
-		return creation.card;
-	});
+	const card = writeAs(locals, (caller) => createCard(caller, {}, body, { source: 'ui', baseUrl }));
 	return json(card, { status: 201 });
 };

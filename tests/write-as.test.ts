@@ -95,7 +95,7 @@ import { inTransaction } from '$lib/server/db/transaction';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { issueFormToken, newRequestToken } from '$lib/server/request-tokens';
 import { cardDir } from '$lib/server/uploads';
-import { stillCallerNow, writeAs } from '$lib/server/write-as';
+import { inWrite, stillCallerNow, writeAs } from '$lib/server/write-as';
 import { stamp } from '$lib/timestamps';
 import { handle } from '../src/hooks.server';
 import { api } from './helpers/api';
@@ -394,6 +394,86 @@ describe('stillCallerNow', () => {
 		db.delete(apiKeys).run();
 
 		expect(outcome(() => stillCallerNow(locals))).toEqual({ status: 401, message: 'Invalid or expired API key' });
+	});
+});
+
+// ─── inWrite: a service writes only inside writeAs (card 2012, R4) ──────────
+
+describe('inWrite', () => {
+	const OUTSIDE = 'A service write was called outside a writeAs callback, and wrote nothing';
+
+	it('refuses outside any transaction, and inside a bare inTransaction that writeAs did not open', () => {
+		expect(() => inWrite()).toThrow(OUTSIDE);
+		// A job's or a scheduler's transaction: no request, so no caller to hand a service.
+		expect(() => inTransaction(() => inWrite())).toThrow(OUTSIDE);
+		expect(sqlite.inTransaction).toBe(false);
+	});
+
+	it('passes inside writeAs, inside an inTransaction nested in it, and inside a writeAs nested in either', () => {
+		const user = makeUser();
+		const locals = sessionLocals(user, makeSession(user));
+
+		const passed = writeAs(locals, () => {
+			inWrite();
+			inTransaction(() => inWrite());
+			writeAs(locals, () => inWrite());
+			inTransaction(() => writeAs(locals, () => inWrite()));
+			inWrite();
+			return 'passed';
+		});
+
+		expect(passed).toBe('passed');
+	});
+
+	it('is taken off when writeAs returns and when it throws, a nested one included, and is not set when the caller is refused', () => {
+		const user = makeUser();
+		const token = makeSession(user);
+		const locals = sessionLocals(user, token);
+
+		writeAs(locals, () => writeAs(locals, () => 'returned'));
+		expect(() => inWrite()).toThrow(OUTSIDE);
+
+		expect(() =>
+			writeAs(locals, () => {
+				writeAs(locals, () => {
+					throw new Error('thrown inside');
+				});
+			})
+		).toThrow('thrown inside');
+		expect(() => inWrite()).toThrow(OUTSIDE);
+		expect(() => inTransaction(() => inWrite())).toThrow(OUTSIDE);
+
+		// Refused before the callback: the write is never run, and nothing is left set.
+		db.delete(sessions).where(eq(sessions.id, token)).run();
+		expect(outcome(() => writeAs(locals, () => inWrite()))).toEqual({ status: 401, message: 'Not authenticated' });
+		expect(() => inTransaction(() => inWrite())).toThrow(OUTSIDE);
+	});
+
+	it('a session ended while the body arrived, naming in its body an id that is not there, is answered 401, not 404 (S2)', async () => {
+		const owner = makeUser({ username: 'owner' });
+		makeBoard({ owner, name: 'Owned' });
+		const token = makeSession(owner);
+		db.delete(sessions).where(eq(sessions.id, token)).run();
+		const before = snapshotDb();
+
+		// No column 999: a 404 would say so to a caller who is no longer signed in.
+		const res = await api('POST', '/api/cards', {
+			user: owner,
+			credential: { kind: 'session', token },
+			body: { columnId: 999, title: 'Too late' }
+		});
+
+		expect(res.status).toBe(401);
+		expect(res.body).toEqual({ message: 'Not authenticated' });
+		expectUnchanged(before);
+		// And the same request with the session open is the 404.
+		const open = await api('POST', '/api/cards', {
+			user: owner,
+			credential: { kind: 'session', token: makeSession(owner) },
+			body: { columnId: 999, title: 'In time' }
+		});
+		expect(open.status).toBe(404);
+		expect(open.body).toEqual({ message: 'Column not found' });
 	});
 });
 

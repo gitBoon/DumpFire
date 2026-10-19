@@ -143,6 +143,8 @@ type Source = {
 	imports: Map<string, { module: string; name: string }>;
 	/** The file's own functions: declarations, and constants that hold a function. */
 	functions: Map<string, ts.Node>;
+	/** The file's constants that hold a text written out (`const NO_EDIT = '…'`), by name (card 2012). */
+	consts: Map<string, string>;
 };
 
 const sources = new Map<string, Source | null>();
@@ -152,7 +154,15 @@ function parse(file: string, text: string): Source {
 	const tree = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
 	const imports: Source['imports'] = new Map();
 	const functions: Source['functions'] = new Map();
+	const consts: Source['consts'] = new Map();
 	for (const statement of tree.statements) {
+		if (ts.isVariableStatement(statement) && (statement.declarationList.flags & ts.NodeFlags.Const) !== 0) {
+			for (const declared of statement.declarationList.declarations) {
+				if (ts.isIdentifier(declared.name) && declared.initializer && ts.isStringLiteralLike(declared.initializer)) {
+					consts.set(declared.name.text, declared.initializer.text);
+				}
+			}
+		}
 		if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
 			const named = statement.importClause?.namedBindings;
 			if (named && ts.isNamedImports(named)) {
@@ -174,7 +184,7 @@ function parse(file: string, text: string): Source {
 			}
 		}
 	}
-	return { tree, imports, functions };
+	return { tree, imports, functions, consts };
 }
 
 /** A source file, parsed once. `file` is a path from the repository root with forward slashes. */
@@ -268,11 +278,16 @@ const readings = new Map<string, Reading>();
  * a status thrown by `requireCard` is known to be one of the handler's. It
  * errs towards more: a status the callee answers on a branch this caller can
  * never reach is counted too. A function that calls itself is read once.
+ *
+ * As `textsOf` does, it reads a function as called with what it was handed,
+ * where that is written out (`known`), and leaves out a branch that rules
+ * out: a shared service handed `{ source: 'api' }` and no `allowMove` is not
+ * answering its move's statuses for that caller (card 2012).
  */
-function reading(file: string, name: string): Reading {
-	const key = `${file}#${name}`;
-	const known = readings.get(key);
-	if (known) return known;
+function reading(file: string, name: string, known: Known = {}): Reading {
+	const key = `${file}#${name}#${JSON.stringify(Object.entries(known).sort())}`;
+	const already = readings.get(key);
+	if (already) return already;
 
 	const found: Reading = { statuses: new Set(), readsBody: false, query: new Set(), unread: [] };
 	readings.set(key, found);
@@ -311,7 +326,16 @@ function reading(file: string, name: string): Reading {
 		found.statuses.add(Number(given.initializer.text));
 	};
 
-	const visit = (node: ts.Node) => {
+	const visit = (node: ts.Node): void => {
+		// A branch that what the function was called with rules out is not read.
+		if (ts.isIfStatement(node) || ts.isConditionalExpression(node)) {
+			const [whenTrue, whenFalse] = ts.isIfStatement(node) ? [node.thenStatement, node.elseStatement] : [node.whenTrue, node.whenFalse];
+			const [first, second] = branchesOf(node, known, source.consts);
+			visit(ts.isIfStatement(node) ? node.expression : node.condition);
+			if (first) visit(whenTrue);
+			if (second && whenFalse) visit(whenFalse);
+			return;
+		}
 		if (ts.isCallExpression(node)) {
 			const called = node.expression;
 			if (ts.isIdentifier(called)) {
@@ -332,10 +356,10 @@ function reading(file: string, name: string): Reading {
 				} else if (fromKit(called.text) === 'json') {
 					answered(node, node.arguments[1]);
 				} else if (source.functions.has(called.text)) {
-					take(reading(file, called.text));
+					take(reading(file, called.text, calledWith(source.functions.get(called.text), node, known, source.consts)));
 				} else if (imported) {
 					const target = fileOf(file, imported.module);
-					if (target) take(reading(target, imported.name));
+					if (target) take(reading(target, imported.name, calledWith(read(target)?.functions.get(imported.name), node, known, source.consts)));
 				}
 			} else if (ts.isPropertyAccessExpression(called)) {
 				if (called.name.text === 'json' && ts.isIdentifier(called.expression) && called.expression.text === 'request') {
@@ -431,8 +455,79 @@ function queryNamesReadBy(file: string, fn: string, params: string): Set<string>
 
 // ─── The texts a handler can answer with ─────────────────────────────────────
 
-/** What a function was called with, where that was written out: a parameter's name, and the literal given for it. */
-type Known = Record<string, string | boolean>;
+/**
+ * An object literal a function was handed (card 2012: a service's options),
+ * with each property it was written with: its literal, or null where the
+ * value is not one. A property it was not written with is absent, and reads
+ * as `undefined`.
+ */
+type KnownObject = { object: Record<string, string | boolean | null> };
+
+/** What a function was called with, where that was written out: a parameter's name, and the literal or object literal given for it. */
+type Known = Record<string, string | boolean | KnownObject>;
+
+/**
+ * What an expression is known to be, from what the function was called with
+ * and its file's constants: `{ value }`, `undefined` among the values for a
+ * property an object literal was not written with; null when it is not known.
+ */
+function valueOf(node: ts.Expression, known: Known, consts: ReadonlyMap<string, string>): { value: string | boolean | undefined | KnownObject } | null {
+	if (ts.isParenthesizedExpression(node)) return valueOf(node.expression, known, consts);
+	if (ts.isStringLiteralLike(node)) return { value: node.text };
+	if (node.kind === ts.SyntaxKind.TrueKeyword) return { value: true };
+	if (node.kind === ts.SyntaxKind.FalseKeyword) return { value: false };
+	if (ts.isIdentifier(node)) {
+		if (node.text in known) return { value: known[node.text] };
+		return consts.has(node.text) ? { value: consts.get(node.text) } : null;
+	}
+	if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
+		const held = known[node.expression.text];
+		if (typeof held !== 'object') return null;
+		if (!(node.name.text in held.object)) return { value: undefined };
+		const value = held.object[node.name.text];
+		return value === null ? null : { value };
+	}
+	if (ts.isObjectLiteralExpression(node)) {
+		const object: KnownObject['object'] = {};
+		for (const property of node.properties) {
+			if (ts.isSpreadAssignment(property) || !property.name) return null;
+			const key = ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name) ? property.name.text : null;
+			if (key === null) return null;
+			const given = ts.isPropertyAssignment(property)
+				? valueOf(property.initializer, known, consts)
+				: ts.isShorthandPropertyAssignment(property)
+					? valueOf(property.name, known, consts)
+					: null;
+			const value = given?.value;
+			object[key] = typeof value === 'string' || typeof value === 'boolean' ? value : null;
+		}
+		return { value: { object } };
+	}
+	return null;
+}
+
+/** What the function `target` is called with by `node`, as far as it is written out. */
+function calledWith(target: ts.Node | undefined, node: ts.CallExpression, known: Known, consts: ReadonlyMap<string, string>): Known {
+	const given: Known = {};
+	const parameters = target && ts.isFunctionLike(target) ? target.parameters : [];
+	for (let i = 0; i < parameters.length; i++) {
+		const parameter = parameters[i];
+		if (node.arguments.slice(0, i + 1).some((argument) => ts.isSpreadElement(argument))) break;
+		if (!ts.isIdentifier(parameter.name)) continue;
+		const value = i < node.arguments.length ? literalOf(node.arguments[i], known, consts) : literalOf(parameter.initializer, {});
+		if (value !== undefined) given[parameter.name.text] = value;
+	}
+	return given;
+}
+
+/**
+ * A branch that what the function was called with rules out, by the
+ * condition of an `if` or a `?:`: `[read the first, read the second]`.
+ */
+function branchesOf(node: ts.IfStatement | ts.ConditionalExpression, known: Known, consts: ReadonlyMap<string, string>): [boolean, boolean] {
+	const outcome = decided(ts.isIfStatement(node) ? node.expression : node.condition, known, consts);
+	return [outcome !== false, outcome !== true];
+}
 
 /**
  * The texts a function can be seen to answer with, and everything it calls.
@@ -485,17 +580,20 @@ function builtText(node: ts.Expression): { source: string; fixed: string } | nul
 /**
  * Whether a condition is true, where that follows from what the function was
  * called with: `need === 'edit'` when `need` is known to be 'view', a bare
- * `forEdit` or `!forEdit`, and `&&` and `||` of those. Undefined when it does
+ * `forEdit` or `!forEdit`, and `&&` and `||` of those. And of the object a
+ * function was handed (card 2012): `opts.allowMove`, false where the object
+ * was written without it, and `opts.source === 'api'`. Undefined when it does
  * not follow, which is nearly always.
  */
-function decided(test: ts.Expression, known: Known): boolean | undefined {
-	if (ts.isParenthesizedExpression(test)) return decided(test.expression, known);
-	if (ts.isIdentifier(test)) {
-		const value = known[test.text];
-		return typeof value === 'boolean' ? value : undefined;
+function decided(test: ts.Expression, known: Known, consts: ReadonlyMap<string, string> = new Map()): boolean | undefined {
+	if (ts.isParenthesizedExpression(test)) return decided(test.expression, known, consts);
+	if (ts.isIdentifier(test) || ts.isPropertyAccessExpression(test)) {
+		const held = valueOf(test, known, consts);
+		if (held === null) return undefined;
+		return typeof held.value === 'object' ? true : Boolean(held.value);
 	}
 	if (ts.isPrefixUnaryExpression(test) && test.operator === ts.SyntaxKind.ExclamationToken) {
-		const value = decided(test.operand, known);
+		const value = decided(test.operand, known, consts);
 		return value === undefined ? undefined : !value;
 	}
 	if (!ts.isBinaryExpression(test)) return undefined;
@@ -503,33 +601,29 @@ function decided(test: ts.Expression, known: Known): boolean | undefined {
 	const operator = test.operatorToken.kind;
 	if (operator === ts.SyntaxKind.AmpersandAmpersandToken || operator === ts.SyntaxKind.BarBarToken) {
 		const settles = operator === ts.SyntaxKind.BarBarToken;
-		const left = decided(test.left, known);
-		const right = decided(test.right, known);
+		const left = decided(test.left, known, consts);
+		const right = decided(test.right, known, consts);
 		if (left === settles || right === settles) return settles;
 		return left === undefined || right === undefined ? undefined : !settles;
 	}
 	if (operator === ts.SyntaxKind.EqualsEqualsEqualsToken || operator === ts.SyntaxKind.ExclamationEqualsEqualsToken) {
-		const [name, value] =
-			ts.isIdentifier(test.left) && ts.isStringLiteralLike(test.right)
-				? [test.left.text, test.right.text]
-				: ts.isIdentifier(test.right) && ts.isStringLiteralLike(test.left)
-					? [test.right.text, test.left.text]
-					: [null, null];
-		if (name !== null && typeof known[name] === 'string') {
-			return (known[name] === value) === (operator === ts.SyntaxKind.EqualsEqualsEqualsToken);
+		const left = valueOf(test.left, known, consts);
+		const right = valueOf(test.right, known, consts);
+		if (left !== null && right !== null && typeof left.value !== 'object' && typeof right.value !== 'object') {
+			return (left.value === right.value) === (operator === ts.SyntaxKind.EqualsEqualsEqualsToken);
 		}
 	}
 	return undefined;
 }
 
-/** The literal an expression is, if it is a string or `true` or `false` written out, or a name known to be one. */
-function literalOf(node: ts.Expression | undefined, known: Known): string | boolean | undefined {
+/**
+ * The literal an expression is, if it is a string or `true` or `false`
+ * written out, a name known to be one or a constant of the file holding one,
+ * a property of an object known to hold one, or an object literal.
+ */
+function literalOf(node: ts.Expression | undefined, known: Known, consts: ReadonlyMap<string, string> = new Map()): string | boolean | KnownObject | undefined {
 	if (!node) return undefined;
-	if (ts.isStringLiteralLike(node)) return node.text;
-	if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
-	if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
-	if (ts.isIdentifier(node)) return known[node.text];
-	return undefined;
+	return valueOf(node, known, consts)?.value;
 }
 
 /**
@@ -567,30 +661,32 @@ function textsOf(file: string, name: string, known: Known = {}, within?: readonl
 		for (const [pattern, matcher] of other.built) found.built.set(pattern, matcher);
 	};
 
-	/** What the function `target` is called with by `node`, as far as it is written out. */
-	const calledWith = (target: ts.Node | undefined, node: ts.CallExpression): Known => {
-		const given: Known = {};
-		const parameters = target && ts.isFunctionLike(target) ? target.parameters : [];
-		for (let i = 0; i < parameters.length; i++) {
-			const parameter = parameters[i];
-			if (node.arguments.slice(0, i + 1).some((argument) => ts.isSpreadElement(argument))) break;
-			if (!ts.isIdentifier(parameter.name)) continue;
-			const value = i < node.arguments.length ? literalOf(node.arguments[i], known) : literalOf(parameter.initializer, {});
-			if (value !== undefined) given[parameter.name.text] = value;
-		}
-		return given;
-	};
-
 	const visit = (node: ts.Node): void => {
 		// A branch that what the function was called with rules out is not read.
 		if (ts.isIfStatement(node) || ts.isConditionalExpression(node)) {
 			const test = ts.isIfStatement(node) ? node.expression : node.condition;
 			const [whenTrue, whenFalse] = ts.isIfStatement(node) ? [node.thenStatement, node.elseStatement] : [node.whenTrue, node.whenFalse];
-			const outcome = decided(test, known);
+			const [first, second] = branchesOf(node, known, source.consts);
 			visit(test);
-			if (outcome !== false) visit(whenTrue);
-			if (outcome !== true && whenFalse) visit(whenFalse);
+			if (first) visit(whenTrue);
+			if (second && whenFalse) visit(whenFalse);
 			return;
+		}
+
+		// `a ?? b` with `a` known to be a text: `b` is never what it answers (card 2012, a tree's `says`).
+		if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+			const left = valueOf(node.left, known, source.consts);
+			visit(node.left);
+			if (left === null || left.value === undefined) visit(node.right);
+			return;
+		}
+
+		// A constant of the file that holds a text, used here: its text (card 2012).
+		if (ts.isIdentifier(node) && source.consts.has(node.text) && !(node.text in known)) {
+			const parent = node.parent;
+			const declared = (ts.isVariableDeclaration(parent) || ts.isParameter(parent) || ts.isBindingElement(parent)) && parent.name === node;
+			const property = ts.isPropertyAccessExpression(parent) && parent.name === node;
+			if (!declared && !property) found.exact.add(source.consts.get(node.text)!);
 		}
 
 		// A text put together here is read whole, and not as its pieces.
@@ -620,11 +716,11 @@ function textsOf(file: string, name: string, known: Known = {}, within?: readonl
 			const called = node.expression.text;
 			const imported = source.imports.get(called);
 			if (source.functions.has(called)) {
-				take(textsOf(file, called, calledWith(source.functions.get(called), node), within));
+				take(textsOf(file, called, calledWith(source.functions.get(called), node, known, source.consts), within));
 			} else if (imported) {
 				const target = fileOf(file, imported.module);
 				if (target && (!within || within.includes(target))) {
-					take(textsOf(target, imported.name, calledWith(read(target)?.functions.get(imported.name), node), within));
+					take(textsOf(target, imported.name, calledWith(read(target)?.functions.get(imported.name), node, known, source.consts), within));
 				}
 			}
 		}
@@ -1618,6 +1714,58 @@ describe('the reading of a handler', () => {
 		const alone = textsOf('example/texts/+server.ts', 'GET', {}, ['example/texts/+server.ts']);
 		expect(isOneOf(alone, 'No such thing')).toBe(true);
 		expect(isOneOf(alone, 'No access to this thing')).toBe(false);
+	});
+
+	it('reads a shared function as each caller calls it: the options it is handed as an object, and the constants of its file (card 2012)', () => {
+		given(
+			'example/options/shared.ts',
+			`export class MoveError extends Error { constructor(public status: number, message: string) { super(message); } }
+			function lost() { throw new MoveError(410, 'Gone'); }
+			function guard(id: number, says?: string) { if (!id) throw error(403, says ?? 'No edit access to this thing'); }
+			export function change(caller: unknown, at: { id: number }, opts: { source: string; says?: string; allowMove?: boolean }) {
+				guard(at.id, opts.says);
+				if (opts.allowMove && at.id) {
+					try { lost(); } catch (e) { if (e instanceof MoveError) throw error(e.status, e.message); throw e; }
+					throw error(409, 'Moved too far');
+				}
+				if (opts.source === 'api') throw error(422, 'Only through the API');
+			}`
+		);
+		given(
+			'example/options/+server.ts',
+			`import { change } from './shared';
+			const NO_EDIT = "No edit access to this thing's board";
+			export const PUT = async () => { change(null, { id: 1 }, { source: 'api', says: NO_EDIT }); return json({}); };
+			export const POST = async () => { change(null, { id: 1 }, { source: 'ui', allowMove: true }); return json({}); };`
+		);
+
+		// Handed `says` and no `allowMove`: the branch the option rules out, and the default `??` would give, are not its own.
+		expect(sorted(reading('example/options/+server.ts', 'PUT').statuses)).toEqual([200, 403, 422]);
+		const put = textsOf('example/options/+server.ts', 'PUT');
+		expect(isOneOf(put, "No edit access to this thing's board")).toBe(true);
+		expect(isOneOf(put, 'No edit access to this thing')).toBe(false);
+		expect(isOneOf(put, 'Moved too far')).toBe(false);
+		expect(isOneOf(put, 'Only through the API')).toBe(true);
+
+		// Handed `allowMove: true` and no `says`: the move's statuses and texts, the default words, and not v1's branch.
+		expect(sorted(reading('example/options/+server.ts', 'POST').statuses)).toEqual([200, 403, 409, 410]);
+		const post = textsOf('example/options/+server.ts', 'POST');
+		expect(isOneOf(post, 'Moved too far')).toBe(true);
+		expect(isOneOf(post, 'No edit access to this thing')).toBe(true);
+		expect(isOneOf(post, "No edit access to this thing's board")).toBe(false);
+		expect(isOneOf(post, 'Only through the API')).toBe(false);
+
+		// And the card update both trees share: v1's handler, handed its words in a constant and no move, answers
+		// neither the move's 409 nor its words, nor the guard's default words; the internal handler, handed the move, does.
+		const v1 = 'src/routes/api/v1/cards/[cardId]/+server.ts';
+		const internal = 'src/routes/api/cards/[id]/+server.ts';
+		expect(sorted(reading(v1, 'PUT').statuses)).toEqual([200, 400, 401, 403, 404]);
+		expect(isOneOf(textsOf(v1, 'PUT'), "No edit access to this card's board")).toBe(true);
+		expect(isOneOf(textsOf(v1, 'DELETE'), "No edit access to this card's board")).toBe(true);
+		expect(isOneOf(textsOf(v1, 'DELETE'), 'No edit access to this board')).toBe(false);
+		expect(isOneOf(textsOf(v1, 'PUT'), 'Target column not found')).toBe(false);
+		expect(isOneOf(textsOf(internal, 'PUT'), 'Target column not found')).toBe(true);
+		expect(sorted(reading(internal, 'PUT').statuses)).toContain(409);
 	});
 
 	// What it cannot read it says, and check 4 fails on it: a status it could not

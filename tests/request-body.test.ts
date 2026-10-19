@@ -3907,8 +3907,9 @@ describe('one wording for a length limit (card 2218)', () => {
 
 	it('lets no one type past a card’s or a request’s limits in the card window or the request page', () => {
 		const source = (path: string) => readFileSync(join(ROOT, path), 'utf8');
-		// The routes' limits the boxes hold to.
-		for (const route of ['src/routes/api/cards/+server.ts', 'src/routes/api/cards/[id]/+server.ts']) {
+		// The routes' limits the boxes hold to: both card routes read their fields
+		// through card-fields.ts (card 2012), a new card's and a change's.
+		for (const route of ['src/lib/server/card-fields.ts']) {
 			expect(source(route)).toMatch(/readText\(body, 'title', \{[^}]*max: 500,/);
 			expect(source(route)).toMatch(/readText\(body, 'description', \{ max: 50000[ ,]/);
 			expect(source(route)).toMatch(/readText\(body, 'businessValue', \{ max: 10000[ ,]/);
