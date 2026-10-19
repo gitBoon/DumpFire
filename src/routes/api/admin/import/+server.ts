@@ -49,6 +49,7 @@ import { isHttpError, json } from '@sveltejs/kit';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import { sqlite } from '$lib/server/db';
 import { convertedList, totalConverted } from '$lib/server/db/timestamps';
+import { releasedCardsList } from '$lib/server/db/migrate';
 import {
 	NO_SUPERADMIN_IN_BACKUP,
 	RestoreError,
@@ -258,6 +259,15 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			const filled = [
 				`first_completed_at on ${result.backfilled.firstCompletedAt} card(s)`,
 				`access_token on ${result.backfilled.accessTokens} request(s)`,
+				// Only when there were any, so that a restore of a backup with
+				// none reads as it did (card 2179), naming the first 50: once a
+				// card is out, nothing records which goal held it (its review).
+				...(result.backfilled.releasedFromMilestones > 0
+					? [
+							`${result.backfilled.releasedFromMilestones} card(s) taken out of a milestone of another board ` +
+								`(${releasedCardsList(result.backfilled)})`
+						]
+					: []),
 				...result.defaulted.map(
 					(d) => `the default (${d.value}) in place of NULL in ${d.table}.${d.column} on ${d.rows} row(s)`
 				)

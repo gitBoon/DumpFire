@@ -145,6 +145,25 @@ const spec = {
 			'where the sub-board was named with its count of open cards; an unfinished sub-board they can open is named as before. ' +
 			'(62) the "Unblocked" comment written on a card that was waiting on work of another board, read by GET /api/v1/cards/{cardId}/comments, names that work by its number only: ' +
 			'"Unblocked: #12, a card on another board, completed — nothing is blocking this card now." or "Unblocked: a subtask on another board completed — …", where it gave the other board\'s title; work on the same board is named by its title as before, and comments written before are unchanged. ' +
+			'(63) PATCH /api/v1/milestones/{milestoneId} gives a milestone to a board, with boardId, only when every card in it, archived ones included, is on that board, and otherwise answers 400 ' +
+			'"Some cards in this milestone are not on that board (archived cards count too). Take those cards out of it first, or make the milestone cross-board instead; only its creator or an administrator can change a cross-board milestone afterwards.", ' +
+			'where the milestone went to the board with its cards and the board\'s readers were given the titles of cards of other boards; boardId null, a milestone across boards, is accepted as before, ' +
+			'and GET /api/v1/boards/{boardId}/cards?archived=true lists archived cards with their milestoneId; a boardId that names no board is answered 404 "Board not found", where an administrator ' +
+			'was answered 500 and anyone else 403 "No edit access to that board". ' +
+			'(64) boardIds on GET /api/v1/milestones lists only the boards the key\'s user can open, where a card of the milestone on another board gave that board\'s id; cardCount and doneCount ' +
+			'still count such a card, as GET /api/v1/milestones/{milestoneId} lists it withheld. ' +
+			'(65) a comment added by POST /api/v1/cards/{cardId}/comments that names an account as @username mails that account only when it can open the card\'s board ' +
+			'(its owner, a member, a member of a team it is shared with, anyone for a public board, or an administrator), where anyone named was mailed the card\'s title, the board\'s name ' +
+			'and the start of the comment; the comment is saved and answered as before, and the author is not told who was not mailed. ' +
+			'(66) a name in a comment is the longest username, in any case, that the text after an @ begins with, where it was the letters, digits and _ after the @, lower-cased: ' +
+			'a username with capitals, dots, hyphens, spaces or letters outside English can now be named, @jane.doe no longer reaches an account called jane, and an @ inside a word, ' +
+			'as in an email address, names nobody; where two usernames differ only in case, the one typed exactly is named, and neither when the name is typed in neither spelling; ' +
+			'only the first 200 @ of a comment that could start a name are read, so a mention after them mails nobody. ' +
+			'(67) GET /api/v1/cards/{cardId}/board-history begins with the board a card started on when the card has no recorded creation, where the first board was left out ' +
+			'because the move off it was recorded in the same second as the arrival. ' +
+			'(68) the two activity entries of a move to another board, read by GET /api/v1/audit-log, name neither board: `"<title>" moved to another board (<from column> → <to column>)` ' +
+			'on the board it left and `"<title>" moved from another board (<from column> → <to column>)` on the board it arrived on, where each named the other board; ' +
+			'entries written before are unchanged. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -1259,7 +1278,12 @@ const spec = {
 					boardName: { type: ['string', 'null'], description: 'Name of the board the milestone belongs to. null for a milestone that spans boards.' },
 					cardCount: { type: 'integer', description: 'How many cards are in the milestone' },
 					doneCount: { type: 'integer', description: 'How many of them are in a Complete column' },
-					boardIds: { type: 'array', items: { type: 'integer' }, description: 'Ids of the boards its cards are on' }
+					boardIds: {
+						type: 'array',
+						items: { type: 'integer' },
+						description:
+							'Ids of the boards its cards are on that you can open. A card on a board you cannot open is still counted in cardCount and doneCount, as GET /milestones/{milestoneId} lists it withheld.'
+					}
 				},
 				required: [
 					'id', 'boardId', 'name', 'description', 'targetDate', 'status', 'createdBy', 'createdAt', 'updatedAt',
@@ -3396,7 +3420,7 @@ const spec = {
 			post: {
 				tags: ['Comments'],
 				summary: 'Add a comment',
-				description: 'Posts a comment on a card. Notifies board members via email. Needs edit access to the card\'s board: a viewer can read comments and cannot add one.',
+				description: 'Posts a comment on a card. Notifies board members via email. Anyone it names as `@username` who can open the card\'s board is also told by email, and nobody else. A name is the longest username that the text after `@` begins with, in any case; an `@` inside a word, as in an email address, is not a mention. Only the first 200 `@` of a comment that could start a name are read. Needs edit access to the card\'s board: a viewer can read comments and cannot add one.',
 				operationId: 'createComment',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -5353,7 +5377,8 @@ const spec = {
 					'Changes the fields that are sent and leaves the rest: at least one of the five. The milestone is looked for and access checked before a field is read, and a value it already holds, sent back unchanged, is accepted as it is. A milestone that belongs to a board is changed by whoever can edit that board; ' +
 					'one that spans boards by its creator and by an administrator.\n\n' +
 					'`status` closes a milestone and opens it again, and does nothing to its cards. `boardId` gives the milestone to a board, which needs edit access to that board, ' +
-					'or with null makes it span boards. The cards already in it stay in it, whichever board they are on.',
+					'or with null makes it span boards. Null is always accepted, and the cards in the milestone stay in it. A board is accepted only when every card in the milestone, archived ones included, ' +
+					'is on that board: a milestone of a board is opened by whoever can open that board, who would otherwise read the titles of cards of other boards. The milestone\'s own board sent back is no change.',
 				operationId: 'updateMilestone',
 				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
 				requestBody: {
@@ -5367,7 +5392,7 @@ const spec = {
 									description: { type: 'string', maxLength: 50000 },
 									targetDate: { type: ['string', 'null'], format: 'date', description: 'A day of the calendar written YYYY-MM-DD. null or an empty string clears it. Until 2026-10-14 any text was stored.' },
 									status: { type: 'string', enum: ['open', 'closed'] },
-									boardId: { type: ['integer', 'null'], minimum: 1, description: 'The board the milestone belongs to, or null for one that spans boards. An id: anything else is 400 boardId must be an id.' }
+									boardId: { type: ['integer', 'null'], minimum: 1, description: 'The board the milestone belongs to, or null for one that spans boards. An id: anything else is 400 boardId must be an id. A board is accepted only when every card in the milestone, archived ones included, is on it.' }
 								}
 							},
 							example: { status: 'closed' }
@@ -5398,7 +5423,9 @@ const spec = {
 						description:
 							'None of the five fields was sent, a field of the wrong type (`name must be text`, `boardId must be an id`), the name is empty or over 200 characters, a description over 50000, ' +
 							'a targetDate that is not a day written YYYY-MM-DD, status is neither open nor closed, milestoneId is not a whole number of 1 or more, ' +
-							'or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+							'or the body is missing, is not valid JSON or is not an object. Or boardId names a board and a card in the milestone is on another board: ' +
+							'"Some cards in this milestone are not on that board (archived cards count too). Take those cards out of it first, or make the milestone cross-board instead; only its creator or an administrator can change a cross-board milestone afterwards." ' +
+							'Archived cards count, and GET /api/v1/boards/{boardId}/cards?archived=true lists them with their milestoneId. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -5407,7 +5434,7 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
 					},
 					'404': {
-						description: 'There is no such milestone',
+						description: 'There is no such milestone, or no board has the id sent as boardId ("Board not found")',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },

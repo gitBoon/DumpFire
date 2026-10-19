@@ -65,11 +65,12 @@ vi.mock('$lib/server/board-access', async (importOriginal) => {
 import { and, eq } from 'drizzle-orm';
 import { SESSION_COOKIE_NAME, openSessionUser, sessionStillOpen, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
-import { boardMembers, boards, boardTeams, sessions, teamMembers, users, type Board } from '$lib/server/db/schema';
+import { boardMembers, boards, boardTeams, columns, sessions, teamMembers, users, type Board } from '$lib/server/db/schema';
 import { deleteBoard } from '$lib/server/deletes';
 import { emit } from '$lib/server/events';
 import { error as logError } from '$lib/server/logger';
-import { addBoardMember, makeBoard, makeSession, makeTeam, makeUser, resetDb, shareBoardWithTeam } from './helpers/fixtures';
+import { addBoardMember, makeBoard, makeCard, makeSession, makeTeam, makeUser, resetDb, shareBoardWithTeam } from './helpers/fixtures';
+import { api } from './helpers/api';
 import { gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
@@ -617,5 +618,29 @@ describe('openSessionUser', () => {
 		expect(openSessionUser(undefined)).toBeNull();
 
 		expectUnchanged(before);
+	});
+});
+
+describe('a stream and a card moved to another board (card 2181)', () => {
+	// The board stream sends an event as it was emitted. The departure of a
+	// card to another board carried that board's name (`toBoard`), and every
+	// listener of the board it left heard it, whether or not they could open
+	// the other board. It names neither board now.
+	it('/api/boards/[id]/events hands on the departure without the other board\'s name', async () => {
+		const other = makeBoard({ owner: w.owner, name: 'BRAVO-SECRET' });
+		const [toDo] = db.select().from(columns).where(eq(columns.boardId, w.board.id)).orderBy(columns.position).all();
+		const card = makeCard(toDo, { title: 'Leaving' });
+		const reader = await open(STREAMS[1], makeSession(w.viewer));
+
+		const res = await api('PUT', `/api/v1/cards/${card.id}/move`, { user: w.owner, body: { columnId: other.cols['To Do'].id } });
+		expect(res.status).toBe(200);
+		// Sent after the move's own events, so that all of them have arrived by then.
+		const mark = newMark();
+		onBoard(mark);
+
+		const { ended, received } = await readUntil(reader, mark);
+		expect(ended).toBe(false);
+		expect(received).toContain('"action":"moved_away"');
+		expect(received).not.toContain('BRAVO-SECRET');
 	});
 });

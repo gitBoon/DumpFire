@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.31
+version: 1.32
 status: As-Built
 date: 2026-10-19
 tags:
@@ -635,6 +635,22 @@ sequenceDiagram
 An event raised while a transaction is open is held until that transaction commits, and is dropped if it rolls back. See the next section.
 
 A card created in a Complete column is completed as a moved one is, and celebrated the same way (card 2134; see [Data Model](data-model.md#one-completion-however-a-card-arrives)). A delete tells the pages open on every board it removes or empties with an `update` that names nothing, `{ type: 'board', action: 'deleted' }`, `{ type: 'card', action: 'purged' }` or `{ type: 'card', action: 'cleared' }`, and the board a deleted sub-board hung from, which is still there, with `{ type: 'board', action: 'sub_board_deleted' }` (card 2108; see [Notifications & Email](notifications-email.md#event-types)). The web application's routes tell what their `/api/v1/` twins tell (card 2143): an assignment, an unassignment and a comment edited send `{ type: 'card' }` to the card's board, a board updated sends `{ type: 'board' }` to that board once, and a sub-board made under a card, by either tree, sends `{ type: 'board', action: 'created' }` to the board that card is on.
+
+**What an event carries.** An event goes, as it was emitted, to every listener of its board on the board stream and on the global one, and `emit` cannot choose a payload per listener. So an event names nothing that some reader of its board may not read; it is there to make the page read its board again, under the page's own access check (P4's rule for the events it added). A move between boards sends `moved_away` to the board the card left and `moved_in` to the board it joined, each with `type`, `action`, `cardTitle`, `fromColumn`, `toColumn`, `userName` and `userEmoji`, and neither names the other board (card 2181): they carried `toBoard` and `fromBoard`, which nothing read, and gave each board's listeners the name of a board some of them could not open. The move's two activity entries name neither board for the same reason (see [Data Model](data-model.md)).
+
+```mermaid
+sequenceDiagram
+    participant M as The mover, editor of A and B
+    participant S as Server
+    participant RA as A reader of board A only
+    participant RB as A reader of board B only
+    M->>S: PUT /api/v1/cards/42/move, to a column of B
+    S->>S: commit, then emit
+    S-->>RA: update, moved_away, card and columns, no board name
+    S-->>RB: update, moved_in, card and columns, no board name
+    RA->>S: read board A again
+    RB->>S: read board B again
+```
 
 ### An open stream and its session
 

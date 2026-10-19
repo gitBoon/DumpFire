@@ -27,7 +27,9 @@ import { parseMentions } from '$lib/server/mentions';
 // An address of its own, so that a failing assertion can print an element.
 const win = new JSDOM('', { url: 'https://dumpfire.test/board/1' }).window as unknown as Window & typeof globalThis;
 const render = createMarkdownRenderer(win);
-const comment = (text: string) => render(text, { mentions: ['alice', 'bob', 'example'] });
+/** The usernames a comment's mentions are read against. */
+const NAMES = ['alice', 'bob', 'example'];
+const comment = (text: string) => render(text, { mentions: NAMES });
 
 /** The HTML, parsed back, to ask about its elements. */
 function dom(html: string): HTMLElement {
@@ -123,7 +125,7 @@ describe('what a description or comment may hold', () => {
 		expect(render('<div class="modal-overlay">x</div>')).toBe('<div>x</div>');
 		expect(comment('<div class="mention-chip modal-overlay">x</div>')).toBe('<div>x</div>');
 		// The typed span loses its class; the chip inside it is the renderer's own.
-		expect(comment('<span class="mention-chip">@nobody</span>')).toBe('<p><span><span class="mention-chip">@nobody</span></span></p>\n');
+		expect(comment('<span class="mention-chip">@alice</span>')).toBe('<p><span><span class="mention-chip">@alice</span></span></p>\n');
 		const code = dom(render('```js\nlet a = 1;\n```'));
 		expect(code.querySelector('pre > code')?.getAttribute('class')).toBe('language-js');
 		expect(render('<code class="language-ts modal-overlay">x</code>')).toContain('<code class="language-ts">x</code>');
@@ -327,16 +329,17 @@ describe('mentions are drawn in text, never in an attribute (card 2210)', () => 
 	});
 
 	it('chips what the server mails: in code and in link text too, since those are mailed', () => {
-		const code = dom(comment('`@decorator` and\n\n```ts\n@Component\n```'));
-		expect(code.querySelector('p > code')?.textContent).toBe('@decorator');
-		expect(code.querySelector('pre > code')?.textContent).toBe('@Component\n');
-		expect(chips(code)).toEqual(['@decorator', '@Component']);
+		// A name is one of the usernames given (card 2207): `@decorator` is nobody's.
+		const code = dom(comment('`@alice` and `@decorator` and\n\n```ts\n@Bob\n```'));
+		expect(code.querySelector('p > code')?.textContent).toBe('@alice');
+		expect(code.querySelector('pre > code')?.textContent).toBe('@Bob\n');
+		expect(chips(code)).toEqual(['@alice', '@Bob']);
 		const linked = dom(comment('[@alice](/u)'));
 		expect(linked.querySelectorAll('a').length).toBe(1);
 		expect(linked.querySelector('a > span.mention-chip')?.textContent).toBe('@alice');
 		for (const text of ['`@decorator` and @alice', '[@alice](/u) **@Bob**', 'mail a@example.com', 'see <a@example.com> and @alice and @Alice']) {
 			const drawn = [...new Set(chips(dom(comment(text))).map((c) => c!.slice(1).toLowerCase()))];
-			expect(drawn, text).toEqual(parseMentions(text));
+			expect(drawn, text).toEqual(parseMentions(text, NAMES));
 		}
 	});
 
@@ -402,10 +405,10 @@ describe('one renderer and one mention rule (read from the source)', () => {
 		expect(src.filter((f) => readFileSync(f, 'utf8').includes('highlightMentions')).map(rel)).toEqual([]);
 	});
 
-	it('parseMentions is findMentions’ names, lower-cased, each once', () => {
+	it('parseMentions is findMentions’ usernames, as stored, each once', () => {
 		const t = 'Hi @Alice, @bob and @alice; mail a@example.com';
-		expect(findMentions(t).map((m) => t.slice(m.start, m.end))).toEqual(['@Alice', '@bob', '@alice', '@example']);
-		expect(parseMentions(t)).toEqual([...new Set(findMentions(t).map((m) => m.username.toLowerCase()))]);
-		expect(parseMentions(t)).toEqual(['alice', 'bob', 'example']);
+		expect(findMentions(t, NAMES).map((m) => t.slice(m.start, m.end))).toEqual(['@Alice', '@bob', '@alice']);
+		expect(parseMentions(t, NAMES)).toEqual([...new Set(findMentions(t, NAMES).map((m) => m.username))]);
+		expect(parseMentions(t, NAMES)).toEqual(['alice', 'bob']);
 	});
 });

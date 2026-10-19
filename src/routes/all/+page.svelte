@@ -310,6 +310,31 @@
 		};
 		editingBoardId = card.boardId;
 		showCardModal = true;
+		loadBoardUsers(card.id);
+	}
+
+	// The window's people are those of the card's own board, as the board page
+	// gives them: a mention is drawn as a chip only for someone it can mail
+	// (card 2198), and the assignee list is the board's. Every account was
+	// given before. Until the card's context answers, or if it does not, the
+	// window names nobody.
+	let editingBoardUsers = $state<{ id: number; username: string; emoji: string }[]>([]);
+
+	async function loadBoardUsers(cardId: number) {
+		editingBoardUsers = [];
+		const started = toasts.navigation();
+		try {
+			const res = await fetch(`/api/cards/${cardId}/context`);
+			if (!res.ok) {
+				if (editingCard?.id === cardId) toasts.add("The people of this card's board could not be read.", 'error', started);
+				return;
+			}
+			const body = await res.json();
+			// An answer for a card no longer open is not used.
+			if (editingCard?.id === cardId) editingBoardUsers = body.boardUsers;
+		} catch {
+			if (editingCard?.id === cardId) toasts.add("No answer from the server: the people of this card's board are not shown.", 'error', started);
+		}
 	}
 
 	function openMoveModal(card: any) {
@@ -1015,7 +1040,7 @@
 		categories={data.categories.filter((c: any) => c.boardId === editingBoardId || c.boardId === null) as any}
 		labels={data.labels.filter((l: any) => l.boardId === editingBoardId) as any}
 		boardId={editingBoardId}
-		boardUsers={data.allUsers}
+		boardUsers={editingBoardUsers}
 		onSave={saveCard}
 		onDelete={deleteCard}
 		onClose={() => { showCardModal = false; editingCard = null; }}

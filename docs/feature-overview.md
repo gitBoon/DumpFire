@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.29
+version: 1.30
 status: As-Built
 date: 2026-10-19
 tags:
@@ -214,9 +214,9 @@ Assign one or more team members to any card. Assignees receive email notificatio
 ### Comments
 
 Discuss tasks directly on cards:
-- **@mentions** — tag team members to get their attention. A mention is drawn as a chip wherever it is in the comment's text, in code and in a link's text too, because whoever is named there is mailed; never inside a link's address, its tooltip or a picture's description. An email address in a comment is a working link
+- **@mentions** — tag team members to get their attention: write `@` and the username as it is spelled, in any case (`@Greg`, `@jane.doe`, `@Jane Doe`). The name is the longest username the text after the `@` begins with, so `@jane.doe` never reaches `jane`, and an `@` inside a word, as in an email address, is not a mention (card 2207). A mention is drawn as a chip wherever it is in the comment's text, in code and in a link's text too, because whoever is named there is mailed; never inside a link's address, its tooltip or a picture's description. An email address in a comment is a working link
 - **Markdown support** — format comments with bold, code, lists, as a description is formatted, with the same rules for what is drawn
-- **Email notifications** — mentioned users receive email alerts, which each can switch off under **Mentions** on My Account
+- **Email notifications** — mentioned users who can open the card's board receive email alerts, which each can switch off under **Mentions** on My Account. Someone named on a board they cannot open is not mailed (card 2198). The card window draws chips only for the people of the card's own board, from the board, the plan, All Tasks and All To Do alike, so a chip shows who is mailed; on a public board, someone who is not one of its people is mailed without a chip. Only the first 200 mentions written in a comment are read, so a mention after them mails nobody and has no chip
 
 ### Real-Time Updates
 

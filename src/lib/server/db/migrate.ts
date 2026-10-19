@@ -231,7 +231,17 @@ export type Backfill = {
 	firstCompletedAt: number;
 	/** Task requests given an `access_token`. */
 	accessTokens: number;
+	/** Cards taken out of a milestone that belongs to another board. */
+	releasedFromMilestones: number;
+	/**
+	 * The first 50 of them, by card id, with the milestone each left: once a
+	 * card is out, nothing records which goal held it (review of card 2179).
+	 */
+	released: ReleasedCard[];
 };
+
+/** A card the backfill took out of a milestone of another board, and that milestone. */
+export type ReleasedCard = { cardId: number; milestoneId: number };
 
 export type MigrationReport = {
 	/** Files applied and recorded by this run, in order. */
@@ -2323,7 +2333,48 @@ export function reconcileSchema(
 // ─── Backfills ───────────────────────────────────────────────────────────────
 
 /**
- * Fill in the two values that 0050 and 0051 filled in once.
+ * 0057's statement (card 2155), which `runBackfills` repeats: every card in a
+ * milestone that belongs to a board other than the card's, archived cards
+ * included, taken out of it. A goal across boards keeps its cards, and so does
+ * a card on a column that is not there. `updated_at` is left as it is, since
+ * nobody edited the cards. The text is 0057's own, and a test holds the two
+ * to it, so that a restore is repaired exactly as the deploy was.
+ */
+export const CARDS_LEAVE_OTHER_BOARDS_MILESTONES = [
+	'UPDATE `cards` SET `milestone_id` = NULL',
+	'WHERE `milestone_id` IN (SELECT `id` FROM `milestones` WHERE `board_id` IS NOT NULL)',
+	'  AND (SELECT `board_id` FROM `milestones` WHERE `id` = `cards`.`milestone_id`)',
+	'      <> (SELECT `board_id` FROM `columns` WHERE `id` = `cards`.`column_id`);'
+].join('\n');
+
+/** How many of the cards it takes out the backfill names. */
+const RELEASED_NAMED = 50;
+
+/**
+ * The cards the statement above takes out, read just before it runs, by its
+ * own `WHERE` (its text from `WHERE` to the `;`, so the two cannot drift):
+ * the first 50 by id, with the milestone each is in.
+ */
+const CARDS_LEAVING_OTHER_BOARDS_MILESTONES =
+	'SELECT `id` AS cardId, `milestone_id` AS milestoneId FROM `cards`\n' +
+	CARDS_LEAVE_OTHER_BOARDS_MILESTONES.slice(CARDS_LEAVE_OTHER_BOARDS_MILESTONES.indexOf('WHERE'), -1) +
+	`\nORDER BY \`id\` LIMIT ${RELEASED_NAMED}`;
+
+/**
+ * The cards the backfill took out, as the start's WARN line and the restore's
+ * "Filled in" name them: `card 12 left milestone 3, card 14 left milestone 3`,
+ * and `; and 7 more` past the first 50 (review of card 2179). By id: a card's
+ * title and a goal's name are for the readers of their boards.
+ */
+export function releasedCardsList(backfill: Pick<Backfill, 'releasedFromMilestones' | 'released'>): string {
+	const named = backfill.released.map((r) => `card ${r.cardId} left milestone ${r.milestoneId}`).join(', ');
+	const more = backfill.releasedFromMilestones - backfill.released.length;
+	return more > 0 ? `${named}; and ${more} more` : named;
+}
+
+/**
+ * Fill in the two values that 0050 and 0051 filled in once, and take out of
+ * their milestones the cards 0057 took out once.
  *
  * Those files run once per database, but rows without the values can arrive
  * afterwards: a restore copies an older backup's rows into the current tables,
@@ -2332,13 +2383,22 @@ export function reconcileSchema(
  * every restore. Each touches only rows that lack the value, so a second run
  * changes nothing.
  *
+ * The same holds for 0057 (card 2179). Once a move to another board takes a
+ * card out of its board's milestone (card 2155), and a milestone is given to
+ * another board only when every card in it is there (card 2179), no write
+ * makes a card in a milestone of another board. A backup taken before those
+ * two can still hold one, and a restore runs no migration, so the statement is
+ * repeated here. A count at a start that follows no restore and no return from
+ * an older image means some write still makes such rows.
+ *
  * A table or column that is not there is skipped. After the migration loop
- * both always exist; they are missing only when the runner is driven against
- * some other set of files, as the tests do, and then there is nothing to fill.
+ * all of them always exist; they are missing only when the runner is driven
+ * against some other set of files, as the tests do, and then there is nothing
+ * to fill.
  */
 export function runBackfills(database: Database.Database = sqlite): Backfill {
 	const fill = database.transaction(() => {
-		const result: Backfill = { firstCompletedAt: 0, accessTokens: 0 };
+		const result: Backfill = { firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] };
 
 		if (hasColumn(database, 'cards', 'first_completed_at') && hasColumn(database, 'cards', 'completed_at')) {
 			// A card that is complete has been completed at least once.
@@ -2354,6 +2414,16 @@ export function runBackfills(database: Database.Database = sqlite): Backfill {
 			result.accessTokens = database
 				.prepare('UPDATE task_requests SET access_token = lower(hex(randomblob(32))) WHERE access_token IS NULL')
 				.run().changes;
+		}
+
+		if (
+			hasColumn(database, 'cards', 'milestone_id') &&
+			hasColumn(database, 'milestones', 'board_id') &&
+			hasColumn(database, 'columns', 'board_id')
+		) {
+			// Which cards first: once they are out, nothing records the goal each was in.
+			result.released = database.prepare(CARDS_LEAVING_OTHER_BOARDS_MILESTONES).all() as ReleasedCard[];
+			result.releasedFromMilestones = database.prepare(CARDS_LEAVE_OTHER_BOARDS_MILESTONES).run().changes;
 		}
 
 		return result;
@@ -2681,12 +2751,12 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 		);
 	}
 
-	let backfilled: Backfill = { firstCompletedAt: 0, accessTokens: 0 };
+	let backfilled: Backfill = { firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] };
 	try {
 		backfilled = runBackfills(database);
 	} catch (err) {
 		halt({
-			stage: 'backfilling cards.first_completed_at and task_requests.access_token',
+			stage: 'backfilling cards.first_completed_at, task_requests.access_token and cards.milestone_id',
 			reason: messageOf(err),
 			cause: err
 		});
@@ -2694,6 +2764,15 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 	if (backfilled.firstCompletedAt > 0 || backfilled.accessTokens > 0) {
 		log.warn(
 			`Backfilled first_completed_at on ${backfilled.firstCompletedAt} card(s) and access_token on ${backfilled.accessTokens} request(s)`
+		);
+	}
+	// After a restore of an older backup, or a return from an older image, this
+	// can find cards. At any other start it finds none, and a count means some
+	// write still puts a card in a milestone of another board (card 2179).
+	if (backfilled.releasedFromMilestones > 0) {
+		log.warn(
+			`Took ${backfilled.releasedFromMilestones} card(s) out of a milestone that belongs to another board: ` +
+				releasedCardsList(backfilled)
 		);
 	}
 

@@ -1,5 +1,9 @@
 /**
- * mentions.ts — Parse and notify @mentions in comments and descriptions.
+ * mentions.ts — Parse and notify @mentions in comments.
+ *
+ * Only the two routes that add a comment call it. Who is named is
+ * `findMentions`'s rule (card 2207); which of them are mailed is
+ * `notifyMention`'s (card 2198: only those who can open the board).
  */
 
 import { db } from './db';
@@ -12,12 +16,13 @@ import { findMentions } from '$lib/mentions';
 const log = createLogger('Mentions');
 
 /**
- * Extract unique @usernames from text. Returns lowercase usernames. Where a
- * mention is is `findMentions`'s rule, the same one the card window draws its
- * chips by (`$lib/mentions`).
+ * The usernames mentioned in text, each once, as they are stored, among
+ * `usernames`: every account's, so that a longer name is never cut to a
+ * shorter one (card 2207). Where a mention is is `findMentions`'s rule, the
+ * same one the card window draws its chips by (`$lib/mentions`).
  */
-export function parseMentions(text: string): string[] {
-	const unique = new Set(findMentions(text).map(m => m.username.toLowerCase()));
+export function parseMentions(text: string, usernames: readonly string[]): string[] {
+	const unique = new Set(findMentions(text, usernames).map(m => m.username));
 	return Array.from(unique);
 }
 
@@ -45,7 +50,9 @@ export function processMentions(
 	baseUrl: string | null
 ) {
 	try {
-		const usernames = parseMentions(text);
+		if (!text.includes('@')) return;
+		const everyone = db.select({ username: users.username }).from(users).all().map(u => u.username);
+		const usernames = parseMentions(text, everyone);
 		if (usernames.length === 0) return;
 
 		const mentionedUsers = resolveMentions(usernames, authorUserId);

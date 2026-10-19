@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.33
+version: 1.34
 status: As-Built
 date: 2026-10-19
 tags:
@@ -564,7 +564,7 @@ flowchart TD
     Files -->|"all applied"| Newer{"Does the database record a migration\nthis image has no file for?"}
     Newer -->|"Yes"| Skip["Log ERROR, and reshape nothing"]
     Newer -->|"No"| Recon["Reconcile six tables: rebuild any\nthat is not in the model's shape"]
-    Recon -->|"rebuilt, or left as it was\nand logged at ERROR"| Fill["Repeat the two backfills"]
+    Recon -->|"rebuilt, or left as it was\nand logged at ERROR"| Fill["Repeat the three backfills"]
     Skip --> Fill
     Fill --> Newer2{"Reconciliation skipped\nabove?"}
     Newer2 -->|"No"| Stamps["Bring every timestamp to the stored form,\nYYYY-MM-DD HH:MM:SS in UTC, in one transaction.\nA failure is rolled back and logged at ERROR"]
@@ -596,7 +596,7 @@ One more refusal comes after the migrations, before the server listens. If the d
 2. **Migration files.** Every `.sql` file in `/app/drizzle` whose name is not yet recorded in the `__drizzle_migrations` table is applied, in file-name order. Each file runs in its own transaction, together with the row that records it, so a file is either applied in full and recorded or not applied at all.
 3. **The first failure stops the server.** The failing file is rolled back, no later file is attempted, and the process exits with code 1 before it listens. Files this start had already applied stay applied and recorded.
 4. **Reconciliation.** Six tables (`boards`, `columns`, `categories`, `settings`, `user_xp`, `invite_tokens`) reached older databases in two different shapes. Any of them that is not in the shape the model declares is rebuilt in it, with every row carried across. A table that cannot be rebuilt safely is left exactly as it was and reported; that does not stop the server. The whole step is skipped when the database records a migration this image has no file for, because that database may be newer than the image, and an older image must not reshape it.
-5. **Backfills.** Two values that migrations `0050` and `0051` filled in once (`cards.first_completed_at` and `task_requests.access_token`) are filled in again for any row that lacks them.
+5. **Backfills.** Three repairs that migrations made once are made again, in one transaction: the two values that `0050` and `0051` filled in (`cards.first_completed_at` and `task_requests.access_token`) for any row that lacks them, and `0057`'s statement, which takes a card out of a milestone that belongs to a board other than the card's (card 2179). The first two are logged in one `WARN` line when they fill anything, the third in a line of its own: `Took <n> card(s) out of a milestone that belongs to another board: card <id> left milestone <id>, …`, naming the first 50 cards by id with the milestone each left (`; and <n> more` after them), since nothing else then records which goal held them. At a start the third finds cards only after a database file taken before 0057 was swapped in by hand, or a return from an older image (after Import Backup the restore runs it and reports it itself); a count at any other start means some write still makes such a card (see [The Update That Brings the Third Round of Read Leaks](#the-update-that-brings-the-third-round-of-read-leaks)). A failure of any of them stops the start, with the stage `backfilling cards.first_completed_at, task_requests.access_token and cards.milestone_id`.
 6. **Timestamps.** Every timestamp column (every TEXT column whose name ends in `_at`, and `system_logs.timestamp`) is brought to the one stored form, `YYYY-MM-DD HH:MM:SS` in UTC (card 2095). A value in ISO 8601, in the stored form with a fraction, or a bare date is rewritten to the same moment, to the second; a value in no form it can read is left as it is and reported at `ERROR`, at every start until it is dealt with. It runs in a transaction of its own: a failure is rolled back, logged at `ERROR`, and tried again at the next start, and the server starts. Like step 4, it is skipped when the database records a migration this image has no file for, and the `ERROR` line of step 4 says so. A start that converts anything says so in one `WARN` line, which is expected once after the update that brings card 2095 and after an Import Backup of an older backup, and at no other time.
 7. **Schema check.** The whole database is compared with the model. Every difference is logged in one `ERROR` line. Nothing is changed and the server starts.
 
@@ -617,6 +617,7 @@ What stops a start, and what is only reported:
 | A migration file fails, cannot be read, holds no SQL statement, or holds a statement the runner refuses (see [Changing the Schema](#changing-the-schema)) | `[CRITICAL] [DB]` | **No** |
 | `/app/drizzle` is missing or holds no `.sql` file (an image built without its migrations) | `[CRITICAL] [DB]` | **No** |
 | The `card_dependencies` conversion or a backfill fails | `[CRITICAL] [DB]` | **No** |
+| The third backfill took cards out of a milestone of another board (card 2179) | `[WARN] [DB] Took <n> card(s) out of a milestone that belongs to another board: card <id> left milestone <id>, …`, at that start, naming the first 50 (`; and <n> more`) | Yes. Expected at the first start after a database file swapped in by hand (a backup taken before 0057 copied over the database) and after a return from an older image, and at no other time: at any other start it is a fault to report. After Import Backup the restore makes the repair itself and reports it in its "Filled in" line, so no start line follows |
 | Foreign keys cannot be switched back on after a rebuild | `[CRITICAL] [DB]` | **No** |
 | One of the six tables cannot be rebuilt, or its rebuild fails its checks and is rolled back | `[ERROR] [DB]`, at every start until the cause is dealt with | Yes, with the table as it was |
 | One of the six tables holds a value that the model's column type would store differently | `[ERROR] [DB]` for that table, at every start until a migration converts it | Yes; that table is as it was and the others are rebuilt |
@@ -1038,7 +1039,7 @@ What the older image makes of a database the newer one has migrated depends on h
 
 One request behaves differently under an image from before this runner once the database has been migrated. A `PUT` to `/api/v1/columns/{columnId}` or `/api/columns/{id}` carrying `"wipLimit": null` is answered 500, because that image passes the null to the database and `columns.wip_limit` no longer accepts one. Send 0, which means the same thing: no limit. The board page is not affected, because that image sends 0 when the box is emptied. Nothing is damaged by the failed request, and the newer image does not have the fault.
 
-When the newer image is started again it finds its migrations already recorded, repeats the backfills for rows created in the meantime, converts any timestamp the older image wrote in ISO 8601 (one `[WARN] [DB]` line), and carries on.
+When the newer image is started again it finds its migrations already recorded, repeats the backfills for rows created in the meantime (taking out of their milestones, since card 2179, the cards the older image left in a milestone of another board, in one `WARN` line), converts any timestamp the older image wrote in ISO 8601 (one `[WARN] [DB]` line), and carries on.
 
 > ⚠️ **While an older image is running, do not use Import Backup (Admin → Backup & Restore).** An image from before this runner replaces the migration record along with the data. Restoring a backup that was taken before the update leaves a database that has the new columns and a record that says migrations `0050` onward never ran. The newer image then tries to apply `0050` again, fails on a column that already exists, and stops at every start. That image also leaves out every column whose WIP limit is NULL in the backup, because `columns.wip_limit` no longer accepts one, and commits all the same, so the cards on those columns are left pointing at nothing.
 
@@ -2381,9 +2382,9 @@ WHERE `milestone_id` IN (SELECT `id` FROM `milestones` WHERE `board_id` IS NOT N
       <> (SELECT `board_id` FROM `columns` WHERE `id` = `cards`.`column_id`);
 ```
 
-It leaves `updated_at` as it is (nobody edited the cards) and writes no activity entry. A goal across boards (no board) keeps every card, and so does a goal whose card is on its own board. Archived cards and closed goals are included. A goal whose board row is gone (deleted while foreign keys were off, as a restore runs) loses its cards too, since no column is on a board that is not there; a card naming a goal that no longer exists is left alone. So is a card whose column row is gone (deleted while foreign keys were off): it is shown nowhere, its board is unknown, and a comparison with an unknown board is never true, so it keeps its milestone and query 3 does not list it. It runs once: nothing repeats it at start-up or after a restore. Why: [Critical-Path Planning](critical-path-planning.md#constraints-worth-knowing).
+It leaves `updated_at` as it is (nobody edited the cards) and writes no activity entry. A goal across boards (no board) keeps every card, and so does a goal whose card is on its own board. Archived cards and closed goals are included. A goal whose board row is gone (deleted while foreign keys were off, as a restore runs) loses its cards too, since no column is on a board that is not there; a card naming a goal that no longer exists is left alone. So is a card whose column row is gone (deleted while foreign keys were off): it is shown nowhere, its board is unknown, and a comparison with an unknown board is never true, so it keeps its milestone and query 3 does not list it. The file runs once; the start-up backfill of card 2179 repeats the same statement at every start and after every restore (below). Why: [Critical-Path Planning](critical-path-planning.md#constraints-worth-knowing).
 
-**Nothing repeats 0057.** It is recorded as applied, so a database that gets cards in a milestone of another board again afterwards keeps them: after going back to an older image, using it, and coming forward again, or after Import Backup of a backup made before this update. After either, run query 3 (check 0o) on the host and fix each card it lists by hand, as check 0o says: move it to its goal's board, make the goal one across boards, or take it out of the goal in its card window.
+**The start-up backfill repeats 0057** (card 2179, the update after this one). The file is recorded as applied and never runs again, but the same statement runs as a backfill at every start and after every restore, so a database that gets cards in a milestone of another board again (after going back to an older image, using it, and coming forward again, or after Import Backup of a backup made before this update) has them taken out at the next start or at the restore itself, with a `WARN` line or a count in the restore's report. Until that update is on production, nothing repeats 0057: after either, run query 3 (check 0o) on the host and fix each card it lists by hand, as check 0o says: move it to its goal's board, make the goal one across boards, or take it out of the goal in its card window.
 
 ```mermaid
 flowchart TD
@@ -2500,7 +2501,7 @@ A request addressed to someone who cannot open its board shows them no badge fro
 - **An affected goal's history changes with it.** Which goal a card is in is not historised: the burndown, the milestone PDF and a closed goal's final figures are drawn from the goal's cards as they are now, across the goal's whole window. So each goal check 0o listed shows, from the deploy on, a burndown, a PDF and (closed) final figures without the cards that left it, for every day back to its start, not only from the deploy. The same happens to a goal after every later move of one of its cards to another board. Keep a goal's PDF from before the deploy if its figures as they were matter.
 - **Reports** downloaded, mailed or scheduled by someone who was not given every sub-board of their board leave those sub-boards out (check 0p). A report of a sub-board shared with someone who cannot open its parent no longer names the parent. A schedule's report follows its owner's access at each run, growing as well as shrinking.
 - **"Unblocked" comments** written from now on about a card on another board read `Unblocked: #12, a card on another board, completed — nothing is blocking this card now.`; those written before stay as they are. The "Unblocked" mail gives an assignee who cannot open the finished card's board "A card on a board you cannot open" in place of its title, and the "Plan created" mail goes only to recipients who can open the plan.
-- **A move to another board** takes the card out of a milestone of the board it left, and the board's activity says so: `"T" moved to board "B" (To Do → To Do) and out of milestone "M"`. Through the API the move answers `milestoneId: null` and names the milestone left as `leftMilestone`, and All Tasks says `Moved. It left milestone "M"; moving it back does not put it back in.` in a toast.
+- **A move to another board** takes the card out of a milestone of the board it left, and the board's activity says so: `"T" moved to board "B" (To Do → To Do) and out of milestone "M"`, or, when the next update (card 2181) is in the same image, `"T" moved to another board (To Do → To Do) and out of milestone "M"`. Through the API the move answers `milestoneId: null` and names the milestone left as `leftMilestone`, and All Tasks says `Moved. It left milestone "M"; moving it back does not put it back in.` in a toast.
 - **An open board** turns into "You do not have access to this board" within about 30 seconds of its reader losing access, where it went on receiving the board's events while the session lasted. `GET /api/boards/{id}/events` on a board that is not there is `404` for everyone, administrators included.
 - **No new log line** is written for any of it.
 
@@ -2525,7 +2526,7 @@ Checks 72 to 90 run on production. Accounts: the superadmin (or an administrator
 | 82 | 2153 | Send a request to `qa-reader` naming board B; as `qa-reader`, open Inbox, then Accept | The administrator, then `qa-reader` | No board badge; the dialog starts at "Select a board…" | B's name, or B preselected |
 | 83 | 2153 | Send the same request to the administrator; open Inbox | `qa-admin2`, then the administrator | The badge shows B | No badge |
 | 84 | 2155 | Open the milestones of the cards check 0o listed (`query-3-before.txt`) | The administrator | Those cards are no longer in them; the others unchanged | A listed card still in its milestone |
-| 85 | 2155 | From All Tasks, move a card of a milestone of A to B | The administrator | A toast `Moved. It left milestone "…"; moving it back does not put it back in.`; the card has no milestone; A's activity reads `… moved to board "B" (…) and out of milestone "…"`; the plan no longer lists it | It keeps the milestone, or no toast |
+| 85 | 2155 | From All Tasks, move a card of a milestone of A to B | The administrator | A toast `Moved. It left milestone "…"; moving it back does not put it back in.`; the card has no milestone; A's activity reads `… moved to board "B" (…) and out of milestone "…"` (`… moved to another board (…) and out of milestone "…"` with card 2181 in the same image); the plan no longer lists it | It keeps the milestone, or no toast |
 | 86 | 2155 | The same with a card of a goal across boards | The administrator | It keeps the goal, and no toast about a milestone | It leaves it, or a toast says it did |
 | 87 | 2170 | `qa-reader` opens board A and leaves it open. As the administrator, take `qa-reader` off A (Share Board), then change nothing on A for a minute | `qa-reader`; the administrator | Within about 30 seconds `qa-reader`'s page shows "You do not have access to this board"; in their browser's developer tools (Network, the `events` request, EventStream) the last message is `update` with `{"type":"access"}` | The board still on screen after a minute |
 | 88 | 2170 | `qa-admin2`, not on A, opens board A. As the superadmin, make `qa-admin2` an ordinary user, then change nothing on A for a minute | `qa-admin2`; the superadmin | The same within about 30 seconds | The board still on screen |
@@ -2540,6 +2541,211 @@ Nothing is done to the database.
 
 - **0057 stays applied.** The older image logs one `[ERROR] [DB]` line for the recorded file it has no file for, and starts. The cards it took out stay out of their milestones.
 - **The rules go with it.** The older image's reports walk into every sub-board again, its refusal and inbox name hidden boards, its "Unblocked" notices carry another board's title, a move leaves a card in its milestone, and an open board stream keeps the access it was opened with.
+
+### The Update That Brings the Third Round of Read Leaks
+
+Six cards go out in one image, and this is the one note for them. Each closes a way for someone to read, or be mailed, something of a board they cannot open, or reaches people a mention could not. No migration and no change of structure; one repair of data at every start, which finds nothing when this goes out with the update before (0057).
+
+- **Card 2179**: `PATCH /api/v1/milestones/{id}` (and the web application's `PATCH /api/milestones/{id}`) gives a milestone to a board only when every card in it, archived ones included, is on that board; otherwise `400` `Some cards in this milestone are not on that board (archived cards count too). Take those cards out of it first, or make the milestone cross-board instead; only its creator or an administrator can change a cross-board milestone afterwards.` A `boardId` that names no board is `404` `Board not found`. And 0057's statement becomes a third backfill, repeated at every start and after every restore (below).
+- **Card 2181**: a move to another board names neither board in its two activity entries (`"T" moved to another board (To Do → Done)` on the board it left, `"T" moved from another board (To Do → Done)` on the one it joined) or in its live events. Entries written before are left as they are.
+- **Card 2198**: a comment mails an account it names as `@username` only when that account can open the card's board. The author is told nothing either way.
+- **Card 2199**: `GET /api/v1/cards/{id}/board-history` begins with the board a card started on when the card has no recorded creation.
+- **Card 2206**: `boardIds` on `GET /api/v1/milestones`, `GET /api/milestones` and the plan page's list holds only boards the caller can open.
+- **Card 2207**: a mention is the longest username the text after `@` begins with, in any case, so usernames with capitals, dots, hyphens, spaces or letters outside English can be mentioned; `@jane.doe` no longer mails `jane`, and an email address in a comment no longer mails an account named after its domain.
+
+**The third backfill.** Every start, after the migrations, and every restore or Import Backup, runs 0057's statement again (`CARDS_LEAVE_OTHER_BOARDS_MILESTONES` in `src/lib/server/db/migrate.ts`, held to 0057's text by a test), in the same transaction as the other two backfills: a failure of it stops the start, as theirs does. It is safe to repeat because no write can now put a card in a milestone of another board: putting one in is refused, a move to another board takes it out (card 2155), and a milestone is given to another board only when all its cards are there (card 2179). So it finds cards only after a restore of a backup taken before 0057, or after coming forward again from an older image that was used meanwhile. When it finds any it writes `[WARN] [DB] Took <n> card(s) out of a milestone that belongs to another board: card 12 left milestone 3, …`, and a restore's log line adds `<n> card(s) taken out of a milestone of another board (card 12 left milestone 3, …)` to its "Filled in". Each names the first 50 cards by id, with the milestone each left, and then `; and <n> more`: once a card is out, nothing else records which goal held it. To see every card and goal by name before an Import Backup, copy the backup file into the container (`docker cp <backup file> dumpfire:/tmp/backup.db`) and run check 0o's command with `'/tmp/backup.db'` in place of `process.env.DB_PATH || 'dumpfire.db'`: it opens the file read-only and lists exactly the cards the restore will take out. **A count at any other start means some write still makes such a card**: report it as a fault.
+
+```mermaid
+flowchart TD
+    Same{"Does this image also bring 0057,<br/>the update before?"}
+    Same -->|"Yes"| None["First start: 0057 takes the cards out,<br/>then the backfill finds none"]
+    Same -->|"No, 0057 is already on production"| Q3["Run check 0o's query 3 again,<br/>read-only, into query-3-again.txt"]
+    Q3 --> Takes["First start: the backfill takes out<br/>exactly the cards it lists, with one WARN line"]
+    R["0r to 0u: read-only counts,<br/>on the host"] --> Deploy["Deploy as in Updating a Running Installation"]
+    None --> After["Checks 91 to 109"]
+    Takes --> After
+    Deploy --> Same
+```
+
+#### Before the deploy: checks 0r to 0u
+
+None of these changes a ruling; each says how many people a visible change reaches. Run each on the host, against the live database, read-only, as check 0o's command runs: save the query as `query-0r.sql` (and so on), and run that command with `query-0r.sql` in place of `query-3.sql` and `query-0r.txt` in place of `query-3-before.txt`. Shares by team and public boards count as access; administrators can open every board and are left out.
+
+**If the update that brings 0057 is already on production**, run check 0o's query 3 again first, into `query-3-again.txt`, and keep the file: the first start of this image takes exactly the cards it lists out of their milestones (between the two updates a milestone could still be given to another board with its cards, and a backup restored meanwhile could bring such cards back). Settle each card as check 0o says before the deploy. If this image also brings 0057, check 0o is the whole of it.
+
+**Check 0r: moves between boards whose entries name a board that some reader of the other cannot open** (card 2181). The entries already stored stay as they are, so each row is a move whose old entries still show one board's name to readers of the other. A move's two entries are written one after the other, so the arrival is the row after the departure. `readers_of_left_not_joined` counts ordinary users who read the departure and cannot open the board it went to, and the last column the reverse.
+
+```sql
+WITH can_open(user_id, board_id) AS (
+  SELECT created_by, id FROM boards WHERE created_by IS NOT NULL
+  UNION SELECT user_id, board_id FROM board_members
+  UNION SELECT tm.user_id, bt.board_id FROM board_teams bt JOIN team_members tm ON tm.team_id = bt.team_id
+  UNION SELECT u.id, b.id FROM users u CROSS JOIN boards b WHERE b.is_public = 1
+),
+moves AS (
+  SELECT away.id AS entry_id, away.created_at, away.board_id AS left_id, arrived.board_id AS joined_id
+  FROM activity_log away
+  JOIN activity_log arrived ON arrived.id = away.id + 1 AND arrived.card_id = away.card_id
+   AND arrived.action IN ('card_moved_in', 'api:card_moved_in')
+  WHERE away.action IN ('card_moved_away', 'api:card_moved_away')
+)
+SELECT m.entry_id, m.created_at, bl.name AS left_board, bj.name AS joined_board,
+  (SELECT COUNT(*) FROM users u WHERE u.role = 'user'
+     AND (u.id, m.left_id) IN (SELECT user_id, board_id FROM can_open)
+     AND (u.id, m.joined_id) NOT IN (SELECT user_id, board_id FROM can_open)) AS readers_of_left_not_joined,
+  (SELECT COUNT(*) FROM users u WHERE u.role = 'user'
+     AND (u.id, m.joined_id) IN (SELECT user_id, board_id FROM can_open)
+     AND (u.id, m.left_id) NOT IN (SELECT user_id, board_id FROM can_open)) AS readers_of_joined_not_left
+FROM moves m
+JOIN boards bl ON bl.id = m.left_id
+JOIN boards bj ON bj.id = m.joined_id
+WHERE readers_of_left_not_joined > 0 OR readers_of_joined_not_left > 0
+ORDER BY m.entry_id;
+```
+
+And, into `query-0r-count.txt`, how many departures there are and how many the query above could pair with their arrival; a difference is a move recorded some other way, which it does not list:
+
+```sql
+SELECT
+  (SELECT COUNT(*) FROM activity_log WHERE action IN ('card_moved_away', 'api:card_moved_away')) AS departures,
+  (SELECT COUNT(*) FROM activity_log away
+     JOIN activity_log arrived ON arrived.id = away.id + 1 AND arrived.card_id = away.card_id
+      AND arrived.action IN ('card_moved_in', 'api:card_moved_in')
+   WHERE away.action IN ('card_moved_away', 'api:card_moved_away')) AS paired;
+```
+
+**Check 0s: accounts named in comments on boards they cannot open** (card 2198): who was mailed for those comments and would not be from the deploy on. An upper bound: a name is found as `@` and the username anywhere in the text, in any case, so `@jane` also counts in `@janet`.
+
+```sql
+WITH can_open(user_id, board_id) AS (
+  SELECT created_by, id FROM boards WHERE created_by IS NOT NULL
+  UNION SELECT user_id, board_id FROM board_members
+  UNION SELECT tm.user_id, bt.board_id FROM board_teams bt JOIN team_members tm ON tm.team_id = bt.team_id
+  UNION SELECT u.id, b.id FROM users u CROSS JOIN boards b WHERE b.is_public = 1
+)
+SELECT u.username, COUNT(*) AS comments, MAX(cc.created_at) AS latest
+FROM card_comments cc
+JOIN cards c ON c.id = cc.card_id
+JOIN columns col ON col.id = c.column_id
+JOIN users u ON u.id <> cc.user_id AND instr(lower(cc.content), '@' || lower(u.username)) > 0
+WHERE u.role = 'user'
+  AND (u.id, col.board_id) NOT IN (SELECT user_id, board_id FROM can_open)
+GROUP BY u.username
+ORDER BY comments DESC, u.username;
+```
+
+**Check 0t: cards whose board history begins on their second board** (card 2199): a recorded move and no recorded creation. From the deploy on, each begins on `started_on`. Keep `query-0t.txt` for check 103.
+
+```sql
+SELECT away.card_id,
+  (SELECT b.name FROM activity_log f JOIN boards b ON b.id = f.board_id
+    WHERE f.card_id = away.card_id AND f.action LIKE '%card_moved_away'
+    ORDER BY f.created_at, f.id LIMIT 1) AS started_on,
+  COUNT(*) AS departures
+FROM activity_log away
+WHERE away.action LIKE '%card_moved_away' AND away.card_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM activity_log cr WHERE cr.card_id = away.card_id AND cr.action LIKE '%card_created')
+GROUP BY away.card_id
+ORDER BY away.card_id;
+```
+
+**Check 0u: who a mention could not reach, and who was mailed in another's place** (card 2207), four queries, into `query-0u-1.txt` to `query-0u-4.txt`. The first lists usernames holding anything but lower-case letters, digits and `_`, which a mention could not reach as typed and can from the deploy on:
+
+```sql
+SELECT id, username FROM users WHERE username GLOB '*[^a-z0-9_]*' ORDER BY id;
+```
+
+The second lists usernames that differ only in case. For such a pair, say `Greg` and `greg`, `@greg` mails `greg` and `@GREG` mails neither from the deploy on; if it lists any, tell both accounts:
+
+```sql
+SELECT lower(username) AS name, COUNT(*) AS accounts, group_concat(username, ', ') AS spellings
+FROM users GROUP BY lower(username) HAVING COUNT(*) > 1 ORDER BY name;
+```
+
+The third lists, for each username that holds a character the old matcher stopped at, the account named by the part before it, if there is one: `mailed_today` was mailed in place of `named`, and from the deploy on `named` is mailed instead:
+
+```sql
+SELECT b.username AS named, a.username AS mailed_today
+FROM users a JOIN users b
+  ON b.id <> a.id
+ AND lower(substr(b.username, 1, length(a.username))) = a.username
+ AND substr(b.username, length(a.username) + 1, 1) GLOB '[^A-Za-z0-9_]'
+WHERE a.username NOT GLOB '*[^a-z0-9_]*'
+ORDER BY b.username;
+```
+
+The fourth lists the accounts a longer name may now take a mention from: `swallowed` is a username, and `longer` another account's username that begins with it, in any case, followed by a character that ends a name (a space, or a mark such as `'` or `!`, but not `.` or `-` before a letter or digit). The longest name wins, so `@jane Doe` written for `jane`, before the word "Doe", mails `Jane Doe`, and `@o'brien` mails `o'brien`, not `o`. Tell the `swallowed` account of each row, if it matters. It compares case for the letters A to Z only, as SQLite's `lower()` does, and takes any character outside ASCII as a letter:
+
+```sql
+SELECT a.username AS swallowed, b.username AS longer
+FROM users a JOIN users b
+  ON b.id <> a.id
+ AND length(b.username) > length(a.username)
+ AND lower(substr(b.username, 1, length(a.username))) = lower(a.username)
+WHERE unicode(substr(b.username, length(a.username) + 1, 1)) < 128
+  AND substr(b.username, length(a.username) + 1, 1) GLOB '[^A-Za-z0-9_]'
+  AND NOT (substr(b.username, length(a.username) + 1, 1) IN ('.', '-')
+       AND (substr(b.username, length(a.username) + 2, 1) GLOB '[A-Za-z0-9_]'
+            OR coalesce(unicode(substr(b.username, length(a.username) + 2, 1)), 0) >= 128))
+ORDER BY a.username, b.username;
+```
+
+**In the rehearsal (check 0c)**, if one is run, `Filled in:` names a third count, `<n> card(s) taken out of a milestone of another board`, with the first 50 of them on the next line when there are any; it is 0 unless check 0o's query 3 lists cards on the copy and 0057 is already applied there: when 0057 ships in the same image, the migration takes them out first and the backfill finds none. No migration file is added, so no other line changes.
+
+#### What changes at the first start
+
+- **The third backfill runs.** With 0057 in the same image it finds nothing, and nothing is logged for it. With 0057 already on production it takes out of their milestones exactly the cards `query-3-again.txt` lists, leaves `updated_at` as it is, writes no activity entry, and logs `[WARN] [DB] Took <n> card(s) out of a milestone that belongs to another board: card <id> left milestone <id>, …` (the first 50; `query-3-again.txt` has them all). A later start finds nothing.
+- **Through the API**: a milestone with cards of another board is refused a new `boardId` (`400`); a `boardId` that names no board is `404` for everyone. `boardIds` lists only boards the key's user can open. A card's board history may begin one board earlier. The activity entries of a move between boards, in the audit log, name neither board.
+- **On the pages**: a board's Activity and All Tasks show `"T" moved to another board (…)` and `"T" moved from another board (…)` for moves from now on, each under its own board in All Tasks. A mention chip and the mention mail follow the new rule: a name with capitals, dots or hyphens is chipped and mailed whole.
+- **By mail**: someone named in a comment on a board they cannot open is not mailed.
+- **No structure changes**, so the schema check has nothing new to say.
+
+**Owner to know.** Through the API a goal can no longer be given to another board while any card in it, archived ones included, is on a board other than that one; making it cross-board still works, and no page sends `boardId`. Anyone who sends a board id that does not exist is answered `404` `Board not found`, where an administrator was answered `500` and anyone else `403`. A backup taken before 0057, restored after this update, comes back with its cards that sit in a milestone of another board taken out of it, and the restore's report says how many. If this update goes out after the one that brings 0057, its first start takes out of their milestones every card then sitting in a milestone of another board, and logs how many (`query-3-again.txt` lists them). A move between boards no longer names the other board in either board's activity, for anyone: to see where a card went, All Tasks shows both entries under their boards. Entries written before the deploy still name the other board (check 0r lists them). Someone named in a comment on a board they cannot open is no longer mailed (check 0s). The board history of a card with no recorded creation begins with the board it started on (check 0t). `boardIds` no longer gives the id of a board the caller cannot open; an administrator's answer is unchanged. A mention reaches usernames with capitals, dots, hyphens, spaces and letters outside English; `@jane.doe` no longer mails `jane`, an email address in a comment no longer mails an account named after its domain, and of two usernames that differ only in case only the one typed exactly is mailed (check 0u's second query). A mention written for a name that begins another account's longer name, before the rest of it, now mails the longer one (its fourth).
+
+#### After the deploy
+
+Checks 91 to 109 run on production. Accounts: an administrator with an API key, an ordinary user `qa-reader` and an ordinary user `qa-both`, each in a browser of their own. Data: two test boards made by the administrator, "QA Alpha" and "QA Bravo"; `qa-reader` a member of QA Alpha only, `qa-both` a member of both; for check 107 an ordinary user `QA.Dot-Case`, a viewer of QA Alpha. Mail set up; the test users' mailboxes readable, with the "Card Moves" and "Mentions" mail preferences on. In Windows PowerShell 5.1 send each request with `curl.exe`, its body from a file as in checks 51 to 71, and `-w " %{http_code}\n"` so that the status follows the answer, as check 64 does. The method changes from check to check (`POST` in 91, 101 and 105, `PATCH` in 91 to 94, `DELETE` in 93 and 106, `GET` in 103 and 104), so each command is given here: `<key>` is the administrator's API key, and where there is a body, put it in `body.json` first.
+
+- **Check 91**: `curl.exe -s -w " %{http_code}\n" -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "@body.json" https://<host>/api/v1/milestones` with `{"name":"QA goal","boardId":<QA Bravo id>}`; then `curl.exe -s -w " %{http_code}\n" -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "@body.json" https://<host>/api/v1/milestones/<milestone id>/cards` with `{"cardId":<card id>}`; then `curl.exe -s -w " %{http_code}\n" -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "@body.json" https://<host>/api/v1/milestones/<milestone id>` with `{"boardId":<QA Alpha id>}`, and `curl.exe -s -w " %{http_code}\n" -H "Authorization: Bearer <key>" https://<host>/api/v1/milestones/<milestone id>` to read it back.
+- **Checks 92 and 94**: `curl.exe -s -w " %{http_code}\n" -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "@body.json" https://<host>/api/v1/milestones/<milestone id>` with each body in turn.
+- **Check 93**: `curl.exe -s -w " %{http_code}\n" -X DELETE -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "@body.json" https://<host>/api/v1/milestones/<milestone id>/cards` with `{"cardId":<card id>}`; then check 92's command with `{"boardId":<QA Alpha id>}`; then `curl.exe -s -w " %{http_code}\n" -X DELETE -H "Authorization: Bearer <key>" https://<host>/api/v1/milestones/<milestone id>`, with no body, to delete it.
+- **Check 101**: `curl.exe -s -w " %{http_code}\n" -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "@body.json" https://<host>/api/v1/cards/<QA Bravo card id>/comments` with `{"content":"@qa-reader check 101"}`.
+- **Checks 103 and 104**: `curl.exe -s -w " %{http_code}\n" -H "Authorization: Bearer <key>" https://<host>/api/v1/cards/<card id>/board-history`, a `GET`, with no `-X` and no body.
+- **Check 105**: `curl.exe -s -w " %{http_code}\n" -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "@body.json" https://<host>/api/v1/milestones` with `{"name":"QA across"}`; then `curl.exe -s -w " %{http_code}\n" -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "@body.json" https://<host>/api/v1/milestones/<milestone id>/cards` twice, with `{"cardId":<QA Alpha card id>}` and then `{"cardId":<QA Bravo card id>}`.
+- **Check 106**: the milestone is deleted with check 93's last command.
+
+`/api/milestones` opened in a signed-in browser shows the answer as JSON.
+
+| # | Card | Do | Account and data | Expect | A fault if |
+|---|---|---|---|---|---|
+| 91 | 2179 | Make a milestone of QA Bravo with one card of QA Bravo in it (`POST /api/v1/milestones` with `{"name":"QA goal","boardId":<QA Bravo id>}`, then `POST /api/v1/milestones/<id>/cards` with `{"cardId":<card id>}`). `PATCH` it with `{"boardId":<QA Alpha id>}` | The administrator's key | `400` `{"message":"Some cards in this milestone are not on that board (archived cards count too). Take those cards out of it first, or make the milestone cross-board instead; only its creator or an administrator can change a cross-board milestone afterwards."}`; `GET /api/v1/milestones/<id>` still has QA Bravo's id | `200` |
+| 92 | 2179 | The same milestone: `{"boardId":null}`, then `{"boardId":<QA Bravo id>}` | The administrator's key | Both `200`: across boards, then back to QA Bravo | Either refused |
+| 93 | 2179 | Take the card out (`DELETE /api/v1/milestones/<id>/cards` with `{"cardId":<card id>}`), then `{"boardId":<QA Alpha id>}`. Then delete the milestone | The administrator's key | `200`, and its `boardId` is QA Alpha's | Refused |
+| 94 | 2179 | `{"boardId":999999}` on any milestone | The administrator's key | `404` `{"message":"Board not found"}` | `500` |
+| 95 | 2180 | Assign `qa-reader` and `qa-both` to a card of QA Alpha. Move it to QA Bravo from All Tasks (Move) | The administrator | `qa-both` is mailed "Card moved", naming QA Bravo; `qa-reader` is not | A mail to `qa-reader` |
+| 96 | 2181 | After check 95, open QA Alpha's Activity | `qa-reader` | `… moved to another board (… → …)`, with no "QA Bravo" | "QA Bravo" in it |
+| 97 | 2181 | Open All Tasks' activity | `qa-both` | Both entries, one under QA Alpha and one under QA Bravo | Either missing |
+| 98 | 2181 | With QA Alpha open, developer tools, Network, the `events` request, EventStream, while the administrator moves another card from QA Alpha to QA Bravo | `qa-reader`; the administrator | The `update` with `"action":"moved_away"` has no `toBoard` and no board name | A board name in it |
+| 99 | 2181 | Look at a move between boards made before the deploy, in a board's Activity | The administrator | It still names the other board: entries already stored are left as they are | — |
+| 100 | 2198 | Comment on a card of QA Bravo: `@qa-reader and @qa-both, check 100` | The administrator | `qa-both` is mailed "… mentioned you: …"; `qa-reader` gets nothing | A mail to `qa-reader` |
+| 101 | 2198 | `POST /api/v1/cards/<QA Bravo card id>/comments` with `{"content":"@qa-reader check 101"}` | The administrator's key | `201`; no mail to `qa-reader` | A mail |
+| 102 | 2198 | Comment `@qa-reader check 102` on a card of QA Alpha | The administrator | `qa-reader` is mailed: the positive control | No mail |
+| 103 | 2199 | Pick a card from `query-0t.txt` that is still on a board; `GET /api/v1/cards/<id>/board-history` | The administrator's key | The first span is on its `started_on`, with `current: false`; the last is the card's board, with `current: true` | It begins on the card's second board |
+| 104 | 2199 | The board history of check 95's card, made after the deploy and moved to QA Bravo | The administrator's key | QA Alpha, then QA Bravo, each once | QA Alpha twice, or missing |
+| 105 | 2206 | Make a milestone across boards (`POST /api/v1/milestones` with a name only) and put a card of QA Alpha and one of QA Bravo in it. Open `/api/milestones` | The administrator's key; then `qa-both` | Its `boardIds` holds both boards' ids | Either is missing |
+| 106 | 2206 | Open `/api/milestones`. Then delete check 105's milestone | `qa-reader`; the administrator | That milestone is not listed (a goal across boards needs every board, as before); QA Alpha's milestones list QA Alpha's id alone | QA Bravo's id anywhere in the answer |
+| 107 | 2207 | Comment on a card of QA Alpha: `@qa.dot-case check 107` | The administrator | `QA.Dot-Case` is mailed "… mentioned you"; the card shows one chip covering `@qa.dot-case` | No mail, or a chip on `@qa` alone |
+| 108 | 2207 | Comment `@qa-reader. check 108, and @qa-readers` | The administrator | `qa-reader` is mailed once; the chip covers `@qa-reader`, and `@qa-readers` has no chip | No mail, or a chip on `@qa` |
+| 109 | 2207 | Comment `write to someone@qa-reader.test` | The administrator | Nobody is mailed "mentioned you", and there is no chip | A mention mail, or a chip |
+
+Check 95 is card 2180's, built with the completion update: it is listed here because no earlier list moves a card to another board. Card 2179's repair after a restore is not checked by hand: production is not restored for a check, the tests cover it, and the rehearsal prints its count. Delete `QA.Dot-Case`, the check comments' cards and the test boards afterwards.
+
+#### Going back to the previous image
+
+Nothing is done to the database: no migration was applied.
+
+- **The rules go with it.** The older image gives a milestone to another board with its cards, writes the other board's name into a move's entries and events, mails anyone a comment names by the old matcher, begins a board history on the second board, and lists every board in `boardIds`. Entries written by this image say "another board" and stay so.
+- **Coming forward again**, the third backfill takes out of their milestones the cards the older image left in a milestone of another board, and logs how many.
 
 ## Changing the Schema
 

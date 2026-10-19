@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.29
+version: 1.30
 status: As-Built
 date: 2026-10-19
 tags:
@@ -970,7 +970,9 @@ with `milestoneId: null`, and `PUT /api/cards/:id` and `PUT /api/v1/cards/:id/mo
 `leftMilestone`, `leftMilestoneOf(move)`: `{ id, name }` for a milestone of the board it
 left, which the mover can read as an editor of that board, and null otherwise, a third
 board's included (the review's O3). All Tasks shows it as a toast. Migration `0057` took out, once, the cards that were already in a
-milestone of another board; see [Deployment](deployment.md).
+milestone of another board, and since card 2179 the start-up backfill repeats the same
+statement at every start and after every restore (step 5 below); see
+[Deployment](deployment.md).
 
 `PUT /api/cards/:id` can carry other fields beside the move. The move, the update of those
 fields and the `card_updated` entry are one transaction.
@@ -988,7 +990,13 @@ card out of Complete and back in. A reopened card is not complete, so
 
 The activity entry is `card_completed`, `card_reopened` or `card_moved`; a move
 to another board also writes `card_moved_away` on the board it left and
-`card_moved_in` on the one it joined. Entries made through the API are stored with
+`card_moved_in` on the one it joined. Neither names the other board (card 2181):
+`"T" moved to another board (To Do → Done)` and `"T" moved from another board
+(To Do → Done)`. An entry is stored once and read by everyone who can open its board,
+so a name in it cannot be kept from a reader who cannot open the other board. The pair
+still records both boards, one entry on each, and the board history
+(`getCardBoardHistory`) reads the boards from `board_id`, never from the text. Entries
+written before card 2181 still name the other board, and are left as they are. Entries made through the API are stored with
 an `api:` prefix, so a query must match both spellings — use `storedActions()`
 from `logActivity.ts`. Board cycle time and `/api/v1/me/stats` compared against
 the bare name and so ignored everything done through the API.
@@ -1320,7 +1328,7 @@ is in [Deployment](deployment.md#start-up-sequence). This section is how it work
 | 2. Convert a `card_dependencies` table still in its original shape | Yes, if the conversion fails |
 | 3. Apply each file not yet recorded, one transaction per file | Yes, on the first failure |
 | 4. Rebuild any of the six reconciled tables that is not in the model's shape | Only if foreign keys cannot be switched back on |
-| 5. Repeat the backfills of migrations `0050` and `0051` for rows that lack the values | Yes, if they fail |
+| 5. Repeat three backfills (`runBackfills`, one transaction): `first_completed_at` of migration `0050` and `access_token` of `0051` for rows that lack them, and `0057`'s statement, which takes a card out of a milestone that belongs to another board (card 2179) | Yes, if they fail: the halt's stage reads `backfilling cards.first_completed_at, task_requests.access_token and cards.milestone_id` |
 | 6. Bring every timestamp to the stored form (`normaliseTimestamps`, card 2095), unless the database records a migration this build has no file for | No: a failure is rolled back, logged at `ERROR`, and tried again at the next start |
 | 7. Compare the whole database with the model and report differences | No |
 
@@ -1328,6 +1336,21 @@ is in [Deployment](deployment.md#start-up-sequence). This section is how it work
 tables rebuilt or left alone, sub-boards detached, rows backfilled, timestamps converted or
 left unread, differences found), which is what the tests assert on. A restore runs steps 5
 and 6 again on what it brought in.
+
+Step 5 logs at `WARN` when it fills anything: `Backfilled first_completed_at on <n> card(s)
+and access_token on <n> request(s)` for the first two, and, on a line of its own, `Took <n>
+card(s) out of a milestone that belongs to another board: card <id> left milestone <id>, …`
+for the third, naming the first 50 cards by id (`; and <n> more` after them): the backfill
+reads them, by the statement's own `WHERE`, just before it runs, because once a card is out
+nothing records which goal held it. A restore names the same in its "Filled in". The third repeats
+0057 because a backup taken before that migration, restored, brings such cards back, and a
+restore runs no migration. It is safe at every start because no write can make such a card
+any more: putting a card in a milestone of another board is refused, a move to another
+board takes the card out (card 2155), and a milestone is given to another board only when
+all its cards are there (card 2179). So it finds cards only after a restore of an older
+backup or a return from an older image, and a count at any other start means some write
+still makes such a card. `migrate.ts` exports the statement as
+`CARDS_LEAVE_OTHER_BOARDS_MILESTONES`, and a test holds it to 0057's text.
 
 A migration file may hold a one-off change to stored data as well as structure, as 0053
 ends every session once, 0054 every invite not yet used, and 0055 gives every task request

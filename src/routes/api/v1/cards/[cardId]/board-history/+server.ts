@@ -36,9 +36,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	const history = getCardBoardHistory(cardId);
 
-	// A board the caller cannot see is named but not detailed: hiding the hop
-	// entirely would make the sequence lie, and naming the board is no more than
-	// the card's own move already tells them.
+	// A board the caller cannot open is kept in the sequence by its id and its
+	// dates, without its name: hiding the hop entirely would make the sequence
+	// lie. Its name is not given, as nowhere else gives it them: since card 2181
+	// the move's own entries and live events name neither board.
 	const visible = history.map((h) =>
 		canViewBoard(locals.user!, h.boardId) ? h : { ...h, boardName: 'Board not visible to you' }
 	);

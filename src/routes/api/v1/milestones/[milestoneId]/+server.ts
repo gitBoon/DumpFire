@@ -26,8 +26,10 @@ const STATUSES = ['open', 'closed'] as const;
  * its priority, column and board. A card moved off a board used to keep that
  * board's milestone, so a viewer of the board was given the title and board
  * of a card on another. A move takes it out now, and migration 0057 took out
- * those already moved (card 2155), but a restored older backup can still hold
- * one.
+ * those already moved (card 2155); a milestone is given to another board only
+ * when all its cards are there, and the backfill after every restore takes out
+ * any an older backup brings back (card 2179). This stays as the guard for a
+ * row made any other way.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
@@ -71,7 +73,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * `description` text of at most 50,000; `targetDate` a date written
  * `YYYY-MM-DD`, or null; `status` `open` or `closed`; `boardId` an id, or null
  * for a goal across boards. A value the milestone already holds, sent back
- * unchanged, is accepted as it is.
+ * unchanged, is accepted as it is. A board sent must be there (404), editable
+ * (403), and hold every card of the milestone (400): `updateMilestone`.
  */
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	const user = requireUser(locals.user);

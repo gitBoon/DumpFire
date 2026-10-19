@@ -248,9 +248,6 @@ function moveCard(request: MoveRequest): CardMove {
 	const completion = completed ? completionOf(before, now) : null;
 	const xpAwarded = completion?.xp ?? 0;
 
-	const fromBoardName = crossBoard ? boardName(fromColumn.boardId) : '';
-	const toBoardName = crossBoard ? boardName(toColumn.boardId) : '';
-
 	let leftMilestone: CardMove['leftMilestone'] = null;
 	const update: Partial<typeof cards.$inferInsert> = {
 		columnId: toColumn.id,
@@ -330,9 +327,15 @@ function moveCard(request: MoveRequest): CardMove {
 
 	if (crossBoard) {
 		// Leaving one board and arriving on another are two facts, one for
-		// each board's history. Leaving a milestone of the board it left is
-		// said on that board's (decision 11 of card 2155): its readers can open
-		// the milestone. One of a third board is not named there.
+		// each board's history. Neither names the other board (card 2181): an
+		// entry is stored once and read by everyone who can open its board,
+		// some of whom cannot open the other one. Each entry is on its own
+		// board, so the pair still records both, and someone who can open both
+		// reads each under its board's name (All Tasks, the audit logs, the
+		// board history). The columns stay: they are the route, not the board.
+		// Leaving a milestone of the board it left is said on that board's
+		// (decision 11 of card 2155): its readers can open the milestone. One
+		// of a third board is not named there.
 		const leftGoal = leftMilestone
 			? leftMilestone.ofSourceBoard
 				? ` and out of milestone "${leftMilestone.name}"`
@@ -343,14 +346,14 @@ function moveCard(request: MoveRequest): CardMove {
 			boardId: fromColumn.boardId,
 			cardId,
 			action: ACTIONS.cardMovedAway,
-			detail: `"${before.title}" moved to board "${toBoardName}" (${route})${leftGoal}`
+			detail: `"${before.title}" moved to another board (${route})${leftGoal}`
 		});
 		logActivity({
 			...who,
 			boardId: toColumn.boardId,
 			cardId,
 			action: ACTIONS.cardMovedIn,
-			detail: `"${before.title}" moved from board "${fromBoardName}" (${route})`
+			detail: `"${before.title}" moved from another board (${route})`
 		});
 	}
 
@@ -425,6 +428,11 @@ function refuseTooDeep(card: Card, hanging: { id: number }[], fromBoardId: numbe
 	}
 }
 
+/**
+ * A board's name, for the two refusals above only: they go to the mover, who
+ * has been found able to edit the target board. The move's entries and events
+ * name no board (card 2181).
+ */
 function boardName(boardId: number): string {
 	return (
 		db.select({ name: boards.name }).from(boards).where(eq(boards.id, boardId)).get()?.name ??
@@ -569,13 +577,15 @@ function sendAnnouncements(
 		// Anything that was waiting on this card may now be startable.
 		if (move.completed) announceUnblocked(unblockedBy(move.card.id), actor, baseUrl);
 
+		// Neither event names the other board (card 2181): each goes to every
+		// listener of its board, and an event that only makes a page re-read
+		// names nothing more than it needs.
 		if (move.crossBoard) {
 			emit(move.fromBoardId, 'update', {
 				type: 'card',
 				action: 'moved_away',
 				cardTitle: move.card.title,
 				fromColumn: move.fromColumn.title,
-				toBoard: boardName(move.toBoardId),
 				toColumn: move.toColumn.title,
 				userName,
 				userEmoji
@@ -584,7 +594,6 @@ function sendAnnouncements(
 				type: 'card',
 				action: 'moved_in',
 				cardTitle: move.card.title,
-				fromBoard: boardName(move.fromBoardId),
 				fromColumn: move.fromColumn.title,
 				toColumn: move.toColumn.title,
 				userName,

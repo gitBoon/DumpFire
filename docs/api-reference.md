@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.50
+version: 1.51
 status: As-Built
 date: 2026-10-19
 tags:
@@ -578,6 +578,10 @@ new; these answers and fields are:
   `columnId` and `boardId` `null`. Every card carries `withheld`. A card moved off a board
   kept that board's milestone, and its title and board were given to every viewer of the
   first board, until card 2155 (below) took it out.
+- **`GET /milestones` gives in `boardIds` only the boards the key's user can open** (card
+  2206), where a card of a milestone on another board gave that board's id. `cardCount`
+  and `doneCount` still count such a card, as `GET /milestones/:milestoneId` lists it
+  withheld. An administrator's key is given every id as before (item 64).
 - **`GET /burndown?milestoneId=` charts only the milestone's cards on boards the key's user
   can open** (card 2129's review), and says in `meta.notes` how many are left out, where a
   card moved to a board they cannot open was charted and its board named in `scope.boards`.
@@ -845,6 +849,39 @@ new; these answers and fields are:
   completed — nothing is blocking this card now.`, or `Unblocked: a subtask on another board
   completed — …`, where it gave the other board's title. Work on the same board is named by
   its title as before; comments written before are unchanged (item 62).
+- **A milestone is given to a board only when every card in it is on that board** (card
+  2179), on `PATCH /milestones/:milestoneId` with `boardId`, archived cards included:
+  otherwise `400` `Some cards in this milestone are not on that board (archived cards count
+  too). Take those cards out of it first, or make the milestone cross-board instead; only its creator or an administrator can change a cross-board milestone afterwards.`, and
+  nothing changes. The milestone went to the board with its cards, and the board's readers
+  were given the titles of cards of other boards. `boardId: null` is accepted as before. A
+  `boardId` that names no board is `404` `Board not found`, where an administrator was
+  answered `500` and anyone else `403` `No edit access to that board` (item 63). See
+  [`PATCH /api/v1/milestones/:milestoneId`](#patch-apiv1milestonesmilestoneid).
+- **A comment mails the people it names only when they can open the card's board** (card
+  2198), on `POST /cards/:cardId/comments`: an account named as `@username` is mailed only
+  when it is the board's owner, a member, a member of a team the board is shared with,
+  anyone for a public board, or an administrator, and then as its Mentions setting says.
+  Anyone named was mailed the card's title, the board's name and the start of the comment.
+  The comment is saved and answered as before; the author is not told who was not mailed
+  (item 65).
+- **A mention reaches every username, as it is spelled, in any case** (card 2207). A name is
+  the longest username that the text after an `@` begins with, case ignored, where it was
+  the letters, digits and `_` after the `@`, lower-cased: `@Greg` reached nobody and
+  `@jane.doe` mailed `jane`. An `@` inside a word, as in `bob@example.com`, is not a
+  mention. Where two usernames differ only in case, the one typed exactly is mailed, and
+  neither when the name is typed in neither spelling. Only the first 200 `@` of a comment
+  that could start a name are read (item 66). See
+  [`POST /api/v1/cards/:cardId/comments`](#post-apiv1cardscardidcomments).
+- **`GET /cards/:cardId/board-history` begins with the board a card started on** (card
+  2199), for a card with no recorded creation that has moved: a move writes its departure
+  and its arrival in the same second, so that board was left out. The entries are read in
+  the order they were written, and no time is compared (item 67).
+- **A move to another board names neither board in its activity entries** (card 2181), as
+  `GET /audit-log` reads them: `"<title>" moved to another board (<from> → <to>)` on the
+  board it left and `"<title>" moved from another board (<from> → <to>)` on the board it
+  arrived on, where each named the other board to every reader of its own. Entries written
+  before are unchanged (item 68).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -883,6 +920,10 @@ API:
   `PUT /api/cards/{id}` answers the card with `leftMilestone`, `{ "id", "name" }` of the
   milestone of the board it left that the move took it out of, and `null` otherwise; All
   Tasks says `Moved. It left milestone "M"; moving it back does not put it back in.`
+- **A move to another board names neither board on the pages either** (card 2181): the
+  entries above are what `GET /api/activity` gives, on a board's Activity panel and in All
+  Tasks, which lists each under its own board's name; the live `update` events `moved_away`
+  and `moved_in` no longer carry `toBoard` and `fromBoard`, which nothing on a page read.
 - **An open board stream ends when its reader can no longer open the board** (card 2170).
   `GET /api/boards/{id}/events` asks at each heartbeat, every 30 seconds, whether the board
   is still there and the account as it is now can open it, and if not sends one last
@@ -1940,7 +1981,10 @@ page of 100 used to be indistinguishable from a complete result.
 
 Which board a card was on, and when — spans oldest first, `to: null` on the
 current one. Needed because a card that changes board mid-window appears in the
-audit log under two different `boardId`s.
+audit log under two different `boardId`s. A card whose creation was never recorded
+begins on the board its first move left, from its `createdAt` (card 2199). A board
+the caller cannot open keeps its id and dates, and its `boardName` is
+`Board not visible to you`.
 
 ---
 
@@ -2267,9 +2311,12 @@ is needed on both). Goes through the same service as a drag in the web UI:
   milestone that belongs to a board other than the one it arrives on, so the answer has
   `milestoneId: null` and names the milestone it left as `leftMilestone` (`{ "id", "name" }`,
   otherwise `null`) (card 2155); a milestone across boards keeps the card.
-  `card_moved_away` and `card_moved_in` are logged, one on each board, and
-  `card_moved_away` ends ` and out of milestone "<name>"` when the move took the card out
-  of one of that board's milestones.
+  `card_moved_away` and `card_moved_in` are logged, one on each board, and neither names
+  the other board (card 2181): `"<title>" moved to another board (<from> → <to>)` on the
+  board it left and `"<title>" moved from another board (<from> → <to>)` on the board it
+  arrived on, because each is read by everyone who can open its board. `card_moved_away`
+  ends ` and out of milestone "<name>"` when the move took the card out of one of that
+  board's milestones.
 - onto one of its own sub-boards: a card's sub-boards go with it, so a move onto one, or
   onto a board beneath one at any depth, is refused with 409 and nothing moves:
   `Card "<title>" cannot go onto "<board>", which hangs beneath it` (card 2141).
@@ -2363,6 +2410,34 @@ end. The subtask and its links go together or not at all, with an `api:subtask_d
 entry naming the subtask. Until 2026-10-14 no entry was written.
 
 ---
+
+### `PATCH /api/v1/milestones/:milestoneId`
+
+Change a milestone's `name`, `description`, `targetDate`, `status` or `boardId`. The
+milestone is looked for and the caller checked first (`404`, then `403`), then each field
+is read. A `boardId` gives the milestone to a board only when every card in it, archived
+cards included, is on that board (card 2179): the board is looked for (`404`
+`Board not found`), the caller must be able to edit it (`403`
+`No edit access to that board`), and a card of the milestone on another board is `400`
+`Some cards in this milestone are not on that board (archived cards count too). Take those cards out of it first, or make the milestone cross-board instead; only its creator or an administrator can change a cross-board milestone afterwards.` A refusal changes
+nothing and names no card and no board; `GET /api/v1/boards/:boardId/cards?archived=true`
+lists archived cards with their `milestoneId`. `boardId: null`, a goal across boards, is
+always accepted, and the milestone's own board sent back is no change.
+
+```mermaid
+flowchart TD
+    P["PATCH with boardId"] --> M{"milestone there,<br/>caller may change it?"}
+    M -->|no| R1["404 or 403"]
+    M -->|yes| N{"boardId null, or<br/>the milestone's own?"}
+    N -->|yes| W["200, written"]
+    N -->|no| E{"board there?"}
+    E -->|no| R3["404 Board not found"]
+    E -->|yes| A{"caller can edit it?"}
+    A -->|no| R4["403 No edit access to that board"]
+    A -->|yes| C{"a card of the milestone,<br/>archived included,<br/>on another board?"}
+    C -->|yes| R5["400 Some cards in this milestone<br/>are not on that board"]
+    C -->|no| W
+```
 
 ### Milestones: Many Cards at Once
 
@@ -2894,6 +2969,15 @@ Add a comment: `{ "content": "Your message here" }`. The card is looked for and 
 checked first (`404`, then `403`), then `content` is read: text, trimmed, of 1 to 50,000
 characters (`content must be text`, `Comment cannot be empty`,
 `content must be at most 50000 characters`).
+
+The board's members are told by email. Anyone it names as `@username` who can open the
+card's board is also told by email, and nobody else (card 2198); the answer is the same
+whoever was mailed. A name is the longest username that the text after `@` begins with, in
+any case, and it must end there (card 2207): `@jane.doe` is the account `jane.doe`, and
+never `jane`; `@Greg` is `Greg`. An `@` inside a word, as in an email address, is not a
+mention. Where two usernames differ only in case, the one typed exactly is mailed. Only the
+first 200 `@` of a comment that could start a name are read (one at the end, or before a
+space or another `@`, cannot), so a mention after them mails nobody.
 
 #### `GET /api/v1/comments/:commentId`
 

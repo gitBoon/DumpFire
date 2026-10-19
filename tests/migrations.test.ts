@@ -23,11 +23,13 @@ import { join } from 'node:path';
 import { sqlite } from '$lib/server/db';
 import { EXPECTED_SCHEMA } from '$lib/server/db/expected-schema';
 import {
+	CARDS_LEAVE_OTHER_BOARDS_MILESTONES,
 	MigrationError,
 	RECONCILED_TABLES,
 	TOLERANT_FILES,
 	leadingKeywords,
 	reconcileSchema,
+	runBackfills,
 	runMigrations,
 	schemaDifferences,
 	scratchNameOf,
@@ -1079,7 +1081,7 @@ describe('the backfills, repeated at every start', () => {
 		const { error } = halted({ database, migrationsDir: REAL_MIGRATIONS });
 
 		expect(error.message).toBe(
-			'Migrations halted (backfilling cards.first_completed_at and task_requests.access_token): ' +
+			'Migrations halted (backfilling cards.first_completed_at, task_requests.access_token and cards.milestone_id): ' +
 				`first completion is frozen. No migration was committed earlier in this start. ${WHAT_NEXT}`
 		);
 		// As it says: the card is as it was before the step that failed.
@@ -1087,6 +1089,100 @@ describe('the backfills, repeated at every start', () => {
 			first_completed_at: null
 		});
 		expect(database.inTransaction).toBe(false);
+	});
+
+	it("repeats 0057's statement, the same text, for a restored older backup (card 2179)", () => {
+		const words = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+		const file = readFileSync(join(REAL_MIGRATIONS, FILE_0057), 'utf-8');
+		expect(sqlStatements(file).map((s) => words(s.text))).toEqual([words(CARDS_LEAVE_OTHER_BOARDS_MILESTONES)]);
+	});
+
+	it('takes out every card in a milestone of another board, archived ones included, and nothing else, once (card 2179)', () => {
+		const STAMP = '2026-10-01 09:00:00';
+		const database = memoryDb();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		// Boards A (1) and B (2), and a board 3 deleted with foreign keys off, as a
+		// restore runs, so that its milestone is left. Milestones: 1 of A, 2 across
+		// boards, 3 of the deleted board. Cards 6 and 8 name a milestone and a
+		// column that are not there.
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x');
+			INSERT INTO boards (id, name, created_by) VALUES (1, 'A', 1), (2, 'B', 1), (3, 'Gone', 1);
+			INSERT INTO columns (id, board_id, title) VALUES (1, 1, 'To Do'), (2, 2, 'To Do');
+			INSERT INTO milestones (id, name, board_id, status) VALUES (1, 'Goal of A', 1, 'open'), (2, 'Across', NULL, 'open'), (3, 'Goal of Gone', 3, 'closed');
+			PRAGMA foreign_keys = OFF;
+			INSERT INTO cards (id, column_id, title, milestone_id, archived_at, created_at, updated_at) VALUES
+				(1, 2, 'On B, in A''s', 1, NULL, '${STAMP}', '${STAMP}'),
+				(2, 1, 'On A, in A''s', 1, NULL, '${STAMP}', '${STAMP}'),
+				(3, 2, 'Archived on B, in A''s', 1, '${STAMP}', '${STAMP}', '${STAMP}'),
+				(4, 2, 'On B, in the goal across', 2, NULL, '${STAMP}', '${STAMP}'),
+				(5, 1, 'In the deleted board''s', 3, NULL, '${STAMP}', '${STAMP}'),
+				(6, 1, 'In a milestone gone', 99, NULL, '${STAMP}', '${STAMP}'),
+				(7, 1, 'In none', NULL, NULL, '${STAMP}', '${STAMP}'),
+				(8, 99, 'On a column gone, in A''s', 1, NULL, '${STAMP}', '${STAMP}');
+			DELETE FROM boards WHERE id = 3;
+			PRAGMA foreign_keys = ON;
+		`);
+		const milestonesOf = () =>
+			database.prepare('SELECT id, milestone_id, updated_at FROM cards ORDER BY id').all() as {
+				id: number;
+				milestone_id: number | null;
+				updated_at: string;
+			}[];
+
+		expect(runBackfills(database)).toEqual({
+			firstCompletedAt: 0,
+			accessTokens: 0,
+			releasedFromMilestones: 3,
+			released: [
+				{ cardId: 1, milestoneId: 1 },
+				{ cardId: 3, milestoneId: 1 },
+				{ cardId: 5, milestoneId: 3 }
+			]
+		});
+
+		expect(milestonesOf().map((card) => [card.id, card.milestone_id])).toEqual([
+			[1, null],
+			[2, 1],
+			[3, null],
+			[4, 2],
+			[5, null],
+			[6, 99],
+			[7, null],
+			[8, 1]
+		]);
+		// Nobody edited the cards.
+		expect(milestonesOf().map((card) => card.updated_at)).toEqual(Array(8).fill(STAMP));
+		expect(runBackfills(database)).toEqual({ firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] });
+	});
+
+	it('names the cards it takes out at a start, the first 50 by card and milestone, in its WARN line (review of card 2179)', () => {
+		const database = memoryDb();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		// Card 1 is on board A in B's milestone; cards 2 to 54 are on board B in A's.
+		const onB = Array.from({ length: 53 }, (_, i) => `(${i + 2}, 2, 'On B', 1)`).join(', ');
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x');
+			INSERT INTO boards (id, name, created_by) VALUES (1, 'A', 1), (2, 'B', 1);
+			INSERT INTO columns (id, board_id, title) VALUES (1, 1, 'To Do'), (2, 2, 'To Do');
+			INSERT INTO milestones (id, name, board_id, status) VALUES (1, 'Goal of A', 1, 'open'), (2, 'Goal of B', 2, 'open');
+			INSERT INTO cards (id, column_id, title, milestone_id) VALUES (1, 1, 'On A', 2), ${onB};
+		`);
+		process.env.LOG_LEVEL = 'WARN';
+		const lines: string[] = [];
+		vi.spyOn(console, 'warn').mockImplementation((line) => {
+			lines.push(String(line).replace(/^\[[^\]]+\] /, ''));
+		});
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		const named = ['card 1 left milestone 2', ...Array.from({ length: 49 }, (_, i) => `card ${i + 2} left milestone 1`)];
+		expect(report.backfilled.releasedFromMilestones).toBe(54);
+		expect(report.backfilled.released).toHaveLength(50);
+		expect(lines.filter((line) => line.includes('Took '))).toEqual([
+			`[WARN] [DB] Took 54 card(s) out of a milestone that belongs to another board: ${named.join(', ')}; and 4 more`
+		]);
+		expect(database.prepare('SELECT COUNT(*) AS n FROM cards WHERE milestone_id IS NOT NULL').get()).toEqual({ n: 0 });
 	});
 });
 
@@ -3318,7 +3414,7 @@ describe('the start-up schema check', () => {
 			leftAlone: [],
 			detachedSubBoards: [],
 			reconciliationSkipped: null,
-			backfilled: { firstCompletedAt: 0, accessTokens: 0 },
+			backfilled: { firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] },
 			timestamps: { converted: {}, unreadable: {}, failed: null },
 			schemaDifferences: [],
 			missingFromDisk: []
@@ -3858,7 +3954,7 @@ describe('restoring a backup taken before the latest migrations', () => {
 
 		// The links are given inside the restore, as every request's is at every
 		// restore (card 2158), so the backfill after it has none to give.
-		expect(result.backfilled).toEqual({ firstCompletedAt: 2, accessTokens: 0 });
+		expect(result.backfilled).toEqual({ firstCompletedAt: 2, accessTokens: 0, releasedFromMilestones: 0, released: [] });
 		expect(result.requestLinksReplaced).toBe(2);
 		expect(live.prepare('SELECT id, first_completed_at FROM cards ORDER BY id').all()).toEqual([
 			{ id: 1, first_completed_at: '2026-09-01 10:00:00' },
@@ -3875,6 +3971,25 @@ describe('restoring a backup taken before the latest migrations', () => {
 		expect(new Set(tokens).size).toBe(2);
 	});
 
+	it('takes out of a milestone a card the backup holds in a milestone of another board (card 2179)', () => {
+		const { live, backup } = liveAndBackup();
+		// Card 1 is on board A (1), card 3 on board B (2): both in a milestone of board A.
+		backup.exec(`
+			INSERT INTO milestones (id, name, board_id) VALUES (1, 'Goal of A', 1);
+			UPDATE cards SET milestone_id = 1 WHERE id IN (1, 3);
+		`);
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.backfilled.releasedFromMilestones).toBe(1);
+		expect(result.backfilled.released).toEqual([{ cardId: 3, milestoneId: 1 }]);
+		expect(live.prepare('SELECT id, milestone_id FROM cards WHERE id IN (1, 3) ORDER BY id').all()).toEqual([
+			{ id: 1, milestone_id: 1 },
+			{ id: 3, milestone_id: null }
+		]);
+	});
+
 	it('does not stop the next start', () => {
 		// With the backup's record in place of its own, the runner would find
 		// 0050 and 0051 unrecorded, run them against columns that already exist,
@@ -3888,7 +4003,7 @@ describe('restoring a backup taken before the latest migrations', () => {
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.rebuilt).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(report.backfilled).toEqual({ firstCompletedAt: 0, accessTokens: 0 });
+		expect(report.backfilled).toEqual({ firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] });
 	});
 
 	it('will not start inside a transaction, where foreign keys cannot be switched off', () => {
@@ -4087,7 +4202,7 @@ describe('restoring a backup taken before the latest migrations', () => {
 		// The rows are in and committed. Saying "the restore failed" would send
 		// someone to restore again over a database that has just been restored.
 		expect(result.errors).toEqual(['Backfill after the restore: first completion is frozen']);
-		expect(result.backfilled).toEqual({ firstCompletedAt: 0, accessTokens: 0 });
+		expect(result.backfilled).toEqual({ firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] });
 		expect(result.restored['cards']).toBe(5);
 		expect(live.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
 		expect(foreignKeysOn(live)).toBe(true);
@@ -4342,6 +4457,25 @@ describe('restoring a backup taken before the latest migrations', () => {
 				{ id: 2, wip_limit: 3 },
 				{ id: 4, wip_limit: 0 }
 			]);
+		});
+
+		it('names in its Filled in the cards it took out of a milestone of another board (review of card 2179)', async () => {
+			const { backup } = liveAndBackup();
+			// Card 1 is on board A (1), card 3 on board B (2): both in a milestone of board A.
+			backup.exec(`
+				INSERT INTO milestones (id, name, board_id) VALUES (1, 'Goal of A', 1);
+				UPDATE cards SET milestone_id = 1 WHERE id IN (1, 3);
+			`);
+			process.env.LOG_LEVEL = 'INFO';
+
+			const { response, logged } = await upload(backup);
+
+			expect(response.status).toBe(200);
+			expect(logged).toHaveLength(1);
+			expect(logged[0]).toContain(
+				'Filled in: first_completed_at on 2 card(s), access_token on 0 request(s), ' +
+					'1 card(s) taken out of a milestone of another board (card 3 left milestone 1), the default (0)'
+			);
 		});
 
 		it('refuses a backup that would leave cards on a column it could not copy, and changes nothing', async () => {
@@ -5753,6 +5887,12 @@ ORDER BY m.id, c.id;`;
 		const listed = (database.prepare(QUERY_3).all() as { card_id: number; milestone_board: string | null }[]);
 		expect(listed.map((row) => row.card_id)).toEqual([1, 3, 5]);
 		expect(listed.find((row) => row.card_id === 5)!.milestone_board).toBeNull();
+		// The backfill's copy of the statement changes the same cards on a copy as it was.
+		const copy = beforeIt();
+		expect(copy.prepare(CARDS_LEAVE_OTHER_BOARDS_MILESTONES).run().changes).toBe(listed.length);
+		expect(copy.prepare('SELECT id FROM cards WHERE milestone_id IS NULL AND id IN (1, 3, 5) ORDER BY id').all()).toEqual(
+			listed.map((row) => ({ id: row.card_id }))
+		);
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
@@ -5773,8 +5913,9 @@ ORDER BY m.id, c.id;`;
 			expect(after[table], table).toEqual(before[table]);
 		}
 
-		// The same statement again changes nothing, and neither does the next start.
-		expect(database.prepare(STATEMENT).run().changes).toBe(0);
+		// The same statement again, as the backfill repeats it at every start
+		// (card 2179), changes nothing, and neither does the next start.
+		expect(database.prepare(CARDS_LEAVE_OTHER_BOARDS_MILESTONES).run().changes).toBe(0);
 		expect(runMigrations({ database, migrationsDir: REAL_MIGRATIONS }).applied).toEqual([]);
 		expect(cardsIn(database)).toEqual(cardsAfter);
 

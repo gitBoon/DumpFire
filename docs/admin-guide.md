@@ -1,9 +1,9 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.37
+version: 1.38
 status: As-Built
-date: 2026-10-18
+date: 2026-10-19
 tags:
   - admin
   - operations
@@ -463,6 +463,7 @@ Whichever is chosen:
 - It replaces rows, not structure. The rows of every table in the running database are replaced with the backup's rows. The tables and columns stay as the running version's migrations made them: a column or table that exists only in the backup is not brought across, and a table the backup does not have is left empty.
 - It keeps the running database's own record of applied migrations. That record describes the structure of the running database, which a restore does not change.
 - It fills in what an older backup lacks: a first-completion date for cards that were complete, and the contents of `work_dependencies` when the backup was taken before that table existed. Every task request is given a new access token in any case (see above).
+- It takes out of its milestone every card that sits in a milestone of another board (card 2179), which a backup taken before migration 0057 can hold: a milestone of a board holds only that board's cards, or the board's readers would read the other cards' titles in it. The card itself is untouched, and a goal across boards keeps its cards. The restore's "Filled in" line on the Logs page then ends `<n> card(s) taken out of a milestone of another board (card 12 left milestone 3, …)`, naming the first 50 cards by id with the milestone each left, and `; and <n> more` after them; with none, the line reads as it did. Once a card is out nothing records which goal held it, so if you want every card and goal by name, run check 0o's query 3 of the [deployment guide](deployment.md#before-the-deploy-checks-0o-to-0q) against the backup file, read-only, before importing it. The same repair runs at every start, where it finds nothing unless an older image was used meanwhile.
 - A value the backup leaves empty, in a column where the running database requires one, is given that column's default. A column's WIP limit that was never set becomes 0, which means no limit. The server log says how many rows that was.
 - A row that cannot be copied is left out, and the restore is still committed, unless it leaves user accounts and no superadmin among them. The message on screen says how many problems there were and lists them, the first hundred where there are more. The list also carries anything else worth knowing, such as a card in the backup whose column is not in the backup either; that card is copied as it is.
 - It will not leave rows pointing, through a foreign key, at a row it left out. If a row that could not be copied is one that other rows refer to in that way, the whole restore is refused and nothing has been changed. References that have no foreign key are not covered by that check: a card's milestone, a board's category, the two ends of a dependency, a task request's target and a report schedule's scope.
@@ -653,7 +654,7 @@ Each user controls their own notification preferences from **My Account**, under
 | **All Email Notifications** | The master switch. Off, no mail of any kind below is sent, whatever its own switch says. Turning it off turns every switch below off, and turning it on turns them all on |
 | **Task Assignments** | Mailed when you are assigned to a card |
 | **Comments** | Mailed when someone else comments on a card of a board you are a member of, yourself or through a team |
-| **Mentions** | Mailed when someone @mentions you in a comment |
+| **Mentions** | Mailed when someone @mentions you in a comment on a card of a board you can open. Someone named on a board they cannot open is not mailed, and the comment's author is not told (card 2198). A mention is `@` and the username as it is spelled, in any case: `@Greg`, `@jane.doe`, `@Jane Doe` (card 2207) |
 | **Card Moves** | Mailed when someone else moves a card you are assigned to to another column on a page, or completes it by any route, through the API included. Never for a move you made yourself, nor for a card on a board you cannot open (card 2180). Also decides the "Unblocked" mail |
 | **Task Requests** | Mailed when someone sends you or your team a task request, or replies to one |
 | **Request Progress** | For a request you raised while signed in: mailed as work goes on on the card made from it (a move, a subtask ticked, a comment), and when it is complete. Someone who raised a request without an account is always mailed |
@@ -747,7 +748,7 @@ The board's activity panel and the All Tasks activity panel name each action in 
 | Stored name, bare or with `api:` | Shown as |
 |----------------------------------|----------|
 | `card_created`, `card_updated`, `card_moved`, `card_completed`, `card_reopened`, `card_archived`, `card_restored`, `card_deleted` | Created card, Updated card, Moved card, Completed card, Reopened card, Archived card, Restored card, Deleted card |
-| `card_moved_away`, `card_moved_in` | Moved card to another board, Moved card from another board |
+| `card_moved_away`, `card_moved_in` | Moved card to another board, Moved card from another board. Their text names neither board (card 2181): `"T" moved to another board (To Do → Done)` on the board it left, `"T" moved from another board (To Do → Done)` on the one it joined. All Tasks and the Audit page list each under its own board. To trace where a card went, use All Tasks (for the boards you can open), the Audit page (administrators), or `GET /api/v1/cards/:cardId/board-history`, which lists each board the card has been on, with its dates. Entries written before card 2181 still name the other board |
 | `cards_purged`, `cards_cleared`, `column_deleted` | Purged archived cards, Cleared cards, Deleted column |
 | `subtask_created`, `subtask_updated`, `subtask_completed`, `subtask_deleted`, and `subtask_toggled`, written by older versions | Created subtask, Updated subtask, Completed subtask, Deleted subtask, Updated subtask |
 | `comment_added`, `comment_edited` | Added comment, Edited comment |

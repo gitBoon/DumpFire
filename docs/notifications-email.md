@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.20
+version: 1.21
 status: As-Built
 date: 2026-10-19
 tags:
@@ -423,7 +423,7 @@ down. The failure shows on the panel and in the log.
 | Plan Created | Assignees of the cards attached to an empty goal, and every administrator, less whoever attached them, and then only those who can open the plan (card 2152). Each is told the plan as they would see it on its page | `email_planning` | `Plan created: {goal}` |
 | User Assigned | Assignee | `email_assigned` | `Assigned: {title}` |
 | Comment Added | Board members | `email_comments` | `New comment on: {title}` |
-| User Mentioned | Mentioned user | `email_mentions` | `{author} mentioned you: {title}` |
+| User Mentioned | A user named as `@username` in a comment who can open the card's board (card 2198), never the author | `email_mentions` | `{author} mentioned you: {title}` |
 | Board Shared | Target user | `email_board_shared` | `Board shared: {boardName}` |
 | Request Confirmation | Requester (no account) | — | `Confirm your request: {title}` |
 | A New Link (card 2158) | Requester, at the request's address (for a request made signed in, the account's email as it is now: card 2171), when they ask for it from a link that no longer works: at most three an hour to one address, and for a request not yet confirmed within the form's three confirmation mails an hour to it; at most 30 an hour in all; worked out and sent after the answer. See [The Public Request Form](authentication-security.md#the-public-request-form) | — | `A new link to your request: {title}` |
@@ -508,6 +508,51 @@ flowchart LR
     Pref -->|"no"| Drop
     Pref -->|"yes"| Send["Mailed after the commit"]
 ```
+
+**Who a mention mails** (cards 2198 and 2207). A comment added on a page or through the API
+(`POST /api/cards/{id}/comments`, `POST /api/v1/cards/{id}/comments`) is read for mentions
+by `processMentions()` in `src/lib/server/mentions.ts`, inside the comment's transaction,
+and each account it names is handed to `notifyMention()`. Only the two routes that add a
+comment call it: an edit and a card's description mail nobody.
+
+- **Whose name it is.** `findMentions(text, usernames)` in `src/lib/mentions.ts`, which the
+  card window's chips use too, applies one rule. A mention starts at an `@` that begins the
+  text or follows a character that is not a letter, a digit or `_` (of any language), so
+  `bob@example.com` holds none. Its name is the longest username of any account that the
+  text after the `@` begins with, case ignored, and the name must end there: not followed by
+  a letter, a digit or `_`, nor by `.` or `-` and then one of those. So `@jane.doe` is the
+  account `jane.doe` and never `jane`; `@jane.`, `@jane,` and `@jane's` are `jane`;
+  `@Jane Doe` is the account `Jane Doe`; and if the longest name does not end there, the
+  `@` names nobody. Where two usernames differ only in case, the one typed exactly is named,
+  and neither when it is typed in neither spelling. The server reads every account's
+  username once per comment (none when the text holds no `@`): matching against the board's
+  people only could cut a longer name of someone off the board to a shorter name of someone
+  on it. Only the first 200 `@` of a comment that could start a name are looked up (one at
+  the end, or before a space or another `@`, cannot), each against the usernames that begin
+  with its next letter, because this runs inside the comment's write: a mention after them
+  mails nobody.
+- **Who of them is mailed.** `notifyMention()` asks `whoCanOpen([user], boardId)` after it
+  has found mail set up and before the preference, so an account that cannot open the card's
+  board is mailed nothing and nothing is logged for it. The comment is saved and answered as
+  it would be, and the author is not told which names were not mailed: an answer that said
+  so would tell any editor whether an account of a given name exists and can open the board.
+  The author is never mailed for their own mention.
+
+```mermaid
+flowchart LR
+    C["A comment is added"] --> F["findMentions:<br/>the longest username after each @,<br/>any case, every account"]
+    F --> R["resolveMentions:<br/>the accounts, less the author"]
+    R --> N["notifyMention"]
+    N --> W{"whoCanOpen<br/>(canViewBoard of the card's board)"}
+    W -->|"no: not on the board,<br/>out of the team, board private"| X["No mail, nothing said"]
+    W -->|"owner, member, team,<br/>public board, administrator"| P{"Preference on?<br/>email_mentions"}
+    P -->|no| X
+    P -->|yes| M["Mailed after the commit"]
+    A["Card moved, Unblocked:<br/>getAssigneeEmails"] --> W
+```
+
+Comments written before are drawn with their chips by the same rule; no mail is sent again
+for them.
 
 ### Text in Mail Is Text
 
@@ -952,6 +997,7 @@ flowchart LR
 | `update` | `{type: 'card', action: 'cleared'}` | The board's cards were cleared, or it was a sub-board removed by the clear |
 | `xp-update` | `{}` | XP was given for a completion |
 | `celebrate` | `{type: 'complete', cardTitle, userName, userEmoji, xpGained}` | A card moved into a Complete column, or created in one (card 2134). One event for a drop of several cards, naming the last |
+| `update` | `{type: 'card', action: 'moved_away', cardTitle, fromColumn, toColumn, userName, userEmoji}` | A card moved to another board, sent to the board it left. `action: 'moved_in'`, with the same fields, goes to the board it joined. Neither names the other board (card 2181) |
 
 The four delete payloads say what kind of change it was and nothing more: no board name,
 card title or user (card 2108). The board of a sub-board's card can be viewed by people who
@@ -959,6 +1005,12 @@ could never open the sub-board, and the page only reads its board again, under i
 access check. Restoring a card that is not archived, from a page, writes nothing and sends
 nothing. Nor does a card update that changes nothing, on either tree: every field sent at
 the value the card holds is no change, and sends no `update` (card 2183).
+
+The two events of a move between boards carried the other board's name, `toBoard` on
+`moved_away` and `fromBoard` on `moved_in`, until card 2181. An event goes to every listener
+of its board, on the board stream and the global one, and some of them cannot open the other
+board; nothing on any page read either field, which only makes the page read its board
+again. The move's two activity entries name neither board for the same reason.
 
 ### Connection Lifecycle
 
@@ -1510,4 +1562,5 @@ What is not sent:
 | `src/lib/server/startup-checks.ts` | Among its twelve start-up lines, the ignored entries of `WEBHOOK_ALLOW_INSIDE`, the boards over the webhook cap, and the webhooks that are on and refused as written |
 | `src/lib/server/logActivity.ts` | Writes the activity entry and queues the webhook for it |
 | `src/lib/server/db/transaction.ts` | `afterCommit()`: holds every notification until the write it reports is committed |
-| `src/lib/server/mentions.ts` | Extract @mentions from comment text |
+| `src/lib/server/mentions.ts` | Extract @mentions from comment text: `parseMentions()` through `findMentions`, against every account's username, then `notifyMention()` for each account found |
+| `src/lib/mentions.ts` | `findMentions(text, usernames)`: where a mention starts and whose name it is (card 2207), shared by the server and the card window's chips |

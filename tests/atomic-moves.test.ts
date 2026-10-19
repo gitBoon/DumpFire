@@ -568,6 +568,80 @@ describe('PUT /api/v1/cards/:id/move', () => {
 			sent.restore();
 		}
 	});
+
+	/**
+	 * Card 2181. A move between boards wrote the other board's name into each
+	 * board's activity, and into the live event each board's listeners hear: a
+	 * reader of one board who could not open the other read its name. Boards
+	 * ALPHA-SECRET and BRAVO-SECRET, both the owner's, so that either name can be
+	 * looked for; `viewerA` views A only, `viewerB` B only, and `both` both.
+	 */
+	const twoBoards = () => {
+		const owner = makeUser({ username: 'owner' });
+		const viewerA = makeUser({ username: 'viewera' });
+		const viewerB = makeUser({ username: 'viewerb' });
+		const both = makeUser({ username: 'both' });
+		const A = makeBoard({ owner, name: 'ALPHA-SECRET' });
+		const B = makeBoard({ owner, name: 'BRAVO-SECRET' });
+		addBoardMember(A.board, viewerA, 'viewer');
+		addBoardMember(B.board, viewerB, 'viewer');
+		addBoardMember(A.board, both, 'viewer');
+		addBoardMember(B.board, both, 'viewer');
+		const first = makeCard(A.cols['To Do'], { title: 'First' });
+		return { owner, viewerA, viewerB, both, A, B, first };
+	};
+	const moveAcross = (w: ReturnType<typeof twoBoards>) =>
+		api('PUT', `/api/v1/cards/${w.first.id}/move`, { user: w.owner, body: { columnId: w.B.cols['In Progress'].id } });
+
+	it('names the other board in neither board\'s activity, and each entry is listed under its own board (card 2181)', async () => {
+		const w = twoBoards();
+
+		expect((await moveAcross(w)).status).toBe(200);
+
+		const ofA = await api('GET', `/api/activity?boardId=${w.A.board.id}`, { user: w.viewerA });
+		expect(ofA.body.map((e: { detail: string }) => e.detail)).toEqual(['"First" moved to another board (To Do → In Progress)']);
+		expect(JSON.stringify(ofA.body)).not.toContain('BRAVO-SECRET');
+		const ofB = await api('GET', `/api/activity?boardId=${w.B.board.id}`, { user: w.viewerB });
+		expect(ofB.body.map((e: { detail: string }) => e.detail)).toEqual(['"First" moved from another board (To Do → In Progress)']);
+		expect(JSON.stringify(ofB.body)).not.toContain('ALPHA-SECRET');
+		// The feed across boards (All Tasks) too.
+		expect(JSON.stringify((await api('GET', '/api/activity', { user: w.viewerA })).body)).not.toContain('BRAVO-SECRET');
+		expect(JSON.stringify((await api('GET', '/api/activity', { user: w.viewerB })).body)).not.toContain('ALPHA-SECRET');
+
+		// Someone who can open both still reads where the card went: each entry
+		// under its own board's name.
+		const all = await api('GET', '/api/activity', { user: w.both });
+		expect(all.body.map((e: { boardName: string; detail: string }) => [e.boardName, e.detail]).sort()).toEqual([
+			['ALPHA-SECRET', '"First" moved to another board (To Do → In Progress)'],
+			['BRAVO-SECRET', '"First" moved from another board (To Do → In Progress)']
+		]);
+	});
+
+	it('names neither board in the live events of the move (card 2181)', async () => {
+		const w = twoBoards();
+		const sent = effects();
+
+		try {
+			expect((await moveAcross(w)).status).toBe(200);
+			await sent.settle();
+
+			const moves = sent.events.filter((e) => e.data?.action === 'moved_away' || e.data?.action === 'moved_in');
+			expect(moves.map((e) => [e.boardId, e.data.action])).toEqual([
+				[w.A.board.id, 'moved_away'],
+				[w.B.board.id, 'moved_in']
+			]);
+			for (const event of moves) {
+				expect(Object.keys(event.data).sort()).toEqual(
+					['action', 'cardTitle', 'fromColumn', 'toColumn', 'type', 'userEmoji', 'userName']
+				);
+			}
+			const heard = JSON.stringify(sent.events.map((e) => e.data));
+			expect(heard).not.toContain('ALPHA-SECRET');
+			expect(heard).not.toContain('BRAVO-SECRET');
+		} finally {
+			sent.restore();
+		}
+	});
 });
 
 /**
@@ -991,7 +1065,7 @@ describe('a move to another board takes the card out of a milestone of another b
 				expect(cardRow(w.card.id).milestoneId).toBeNull();
 				expect(cardRow(w.stays.id).milestoneId).toBe(w.M.id);
 				expect(movedAway(w.A.board.id, w.card.id)).toEqual([
-					'"MOVEDSECRET2155" moved to board "BRAVO" (To Do → In Progress) and out of milestone "Goal M"'
+					'"MOVEDSECRET2155" moved to another board (To Do → In Progress) and out of milestone "Goal M"'
 				]);
 				await readerSeesOnly(w);
 			}
@@ -1016,7 +1090,7 @@ describe('a move to another board takes the card out of a milestone of another b
 		expect(res.body.leftMilestone).toEqual({ id: w.M.id, name: 'Goal M' });
 		expect(cardRow(w.card.id).milestoneId).toBeNull();
 		expect(movedAway(w.A.board.id, w.card.id)).toEqual([
-			'"MOVEDSECRET2155" moved to board "BRAVO" (To Do → To Do) and out of milestone "Goal M"'
+			'"MOVEDSECRET2155" moved to another board (To Do → To Do) and out of milestone "Goal M"'
 		]);
 		await readerSeesOnly(w);
 	});
@@ -1035,7 +1109,7 @@ describe('a move to another board takes the card out of a milestone of another b
 		expect(cardRow(w.card.id).milestoneId).toBeNull();
 		expect(third.id).not.toBe(w.M.id);
 		expect(movedAway(w.A.board.id, w.card.id)).toEqual([
-			'"MOVEDSECRET2155" moved to board "BRAVO" (To Do → To Do) and out of a milestone of another board'
+			'"MOVEDSECRET2155" moved to another board (To Do → To Do) and out of a milestone of another board'
 		]);
 	});
 
@@ -1065,7 +1139,7 @@ describe('a move to another board takes the card out of a milestone of another b
 		expect(cardRow(arriving.id).milestoneId).toBe(ofB.id);
 		for (const card of [across, arriving]) {
 			expect(movedAway(w.A.board.id, card.id)).toEqual([
-				`"${card.title}" moved to board "BRAVO" (To Do → To Do)`
+				`"${card.title}" moved to another board (To Do → To Do)`
 			]);
 		}
 	});

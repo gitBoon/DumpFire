@@ -10,10 +10,10 @@
 import { db } from './db';
 import { inTransaction } from './db/transaction';
 import { milestones, cards, columns, boards } from './db/schema';
-import { eq, and, isNull, inArray } from 'drizzle-orm';
+import { eq, and, isNull, inArray, ne } from 'drizzle-orm';
 import { canViewBoard, canEditBoard, getAccessibleBoardIds, type Actor } from './board-access';
 import { isCompleteColumnTitle } from './card-completion';
-import { getMilestoneBoardIds } from './planning';
+import { boardsOpenTo, getMilestoneBoardIds } from './planning';
 import type { SessionUser } from './auth';
 import { stamp } from '$lib/timestamps';
 
@@ -23,7 +23,12 @@ export interface MilestoneListEntry extends MilestoneRow {
 	boardName: string | null;
 	cardCount: number;
 	doneCount: number;
-	/** Boards the milestone's cards actually live on — a goal can span several. */
+	/**
+	 * Boards the milestone's cards actually live on that the caller can open —
+	 * a goal can span several. A card on a board they cannot open is still
+	 * counted, and has no id here: the read of one lists it withheld, with no
+	 * board (card 2206).
+	 */
 	boardIds: number[];
 }
 
@@ -136,6 +141,7 @@ export function listMilestones(
 	if (filtered.length === 0) return [];
 
 	const ids = filtered.map((m) => m.id);
+	const opens = boardsOpenTo(user);
 	const memberRows = db
 		.select({ milestoneId: cards.milestoneId, columnTitle: columns.title, boardId: columns.boardId })
 		.from(cards)
@@ -173,7 +179,7 @@ export function listMilestones(
 				boardName: m.boardId === null ? null : (boardNames.get(m.boardId) ?? null),
 				cardCount: c.total,
 				doneCount: c.done,
-				boardIds: [...c.boards]
+				boardIds: [...c.boards].filter(opens)
 			};
 		})
 		.sort((a, b) => {
@@ -233,9 +239,45 @@ export interface UpdateMilestoneInput {
 	boardId?: number | null;
 }
 
-export function updateMilestone(user: SessionUser, milestoneId: number, patch: UpdateMilestoneInput): MilestoneRow {
-	requireMilestone(user, milestoneId, true);
+/**
+ * What a caller is told who gives a milestone to a board while a card in it is
+ * on another (card 2179). No count and no board's name: the caller may not be
+ * able to open the boards those cards are on. Taking the cards out comes first,
+ * and the cost of the other way is said: a cross-board milestone can then be
+ * changed only by its creator or an administrator (`canEditMilestone`), so the
+ * board's other editors lose it (review of card 2179).
+ */
+const CARDS_ON_ANOTHER_BOARD =
+	'Some cards in this milestone are not on that board (archived cards count too). ' +
+	'Take those cards out of it first, or make the milestone cross-board instead; ' +
+	'only its creator or an administrator can change a cross-board milestone afterwards.';
 
+/**
+ * Change a milestone.
+ *
+ * A `boardId` that is sent, not null and not the milestone's own gives the
+ * milestone to that board. The board must be there (404) and the caller able
+ * to edit it (403), and then every card in the milestone, archived ones
+ * included, must be on it (400, card 2179). Otherwise everyone who can open
+ * the new board would read the titles of the other boards' cards in the goal:
+ * a milestone of a board is opened by whoever can open that board. An archived
+ * card counts because restoring it keeps its milestone. Null, a goal across
+ * boards, is always accepted.
+ *
+ * One transaction: the milestone and its cards are read in the one that
+ * writes, so what was checked is what is written.
+ */
+export function updateMilestone(user: SessionUser, milestoneId: number, patch: UpdateMilestoneInput): MilestoneRow {
+	return inTransaction(() => {
+		const milestone = requireMilestone(user, milestoneId, true);
+		const updateData = fieldsToUpdate(user, milestone, patch);
+		updateData.updatedAt = stamp();
+		return db.update(milestones).set(updateData).where(eq(milestones.id, milestoneId)).returning().get();
+	});
+}
+
+/** `updateMilestone`'s checks, in order: each field, then the board. What to write. */
+function fieldsToUpdate(user: SessionUser, milestone: MilestoneRow, patch: UpdateMilestoneInput): Record<string, unknown> {
 	const updateData: Record<string, unknown> = {};
 	if (patch.name !== undefined) {
 		const name = patch.name.trim();
@@ -252,16 +294,25 @@ export function updateMilestone(user: SessionUser, milestoneId: number, patch: U
 		updateData.status = patch.status;
 	}
 	if (patch.boardId !== undefined) {
-		if (patch.boardId !== null && !canEditBoard(user, patch.boardId)) {
-			throw new MilestoneError(403, 'No edit access to that board');
+		// Both routes read it as a whole number or null, so the milestone's own
+		// board sent back compares equal and is no change.
+		const boardId = patch.boardId;
+		if (boardId !== null && boardId !== milestone.boardId) {
+			requireMilestoneBoard(user, boardId);
+			const elsewhere = db
+				.select({ id: cards.id })
+				.from(cards)
+				.innerJoin(columns, eq(cards.columnId, columns.id))
+				.where(and(eq(cards.milestoneId, milestone.id), ne(columns.boardId, boardId)))
+				.limit(1)
+				.get();
+			if (elsewhere) throw new MilestoneError(400, CARDS_ON_ANOTHER_BOARD);
 		}
-		updateData.boardId = patch.boardId;
+		updateData.boardId = boardId;
 	}
 
 	if (Object.keys(updateData).length === 0) throw new MilestoneError(400, 'No valid fields to update');
-	updateData.updatedAt = stamp();
-
-	return db.update(milestones).set(updateData).where(eq(milestones.id, milestoneId)).returning().get();
+	return updateData;
 }
 
 /**

@@ -93,6 +93,7 @@ const TEST_FILES = [
 	'mail-links.test.ts',
 	'mail-settings.test.ts',
 	'markdown.test.ts',
+	'mentions.test.ts',
 	'migrations.test.ts',
 	'openapi-document.test.ts',
 	'page-failures.test.ts',
