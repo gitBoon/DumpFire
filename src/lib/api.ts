@@ -168,15 +168,34 @@ export function boardDeleteWarning(name: string): string {
  * parent board's tile, so a member of the board who cannot open the parent
  * board no longer sees it there. Whoever can open the parent board sees the
  * sub-board on its card only if they can open the sub-board too (card 2130),
- * and until card 2150 is built the parent board's reports, scheduled ones
- * included, walk into it for all of them (`reports.ts`). A card moved to
+ * and the parent board's reports, scheduled ones included, take in its cards
+ * only for a reader who can open it as well (card 2150, `reports.ts`). A
+ * report's reader is whoever downloads or sends it, and a scheduled one's is
+ * its owner: whoever a report is mailed to gets what that person can see
+ * (decision 2). A card moved to
  * another board takes its sub-boards with it. A card is not
  * completed while a board under it has open cards (`getCompletionBlocker`);
  * and a sub-board goes with its card, the card's column and the card's board
  * (`deletes.ts`).
  */
 export function subBoardLinkWarning(name: string): string {
-	return `Put "${name}" under this card? It will be shown on this card instead of on the dashboard, and its members who cannot open this board will no longer see it on theirs. Those who can open this board see it on this card only if they can open "${name}" too, but this board's reports, scheduled ones included, will include its cards for all of them. This board's editors can move this card, taking "${name}" with it. This card cannot be completed while "${name}" has cards that are not complete, and "${name}" is deleted for good, with everything on it, if this card, its column or this board is ever deleted for good.`;
+	return `Put "${name}" under this card? It will be shown on this card instead of on the dashboard, and its members who cannot open this board will no longer see it on theirs. Those who can open this board see it on this card only if they can open "${name}" too. Its cards are in this board's reports only when whoever downloads, sends or schedules the report can open "${name}" too; whoever they send it to gets what that person can see. This board's editors can move this card, taking "${name}" with it. This card cannot be completed while "${name}" has cards that are not complete, and "${name}" is deleted for good, with everything on it, if this card, its column or this board is ever deleted for good.`;
+}
+
+/**
+ * What a move's answer tells the mover beyond "moved", or null: that a move to
+ * another board took the card out of a milestone of the board it left (card
+ * 2155, the review's O3). Moving it back does not put it back in, and the card
+ * was simply gone from the goal. `PUT /api/cards/{id}` names the goal as
+ * `leftMilestone`, null for any other move; one of a third board, which only
+ * older data can give, is not named. One sentence, so every page that moves a
+ * card says it alike.
+ */
+export function leftMilestoneNotice(body: Record<string, unknown> | null): string | null {
+	const left = body?.leftMilestone;
+	if (left === null || typeof left !== 'object') return null;
+	const name = (left as { name?: unknown }).name;
+	return typeof name === 'string' ? `Moved. It left milestone "${name}"; moving it back does not put it back in.` : null;
 }
 
 const PURGE_TAKES = `Each goes with its subtasks, comments and dependency links, and with every sub-board under it and everything on it. ${TRASH_SENTENCE}`;

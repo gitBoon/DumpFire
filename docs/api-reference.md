@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.49
+version: 1.50
 status: As-Built
 date: 2026-10-19
 tags:
@@ -576,8 +576,8 @@ new; these answers and fields are:
   withheld** (card 2129's review), as the summary does: its `id`, `withheld: true`,
   `A card on a board you cannot open` for its `title`, `columnTitle` `""`, and `priority`,
   `columnId` and `boardId` `null`. Every card carries `withheld`. A card moved off a board
-  keeps that board's milestone, and its title and board were given to every viewer of the
-  first board.
+  kept that board's milestone, and its title and board were given to every viewer of the
+  first board, until card 2155 (below) took it out.
 - **`GET /burndown?milestoneId=` charts only the milestone's cards on boards the key's user
   can open** (card 2129's review), and says in `meta.notes` how many are left out, where a
   card moved to a board they cannot open was charted and its board named in `scope.boards`.
@@ -824,6 +824,27 @@ new; these answers and fields are:
   forgets it. It is read through the API only: no page shows webhooks, and nothing tells
   anyone that a delivery failed. Until then a delivery's result was in the system log only,
   which administrators read (item 59).
+- **A move to another board takes the card out of a milestone of the board it left** (card
+  2155), on `PUT /cards/:cardId/move`: when the card's milestone belongs to a board other
+  than the one it arrives on, `milestoneId` is set to `null` in the same write as the move,
+  and the answer has `milestoneId: null` and `leftMilestone` `{ "id", "name" }`, the
+  milestone it left (`null` for any other move, and for a third board's, which is not
+  named); moving the card back does not put it back in. A milestone across boards (`boardId` `null`) keeps
+  the card, and so does one of the board it arrives on. The `api:card_moved_away` entry on
+  the board it left ends ` and out of milestone "<name>"`, or ` and out of a milestone of
+  another board` for a third board's; no other entry or webhook delivery is added. The card
+  kept the milestone, and its title was listed to every reader of the board it left
+  (item 60). Cards already in that state were taken out once, at the deploy, by a migration.
+- **The completion refusal names only a sub-board the key's user can open** (card 2151), on
+  `PUT /cards/:cardId/move` into a Complete column: when the only unfinished sub-boards are
+  ones they cannot open, `409` `A sub-board you cannot open still has incomplete cards that
+  must be completed first. Ask this board's owner.`, with no name and no count, where the sub-board was named with
+  its count of open cards. One they can open is named as before (item 61).
+- **The "Unblocked" comment names work on another board by its number only** (card 2152),
+  as `GET /cards/:cardId/comments` reads it: `Unblocked: #12, a card on another board,
+  completed — nothing is blocking this card now.`, or `Unblocked: a subtask on another board
+  completed — …`, where it gave the other board's title. Work on the same board is named by
+  its title as before; comments written before are unchanged (item 62).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -845,6 +866,34 @@ reach the keys every caller uses:
 These touch only the web application, whose routes under `/api/` the pages use, and not the
 API:
 
+- **A report is its reader's** (card 2150). `POST /api/reports`, `POST /api/reports/email`
+  and every scheduled report take in only the sub-boards beneath their boards that the
+  reader can open, and do not walk through one they cannot; a board whose parent the reader
+  cannot open is drawn as a board of its own, the parent not named. The reader is the
+  caller, the sender, or the schedule's owner as their account stands at the run; every
+  recipient gets that report. The Reports page lists, for an ordinary user, each board they
+  can open whose parent board they cannot.
+- **The inbox gives a request's desired board only to a reader who can open it** (card
+  2153). `GET /api/requests` answers `desiredBoardId`, `desiredBoardName` and
+  `desiredBoardEmoji` all `null` for a board the reader cannot open, each member of an
+  addressed team judged for themselves; the accept dialog then preselects no board. The
+  answer to an accept or a reject, `PATCH /api/requests/{id}`, gives `desiredBoardId`
+  `null` likewise.
+- **Moving a card to another board says when it left its milestone** (card 2155).
+  `PUT /api/cards/{id}` answers the card with `leftMilestone`, `{ "id", "name" }` of the
+  milestone of the board it left that the move took it out of, and `null` otherwise; All
+  Tasks says `Moved. It left milestone "M"; moving it back does not put it back in.`
+- **An open board stream ends when its reader can no longer open the board** (card 2170).
+  `GET /api/boards/{id}/events` asks at each heartbeat, every 30 seconds, whether the board
+  is still there and the account as it is now can open it, and if not sends one last
+  `update` with `{"type":"access"}` and ends; the board page re-reads and shows its refusal.
+  It opens only on a board that is there: `404` `Board not found` for one that is not,
+  administrators included, where an administrator was answered `200` for any id.
+  `GET /api/events` keeps each board's answer until its next heartbeat, where it kept it
+  30 seconds by the clock.
+- **The "Unblocked" and "Plan created" mails are each drawn for their recipient** (card
+  2152): finished work on a board the recipient cannot open is "A card on a board you
+  cannot open", and the plan mail goes only to those who can open the plan.
 - **A body that is not a form, sent where a form is read** (the attachment upload, and the
   sign-in, set-up and invitation pages), is answered `400` `The request body is not a form`
   where it was `500`. A form is a body sent as `multipart/form-data` or
@@ -2214,8 +2263,13 @@ is needed on both). Goes through the same service as a drag in the web UI:
   two of them, and between two working columns. Until 2026-10-14 only a drag on the board
   page cleared it (card 2208).
 - to another board: the source board's labels are removed from the card, and so is
-  a category that belongs to another board (a category with no board stays);
-  `card_moved_away` and `card_moved_in` are logged, one on each board.
+  a category that belongs to another board (a category with no board stays), and so is a
+  milestone that belongs to a board other than the one it arrives on, so the answer has
+  `milestoneId: null` and names the milestone it left as `leftMilestone` (`{ "id", "name" }`,
+  otherwise `null`) (card 2155); a milestone across boards keeps the card.
+  `card_moved_away` and `card_moved_in` are logged, one on each board, and
+  `card_moved_away` ends ` and out of milestone "<name>"` when the move took the card out
+  of one of that board's milestones.
 - onto one of its own sub-boards: a card's sub-boards go with it, so a move onto one, or
   onto a board beneath one at any depth, is refused with 409 and nothing moves:
   `Card "<title>" cannot go onto "<board>", which hangs beneath it` (card 2141).
@@ -2297,7 +2351,8 @@ the caller checked, before a field is read, on both operations.
 
 Completing a subtask writes an `api:subtask_completed` entry, `<subtask> (on <card>)`, then
 the "Unblocked" notices, and mails whoever asked for the card when it came from a task
-request, as ticking it in the web UI does. A subtask already complete, sent
+request, as ticking it in the web UI does. A notice on a card of another board names the
+subtask only as `a subtask on another board` (card 2152). A subtask already complete, sent
 `"completed": true` again, writes none of it. Until 2026-10-14 this wrote no entry and
 mailed nobody.
 

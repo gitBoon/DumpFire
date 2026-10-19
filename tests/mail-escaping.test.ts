@@ -289,27 +289,22 @@ describe('every mail in notifications.ts', () => {
 		{
 			name: 'notifyCardUnblocked',
 			link: true,
-			send: () => notifications.notifyCardUnblocked(board.id, card.id, MARKER, 99, MARKER, MARKER, BASE)
+			send: () =>
+				notifications.notifyCardUnblocked(board.id, card.id, MARKER, { kind: 'card', id: 99, title: MARKER, boardId: board.id }, MARKER, BASE)
 		},
 		{
 			name: 'notifyPlanCreated',
 			link: true,
 			send: () =>
-				notifications.notifyPlanCreated(
-					{
-						milestoneId: 1,
-						name: MARKER,
-						cardCount: 1,
-						boards: [MARKER],
-						criticalPath: [{ id: card.id, title: MARKER }],
-						startable: 1,
-						blocked: 0
-					},
-					[card.id],
-					MARKER,
-					actor.id,
-					BASE
-				)
+				notifications.notifyPlanCreated([card.id], MARKER, actor.id, BASE, () => ({
+					milestoneId: 1,
+					name: MARKER,
+					cardCount: 1,
+					boards: [MARKER],
+					criticalPath: [{ id: card.id, title: MARKER }],
+					startable: 1,
+					blocked: 0
+				}))
 		},
 		{
 			name: 'notifyMention',
@@ -378,7 +373,8 @@ describe('the mails to a card\'s assignees', () => {
 		},
 		{
 			name: 'notifyCardUnblocked',
-			send: (boardId, cardId) => notifications.notifyCardUnblocked(boardId, cardId, 'Secret', 99, 'Other', 'owner', BASE)
+			send: (boardId, cardId) =>
+				notifications.notifyCardUnblocked(boardId, cardId, 'Secret', { kind: 'card', id: 99, title: 'Other', boardId }, 'owner', BASE)
 		}
 	];
 

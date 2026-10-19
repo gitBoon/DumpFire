@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.28
+version: 1.29
 status: As-Built
-date: 2026-10-18
+date: 2026-10-19
 tags:
   - features
   - overview
@@ -78,7 +78,7 @@ Break large tasks into smaller steps:
 
 A card can have a whole board beneath it, for work too large for a list of subtasks. Open the card and, under **Sub-board**, either create a new board there or choose **Link existing board** to put one of your boards beneath the card.
 
-- **Linking asks first.** The confirmation says what changes: the board is shown on the card instead of on the dashboard, so its members who cannot open the board the card is on no longer see it on theirs; those who can open the board the card is on see it on the card only if they can open the linked board too, but that board's reports, scheduled ones included, take in its cards for all of them; that board's editors can move the card, taking the linked board with it; the card cannot be completed while the linked board has cards that are not complete; and the linked board is deleted for good, with everything on it, if the card, its column or the board the card is on is ever deleted for good.
+- **Linking asks first.** The confirmation says what changes: the board is shown on the card instead of on the dashboard, so its members who cannot open the board the card is on no longer see it on theirs; those who can open the board the card is on see it on the card only if they can open the linked board too; its cards are in that board's reports only when whoever downloads, sends or schedules the report can open the linked board too, and whoever they send it to gets what that person can see; that board's editors can move the card, taking the linked board with it; the card cannot be completed while the linked board has cards that are not complete; and the linked board is deleted for good, with everything on it, if the card, its column or the board the card is on is ever deleted for good.
 - **Who may link a board.** The board's owner or an administrator. The owner is whoever created the board; someone shared as Owner before 14 October 2026 keeps that role and may link it too, but no screen can make anyone an owner now. A board with no owner, such as one whose creator was deleted, can be linked only by an administrator. Whoever links it must also be able to edit the board the card is on. An editor of a board cannot put it beneath another board's card, because that would hand its deletion to that board's editors. The list offers only the boards you may link, so an editor who owns no other board does not see the button.
 - **No loops.** A board cannot go beneath a card on itself or on one of its own sub-boards; DumpFire refuses it and says why.
 - **A card cannot be moved onto its own sub-board**, or onto a board beneath one: its sub-boards go with it, so they would hang beneath themselves, on no dashboard, and the card could never be completed. DumpFire refuses the move and says why, in All Tasks' Move window and through the API, and the card stays where it was. A board left beneath one of its own cards by a move made before this was refused still opens, its path showing the loop once round, and the server names it in the system log at every start until it is put right: see [Admin Operations Guide](admin-guide.md#a-board-beneath-one-of-its-own-cards).
@@ -258,6 +258,8 @@ Generate PDF reports for any board, category, or the entire system. Reports incl
 - Priority breakdown
 - Assignee performance stats
 - Completed work first, then the outstanding task lists
+
+A report is its reader's: it takes in the sub-boards beneath its boards that the person asking for it can open, and none they cannot, and names a board's parent only when they can open that too. A report emailed by hand is the sender's, and a scheduled one its owner's as their account stands at each run; every recipient gets that same report. A sub-board shared with someone without its parent board is in their Reports page's board list, to report on by itself.
 
 Use the **Include** filter to choose what the report lists:
 - **All work** — completed in the period first, then everything still open

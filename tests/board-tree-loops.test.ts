@@ -425,7 +425,7 @@ describe('every other walk of the board tree ends on a loop', () => {
 
 	it('the completion check of the card S hangs from, which can never pass while the loop is there', async () => {
 		const w = world();
-		expect(await withinBudget(() => getCompletionBlocker(w.s.id))).toMatch(/^Sub-board "S" has 2 incomplete cards/);
+		expect(await withinBudget(() => getCompletionBlocker(w.s.id, w.owner))).toMatch(/^Sub-board "S" has 2 incomplete cards/);
 	});
 
 	it('the card context of that card, and the graph of S', async () => {

@@ -35,18 +35,19 @@ export const GET: RequestHandler = async ({ locals, cookies }) => {
 	// what. A subscriber only gets the ones from boards they can open — this
 	// used to forward all of them to any signed-in user.
 	//
-	// The answer is cached briefly per board: a busy board emits several events
-	// a second and each check is a handful of queries. Thirty seconds is how
-	// long a revoked share can keep trickling through.
-	const ACCESS_TTL_MS = 30_000;
-	const access = new Map<number, { allowed: boolean; at: number }>();
+	// The answer is kept per board until the next heartbeat, which forgets
+	// them all (card 2170): a busy board emits several events a second and
+	// each check is a handful of queries. So a share taken away stops what
+	// this stream sends of that board at the heartbeat, the moment at which it
+	// decides everything else again too.
+	const access = new Map<number, boolean>();
 	const canSee = (boardId: unknown): boolean => {
 		if (openedAsAdmin) return true;
 		if (typeof boardId !== 'number') return false;
-		const cached = access.get(boardId);
-		if (cached && Date.now() - cached.at < ACCESS_TTL_MS) return cached.allowed;
+		const known = access.get(boardId);
+		if (known !== undefined) return known;
 		const allowed = canViewBoard(user, boardId);
-		access.set(boardId, { allowed, at: Date.now() });
+		access.set(boardId, allowed);
 		return allowed;
 	};
 
@@ -82,6 +83,8 @@ export const GET: RequestHandler = async ({ locals, cookies }) => {
 					const now = openSessionUser(token);
 					if (!now || isAdmin(now) !== openedAsAdmin) return end();
 					checked = true;
+					// Each board is asked again at its next event.
+					access.clear();
 					controller.enqueue(encoder.encode(': heartbeat\n\n'));
 				} catch (err) {
 					// The client has gone, or the session could not be checked.

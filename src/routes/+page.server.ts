@@ -138,8 +138,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// The walk follows only the sub-boards the caller can open (card 2130), so
 	// the three can differ. It cannot reach one shared with the caller under a
 	// card of a board they cannot open, which /all counts, since /all lists
-	// every board they can open. And the report still walks into every
-	// sub-board, opened or not, until card 2150 is done.
+	// every board they can open. The report walks as this does, stopping at a
+	// sub-board its reader cannot open (card 2150).
 	const isDoneTitle = isCompleteColumnTitle;
 	const walkedBoardIds = new Set<number>(allBoards.map(b => b.id));
 	const countedCardIds = new Set<number>();

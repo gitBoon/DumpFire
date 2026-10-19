@@ -54,6 +54,7 @@ import {
 	categories,
 	columns,
 	labels,
+	milestones,
 	userXp,
 	type Card,
 	type Column
@@ -128,6 +129,25 @@ export interface CardMove {
 	reopened: boolean;
 	/** XP awarded to the actor: non-zero only the first time a card is ever completed. */
 	xpAwarded: number;
+	/**
+	 * The milestone a move to another board took the card out of: one of a
+	 * board other than the one it arrived on (card 2155). `ofSourceBoard` is
+	 * false for a milestone of a third board, which only data from before the
+	 * rule can give. Null for every other move.
+	 */
+	leftMilestone: { id: number; name: string; ofSourceBoard: boolean } | null;
+}
+
+/**
+ * The milestone a move took the card out of, as the mover is told it (the
+ * review's O3): one of the board the card left, which they could edit and so
+ * may read. A third board's, which only older data can give, is not named,
+ * as the source board's `card_moved_away` entry does not name it. Null for
+ * every other move, and for no move.
+ */
+export function leftMilestoneOf(move: CardMove | null): { id: number; name: string } | null {
+	const left = move?.leftMilestone;
+	return left && left.ofSourceBoard ? { id: left.id, name: left.name } : null;
 }
 
 export interface MoveRequest {
@@ -147,8 +167,9 @@ export interface MoveRequest {
  * was: the card's column and position, `completedAt` (set on completion,
  * cleared on reopening), `firstCompletedAt`, the on-hold note (cleared when
  * the card leaves a hold column for one that is not, card 2208, with no entry
- * of its own: the move's entry is the record), labels and a board-owned category
- * that cannot follow it to another board, the actor's XP, and the activity
+ * of its own: the move's entry is the record), labels, a board-owned category
+ * and a milestone of a board that cannot follow it to another board (card
+ * 2155), the actor's XP, and the activity
  * entry — one per move, carrying the actor's id and the source. The card and
  * both columns are read inside that transaction too, so the move is decided on
  * the rows it then writes.
@@ -207,7 +228,8 @@ function moveCard(request: MoveRequest): CardMove {
 			crossBoard: false,
 			completed: false,
 			reopened: false,
-			xpAwarded: 0
+			xpAwarded: 0,
+			leftMilestone: null
 		};
 	}
 
@@ -217,7 +239,7 @@ function moveCard(request: MoveRequest): CardMove {
 	const reopened = wasComplete && !isComplete;
 
 	if (completed) {
-		const blocker = getCompletionBlocker(cardId);
+		const blocker = getCompletionBlocker(cardId, actor);
 		if (blocker) throw new CardMoveError(409, blocker);
 	}
 
@@ -229,6 +251,7 @@ function moveCard(request: MoveRequest): CardMove {
 	const fromBoardName = crossBoard ? boardName(fromColumn.boardId) : '';
 	const toBoardName = crossBoard ? boardName(toColumn.boardId) : '';
 
+	let leftMilestone: CardMove['leftMilestone'] = null;
 	const update: Partial<typeof cards.$inferInsert> = {
 		columnId: toColumn.id,
 		position,
@@ -277,6 +300,25 @@ function moveCard(request: MoveRequest): CardMove {
 				update.categoryId = null;
 			}
 		}
+
+		// Nor a milestone of another board (card 2155). A milestone of a board
+		// holds only that board's cards, as putting one in it already insists
+		// (`setCardMilestone`, the bulk attach): its viewers read every card's
+		// title and count it in the goal's progress. A goal across boards (no
+		// board) keeps its cards, and so does one of the board the card arrives
+		// on. Written in the same update of the card, so the move makes no write
+		// more than it did.
+		if (before.milestoneId !== null) {
+			const goal = db
+				.select({ id: milestones.id, name: milestones.name, boardId: milestones.boardId })
+				.from(milestones)
+				.where(eq(milestones.id, before.milestoneId))
+				.get();
+			if (goal && goal.boardId !== null && goal.boardId !== toColumn.boardId) {
+				update.milestoneId = null;
+				leftMilestone = { id: goal.id, name: goal.name, ofSourceBoard: goal.boardId === fromColumn.boardId };
+			}
+		}
 	}
 
 	const after = db.update(cards).set(update).where(eq(cards.id, cardId)).returning().get();
@@ -288,13 +330,20 @@ function moveCard(request: MoveRequest): CardMove {
 
 	if (crossBoard) {
 		// Leaving one board and arriving on another are two facts, one for
-		// each board's history.
+		// each board's history. Leaving a milestone of the board it left is
+		// said on that board's (decision 11 of card 2155): its readers can open
+		// the milestone. One of a third board is not named there.
+		const leftGoal = leftMilestone
+			? leftMilestone.ofSourceBoard
+				? ` and out of milestone "${leftMilestone.name}"`
+				: ' and out of a milestone of another board'
+			: '';
 		logActivity({
 			...who,
 			boardId: fromColumn.boardId,
 			cardId,
 			action: ACTIONS.cardMovedAway,
-			detail: `"${before.title}" moved to board "${toBoardName}" (${route})`
+			detail: `"${before.title}" moved to board "${toBoardName}" (${route})${leftGoal}`
 		});
 		logActivity({
 			...who,
@@ -333,7 +382,8 @@ function moveCard(request: MoveRequest): CardMove {
 		crossBoard,
 		completed,
 		reopened,
-		xpAwarded
+		xpAwarded,
+		leftMilestone
 	};
 }
 

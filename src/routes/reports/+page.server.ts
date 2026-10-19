@@ -8,7 +8,12 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals }) => {
 	const user = locals.user!;
 
-	// Get accessible boards
+	// The boards a report can be chosen of: the top-level boards the caller
+	// can open, and each board they can open whose parent board they cannot
+	// (card 2150). A board report takes in only the sub-boards its reader can
+	// open, and does not walk through one they cannot, so a board shared with
+	// them under one they were not given would be in no report they could
+	// choose. An administrator opens every parent: top-level boards only.
 	const accessibleIds = getAccessibleBoardIds(user);
 	let userBoards: (typeof boards.$inferSelect)[];
 	if (accessibleIds === null) {
@@ -16,10 +21,24 @@ export const load: PageServerLoad = async ({ locals }) => {
 	} else if (accessibleIds.length === 0) {
 		userBoards = [];
 	} else {
-		userBoards = db.select().from(boards)
-			.where(isNull(boards.parentCardId))
-			.all()
-			.filter(b => accessibleIds.includes(b.id));
+		const open = new Set(accessibleIds);
+		const openBoards = db.select().from(boards).where(inArray(boards.id, accessibleIds)).all();
+		const parentCardIds = openBoards.map(b => b.parentCardId).filter((id): id is number => id !== null);
+		const parentBoardOf = new Map(
+			parentCardIds.length === 0
+				? []
+				: db.select({ cardId: cards.id, boardId: columns.boardId })
+					.from(cards)
+					.innerJoin(columns, eq(columns.id, cards.columnId))
+					.where(inArray(cards.id, parentCardIds))
+					.all()
+					.map(row => [row.cardId, row.boardId] as const)
+		);
+		userBoards = openBoards.filter(b => {
+			if (b.parentCardId === null) return true;
+			const parentBoardId = parentBoardOf.get(b.parentCardId);
+			return parentBoardId === undefined || !open.has(parentBoardId);
+		});
 	}
 
 	// The groupings the caller is listed: those holding a board they can open,

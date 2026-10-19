@@ -7,6 +7,7 @@ import { emit } from '$lib/server/events';
 import { requireCard, requireColumn, requireUser } from '$lib/server/route-guards';
 import {
 	applyCardMove,
+	leftMilestoneOf,
 	announceCardMoves,
 	recordUnblockedByMoves,
 	CardMoveError,
@@ -57,6 +58,10 @@ import type { RequestHandler } from './$types';
  * 2183, `card-changes.ts`): the entry names only the fields that changed, and
  * a request that changes nothing writes nothing, records no entry, sends no
  * `card.updated` and no live event, and is answered 200 with the card.
+ *
+ * The answer is the card with `leftMilestone` beside it: the milestone of the
+ * board it left that a move to another board took it out of (card 2155), for
+ * All Tasks to tell the mover, and null otherwise (the review's O3).
  */
 export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 	const user = requireUser(locals.user);
@@ -71,7 +76,7 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 	// it, so a failure between the two left a card moved with its edits lost.
 	// The card is read in here and not before the body was awaited: another
 	// request could have changed it in between.
-	let updated: Card;
+	let updated: Card & { leftMilestone: { id: number; name: string } | null };
 	try {
 		updated = inTransaction(() => {
 			// The board comes from the card's own row. A `boardId` in the body is
@@ -206,7 +211,7 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 				emit(boardId, 'update', { type: 'card' });
 			}
 
-			return row;
+			return { ...row, leftMilestone: leftMilestoneOf(move) };
 		});
 	} catch (e) {
 		if (e instanceof CardMoveError) throw error(e.status, e.message);

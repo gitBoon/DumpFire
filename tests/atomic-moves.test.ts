@@ -28,6 +28,7 @@ import {
 } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { createDependencyBatch, recordUnblocked } from '$lib/server/planning';
+import { listMilestones } from '$lib/server/milestones';
 import { recordTokenUsageBatch } from '$lib/server/tokens';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
@@ -39,6 +40,7 @@ import {
 	makeCard,
 	makeDependency,
 	makeLabel,
+	makeMilestone,
 	makeSmtp,
 	makeSubtask,
 	makeTeam,
@@ -838,6 +840,237 @@ describe('who is mailed that a card moved (card 2180)', () => {
 	});
 });
 
+/**
+ * Card 2152. The "Unblocked" comment is stored once and read by everyone who
+ * can open the waiting card's board, so it names the finished work only when
+ * that work is on the same board (decision 6). The mail is one person's, so
+ * each assignee is told the title when they can open the finished work's
+ * board, and P1's words when not (decision 7); only an assignee who can open
+ * the waiting card's board is mailed at all (R4, card 2180).
+ */
+describe('the "Unblocked" notice of work on another board (card 2152)', () => {
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+	});
+	afterEach(() => sent.restore());
+
+	/**
+	 * W on board A waits on X on board BRAVO. W is assigned to `editsA` (an
+	 * editor of A only), `both` (an editor of A and BRAVO) and `gone` (assigned,
+	 * then taken off A).
+	 */
+	function world() {
+		makeSmtp();
+		const owner = makeUser({ username: 'owner' });
+		const A = makeBoard({ owner, name: 'A' });
+		const B = makeBoard({ owner, name: 'BRAVO' });
+		const editsA = makeUser({ username: 'editsa' });
+		const both = makeUser({ username: 'both' });
+		const gone = makeUser({ username: 'gone' });
+		addBoardMember(A.board, editsA, 'editor');
+		addBoardMember(A.board, both, 'editor');
+		addBoardMember(B.board, both, 'editor');
+		const W = makeCard(A.cols['To Do'], { title: 'Waiting work' });
+		const X = makeCard(B.cols['To Do'], { title: 'XSECRET2152' });
+		for (const user of [editsA, both, gone]) assignCard(W, user);
+		return { owner, A, B, editsA, both, W, X };
+	}
+
+	const mailTo = (username: string) => sent.emails.find((e) => e.to === `${username}@example.test`);
+
+	it('names a card on another board by its number in the comment, and by its title only to an assignee who can open that board', async () => {
+		const { owner, B, W, X } = world();
+		makeDependency({ blocked: W, blocker: X });
+
+		const res = await api('PUT', `/api/v1/cards/${X.id}/move`, { user: owner, body: { columnId: B.cols['Complete'].id } });
+		expect(res.status).toBe(200);
+		await sent.settle();
+
+		expect(notices().map((n) => ({ cardId: n.cardId, content: n.content }))).toEqual([
+			{ cardId: W.id, content: `Unblocked: #${X.id}, a card on another board, completed — nothing is blocking this card now.` }
+		]);
+		expect(notices().filter((n) => n.content.includes('XSECRET2152'))).toEqual([]);
+
+		const unblocked = sent.emails.filter((e) => e.subject === 'Unblocked: Waiting work');
+		expect(unblocked.map((e) => e.to).sort()).toEqual(['both@example.test', 'editsa@example.test']);
+		expect(mailTo('editsa')!.html).toContain(`#${X.id} <strong>A card on a board you cannot open</strong>`);
+		expect(mailTo('editsa')!.html).not.toContain('XSECRET2152');
+		expect(mailTo('both')!.html).toContain(`#${X.id} <strong>XSECRET2152</strong>`);
+	});
+
+	it('names a subtask on another board as a subtask, never by its id, in the comment and the mail', async () => {
+		const { owner, W, X } = world();
+		const step = makeSubtask(X, { title: 'STEPSECRET2152', completed: false });
+		makeDependency({ blocked: W, blocker: step });
+
+		const res = await api('PUT', `/api/v1/subtasks/${step.id}`, { user: owner, body: { completed: true } });
+		expect(res.status).toBe(200);
+		await sent.settle();
+
+		expect(notices().map((n) => n.content)).toEqual([
+			'Unblocked: a subtask on another board completed — nothing is blocking this card now.'
+		]);
+
+		const subtaskId = new RegExp(`#${step.id}(?![0-9a-f])`);
+		expect(mailTo('editsa')!.html).toContain('<strong>A subtask on a board you cannot open</strong>');
+		expect(mailTo('editsa')!.html).not.toContain('STEPSECRET2152');
+		expect(mailTo('both')!.html).toContain('the subtask <strong>STEPSECRET2152</strong>');
+		for (const mail of sent.emails) expect(mail.html).not.toMatch(subtaskId);
+		expect(mailTo('gone')).toBeUndefined();
+	});
+
+	it('names work on the same board by its title, in the comment and the mail, as before', async () => {
+		const { owner, A, W, editsA } = world();
+		const Y = makeCard(A.cols['To Do'], { title: 'Same board blocker' });
+		makeDependency({ blocked: W, blocker: Y });
+
+		expect((await api('PUT', `/api/v1/cards/${Y.id}/move`, { user: owner, body: { columnId: A.cols['Complete'].id } })).status).toBe(200);
+		await sent.settle();
+
+		expect(notices().map((n) => n.content)).toEqual([
+			`Unblocked: #${Y.id} "Same board blocker" completed — nothing is blocking this card now.`
+		]);
+		expect(mailTo(editsA.username)!.html).toContain(`#${Y.id} <strong>Same board blocker</strong>`);
+	});
+});
+
+/**
+ * Card 2155. A milestone of a board holds only that board's cards: putting a
+ * card of another board in one is refused (`setCardMilestone`, the bulk
+ * attach), and a move to another board takes the card out of one, in the
+ * move's own write of the card, for every route (decision 10). A goal across
+ * boards keeps its cards. The source board's `card_moved_away` entry says so
+ * (decision 11).
+ */
+describe('a move to another board takes the card out of a milestone of another board (card 2155)', () => {
+	/**
+	 * Boards A and BRAVO, both the owner's; `reader` is a viewer of A only. The
+	 * card is on A, in A's milestone "Goal M", with a neighbour that stays.
+	 */
+	function world() {
+		const owner = makeUser({ username: 'owner' });
+		const reader = makeUser({ username: 'reader' });
+		const A = makeBoard({ owner, name: 'A' });
+		const B = makeBoard({ owner, name: 'BRAVO' });
+		addBoardMember(A.board, reader, 'viewer');
+		const card = makeCard(A.cols['To Do'], { title: 'MOVEDSECRET2155' });
+		const stays = makeCard(A.cols['To Do'], { title: 'Stays' });
+		const M = makeMilestone({ board: A.board, name: 'Goal M', cards: [card, stays] });
+		return { owner, reader, A, B, card, stays, M };
+	}
+
+	const movedAway = (boardId: number, cardId: number) =>
+		db
+			.select()
+			.from(activityLog)
+			.all()
+			.filter((e) => e.boardId === boardId && e.cardId === cardId && e.action.endsWith('card_moved_away'))
+			.map((e) => e.detail);
+
+	/** What a viewer of A reads of M afterwards: no title of the card, and a count of the one left. */
+	async function readerSeesOnly(w: ReturnType<typeof world>) {
+		const res = await api('GET', `/api/v1/milestones/${w.M.id}`, { user: w.reader });
+		expect(res.status).toBe(200);
+		expect(res.body.cards.map((c: { id: number }) => c.id)).toEqual([w.stays.id]);
+		expect(JSON.stringify(res.body)).not.toContain('MOVEDSECRET2155');
+		const listed = listMilestones(w.reader).find((m) => m.id === w.M.id)!;
+		expect(listed).toMatchObject({ cardCount: 1, boardIds: [w.A.board.id] });
+	}
+
+	it('through the API, in the move itself, all or nothing, and says so on the board it left', async () => {
+		const run = await eachWriteInTurn({
+			build: world,
+			request: ({ owner, card, B }) =>
+				api('PUT', `/api/v1/cards/${card.id}/move`, { user: owner, body: { columnId: B.cols['In Progress'].id } }),
+			afterSuccess: async (w, res) => {
+				expect(res.status).toBe(200);
+				expect(res.body).toMatchObject({ id: w.card.id, boardId: w.B.board.id, milestoneId: null });
+				// Whoever moved it is told which goal it left (the review's O3).
+				expect(res.body.leftMilestone).toEqual({ id: w.M.id, name: 'Goal M' });
+				expect(cardRow(w.card.id).milestoneId).toBeNull();
+				expect(cardRow(w.stays.id).milestoneId).toBe(w.M.id);
+				expect(movedAway(w.A.board.id, w.card.id)).toEqual([
+					'"MOVEDSECRET2155" moved to board "BRAVO" (To Do → In Progress) and out of milestone "Goal M"'
+				]);
+				await readerSeesOnly(w);
+			}
+		});
+
+		// The milestone goes in the same write of the card: nothing more is written.
+		expect(run.writes.map((sql) => sql.split(/[ (]/).slice(0, 3).join(' '))).toEqual([
+			'update "cards" set',
+			'insert into "activity_log"',
+			'insert into "activity_log"'
+		]);
+	});
+
+	it('from the card window and All Tasks, by the same rule', async () => {
+		const w = world();
+
+		const res = await api('PUT', `/api/cards/${w.card.id}`, { user: w.owner, body: { columnId: w.B.cols['To Do'].id } });
+
+		expect(res.status).toBe(200);
+		expect(res.body.milestoneId).toBeNull();
+		// All Tasks says so in a toast, from this (the review's O3).
+		expect(res.body.leftMilestone).toEqual({ id: w.M.id, name: 'Goal M' });
+		expect(cardRow(w.card.id).milestoneId).toBeNull();
+		expect(movedAway(w.A.board.id, w.card.id)).toEqual([
+			'"MOVEDSECRET2155" moved to board "BRAVO" (To Do → To Do) and out of milestone "Goal M"'
+		]);
+		await readerSeesOnly(w);
+	});
+
+	it('takes a card out of a milestone of a third board too, without naming it', async () => {
+		const w = world();
+		const C = makeBoard({ owner: w.owner, name: 'CHARLIE' });
+		const third = makeMilestone({ board: C.board, name: 'THIRDSECRET', cards: [w.card] });
+
+		const res = await api('PUT', `/api/v1/cards/${w.card.id}/move`, { user: w.owner, body: { columnId: w.B.cols['To Do'].id } });
+		expect(res.status).toBe(200);
+		// Not named to the mover either: a third board's goal is not theirs to read.
+		expect(res.body.leftMilestone).toBeNull();
+		expect(JSON.stringify(res.body)).not.toContain('THIRDSECRET');
+
+		expect(cardRow(w.card.id).milestoneId).toBeNull();
+		expect(third.id).not.toBe(w.M.id);
+		expect(movedAway(w.A.board.id, w.card.id)).toEqual([
+			'"MOVEDSECRET2155" moved to board "BRAVO" (To Do → To Do) and out of a milestone of another board'
+		]);
+	});
+
+	it('leaves the milestone of a card in a goal across boards, of one moved within its board, and of one arriving on its milestone\'s board', async () => {
+		const w = world();
+		const across = makeCard(w.A.cols['To Do'], { title: 'Across' });
+		const goal = makeMilestone({ name: 'Across boards', cards: [across] });
+		const arriving = makeCard(w.A.cols['To Do'], { title: 'Arriving' });
+		// Written by hand: nothing puts a card of A in a milestone of BRAVO.
+		const ofB = makeMilestone({ board: w.B.board, name: 'Goal of BRAVO', cards: [arriving] });
+
+		const move = (card: Card, columnId: number) => api('PUT', `/api/v1/cards/${card.id}/move`, { user: w.owner, body: { columnId } });
+		const answers = [
+			await move(across, w.B.cols['To Do'].id),
+			await move(w.card, w.A.cols['In Progress'].id),
+			await move(arriving, w.B.cols['To Do'].id),
+			// A save of the card window that moves nothing.
+			await api('PUT', `/api/cards/${w.card.id}`, { user: w.owner, body: { title: 'MOVEDSECRET2155 renamed' } })
+		];
+		for (const res of answers) {
+			expect(res.status).toBe(200);
+			expect(res.body.leftMilestone).toBeNull();
+		}
+
+		expect(cardRow(across.id).milestoneId).toBe(goal.id);
+		expect(cardRow(w.card.id).milestoneId).toBe(w.M.id);
+		expect(cardRow(arriving.id).milestoneId).toBe(ofB.id);
+		for (const card of [across, arriving]) {
+			expect(movedAway(w.A.board.id, card.id)).toEqual([
+				`"${card.title}" moved to board "BRAVO" (To Do → To Do)`
+			]);
+		}
+	});
+});
+
 describe('PUT /api/subtasks/:id', () => {
 	/** `first` has one open subtask, and `waiting` waits on that subtask alone. */
 	const withStep = () => {
@@ -1051,7 +1284,7 @@ describe('the "Unblocked" notice is part of the completion', () => {
 				cardId: waiting.id,
 				title: 'Waiting',
 				boardId: A.board.id,
-				completed: { kind: 'card', id: second.id, title: 'Second' }
+				completed: { kind: 'card', id: second.id, title: 'Second', boardId: A.board.id }
 			}
 		]);
 		expect(notices().map((n) => n.cardId)).toEqual([waiting.id]);
@@ -1071,7 +1304,7 @@ describe('the "Unblocked" notice is part of the completion', () => {
 			recordUnblocked([later.id, first.id, { kind: 'subtask', id: step.id }], owner.id)
 		);
 
-		expect(written.map((w) => w.completed)).toEqual([{ kind: 'subtask', id: step.id, title: 'Write it' }]);
+		expect(written.map((w) => w.completed)).toEqual([{ kind: 'subtask', id: step.id, title: 'Write it', boardId: A.board.id }]);
 		expect(notices().map((n) => n.content)).toEqual([
 			'Unblocked: subtask "Write it" completed — nothing is blocking this card now.'
 		]);

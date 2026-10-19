@@ -71,6 +71,7 @@ import {
 	dependencyEndBody,
 	dependencyRow,
 	failureMessage,
+	leftMilestoneNotice,
 	sizeInWords,
 	subBoardLinkWarning,
 	uploadFailure,
@@ -1992,7 +1993,8 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'purgeAll', reads: 'failureMessage', done: ['await invalidateAll()'] }
 	],
 	'src/routes/all/+page.svelte': [
-		{ name: 'doMoveCard', reads: 'failureMessage', done: ['showMoveModal = false', 'playMoveSound()', 'playCompleteSound()'] },
+		// The review's O3: a move to another board that took the card out of its milestone says so.
+		{ name: 'doMoveCard', reads: 'failureMessage', done: ['showMoveModal = false', 'playMoveSound()', 'playCompleteSound()', "toasts.add(leftGoal, 'info')"] },
 		{ name: 'saveCard', reads: 'failureMessage', done: ["toasts.add('Card updated')", 'showCardModal = false'] },
 		{ name: 'deleteCard', reads: 'deleteFailure', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'showCardModal = false'] },
 		{ name: 'restoreArchivedCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)', "toasts.add('Card restored')"] },
@@ -2697,11 +2699,54 @@ describe('linking an existing board under a card, src/lib/board/card-actions.ts 
 	it('says in the dialog who will see the board and its cards, who can move it, that the card cannot be completed while it has open cards, and what deletes it', () => {
 		expect(subBoardLinkWarning('Website')).toBe(
 			'Put "Website" under this card? It will be shown on this card instead of on the dashboard, and its members who cannot open this board will no longer see it on theirs. ' +
-				'Those who can open this board see it on this card only if they can open "Website" too, ' +
-				"but this board's reports, scheduled ones included, will include its cards for all of them. " +
+				// A report is its reader's: whoever downloads or sends it, and a
+				// scheduled one's owner (card 2150, decision 2).
+				'Those who can open this board see it on this card only if they can open "Website" too. ' +
+				"Its cards are in this board's reports only when whoever downloads, sends or schedules the report can open \"Website\" too; whoever they send it to gets what that person can see. " +
 				"This board's editors can move this card, taking \"Website\" with it. " +
 				'This card cannot be completed while "Website" has cards that are not complete, and "Website" is deleted for good, with everything on it, if this card, its column or this board is ever deleted for good.'
 		);
+	});
+});
+
+describe("a move to another board that takes the card out of its milestone (card 2155, the review's O3)", () => {
+	// The card leaves a milestone of the board it left, and moving it back does
+	// not put it back in. The mover was told nothing: the card was simply gone
+	// from the goal. The answer of PUT /api/cards/{id} names the goal.
+	it('is said in one sentence, from one place, and only when the answer names a goal', () => {
+		expect(leftMilestoneNotice({ id: 5, leftMilestone: { id: 3, name: 'Goal M' } })).toBe(
+			'Moved. It left milestone "Goal M"; moving it back does not put it back in.'
+		);
+		expect(leftMilestoneNotice({ id: 5, leftMilestone: null })).toBeNull();
+		expect(leftMilestoneNotice({ id: 5 })).toBeNull();
+		expect(leftMilestoneNotice({ id: 5, leftMilestone: { id: 3 } })).toBeNull();
+		expect(leftMilestoneNotice(null)).toBeNull();
+
+		// No page or component writes the words itself, so each says them alike.
+		const pages = [...filesUnder('src/routes', '.svelte'), ...filesUnder('src/lib/components', '.svelte'), ...filesUnder('src/lib/board', '.ts')];
+		for (const file of pages) expect(readFileSync(join(ROOT, file), 'utf8'), file).not.toContain('put it back in');
+	});
+
+	it('is said by All Tasks for a move that succeeded, read from its answer', () => {
+		const said = functionNamed(scriptOf('src/routes/all/+page.svelte'), 'doMoveCard').getText().replace(/\s+/g, ' ');
+
+		expect(said).toContain('const leftGoal = leftMilestoneNotice(await answerBody(res));');
+		expect(said).toContain("if (leftGoal) toasts.add(leftGoal, 'info');");
+		expect(said.indexOf('leftMilestoneNotice(')).toBeGreaterThan(said.indexOf('if (!res.ok)'));
+	});
+
+	it('has no other page to be said on: the board page and All To Do move no card to another board', () => {
+		// All Tasks' Move window is the one place a person chooses another board
+		// for a card. The board page moves a card among its own columns (a drag,
+		// the card menu and the bulk move, each through PUT /api/cards/reorder),
+		// its card window sends no column, and All To Do has no Move window
+		// (card 2240). A page that gains one says the sentence above too.
+		for (const file of ['src/routes/board/[id]/+page.svelte', 'src/routes/todo/+page.svelte']) {
+			const source = readFileSync(join(ROOT, file), 'utf8');
+			expect(source, file).not.toContain('id="move-board"');
+			expect(source, file).not.toMatch(/columnId: move/);
+		}
+		expect(readFileSync(join(ROOT, 'src/routes/all/+page.svelte'), 'utf8')).toContain('id="move-board"');
 	});
 });
 
@@ -2907,7 +2952,8 @@ describe('a drop onto Complete, src/lib/board/dnd-handlers.ts and the board page
 		const modal = source.slice(start, source.indexOf('{/if}', start)).replace(/\s+/g, ' ');
 
 		expect(modal).toContain("confirmText={blockedState.subBoardId !== null ? 'Open Sub-board' : 'Open Card'}");
-		expect(modal).toContain('on a sub-board you cannot open.');
+		// Whoever can give them the sub-board, or finish its cards, is the board's owner (the review's O-N5).
+		expect(modal).toContain("on a sub-board you cannot open. All sub-board tasks must be completed first. Ask this board's owner.`");
 		expect(modal).toContain('if (blockedState.subBoardId !== null) { window.location.href = `/board/${blockedState.subBoardId}`; } else { openCardModal(blockedState.card); }');
 	});
 });

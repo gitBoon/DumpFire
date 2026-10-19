@@ -2,7 +2,8 @@
  * The one-off changes to data that migration files make: every file, from 0053
  * on, that deletes rows, drops a table or replaces rows (card 2106, decision 3),
  * and every one that rewrites a column in the rows it keeps (`keepsRows`: 0055,
- * card 2158, which gives every task request a new link).
+ * card 2158, which gives every task request a new link; 0057, card 2155, which
+ * takes cards out of a milestone of another board).
  *
  * The rehearsal (copy.rehearsal.ts) fails on any table that has fewer rows
  * after the runner than before. A file named here is allowed to take rows from
@@ -38,7 +39,13 @@ export type OneOff = {
 export const ONE_OFFS: readonly OneOff[] = Object.freeze([
 	{ file: '0053_index_foreign_keys_end_sessions.sql', table: 'sessions', change: 'every row deleted' },
 	{ file: '0054_index_user_time_end_unused_invites.sql', table: 'invite_tokens', change: 'every unused invite deleted' },
-	{ file: '0055_replace_request_links.sql', table: 'task_requests', change: 'every access_token replaced', keepsRows: true }
+	{ file: '0055_replace_request_links.sql', table: 'task_requests', change: 'every access_token replaced', keepsRows: true },
+	{
+		file: '0057_cards_leave_other_boards_milestones.sql',
+		table: 'cards',
+		change: 'milestone_id cleared where it named a milestone of another board',
+		keepsRows: true
+	}
 ]);
 
 /** The first file the rule covers. Files before it were written before the rule. */

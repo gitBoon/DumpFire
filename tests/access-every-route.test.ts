@@ -2159,9 +2159,10 @@ describe('GET /api/events, the stream itself', () => {
 
 describe('a report of a grouping of boards', () => {
 	// POST /api/reports answers with a PDF, and POST /api/reports/email mails
-	// one: neither answer can be read for a card's title. Both draw what
-	// `generateCategoryReport` gives them, so that is read here. Both boards are
-	// under the grouping, and each caller can open one of them.
+	// one. Both draw what `generateCategoryReport` gives them, so that is read
+	// here; tests/report-access.test.ts reads the PDFs themselves, with
+	// `pdfText`, for the sub-boards a report takes in (card 2150). Both boards
+	// are under the grouping, and each caller can open one of them.
 	const readers: { who: Exclude<Who, 'nobody'>; theirs: string; kept: string }[] = [
 		{ who: 'outsider', theirs: MARK_B, kept: MARK },
 		{ who: 'viewer', theirs: MARK, kept: MARK_B }

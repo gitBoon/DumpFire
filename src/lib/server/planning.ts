@@ -39,6 +39,7 @@ import { eq, and, isNull, inArray, asc } from 'drizzle-orm';
 import { getAccessibleBoardIds, type Actor } from './board-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { notifyCardUnblocked } from './notifications';
+import { WITHHELD_BOARD_NAME, WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE } from './withheld';
 import { emit } from './events';
 import { createLogger } from './logger';
 import { completionPercent } from '$lib/progress';
@@ -129,12 +130,9 @@ export interface PlanNode extends WorkRef {
 	withheld: boolean;
 }
 
-/** In place of the title of a card on a board the viewer cannot open. */
-export const WITHHELD_CARD_TITLE = 'A card on a board you cannot open';
-/** In place of the title of a subtask on a board the viewer cannot open. */
-export const WITHHELD_SUBTASK_TITLE = 'A subtask on a board you cannot open';
-/** In place of the name of a board the viewer cannot open. */
-export const WITHHELD_BOARD_NAME = 'A board you cannot open';
+// The words in place of what a viewer cannot open, kept in withheld.ts so that
+// the mails can use them too, and given from here as they always were.
+export { WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE, WITHHELD_BOARD_NAME };
 
 /** Retained name — a card is just a node whose `kind` is 'card'. */
 export type PlanCard = PlanNode;
@@ -792,8 +790,9 @@ function weightOf(priority: string): number {
  * so that they are the same for everyone. Then each node is withheld once, if
  * its board is one the viewer cannot open, and everything given is built from
  * those: the nodes, the chain, the blockers and the progress. A member card can
- * be on such a board too: a card moved to another board keeps a board's
- * milestone (card 2129, R4).
+ * be on such a board too (card 2129, R4): in data from before card 2155, when
+ * a card moved to another board kept its board's milestone, and where a
+ * milestone was moved to another board with its cards, until card 2179.
  */
 export function getMilestoneSummary(milestoneId: number, viewer: Actor): MilestoneSummary | null {
 	const milestone = db.select().from(milestones).where(eq(milestones.id, milestoneId)).get();
@@ -1147,9 +1146,11 @@ export interface UnblockedWork {
 	boardId: number;
 	/**
 	 * The work whose completion left this with nothing open blocking it. Where
-	 * one request completed several of its blockers, the last of them.
+	 * one request completed several of its blockers, the last of them. Its
+	 * board is the card's, or a subtask's card's: the mail names it only to an
+	 * assignee who can open that board (card 2152).
 	 */
-	completed: { kind: WorkKind; id: number; title: string };
+	completed: { kind: WorkKind; id: number; title: string; boardId: number };
 }
 
 /** Retained name for callers that only ever dealt in cards. */
@@ -1198,10 +1199,20 @@ function writeUnblockNotices(
 		// and names the subtask.
 		const cardId = node.kind === 'card' ? node.id : (node.parentCardId ?? node.id);
 		const what = node.kind === 'card' ? 'this card' : `subtask "${node.title}"`;
+		// The comment is stored once and read by everyone who can open the
+		// waiting card's board, so the finished work is named by its title only
+		// when it is on that board too (card 2152, decision 6). A card on another
+		// board keeps its number, as a withheld plan node keeps its id; a subtask
+		// is said to be one. Comments written before stay as they are.
+		const sameBoard = completedNode.boardId === node.boardId;
 		const by =
 			completedNode.kind === 'card'
-				? `#${completedNode.id} "${completedNode.title}"`
-				: `subtask "${completedNode.title}"`;
+				? sameBoard
+					? `#${completedNode.id} "${completedNode.title}"`
+					: `#${completedNode.id}, a card on another board,`
+				: sameBoard
+					? `subtask "${completedNode.title}"`
+					: 'a subtask on another board';
 
 		db.insert(cardComments)
 			.values({
@@ -1217,7 +1228,12 @@ function writeUnblockNotices(
 			cardId,
 			title: node.title,
 			boardId: node.boardId,
-			completed: { kind: completedNode.kind, id: completedNode.id, title: completedNode.title }
+			completed: {
+				kind: completedNode.kind,
+				id: completedNode.id,
+				title: completedNode.title,
+				boardId: completedNode.boardId
+			}
 		});
 	}
 
@@ -1301,8 +1317,7 @@ export function announceUnblocked(
 			u.boardId,
 			u.cardId,
 			u.kind === 'card' ? u.title : `${u.title} (subtask)`,
-			u.completed.id,
-			u.completed.title,
+			u.completed,
 			actor.username,
 			baseUrl
 		);

@@ -11,15 +11,16 @@
  * was closed.
  *
  * Each now asks at the heartbeat it already had, every 30 seconds (25 for the
- * log), and ends if the session is gone, has expired or has no account: the
- * board stream asks `sessionStillOpen`, and the two that were let in for an
- * administrator's role ask `openSessionUser`, and end as well when the role
- * they were let in for has changed (the log stream when the account is no
- * longer an administrator, `/api/events` when it has become one or stopped
- * being one). Nothing else ends a stream: another session of the same account
- * ending does not, the board stream does not ask about the role, and a check
- * that throws ends the stream with one WARN line and never escapes the timer,
- * where it would end the process.
+ * log), and ends if the session is gone, has expired or has no account: each
+ * asks `openSessionUser`. The two that were let in for an administrator's role
+ * end as well when that role has changed (the log stream when the account is
+ * no longer an administrator, `/api/events` when it has become one or stopped
+ * being one). The board stream ends as well when the board has gone or the
+ * account as it is now cannot open it, and says so first with one `update`
+ * of its own (card 2170); `/api/events` asks each board again after each
+ * heartbeat. Nothing else ends a stream: another session of the same account
+ * ending does not, and a check that throws ends the stream with one WARN line
+ * and never escapes the timer, where it would end the process.
  *
  * The server is started under real timers. Each test then fakes only
  * `setInterval` and `clearInterval`, so that the heartbeat is advanced by hand
@@ -47,13 +48,28 @@ vi.mock('$lib/server/auth', async (importOriginal) => {
 	};
 });
 
-import { eq } from 'drizzle-orm';
+/** Set to make the board stream's access check throw, the same way (card 2170). */
+const accessCheck = vi.hoisted(() => ({ fails: false }));
+
+vi.mock('$lib/server/board-access', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/board-access')>();
+	return {
+		...real,
+		canViewBoard: (...args: Parameters<typeof real.canViewBoard>) => {
+			if (accessCheck.fails) throw new Error('disk I/O error');
+			return real.canViewBoard(...args);
+		}
+	};
+});
+
+import { and, eq } from 'drizzle-orm';
 import { SESSION_COOKIE_NAME, openSessionUser, sessionStillOpen, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
-import { sessions, users, type Board } from '$lib/server/db/schema';
+import { boardMembers, boards, boardTeams, sessions, teamMembers, users, type Board } from '$lib/server/db/schema';
+import { deleteBoard } from '$lib/server/deletes';
 import { emit } from '$lib/server/events';
 import { error as logError } from '$lib/server/logger';
-import { addBoardMember, makeBoard, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { addBoardMember, makeBoard, makeSession, makeTeam, makeUser, resetDb, shareBoardWithTeam } from './helpers/fixtures';
 import { gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
@@ -90,6 +106,7 @@ afterEach(async () => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	check.fails = false;
+	accessCheck.fails = false;
 	if (LOG_LEVEL === undefined) delete process.env.LOG_LEVEL;
 	else process.env.LOG_LEVEL = LOG_LEVEL;
 });
@@ -324,9 +341,9 @@ describe('a stream and a change of role', () => {
 		});
 	}
 
-	// The board stream does not ask about the role. Whether the account may
-	// still open the board is card 2170's, and a deleted board's page must
-	// still be told by its event before its stream ends.
+	// The board stream does not ask about the role as such: it asks whether
+	// the account, as it is now, may still open the board (card 2170, below).
+	// An administrator who is on the board still may as an ordinary user.
 	it(`${BOARD.route} goes on when an administrator on the board is made an ordinary user`, async () => {
 		addBoardMember(w.board, w.admin, 'viewer');
 		const reader = await open(BOARD, makeSession(w.admin));
@@ -340,6 +357,187 @@ describe('a stream and a change of role', () => {
 		expect(ended).toBe(false);
 		expect(received).toContain(mark);
 		expect(count(received, BOARD.beat)).toBe(BOARD.beatsAtOpen + 1);
+	});
+});
+
+/** What the board stream sends, on that stream alone, before it ends for want of access. */
+const ACCESS_EVENT = 'event: update\ndata: {"type":"access"}\n\n';
+
+describe('a stream and access to its board', () => {
+	// Card 2170. The board stream asked whether its account could open the
+	// board once, when it opened, and went on sending the board's events to
+	// someone taken off it for as long as the session lasted. It now asks at
+	// each heartbeat, of the account as it is now, and before it ends sends
+	// one `update` of its own so that the page re-reads and shows its load's
+	// refusal. The global stream decides each board again at its heartbeat.
+	const [EVENTS, BOARD] = STREAMS;
+
+	/** The ways someone stops being able to open a board, each to its own account. */
+	const WITHDRAWN: { what: string; who: () => SessionUser; take: (user: SessionUser) => void }[] = [
+		{
+			what: 'their membership of the board is deleted',
+			who: () => w.viewer,
+			take: (user) =>
+				db.delete(boardMembers).where(and(eq(boardMembers.boardId, w.board.id), eq(boardMembers.userId, user.id))).run()
+		},
+		{
+			what: 'the team share they opened it through is deleted',
+			who: () => {
+				const user = makeUser();
+				shareBoardWithTeam(w.board, makeTeam([user]), 'viewer');
+				return user;
+			},
+			take: () => db.delete(boardTeams).where(eq(boardTeams.boardId, w.board.id)).run()
+		},
+		{
+			what: 'they are taken out of the team the board is shared with',
+			who: () => {
+				const user = makeUser();
+				shareBoardWithTeam(w.board, makeTeam([user]), 'viewer');
+				return user;
+			},
+			take: (user) => db.delete(teamMembers).where(eq(teamMembers.userId, user.id)).run()
+		},
+		{
+			what: 'a public board they are not on is made private',
+			who: () => {
+				db.update(boards).set({ isPublic: true }).where(eq(boards.id, w.board.id)).run();
+				return makeUser();
+			},
+			take: () => db.update(boards).set({ isPublic: false }).where(eq(boards.id, w.board.id)).run()
+		},
+		{
+			what: 'an administrator who is not on the board is made an ordinary user',
+			who: () => w.admin,
+			take: (user) => setRole(user, 'user')
+		}
+	];
+
+	for (const { what, who, take } of WITHDRAWN) {
+		it(`${BOARD.route} sends the access event and ends at the next heartbeat when ${what}`, async () => {
+			const user = who();
+			const token = makeSession(user);
+			const reader = await open(BOARD, token);
+
+			take(user);
+			vi.advanceTimersByTime(BOARD.every);
+			const mark = newMark();
+			BOARD.send(mark);
+
+			const { ended, received } = await readUntil(reader, mark);
+			expect(ended).toBe(true);
+			expect(received).not.toContain(mark);
+			expect(count(received, ACCESS_EVENT)).toBe(1);
+			expect(received.endsWith(ACCESS_EVENT)).toBe(true);
+			// Not the heartbeat that found it: the session is open still.
+			expect(count(received, BOARD.beat)).toBe(BOARD.beatsAtOpen);
+			expect(sessionStillOpen(token)).toBe(true);
+		});
+	}
+
+	it(`${BOARD.route} hands on a deleted board's own event first, then the access event, then ends`, async () => {
+		const reader = await open(BOARD, makeSession(w.viewer));
+
+		// The delete's event is delivered as its transaction commits, in the
+		// same run; the heartbeat is a timer and comes after it.
+		deleteBoard(w.board.id, w.owner);
+		vi.advanceTimersByTime(BOARD.every);
+		const mark = newMark();
+		BOARD.send(mark);
+
+		const { ended, received } = await readUntil(reader, mark);
+		expect(ended).toBe(true);
+		expect(received).not.toContain(mark);
+		const deleted = received.indexOf('event: update\ndata: {"type":"board","action":"deleted"}\n\n');
+		expect(deleted).toBeGreaterThan(-1);
+		expect(received.indexOf(ACCESS_EVENT)).toBeGreaterThan(deleted);
+		expect(received.endsWith(ACCESS_EVENT)).toBe(true);
+	});
+
+	it(`${BOARD.route} goes on for a member who stays, with every event and no access event`, async () => {
+		const reader = await open(BOARD, makeSession(w.viewer));
+
+		const marks = [newMark(), newMark(), newMark()];
+		for (const mark of marks) {
+			BOARD.send(mark);
+			vi.advanceTimersByTime(BOARD.every);
+		}
+
+		const { ended, received } = await readUntil(reader, marks[2]);
+		expect(ended).toBe(false);
+		for (const mark of marks) expect(received).toContain(mark);
+		expect(received).not.toContain('"type":"access"');
+	});
+
+	it(`${BOARD.route} does not open on a board that is not there, administrators included, or on an id that is not one`, async () => {
+		const asked = async (path: string, user: SessionUser) => {
+			// Asked for JSON so that the refusal's words can be read: what the
+			// page's EventSource reads is the status, which is the same.
+			const res = await gate('GET', path, {
+				headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}`, accept: 'application/json' }
+			});
+			// A stream that opened is never read to its end: it has none.
+			if (res.status === 200) {
+				await res.body?.cancel();
+				return { status: 200, body: null };
+			}
+			return { status: res.status, body: await res.json() };
+		};
+		expect(await asked('/api/boards/999999/events', w.admin)).toEqual({ status: 404, body: { message: 'Board not found' } });
+		expect(await asked('/api/boards/999999/events', w.viewer)).toEqual({ status: 404, body: { message: 'Board not found' } });
+		expect(await asked('/api/boards/abc/events', w.admin)).toEqual({ status: 400, body: { message: 'Invalid board ID' } });
+		// A board that is there and that the caller cannot open, as before.
+		const outsider = makeUser();
+		expect(await asked(`/api/boards/${w.board.id}/events`, outsider)).toEqual({ status: 403, body: { message: 'No access to this board' } });
+	});
+
+	it(`${EVENTS.route} stops sending a board's events at the next heartbeat to someone taken off it, and goes on with the rest`, async () => {
+		const { board: other } = makeBoard({ owner: w.owner });
+		addBoardMember(other, w.viewer, 'viewer');
+		const reader = await open(EVENTS, makeSession(w.viewer));
+
+		// Delivered once first, so that the stream has its answer for the board.
+		const first = newMark();
+		BOARD.send(first);
+		expect((await readUntil(reader, first)).received).toContain(first);
+
+		db.delete(boardMembers).where(and(eq(boardMembers.boardId, w.board.id), eq(boardMembers.userId, w.viewer.id))).run();
+		// One heartbeat, and the clock not moved: nothing else decides.
+		vi.advanceTimersByTime(EVENTS.every);
+		const gone = newMark();
+		const kept = newMark();
+		BOARD.send(gone);
+		emit(other.id, 'update', { type: 'card', title: kept });
+
+		const { ended, received } = await readUntil(reader, kept);
+		expect(ended).toBe(false);
+		expect(received).toContain(kept);
+		expect(received).not.toContain(gone);
+	});
+
+	it(`${BOARD.route} ends, says so once at WARN, and does not throw out of its timer, when the access check cannot be made`, async () => {
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const reader = await open(BOARD, makeSession(w.viewer));
+
+		accessCheck.fails = true;
+		expect(() => vi.advanceTimersByTime(BOARD.every)).not.toThrow();
+		accessCheck.fails = false;
+		const mark = newMark();
+		BOARD.send(mark);
+
+		const { ended, received } = await readUntil(reader, mark);
+		expect(ended).toBe(true);
+		expect(received).not.toContain(mark);
+		// It could not say whether access was withdrawn, so it does not say it was.
+		expect(received).not.toContain('"type":"access"');
+
+		const said = sqlite
+			.prepare("SELECT level, meta FROM system_logs WHERE message = 'Live stream ended: its session could not be checked'")
+			.all() as { level: string; meta: string }[];
+		expect(said).toHaveLength(1);
+		expect(said[0].level).toBe('WARN');
+		expect(JSON.parse(said[0].meta)).toMatchObject({ route: BOARD.route, boardId: w.board.id, error: 'Error: disk I/O error' });
 	});
 });
 

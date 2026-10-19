@@ -101,6 +101,7 @@ const TEST_FILES = [
 	'pricing.test.ts',
 	'public-requests.test.ts',
 	'report-mail.test.ts',
+	'report-access.test.ts',
 	'report-recipients.test.ts',
 	'request-body.test.ts',
 	'schedulers.test.ts',

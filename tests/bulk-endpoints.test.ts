@@ -31,6 +31,7 @@ import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type RecordedEffect } from './helpers/effects';
 import {
 	addBoardMember,
+	assignCard,
 	makeBoard,
 	makeCard,
 	makeDependency,
@@ -241,22 +242,65 @@ describe('POST /api/v1/milestones/:milestoneId/cards/bulk', () => {
 				});
 				await sent.settle();
 				expect(res.status).toBe(200);
-				const mail = sent.all.find((e) => e.kind === 'email');
-				return mail?.kind === 'email' ? mail.html : '';
+				const to = (who: string) => sent.emails.find((e) => e.to === `${who}@example.test`)?.html ?? '';
+				return { reader: to('reader'), admin: to('admin') };
 			} finally {
 				sent.restore();
 			}
 		};
 
-		// `owner` cannot open board B: the step is withheld, and so is its card.
+		// Each recipient is mailed the plan as they would see it (card 2152): an
+		// assignee who cannot open board B is mailed the step withheld, and so is
+		// its card; the administrator, who can open B, its title.
+		const reader = makeUser({ username: 'reader' });
+		addBoardMember(s.A.board, reader, 'viewer');
+		assignCard(s.a[0], reader);
 		const hidden = await mailed('Hidden');
-		expect(hidden).toContain(`<li>#${s.b.id} a card on a board you cannot open</li>`);
-		expect(hidden).not.toContain('B1');
+		expect(hidden.reader).toContain(`<li>#${s.b.id} A card on a board you cannot open</li>`);
+		expect(hidden.reader).not.toContain('B1');
+		expect(hidden.admin).toContain(`<li>#${s.b.id} B1</li>`);
 
-		// Given board B, they are mailed its title.
-		addBoardMember(s.B.board, s.owner, 'viewer');
+		// Given board B, the assignee is mailed its title too.
+		addBoardMember(s.B.board, reader, 'viewer');
 		db.update(cards).set({ milestoneId: null }).run();
-		expect(await mailed('Shown')).toContain(`<li>#${s.b.id} B1</li>`);
+		expect((await mailed('Shown')).reader).toContain(`<li>#${s.b.id} B1</li>`);
+	});
+
+	it("mails each recipient the plan as they would see it, and nobody who cannot open it (card 2152)", async () => {
+		// `c1` waits on `X`, on board B, and `c2` on `c1`: the chain is X, c1, c2.
+		// `editsA` (an editor of A, assigned to c1) cannot open B. `former`,
+		// assigned to c2, cannot open A, as someone taken off it cannot: they
+		// stay assigned.
+		const s = withGoals();
+		const [c1, c2] = s.a;
+		const X = makeCard(s.B.cols['To Do'], { title: 'XSECRET2152' });
+		makeDependency({ blocked: c1, blocker: X });
+		makeDependency({ blocked: c2, blocker: c1 });
+		const editsA = makeUser({ username: 'editsa' });
+		const former = makeUser({ username: 'former' });
+		addBoardMember(s.A.board, editsA, 'editor');
+		assignCard(c1, editsA);
+		assignCard(c2, former);
+
+		const sent = effects();
+		try {
+			const res = await api('POST', `/api/v1/milestones/${s.goal.id}/cards/bulk`, {
+				user: s.owner,
+				body: { cardIds: [c1.id, c2.id] }
+			});
+			await sent.settle();
+			expect(res.status).toBe(200);
+
+			const mails = sent.emails.filter((e) => e.subject === 'Plan created: Goal');
+			expect(mails.map((e) => e.to).sort()).toEqual(['admin@example.test', 'editsa@example.test']);
+			const to = (who: string) => mails.find((e) => e.to === `${who}@example.test`)!.html;
+			expect(to('editsa')).toContain(`<li>#${X.id} A card on a board you cannot open</li>`);
+			expect(to('editsa')).not.toContain('XSECRET2152');
+			expect(to('editsa')).toContain(`<li>#${c1.id} A1</li>`);
+			expect(to('admin')).toContain(`<li>#${X.id} XSECRET2152</li>`);
+		} finally {
+			sent.restore();
+		}
 	});
 
 	it('answers as it did for a milestone that is not there, one the caller cannot edit, and a bad list', async () => {

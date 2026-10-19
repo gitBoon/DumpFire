@@ -1749,7 +1749,7 @@
 		message={blockedState.reason === 'subtasks'
 			? `This card has ${blockedState.incomplete} incomplete subtask${blockedState.incomplete > 1 ? 's' : ''}. All subtasks must be completed before moving it to the Complete column.`
 			: blockedState.subBoardId === null
-				? `This card has ${blockedState.incomplete} incomplete task${blockedState.incomplete > 1 ? 's' : ''} on a sub-board you cannot open. All sub-board tasks must be completed first.`
+				? `This card has ${blockedState.incomplete} incomplete task${blockedState.incomplete > 1 ? 's' : ''} on a sub-board you cannot open. All sub-board tasks must be completed first. Ask this board's owner.`
 				: `This card has ${blockedState.incomplete} incomplete task${blockedState.incomplete > 1 ? 's' : ''} on its sub-board. All sub-board tasks must be completed first.`
 		}
 		confirmText={blockedState.subBoardId !== null ? 'Open Sub-board' : 'Open Card'}

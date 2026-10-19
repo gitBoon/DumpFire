@@ -63,6 +63,16 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 	// request's status are written together: a failure part of the way used to
 	// leave a card on the board for a request still waiting in the inbox. The
 	// mail is worked out in here and sent once it is committed.
+	// The request as its answer gives it, with the board it asks for only when
+	// the caller can open that board, as the inbox gives it (card 2153, the
+	// review's N3): the row's own desiredBoardId went to an addressee who could
+	// not. The answer carries no name or emoji of the board.
+	const answered = (row: TaskRequest) => {
+		const shown = publicRequest(row);
+		const open = row.desiredBoardId !== null && canViewBoard(user, row.desiredBoardId);
+		return { ...shown, desiredBoardId: open ? row.desiredBoardId : null };
+	};
+
 	const answer = inTransaction(() => {
 		const existing = db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
 		if (!existing) throw error(404, 'Request not found');
@@ -193,7 +203,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			// the requester's "Your request is complete", which waits for its PDF.
 			announceCardCreated(creation, user, baseUrl);
 
-			return { ...publicRequest(existing), requesterEmail: requester, status: 'accepted', resolvedCardId: newCard.id };
+			return { ...answered(existing), requesterEmail: requester, status: 'accepted', resolvedCardId: newCard.id };
 
 		} else {
 			const rejectReason = readText(body, 'rejectReason', { nullable: true, max: 10000 });
@@ -209,7 +219,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 				notifyRequesterRejected(requester, existing.title, user.username, rejectReason || undefined);
 			}
 
-			return { ...publicRequest(existing), requesterEmail: requester, status: 'rejected' };
+			return { ...answered(existing), requesterEmail: requester, status: 'rejected' };
 		}
 	});
 

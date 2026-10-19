@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.19
+version: 1.20
 status: As-Built
 date: 2026-10-19
 tags:
@@ -419,6 +419,8 @@ down. The failure shows on the panel and in the log.
 | Event | Recipients | Preference Key | Subject Format |
 |-------|-----------|---------------|----------------|
 | Card Moved | Assignees who can open the board the card is on now, never the one who moved it | `email_moved` | `Card moved: {title} → {column}` |
+| Card Unblocked | Assignees of the card that was waiting who can open its board (card 2180). Each is told the finished work's title only if they can open the board it is on (card 2152) | `email_moved` | `Unblocked: {title of the waiting card}` |
+| Plan Created | Assignees of the cards attached to an empty goal, and every administrator, less whoever attached them, and then only those who can open the plan (card 2152). Each is told the plan as they would see it on its page | `email_planning` | `Plan created: {goal}` |
 | User Assigned | Assignee | `email_assigned` | `Assigned: {title}` |
 | Comment Added | Board members | `email_comments` | `New comment on: {title}` |
 | User Mentioned | Mentioned user | `email_mentions` | `{author} mentioned you: {title}` |
@@ -439,6 +441,31 @@ them twice. The table
 listed a "Card Created" mail, `New card: {title}`, whose function, `notifyCardCreated`,
 nothing called; it was removed (card 2010). A new card still reaches the pages open on its
 board and the board's webhooks, which is the "Card Created" of the diagram above.
+
+**What "Unblocked" and "Plan created" tell** (card 2152). Each mail is one person's, and is
+drawn for that person:
+
+- **"Unblocked"** says "Nothing is blocking this card any more — *who* completed *the work*,
+  which was the last one", with the waiting card's title and board. The finished work is
+  `#12 <title>` for a card, or `the subtask <title>`, to an assignee who can open the board
+  it is on (`canViewBoard(assignee, completed.boardId)`), and otherwise `#12 A card on a
+  board you cannot open`, or `A subtask on a board you cannot open`. A card keeps its number
+  either way, as a withheld plan node keeps its id; a subtask is never given its id as if it
+  were a card's number, as it once was. At most two mails are built, one of each kind.
+- **"Plan created"** is sent when cards are attached to an empty goal
+  (`POST /api/v1/milestones/{id}/cards/bulk`). The recipients are chosen as before and then
+  each is asked `canViewMilestone`: someone who cannot open the plan, such as a former member
+  of its board or someone who cannot open every board of a goal across boards, is not mailed.
+  The rest are mailed the plan from `getMilestoneSummary(milestoneId, recipient)`, as its page
+  shows it to them: a step on a board they cannot open is `#12 A card on a board you cannot
+  open` in "The chain that cannot slip", and "Covering" counts the boards they cannot open as
+  "A board you cannot open". Recipients who can open the same boards share one notice and one
+  mail, so the administrators cost one. The route hands `notifyPlanCreated` a function that
+  gives a recipient's notice or null, so that `notifications.ts` imports neither planning
+  module, which import it.
+- The "Unblocked" comment on the card is stored once for every reader of its board, and so
+  follows a rule of its own: see
+  [Critical-Path Planning](critical-path-planning.md#unblock-notification).
 
 **When "Card moved" is sent** (card 2134). For every move made on a page (a drag, the card
 window, All Tasks), and for a move that completes the card however it was made, through
@@ -697,6 +724,13 @@ the plan's probe), a schedule held as many as it was given (2,000), and an accou
 make any number of schedules. A mass send also spends the sender's daily quota at the mail
 provider, which once spent stops every other DumpFire mail until it resets.
 
+**The report is its sender's or its owner's view** (card 2150). A report emailed by hand is
+built as its sender may read it, and a scheduled one as its owner's account stands at the
+run: the sub-boards that person can open, and no parent board they cannot open by name.
+Every recipient is sent that same report, whoever they are; an account gives a recipient
+neither more nor less. See
+[Whose Report It Is](backup-reporting.md#whose-report-it-is).
+
 **Any address may still be a recipient**, an account's or not, and every report mail names
 the account behind it: the one emailed by hand says "Sent by `<username>` via DumpFire",
 and a scheduled one now says "Set up by `<username>`" above "— DumpFire Automated Reports",
@@ -943,13 +977,21 @@ its page is destroyed and the second board's opened as its page mounts. A link t
 the same board (`?card=`) keeps the page and its stream.
 
 The global stream carries card titles and who did what on every board, so a subscriber
-is only sent events from boards they can view. The check is made per event and cached
-per board for 30 seconds, which is how long a revoked share can keep trickling through.
-Administrators receive everything. A board that has been deleted can be viewed by nobody
-but an administrator, so a member's dashboard is not told of its deletion, and catches up
-when it is next brought to the front. A page open on the board itself is told, by the
-board's own stream, which checked access once when it was opened: it reads the board
-again and shows "Board not found".
+is only sent events from boards they can view. The check is made at a board's first event
+and kept until the stream's next heartbeat, which forgets every answer (card 2170): a share
+taken away stops what it sends of that board from its next heartbeat. Administrators
+receive everything. A board that has been deleted can be viewed by nobody but an
+administrator, so a member's dashboard is not told of its deletion, and catches up when it
+is next brought to the front. A page open on the board itself is told, by the board's own
+stream, as the delete commits: it reads the board again and shows "Board not found".
+
+The board stream opens only on a board that is there and that the caller can open (`404`,
+administrators included; `403`; `400` for an id that is not one), and asks again at each
+heartbeat, of the account as it is now (card 2170). When the board has gone or the account
+can no longer open it, it sends one last `update` with `{"type":"access"}`, on that stream
+alone, and ends; the page re-reads and shows "You do not have access to this board" or
+"Board not found". A deleted board's own event always arrives first. See
+[An Open Stream and Its Session](authentication-security.md#an-open-stream-and-its-session).
 
 ## Webhooks
 

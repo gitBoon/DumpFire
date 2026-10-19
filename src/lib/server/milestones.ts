@@ -11,7 +11,7 @@ import { db } from './db';
 import { inTransaction } from './db/transaction';
 import { milestones, cards, columns, boards } from './db/schema';
 import { eq, and, isNull, inArray } from 'drizzle-orm';
-import { canViewBoard, canEditBoard, getAccessibleBoardIds } from './board-access';
+import { canViewBoard, canEditBoard, getAccessibleBoardIds, type Actor } from './board-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { getMilestoneBoardIds } from './planning';
 import type { SessionUser } from './auth';
@@ -36,7 +36,7 @@ export class MilestoneError extends Error {
 	}
 }
 
-function isAdmin(user: SessionUser): boolean {
+function isAdmin(user: Pick<SessionUser, 'role'>): boolean {
 	return user.role === 'admin' || user.role === 'superadmin';
 }
 
@@ -45,9 +45,11 @@ function isAdmin(user: SessionUser): boolean {
  *
  * Board-scoped: view access to that board. Cross-board (`boardId` null): view
  * access to every board its cards live on — the summary carries card titles
- * from all of them, so partial access must not be enough.
+ * from all of them, so partial access must not be enough. Asked of a signed-in
+ * caller, and of each recipient of the plan-created mail (card 2152), so it
+ * takes only who they are and their role.
  */
-export function canViewMilestone(user: SessionUser, milestone: MilestoneRow): boolean {
+export function canViewMilestone(user: Actor, milestone: MilestoneRow): boolean {
 	if (isAdmin(user)) return true;
 	if (milestone.boardId !== null) return canViewBoard(user, milestone.boardId);
 

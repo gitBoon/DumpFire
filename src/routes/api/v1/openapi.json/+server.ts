@@ -71,7 +71,7 @@ const spec = {
 			'carries withheld; and the summary\'s progress counts the cards on such boards under one entry of boards with id null and an empty column title, where it named each board, ' +
 			'while its criticalPath, worked out from the real work, gives the id of the card a withheld subtask on the chain belongs to, as for any subtask; ' +
 			'(34) GET /api/v1/milestones/{milestoneId} lists a card on a board the key\'s user cannot open withheld, as the summary lists its node, with withheld on every card, ' +
-			'where a card moved off the milestone\'s board, which keeps the milestone, was listed with its title and board; GET /api/v1/burndown with a milestoneId charts only ' +
+			'where a card moved off the milestone\'s board, which kept the milestone until (60), was listed with its title and board; GET /api/v1/burndown with a milestoneId charts only ' +
 			'the milestone\'s cards on boards the key\'s user can open and says in meta.notes how many it leaves out, where such a card was charted and its board named; and ' +
 			'DELETE /api/v1/boards/{boardId} deletes the board\'s card categories, and those of every sub-board deleted with it, so that a card on another board that carried one has none, ' +
 			'where they were kept as categories of no board, which every key is given; ' +
@@ -138,6 +138,13 @@ const spec = {
 			'the moment the event was dispatched, the event, an outcome (delivered for a 2xx, answered for any other status, no-answer, or not-sent when it was refused before any request), ' +
 			'the receiver\'s status or null, and a reason in fixed words that never names an address; null before the first delivery since the server started and after the url changes, ' +
 			'and in the answer to the create; not given to anyone else, as url is not; the latest attempt only, kept in memory, and a not-reached result recorded no sooner than the timeout after the delivery got its connection, so its timing tells nothing. ' +
+			'(60) PUT /api/v1/cards/{cardId}/move to another board takes the card out of its milestone when the milestone belongs to a board other than the one the card arrives on, in the same write as the move, and answers milestoneId null and leftMilestone, the id and name of the milestone it left (null for any other move, and for a third board\'s), ' +
+			'where the card kept the milestone and its title was listed to every reader of the board it left; a milestone across boards (boardId null) keeps the card, and so does one of the board it arrives on; ' +
+			'the api:card_moved_away entry on the board it left ends ` and out of milestone "<name>"`, or ` and out of a milestone of another board` for a third board\'s, and no other entry or webhook delivery is added. ' +
+			'(61) PUT /api/v1/cards/{cardId}/move into a Complete column answers 409 "A sub-board you cannot open still has incomplete cards that must be completed first. Ask this board\'s owner.", with no name and no count, when the only unfinished sub-boards of the card are ones the key\'s user cannot open, ' +
+			'where the sub-board was named with its count of open cards; an unfinished sub-board they can open is named as before. ' +
+			'(62) the "Unblocked" comment written on a card that was waiting on work of another board, read by GET /api/v1/cards/{cardId}/comments, names that work by its number only: ' +
+			'"Unblocked: #12, a card on another board, completed — nothing is blocking this card now." or "Unblocked: a subtask on another board completed — …", where it gave the other board\'s title; work on the same board is named by its title as before, and comments written before are unchanged. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -423,7 +430,7 @@ const spec = {
 			MovedCard: {
 				type: 'object',
 				description:
-					'A card as a move answers it. Every property of Card, described there, as they are after the move, and two more: `columnTitle` and `boardId`.',
+					'A card as a move answers it. Every property of Card, described there, as they are after the move, and three more: `columnTitle`, `boardId` and `leftMilestone`.',
 				properties: {
 					id: { type: 'integer' },
 					columnId: { type: 'integer' },
@@ -464,13 +471,24 @@ const spec = {
 					createdAt: { type: 'string', format: 'date-time' },
 					updatedAt: { type: 'string', format: 'date-time' },
 					columnTitle: { type: 'string', description: 'Title of the column the card is now in' },
-					boardId: { type: 'integer', description: 'The board the card is now on: another board after a move across boards' }
+					boardId: { type: 'integer', description: 'The board the card is now on: another board after a move across boards' },
+					leftMilestone: {
+						type: ['object', 'null'],
+						description:
+							'The milestone of the board the card left that this move to another board took it out of; moving the card back does not put it back in. ' +
+							'null for every other move, and for a milestone of a third board, which is not named. Since 2026-10-14.',
+						properties: {
+							id: { type: 'integer' },
+							name: { type: 'string' }
+						},
+						required: ['id', 'name']
+					}
 				},
 				required: [
 					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
 					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
 					'milestoneId', 'createdBy', 'summary', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'createdAt', 'updatedAt',
-					'columnTitle', 'boardId'
+					'columnTitle', 'boardId', 'leftMilestone'
 				]
 			},
 			Assignee: {
@@ -2946,7 +2964,9 @@ const spec = {
 					'A move that completes the card mails its assignees who can open the board it is now on "Card moved: <title> → <column>", each as their own card-moved setting says, as a move made in the web application does; a move through the API that does not complete the card mails nobody. ' +
 					'Whoever made the move is never mailed about it. Until 2026-10-14 no move through the API mailed an assignee. ' +
 					'Moving a card out of an On Hold column (any column titled On Hold, Hold, Blocked, Parked or Waiting) to one that is not clears its onHoldNote. ' +
-					'An archived card on a sub-board is not counted: a sub-board holds the card back while it has a card that is not archived and not in a Complete column. Until 2026-10-14 an archived card held it back.',
+					'An archived card on a sub-board is not counted: a sub-board holds the card back while it has a card that is not archived and not in a Complete column. Until 2026-10-14 an archived card held it back. ' +
+					'The 409 for sub-boards names an unfinished one the key\'s user can open; when the only unfinished ones are sub-boards they cannot open it reads "A sub-board you cannot open still has incomplete cards that must be completed first. Ask this board\'s owner.", with no name and no count. ' +
+					'A move to another board takes the card out of its milestone when the milestone belongs to a board other than the one the card arrives on, and the answer has milestoneId null and names the milestone it left as leftMilestone, which is null for any other move; a milestone across boards keeps the card. Until 2026-10-14 the card kept the milestone.',
 				operationId: 'moveCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
