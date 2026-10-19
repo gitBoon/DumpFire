@@ -1,10 +1,11 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { labels, cardLabels, type Label } from '$lib/server/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { labels, type Label } from '$lib/server/db/schema';
+import { eq } from 'drizzle-orm';
+import { toggleCardLabel } from '$lib/server/card-labels';
 import { emit } from '$lib/server/events';
 import { readBody, readColour, readId, readQueryId, readText, type RequestBody } from '$lib/server/request-body';
-import { requireBoard, requireCard, requireLabel, requireUser } from '$lib/server/route-guards';
+import { requireBoard, requireLabel, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -123,40 +124,14 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
 /**
  * Toggle a label on a card. `cardId` and `labelId` are ids (card 2117): one
  * that was not was read with `Number()`, and looked for as a card or a label.
+ * The work is `toggleCardLabel` in `$lib/server/card-labels`, beside v1's add
+ * and remove (card 2012).
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const toggled = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		const cardId = readId(body, 'cardId', { required: true, says: 'Invalid card ID' });
-
-		// The board is the card's. A `boardId` in the body is ignored.
-		const { boardId } = requireCard(user, cardId, 'edit');
-
-		// A label belongs to one board and can only go on that board's cards.
-		const labelId = readId(body, 'labelId', { required: true, says: 'Invalid label ID' });
-		const { label } = requireLabel(user, labelId, 'view');
-		if (label.boardId !== boardId) throw error(400, 'That label belongs to a different board');
-
-		// Check if it exists
-		const existing = db
-			.select()
-			.from(cardLabels)
-			.where(and(eq(cardLabels.cardId, cardId), eq(cardLabels.labelId, labelId)))
-			.get();
-
-		if (existing) {
-			db.delete(cardLabels)
-				.where(and(eq(cardLabels.cardId, cardId), eq(cardLabels.labelId, labelId)))
-				.run();
-		} else {
-			db.insert(cardLabels).values({ cardId, labelId }).run();
-		}
-		emit(boardId, 'update', { type: 'label' });
-		return !existing;
-	});
+	const toggled = writeAs(locals, (caller) => toggleCardLabel(caller, {}, body, { source: 'ui' }));
 	return json({ toggled });
 };
 

@@ -1,46 +1,19 @@
-import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
-import { cardComments, type Card, type CardComment } from '$lib/server/db/schema';
-import { eq, sql } from 'drizzle-orm';
-import { isAdmin } from '$lib/server/board-access';
-import { emit } from '$lib/server/events';
-import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
-import { pathId, readBody, readText } from '$lib/server/request-body';
-import { requireCard, requireUser } from '$lib/server/route-guards';
-import type { SessionUser } from '$lib/server/auth';
+import { json } from '@sveltejs/kit';
+import { deleteComment, editComment } from '$lib/server/card-comments';
+import { pathId, readBody } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
- * The comment, if it is on this card, on a board the caller can still edit,
- * and theirs to change.
+ * PUT — Edit own comment, on this card (404 otherwise), on a board the caller
+ * can still edit: authorship alone used to be enough, so someone removed from
+ * a board could go on editing what they had written there.
  *
- * Authorship alone used to be enough, so someone removed from a board could go
- * on editing what they had written there. Commenting needs edit access to the
- * board, and so does changing a comment.
- *
- * With it, the card and the board it is on, which an edit's entry names.
+ * The work is `editComment` in `$lib/server/card-comments`, which
+ * `PUT /api/v1/comments/{id}` shares (card 2012); this route names the card
+ * the comment must be on, and answers the row as written.
  */
-function requireOwnComment(
-	user: SessionUser | null,
-	cardId: number,
-	commentId: number,
-	verb: string
-): { comment: CardComment; card: Card; boardId: number } {
-	const caller = requireUser(user);
-
-	const comment = db.select().from(cardComments).where(eq(cardComments.id, commentId)).get();
-	if (!comment || comment.cardId !== cardId) throw error(404, 'Comment not found');
-
-	const { card, boardId } = requireCard(caller, comment.cardId, 'edit');
-
-	if (comment.userId !== caller.id && !isAdmin(caller)) {
-		throw error(403, `You can only ${verb} your own comments`);
-	}
-	return { comment, card, boardId };
-}
-
-/** PUT — Edit own comment. */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
 	const cardId = pathId(params.id, 'card');
@@ -53,43 +26,12 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// (card 2253). The `comment_edited` entry and the board's live update are
 	// the ones `PUT /api/v1/comments/{id}` writes and sends (card 2143): an
 	// edit made on screen had neither.
-	const updated = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		const { comment, card, boardId } = requireOwnComment(user, cardId, commentId, 'edit');
-
-		const content = readText(body, 'content', {
-			required: true,
-			trim: true,
-			min: 1,
-			max: 50000,
-			keep: comment.content,
-			says: { missing: 'Comment cannot be empty', empty: 'Comment cannot be empty' }
-		});
-
-		const row = db
-			.update(cardComments)
-			.set({ content, updatedAt: sql`(datetime('now'))` })
-			.where(eq(cardComments.id, commentId))
-			.returning()
-			.get();
-
-		logUiActivity({
-			boardId,
-			cardId: comment.cardId,
-			action: ACTIONS.commentEdited,
-			detail: `Edited a comment on "${card.title}"`,
-			...actorOf(user)
-		});
-
-		emit(boardId, 'update', { type: 'card' });
-
-		return row;
-	});
+	const updated = writeAs(locals, (caller) => editComment(caller, { commentId, cardId }, body, { source: 'ui' }));
 
 	return json(updated);
 };
 
-/** DELETE — Delete own comment (or admin). */
+/** DELETE — Delete own comment (or admin), on this card. The work is `deleteComment` (card 2012). */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	const cardId = pathId(params.id, 'card');
 	const commentId = pathId(params.commentId, 'comment');
@@ -98,9 +40,6 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// transaction that asks first whether the session is still open, and who
 	// its account is now (card 2253). The check and the delete were two steps
 	// with no transaction around them.
-	writeAs(locals, (caller) => {
-		requireOwnComment(caller, cardId, commentId, 'delete');
-		db.delete(cardComments).where(eq(cardComments.id, commentId)).run();
-	});
+	writeAs(locals, (caller) => deleteComment(caller, { cardId, commentId }, null, { source: 'ui' }));
 	return json({ success: true });
 };

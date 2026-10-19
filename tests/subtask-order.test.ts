@@ -179,8 +179,8 @@ describe('every reader of a card’s subtasks orders them by position, then id',
 			['src/routes/board/[id]/+page.server.ts', 1],
 			['src/lib/server/cross-board-cards.ts', 1],
 			['src/routes/api/cards/[id]/context/+server.ts', 1],
-			['src/routes/api/subtasks/+server.ts', 1],
-			['src/routes/api/v1/cards/[cardId]/subtasks/+server.ts', 1],
+			// GET /api/subtasks and GET /api/v1/cards/:cardId/subtasks, through their one list (card 2012).
+			['src/lib/server/subtasks.ts', 1],
 			['src/routes/api/v1/cards/[cardId]/+server.ts', 1],
 			['src/lib/server/reports.ts', 2],
 			['src/routes/api/boards/[id]/export/csv/+server.ts', 1],
@@ -192,8 +192,8 @@ describe('every reader of a card’s subtasks orders them by position, then id',
 			expect(text.split('.orderBy(...SUBTASK_ORDER)').length - 1, file).toBe(sites);
 			expect(text, file).not.toContain('asc(subtasks.position))');
 		}
-		// Both creates take the next position from the one helper.
-		for (const file of ['src/routes/api/subtasks/+server.ts', 'src/routes/api/v1/cards/[cardId]/subtasks/+server.ts']) {
+		// Both creates take the next position from the one helper, in the one create they share (card 2012).
+		for (const file of ['src/lib/server/subtasks.ts']) {
 			expect(source(file), file).toContain('nextSubtaskPosition(cardId)');
 		}
 	});

@@ -295,11 +295,12 @@ export function requireSubBoardLink(
 	return { card, boardId: parentBoardId };
 }
 
-/** The subtask, its parent card and the board that card is on. */
+/** The subtask, its parent card and the board that card is on; `says` as for `requireBoard`. */
 export function requireSubtask(
 	user: SessionUser | null | undefined,
 	subtaskId: number,
-	need: Need
+	need: Need,
+	says?: string
 ): { subtask: Subtask; card: Card; boardId: number } {
 	requireUser(user);
 	if (!Number.isInteger(subtaskId)) error(400, 'Invalid subtask ID');
@@ -307,7 +308,7 @@ export function requireSubtask(
 	const subtask = db.select().from(subtasks).where(eq(subtasks.id, subtaskId)).get();
 	if (!subtask) error(404, 'Subtask not found');
 
-	const { card, boardId } = requireCard(user, subtask.cardId, need);
+	const { card, boardId } = requireCard(user, subtask.cardId, need, says);
 	return { subtask, card, boardId };
 }
 

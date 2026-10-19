@@ -1,16 +1,15 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
-import { subtasks } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
-import { emit } from '$lib/server/events';
-import { requireCard, requireUser } from '$lib/server/route-guards';
-import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
-import { PRIORITIES } from '$lib/server/card-fields';
-import { SUBTASK_ORDER, nextSubtaskPosition } from '$lib/server/subtask-order';
-import { readBody, readChoice, readColour, readDate, readId, readQueryId, readText } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
+import { createSubtask, listSubtasks } from '$lib/server/subtasks';
+import { readBody, readQueryId } from '$lib/server/request-body';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
+/**
+ * GET /api/subtasks?cardId= — a card's subtasks, by position and then id; no
+ * card named, none. The work is `listSubtasks` in `$lib/server/subtasks`,
+ * which the v1 list shares (card 2012).
+ */
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
@@ -19,10 +18,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const cardId = readQueryId(url.searchParams.get('cardId'), 'card', 'Invalid cardId');
 	if (cardId === undefined) return json([]);
 
-	requireCard(locals.user, cardId, 'view');
-
-	const all = db.select().from(subtasks).where(eq(subtasks.cardId, cardId)).orderBy(...SUBTASK_ORDER).all();
-	return json(all);
+	return json(listSubtasks(locals.user, { cardId }, {}));
 };
 
 /**
@@ -35,6 +31,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
  * `priority` one of the four; `colorTag` a colour written `#rrggbb` or empty;
  * `dueDate` a date written `YYYY-MM-DD`, or null. A title that was missing
  * gave "New subtask", and every other field was stored as sent.
+ *
+ * The work is `createSubtask` in `$lib/server/subtasks`, which the v1 route
+ * shares (card 2012). This route takes no `position`, names the subtask alone
+ * in its entry, and sends `subtask` as its live event's type after the entry.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
@@ -43,48 +43,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// One transaction: the card is read, the caller checked and the position
 	// worked out in the one that creates the subtask and writes its entry. It
 	// asks first whether the session is still open, and who its account is now
-	// (card 2253).
-	const subtask = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		// The board is the parent card's. A `boardId` in the body is ignored.
-		const cardId = readId(body, 'cardId', { required: true, says: 'Invalid card ID' });
-		const { boardId } = requireCard(user, cardId, 'edit');
-
-		const title = readText(body, 'title', {
-			required: true,
-			trim: true,
-			min: 1,
-			max: 500,
-			says: { missing: 'title is required', empty: 'title is required' }
-		});
-		const description = readText(body, 'description', { max: 50000 });
-		const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true });
-		const colorTag = readColour(body, 'colorTag', { allowEmpty: true });
-		const dueDate = readDate(body, 'dueDate', { nullable: true });
-
-		const subtask = db
-			.insert(subtasks)
-			.values({
-				cardId,
-				title,
-				description: description ?? '',
-				priority: priority ?? 'medium',
-				colorTag: colorTag ?? '',
-				dueDate: dueDate ?? null,
-				position: nextSubtaskPosition(cardId)
-			})
-			.returning()
-			.get();
-
-		logUiActivity({
-			boardId,
-			cardId,
-			action: ACTIONS.subtaskCreated,
-			detail: subtask.title,
-			...actorOf(user)
-		});
-		emit(boardId, 'update', { type: 'subtask' });
-		return subtask;
-	});
+	// (card 2253). The card is named in the body, and read in there.
+	const subtask = writeAs(locals, (caller) => createSubtask(caller, {}, body, { source: 'ui', eventType: 'subtask' }));
 	return json(subtask, { status: 201 });
 };
