@@ -570,26 +570,51 @@
 		}
 	}
 
+	/** What the page says when the address pasted is not the whole one (card 2251, decision 5). */
+	const PASTE_WHOLE_ADDRESS =
+		"Paste the whole address from the browser's address bar: it holds the code and the check that this connection was started here.";
+
 	async function exchangeGDriveCode() {
 		if (!gdriveAuthCode.trim() || !gdriveConnecting) return;
-		gdriveExchanging = true;
 		const started = toasts.navigation();
 
-		// Extract the code from a full URL if the user pasted the entire redirect URL
-		let code = gdriveAuthCode.trim();
+		// The whole address Google's page leads to: its code, and the state that
+		// shows this Connect was started here (card 2251). A bare code is not
+		// sent: the server refuses a code without its state. An address Google
+		// ended with an error, consent refused above all, is said and not sent.
+		let address: URL | null = null;
 		try {
-			const urlObj = new URL(code);
-			const codeParam = urlObj.searchParams.get('code');
-			if (codeParam) code = codeParam;
-		} catch { /* not a URL, use as-is */ }
+			address = new URL(gdriveAuthCode.trim());
+		} catch { /* not an address: a bare code, refused below */ }
+		const googleError = address?.searchParams.get('error');
+		if (googleError) {
+			showToast(
+				googleError === 'access_denied'
+					? 'Google says access was not granted (access_denied). Press Connect again and allow access.'
+					: `Google answered with an error (${googleError}). Press Connect again.`,
+				'error',
+				started
+			);
+			gdriveConnecting = '';
+			gdriveAuthCode = '';
+			return;
+		}
+		const code = address?.searchParams.get('code');
+		const state = address?.searchParams.get('state');
+		if (!code || !state) {
+			// The box stays open, for the whole address to be pasted.
+			showToast(PASTE_WHOLE_ADDRESS, 'error', started);
+			return;
+		}
 
+		gdriveExchanging = true;
 		try {
 			const res = await sent(
 				() =>
 					fetch('/api/admin/backup/gdrive/auth', {
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ code, destName: gdriveConnecting })
+						body: JSON.stringify({ code, state, destName: gdriveConnecting })
 					}),
 				'Failed to exchange authorization code'
 			);
@@ -2324,11 +2349,11 @@
 				A Google sign-in window has opened. After granting access, Google will redirect to a page that may not load — <strong>that's expected</strong>.
 			</p>
 			<p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: var(--space-md); line-height: 1.5">
-				Copy the <strong>entire URL</strong> from your browser's address bar (it will contain <code style="background: var(--bg-elevated); padding: 1px 4px; border-radius: 3px; font-size: 0.72rem">code=</code>) and paste it below:
+				Copy the <strong>whole address</strong> from your browser's address bar, not only the code: it holds the code and the check that this connection was started here. Paste it below:
 			</p>
 			<input
 				type="text"
-				placeholder="Paste the full URL or authorization code here..."
+				placeholder="Paste the whole address, starting http://localhost/?state=…"
 				bind:value={gdriveAuthCode}
 				class="form-input"
 				style="width: 100%; font-family: monospace; font-size: 0.78rem; margin-bottom: var(--space-md)"

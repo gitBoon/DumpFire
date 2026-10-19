@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.45
+version: 1.46
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1487,7 +1487,7 @@ superadmin...", for everybody else who is not the superadmin, an administrator i
 | `POST /api/admin/reset` | Clear every account, and be the superadmin of the installation they then set up |
 | `GET`, `PUT`, `POST /api/admin/backup` | Add a destination of their own and have the whole database sent to it. The `GET` masks every secret field of every destination (card 2187; it answered a Google Drive refresh token as stored), and a `PUT` keeps a masked secret only for the one stored destination that is the same in type, name and every setting that is not secret (card 2190; it was taken by the destination's place in the list) |
 | `POST /api/admin/backup/test` | Have a stored destination's password sent to a host of their choosing, which until card 2190 a test whose secrets were masked did: it connected with the stored ones whatever host it named. Now a masked secret is used only for an unchanged destination, by the `PUT`'s rule, and any other is refused `400` before anything connects |
-| `GET`, `POST /api/admin/backup/gdrive/auth` | Connect a Google Drive of their own as a destination. Connect asks Google for `drive.file`, DumpFire's own files, where it asked for the whole of Drive (card 2188) |
+| `GET`, `POST /api/admin/backup/gdrive/auth` | Connect a Google Drive of their own as a destination. Connect asks Google for `drive.file`, DumpFire's own files, where it asked for the whole of Drive (card 2188). The `POST` takes a code only with the state the same session's `GET` put in the consent address, once and within ten minutes, and exchanges it with that Connect's PKCE verifier (card 2251; below) |
 | `GET`, `PUT`, `POST /api/admin/smtp` | Point mail at a server of their own and the App URL at a host of their own, and read an invite meant for somebody else. A `PUT` keeps a masked or missing mail password only while the host, port, user name and "Allow mail without a checked, encrypted connection" are as stored, and turning that setting on or off from the panel needs the password typed and writes a `WARN` line naming who (cards 2190 and 2189), so a session in the wrong hands cannot send the stored password elsewhere, or lower its protection, without knowing it. The host is compared trimmed of ASCII spaces and tabs, ASCII letters in any case, and stored as it was saved while the password is kept, so the host compared is the host connected to (the review-fix pass's S1). A restore also brings the setting in, with the backup's other mail settings and with neither: it keeps this server's password only where the setting is this server's, and its "To enter again" line names the box where it differs (S5) |
 
 ```mermaid
@@ -1512,6 +1512,53 @@ user and team routes.
   [If Nobody Can Sign In as the Superadmin](deployment.md#if-nobody-can-sign-in-as-the-superadmin).
 - **The admin page shows an administrator none of it**, and asks the server for none of it
   when it opens. In its place is one section that names the superadmin.
+- **A Google Drive Connect is finished only by the session that started it** (card 2251).
+  The `POST` exchanged any code it was sent, with the destination's name as the OAuth
+  `state` and no check of it, so a superadmin led to paste a code or address from somebody
+  else's consent connected that person's Google account, and with the Folder ID empty every
+  later backup went to it. Now each `GET` makes a `state` of 32 random bytes and a PKCE
+  `code_verifier`, held in memory (`src/lib/server/gdrive-connect.ts`) for ten minutes and
+  bound to the SHA-256 of the session's token, the account and the destination; the consent
+  address carries the state and `code_challenge` (S256), and is answered `Cache-Control:
+  no-store`. The `POST` must send the state back: it is removed the first time it is
+  presented, whatever follows, and a missing, unknown, expired or used one, or one another
+  session, account or destination started, is `400` in one sentence ("This connection was
+  not started from this session, or has expired or been used. …"), never saying which,
+  with nothing exchanged or written and one `WARN` line, filed under the account, whose meta
+  `stateSent` tells a `POST` with no state from one whose state failed. The code goes to
+  Google with the verifier, and Google refuses a code issued for another challenge. The
+  state and the challenge both sit in the consent address, so whoever holds that address
+  can finish the Connect it started: an address somebody else sends cannot connect their
+  account unless they also had the consent address this session's Connect opened. The page
+  reads the code and the state from the whole address pasted and sends nothing for a bare
+  code. One Connect per session and destination, 20 at most; a restart ends those under
+  way. A connection already made is not checked again.
+
+  ```mermaid
+  sequenceDiagram
+      participant S as Superadmin's session
+      participant D as DumpFire
+      participant X as Somebody else
+      participant G as Google
+      S->>D: GET gdrive/auth: state s1 and verifier v1 kept, bound to this session
+      X->>G: consents with their own account (state x, or none)
+      X-->>S: "paste this address": code c2 with state x
+      S->>D: POST code c2, state x
+      D-->>S: 400, x is not a state this session started; nothing sent to Google
+  ```
+
+- **The Connect `GET` can be reached from another site** (card 2251). A cross-site
+  navigation to it (the session cookie goes with it) replaces this session's pending
+  Connect for each destination name it names, and fills slots under the shared cap of 20,
+  pushing out other sessions' pending Connects. That is denial of service only: the other
+  site never sees a state or the consent address, so it cannot finish a Connect; the
+  superadmin presses Connect again.
+- **Not prevented here: a superadmin who connects someone else's Drive on purpose**
+  (card 2251). A superadmin who gets someone else to approve their consent address and
+  paste back the result connects that person's Drive. The server cannot see which Google
+  account approved (`drive.file` returns no identity), so it cannot refuse it. It is
+  limited: `drive.file` reaches only the files DumpFire makes, and any superadmin can
+  already edit every destination.
 
 Covered by the `superadmin` kind in `tests/access-every-route.test.ts`, which has an entry
 for every one of these routes, and by `tests/backups.test.ts`.

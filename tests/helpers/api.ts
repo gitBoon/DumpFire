@@ -31,11 +31,17 @@
  *
  * The cookie is not looked up: the handler is given `user` as its caller, as
  * the gate would give it the session's account.
+ *
+ * Nor is a credential set: `locals.credential` is left undefined, as for a
+ * request no gate let in, unless the test gives one. A handler that tells two
+ * sessions of one account apart is given each in turn (card 2251):
+ *
+ *     api('GET', '/api/admin/backup/gdrive/auth?dest=G', { user, credential: { kind: 'session', token: 'laptop' } });
  */
 import { readdirSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { isHttpError, isRedirect, type RequestEvent } from '@sveltejs/kit';
-import type { SessionUser } from '$lib/server/auth';
+import type { Credential, SessionUser } from '$lib/server/auth';
 import { guardBody } from '$lib/server/api-errors';
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -155,6 +161,12 @@ export type ApiOptions = {
 	headers?: Record<string, string>;
 	/** The address the request appears to come from. Rate limits are keyed on it. */
 	ip?: string;
+	/**
+	 * What the gate let the request in with, set as `locals.credential`: a
+	 * session's token, an API key's row id, or null for neither. Left out, it is
+	 * undefined, as for a request no gate let in.
+	 */
+	credential?: Credential | null;
 };
 
 export type ApiResult = {
@@ -197,7 +209,7 @@ export async function api(method: Method, path: string, opts: ApiOptions = {}): 
 		request,
 		url,
 		params: found.params,
-		locals: { user: opts.user ?? null },
+		locals: 'credential' in opts ? { user: opts.user ?? null, credential: opts.credential } : { user: opts.user ?? null },
 		route: { id: found.route.pattern },
 		cookies: {
 			get: (name: string) => cookieJar.get(name),

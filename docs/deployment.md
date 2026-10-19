@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.36
+version: 1.37
 status: As-Built
 date: 2026-10-19
 tags:
@@ -2938,6 +2938,38 @@ SELECT cc.id AS comment_id, cc.card_id, substr(cc.content, 1, 120) AS content
 
 **A row can be left.** The update rewrites none of these notices and changes nothing for them: each reads as it did before the deploy. A one-off rewrite of the rows found would change stored comments, and would be its own card, not part of this deploy.
 
+### A Google Drive Connect Finished Only by the Session That Started It
+
+**Card 2251.** No migration, no setting and no value changes. Connect on a Google Drive destination with OAuth now puts a random `state` and a PKCE challenge (`code_challenge`, `code_challenge_method=S256`) in Google's consent address, and takes the address pasted back only from the same browser session, signed in as the same superadmin, for the same destination, within ten minutes and once; the code goes to Google with the PKCE verifier. Until now it took any code, so a code from somebody else's consent, pasted by a superadmin led to, connected that person's Google account. See [Authentication & Security](authentication-security.md) (the superadmin's routes) and [Backups & Reporting](backup-reporting.md) (Google Drive's scope and folder).
+
+**Owner to know.**
+
+- **Paste the whole address.** The page refuses a bare code, which it used to take: "Paste the whole address from the browser's address bar: it holds the code and the check that this connection was started here." An address holding `error=access_denied` (consent refused in Google's window) is said and not sent.
+- **A refused address** answers "This connection was not started from this session, or has expired or been used. Press Connect again, and paste the whole address Google's page leads to.", with one `[WARN] [GDRIVE] Google Drive Connect refused for destination "…"` line on the Audit page. Press Connect and start again.
+- **A deploy or restart ends a Connect under way**: the Connects are held in memory. Press Connect again.
+- **Reload any admin page left open from before the deploy before connecting.** A tab loaded before it sends no state, and every paste from it is refused.
+- **Connections already made keep working** and are not checked again. No destination needs to be connected again because of this deploy.
+- **Google must accept PKCE for this OAuth client** (check 125). The client's secret is still sent with the code, as before; whether Google accepts the verifier with it for this client's type cannot be tried from the development machine, where Google is stood in for. If Google refuses the verifier, no new Connect can be made until that is resolved; existing connections are unaffected.
+
+#### After the deploy
+
+Checks 124 to 129 run on production as the superadmin, on a Google Drive destination with OAuth that is **not yet connected**: add a scratch destination for them (any name, the same client ID and secret as the real one, the Folder ID empty), and remove it afterwards, with the folder Connect makes in the account's My Drive. Do not use the real destination: once connected, it shows no Connect button. Have the client ID and secret from the Google Cloud console to hand: check 126 adds the destination again, and the page masks the secret. Run the checks away from the scheduled backup time: while the scratch destination is unconnected a scheduled run fails for it (and sends its failure email if notify-on-failure is on), and between checks 125 and 126 it is connected, so a scheduled run would upload a full copy of the database into its folder.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 124 | 2251 | **🔗 Connect** on the scratch destination; in the consent window, before approving, look at the address | `state=` a long random value, `code_challenge=` and `code_challenge_method=S256` | `state=` the destination's name, or no challenge |
+| 125 | 2251 | **Does Google accept PKCE for this OAuth client type?** Approve, copy the whole address of the page Google leads to (`http://localhost/?state=…&code=…`) and keep a copy of it (for example in a text editor) for check 127, paste it, ✅ Connect | "Google Drive connected. DumpFire made the folder …": Google accepted the verifier for this client | `invalid_grant`, or any message naming a code verifier or `code_challenge`: Google refuses PKCE for this OAuth client type. Stop and report it with the client's type (Google Cloud console, Credentials: "Desktop app" or "Web application"); the design's PKCE half is then revisited |
+| 126 | 2251 | Remove the scratch destination and add it again (still not connected); Connect, approve, and paste only the value after `code=` | The page refuses: "Paste the whole address from the browser's address bar: …"; nothing is sent | Sent, or connected |
+| 127 | 2251 | Paste the address from check 125 again (Connect pressed first, the box open) | "This connection was not started from this session, or has expired or been used. …"; one `[WARN] [GDRIVE] Google Drive Connect refused …` line on the Audit page, filed under your account with `{"stateSent":true}` | Connected |
+| 128 | 2251 | Connect, wait eleven minutes, then approve and paste the address | The same refusal | Connected |
+| 129 | 2251 | Connect and approve in one browser; in a second browser signed in as the same superadmin, press Connect, close its consent window, and paste the first browser's address there | The same refusal | Connected |
+
+Then remove the scratch destination, and in Google Drive delete the scratch folder check 125 made.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image builds a consent address with the destination's name as its `state` and no challenge, and takes any code again; a connection made under either image works under both.
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -3169,6 +3201,8 @@ Backups made before this version do hold the sessions of whoever was signed in w
 **What the admin page is told of the secrets, and when a saved one is used** (cards 2187 and 2190). `GET /api/admin/backup` answers every secret field masked, `••••••••`, whatever the destination's type: an SFTP password and private key, an S3 secret access key, a client secret, a Google Drive refresh token and a service account's private key (a service account JSON that cannot be read as an object is masked whole). A save or a test that sends a secret masked uses the saved one only from the one saved destination that is the same in type, name and every setting that is not secret; otherwise it is refused `400`, naming what to type again, with nothing written. See [Configuring Backups](admin-guide.md#configuring-backups).
 
 **Google Drive with OAuth** (card 2188). Connect asks Google for `https://www.googleapis.com/auth/drive.file`, the files DumpFire makes, and records the scope Google granted as `grantedScope` in the destination. With the Folder ID empty it makes a folder, "DumpFire backups (made YYYY-MM-DD)", in the account's My Drive and saves its id; with one set it fetches it and refuses the Connect, saving nothing, when Google does not let it reach it. Connections made before this change asked for the whole of Drive and keep it until they are narrowed by hand, removing DumpFire's access in the Google account first: see [Configuring Backups](admin-guide.md#configuring-backups). A token refreshes with the scopes it was granted, so the deploy stops no Drive backup.
+
+**A Connect is finished only by the session that started it** (card 2251): the consent address carries a random `state` and a PKCE challenge, and the whole address Google's page leads to must be pasted back from the same session, within ten minutes, once. See [A Google Drive Connect Finished Only by the Session That Started It](#a-google-drive-connect-finished-only-by-the-session-that-started-it).
 
 Backup destinations, the schedule and "Run Now" are the superadmin's: see [The Superadmin](#the-superadmin). See [Restoring from Backup](admin-guide.md#restoring-from-backup) for the two ways to put one back.
 

@@ -37,6 +37,11 @@
  *     granted, and writes nothing over a save made while Google answers (card
  *     2188). Google is stood in for by spies on `OAuth2.prototype.getToken`
  *     and `google.drive`.
+ *   - Connect is taken only from the session that started it: the consent
+ *     address carries a random state, held in memory for ten minutes and
+ *     bound to the session, the account and the destination, and a PKCE
+ *     challenge whose verifier goes to Google with the code; a state is used
+ *     once, whatever comes of it (card 2251).
  *
  * No destination is reached. `createDestination` is replaced, for this file,
  * by one that keeps what it is handed: see `uploaded` and `handed`.
@@ -47,6 +52,7 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -76,7 +82,7 @@ import {
 	unsealedBecause
 } from '$lib/server/backup-secrets';
 import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
-import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
 import { NO_SUPERADMIN_IN_BACKUP, RestoreError, SIGNED_OUT, backupLacksSuperadmin, restoreFromBackup, rowsToRestore } from '$lib/server/db/restore';
@@ -2889,7 +2895,24 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 			await meanwhile?.();
 			return { tokens, res: null };
 		}) as never);
-	const connect = () => api('POST', '/api/admin/backup/gdrive/auth', { user: chief, body: { code: 'the-code', destName: 'G' } });
+	/** Connect's first half, as the page asks it: the consent address, read. */
+	const begin = async (opts: { user?: SessionUser; credential?: Credential | null; dest?: string } = {}) => {
+		const res = await api('GET', `/api/admin/backup/gdrive/auth?dest=${opts.dest ?? 'G'}`, {
+			user: opts.user ?? chief,
+			...('credential' in opts ? { credential: opts.credential } : {})
+		});
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		return { res, address: new URL(res.body.authUrl), state: new URL(res.body.authUrl).searchParams.get('state') };
+	};
+	/** Its second half: the code and the state from the address Google's page leads to (card 2251). */
+	const finish = (state: unknown, opts: { user?: SessionUser; credential?: Credential | null; destName?: string } = {}) =>
+		api('POST', '/api/admin/backup/gdrive/auth', {
+			user: opts.user ?? chief,
+			...('credential' in opts ? { credential: opts.credential } : {}),
+			body: { code: 'the-code', ...(state === undefined ? {} : { state }), destName: opts.destName ?? 'G' }
+		});
+	/** Both halves, as one superadmin in one session. */
+	const connect = async () => finish((await begin()).state);
 
 	/** A folder `files.get` finds, and one it does not. */
 	const found = (id: string, more: Record<string, unknown> = {}) => ({ data: { id, name: 'Backups', mimeType: FOLDER_TYPE, trashed: false, ...more } });
@@ -3037,6 +3060,165 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 			message: 'Connected to Google Drive folder (0 existing files)'
 		});
 	});
+
+	describe('Connect is taken only from the session that started it: a state used once, and PKCE (card 2251)', () => {
+		/** Decision 7's one sentence, for every failed state check. */
+		const NOT_STARTED_HERE =
+			'This connection was not started from this session, or has expired or been used. ' +
+			"Press Connect again, and paste the whole address Google's page leads to.";
+		const WARNED = 'WARN GDRIVE Google Drive Connect refused for destination "G": its state was not one this session started, or had expired or been used';
+		const H = { ...G, name: 'H', clientId: 'h-client.apps.example.test' };
+		/** Two sessions of the one superadmin, as the gate keeps each (decision 2). */
+		const LAPTOP: Credential = { kind: 'session', token: 'chief-laptop-session-2251' };
+		const PHONE: Credential = { kind: 'session', token: 'chief-phone-session-2251' };
+		const BASE64URL_32_BYTES = /^[A-Za-z0-9_-]{43}$/;
+		/** A second superadmin, made before anything is snapshotted. */
+		let deputy: SessionUser;
+		beforeEach(() => {
+			deputy = makeUser({ username: 'deputy', role: 'superadmin' });
+		});
+
+		/** What `run` answers, and the lines at WARN and above written meanwhile: the tests keep ERROR and above otherwise. */
+		const warnedIn = async <T>(run: () => Promise<T>) => {
+			const level = process.env.LOG_LEVEL;
+			process.env.LOG_LEVEL = 'WARN';
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			const from = (sqlite.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM system_logs').get() as { id: number }).id;
+			try {
+				const result = await run();
+				const lines = column<string>(sqlite, `SELECT level || ' ' || context || ' ' || message FROM system_logs WHERE id > ${from} ORDER BY id`);
+				/** The account each line is filed under, and its meta. */
+				const filed = (sqlite.prepare(`SELECT user_id AS userId, meta FROM system_logs WHERE id > ${from} ORDER BY id`).all() as {
+					userId: number | null;
+					meta: string | null;
+				}[]).map((line) => ({ userId: line.userId, meta: line.meta === null ? null : JSON.parse(line.meta) }));
+				return { result, lines, filed };
+			} finally {
+				if (level === undefined) delete process.env.LOG_LEVEL;
+				else process.env.LOG_LEVEL = level;
+			}
+		};
+
+		it('answers a new random state at every GET, never the destination’s name, with an S256 challenge, not to be kept (decisions 1, 3, 8)', async () => {
+			store(G);
+
+			const first = await begin();
+			const second = await begin();
+
+			for (const { address, state } of [first, second]) {
+				expect(state).toMatch(BASE64URL_32_BYTES);
+				expect(state).not.toBe('G');
+				expect(address.searchParams.get('code_challenge')).toMatch(BASE64URL_32_BYTES);
+				expect(address.searchParams.get('code_challenge_method')).toBe('S256');
+			}
+			expect(first.state).not.toBe(second.state);
+			expect(first.address.searchParams.get('code_challenge')).not.toBe(second.address.searchParams.get('code_challenge'));
+			expect(first.res.headers.get('cache-control')).toBe('no-store');
+		});
+
+		it('hands Google the code with the verifier whose SHA-256 is the address’s challenge (decision 3)', async () => {
+			store(G);
+			const exchanged = exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+			const { address, state } = await begin();
+
+			const res = await finish(state);
+
+			expect(res.body.success, JSON.stringify(res.body)).toBe(true);
+			expect(exchanged).toHaveBeenCalledTimes(1);
+			const handed = (exchanged.mock.calls[0] as unknown[])[0] as { code: string; codeVerifier: string };
+			expect(Object.keys(handed).sort()).toEqual(['code', 'codeVerifier']);
+			expect(handed.code).toBe('the-code');
+			expect(handed.codeVerifier).toMatch(BASE64URL_32_BYTES);
+			expect(createHash('sha256').update(handed.codeVerifier).digest('base64url')).toBe(address.searchParams.get('code_challenge'));
+		});
+
+		it.each([
+			['no state', false, async () => (await begin(), finish(undefined))],
+			['an empty state', false, async () => (await begin(), finish(''))],
+			['a state it never gave', true, async () => (await begin(), finish('A'.repeat(43)))],
+			['the destination’s name, the state it once gave', true, async () => (await begin(), finish('G'))],
+			['a state another session of the same superadmin started', true, async () => finish((await begin({ credential: LAPTOP })).state, { credential: PHONE })],
+			['a state another superadmin started', true, async () => finish((await begin({ user: deputy })).state)],
+			['a state started for another destination', true, async () => finish((await begin({ dest: 'H' })).state)]
+		])('refuses %s: 400 in one sentence, nothing exchanged or written, one WARN line under the account (decisions 2, 7)', async (_case, stateSent, present) => {
+			store(G, H);
+			const exchanged = exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+			const before = snapshotDb();
+
+			const { result: res, lines, filed } = await warnedIn(present);
+
+			expect(res.status, JSON.stringify(res.body)).toBe(400);
+			expect(res.body).toEqual({ message: NOT_STARTED_HERE });
+			expect(exchanged).not.toHaveBeenCalled();
+			expect(files.create).not.toHaveBeenCalled();
+			expectUnchanged(before);
+			expect(lines).toEqual([WARNED]);
+			// Filed under the superadmin who pasted, telling no state from a failed one (review O3).
+			expect(filed).toEqual([{ userId: chief.id, meta: { stateSent } }]);
+		});
+
+		it('refuses a state presented a second time, whether the first time was refused or taken (decision 4)', async () => {
+			store(G, H);
+			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+
+			// Refused the first time, for another destination: spent all the same.
+			const refused = await begin();
+			expect((await finish(refused.state, { destName: 'H' })).status).toBe(400);
+			const again = await finish(refused.state);
+			expect(again.status).toBe(400);
+			expect(again.body).toEqual({ message: NOT_STARTED_HERE });
+
+			// Taken the first time.
+			const taken = await begin();
+			expect((await finish(taken.state)).body.success).toBe(true);
+			const twice = await finish(taken.state);
+			expect(twice.status).toBe(400);
+			expect(twice.body).toEqual({ message: NOT_STARTED_HERE });
+		});
+
+		it('takes a state inside its ten minutes and refuses one past them (decision 4)', async () => {
+			store(G);
+			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+			vi.useFakeTimers({ toFake: ['Date'] });
+			try {
+				const started = Date.now();
+				const late = await begin({ credential: LAPTOP });
+				const inTime = await begin({ credential: PHONE });
+
+				vi.setSystemTime(started + 10 * 60 * 1000 - 1000);
+				expect((await finish(inTime.state, { credential: PHONE })).body.success).toBe(true);
+
+				vi.setSystemTime(started + 10 * 60 * 1000 + 1);
+				const res = await finish(late.state, { credential: LAPTOP });
+				expect(res.status).toBe(400);
+				expect(res.body).toEqual({ message: NOT_STARTED_HERE });
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('forgets the older state when the same session asks again for the same destination (decision 4)', async () => {
+			store(G);
+			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+
+			const first = await begin();
+			const second = await begin();
+
+			expect((await finish(first.state)).status).toBe(400);
+			expect((await finish(second.state)).body.success).toBe(true);
+		});
+
+		it('holds at most twenty Connects at once, dropping the oldest (decision 4)', async () => {
+			store(G);
+			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+			const session = (n: number): Credential => ({ kind: 'session', token: `session-${n}` });
+			const states: (string | null)[] = [];
+			for (let n = 0; n <= 20; n++) states.push((await begin({ credential: session(n) })).state);
+
+			expect((await finish(states[0], { credential: session(0) })).status).toBe(400);
+			expect((await finish(states[1], { credential: session(1) })).body.success).toBe(true);
+		});
+	});
 });
 
 describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, slice 4)', () => {
@@ -3074,8 +3256,15 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 		expect(row).toMatch(
 			/\{#if dest\.refreshToken\}\s*\{#if driveScopeIsNarrow\(dest\.grantedScope\)\}\s*<span[^>]*>✅ Connected<\/span>\s*\{:else\}\s*<span[^>]*>⚠️ Connected · all of Drive<\/span>\s*\{\/if\}\s*\{:else\}\s*<button[^>]*onclick=\{\(\) => connectGDriveOAuth\(dest\.name\)\}>🔗 Connect<\/button>\s*\{\/if\}/
 		);
-		// No "Connect again": the page would lead into the wrong order (R2).
-		expect(page).not.toContain('Connect again');
+		// No "Connect again" as an action on a destination: the page would lead
+		// into the wrong order (R2). The phrase is only in the two toasts of card
+		// 2251's paste box, for a Connect Google ended with an error, which leaves
+		// the destination unconnected and its Connect button showing.
+		expect(markup).not.toContain('Connect again');
+		const script = page.slice(0, page.indexOf('</script>'));
+		const fn = script.slice(script.indexOf('async function exchangeGDriveCode()'), script.indexOf('// ─── Board Management'));
+		expect(script.match(/Connect again/g)).toHaveLength(2);
+		expect(fn.match(/Press Connect again/g)).toHaveLength(2);
 		expect(markup.match(/connectGDriveOAuth\(/g)).toHaveLength(1);
 	});
 

@@ -16,14 +16,22 @@
  * did not make, so Connect makes one of its own when the Folder ID is empty,
  * and checks the one it is given when it is not.
  *
+ * The `POST` takes a code only from the session that started the Connect
+ * (card 2251): the `GET` puts a random `state` and a PKCE `code_challenge` in
+ * the consent address, and the `POST` must send that state back, from the
+ * same session and account and for the same destination, within ten minutes
+ * and once; the code goes to Google with the verifier. See
+ * `$lib/server/gdrive-connect`.
+ *
  * The superadmin's alone: see `/api/admin/backup`.
  */
 
 import { json, error } from '@sveltejs/kit';
-import { google, type drive_v3 } from 'googleapis';
+import { google, type Auth, type drive_v3 } from 'googleapis';
 import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
 import { getBackupConfig, saveBackupConfig } from '$lib/server/backup';
 import { makeDumpfireFolder, reachFolder } from '$lib/server/backup-destinations';
+import { startConnect, takeConnect } from '$lib/server/gdrive-connect';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { readBody, readText } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
@@ -57,9 +65,22 @@ const REMEDY_WIDE =
 /** Why a Connect is refused when the destination was saved meanwhile (decision 9). */
 const CHANGED_MEANWHILE = 'The destination was changed or removed while it was being connected, so the connection was not saved. Connect it again.';
 
-/** GET — Generate the Google OAuth consent URL. */
+/**
+ * Why a code is refused when its state is not one this session started, has
+ * expired or has been used (card 2251, decision 7): one sentence for all of
+ * them, never saying which.
+ */
+const NOT_STARTED_HERE =
+	'This connection was not started from this session, or has expired or been used. ' +
+	"Press Connect again, and paste the whole address Google's page leads to.";
+
+/**
+ * GET — Generate the Google OAuth consent URL, with a new state and PKCE
+ * challenge bound to this session (card 2251). Not to be kept by anything on
+ * the way: the state is this session's alone.
+ */
 export const GET: RequestHandler = async ({ locals, url }) => {
-	requireSuperadmin(locals.user);
+	const caller = requireSuperadmin(locals.user);
 
 	const destName = url.searchParams.get('dest');
 	if (!destName) throw error(400, 'Missing dest parameter');
@@ -72,15 +93,18 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!clientId || !clientSecret) throw error(400, 'Client ID and Secret required');
 
 	const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, REDIRECT_URI);
+	const { state, codeChallenge } = startConnect({ userId: caller.id, credential: locals.credential }, destName);
 
 	const authUrl = oauth2Client.generateAuthUrl({
 		access_type: 'offline',
 		prompt: 'consent',
 		scope: SCOPES,
-		state: destName
+		state,
+		code_challenge: codeChallenge,
+		code_challenge_method: 'S256' as Auth.CodeChallengeMethod
 	});
 
-	return json({ authUrl });
+	return json({ authUrl }, { headers: { 'cache-control': 'no-store' } });
 };
 
 /**
@@ -97,15 +121,33 @@ export const GET: RequestHandler = async ({ locals, url }) => {
  * meanwhile. A folder made for a Connect that is not saved is deleted again.
  * The token, the scope Google granted (none where it names none, R6) and a
  * new folder's id are saved together.
+ *
+ * Before all of that, the `state` (card 2251): taken once, here, whatever
+ * follows, and refused unless this session, this account and this destination
+ * started it within ten minutes. Nothing is exchanged or written then. The
+ * code goes to Google with the Connect's PKCE verifier.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	requireSuperadmin(locals.user);
+	const caller = requireSuperadmin(locals.user);
 
 	// Each text: `code` that was not was handed to Google as it was sent.
 	const body = await readBody(request);
 	const MISSING = 'Missing code or destName';
 	const code = readText(body, 'code', { required: true, min: 1, says: { missing: MISSING, empty: MISSING } });
 	const destName = readText(body, 'destName', { required: true, min: 1, says: { missing: MISSING, empty: MISSING } });
+	const state = readText(body, 'state', {});
+
+	const started = state ? takeConnect(state, { userId: caller.id, credential: locals.credential }, destName) : null;
+	if (!started) {
+		// Filed under the account, and telling a paste with no state (an old page,
+		// or a bare code) from one whose state failed; the answer says neither.
+		log.warn(
+			`Google Drive Connect refused for destination "${destName}": its state was not one this session started, or had expired or been used`,
+			{ stateSent: !!state },
+			{ userId: caller.id }
+		);
+		throw error(400, NOT_STARTED_HERE);
+	}
 
 	const config = getBackupConfig();
 	const destIndex = config.destinations.findIndex(d => d.name === destName && d.type === 'gdrive');
@@ -131,7 +173,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	};
 
 	try {
-		const { tokens } = await oauth2Client.getToken(code);
+		const { tokens } = await oauth2Client.getToken({ code, codeVerifier: started.verifier });
 		if (!tokens.refresh_token) {
 			return json({ success: false, message: 'No refresh token received. Try revoking app access at https://myaccount.google.com/permissions and reconnecting.' });
 		}
