@@ -143,14 +143,25 @@ const BUSY =
 
 describe('the server’s thread', () => {
 	// Probe: two threads, ten checks, the longest gap 21 ms (the timer's own
-	// granularity on Windows); on the server's thread, 214 ms. 60 ms leaves
-	// room for a loaded machine and stays well under one check.
+	// granularity on Windows); on the server's thread, 214 ms, one check.
+	//
+	// The bound is half of one check, timed here on the test's own thread
+	// (card 2274). A check made on the server's thread holds the timer for all
+	// of it, so the gap is at least one check; on threads it is only the time
+	// the machine gave the test's process no CPU. A fixed 60 ms measured that
+	// load instead, and failed under the whole suite at 75 and 79 ms; timed in
+	// the same run, a slower or busier machine widens the check and the bound
+	// together.
 	it.skipIf(CPUS < 3)('stays free while six checks are made at once', async () => {
 		await warm();
+		const started = performance.now();
+		compareSync(RIGHT, REAL);
+		const oneCheck = performance.now() - started;
+
 		const gap = await longestGap(() =>
 			Promise.all(Array.from({ length: 6 }, (_, n) => checkPassword(n % 2 ? RIGHT : 'wrong', REAL, 'other')))
 		);
-		expect(gap).toBeLessThan(60);
+		expect(gap, `the longest gap ${gap.toFixed(1)} ms, one check ${oneCheck.toFixed(1)} ms`).toBeLessThan(oneCheck / 2);
 	});
 
 	// Four sign-ins at a cost-12 account are about two fifths of a second of
