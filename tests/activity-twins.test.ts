@@ -30,7 +30,19 @@ import ts from 'typescript';
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '$lib/server/db';
-import { activityLog, cardLabels, cards, milestones, taskRequests, tokenUsage, type Card, type CardComment } from '$lib/server/db/schema';
+import {
+	activityLog,
+	boardCategories,
+	boards,
+	cardLabels,
+	cards,
+	categories,
+	milestones,
+	taskRequests,
+	tokenUsage,
+	type Card,
+	type CardComment
+} from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { ACTIONS, canonicalAction } from '$lib/server/logActivity';
 import { ACTIVITY_LABELS, activityLabel } from '$lib/utils/activity-labels';
@@ -404,6 +416,19 @@ function linkScene(linked: boolean): Scene {
 function goalScene(holding: boolean): Scene {
 	const s = cardScene();
 	makeMilestone({ board: s.A.board, name: 'Launch', createdBy: s.owner, cards: holding ? [s.first] : [] });
+	return s;
+}
+
+/**
+ * As `cardScene`, with the dashboard grouping Clients (id 1) that board A is
+ * filed under, and board A's card category Bug (id 1) and label Urgent (id 1).
+ */
+function boardScene(): Scene {
+	const s = cardScene();
+	const grouping = db.insert(boardCategories).values({ name: 'Clients', color: '#6366f1' }).returning().get();
+	db.update(boards).set({ categoryId: grouping.id }).where(eq(boards.id, s.A.board.id)).run();
+	db.insert(categories).values({ boardId: s.A.board.id, name: 'Bug', color: '#ef4444' }).run();
+	makeLabel(s.A.board, 'Urgent');
 	return s;
 }
 
@@ -854,6 +879,189 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		build: () => goalScene(true),
 		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id, attach: false } }),
 		v1: (s) => api('DELETE', `/api/v1/milestones/${launch()}/cards`, { user: s.owner, body: { cardId: s.first.id } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	// Slice A4: boards, dashboard groupings, columns, card categories and
+	// labels. No grouping, column change, category or label write records an
+	// entry, and no grouping write tells anyone. Each tree places a new column
+	// sent with no position where it did (R2): first from the page, after the
+	// last through v1.
+	{
+		row: 24,
+		what: 'making a board under a card',
+		build: boardScene,
+		internal: (s) => api('POST', '/api/boards', { user: s.owner, body: { name: 'Roadmap', emoji: '🗺️', parentCardId: s.first.id } }),
+		v1: (s) => api('POST', '/api/v1/boards', { user: s.owner, body: { name: 'Roadmap', emoji: '🗺️', parentCardId: s.first.id } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: ['board_created ui'], v1: ['api:board_created api'] }
+	},
+	{
+		row: 24,
+		what: 'making a board on the dashboard',
+		build: boardScene,
+		internal: (s) => api('POST', '/api/boards', { user: s.owner, body: { name: 'Roadmap' } }),
+		v1: (s) => api('POST', '/api/v1/boards', { user: s.owner, body: { name: 'Roadmap' } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: ['board_created ui'], v1: ['api:board_created api'] },
+		told: { internal: [], v1: [] }
+	},
+	{
+		row: 25,
+		what: 'renaming a board, with its emoji and its grouping',
+		build: boardScene,
+		internal: (s) => api('PUT', `/api/boards/${s.A.board.id}`, { user: s.owner, body: { name: 'Renamed', emoji: '🚀', categoryId: null } }),
+		v1: (s) => api('PUT', `/api/v1/boards/${s.A.board.id}`, { user: s.owner, body: { name: 'Renamed', emoji: '🚀', categoryId: null } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['board_updated ui'], v1: ['api:board_updated api'] }
+	},
+	{
+		row: 25,
+		what: 'deleting a board',
+		build: boardScene,
+		internal: (s) => api('DELETE', `/api/boards/${s.S.board.id}`, { user: s.owner }),
+		v1: (s) => api('DELETE', `/api/v1/boards/${s.S.board.id}`, { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 26,
+		what: 'making a dashboard grouping',
+		build: boardScene,
+		internal: (s) => api('POST', '/api/board-categories', { user: s.owner, body: { name: 'Partners', color: '#123456' } }),
+		v1: (s) => api('POST', '/api/v1/board-categories', { user: s.owner, body: { name: 'Partners', color: '#123456' } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] },
+		told: { internal: [], v1: [] }
+	},
+	{
+		row: 26,
+		what: 'renaming and recolouring a dashboard grouping',
+		build: boardScene,
+		internal: (s) => api('PUT', '/api/board-categories/1', { user: s.owner, body: { name: 'Customers', color: '#654321' } }),
+		v1: (s) => api('PUT', '/api/v1/board-categories/1', { user: s.owner, body: { name: 'Customers', color: '#654321' } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] },
+		told: { internal: [], v1: [] }
+	},
+	{
+		row: 26,
+		what: 'deleting a dashboard grouping',
+		build: boardScene,
+		internal: (s) => api('DELETE', '/api/board-categories/1', { user: s.owner }),
+		v1: (s) => api('DELETE', '/api/v1/board-categories/1', { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] },
+		told: { internal: [], v1: [] }
+	},
+	{
+		row: 27,
+		what: 'adding a column where it is asked for',
+		build: boardScene,
+		internal: (s) => api('POST', '/api/columns', { user: s.owner, body: { boardId: s.A.board.id, title: 'Review', position: 2.5, color: '#123456' } }),
+		v1: (s) => api('POST', `/api/v1/boards/${s.A.board.id}/columns`, { user: s.owner, body: { title: 'Review', position: 2.5, color: '#123456' } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 27,
+		what: 'adding a column with no position',
+		build: boardScene,
+		internal: (s) => api('POST', '/api/columns', { user: s.owner, body: { boardId: s.A.board.id, title: 'Review' } }),
+		v1: (s) => api('POST', `/api/v1/boards/${s.A.board.id}/columns`, { user: s.owner, body: { title: 'Review' } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] },
+		// Each tree's place for it (R2): first from the page, after board A's last (3) through v1.
+		rows: (() => {
+			const added = (position: number) => [
+				{ table: 'columns', row: '9', was: undefined, is: { id: 9, board_id: 1, title: 'Review', position, color: '#6366f1', wip_limit: 0, show_add_card: 0 } },
+				{ table: 'sqlite_sequence', row: 'columns', was: { name: 'columns', seq: 8 }, is: { name: 'columns', seq: 9 } }
+			];
+			return { internal: added(0), v1: added(4) };
+		})()
+	},
+	{
+		row: 27,
+		what: 'changing a column',
+		build: boardScene,
+		internal: (s) => api('PUT', `/api/columns/${s.A.cols['On Hold'].id}`, { user: s.owner, body: { title: 'Waiting', wipLimit: '3', showAddCard: true } }),
+		v1: (s) => api('PUT', `/api/v1/columns/${s.A.cols['On Hold'].id}`, { user: s.owner, body: { title: 'Waiting', wipLimit: '3', showAddCard: true } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 27,
+		what: 'deleting a column, and the card in it',
+		build: boardScene,
+		internal: (s) => api('DELETE', `/api/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
+		v1: (s) => api('DELETE', `/api/v1/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['column_deleted ui'], v1: ['api:column_deleted api'] }
+	},
+	{
+		row: 29,
+		what: 'making a card category on a board',
+		build: boardScene,
+		internal: (s) => api('POST', '/api/categories', { user: s.owner, body: { boardId: s.A.board.id, name: 'Feature', color: '#123456' } }),
+		v1: (s) => api('POST', `/api/v1/boards/${s.A.board.id}/categories`, { user: s.owner, body: { name: 'Feature', color: '#123456' } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 29,
+		what: 'renaming and recolouring a card category',
+		build: boardScene,
+		internal: (s) => api('PUT', '/api/categories/1', { user: s.owner, body: { name: 'Defect', color: '#654321' } }),
+		v1: (s) => api('PUT', '/api/v1/categories/1', { user: s.owner, body: { name: 'Defect', color: '#654321' } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 29,
+		what: 'deleting a card category',
+		build: boardScene,
+		internal: (s) => api('DELETE', '/api/categories/1', { user: s.owner }),
+		v1: (s) => api('DELETE', '/api/v1/categories/1', { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 30,
+		what: 'making a label',
+		build: boardScene,
+		internal: (s) => api('POST', '/api/labels', { user: s.owner, body: { boardId: s.A.board.id, name: 'Later', color: '#123456' } }),
+		v1: (s) => api('POST', `/api/v1/boards/${s.A.board.id}/labels`, { user: s.owner, body: { name: 'Later', color: '#123456' } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 30,
+		what: "renaming and recolouring a label (the page's PATCH, against v1's PUT)",
+		build: boardScene,
+		internal: (s) => api('PATCH', '/api/labels', { user: s.owner, body: { id: 1, name: 'Hot', color: '#654321' } }),
+		v1: (s) => api('PUT', '/api/v1/labels/1', { user: s.owner, body: { name: 'Hot', color: '#654321' } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 30,
+		what: 'deleting a label',
+		build: boardScene,
+		internal: (s) => api('DELETE', '/api/labels', { user: s.owner, body: { id: 1 } }),
+		v1: (s) => api('DELETE', '/api/v1/labels/1', { user: s.owner }),
 		status: { internal: 200, v1: 200 },
 		sources: { internal: [], v1: [] },
 		entries: { internal: [], v1: [] }
@@ -1522,11 +1730,318 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		});
 	});
 
-	it('has a case for each pair moved so far that writes in both trees, rows 1 to 7, 9, 10, 12, 14 to 18, 21 and 22', () => {
-		// Rows 8, 13, 19 and 23 are reads, row 11 (a comment deleted) the page's
-		// alone and row 20 (the token writes) v1's alone: the cases above hold
-		// their words and what they do.
-		expect([...new Set(SERVICE_TWINS.map((twin) => twin.row))]).toEqual([1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 16, 17, 18, 21, 22]);
+	it("refuses a viewer, and an editor where the owner is asked for, in each tree's own words, rows 24 to 30, and writes and tells nothing", async () => {
+		const s = boardScene();
+		const viewer = { user: s.viewer };
+		const helper = { user: s.helper };
+		const before = snapshotDb();
+		const sent = effects();
+		const refusals: Record<string, unknown> = {};
+		try {
+			const ask = async (what: string, res: Promise<ApiResult>) => {
+				const { status, body } = await res;
+				refusals[what] = `${status} ${body?.message}`;
+			};
+			const A = s.A.board.id;
+			const column = s.A.cols['On Hold'].id;
+			const under = { name: 'No', parentCardId: s.first.id };
+			await ask('internal board under a card', api('POST', '/api/boards', { ...viewer, body: under }));
+			await ask('v1 board under a card', api('POST', '/api/v1/boards', { ...viewer, body: under }));
+			await ask('internal board change', api('PUT', `/api/boards/${A}`, { ...viewer, body: { name: 'No' } }));
+			await ask('v1 board change', api('PUT', `/api/v1/boards/${A}`, { ...viewer, body: { name: 'No' } }));
+			await ask('internal board made public by an editor', api('PUT', `/api/boards/${A}`, { ...helper, body: { name: 'No', isPublic: true } }));
+			await ask('v1 board made public by an editor', api('PUT', `/api/v1/boards/${A}`, { ...helper, body: { name: 'No', isPublic: true } }));
+			await ask('internal board delete by an editor', api('DELETE', `/api/boards/${A}`, helper));
+			await ask('v1 board delete by an editor', api('DELETE', `/api/v1/boards/${A}`, helper));
+			await ask('internal grouping change', api('PUT', '/api/board-categories/1', { ...viewer, body: { name: 'No' } }));
+			await ask('v1 grouping change', api('PUT', '/api/v1/board-categories/1', { ...viewer, body: { name: 'No' } }));
+			await ask('internal grouping delete', api('DELETE', '/api/board-categories/1', viewer));
+			await ask('v1 grouping delete', api('DELETE', '/api/v1/board-categories/1', viewer));
+			await ask('internal column', api('POST', '/api/columns', { ...viewer, body: { boardId: A, title: 'No' } }));
+			await ask('v1 column', api('POST', `/api/v1/boards/${A}/columns`, { ...viewer, body: { title: 'No' } }));
+			await ask('internal column change', api('PUT', `/api/columns/${column}`, { ...viewer, body: { title: 'No' } }));
+			await ask('v1 column change', api('PUT', `/api/v1/columns/${column}`, { ...viewer, body: { title: 'No' } }));
+			await ask('internal column delete', api('DELETE', `/api/columns/${column}`, viewer));
+			await ask('v1 column delete', api('DELETE', `/api/v1/columns/${column}`, viewer));
+			await ask('internal column reorder', api('PUT', '/api/columns/reorder', { ...viewer, body: { updates: [{ id: column, position: 9 }] } }));
+			await ask('internal category', api('POST', '/api/categories', { ...viewer, body: { boardId: A, name: 'No' } }));
+			await ask('internal category of no board', api('POST', '/api/categories', { ...viewer, body: { name: 'No' } }));
+			await ask('v1 category', api('POST', `/api/v1/boards/${A}/categories`, { ...viewer, body: { name: 'No' } }));
+			await ask('internal category change', api('PUT', '/api/categories/1', { ...viewer, body: { name: 'No' } }));
+			await ask('v1 category change', api('PUT', '/api/v1/categories/1', { ...viewer, body: { name: 'No' } }));
+			await ask('internal category delete', api('DELETE', '/api/categories/1', viewer));
+			await ask('v1 category delete', api('DELETE', '/api/v1/categories/1', viewer));
+			await ask('internal label', api('POST', '/api/labels', { ...viewer, body: { boardId: A, name: 'No' } }));
+			await ask('v1 label', api('POST', `/api/v1/boards/${A}/labels`, { ...viewer, body: { name: 'No' } }));
+			await ask('internal label change', api('PATCH', '/api/labels', { ...viewer, body: { id: 1, name: 'No' } }));
+			await ask('v1 label change', api('PUT', '/api/v1/labels/1', { ...viewer, body: { name: 'No' } }));
+			await ask('internal label delete', api('DELETE', '/api/labels', { ...viewer, body: { id: 1 } }));
+			await ask('v1 label delete', api('DELETE', '/api/v1/labels/1', viewer));
+			await sent.settle();
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+
+		expect(refusals).toEqual({
+			'internal board under a card': "403 No edit access to the parent card's board",
+			'v1 board under a card': "403 No edit access to the parent card's board",
+			'internal board change': '403 No edit access to this board',
+			'v1 board change': '403 No edit access to this board',
+			'internal board made public by an editor': '403 Only board owners and admins can change visibility',
+			'v1 board made public by an editor': '403 Only board owners and admins can change visibility',
+			'internal board delete by an editor': '403 Only board owners and admins can delete boards',
+			'v1 board delete by an editor': '403 Only board owners and admins can delete boards',
+			'internal grouping change': '403 This category groups boards you cannot edit',
+			'v1 grouping change': '403 This category groups boards you cannot edit',
+			'internal grouping delete': '403 This category groups boards you cannot edit',
+			'v1 grouping delete': '403 This category groups boards you cannot edit',
+			'internal column': '403 No edit access to this board',
+			'v1 column': '403 No edit access to this board',
+			'internal column change': '403 No edit access to this board',
+			'v1 column change': '403 No edit access to this board',
+			'internal column delete': '403 No edit access to this board',
+			'v1 column delete': '403 No edit access to this board',
+			'internal column reorder': '403 No edit access to this board',
+			'internal category': '403 No edit access to this board',
+			'internal category of no board': '403 Only an administrator can create a category that belongs to no board',
+			'v1 category': '403 No edit access to this board',
+			'internal category change': '403 No edit access to this board',
+			'v1 category change': '403 No edit access to this board',
+			'internal category delete': '403 No edit access to this board',
+			'v1 category delete': '403 No edit access to this board',
+			'internal label': '403 No edit access to this board',
+			'v1 label': '403 No edit access to this board',
+			'internal label change': '403 No edit access to this board',
+			'v1 label change': '403 No edit access to this board',
+			'internal label delete': '403 No edit access to this board',
+			'v1 label delete': '403 No edit access to this board'
+		});
+		expectUnchanged(before);
+	});
+
+	it("answers what is not there, or not sound, in each tree's own words, rows 24 to 30", async () => {
+		const s = boardScene();
+		const as = { user: s.owner };
+		const refusals: Record<string, unknown> = {};
+		const ask = async (what: string, res: Promise<ApiResult>) => {
+			const { status, body } = await res;
+			refusals[what] = `${status} ${body?.message}`;
+		};
+		const A = s.A.board.id;
+		const column = s.A.cols['On Hold'].id;
+		await ask('internal board, no name', api('POST', '/api/boards', { ...as, body: { emoji: '🗺️' } }));
+		await ask('v1 board, no name', api('POST', '/api/v1/boards', { ...as, body: { emoji: '🗺️' } }));
+		await ask('internal board, no parent card', api('POST', '/api/boards', { ...as, body: { name: 'No', parentCardId: 999 } }));
+		await ask('v1 board, no parent card', api('POST', '/api/v1/boards', { ...as, body: { name: 'No', parentCardId: 999 } }));
+		await ask('internal board, no grouping', api('POST', '/api/boards', { ...as, body: { name: 'No', categoryId: 999 } }));
+		await ask('internal board change, no board', api('PUT', '/api/boards/999', { ...as, body: { name: 'No' } }));
+		await ask('v1 board change, no board', api('PUT', '/api/v1/boards/999', { ...as, body: { name: 'No' } }));
+		await ask('internal board change, nothing sent', api('PUT', `/api/boards/${A}`, { ...as, body: {} }));
+		await ask('v1 board change, nothing sent', api('PUT', `/api/v1/boards/${A}`, { ...as, body: {} }));
+		await ask('internal board change, empty name', api('PUT', `/api/boards/${A}`, { ...as, body: { name: ' ' } }));
+		await ask('v1 board change, empty name', api('PUT', `/api/v1/boards/${A}`, { ...as, body: { name: ' ' } }));
+		await ask('internal board change, no grouping', api('PUT', `/api/boards/${A}`, { ...as, body: { categoryId: 999 } }));
+		await ask('v1 board change, no grouping', api('PUT', `/api/v1/boards/${A}`, { ...as, body: { categoryId: 999 } }));
+		await ask('internal board change, under no card', api('PUT', `/api/boards/${A}`, { ...as, body: { parentCardId: 999 } }));
+		await ask('internal board delete, no board', api('DELETE', '/api/boards/999', as));
+		await ask('v1 board delete, no board', api('DELETE', '/api/v1/boards/999', as));
+		await ask('internal grouping, no name', api('POST', '/api/board-categories', { ...as, body: { color: '#123456' } }));
+		await ask('v1 grouping, no name', api('POST', '/api/v1/board-categories', { ...as, body: { color: '#123456' } }));
+		await ask('internal grouping, a colour that is none', api('POST', '/api/board-categories', { ...as, body: { name: 'No', color: 'red' } }));
+		await ask('v1 grouping, a colour that is none', api('POST', '/api/v1/board-categories', { ...as, body: { name: 'No', color: 'red' } }));
+		await ask('internal grouping change, none', api('PUT', '/api/board-categories/999', { ...as, body: { name: 'No' } }));
+		await ask('v1 grouping change, none', api('PUT', '/api/v1/board-categories/999', { ...as, body: { name: 'No' } }));
+		await ask('internal grouping change, nothing sent', api('PUT', '/api/board-categories/1', { ...as, body: {} }));
+		await ask('v1 grouping change, nothing sent', api('PUT', '/api/v1/board-categories/1', { ...as, body: {} }));
+		await ask('internal grouping change, empty name', api('PUT', '/api/board-categories/1', { ...as, body: { name: '' } }));
+		await ask('v1 grouping change, empty name', api('PUT', '/api/v1/board-categories/1', { ...as, body: { name: '' } }));
+		await ask('internal grouping delete, none', api('DELETE', '/api/board-categories/999', as));
+		await ask('v1 grouping delete, none', api('DELETE', '/api/v1/board-categories/999', as));
+		await ask('internal column, no boardId', api('POST', '/api/columns', { ...as, body: { title: 'No' } }));
+		await ask('internal column, no board', api('POST', '/api/columns', { ...as, body: { boardId: 999, title: 'No' } }));
+		await ask('v1 column, no board', api('POST', '/api/v1/boards/999/columns', { ...as, body: { title: 'No' } }));
+		await ask('internal column, no title', api('POST', '/api/columns', { ...as, body: { boardId: A } }));
+		await ask('v1 column, no title', api('POST', `/api/v1/boards/${A}/columns`, { ...as, body: {} }));
+		// Each tree reads the position and the colour in its own order (R2).
+		const both = { title: 'No', position: 'top', color: 'red' };
+		await ask('internal column, position and colour unsound', api('POST', '/api/columns', { ...as, body: { boardId: A, ...both } }));
+		await ask('v1 column, position and colour unsound', api('POST', `/api/v1/boards/${A}/columns`, { ...as, body: both }));
+		await ask('internal column change, none', api('PUT', '/api/columns/999', { ...as, body: { title: 'No' } }));
+		await ask('v1 column change, none', api('PUT', '/api/v1/columns/999', { ...as, body: { title: 'No' } }));
+		await ask('internal column change, nothing sent', api('PUT', `/api/columns/${column}`, { ...as, body: {} }));
+		await ask('v1 column change, nothing sent', api('PUT', `/api/v1/columns/${column}`, { ...as, body: {} }));
+		await ask('internal column change, empty title', api('PUT', `/api/columns/${column}`, { ...as, body: { title: '' } }));
+		await ask('v1 column change, empty title', api('PUT', `/api/v1/columns/${column}`, { ...as, body: { title: '' } }));
+		await ask('internal column change, Complete with a card', api('PUT', `/api/columns/${s.A.cols['To Do'].id}`, { ...as, body: { title: 'Complete' } }));
+		await ask('v1 column change, Complete with a card', api('PUT', `/api/v1/columns/${s.A.cols['To Do'].id}`, { ...as, body: { title: 'Complete' } }));
+		await ask('internal column delete, none', api('DELETE', '/api/columns/999', as));
+		await ask('v1 column delete, none', api('DELETE', '/api/v1/columns/999', as));
+		await ask('internal column reorder, no updates', api('PUT', '/api/columns/reorder', { ...as, body: {} }));
+		await ask('internal column reorder, no column', api('PUT', '/api/columns/reorder', { ...as, body: { updates: [{ id: 999, position: 1 }] } }));
+		await ask('internal column reorder, a position that is none', api('PUT', '/api/columns/reorder', { ...as, body: { updates: [{ id: column, position: 'top' }] } }));
+		await ask('internal category, no board', api('POST', '/api/categories', { ...as, body: { boardId: 999, name: 'No' } }));
+		await ask('v1 category, no board', api('POST', '/api/v1/boards/999/categories', { ...as, body: { name: 'No' } }));
+		await ask('internal category, no name', api('POST', '/api/categories', { ...as, body: { boardId: A } }));
+		await ask('v1 category, no name', api('POST', `/api/v1/boards/${A}/categories`, { ...as, body: {} }));
+		await ask('internal category change, none', api('PUT', '/api/categories/999', { ...as, body: { name: 'No' } }));
+		await ask('v1 category change, none', api('PUT', '/api/v1/categories/999', { ...as, body: { name: 'No' } }));
+		await ask('internal category change, nothing sent', api('PUT', '/api/categories/1', { ...as, body: {} }));
+		await ask('v1 category change, nothing sent', api('PUT', '/api/v1/categories/1', { ...as, body: {} }));
+		await ask('internal category change, empty name', api('PUT', '/api/categories/1', { ...as, body: { name: '' } }));
+		await ask('v1 category change, empty name', api('PUT', '/api/v1/categories/1', { ...as, body: { name: '' } }));
+		await ask('internal category delete, none', api('DELETE', '/api/categories/999', as));
+		await ask('v1 category delete, none', api('DELETE', '/api/v1/categories/999', as));
+		await ask('internal label, no boardId', api('POST', '/api/labels', { ...as, body: { name: 'No' } }));
+		await ask('internal label, no board', api('POST', '/api/labels', { ...as, body: { boardId: 999, name: 'No' } }));
+		await ask('v1 label, no board', api('POST', '/api/v1/boards/999/labels', { ...as, body: { name: 'No' } }));
+		await ask('internal label, no name', api('POST', '/api/labels', { ...as, body: { boardId: A } }));
+		await ask('v1 label, no name', api('POST', `/api/v1/boards/${A}/labels`, { ...as, body: {} }));
+		await ask('internal label change, no id', api('PATCH', '/api/labels', { ...as, body: { name: 'No' } }));
+		await ask('internal label change, none', api('PATCH', '/api/labels', { ...as, body: { id: 999, name: 'No' } }));
+		await ask('v1 label change, none', api('PUT', '/api/v1/labels/999', { ...as, body: { name: 'No' } }));
+		await ask('internal label change, nothing sent', api('PATCH', '/api/labels', { ...as, body: { id: 1 } }));
+		await ask('v1 label change, nothing sent', api('PUT', '/api/v1/labels/1', { ...as, body: {} }));
+		await ask('internal label change, empty name', api('PATCH', '/api/labels', { ...as, body: { id: 1, name: '' } }));
+		await ask('v1 label change, empty name', api('PUT', '/api/v1/labels/1', { ...as, body: { name: '' } }));
+		await ask('internal label delete, no id', api('DELETE', '/api/labels', { ...as, body: {} }));
+		await ask('internal label delete, none', api('DELETE', '/api/labels', { ...as, body: { id: 999 } }));
+		await ask('v1 label delete, none', api('DELETE', '/api/v1/labels/999', as));
+
+		const completeRefused =
+			'409 This column holds 1 card. Renaming it to "Complete" would mark it finished without anyone finishing it. ' +
+			'Move each finished card to a Complete column and the rest out of this one first, or choose another name.';
+		expect(refusals).toEqual({
+			'internal board, no name': '400 name is required',
+			'v1 board, no name': '400 name is required',
+			'internal board, no parent card': '404 Parent card not found',
+			'v1 board, no parent card': '404 Parent card not found',
+			'internal board, no grouping': '404 Board category not found',
+			'internal board change, no board': '404 Board not found',
+			'v1 board change, no board': '404 Board not found',
+			// R2: the internal route answers an empty change as it did, v1 refuses it.
+			'internal board change, nothing sent': '200 undefined',
+			'v1 board change, nothing sent': '400 No valid fields to update',
+			'internal board change, empty name': '400 name cannot be empty',
+			'v1 board change, empty name': '400 name cannot be empty',
+			'internal board change, no grouping': '404 Board category not found',
+			'v1 board change, no grouping': '404 Board category not found',
+			'internal board change, under no card': '404 Parent card not found',
+			'internal board delete, no board': '404 Board not found',
+			'v1 board delete, no board': '404 Board not found',
+			'internal grouping, no name': '400 name is required',
+			'v1 grouping, no name': '400 name is required',
+			'internal grouping, a colour that is none': '400 color must be a colour written #rrggbb',
+			'v1 grouping, a colour that is none': '400 color must be a colour written #rrggbb',
+			'internal grouping change, none': '404 Board category not found',
+			'v1 grouping change, none': '404 Board category not found',
+			'internal grouping change, nothing sent': '400 No valid fields to update',
+			'v1 grouping change, nothing sent': '400 No valid fields to update',
+			'internal grouping change, empty name': '400 name cannot be empty',
+			'v1 grouping change, empty name': '400 name cannot be empty',
+			'internal grouping delete, none': '404 Board category not found',
+			'v1 grouping delete, none': '404 Board category not found',
+			'internal column, no boardId': '400 Invalid board ID',
+			'internal column, no board': '404 Board not found',
+			'v1 column, no board': '404 Board not found',
+			'internal column, no title': '400 title is required',
+			'v1 column, no title': '400 title is required',
+			'internal column, position and colour unsound': '400 position must be a number',
+			'v1 column, position and colour unsound': '400 color must be a colour written #rrggbb',
+			'internal column change, none': '404 Column not found',
+			'v1 column change, none': '404 Column not found',
+			'internal column change, nothing sent': '400 No valid fields to update',
+			'v1 column change, nothing sent': '400 No valid fields to update',
+			'internal column change, empty title': '400 title cannot be empty',
+			'v1 column change, empty title': '400 title cannot be empty',
+			'internal column change, Complete with a card': completeRefused,
+			'v1 column change, Complete with a card': completeRefused,
+			'internal column delete, none': '404 Column not found',
+			'v1 column delete, none': '404 Column not found',
+			'internal column reorder, no updates': '400 updates must be an array',
+			'internal column reorder, no column': '404 Column not found',
+			'internal column reorder, a position that is none': '400 updates[0].position must be a number',
+			'internal category, no board': '404 Board not found',
+			'v1 category, no board': '404 Board not found',
+			'internal category, no name': '400 name is required',
+			'v1 category, no name': '400 name is required',
+			'internal category change, none': '404 Category not found',
+			'v1 category change, none': '404 Category not found',
+			'internal category change, nothing sent': '400 No valid fields to update',
+			'v1 category change, nothing sent': '400 No valid fields to update',
+			'internal category change, empty name': '400 name cannot be empty',
+			'v1 category change, empty name': '400 name cannot be empty',
+			'internal category delete, none': '404 Category not found',
+			'v1 category delete, none': '404 Category not found',
+			'internal label, no boardId': '400 Invalid board ID',
+			'internal label, no board': '404 Board not found',
+			'v1 label, no board': '404 Board not found',
+			'internal label, no name': '400 name is required',
+			'v1 label, no name': '400 name is required',
+			'internal label change, no id': '400 Invalid label ID',
+			'internal label change, none': '404 Label not found',
+			'v1 label change, none': '404 Label not found',
+			'internal label change, nothing sent': '400 Send name or color to change',
+			'v1 label change, nothing sent': '400 No valid fields to update',
+			'internal label change, empty name': '400 name cannot be empty',
+			'v1 label change, empty name': '400 name cannot be empty',
+			'internal label delete, no id': '400 Invalid label ID',
+			'internal label delete, none': '404 Label not found',
+			'v1 label delete, none': '404 Label not found'
+		});
+	});
+
+	it("lists boards and a board's labels alike through either tree, and refuses in each tree's words, rows 24 and 30", async () => {
+		const s = boardScene();
+		const outsider = makeUser({ username: 'outsider' });
+		const elsewhere = makeBoard({ name: 'Not shared' });
+		makeLabel(elsewhere.board, 'Theirs');
+		const said = async (path: string, user = outsider) => {
+			const { status, body } = await api('GET', path, { user });
+			return `${status} ${body?.message}`;
+		};
+		const ids = (body: unknown) => (body as { id: number }[]).map((row) => row.id);
+		const stamped = (body: unknown) => JSON.parse(JSON.stringify(body), (_key, value) => (typeof value === 'string' && STAMP.test(value) ? '<stamp>' : value));
+
+		// The boards the caller can open, newest first, and every board for an administrator.
+		for (const user of [s.viewer, s.owner, makeUser({ username: 'admin', role: 'admin' })]) {
+			const [internal, v1] = [await api('GET', '/api/boards', { user }), await api('GET', '/api/v1/boards', { user })];
+			expect([internal.status, v1.status]).toEqual([200, 200]);
+			expect(stamped(v1.body)).toEqual(stamped(internal.body));
+		}
+		expect(ids((await api('GET', '/api/boards', { user: s.viewer })).body)).toEqual([s.A.board.id]);
+		expect(ids((await api('GET', '/api/boards', { user: outsider })).body)).toEqual([]);
+		// A board's labels.
+		const labels = await api('GET', `/api/labels?boardId=${s.A.board.id}`, { user: s.viewer });
+		const v1Labels = await api('GET', `/api/v1/boards/${s.A.board.id}/labels`, { user: s.viewer });
+		expect([labels.status, v1Labels.status]).toEqual([200, 200]);
+		expect(ids(labels.body)).toEqual([1]);
+		expect(v1Labels.body).toEqual(labels.body);
+		// The page's list with no board named is empty, as it was.
+		expect((await api('GET', '/api/labels', { user: s.viewer })).body).toEqual([]);
+
+		expect({
+			'internal labels, an outsider': await said(`/api/labels?boardId=${s.A.board.id}`),
+			'v1 labels, an outsider': await said(`/api/v1/boards/${s.A.board.id}/labels`),
+			'internal labels, no board': await said('/api/labels?boardId=999', s.owner),
+			'v1 labels, no board': await said('/api/v1/boards/999/labels', s.owner),
+			'internal labels, a board id that is none': await said('/api/labels?boardId=two', s.owner)
+		}).toEqual({
+			'internal labels, an outsider': '403 No access to this board',
+			'v1 labels, an outsider': '403 No access to this board',
+			'internal labels, no board': '404 Board not found',
+			'v1 labels, no board': '404 Board not found',
+			'internal labels, a board id that is none': '400 Invalid boardId'
+		});
+	});
+
+	it('has a case for each pair moved so far that writes in both trees, rows 1 to 7, 9, 10, 12, 14 to 18, 21, 22, 24 to 27, 29 and 30', () => {
+		// Rows 8, 13, 19 and 23 are reads, row 11 (a comment deleted) and row 28
+		// (the column reorder) the page's alone, and row 20 (the token writes)
+		// v1's alone: the cases above hold their words and what they do.
+		expect([...new Set(SERVICE_TWINS.map((twin) => twin.row))]).toEqual([
+			1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 16, 17, 18, 21, 22, 24, 25, 26, 27, 29, 30
+		]);
 	});
 
 	it('hands each service exactly the options its handler took before it moved, read from the source (R3)', () => {
@@ -1775,6 +2290,88 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/milestones/[id]/pdf/+server.ts GET': [{ service: 'readMilestoneSummary', args: [code('locals.user'), { milestoneId: code('id') }, {}] }],
 	'src/routes/api/v1/milestones/[milestoneId]/pdf/+server.ts GET': [
 		{ service: 'readMilestoneSummary', args: [code('locals.user'), { milestoneId: code('id') }, {}] }
+	],
+	// Slice A4: boards, dashboard groupings, columns, card categories and
+	// labels. What each does differently today: the page files a new board
+	// under a grouping (`allowCategory`) and moves a board under a card
+	// (`allowParent`); v1 refuses a board change that names no field
+	// (`refuseEmpty`) and tells the board first (`tellBeforeEntry`); v1 puts a
+	// new column sent with no position after the last (`placeAfterLast`) and
+	// reads its colour first (`colorBeforePosition`); the page's words for a
+	// label change that names nothing (`sendNameOrColor`).
+	'src/routes/api/boards/+server.ts GET': [{ service: 'listBoardsFor', args: [code('locals.user'), {}, {}] }],
+	'src/routes/api/v1/boards/+server.ts GET': [{ service: 'listBoardsFor', args: [code('locals.user'), {}, {}] }],
+	'src/routes/api/boards/+server.ts POST': [{ service: 'createBoard', args: [code('caller'), {}, code('body'), { source: 'ui', allowCategory: true }] }],
+	'src/routes/api/v1/boards/+server.ts POST': [{ service: 'createBoard', args: [code('caller'), {}, code('body'), { source: 'api' }] }],
+	'src/routes/api/boards/[id]/+server.ts PUT': [
+		{ service: 'updateBoard', args: [code('caller'), { boardId: code('id') }, code('body'), { source: 'ui', allowParent: true }] }
+	],
+	'src/routes/api/v1/boards/[boardId]/+server.ts PUT': [
+		{ service: 'updateBoard', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api', refuseEmpty: true, tellBeforeEntry: true }] }
+	],
+	'src/routes/api/boards/[id]/+server.ts DELETE': [{ service: 'deleteBoardFor', args: [code('caller'), { boardId: code('id') }, null, { source: 'ui' }] }],
+	'src/routes/api/v1/boards/[boardId]/+server.ts DELETE': [
+		{ service: 'deleteBoardFor', args: [code('caller'), { boardId: code('boardId') }, null, { source: 'api' }] }
+	],
+	'src/routes/api/board-categories/+server.ts POST': [{ service: 'createBoardGrouping', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
+	'src/routes/api/v1/board-categories/+server.ts POST': [{ service: 'createBoardGrouping', args: [code('caller'), {}, code('body'), { source: 'api' }] }],
+	'src/routes/api/board-categories/[id]/+server.ts PUT': [
+		{ service: 'updateBoardGrouping', args: [code('caller'), { categoryId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/v1/board-categories/[categoryId]/+server.ts PUT': [
+		{ service: 'updateBoardGrouping', args: [code('caller'), { categoryId: code('categoryId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/board-categories/[id]/+server.ts DELETE': [
+		{ service: 'deleteBoardGrouping', args: [code('caller'), { categoryId: code('id') }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/v1/board-categories/[categoryId]/+server.ts DELETE': [
+		{ service: 'deleteBoardGrouping', args: [code('caller'), { categoryId: code('categoryId') }, null, { source: 'api' }] }
+	],
+	'src/routes/api/columns/+server.ts POST': [{ service: 'createColumn', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
+	'src/routes/api/v1/boards/[boardId]/columns/+server.ts POST': [
+		{
+			service: 'createColumn',
+			args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api', placeAfterLast: true, colorBeforePosition: true }]
+		}
+	],
+	'src/routes/api/columns/[id]/+server.ts PUT': [{ service: 'updateColumn', args: [code('caller'), { columnId: code('id') }, code('body'), { source: 'ui' }] }],
+	'src/routes/api/v1/columns/[columnId]/+server.ts PUT': [
+		{ service: 'updateColumn', args: [code('caller'), { columnId: code('columnId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/columns/[id]/+server.ts DELETE': [{ service: 'deleteColumnFor', args: [code('caller'), { columnId: code('id') }, null, { source: 'ui' }] }],
+	'src/routes/api/v1/columns/[columnId]/+server.ts DELETE': [
+		{ service: 'deleteColumnFor', args: [code('caller'), { columnId: code('columnId') }, null, { source: 'api' }] }
+	],
+	'src/routes/api/columns/reorder/+server.ts PUT': [{ service: 'reorderColumns', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
+	'src/routes/api/categories/+server.ts POST': [{ service: 'createCardCategory', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
+	'src/routes/api/v1/boards/[boardId]/categories/+server.ts POST': [
+		{ service: 'createCardCategory', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/categories/[id]/+server.ts PUT': [
+		{ service: 'updateCardCategory', args: [code('caller'), { categoryId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/v1/categories/[categoryId]/+server.ts PUT': [
+		{ service: 'updateCardCategory', args: [code('caller'), { categoryId: code('categoryId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/categories/[id]/+server.ts DELETE': [
+		{ service: 'deleteCardCategory', args: [code('caller'), { categoryId: code('id') }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/v1/categories/[categoryId]/+server.ts DELETE': [
+		{ service: 'deleteCardCategory', args: [code('caller'), { categoryId: code('categoryId') }, null, { source: 'api' }] }
+	],
+	'src/routes/api/labels/+server.ts GET': [{ service: 'labelsOfBoard', args: [code('locals.user'), { boardId: code('boardId') }, {}] }],
+	'src/routes/api/v1/boards/[boardId]/labels/+server.ts GET': [{ service: 'labelsOfBoard', args: [code('locals.user'), { boardId: code('boardId') }, {}] }],
+	'src/routes/api/labels/+server.ts POST': [{ service: 'createLabel', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
+	'src/routes/api/v1/boards/[boardId]/labels/+server.ts POST': [
+		{ service: 'createLabel', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/labels/+server.ts PATCH': [{ service: 'updateLabel', args: [code('caller'), {}, code('body'), { source: 'ui', sendNameOrColor: true }] }],
+	'src/routes/api/v1/labels/[labelId]/+server.ts PUT': [
+		{ service: 'updateLabel', args: [code('caller'), { labelId: code('labelId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/labels/+server.ts DELETE': [{ service: 'deleteLabel', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
+	'src/routes/api/v1/labels/[labelId]/+server.ts DELETE': [
+		{ service: 'deleteLabel', args: [code('caller'), { labelId: code('labelId') }, null, { source: 'api' }] }
 	]
 };
 

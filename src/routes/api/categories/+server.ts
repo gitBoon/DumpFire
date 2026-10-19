@@ -1,10 +1,8 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
-import { categories } from '$lib/server/db/schema';
-import { emit } from '$lib/server/events';
+import { createCardCategory } from '$lib/server/card-categories';
 import { cardCategoriesFor } from '$lib/server/list-access';
-import { readBody, readColour, readId, readText } from '$lib/server/request-body';
-import { requireCategoryCreate, requireUser } from '$lib/server/route-guards';
+import { readBody } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -28,7 +26,8 @@ export const GET: RequestHandler = async ({ locals }) => {
  * the other fields are read (card 2117, R1): `name` text, trimmed, of 1 to 200
  * characters, and `color` a colour written `#rrggbb`. A name that was missing
  * gave "New Category", any colour was stored, and `''` and `0` as the board
- * meant none.
+ * meant none. The work is `createCardCategory` in
+ * `$lib/server/card-categories`, which the v1 route shares (card 2012).
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
@@ -37,30 +36,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// The session is asked again, and who its account is now, in the
 	// transaction that makes the category (card 2253): one of no board is an
 	// administrator's to make, as they are then.
-	const category = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		const boardId = requireCategoryCreate(user, readId(body, 'boardId', { nullable: true, says: 'Invalid board ID' }));
-
-		const name = readText(body, 'name', {
-			required: true,
-			trim: true,
-			min: 1,
-			max: 200,
-			says: { missing: 'name is required', empty: 'name is required' }
-		});
-		const color = readColour(body, 'color', {});
-
-		const category = db
-			.insert(categories)
-			.values({
-				boardId,
-				name,
-				color: color ?? '#6366f1'
-			})
-			.returning()
-			.get();
-		if (boardId) emit(boardId, 'update', { type: 'category' });
-		return category;
-	});
+	const category = writeAs(locals, (caller) => createCardCategory(caller, {}, body, { source: 'ui' }));
 	return json(category, { status: 201 });
 };

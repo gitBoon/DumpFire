@@ -2,8 +2,8 @@ import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { categories } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
-import { emit } from '$lib/server/events';
-import { pathId, readBody, readColour, readText } from '$lib/server/request-body';
+import { createCardCategory } from '$lib/server/card-categories';
+import { pathId, readBody } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -23,7 +23,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	return json(all);
 };
 
-/** POST /api/v1/boards/:boardId/categories — Create a category on a board. */
+/**
+ * POST /api/v1/boards/:boardId/categories — Create a category on a board.
+ * The work is `createCardCategory` in `$lib/server/card-categories`, which
+ * `POST /api/categories` shares (card 2012).
+ */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
@@ -34,27 +38,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	// is 404 to everyone: it was 403, and for an administrator a 500. The
 	// transaction asks first whether the key or session is still open, and who
 	// its account is now (card 2253).
-	const category = writeAs(locals, (caller) => {
-		requireBoard(caller, boardId, 'edit');
-
-		const name = readText(body, 'name', {
-			required: true,
-			trim: true,
-			min: 1,
-			max: 200,
-			says: { missing: 'name is required', empty: 'name is required' }
-		});
-		const color = readColour(body, 'color', {});
-
-		const row = db
-			.insert(categories)
-			.values({ boardId, name, color: color ?? '#6366f1' })
-			.returning()
-			.get();
-
-		emit(boardId, 'update', { type: 'category' });
-		return row;
-	});
+	const category = writeAs(locals, (caller) => createCardCategory(caller, { boardId }, body, { source: 'api' }));
 
 	return json(category, { status: 201 });
 };

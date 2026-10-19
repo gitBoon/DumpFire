@@ -1,66 +1,28 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
-import { labels, type Label } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
 import { toggleCardLabel } from '$lib/server/card-labels';
-import { emit } from '$lib/server/events';
-import { readBody, readColour, readId, readQueryId, readText, type RequestBody } from '$lib/server/request-body';
-import { requireBoard, requireLabel, requireUser } from '$lib/server/route-guards';
+import { createLabel, deleteLabel, labelsOfBoard, updateLabel } from '$lib/server/labels';
+import { readBody, readQueryId } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
-// Get all labels for a board. A `boardId` that is no id is a 400, where `2.5`
-// and `5abc` were read as another board or as none (card 2117).
+// Get all labels for a board (`labelsOfBoard`, which the v1 twin shares, card
+// 2012). A `boardId` that is no id is a 400, where `2.5` and `5abc` were read
+// as another board or as none (card 2117).
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const boardId = readQueryId(url.searchParams.get('boardId'), 'board', 'Invalid boardId');
 	if (boardId === undefined) return json([]);
 
-	requireBoard(locals.user, boardId, 'view');
-
-	const result = db.select().from(labels).where(eq(labels.boardId, boardId)).all();
-	return json(result);
+	return json(labelsOfBoard(locals.user, { boardId }, {}));
 };
 
 /**
- * A label's `name` and `color`, as creating one and changing one read them,
- * one rule for both: `name` text, trimmed, of 1 to 200 characters (card
- * 2117's rule), and `color` a colour written `#rrggbb` (card 2010's decision
- * 14: a label's colour is drawn in a `style` on every page that shows it).
- *
- * With no `label`, a new one is read: `name` is required and `color` is
- * `#6366f1` when it is not sent. With the label being changed, either may be
- * left out, and what the label holds now, sent back unchanged, is kept as it
- * is: a colour stored before the rule does not stop a rename.
- */
-function readLabelFields(body: RequestBody): { name: string; color: string };
-function readLabelFields(body: RequestBody, label: Label): { name?: string; color?: string };
-function readLabelFields(body: RequestBody, label?: Label): { name?: string; color?: string } {
-	const name = readText(body, 'name', {
-		required: !label,
-		trim: true,
-		min: 1,
-		max: 200,
-		keep: label?.name,
-		says: {
-			missing: 'name is required',
-			empty: label ? 'name cannot be empty' : 'name is required'
-		}
-	});
-	const color = readColour(body, 'color', { keep: label?.color });
-	if (!label) return { name, color: color ?? '#6366f1' };
-
-	const changes: { name?: string; color?: string } = {};
-	if (name !== undefined) changes.name = name;
-	if (color !== undefined) changes.color = color;
-	return changes;
-}
-
-/**
  * Create a new label. `boardId` names the row guarded, so it is read first;
- * then `name` and `color` (`readLabelFields`). A label with no name was a 500,
- * and any colour was stored.
+ * then `name` and `color`. A label with no name was a 500, and any colour was
+ * stored. The work is `createLabel` in `$lib/server/labels`, which the v1
+ * route shares (card 2012).
  *
  * Each write of this file asks first, in its transaction, whether the session
  * is still open, and who its account is now (card 2253).
@@ -69,22 +31,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const label = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		// Here the body's board id is the thing being acted on — the board the
-		// label is created on — so it is the right one to check.
-		const boardId = requireBoard(user, readId(body, 'boardId', { required: true, says: 'Invalid board ID' }), 'edit').id;
-
-		const { name, color } = readLabelFields(body);
-
-		const label = db
-			.insert(labels)
-			.values({ boardId, name, color })
-			.returning()
-			.get();
-		emit(boardId, 'update', { type: 'label' });
-		return label;
-	});
+	const label = writeAs(locals, (caller) => createLabel(caller, {}, body, { source: 'ui' }));
 	return json(label, { status: 201 });
 };
 
@@ -97,27 +44,16 @@ export const POST: RequestHandler = async ({ request, locals }) => {
  * The label is looked for and the caller checked first (400 for an id that is
  * no id, 404, then 403: edit access to the label's own board), then the
  * fields are read (400), in the transaction that writes them. A body that
- * names neither field is a 400. Open pages are told after the commit. No
- * activity entry is written, as no label route writes one.
+ * names neither field is `400 Send name or color to change`, this route's
+ * words (`sendNameOrColor`). Open pages are told after the commit. No
+ * activity entry is written, as no label route writes one. The work is
+ * `updateLabel` in `$lib/server/labels`, which the v1 route shares (card 2012).
  */
 export const PATCH: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const updated = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		const id = readId(body, 'id', { required: true, says: 'Invalid label ID' });
-
-		// The board is the label's own. A `boardId` in the body is ignored.
-		const { label, boardId } = requireLabel(user, id, 'edit');
-
-		const changes = readLabelFields(body, label);
-		if (changes.name === undefined && changes.color === undefined) throw error(400, 'Send name or color to change');
-
-		const row = db.update(labels).set(changes).where(eq(labels.id, id)).returning().get();
-		emit(boardId, 'update', { type: 'label' });
-		return row;
-	});
+	const updated = writeAs(locals, (caller) => updateLabel(caller, {}, body, { source: 'ui', sendNameOrColor: true }));
 	return json(updated);
 };
 
@@ -135,20 +71,11 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 	return json({ toggled });
 };
 
-/** Delete a label. Body: `{ id }`, an id (card 2117). */
+/** Delete a label. Body: `{ id }`, an id (card 2117). The work is `deleteLabel` in `$lib/server/labels` (card 2012). */
 export const DELETE: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
 	const body = await readBody(request);
 
-	writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		const id = readId(body, 'id', { required: true, says: 'Invalid label ID' });
-
-		// The board is the label's own. A `boardId` in the body is ignored.
-		const { boardId } = requireLabel(user, id, 'edit');
-
-		db.delete(labels).where(eq(labels.id, id)).run();
-		emit(boardId, 'update', { type: 'label' });
-	});
+	writeAs(locals, (caller) => deleteLabel(caller, {}, body, { source: 'ui' }));
 	return json({ success: true });
 };

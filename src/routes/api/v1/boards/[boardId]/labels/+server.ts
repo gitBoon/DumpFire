@@ -1,24 +1,22 @@
 import { json } from '$lib/server/v1-json';
-import { db } from '$lib/server/db';
-import { labels } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
-import { emit } from '$lib/server/events';
-import { pathId, readBody, readColour, readText } from '$lib/server/request-body';
-import { requireBoard, requireUser } from '$lib/server/route-guards';
+import { createLabel, labelsOfBoard } from '$lib/server/labels';
+import { pathId, readBody } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
-/** GET /api/v1/boards/:boardId/labels — List all labels for a board. */
+/** GET /api/v1/boards/:boardId/labels — List all labels for a board (`labelsOfBoard`, card 2012). */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	const boardId = pathId(params.boardId, 'board');
 	// A board that is not there is 404 to everyone, then one the caller cannot open 403.
-	requireBoard(locals.user, boardId, 'view');
-
-	const result = db.select().from(labels).where(eq(labels.boardId, boardId)).all();
-	return json(result);
+	return json(labelsOfBoard(locals.user, { boardId }, {}));
 };
 
-/** POST /api/v1/boards/:boardId/labels — Create a new label on a board. */
+/**
+ * POST /api/v1/boards/:boardId/labels — Create a new label on a board. The
+ * work is `createLabel` in `$lib/server/labels`, which `POST /api/labels`
+ * shares (card 2012).
+ */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
@@ -29,26 +27,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	// 404 to everyone: it was 403, and for an administrator a 500. The
 	// transaction asks first whether the key or session is still open, and who
 	// its account is now (card 2253).
-	const label = writeAs(locals, (caller) => {
-		requireBoard(caller, boardId, 'edit');
-
-		const name = readText(body, 'name', {
-			required: true,
-			trim: true,
-			min: 1,
-			max: 200,
-			says: { missing: 'name is required', empty: 'name is required' }
-		});
-		const color = readColour(body, 'color', {});
-
-		const row = db.insert(labels)
-			.values({ boardId, name, color: color ?? '#6366f1' })
-			.returning()
-			.get();
-
-		emit(boardId, 'update', { type: 'label' });
-		return row;
-	});
+	const label = writeAs(locals, (caller) => createLabel(caller, { boardId }, body, { source: 'api' }));
 
 	return json(label, { status: 201 });
 };

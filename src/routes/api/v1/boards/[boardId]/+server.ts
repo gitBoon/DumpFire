@@ -1,14 +1,10 @@
-import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { boards, columns } from '$lib/server/db/schema';
+import { columns } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
-import { emit } from '$lib/server/events';
-import { logActivity } from '$lib/server/logActivity';
-import { deleteBoard } from '$lib/server/deletes';
-import { pathId, readBody, readBoolean, readId, readText } from '$lib/server/request-body';
-import { requireBoard, requireBoardCategory, requireBoardOwner, requireUser } from '$lib/server/route-guards';
-import { stamp } from '$lib/timestamps';
+import { deleteBoardFor, updateBoard } from '$lib/server/boards';
+import { pathId, readBody } from '$lib/server/request-body';
+import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -36,7 +32,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * PUT /api/v1/boards/:boardId — Update board name, emoji, categoryId, or isPublic.
  *
  * Edit access is enough for the first three. `isPublic` is the board's
- * owner's to send, or an administrator's.
+ * owner's to send, or an administrator's. A body that sets none of them is
+ * `400 No valid fields to update`.
+ *
+ * The work is `updateBoard` in `$lib/server/boards`, which `PUT
+ * /api/boards/:id` shares (card 2012); this route passes `refuseEmpty`, and
+ * `tellBeforeEntry` for the order it tells in.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -48,71 +49,14 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// writes used to leave a board changed with nothing to say who changed it.
 	// It asks first whether the key or session is still open, and who its
 	// account is now (card 2253).
-	const updated = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		const board = requireBoard(user, boardId, 'edit');
-
-		// An editor changes what is on a board, and not who can see it. Sent by
-		// anyone but the owner or an administrator, `isPublic` refuses the whole
-		// request: no other field that came with it is saved either. It is asked
-		// before the value is read, so an editor is answered 403 whatever it is.
-		if ('isPublic' in body) requireBoardOwner(user, boardId);
-
-		const updates: Partial<typeof boards.$inferInsert> = {};
-		const name = readText(body, 'name', {
-			trim: true,
-			min: 1,
-			max: 200,
-			keep: board.name,
-			says: { empty: 'name cannot be empty' }
-		});
-		if (name !== undefined) updates.name = name;
-		const emoji = readText(body, 'emoji', { min: 1, max: 32, keep: board.emoji });
-		if (emoji !== undefined) updates.emoji = emoji;
-		// The dashboard grouping the board is filed under, or null for none.
-		const categoryId = readId(body, 'categoryId', { nullable: true, keep: board.categoryId });
-		if (categoryId !== undefined) updates.categoryId = categoryId;
-		const isPublic = readBoolean(body, 'isPublic', { keep: board.isPublic });
-		if (isPublic !== undefined) updates.isPublic = isPublic;
-
-		if (Object.keys(updates).length === 0) {
-			throw error(400, 'No valid fields to update');
-		}
-
-		// `boards.category_id` has no foreign key, so a grouping that is not
-		// there was stored as sent: 404. One all of whose boards the caller
-		// cannot open is 403, as reading it is (card 2128, R2). One sent back
-		// unchanged is left alone.
-		if (categoryId !== undefined && categoryId !== null && categoryId !== board.categoryId) {
-			requireBoardCategory(user, categoryId);
-		}
-
-		updates.updatedAt = stamp();
-
-		const updated = db.update(boards)
-			.set(updates)
-			.where(eq(boards.id, boardId))
-			.returning()
-			.get();
-
-		emit(boardId, 'update', { type: 'board' });
-
-		logActivity({
-			boardId,
-			userId: user.id,
-			action: 'api:board_updated',
-			detail: `Updated board "${updated.name}" (fields: ${Object.keys(updates).filter(k => k !== 'updatedAt').join(', ')})`,
-			userName: user.username,
-			userEmoji: user.emoji || '👤'
-		});
-
-		return updated;
-	});
+	const updated = writeAs(locals, (caller) =>
+		updateBoard(caller, { boardId }, body, { source: 'api', refuseEmpty: true, tellBeforeEntry: true })
+	);
 
 	return json(updated);
 };
 
-/** DELETE /api/v1/boards/:boardId — Delete a board and all its data. */
+/** DELETE /api/v1/boards/:boardId — Delete a board and all its data (`deleteBoardFor`, card 2012). */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
@@ -121,15 +65,9 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// board, which asks first whether the key or session is still open, and who
 	// its account is now (card 2253). Every sub-board at every depth goes with
 	// it, where this used to name one level of them; what else goes is in
-	// $lib/server/deletes.ts.
-	writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		// Only owners and admins can delete boards. A board that is not there
-		// is 404 to everyone, before who is asking is looked at.
-		requireBoardOwner(user, boardId, 'Only board owners and admins can delete boards');
-
-		if (!deleteBoard(boardId, user)) throw error(404, 'Board not found');
-	});
+	// $lib/server/deletes.ts. A board that is not there is 404 to everyone,
+	// before who is asking is looked at.
+	writeAs(locals, (caller) => deleteBoardFor(caller, { boardId }, null, { source: 'api' }));
 
 	return json({ success: true });
 };

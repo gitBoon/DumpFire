@@ -2166,7 +2166,8 @@ describe("card 2253's rule itself", () => {
 /**
  * The modules both API trees' handlers call for their work, each written to
  * the rule above. Slice A1: the cards; A2: what is on a card; A3: dependencies,
- * a card's cost and the token writes, milestones.
+ * a card's cost and the token writes, milestones; A4: boards, dashboard
+ * groupings, columns, card categories and labels.
  */
 const SERVICES = [
 	'src/lib/server/cards.ts',
@@ -2176,7 +2177,12 @@ const SERVICES = [
 	'src/lib/server/subtasks.ts',
 	'src/lib/server/work-dependencies.ts',
 	'src/lib/server/token-service.ts',
-	'src/lib/server/milestone-service.ts'
+	'src/lib/server/milestone-service.ts',
+	'src/lib/server/boards.ts',
+	'src/lib/server/board-groupings.ts',
+	'src/lib/server/columns.ts',
+	'src/lib/server/card-categories.ts',
+	'src/lib/server/labels.ts'
 ];
 
 /**
@@ -2842,7 +2848,13 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/lib/server/milestone-service.ts': {
 				reads: ['readMilestone', 'readMilestoneSummary'],
 				writes: ['createMilestoneFor', 'changeMilestone', 'deleteMilestoneFor', 'attachCardToMilestone', 'detachCardFromMilestone']
-			}
+			},
+			// Slice A4: boards, dashboard groupings, columns, card categories and labels.
+			'src/lib/server/boards.ts': { reads: ['listBoardsFor'], writes: ['createBoard', 'updateBoard', 'deleteBoardFor'] },
+			'src/lib/server/board-groupings.ts': { reads: [], writes: ['createBoardGrouping', 'updateBoardGrouping', 'deleteBoardGrouping'] },
+			'src/lib/server/columns.ts': { reads: [], writes: ['createColumn', 'updateColumn', 'deleteColumnFor', 'reorderColumns'] },
+			'src/lib/server/card-categories.ts': { reads: [], writes: ['createCardCategory', 'updateCardCategory', 'deleteCardCategory'] },
+			'src/lib/server/labels.ts': { reads: ['labelsOfBoard'], writes: ['createLabel', 'updateLabel', 'deleteLabel'] }
 		});
 	});
 
@@ -2906,6 +2918,30 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/routes/api/v1/subtasks/[subtaskId]/tokens/+server.ts',
 			'src/routes/api/v1/tokens/[entryId]/+server.ts',
 			'src/routes/api/v1/tokens/bulk/+server.ts'
+		]);
+		// Slice A4: boards, dashboard groupings, columns, card categories and labels.
+		const a4 = routes.filter((file) => /from '\$lib\/server\/(boards|board-groupings|columns|card-categories|labels)'/.test(readFileSync(join(ROOT, file), 'utf8')));
+		expect(a4).toEqual([
+			'src/routes/api/board-categories/+server.ts',
+			'src/routes/api/board-categories/[id]/+server.ts',
+			'src/routes/api/boards/+server.ts',
+			'src/routes/api/boards/[id]/+server.ts',
+			'src/routes/api/categories/+server.ts',
+			'src/routes/api/categories/[id]/+server.ts',
+			'src/routes/api/columns/+server.ts',
+			'src/routes/api/columns/[id]/+server.ts',
+			'src/routes/api/columns/reorder/+server.ts',
+			'src/routes/api/labels/+server.ts',
+			'src/routes/api/v1/board-categories/+server.ts',
+			'src/routes/api/v1/board-categories/[categoryId]/+server.ts',
+			'src/routes/api/v1/boards/+server.ts',
+			'src/routes/api/v1/boards/[boardId]/+server.ts',
+			'src/routes/api/v1/boards/[boardId]/categories/+server.ts',
+			'src/routes/api/v1/boards/[boardId]/columns/+server.ts',
+			'src/routes/api/v1/boards/[boardId]/labels/+server.ts',
+			'src/routes/api/v1/categories/[categoryId]/+server.ts',
+			'src/routes/api/v1/columns/[columnId]/+server.ts',
+			'src/routes/api/v1/labels/[labelId]/+server.ts'
 		]);
 	});
 
