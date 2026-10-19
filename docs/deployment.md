@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.39
+version: 1.40
 status: As-Built
 date: 2026-10-19
 tags:
@@ -3061,6 +3061,31 @@ Checks 138 to 147 run on production as the superadmin. Checks 139 to 145 need a 
 #### Going back to the previous image
 
 Nothing is done to the database. The older image's Connect says "Failed to generate auth URL" for every refusal and "A Google sign-in window has opened" whether or not one did, a save of a host key writes no line, and a second Test brings back the first destination's button early. The lines already written stay in the system log.
+
+### A Line for Every Change to the Backup Settings
+
+**Card 2270.** No migration, no setting and no answer changes. Every save of the backup settings (Admin, Scheduled Backups) that changes anything writes one line under `BACKUP` on the Audit page, with the chip of the account that saved it: `Backup settings changed: …`, naming each setting changed with its old and new values (the failure mail address by name alone), each destination added or removed by name and type, and each destination changed by the names of its fields, never a value, a password typed again among them. A save that changes nothing, is refused or fails writes none. Card 2267's host key lines follow it, and hold the keys; this line names `hostKey` alone. See [A Save of the Backup Settings, on Record](backup-reporting.md#a-save-of-the-backup-settings-on-record).
+
+**Owner to know.**
+
+- **The level says what matters.** `WARN` where the save leaves fewer copies, or sends them elsewhere: a destination removed; a destination kept but pointed at another account or place (its host, port, user name or remote path; its bucket, region, prefix, endpoint or access key; its folder, client, tenant or service account); less time covered by the copies kept, the retention times the schedule's interval, which is the schedule switched to Disabled or to one more frequent (Weekly to Hourly with the retention kept covers 7 hours, not 7 weeks); or the retention lowered (the next run, a Run Now too, deletes the older copies at every destination). `INFO` for any other change, a schedule less frequent or a password typed again alone among them, so with `LOG_LEVEL` at `WARN` those are not kept, and at `ERROR` none is (the default is `INFO`).
+- **A quotation mark in a destination's name is escaped** in this line and in card 2267's host key lines (`"Off\"site"`), so a name cannot make the rest of the line read as something else.
+
+#### After the deploy
+
+Checks 148 to 152 run on production as the superadmin, with the Audit page's System Logs filtered to `BACKUP` in a second tab. Note the schedule and retention before starting, and put them back as the checks say. Checks 150 and 151 need a scratch SFTP destination whose host does not answer, such as `10.255.255.1` (any username and password); 151 removes it.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 148 | 2270 | Raise the retention by one and **💾 Save**; then put it back and Save | One `[INFO] [BACKUP] Backup settings changed: retention from 7 to 8` line (your numbers) with your account's chip; then one `[WARN] [BACKUP] Backup settings changed: retention from 8 to 7` | No line, the first at `WARN`, the second at `INFO`, or either not filed under you |
+| 149 | 2270 | Save again without changing anything | No new `Backup settings changed` line | A line |
+| 150 | 2270 | Add the scratch SFTP destination and Save; then ✏️ Edit it, type a password other than the one saved, and Save; then Edit it again, change its port, type the same password again (a port changed needs it), and Save | One `[INFO]` line `destination "…" added (sftp)`; then one `[INFO]` line `destination "…" changed: password`; then one `[WARN]` line `destination "…" changed: port` (the copies would now go to another place), its details holding `"elsewhere":true`. Neither the host, the port nor either password appears in a line or its details | No line, a value in one, the second at `WARN` or the third at `INFO` |
+| 151 | 2270 | 🗑️ Remove the scratch destination | One `[WARN] [BACKUP] Backup settings changed: destination "…" removed (sftp)` | `INFO`, or no line |
+| 152 | 2270 | Switch the schedule to Disabled and Save; then put it back and Save | One `[WARN]` line `schedule from <yours> to disabled`; then one `[INFO]` line `schedule from disabled to <yours>` | No line, or the first at `INFO` |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image writes no line for a change to the backup settings; the lines already written stay in the system log.
 
 ## Changing the Schema
 

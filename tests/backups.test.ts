@@ -79,6 +79,7 @@ import {
 	sealVerifies,
 	secretsKeptSentence,
 	secretsToEnterSentence,
+	settingsChanges,
 	strayInternalObjects,
 	unsealedBecause
 } from '$lib/server/backup-secrets';
@@ -3229,6 +3230,17 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 			expect(hostKeyChanges(others, others.map((d) => ({ ...d, hostKey: HOST_KEY })))).toEqual([]);
 		});
 
+		it('matches stored and saved destinations one to one: a key on one of two stored under a name, left out, is removed (the card 2270 review)', () => {
+			const other = { host: 'other.example.test' };
+
+			expect(hostKeyChanges([sftp('NAS', HOST_KEY), sftp('NAS', OTHER_HOST_KEY, other)], [sftp('NAS', HOST_KEY)])).toEqual([
+				{ name: 'NAS', host: 'other.example.test', port: 22, from: OTHER_HOST_KEY, to: '', removed: true }
+			]);
+			expect(hostKeyChanges([sftp('NAS', HOST_KEY)], [sftp('NAS', HOST_KEY), sftp('NAS', OTHER_HOST_KEY, other)])).toEqual([
+				{ name: 'NAS', host: 'other.example.test', port: 22, from: '', to: OTHER_HOST_KEY, removed: false }
+			]);
+		});
+
 		it('counts a change of type with the same fingerprint as a change (decision 3)', () => {
 			expect(hostKeyChanges([sftp('NAS', HOST_KEY)], [sftp('NAS', RSA_SAME)])).toEqual([
 				{ name: 'NAS', host: 'nas.example.test', port: 22, from: HOST_KEY, to: RSA_SAME, removed: false }
@@ -3264,6 +3276,352 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 
 		it('ignores what is not a destination, and a destination with no key either side', () => {
 			expect(hostKeyChanges([null, 'NAS', sftp('A', '')], [7, [], sftp('A', undefined), sftp('B', '')])).toEqual([]);
+		});
+	});
+
+	describe('the line a save writes naming what it changed in the backup settings (card 2270)', () => {
+		// The tests keep ERROR and above; most of these lines are INFO.
+		let level: string | undefined;
+		beforeEach(() => {
+			level = process.env.LOG_LEVEL;
+			process.env.LOG_LEVEL = 'INFO';
+			vi.spyOn(console, 'log').mockImplementation(() => {});
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+		});
+		afterEach(() => {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		});
+
+		/** The lines a save of the backup settings writes (card 2270), oldest first. */
+		const settingsLines = () =>
+			(
+				sqlite
+					.prepare("SELECT level, context, message, meta, user_id FROM system_logs WHERE message LIKE 'Backup settings changed:%' ORDER BY id")
+					.all() as { level: string; context: string; message: string; meta: string | null; user_id: number | null }[]
+			).map((row) => ({ ...row, meta: row.meta === null ? null : JSON.parse(row.meta) }));
+		const NONE = { settings: [], added: [], removed: [], changed: [] };
+		const line = (level: 'INFO' | 'WARN', words: string, meta: Record<string, unknown>) => ({
+			level,
+			context: 'BACKUP',
+			message: `Backup settings changed: ${words}`,
+			meta: { ...NONE, ...meta },
+			user_id: chief.id
+		});
+		const putSettings = (body: Record<string, unknown>) => api('PUT', '/api/admin/backup', { user: chief, body });
+		/** STORED, with the settings beside the destinations changed by `more`. */
+		const storeWith = (more: Record<string, unknown>) =>
+			sqlite
+				.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+				.run('backup_config', JSON.stringify({ ...JSON.parse(configWith(STORED)), ...more }));
+		const OFFSITE = { type: 'sftp', name: 'Offsite', host: 'offsite.example.test', port: 2222, username: 'copy', password: 'offsite-password', privateKey: '', remotePath: '/copies' };
+
+		it('writes one INFO line under BACKUP, filed under the account, naming a destination added (card 2270)', async () => {
+			const saved = await put([...(await shown()), OFFSITE]);
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(settingsLines()).toEqual([line('INFO', 'destination "Offsite" added (sftp)', { added: [{ name: 'Offsite', type: 'sftp' }] })]);
+			expect(JSON.stringify(settingsLines())).not.toContain('offsite-password');
+		});
+
+		it('names the fields of a destination changed, a secret typed again among them, and never a value (card 2270, decision 4)', async () => {
+			const saved = await put(
+				(await shown()).map((d, i) => (i === 0 ? { ...d, host: 'moved.example.test', port: 2222, password: 'typed-again', privateKey: '' } : d))
+			);
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			// The host and port say where the copies go (SAME_IN): they now go elsewhere, a WARN (the review's ruling 2).
+			expect(settingsLines()).toEqual([
+				line('WARN', 'destination "NAS" changed: host, port, password, privateKey', {
+					changed: [{ name: 'NAS', fields: ['host', 'port', 'password', 'privateKey'], elsewhere: true }]
+				})
+			]);
+			const text = JSON.stringify(settingsLines());
+			for (const value of ['moved.example.test', '2222', 'typed-again', SECRETS.sftpPassword, SECRETS.sftpKey]) expect(text.includes(value), value).toBe(false);
+		});
+
+		it('writes a WARN line for a destination left out of the list (card 2270, decision 1)', async () => {
+			const saved = await put((await shown()).filter((d) => d.name !== 'Bucket'));
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(settingsLines()).toEqual([line('WARN', 'destination "Bucket" removed (s3)', { removed: [{ name: 'Bucket', type: 's3' }] })]);
+		});
+
+		it('writes a destination saved as another type under its name as removed and added, at WARN (card 2270, decision 4)', async () => {
+			const saved = await put((await shown()).map((d) => (d.name === 'Bucket' ? { ...NAS, name: 'Bucket', password: 'typed', privateKey: '' } : d)));
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(settingsLines()).toEqual([
+				line('WARN', 'destination "Bucket" added (sftp); destination "Bucket" removed (s3)', {
+					added: [{ name: 'Bucket', type: 'sftp' }],
+					removed: [{ name: 'Bucket', type: 's3' }]
+				})
+			]);
+		});
+
+		it('writes a WARN line for the schedule switched off (card 2270, decision 1)', async () => {
+			storeWith({ schedule: 'daily' });
+
+			const saved = await putSettings({ schedule: 'disabled' });
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(settingsLines()).toEqual([line('WARN', 'schedule from daily to disabled', { settings: [{ field: 'schedule', from: 'daily', to: 'disabled' }] })]);
+		});
+
+		it('writes one INFO line naming each setting changed with its values, and the failure mail address by name alone (card 2270, decision 4)', async () => {
+			const saved = await putSettings({ schedule: 'weekly', scheduleTime: '03:30', scheduleDay: 5, retention: 10, notifyOnFailure: true, notifyEmail: 'ops@example.test' });
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(settingsLines()).toEqual([
+				line('INFO', 'schedule from disabled to weekly; scheduleTime from 02:00 to 03:30; scheduleDay from 0 to 5; retention from 7 to 10; notifyOnFailure from false to true; notifyEmail', {
+					settings: [
+						{ field: 'schedule', from: 'disabled', to: 'weekly' },
+						{ field: 'scheduleTime', from: '02:00', to: '03:30' },
+						{ field: 'scheduleDay', from: 0, to: 5 },
+						{ field: 'retention', from: 7, to: 10 },
+						{ field: 'notifyOnFailure', from: false, to: true },
+						{ field: 'notifyEmail' }
+					]
+				})
+			]);
+			expect(JSON.stringify(settingsLines())).not.toContain('ops@example.test');
+		});
+
+		it('writes a WARN line for the retention lowered: the next run deletes the older copies (card 2270, decision 1)', async () => {
+			// The schedule stored is disabled, so the time the copies cover is none either way; a Run Now still keeps to the retention.
+			const saved = await putSettings({ retention: 3 });
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(settingsLines()).toEqual([line('WARN', 'retention from 7 to 3', { settings: [{ field: 'retention', from: 7, to: 3 }] })]);
+		});
+
+		it('writes a WARN line for a schedule more frequent with the retention kept: the copies kept cover less time (the review, ruling 2)', async () => {
+			storeWith({ schedule: 'weekly' });
+
+			const saved = await putSettings({ schedule: 'hourly' });
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(settingsLines()).toEqual([line('WARN', 'schedule from weekly to hourly', { settings: [{ field: 'schedule', from: 'weekly', to: 'hourly' }] })]);
+		});
+
+		it('writes an INFO line for a schedule less frequent: the copies kept cover more time (the review, ruling 2)', async () => {
+			storeWith({ schedule: 'hourly' });
+
+			const saved = await putSettings({ schedule: 'daily' });
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(settingsLines()).toEqual([line('INFO', 'schedule from hourly to daily', { settings: [{ field: 'schedule', from: 'hourly', to: 'daily' }] })]);
+		});
+
+		it("writes a WARN line for a kept destination's port changed, which says where the copies go, and an INFO one for its password alone (the review, ruling 2)", async () => {
+			const moved = await put((await shown()).map((d, i) => (i === 0 ? { ...d, port: 2200, password: 'typed-again', privateKey: '' } : d)));
+			const retyped = await put((await shown()).map((d, i) => (i === 0 ? { ...d, password: 'typed-once-more' } : d)));
+
+			expect([moved.status, retyped.status], JSON.stringify([moved.body, retyped.body])).toEqual([200, 200]);
+			expect(settingsLines()).toEqual([
+				line('WARN', 'destination "NAS" changed: port, password, privateKey', {
+					changed: [{ name: 'NAS', fields: ['port', 'password', 'privateKey'], elsewhere: true }]
+				}),
+				line('INFO', 'destination "NAS" changed: password', { changed: [{ name: 'NAS', fields: ['password'] }] })
+			]);
+		});
+
+		it('writes a WARN line naming a destination removed where two were stored under its name and the save keeps one (the review, ruling 1)', async () => {
+			storeWith({ destinations: [NAS, { ...NAS, host: 'other.example.test' }] });
+
+			const saved = await put([NAS]);
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(settingsLines()).toEqual([line('WARN', 'destination "NAS" removed (sftp)', { removed: [{ name: 'NAS', type: 'sftp' }] })]);
+		});
+
+		it("writes card 2267's key line for the host key of one of two stored under a name that the save leaves out (the card 2270 review)", async () => {
+			storeWith({ destinations: [{ ...NAS, hostKey: HOST_KEY }, { ...NAS, host: 'other.example.test', hostKey: OTHER_HOST_KEY }] });
+
+			const saved = await put([{ ...NAS, hostKey: HOST_KEY }]);
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'BACKUP' ORDER BY id").all()).toEqual([
+				{ level: 'WARN', message: 'Backup settings changed: destination "NAS" removed (sftp)' },
+				{ level: 'WARN', message: `SFTP host key of destination "NAS" at other.example.test:22 removed with the destination: was ${OTHER_HOST_KEY}` }
+			]);
+		});
+
+		it('writes no line for a retention and day stored as text and sent as the same numbers (the review, ruling 5)', async () => {
+			storeWith({ retention: '7', scheduleDay: '3' });
+
+			const saved = await putSettings({ retention: 7, scheduleDay: 3 });
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(settingsLines()).toEqual([]);
+		});
+
+		it("escapes a quotation mark in a destination's name in this line and in card 2267's, so the name cannot end early (the review, ruling 3)", async () => {
+			const saved = await put([...(await shown()), { ...OFFSITE, name: 'Off"site\\', hostKey: HOST_KEY }]);
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'BACKUP' ORDER BY id").all()).toEqual([
+				{ level: 'INFO', message: 'Backup settings changed: destination "Off\\"site\\\\" added (sftp)' },
+				{ level: 'WARN', message: `SFTP host key of destination "Off\\"site\\\\" at offsite.example.test:2222 added: ${HOST_KEY}` }
+			]);
+		});
+
+		it("names a host key confirmed as a field changed, with no key in it, before card 2267's line that holds the key (card 2270, decision 3)", async () => {
+			const saved = await put((await shown()).map((d, i) => (i === 0 ? { ...d, hostKey: HOST_KEY } : d)));
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'BACKUP' ORDER BY id").all()).toEqual([
+				{ level: 'INFO', message: 'Backup settings changed: destination "NAS" changed: hostKey' },
+				{ level: 'WARN', message: `SFTP host key of destination "NAS" at nas.example.test:22 added: ${HOST_KEY}` }
+			]);
+			expect(JSON.stringify(settingsLines())).not.toContain('SHA256');
+		});
+
+		it('writes no line for a save that changes nothing: the list sent back as shown, and settings sent as they are (card 2270, decision 5)', async () => {
+			const again = await put(await shown());
+			const same = await putSettings({ schedule: 'disabled', retention: 7, notifyEmail: '' });
+
+			expect([again.status, same.status], JSON.stringify([again.body, same.body])).toEqual([200, 200]);
+			expect(settingsLines()).toEqual([]);
+		});
+
+		it('writes no line for a save refused: a masked secret sent with its host changed (card 2270)', async () => {
+			const before = snapshotDb();
+
+			const saved = await put((await shown()).map((d, i) => (i === 0 ? { ...d, host: 'moved.example.test' } : d)));
+
+			expect(saved.status).toBe(400);
+			expect(settingsLines()).toEqual([]);
+			expectUnchanged(before);
+		});
+
+		it('writes no line for a change whose save fails after the line was due: the line waits for the commit (card 2270)', async () => {
+			sqlite.exec(
+				"CREATE TEMP TRIGGER backup_config_frozen BEFORE UPDATE ON settings WHEN NEW.key = 'backup_config' BEGIN SELECT RAISE(ABORT, 'frozen'); END;" +
+					"CREATE TEMP TRIGGER backup_config_frozen_insert BEFORE INSERT ON settings WHEN NEW.key = 'backup_config' BEGIN SELECT RAISE(ABORT, 'frozen'); END;"
+			);
+			try {
+				await expect(putSettings({ retention: 3 })).rejects.toThrow('frozen');
+			} finally {
+				sqlite.exec('DROP TRIGGER backup_config_frozen; DROP TRIGGER backup_config_frozen_insert;');
+			}
+
+			expect(JSON.parse(settingsOf(sqlite)['backup_config']).retention).toBe(7);
+			expect(settingsLines()).toEqual([]);
+		});
+	});
+
+	describe('settingsChanges, what a save of the backup settings changes (card 2270)', () => {
+		const settings = (destinations: unknown[], more: Record<string, unknown> = {}) => ({ ...JSON.parse(configWith(destinations)), ...more });
+		const RSA_SAME = `ssh-rsa ${HOST_KEY.split(' ')[1]}`;
+
+		it('is null for the same settings, for the destinations in another order, and for each default as it is used (decision 4)', () => {
+			expect(settingsChanges(settings(STORED), settings(STORED))).toBeNull();
+			expect(settingsChanges(settings(STORED), settings([...STORED].reverse()))).toBeNull();
+			expect(
+				settingsChanges(
+					settings([{ ...NAS, port: null, hostKey: '' }, BUCKET, { ...ONEDRIVE, folderPath: 'DumpFire Backups' }]),
+					settings([
+						{ ...NAS, port: 22, host: ' NAS.Example.TEST\t', hostKey: undefined },
+						{ ...BUCKET, endpoint: '', prefix: 'dumpfire/' },
+						{ ...ONEDRIVE, folderPath: '/DumpFire Backups/' }
+					])
+				)
+			).toBeNull();
+			expect(settingsChanges(settings([{ ...BUCKET, region: '' }]), settings([{ ...BUCKET, region: 'us-east-1' }]))).toBeNull();
+		});
+
+		it('names each field changed, a secret by name alone, and a host key whose type changed (decision 3)', () => {
+			const changes = settingsChanges(
+				settings([{ ...NAS, hostKey: HOST_KEY }, BUCKET, STORED[2]]),
+				settings([
+					{ ...NAS, password: 'new-password', hostKey: RSA_SAME },
+					{ ...BUCKET, prefix: 'other/', secretAccessKey: 'new-secret' },
+					{ ...DRIVE, refreshToken: '' }
+				])
+			);
+
+			expect(changes).toEqual({
+				settings: [],
+				added: [],
+				removed: [],
+				changed: [
+					{ name: 'NAS', fields: ['password', 'hostKey'] },
+					{ name: 'Bucket', fields: ['secretAccessKey', 'prefix'], elsewhere: true },
+					{ name: 'Drive', fields: ['refreshToken', 'grantedScope'] }
+				]
+			});
+			const text = JSON.stringify(changes);
+			for (const value of ['new-password', 'new-secret', 'other/', 'SHA256']) expect(text.includes(value), value).toBe(false);
+		});
+
+		it('gives a destination added, removed, or saved as another type under its name, with its type', () => {
+			expect(settingsChanges(settings([NAS, BUCKET]), settings([{ ...ROBOT, name: 'NAS' }, ONEDRIVE]))).toEqual({
+				settings: [],
+				added: [
+					{ name: 'NAS', type: 'gdrive' },
+					{ name: 'OneDrive', type: 'onedrive' }
+				],
+				removed: [
+					{ name: 'NAS', type: 'sftp' },
+					{ name: 'Bucket', type: 's3' }
+				],
+				changed: []
+			});
+		});
+
+		it('gives each setting changed with its values, but the failure mail address without them', () => {
+			expect(settingsChanges(settings([]), settings([], { schedule: 'hourly', notifyEmail: 'ops@example.test', notifyOnFailure: true }))).toEqual({
+				settings: [
+					{ field: 'schedule', from: 'disabled', to: 'hourly' },
+					{ field: 'notifyOnFailure', from: false, to: true },
+					{ field: 'notifyEmail' }
+				],
+				added: [],
+				removed: [],
+				changed: []
+			});
+		});
+
+		it('matches stored and saved destinations one to one: each stored entry left over is removed (the review, ruling 1)', () => {
+			const other = { ...NAS, host: 'other.example.test' };
+
+			expect(settingsChanges(settings([NAS, other]), settings([NAS]))).toEqual({
+				settings: [],
+				added: [],
+				removed: [{ name: 'NAS', type: 'sftp' }],
+				changed: []
+			});
+			expect(settingsChanges(settings([NAS]), settings([NAS, other]))).toEqual({
+				settings: [],
+				added: [{ name: 'NAS', type: 'sftp' }],
+				removed: [],
+				changed: []
+			});
+		});
+
+		it('compares the retention and the day as numbers: text stored is the same number sent (the review, ruling 5)', () => {
+			expect(settingsChanges(settings([], { retention: '7', scheduleDay: '3' }), settings([], { retention: 7, scheduleDay: 3 }))).toBeNull();
+			expect(settingsChanges(settings([], { retention: '7' }), settings([], { retention: 8 }))?.settings).toEqual([{ field: 'retention', from: '7', to: 8 }]);
+		});
+
+		it('marks a destination changed in a field that says where its copies go, its account included, and no other (the review, ruling 2)', () => {
+			const otherAccount = { ...ROBOT, serviceAccountJson: serviceAccountJson(SECRETS.serviceAccountKey).replace('robot@', 'someone@') };
+
+			expect(
+				settingsChanges(
+					settings([NAS, ROBOT, ONEDRIVE]),
+					settings([{ ...NAS, username: 'other' }, otherAccount, { ...ONEDRIVE, clientSecret: 'new' }])
+				)?.changed
+			).toEqual([
+				{ name: 'NAS', fields: ['username'], elsewhere: true },
+				{ name: 'Robot', fields: ['serviceAccountJson'], elsewhere: true },
+				{ name: 'OneDrive', fields: ['clientSecret'] }
+			]);
+		});
+
+		it('ignores what is not a destination, or has no name', () => {
+			expect(settingsChanges(settings([null, 'NAS', 7]), settings([[], { type: 'sftp', name: 5 }]))).toBeNull();
 		});
 	});
 

@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.22
+version: 1.23
 status: As-Built
 date: 2026-10-19
 tags:
@@ -449,7 +449,7 @@ flowchart TD
 | A backup run | `runBackup()` | An unconfirmed destination is not tried, beside `credentialsMissing()`; a refused key fails the upload with the class's message, `Backup failed: NAS → …`, with its Backup History row and failure mail, and no line of its own |
 | The start | `reportUnconfirmedHostKeys()` in `startup-checks.ts`, the thirteenth line | `[WARN] [STARTUP] 1 SFTP backup destination(s) have no confirmed host key, and nothing is sent to them until one is confirmed: "NAS". In Admin, Scheduled Backups, press Test on each and confirm the key it shows.`, the first 20 named, then `; and N more` |
 | A restore | `fillSecretGaps()`, `withSecretsOf()` | Every SFTP entry loses the backup's `hostKey` first; one filled, or with neither secret here either, takes the key of the entry here it was matched with, or none. `needs()` reads "SFTP: its password or private key, then Test to confirm its host key" |
-| A save | `hostKeyChanges()` in `backup-secrets.ts`, from `PUT /api/admin/backup` | One `WARN` line under `BACKUP` per SFTP destination whose key as stored (`<type> SHA256:…`, `''` for none or for stored text that does not read) the save changes, filed under the saving account (`user_id`), with the meta `{"destination":"NAS","from":"<key or ''>","to":"<key or ''>"}` (card 2267), and `"fromAt":"oldhost:22"` beside them where the same save moved the destination as well as changing or clearing its key: `SFTP host key of destination "NAS" at nas.example:22 added: ssh-ed25519 SHA256:NEW`, `… changed from ssh-ed25519 SHA256:OLD to ssh-ed25519 SHA256:NEW`, `… cleared: was ssh-ed25519 SHA256:OLD`, and `… removed with the destination: was ssh-ed25519 SHA256:OLD` for a name stored with a key that the save drops or makes another type (decision 2). The host and port are the saved destination's, or the stored one's when it is gone; where a save moves the destination and changes or clears its key, the old key is followed by the place it was for, `… changed from ssh-ed25519 SHA256:OLD (at oldhost:22) to ssh-ed25519 SHA256:NEW` (the card 2267 review); the logger makes the name and host printable. The line is a `WARN`, so it is not written with `LOG_LEVEL` at `ERROR` (the default is `INFO`). A change of type with the same fingerprint is a change (decision 3); the same key sent as `ssh-keygen -l` prints it is stored canonical and is none. Queued with `afterCommit()`, so a save refused or rolled back writes no line: the logger keeps a row logged inside a transaction whichever way it ends |
+| A save | `hostKeyChanges()` in `backup-secrets.ts`, from `PUT /api/admin/backup` | One `WARN` line under `BACKUP` per SFTP destination whose key as stored (`<type> SHA256:…`, `''` for none or for stored text that does not read) the save changes, filed under the saving account (`user_id`), with the meta `{"destination":"NAS","from":"<key or ''>","to":"<key or ''>"}` (card 2267), and `"fromAt":"oldhost:22"` beside them where the same save moved the destination as well as changing or clearing its key: `SFTP host key of destination "NAS" at nas.example:22 added: ssh-ed25519 SHA256:NEW`, `… changed from ssh-ed25519 SHA256:OLD to ssh-ed25519 SHA256:NEW`, `… cleared: was ssh-ed25519 SHA256:OLD`, and `… removed with the destination: was ssh-ed25519 SHA256:OLD` for a name stored with a key that the save drops or makes another type (decision 2). Stored and saved destinations are matched one to one, as the settings line matches them (`matchOneToOne()`, the card 2270 review): where two were stored under one name and the save keeps one, a key on the other is `removed with the destination`, and a second saved under a name stored once is a key `added`. The host and port are the saved destination's, or the stored one's when it is gone; where a save moves the destination and changes or clears its key, the old key is followed by the place it was for, `… changed from ssh-ed25519 SHA256:OLD (at oldhost:22) to ssh-ed25519 SHA256:NEW` (the card 2267 review); a `\` or `"` in the name is escaped, `\\` or `\"` (the card 2270 review), and the logger makes the name and host printable. The line is a `WARN`, so it is not written with `LOG_LEVEL` at `ERROR` (the default is `INFO`). A change of type with the same fingerprint is a change (decision 3); the same key sent as `ssh-keygen -l` prints it is stored canonical and is none. Queued with `afterCommit()`, so a save refused or rolled back writes no line: the logger keeps a row logged inside a transaction whichever way it ends |
 
 A save's line, in order (card 2267):
 
@@ -506,6 +506,53 @@ the destination as the server now holds it. The card 2250 review added:
   button back when it starts (one `testingDest` name did), nor when it answers. A save moves
   `hostKeyTests` on and never `testsInFlight`, so a Test whose answer is dropped still clears its
   own entry when the answer comes.
+
+### A Save of the Backup Settings, on Record
+
+Every save of `PUT /api/admin/backup` that changes anything writes one line under `BACKUP`,
+filed under the saving account (`user_id`, the chip on the Audit page), naming what it changed
+(card 2270). `settingsChanges(before, after)` in `backup-secrets.ts`, beside `hostKeyChanges()`,
+compares the settings as stored with the settings about to be saved, and returns `null` where
+nothing changed, so a save that changes nothing writes nothing: the page's Save of the list as
+shown, with every secret masked, is one. The route words the line (`settingsChangeLine()`) and
+queues it with `afterCommit`, so a save refused or failed leaves none.
+
+| | |
+|---|---|
+| The settings | `schedule`, `scheduleTime`, `scheduleDay`, `retention` and `notifyOnFailure` named with their old and new values (`schedule from daily to disabled`); `notifyEmail` named alone, never its addresses. `retention` and `scheduleDay` are compared as numbers, so `"7"` stored and `7` saved is no change |
+| A destination's name | In quotation marks, each `\` and `"` in it escaped as `\\` and `\"` (`quoted()` in the route), so a name cannot end the quotation early and make the rest of the line read as something else. Card 2267's host key lines write the name the same way. The logger then makes it printable |
+| A destination added | By name, new in the save: `destination "Offsite" added (sftp)` |
+| A destination removed | By name, gone from the save: `destination "Old" removed (s3)`. One saved as another type under its name is removed and added, as card 2267 has it. Stored and saved destinations are matched one to one: each stored entry is taken once it is matched, so where two were stored under one name and the save keeps one, the other is removed |
+| A destination changed | The names of its fields that changed, never a value, secrets and the rest alike: `destination "NAS" changed: host, port, password, privateKey, hostKey`. Every field either entry holds but `name` and `type` is compared (so `grantedScope` too), as it is used: `host`, `port`, `region` and `folderPath` by their defaults (`inUse`: a port left empty is 22, a host in other case is the same host), `hostKey` as stored (`keyAsStored`), every other field with missing, `null` and empty text alike. A secret sent back masked is the stored secret by then (`keepMaskedSecrets`), so it is no change. Where a field that says where the copies go changed, by the rule a masked secret is kept by (`SAME_IN` and a service account's address and key ID, the host key aside), its entry in the meta holds `"elsewhere":true`: an SFTP host, port, user name or remote path; an S3 region, bucket, prefix, endpoint or access key ID; a Google Drive sign-in method, folder ID, client ID or service account; a OneDrive tenant ID, client ID or folder path |
+| The order | Settings, then destinations added, changed and removed, separated by `; `. The order of the list is not a change |
+| The level | `WARN` where the save leaves fewer copies, or sends them elsewhere: a destination removed (or saved as another type); a destination kept with `elsewhere`; less time covered by the copies kept, the retention times the schedule's interval (`SCHEDULE_INTERVALS` in `backup.ts`, none for `disabled`), which is the schedule switched to `disabled` or to one more frequent (weekly to hourly with the retention kept); or the retention lowered, which the next run keeps to at every destination, a **Run Now** under `disabled` too, deleting the older copies. `INFO` for any other: a schedule less frequent (hourly to daily), a secret typed again alone, an address added. At `LOG_LEVEL=WARN` the `INFO` lines are not kept; the default is `INFO` |
+| The meta | `{"settings":[{"field":"schedule","from":"daily","to":"disabled"},{"field":"notifyEmail"}],"added":[{"name":"Offsite","type":"sftp"}],"removed":[{"name":"Old","type":"s3"}],"changed":[{"name":"NAS","fields":["host","port"],"elsewhere":true}]}`, each list present, empty where nothing of its kind changed; `elsewhere` only where it is true |
+| Beside card 2267's lines | This line names `hostKey` among a kept destination's changed fields (one of the same name and type in both) exactly when 2267 writes a key line for that destination, and never the key: the keys are in 2267's line alone. A destination added or removed with a key is named as added or removed, and 2267's line gives the key. It is queued first, so it reads before them |
+
+A whole save, in order:
+
+```
+[WARN] [BACKUP] Backup settings changed: schedule from daily to disabled; destination "NAS" changed: hostKey; destination "Old" removed (s3)
+[WARN] [BACKUP] SFTP host key of destination "NAS" at nas.example:22 added: ssh-ed25519 SHA256:…
+```
+
+```mermaid
+flowchart TD
+    S[PUT /api/admin/backup, in its transaction] --> C{settingsChanges<br/>existing vs config}
+    C -->|null| K[no settings line]
+    C -->|changes| F{a destination removed or elsewhere,<br/>less time kept, or<br/>retention lowered?}
+    F -->|yes| W[afterCommit: log.warn]
+    F -->|no| I[afterCommit: log.info]
+    K --> H[hostKeyChanges: afterCommit log.warn per key, card 2267]
+    W --> H
+    I --> H
+    H --> V[saveBackupConfig]
+    V -->|committed| L[lines written, in that order, under the account]
+    V -->|refused or failed| N[effects dropped: no line]
+```
+
+The successful Google Drive Connect, the other writer of `backup_config`, writes no such line
+yet; only its refusals and failures are logged.
 
 ### Retention Cleanup
 

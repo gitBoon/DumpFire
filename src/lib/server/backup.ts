@@ -47,7 +47,8 @@ export type BackupSchedule = 'disabled' | 'hourly' | 'every6h' | 'every12h' | 'd
 /** Every schedule there is, as PUT /api/admin/backup reads one. */
 export const BACKUP_SCHEDULES: readonly BackupSchedule[] = ['disabled', 'hourly', 'every6h', 'every12h', 'daily', 'weekly'];
 
-const SCHEDULE_INTERVALS: Record<BackupSchedule, number> = {
+/** How often each schedule runs, in milliseconds; none for `disabled`. PUT /api/admin/backup reads it to weigh a change (card 2270). */
+export const SCHEDULE_INTERVALS: Record<BackupSchedule, number> = {
 	disabled: 0,
 	hourly: 60 * 60 * 1000,
 	every6h: 6 * 60 * 60 * 1000,

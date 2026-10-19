@@ -1068,10 +1068,27 @@ export interface HostKeyChange {
 }
 
 /**
+ * Each destination saved with the stored one it keeps, by `same`, or none, and
+ * the stored ones no saved one keeps, in the stored order. Each stored entry is
+ * matched once, so where two were stored under one name and the save keeps
+ * one, the other is left over (the card 2270 review).
+ */
+function matchOneToOne(stored: readonly Entry[], saved: readonly Entry[], same: (a: Entry, b: Entry) => boolean) {
+	const unmatched = [...stored];
+	const pairs = saved.map((destination) => {
+		const at = unmatched.findIndex((d) => same(d, destination));
+		return { destination, kept: at === -1 ? undefined : unmatched.splice(at, 1)[0] };
+	});
+	return { pairs, unmatched };
+}
+
+/**
  * The SFTP host keys a save of the destinations changes (card 2267), so that
  * each is one line in the system log: a name in both lists whose key as
  * stored differs, a name stored with a key that the save drops or makes
- * another type (decision 2), and a name new in the save with a key. Keys are
+ * another type (decision 2), and a name new in the save with a key. Stored and
+ * saved are matched one to one (`matchOneToOne`), so a key on one of two
+ * stored under a name that the save keeps once is removed too. Keys are
  * compared as stored, `<type> SHA256:…` (decision 3: a change of type with the
  * same fingerprint is a change), so the same key sent back as `ssh-keygen -l`
  * prints it, which `readDestination` stores canonical, is no change; stored
@@ -1096,8 +1113,8 @@ export function hostKeyChanges(before: readonly unknown[], after: readonly unkno
 		removed
 	});
 	const changes: HostKeyChange[] = [];
-	for (const destination of saved) {
-		const was = stored.find((d) => d.name === destination.name);
+	const { pairs, unmatched } = matchOneToOne(stored, saved, (a, b) => a.name === b.name);
+	for (const { destination, kept: was } of pairs) {
 		const from = was === undefined ? '' : keyAsStored(was);
 		const to = keyAsStored(destination);
 		if (from === to) continue;
@@ -1109,11 +1126,106 @@ export function hostKeyChanges(before: readonly unknown[], after: readonly unkno
 		}
 		changes.push(entry);
 	}
-	for (const destination of stored) {
+	for (const destination of unmatched) {
 		const from = keyAsStored(destination);
-		if (from !== '' && !saved.some((d) => d.name === destination.name)) changes.push(change(destination, from, '', true));
+		if (from !== '') changes.push(change(destination, from, '', true));
 	}
 	return changes;
+}
+
+/**
+ * What a save of the backup settings changes (card 2270), for its one line in
+ * the system log. Never a value of a destination's field: the settings are
+ * the superadmin's, the log every administrator's (decision 4).
+ */
+export interface BackupSettingsChanges {
+	/** Each setting beside the destinations that changed, with its values; `notifyEmail` without them. */
+	settings: { field: string; from?: unknown; to?: unknown }[];
+	/** Destinations new by name, or saved as another type under a name: in the save's order. */
+	added: { name: string; type: string }[];
+	/** Destinations gone by name, or saved as another type: in the stored order. */
+	removed: { name: string; type: string }[];
+	/**
+	 * The fields of each destination kept, by name, whose value changed: in the
+	 * save's order. `elsewhere` where one of them says where the copies go, by
+	 * `SAME_IN`'s rule of the same account and place (`differences`): the copies
+	 * now go elsewhere (the card 2270 review).
+	 */
+	changed: { name: string; fields: string[]; elsewhere?: true }[];
+}
+
+/** The settings beside the destinations, in the order the line names them. `notifyEmail` holds addresses, so it is named alone. */
+const SETTINGS_FIELDS = ['schedule', 'scheduleTime', 'scheduleDay', 'retention', 'notifyOnFailure', 'notifyEmail'] as const;
+
+/** The settings that are numbers: compared as numbers, so `"7"` stored and 7 sent are the same (the card 2270 review). */
+const NUMBER_SETTINGS: readonly string[] = ['scheduleDay', 'retention'];
+
+/**
+ * Whether a destination's `field` differs between `a` and `b`, as it is used
+ * (card 2270, decision 4): a host, port, region and folder path by their
+ * defaults (`inUse`), a host key as stored (`keyAsStored`, so that it is named
+ * exactly when card 2267's line is written), and every other field with a
+ * missing, a null and an empty text alike.
+ */
+function fieldDiffers(a: Entry, b: Entry, field: string): boolean {
+	if (field === 'hostKey') return keyAsStored(a) !== keyAsStored(b);
+	const one = inUse(a, field);
+	const other = inUse(b, field);
+	if (one === other) return false;
+	const isObject = (value: unknown) => value !== null && typeof value === 'object';
+	return !(isObject(one) && isObject(other) && JSON.stringify(one) === JSON.stringify(other));
+}
+
+/**
+ * What a save of the backup settings changes (card 2270), `before` as stored
+ * and `after` as it is to be saved, or null where it changes nothing, so that
+ * such a save writes no line (decision 5). A destination is matched by name, as
+ * everything else matches it: one saved as another type under its name is
+ * removed and added, as card 2267 has it. Each stored entry is matched once, so
+ * where two were stored under one name and the save keeps one, the other is
+ * removed (the card 2270 review). The fields compared are every field either
+ * entry holds but `name` and `type`, so a field no list names is compared too
+ * (`grantedScope` among them). The retention and the day are compared as
+ * numbers. The order of the destinations is not a change.
+ */
+export function settingsChanges(before: object, after: object): BackupSettingsChanges | null {
+	const was = before as Entry;
+	const now = after as Entry;
+	const named = (list: unknown) =>
+		(Array.isArray(list) ? list : []).filter((d): d is Entry => isEntry(d) && typeof d.name === 'string');
+	const stored = named(was.destinations);
+	const saved = named(now.destinations);
+	const typeOf = (destination: Entry) => String(destination.type ?? '');
+	const sameKind = (a: Entry, b: Entry) => a.name === b.name && a.type === b.type;
+
+	const settings: BackupSettingsChanges['settings'] = [];
+	for (const field of SETTINGS_FIELDS) {
+		const same = NUMBER_SETTINGS.includes(field) ? Number(was[field]) === Number(now[field]) : was[field] === now[field];
+		if (same) continue;
+		settings.push(field === 'notifyEmail' ? { field } : { field, from: was[field], to: now[field] });
+	}
+
+	// Each stored entry matched once: those left over are the ones removed.
+	const { pairs, unmatched } = matchOneToOne(stored, saved, sameKind);
+	const added: BackupSettingsChanges['added'] = [];
+	const changed: BackupSettingsChanges['changed'] = [];
+	for (const { destination, kept } of pairs) {
+		if (kept === undefined) {
+			added.push({ name: destination.name as string, type: typeOf(destination) });
+			continue;
+		}
+		const fields = [...new Set([...Object.keys(destination), ...Object.keys(kept)])].filter(
+			(field) => field !== 'name' && field !== 'type' && fieldDiffers(kept, destination, field)
+		);
+		if (fields.length === 0) continue;
+		// The rule a masked secret is kept by: another account or place, the host key aside (card 2267's line has it).
+		const elsewhere = differences(destination, kept, 'save').some((field) => field !== 'hostKey' && field !== 'type');
+		changed.push({ name: destination.name as string, fields, ...(elsewhere ? { elsewhere: true as const } : {}) });
+	}
+	const removed = unmatched.map((destination) => ({ name: destination.name as string, type: typeOf(destination) }));
+
+	if (settings.length + added.length + removed.length + changed.length === 0) return null;
+	return { settings, added, removed, changed };
 }
 
 /**

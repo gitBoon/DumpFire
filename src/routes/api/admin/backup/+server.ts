@@ -22,10 +22,19 @@ import {
 	saveBackupConfig,
 	getBackupHistory,
 	runBackup,
+	SCHEDULE_INTERVALS,
 	type BackupConfig
 } from '$lib/server/backup';
 import { readDestination } from '$lib/server/backup-destinations';
-import { hostKeyChanges, keepMaskedSecrets, maskDestination, twiceNamed, type HostKeyChange } from '$lib/server/backup-secrets';
+import {
+	hostKeyChanges,
+	keepMaskedSecrets,
+	maskDestination,
+	settingsChanges,
+	twiceNamed,
+	type BackupSettingsChanges,
+	type HostKeyChange
+} from '$lib/server/backup-secrets';
 import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { createLogger } from '$lib/server/logger';
 import {
@@ -44,6 +53,13 @@ import type { RequestHandler } from './$types';
 const log = createLogger('BACKUP');
 
 /**
+ * A destination's name in quotation marks for a line, with each `\` and `"`
+ * in it escaped (`\\`, `\"`), so that no name can end the quotation early and
+ * make the rest of the line read as something else (the card 2270 review).
+ */
+const quoted = (name: string) => `"${name.replace(/[\\"]/g, '\\$&')}"`;
+
+/**
  * The line a save writes for one SFTP host key it adds, changes or removes
  * (card 2267). It names the destination, its host and the keys, as the Test's
  * ERROR lines do, and no secret; the logger makes the name and host printable.
@@ -51,12 +67,57 @@ const log = createLogger('BACKUP');
  * place it was for (the card 2267 review).
  */
 function hostKeyChangeLine(change: HostKeyChange): string {
-	const at = `SFTP host key of destination "${change.name}" at ${change.host}:${change.port}`;
+	const at = `SFTP host key of destination ${quoted(change.name)} at ${change.host}:${change.port}`;
 	const was = change.fromAt === undefined ? change.from : `${change.from} (at ${change.fromAt})`;
 	if (change.removed) return `${at} removed with the destination: was ${was}`;
 	if (change.from === '') return `${at} added: ${change.to}`;
 	if (change.to === '') return `${at} cleared: was ${was}`;
 	return `${at} changed from ${was} to ${change.to}`;
+}
+
+/**
+ * The line a save writes for what it changed in the backup settings (card
+ * 2270): each setting with its values, `notifyEmail` by name alone, and each
+ * destination added, removed or changed, a changed one by the names of its
+ * fields, never a value. A host key is named as a field, and its keys are left
+ * to `hostKeyChangeLine` (decision 3).
+ */
+function settingsChangeLine(changes: BackupSettingsChanges): string {
+	const parts = [
+		...changes.settings.map((s) => ('from' in s ? `${s.field} from ${s.from} to ${s.to}` : s.field)),
+		...changes.added.map((d) => `destination ${quoted(d.name)} added (${d.type})`),
+		...changes.changed.map((d) => `destination ${quoted(d.name)} changed: ${d.fields.join(', ')}`),
+		...changes.removed.map((d) => `destination ${quoted(d.name)} removed (${d.type})`)
+	];
+	return `Backup settings changed: ${parts.join('; ')}`;
+}
+
+/**
+ * How long the copies kept at each destination reach back: the retention
+ * times the schedule's interval, none for `disabled` or a schedule this
+ * version does not know (the card 2270 review).
+ */
+function timeKept(config: BackupConfig): number {
+	const interval = Object.hasOwn(SCHEDULE_INTERVALS, config.schedule) ? SCHEDULE_INTERVALS[config.schedule] : 0;
+	return (Number(config.retention) || 0) * interval;
+}
+
+/**
+ * Whether a save leaves fewer copies, or sends them elsewhere (card 2270,
+ * decision 1, as its review ruled): a destination removed or saved as another
+ * type; a destination kept whose account or place changed (`elsewhere`); less
+ * time covered by the copies kept (`timeKept`), which is the schedule switched
+ * off or made more frequent; or the retention lowered, which the next run,
+ * a Run Now under `disabled` too, keeps to at every destination, deleting the
+ * older copies. Such a line is a WARN, any other an INFO.
+ */
+function leavesFewerCopies(before: BackupConfig, after: BackupConfig, changes: BackupSettingsChanges): boolean {
+	return (
+		changes.removed.length > 0 ||
+		changes.changed.some((d) => d.elsewhere) ||
+		timeKept(after) < timeKept(before) ||
+		Number(after.retention) < Number(before.retention)
+	);
 }
 
 /** GET — Return backup config and recent history. */
@@ -103,10 +164,15 @@ export const GET: RequestHandler = async ({ locals }) => {
  *                      the save is a 400 naming the destination, what to
  *                      type again and what changed; nothing is written
  *
- * Each SFTP host key the save adds, changes, clears or removes with its
- * destination is one WARN line under BACKUP, filed under the account that
- * saved it (card 2267), so a key confirmed and later put back leaves both
- * changes on record.
+ * A save that changes anything is one line under BACKUP, filed under the
+ * account that saved it, naming what changed (card 2270): a WARN where it
+ * leaves fewer copies or sends them elsewhere (a destination removed, one
+ * kept pointed at another account or place, or less time covered by the
+ * copies kept: the retention lowered, the schedule switched off or made more
+ * frequent), an INFO otherwise. Each SFTP host key the save adds,
+ * changes, clears or removes with its destination is one WARN line after it
+ * (card 2267), so a key confirmed and later put back leaves both changes on
+ * record. A save that changes nothing, is refused or fails writes none.
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
 	const caller = requireSuperadmin(locals.user);
@@ -157,7 +223,13 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 
 		// After the commit, not here: the logger writes a row logged inside a
 		// transaction whichever way it ends, and a save that fails would leave
-		// a line for a key it never saved (card 2267).
+		// a line for a change it never saved (cards 2267 and 2270). The line for
+		// the whole save is queued first, so it reads before the key lines.
+		const changed = settingsChanges(existing, config);
+		if (changed !== null) {
+			const write = leavesFewerCopies(existing, config, changed) ? log.warn : log.info;
+			afterCommit(() => write(settingsChangeLine(changed), changed, { userId: caller.id }));
+		}
 		const changes = destinations === undefined ? [] : hostKeyChanges(existing.destinations, config.destinations);
 		for (const change of changes) {
 			afterCommit(() =>
