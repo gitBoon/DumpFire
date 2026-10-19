@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.28
+version: 1.29
 status: As-Built
-date: 2026-10-18
+date: 2026-10-19
 tags:
   - database
   - schema
@@ -887,7 +887,7 @@ sequenceDiagram
             R->>DB: ROLLBACK, every move of the request undone
         end
         M->>DB: card: column, position, updated_at,<br/>completed_at set or cleared, first_completed_at
-        M->>DB: cross-board: drop source board's labels<br/>and a category owned by another board
+        M->>DB: cross-board: drop source board's labels, a category owned by another board,<br/>and a milestone of a board other than the target (card 2155), in the same update
         M->>DB: user_xp += priority XP (first completion only)
         M->>DB: activity_log: one entry, with user id and source<br/>(its webhook is queued)
         M-->>R: CardMove { completed, reopened, xpAwarded, ... }
@@ -907,8 +907,13 @@ savepoint. A drop of several cards is therefore one transaction: if the last car
 completed, the earlier ones are rolled back with it and nothing is announced for any of them.
 A failure to write an "Unblocked" notice fails the move it belongs to in the same way.
 
-The check for open subtasks and sub-boards is `getCompletionBlocker()` in
-`src/lib/server/card-completion.ts`. A sub-board holds its card back while it has a card that
+The check for open subtasks and sub-boards is `getCompletionBlocker(cardId, viewer)` in
+`src/lib/server/card-completion.ts`, and `moveCard` passes the actor as the viewer (card
+2151). Subtasks are the card's own and keep their message. Of the unfinished sub-boards, the
+first the viewer can open is named, as before (`Sub-board "<name>" has 1 incomplete card that
+must be completed first`); when the only unfinished ones are sub-boards the viewer cannot
+open, the refusal is `409` `A sub-board you cannot open still has incomplete cards that must
+be completed first. Ask this board's owner.`, with no name and no count. A sub-board holds its card back while it has a card that
 is not archived and not in a Complete column; an archived card is not live work and holds
 nothing back (card 2205). It reads each sub-board's figures from `subBoardProgress(boardIds)`
 beside it, one query giving `{ done, total }` for every board asked: `total` the cards on
@@ -951,6 +956,21 @@ costs nothing more and is never refused. Otherwise `moveTooDeep()` compares `dep
 the two boards, and only when the target is the deeper one counts the levels the card
 carries, with `heightUnderCard()` stopped at the room the target leaves. A move that lifts a
 tree, or leaves it no deeper, is allowed, which is how a tree already too deep is put right.
+
+A move to another board also takes the card out of its milestone when the milestone belongs
+to a board other than the one it arrives on (card 2155): beside the category rule, the
+milestone is read and `milestoneId` set to null in the same `UPDATE` of the card, so the move
+makes no extra write, and every move route has the rule. A goal across boards (no
+`board_id`) keeps its cards, and a card already in a milestone of the board it arrives on
+keeps it. `CardMove.leftMilestone` is `{ id, name, ofSourceBoard }` or null, and the source
+board's `card_moved_away` entry ends `and out of milestone "M"` for a milestone of the board
+it left, or `and out of a milestone of another board` for a third board's (one restored from
+an older backup); `card_moved_in` does not mention it. Both API trees answer the moved card
+with `milestoneId: null`, and `PUT /api/cards/:id` and `PUT /api/v1/cards/:id/move` add
+`leftMilestone`, `leftMilestoneOf(move)`: `{ id, name }` for a milestone of the board it
+left, which the mover can read as an editor of that board, and null otherwise, a third
+board's included (the review's O3). All Tasks shows it as a toast. Migration `0057` took out, once, the cards that were already in a
+milestone of another board; see [Deployment](deployment.md).
 
 `PUT /api/cards/:id` can carry other fields beside the move. The move, the update of those
 fields and the `card_updated` entry are one transaction.

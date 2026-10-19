@@ -2,6 +2,7 @@ import { db } from '$lib/server/db';
 import { cards, columns, subtasks, boards, type Column } from '$lib/server/db/schema';
 import { and, count, eq, inArray, isNull } from 'drizzle-orm';
 import { isCompleteColumnTitle, isHoldColumnTitle } from '$lib/column-role';
+import { canViewBoard, type Actor } from './board-access';
 
 /** How far a sub-board is: `total` live cards, `done` of them in a Complete column. */
 export type SubBoardProgress = { done: number; total: number };
@@ -57,8 +58,18 @@ export function subBoardProgress(boardIds: number[]): Map<number, SubBoardProgre
  *
  * Returns `null` if the card is ready to complete, or an error message string
  * describing what's still incomplete.
+ *
+ * The message is the caller's, `viewer` (card 2151). A sub-board they can open
+ * is asked about first, and an unfinished one is named, with its count. When
+ * the only unfinished sub-boards are ones they cannot open, the card is still
+ * refused, and the message names none and counts nothing: access is not
+ * inherited from a parent board, and the board page names no such sub-board
+ * to them either. It says who can help, the board's owner, as the board page
+ * does (the review's O-N5). Subtasks are the card's own and keep their message. Each
+ * message is one template, so the OpenAPI document's check of its examples can
+ * find it here.
  */
-export function getCompletionBlocker(cardId: number): string | null {
+export function getCompletionBlocker(cardId: number, viewer: Actor): string | null {
 	// 1. Check subtasks
 	const cardSubtasks = db.select().from(subtasks)
 		.where(eq(subtasks.cardId, cardId))
@@ -76,13 +87,19 @@ export function getCompletionBlocker(cardId: number): string | null {
 		.where(eq(boards.parentCardId, cardId))
 		.all();
 	const progress = subBoardProgress(subBoards.map(sb => sb.id));
+	const openCards = (boardId: number) => {
+		const { done, total } = progress.get(boardId)!;
+		return total - done;
+	};
+	const unfinished = subBoards.filter(sb => openCards(sb.id) > 0);
 
-	for (const sb of subBoards) {
-		const { done, total } = progress.get(sb.id)!;
-		const open = total - done;
-		if (open > 0) {
-			return `Sub-board "${sb.name}" has ${open} incomplete card${open > 1 ? 's' : ''} that must be completed first`;
-		}
+	const named = unfinished.find(sb => canViewBoard(viewer, sb.id));
+	if (named) {
+		const open = openCards(named.id);
+		return `Sub-board "${named.name}" has ${open} incomplete card${open > 1 ? 's' : ''} that must be completed first`;
+	}
+	if (unfinished.length > 0) {
+		return `A sub-board you cannot open still has incomplete cards that must be completed first. Ask this board's owner.`;
 	}
 
 	return null;

@@ -10,6 +10,7 @@ import { checkRateLimit } from '$lib/server/rate-limit';
 import { addressToCount } from '$lib/server/client-address';
 import { readBody, readChoice, readEmail, readId, readText } from '$lib/server/request-body';
 import { requireBoard } from '$lib/server/route-guards';
+import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { UNVERIFIED_LIFETIME_DAYS, requesterAddress } from '$lib/server/request-access';
 import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
@@ -45,6 +46,11 @@ export const GET: RequestHandler = async ({ locals }) => {
 		.orderBy(desc(taskRequests.createdAt))
 		.all();
 
+	// The boards the reader can open, once (null: an administrator, every one).
+	const accessible = getAccessibleBoardIds(locals.user);
+	const openBoardIds = accessible === null ? null : new Set(accessible);
+	const canOpen = (boardId: number) => openBoardIds === null || openBoardIds.has(boardId);
+
 	// Enrich with target name, desired board info, and resolved board ID
 	const enriched = rows.map(r => {
 		let targetName = 'Unknown';
@@ -67,11 +73,16 @@ export const GET: RequestHandler = async ({ locals }) => {
 			}
 		}
 
-		// Look up desired board info
+		// Look up desired board info, only for a board the reader can open
+		// (card 2153). Each reader is judged for themselves: the addressee, or
+		// any member of the addressed team. Otherwise the board's id, name and
+		// emoji are all null, so the accept dialog preselects no board missing
+		// from its own list, which is the boards the reader can open.
+		const desiredBoardId = r.desiredBoardId !== null && canOpen(r.desiredBoardId) ? r.desiredBoardId : null;
 		let desiredBoardName: string | null = null;
 		let desiredBoardEmoji: string | null = null;
-		if (r.desiredBoardId) {
-			const board = db.select({ name: boards.name, emoji: boards.emoji }).from(boards).where(eq(boards.id, r.desiredBoardId)).get();
+		if (desiredBoardId) {
+			const board = db.select({ name: boards.name, emoji: boards.emoji }).from(boards).where(eq(boards.id, desiredBoardId)).get();
 			if (board) {
 				desiredBoardName = board.name;
 				desiredBoardEmoji = board.emoji || '📋';
@@ -82,7 +93,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 		// as it is now, for a request made signed in (card 2171).
 		const requesterEmail = requesterAddress(r);
 
-		return { ...publicRequest(r), requesterEmail, targetName, targetEmoji, resolvedBoardId, desiredBoardName, desiredBoardEmoji };
+		return { ...publicRequest(r), requesterEmail, targetName, targetEmoji, resolvedBoardId, desiredBoardId, desiredBoardName, desiredBoardEmoji };
 	});
 
 	return json(enriched);

@@ -2,13 +2,13 @@ import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
-import { cards, columns } from '$lib/server/db/schema';
+import { cards, columns, milestones } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
-import { canEditBoard } from '$lib/server/board-access';
-import { requireMilestone, MilestoneError } from '$lib/server/milestones';
+import { canEditBoard, getAccessibleBoardIds, type Actor } from '$lib/server/board-access';
+import { canViewMilestone, requireMilestone, MilestoneError } from '$lib/server/milestones';
 import { emit } from '$lib/server/events';
-import { getMilestoneSummary } from '$lib/server/planning';
-import { notifyPlanCreated } from '$lib/server/notifications';
+import { getMilestoneSummary, WITHHELD_CARD_TITLE } from '$lib/server/planning';
+import { notifyPlanCreated, type PlanCreatedNotice } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readIds, type RequestBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
@@ -52,6 +52,53 @@ function parseCardIds(body: RequestBody): number[] {
 	});
 	if (ids.length > 500) throw error(400, 'Batch too large (max 500 cards)');
 	return [...new Set(ids)];
+}
+
+/**
+ * The plan-created mail's notice for each recipient: the plan as they would
+ * see it on its page (card 2152, decision 8), or null when they cannot open
+ * it, and they are not mailed. Work on a board they cannot open is withheld
+ * by the summary made for them (card 2129). Recipients who can open the same
+ * boards see the same plan, so the summary is worked out once for each set of
+ * boards: once for every administrator.
+ */
+function planNoticeFor(milestoneId: number, name: string): (recipient: Actor) => PlanCreatedNotice | null {
+	const milestone = db.select().from(milestones).where(eq(milestones.id, milestoneId)).get();
+	const byBoards = new Map<string, PlanCreatedNotice | null>();
+	return (recipient) => {
+		if (!milestone || !canViewMilestone(recipient, milestone)) return null;
+		const boardIds = getAccessibleBoardIds(recipient);
+		const key = boardIds === null ? 'all' : [...boardIds].sort((a, b) => a - b).join(',');
+		if (!byBoards.has(key)) byBoards.set(key, planNotice(milestoneId, name, recipient));
+		return byBoards.get(key)!;
+	};
+}
+
+/** The notice of the plan as `viewer` would see it, or null when it is gone. */
+function planNotice(milestoneId: number, name: string, viewer: Actor): PlanCreatedNotice | null {
+	const summary = getMilestoneSummary(milestoneId, viewer);
+	if (!summary) return null;
+	// `criticalPath` puts a subtask's card in its place, and that card need not
+	// be in the plan. A step that is shown is on a board the viewer can open,
+	// and so is its card, whose title is read. A withheld one has no card
+	// given, and the card is said to be on a board they cannot open, with its
+	// number, as a withheld node keeps its id.
+	const titleOf = (id: number) => {
+		const card = summary.graph.nodes.find((n) => n.kind === 'card' && n.id === id);
+		if (card) return card.title;
+		const shownStep = summary.graph.nodes.some((n) => n.kind === 'subtask' && !n.withheld && n.parentCardId === id);
+		const stored = shownStep ? db.select({ title: cards.title }).from(cards).where(eq(cards.id, id)).get() : undefined;
+		return stored?.title ?? WITHHELD_CARD_TITLE;
+	};
+	return {
+		milestoneId,
+		name,
+		cardCount: summary.progress.total,
+		boards: summary.progress.boards.map((b) => b.name),
+		criticalPath: summary.criticalPath.map((id) => ({ id, title: titleOf(id) })),
+		startable: summary.nextActionable.length,
+		blocked: summary.blocked.length
+	};
 }
 
 /**
@@ -191,39 +238,13 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 		// commit and outside the transaction, so a failure here is caught with
 		// nothing half written behind it.
 		try {
-			// As the one who attached the cards sees the plan: work on a board
-			// they cannot open is withheld (card 2129). Others are mailed it
-			// too, who may open fewer boards: that is card 2152.
-			const summary = getMilestoneSummary(milestoneId, user);
-			if (summary) {
-				// `criticalPath` puts a subtask's card in its place, and that card
-				// need not be in the plan. A step that is shown is on a board the
-				// attacher can open, and so is its card, whose title is read. A
-				// withheld one has no card given, and the card is said to be on a
-				// board they cannot open, where it was printed with no title at all.
-				const titleOf = (id: number) => {
-					const card = summary.graph.nodes.find((n) => n.kind === 'card' && n.id === id);
-					if (card) return card.title;
-					const shownStep = summary.graph.nodes.some((n) => n.kind === 'subtask' && !n.withheld && n.parentCardId === id);
-					const stored = shownStep ? db.select({ title: cards.title }).from(cards).where(eq(cards.id, id)).get() : undefined;
-					return stored?.title ?? 'a card on a board you cannot open';
-				};
-				notifyPlanCreated(
-					{
-						milestoneId,
-						name: milestone.name,
-						cardCount: summary.progress.total,
-						boards: summary.progress.boards.map((b) => b.name),
-						criticalPath: summary.criticalPath.map((id) => ({ id, title: titleOf(id) })),
-						startable: summary.nextActionable.length,
-						blocked: summary.blocked.length
-					},
-					toAttach.map((c) => c.cardId),
-					user.username,
-					user.id,
-					linkBaseUrl(url)
-				);
-			}
+			notifyPlanCreated(
+				toAttach.map((c) => c.cardId),
+				user.username,
+				user.id,
+				linkBaseUrl(url),
+				planNoticeFor(milestoneId, milestone.name)
+			);
 		} catch {
 			/* notification only — the cards are attached either way */
 		}

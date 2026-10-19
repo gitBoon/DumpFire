@@ -26,7 +26,7 @@
 	import { activityLabel } from '$lib/utils/activity-labels';
 	import { boardOptionLabel, boardOptions, boardPathText, boardPlaces as placesOf, chosenBoardId, inBoardFilter } from '$lib/board-tree';
 	import { isCompleteColumnTitle } from '$lib/column-role';
-	import { cardArchiveWarning, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
+	import { answerBody, cardArchiveWarning, cardDeleteWarning, deleteFailure, failureMessage, leftMilestoneNotice } from '$lib/api';
 	import { keepStreamOpen } from '$lib/live-stream';
 	import { playMoveSound, playCompleteSound, playCreateSound, playNotifySound } from '$lib/utils/sounds';
 	import { drawnColour } from '$lib/colours';
@@ -345,6 +345,11 @@
 			toasts.add(await failureMessage(res, 'The card was not moved.'), 'error', started);
 			return;
 		}
+
+		// A move to another board takes the card out of a milestone of the board
+		// it left, for good: say so (card 2155, the review's O3).
+		const leftGoal = leftMilestoneNotice(await answerBody(res));
+		if (leftGoal) toasts.add(leftGoal, 'info');
 
 		// Play appropriate sound
 		if (isCompletingMove) {

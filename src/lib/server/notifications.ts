@@ -32,6 +32,7 @@ import { createLogger } from './logger';
 import { requestReplyUrl } from './request-tokens';
 import { requesterAddress } from './request-access';
 import { canViewBoard, type Actor } from './board-access';
+import { WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE } from './withheld';
 
 const log = createLogger('NOTIFY');
 
@@ -839,6 +840,15 @@ async function sendRequesterProgress(event: RequesterProgressEvent): Promise<voi
 
 // ─── Dependency Notifications ───────────────────────────────────────────────
 
+/** The work whose completion unblocked a card, as `recordUnblocked` found it. */
+export type FinishedWork = {
+	kind: 'card' | 'subtask';
+	id: number;
+	title: string;
+	/** The board it is on: a subtask's is its card's. */
+	boardId: number;
+};
+
 /**
  * Tell a card's assignees that the last thing blocking it just finished.
  *
@@ -848,13 +858,19 @@ async function sendRequesterProgress(event: RequesterProgressEvent): Promise<voi
  * column change on somebody else's card, and a user who muted moves does not
  * want this either. Only the assignees who can open the waiting card's board
  * (`boardId`) are mailed (card 2180).
+ *
+ * The finished work may be on another board. Each mail is one person's, so it
+ * names the work by its title to an assignee who can open that board, and
+ * otherwise in the words of a plan view, "A card on a board you cannot open"
+ * or "A subtask on a board you cannot open" (card 2152, decision 7). A card
+ * keeps its number either way; a subtask is named as a subtask, never by its
+ * id, which is not a card's number.
  */
 export function notifyCardUnblocked(
 	boardId: number,
 	cardId: number,
 	cardTitle: string,
-	completedCardId: number,
-	completedCardTitle: string,
+	completed: FinishedWork,
 	completerName: string,
 	baseUrl: string | null
 ): void {
@@ -867,20 +883,33 @@ export function notifyCardUnblocked(
 	const boardName = getBoardName(boardId);
 	const cardUrl = `${baseUrl}/board/${boardId}?card=${cardId}`;
 
-	const html = emailTemplate('Ready to start', `
+	// At most two mails to build: with the finished work's title, and without.
+	const htmlFor = (named: boolean) => {
+		const title = named ? completed.title : completed.kind === 'card' ? WITHHELD_CARD_TITLE : WITHHELD_SUBTASK_TITLE;
+		const work =
+			completed.kind === 'card'
+				? `#${completed.id} <strong>${escapeHtml(title)}</strong>`
+				: named
+					? `the subtask <strong>${escapeHtml(title)}</strong>`
+					: `<strong>${escapeHtml(title)}</strong>`;
+		return emailTemplate('Ready to start', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #10b981;">
 			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(cardTitle)}</p>
 			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">
 				Nothing is blocking this card any more — <strong>${escapeHtml(completerName)}</strong> completed
-				#${completedCardId} <strong>${escapeHtml(completedCardTitle)}</strong>, which was the last one.
+				${work}, which was the last one.
 			</p>
 			<p style="margin: 4px 0 16px; font-size: 12px; color: #64748b;">Board: ${escapeHtml(boardName)}</p>
 			<a href="${escapeHtml(cardUrl)}" style="display: inline-block; padding: 8px 16px; background: #10b981; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">View Task</a>
 		</div>
 	`);
+	};
+	const built = new Map<boolean, string>();
 
 	for (const a of assignees) {
-		sendEmail(a.email, `Unblocked: ${cardTitle}`, html).catch(err =>
+		const named = canViewBoard(a, completed.boardId);
+		if (!built.has(named)) built.set(named, htmlFor(named));
+		sendEmail(a.email, `Unblocked: ${cardTitle}`, built.get(named)!).catch(err =>
 			log.error(`Unblock notification failed for ${a.email}`, err)
 		);
 	}
@@ -910,13 +939,21 @@ export interface PlanCreatedNotice {
  * Recipients are the assignees of the cards in the plan, plus admins (a
  * cross-board goal has no single board owner to notify), minus whoever created
  * it — they already know. Respects an `email_planning` preference.
+ *
+ * Then each is asked of `noticeFor`, which gives the plan as that recipient
+ * would see it on its page, or null when they cannot open it, and they are
+ * not mailed (card 2152, decision 8). An assignee may be a former member of
+ * the board, or unable to open every board of a goal that spans several, and
+ * the mail holds the chain's titles and the boards' names. The caller works
+ * the notice out, so that this module does not import the planning modules,
+ * which import it.
  */
 export function notifyPlanCreated(
-	notice: PlanCreatedNotice,
 	cardIds: number[],
 	creatorName: string,
 	creatorUserId: number,
-	baseUrl: string | null
+	baseUrl: string | null,
+	noticeFor: (recipient: Actor) => PlanCreatedNotice | null
 ): void {
 	if (!isSmtpConfigured()) return;
 	if (cardIds.length === 0) return;
@@ -948,7 +985,7 @@ export function notifyPlanCreated(
 	if (assigneeIds.size === 0) return;
 
 	const recipients = db
-		.select({ email: users.email, username: users.username })
+		.select({ id: users.id, email: users.email, username: users.username, role: users.role })
 		.from(users)
 		.where(inArray(users.id, [...assigneeIds]))
 		.all();
@@ -957,6 +994,21 @@ export function notifyPlanCreated(
 	if (toSend.length === 0) return;
 	if (noLinkAddress(baseUrl, 'The mail about a new plan')) return;
 
+	// One mail for each notice: recipients who see the plan alike are given
+	// the same notice, and so the same mail.
+	const built = new Map<PlanCreatedNotice, string>();
+	for (const r of toSend) {
+		const notice = noticeFor(r);
+		if (!notice) continue;
+		if (!built.has(notice)) built.set(notice, planCreatedHtml(notice, creatorName, baseUrl));
+		sendEmail(r.email, `Plan created: ${notice.name}`, built.get(notice)!).catch((err) =>
+			log.error(`Plan-created notification failed for ${r.email}`, err)
+		);
+	}
+}
+
+/** The "A plan was created" mail, for one notice. */
+function planCreatedHtml(notice: PlanCreatedNotice, creatorName: string, baseUrl: string | null): string {
 	const planUrl = `${baseUrl}/plan/${notice.milestoneId}`;
 	const scope = notice.boards.length > 0 ? notice.boards.join(', ') : 'no boards yet';
 
@@ -970,7 +1022,7 @@ export function notifyPlanCreated(
 			     No ordering recorded yet — nothing in this goal is waiting on anything else.
 			   </p>`;
 
-	const html = emailTemplate('A plan was created', `
+	return emailTemplate('A plan was created', `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
 			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(notice.name)}</p>
 			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">
@@ -987,12 +1039,6 @@ export function notifyPlanCreated(
 			</div>
 		</div>
 	`);
-
-	for (const r of toSend) {
-		sendEmail(r.email, `Plan created: ${notice.name}`, html).catch((err) =>
-			log.error(`Plan-created notification failed for ${r.email}`, err)
-		);
-	}
 }
 
 // ─── @Mention Notifications ─────────────────────────────────────────────────

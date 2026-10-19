@@ -939,7 +939,8 @@ const MIRRORS: Record<string, Mirror> = {
 		table: cards,
 		adds: {
 			columnTitle: 'PUT /cards/{cardId}/move names the column the card is now in',
-			boardId: 'and the board, which is another board after a move across boards'
+			boardId: 'and the board, which is another board after a move across boards',
+			leftMilestone: 'and the milestone of the board it left that a move across boards took it out of (card 2155, the review\'s O3)'
 		}
 	},
 	CardDetail: {

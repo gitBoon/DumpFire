@@ -40,6 +40,7 @@ import {
 	makeCard,
 	makeLabel,
 	makeSubtask,
+	makeTeam,
 	makeUser,
 	resetDb,
 	type BoardFixture
@@ -525,6 +526,99 @@ describe('task requests', () => {
 
 		expect(res.status).toBe(200);
 		expect(db.select().from(cards).all()).toHaveLength(1);
+	});
+
+	// Card 2153. The inbox named the board a request asks for, and gave its id,
+	// to an addressee who cannot open it: the accept dialog then preselected a
+	// board missing from its own list.
+	describe('the board a request asks for, in the inbox', () => {
+		let secret: BoardFixture;
+		beforeEach(() => {
+			secret = makeBoard({ owner, name: 'DESIREDSECRET' });
+			db.update(boards).set({ emoji: '🗝️' }).where(eq(boards.id, secret.board.id)).run();
+		});
+
+		const requestFor = (targetType: 'user' | 'team', targetId: number) =>
+			db
+				.insert(taskRequests)
+				.values({ targetType, targetId, title: 'Please do this', desiredBoardId: secret.board.id, requesterEmail: 'someone@example.test' })
+				.returning()
+				.get();
+
+		/** The reader's inbox row for `requestId`, and the whole answer as text. */
+		const inboxOf = async (reader: SessionUser, requestId: number) => {
+			const res = await api('GET', '/api/requests', { user: reader });
+			expect(res.status).toBe(200);
+			const row = (res.body as any[]).find((r) => r.id === requestId);
+			expect(row, reader.username).toBeDefined();
+			return { row, text: JSON.stringify(res.body) };
+		};
+
+		it('is withheld, id, name and emoji, from an addressee who cannot open it', async () => {
+			const request = requestFor('user', viewer.id);
+
+			const { row, text } = await inboxOf(viewer, request.id);
+
+			expect(row).toMatchObject({ desiredBoardId: null, desiredBoardName: null, desiredBoardEmoji: null });
+			expect(text).not.toContain('DESIREDSECRET');
+			expect(text).not.toContain('🗝️');
+		});
+
+		it('is named to an addressee who can open it', async () => {
+			const request = requestFor('user', owner.id);
+
+			const { row } = await inboxOf(owner, request.id);
+
+			expect(row).toMatchObject({ desiredBoardId: secret.board.id, desiredBoardName: 'DESIREDSECRET', desiredBoardEmoji: '🗝️' });
+		});
+
+		it('is answered to each member of an addressed team for themselves', async () => {
+			const team = makeTeam([owner, viewer, admin]);
+			const request = requestFor('team', team.id);
+
+			const named = { desiredBoardId: secret.board.id, desiredBoardName: 'DESIREDSECRET', desiredBoardEmoji: '🗝️' };
+			expect((await inboxOf(owner, request.id)).row).toMatchObject(named);
+			expect((await inboxOf(admin, request.id)).row).toMatchObject(named);
+			const theViewers = await inboxOf(viewer, request.id);
+			expect(theViewers.row).toMatchObject({ desiredBoardId: null, desiredBoardName: null, desiredBoardEmoji: null });
+			expect(theViewers.text).not.toContain('DESIREDSECRET');
+		});
+
+		// The review's N3. Accepting or rejecting answers the request's own row,
+		// which gave the board's id to an addressee the inbox withholds it from.
+		it('is withheld from the answer to an accept or a reject by an addressee who cannot open it', async () => {
+			const accepted = requestFor('user', outsider.id);
+			const rejected = requestFor('user', outsider.id);
+
+			const accept = await api('PATCH', `/api/requests/${accepted.id}`, {
+				user: outsider,
+				body: { action: 'accept', boardId: B.board.id, columnId: B.cols['To Do'].id }
+			});
+			const reject = await api('PATCH', `/api/requests/${rejected.id}`, { user: outsider, body: { action: 'reject' } });
+
+			expect(accept.status).toBe(200);
+			expect(reject.status).toBe(200);
+			expect(accept.body).toMatchObject({ status: 'accepted', desiredBoardId: null });
+			expect(reject.body).toMatchObject({ status: 'rejected', desiredBoardId: null });
+			for (const res of [accept, reject]) {
+				expect(JSON.stringify(res.body)).not.toContain('DESIREDSECRET');
+				expect(JSON.stringify(res.body)).not.toContain(`"desiredBoardId":${secret.board.id}`);
+			}
+		});
+
+		it('is given in the answer to an accept or a reject by an addressee who can open it', async () => {
+			const accepted = requestFor('user', owner.id);
+			const rejected = requestFor('user', owner.id);
+
+			const accept = await api('PATCH', `/api/requests/${accepted.id}`, {
+				user: owner,
+				body: { action: 'accept', boardId: A.board.id, columnId: A.cols['To Do'].id }
+			});
+			const reject = await api('PATCH', `/api/requests/${rejected.id}`, { user: owner, body: { action: 'reject' } });
+
+			expect(accept.body).toMatchObject({ status: 'accepted', desiredBoardId: secret.board.id });
+			expect(reject.body).toMatchObject({ status: 'rejected', desiredBoardId: secret.board.id });
+		});
 	});
 });
 

@@ -1,9 +1,9 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.14
+version: 1.15
 status: As-Built
-date: 2026-10-15
+date: 2026-10-19
 tags:
   - planning
   - dependencies
@@ -188,6 +188,7 @@ card-only lists written before subtasks existed are untouched.
 | `UNIQUE (card_id, depends_on_card_id)` | The duplicate check used to be handler-only. Migration `0042` de-duplicates to `MIN(id)` per pair before creating the index, or it fails on live data. |
 | `cards.milestone_id` has no `REFERENCES` clause | SQLite cannot add a column with `ON DELETE` to an existing table. The delete handler nulls it instead — which is the wanted behaviour anyway: **deleting a goal must never delete the work.** |
 | `milestones.board_id` nullable | A goal can span several projects. A migration touches more than one board. |
+| A board's milestone holds only that board's cards | `setCardMilestone` and the bulk attach refuse a card of another board for it, and since card 2155 a move to another board takes the card out of a milestone of a board other than the one it arrives on, in the same update of the card (`moveCard`, beside the category rule). The source board's `card_moved_away` entry ends `and out of milestone "M"`, or `and out of a milestone of another board` for a third board's. The mover is told: `PUT /api/cards/{id}` and the v1 move answer `leftMilestone` `{ id, name }` for a milestone of the board the card left (null otherwise, and for a third board's), and All Tasks says `Moved. It left milestone "M"; moving it back does not put it back in.` A goal across boards keeps its cards wherever they move. Migration `0057` took out the cards already in a milestone of another board, once (a card whose column row is gone is left alone, its board being unknown; nothing repeats 0057 after an older backup is imported). Membership is not historised, so a goal that loses a card, to 0057 or to any later move, shows a burndown, a milestone PDF and, closed, final figures without it across its whole window, not only from the move. The one way left in is `PATCH` of a milestone with a new `boardId`, which moves it with its cards, and which card 2179 is to close. |
 | Archived cards are excluded everywhere | An archived blocker is not a live dependency. |
 
 ### What counts as "done"
@@ -232,8 +233,9 @@ the mistake the feature exists to prevent. Direct blockers only: one level is ex
 are context, not scope.
 
 **Work on a board the viewer cannot open is withheld, not left out** (card 2129). An
-external blocker can sit on a board the person reading the plan was never given, and a card
-of the milestone moved onto such a board keeps the milestone (card 2155 is to take it out). Leaving such a node out would make a blocked card look startable, so it
+external blocker can sit on a board the person reading the plan was never given, and so can
+a card of a goal across boards (a card of a board's milestone moved to another board leaves
+the milestone, card 2155, but a backup restored from before it can still hold one). Leaving such a node out would make a blocked card look startable, so it
 stays, with its id, its kind, whether it is finished and its place in the plan (`external`,
 its layer, its edges, `openBlockers`, `downstreamCount`, `onCriticalPath`). What is
 withheld: its title reads "A card on a board you cannot open" or "A subtask on a board you
@@ -401,6 +403,37 @@ the halves directly.
 A request writes one notice for each piece of work it unblocks, however many of that work's
 blockers it completed. The notice names the last of those blockers to be completed in the
 request, and the assignees are mailed once for it.
+
+**What the notice says, and to whom** (card 2152). The finished work can be on another board
+than the work that waited on it, and the two halves name it differently because they have
+different readers:
+
+- **The comment** is stored once and read by everyone who can open the waiting card's board,
+  so it cannot be drawn per reader. It names the finished work by its title only when that
+  work is on the same board: `Unblocked: #1686 "Ship the API" completed — nothing is blocking
+  this card now.`, or `Unblocked: subtask "Write tests" completed — …`. Otherwise it reads
+  `Unblocked: #1686, a card on another board, completed — nothing is blocking this card
+  now.`, or `Unblocked: a subtask on another board completed — …`. The number is kept, as a
+  withheld plan node keeps its id: whoever can open the other board can find it. A waiting
+  subtask's comment ends `nothing is blocking subtask "…" now.`, as before. Comments written
+  before card 2152 stay as they are.
+- **The mail** is one person's. It goes to the waiting card's assignees who can open its
+  board (card 2180), and names the finished work by its title to an assignee who can open
+  the board it is on, and otherwise as "A card on a board you cannot open" (with its number)
+  or "A subtask on a board you cannot open". A finished subtask is named as a subtask, never
+  by its id. `UnblockedWork.completed` carries the finished work's `boardId` for this, and
+  `notifyCardUnblocked` takes it whole.
+
+```mermaid
+flowchart TD
+    Done["Finished work F unblocks waiting work W"] --> Same{"F on W's board?"}
+    Same -->|yes| Named["Comment names F by title"]
+    Same -->|no| Other["Comment: #F, a card on another board<br/>or: a subtask on another board"]
+    Done --> Each["Each assignee of W who can open W's board"]
+    Each --> Can{"canViewBoard(assignee, F's board)"}
+    Can -->|yes| MailNamed["Mail names F by title"]
+    Can -->|no| MailWithheld["Mail: A card on a board you cannot open<br/>or: A subtask on a board you cannot open"]
+```
 
 ```mermaid
 sequenceDiagram
@@ -743,11 +776,18 @@ unassigned — minus whoever created it, who already knows. It respects an `emai
 preference and, like every other notification, no-ops entirely when SMTP is unconfigured.
 
 The email carries the goal, who created it, how many cards and which boards, how much is
-startable versus waiting, and the critical path if one exists. The plan in it is read as the
-person who attached the cards would read it, so work on a board they cannot open is
-withheld (card 2129). Its recipients are not asked about each board in turn: an assignee who
-cannot open a board the attacher can is still sent that board's titles, which is card
-2152's, with the "Unblocked" comment. It is wrapped in a `try` that
+startable versus waiting, and the critical path if one exists. Since card 2152 each
+recipient is first asked whether they can open the plan (`canViewMilestone`): someone who
+cannot, such as a former member of its board, or an assignee who cannot open every board of
+a goal across boards, is not mailed. Each one mailed is sent the plan as they would read it
+on its page, from `getMilestoneSummary(milestoneId, recipient)`: a step on a board they
+cannot open is `#12 A card on a board you cannot open` in the chain, and "Covering" counts
+the boards they cannot open as "A board you cannot open". Recipients who can open the same
+boards share one summary and one mail, so the administrators cost one. The route hands
+`notifyPlanCreated` a function that gives a recipient's notice or null, so that
+`notifications.ts` imports neither `planning.ts` nor `milestones.ts`, which import it. The
+mail used to be read as the person who attached the cards would read it, for everyone. It
+is wrapped in a `try` that
 swallows its own failures: the cards are attached either way, and a notification must never
 fail the write it is reporting on.
 

@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.30
+version: 1.31
 status: As-Built
-date: 2026-10-18
+date: 2026-10-19
 tags:
   - architecture
   - sveltekit
@@ -638,7 +638,7 @@ A card created in a Complete column is completed as a moved one is, and celebrat
 
 ### An open stream and its session
 
-The gate looks at a request's session once, when it arrives, and a stream is one request that stays open. So each of the three streams (`/api/events`, `/api/boards/[id]/events` and `/api/logs/stream`) reads its session cookie when it is opened, and asks at each heartbeat it already sends (every 30 seconds; 25 for the log) whether that session is still open: there, not expired, and with an account. When it is not, the stream stops listening, stops its heartbeat and closes, and sends nothing more. The board stream asks `sessionStillOpen()` in `src/lib/server/auth.ts`. The two streams let in for an administrator's role ask `openSessionUser()`, which gives the session's account as it is now, and end as well when the role they were let in for has changed: the log stream when the account is no longer an administrator, and `/api/events` when it has become one or stopped being one, since that decides which boards' events it sends. Both share one private function with `validateSession()`, so that what counts as an open session is decided in one place. Unlike `validateSession()` they write nothing, log nothing and do not move the session's expiry on: an open tab would otherwise keep its session alive for ever.
+The gate looks at a request's session once, when it arrives, and a stream is one request that stays open. So each of the three streams (`/api/events`, `/api/boards/[id]/events` and `/api/logs/stream`) reads its session cookie when it is opened, and asks at each heartbeat it already sends (every 30 seconds; 25 for the log) whether that session is still open: there, not expired, and with an account. When it is not, the stream stops listening, stops its heartbeat and closes, and sends nothing more. Each asks `openSessionUser()` in `src/lib/server/auth.ts`, which gives the session's account as it is now. The two streams let in for an administrator's role end as well when the role they were let in for has changed: the log stream when the account is no longer an administrator, and `/api/events` when it has become one or stopped being one, since that decides which boards' events it sends. The board stream ends as well when its board has gone or the account can no longer open it, and says so first (card 2170, below). `openSessionUser()` and `sessionStillOpen()` share one private function with `validateSession()`, so that what counts as an open session is decided in one place. Unlike `validateSession()` they write nothing, log nothing and do not move the session's expiry on: an open tab would otherwise keep its session alive for ever.
 
 ```mermaid
 sequenceDiagram
@@ -661,7 +661,37 @@ sequenceDiagram
 - **Only the session that opened it counts.** Another session of the same account ending does not end the stream.
 - **A check that cannot be made ends the stream too.** The check runs inside the heartbeat's `try`. If it throws, the stream ends as for a session that has gone, and one `WARN` line is written under `AUTH`, "Live stream ended: its session could not be checked", with the route and the error. Nothing escapes the timer, where it would end the process.
 - **What the page does.** Nothing new: `keepStreamOpen()` sees the stream drop, asks again three seconds later, is answered `401` and stays closed, and a page that holds a stream (a board, the dashboard, All Tasks, Burndown) goes to the login page by itself, about 35 seconds after the session ended at most. A page that holds none (Account, Admin, Reports) goes there at its next request. A stream that ended because its holder changed their own password opens again at once on the browser's new cookie, one that `/api/events` ended for a change of role opens again with the role as it is now, and the page re-reads its data. The audit console's own `EventSource` is refused when it tries again (`401`, or `403` for an account that is no longer an administrator), gives up, and the console shows it is disconnected.
-- **What access each stream checks again.** The board stream keeps the board access it was opened with: a user taken off a board goes on receiving that board's events while the session lasts, so that a deleted board's page is told by its event (card 2170 is to handle it). `/api/events` asks again whether an ordinary user may open a board, through a cache that keeps each answer about 30 seconds. An administrator made an ordinary user stops receiving the log and every board's events at the next heartbeat.
+- **What access each stream checks again** (card 2170). Each decides everything again at one moment, its heartbeat. The board stream asks, after the session, whether the board row is still there and the account as it is now can open it (`canViewBoard`); if not, it enqueues one last `update` with `{"type":"access"}` on its own stream, not emitted to anyone else, and ends, and the board page re-reads and shows its load's refusal, "You do not have access to this board" or "Board not found". It opens only on a board that is there and that the caller can open (`requireBoard(user, id, 'view')`: `404`, administrators included, `403`, or `400` for an id that is not one). `/api/events` keeps each board's answer until its next heartbeat, which forgets them all once the session and the role are checked; the 30-second clock it kept them by is gone. An administrator made an ordinary user stops receiving the log and every board's events at the next heartbeat, and a board's events too unless they are on it.
+- **A deleted board is told first.** A delete's own event is delivered in the same synchronous run as its commit (`emit` queues it with `afterCommit`, and the outermost transaction starts the queued effects as it returns), and a heartbeat is a timer, which cannot run in between. A stream closed after an `enqueue` still hands the reader what was enqueued, so the deleted board's page always has `{ type: 'board', action: 'deleted' }` before the access event and the end. Board ids are never used again, so ending a stream on a deleted board loses nothing.
+
+```mermaid
+sequenceDiagram
+    participant P as Board page (session X)
+    participant S as /api/boards/7/events
+    participant DB as Database
+    participant R as Another request
+    P->>S: GET (cookie X)
+    S->>DB: requireBoard(user, 7, 'view')
+    S-->>P: heartbeat comment
+    alt access withdrawn (share removed, made private, role changed)
+        R->>DB: the change
+        Note over S: until the heartbeat, events still flow
+        S->>DB: heartbeat - session X open? account now? board 7 there and openable?
+        DB-->>S: no
+        S-->>P: event update, data type access
+        S-->>P: the stream ends
+        P->>P: re-reads - You do not have access to this board
+    else board deleted (card 2108)
+        R->>DB: COMMIT the delete
+        R-->>S: afterCommit, same run - update, type board, action deleted
+        S-->>P: the deletion event, queued first
+        S->>DB: next heartbeat - board 7 there?
+        DB-->>S: no
+        S-->>P: event update, data type access, then the end
+    end
+    P->>S: keepStreamOpen asks again after 3 s
+    S-->>P: 403 or 404 - stays closed
+```
 
 Covered by `tests/live-streams.test.ts`.
 

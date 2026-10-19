@@ -23,9 +23,11 @@ const STATUSES = ['open', 'closed'] as const;
  * A card on a board the caller cannot open is listed withheld, as the
  * summary lists it (card 2129): its id, with `withheld: true`, "A card on a
  * board you cannot open" for its title, an empty column title, and null for
- * its priority, column and board. A card moved off a board keeps that
+ * its priority, column and board. A card moved off a board used to keep that
  * board's milestone, so a viewer of the board was given the title and board
- * of a card on another.
+ * of a card on another. A move takes it out now, and migration 0057 took out
+ * those already moved (card 2155), but a restored older backup can still hold
+ * one.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');

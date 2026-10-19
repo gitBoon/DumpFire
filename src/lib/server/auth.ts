@@ -304,10 +304,11 @@ function sessionUserOf(user: User): SessionUser {
  * Whether the session with this token is still open: there, not expired, and
  * with an account. False for no token at all.
  *
- * For a live stream, which is let in once by the gate and then stays open:
- * it asks this at each heartbeat and ends when the answer is no, so that a
- * sign-out, a password change or a reset stops what an open tab receives.
- * Unlike `validateSession` it writes and logs nothing. It does not move the
+ * Written for the live streams, which are let in once by the gate and then
+ * stay open, so that a sign-out, a password change or a reset stops what an
+ * open tab receives. Each stream now asks `openSessionUser` at its heartbeat,
+ * the board stream too since card 2170, which answers this and gives the
+ * account as well. Unlike `validateSession` it writes and logs nothing. It does not move the
  * expiry on, or an open tab would keep its session alive for ever, and it
  * leaves an orphaned session for the gate to delete.
  */
@@ -320,10 +321,12 @@ export function sessionStillOpen(token: string | undefined): boolean {
  * still open as `sessionStillOpen` asks it; null if not, or for no token.
  *
  * For a live stream let in for what its account was when it opened: the
- * system log for an administrator, and every board's events for one. It asks
- * this at each heartbeat in place of `sessionStillOpen`, and ends when the
- * session has gone or the role it was let in for has, so that an
- * administrator made an ordinary user stops receiving within one heartbeat.
+ * system log for an administrator, every board's events for one, and a
+ * board's events for someone who can open it. It asks this at each heartbeat
+ * in place of `sessionStillOpen`, and ends when the session has gone or what
+ * it was let in for has (the role, or for the board stream access to the
+ * board, card 2170), so that an administrator made an ordinary user, or
+ * someone taken off a board, stops receiving within one heartbeat.
  * Like `sessionStillOpen` it writes and logs nothing.
  */
 export function openSessionUser(token: string | undefined): SessionUser | null {

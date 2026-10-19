@@ -1,9 +1,9 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.17
+version: 1.18
 status: As-Built
-date: 2026-10-18
+date: 2026-10-19
 tags:
   - backup
   - reports
@@ -408,7 +408,53 @@ flowchart TD
 | `category` | Board category | All boards in a category, aggregated |
 | `all` | All boards | Every board across the system |
 
-Every scope walks into sub-boards recursively (`collectSubBoardIds`), so a board report includes the cards on its sub-boards and an all-boards report counts every card in the system.
+Every scope walks into sub-boards at any depth (`collectSubBoardIds`), but only into those its reader can open, and the walk does not pass through one they cannot (card 2150): a sub-board further down that they can open, under one they cannot, is not reached. So a board report holds the cards of the sub-boards beneath it that its reader can open, and an administrator's all-boards report counts every card in the system. A sub-board left out is not mentioned: no line says that some were.
+
+#### Whose Report It Is
+
+A report is always one person's view, drawn from `getAccessibleBoardIds` of that person
+(`null` for an administrator, who opens everything). The three report functions build one
+`canOpen(boardId)` from it (`openerFor`) and hand it to the walk and to
+`generateReportForBoards`:
+
+| Path | The reader |
+|------|------------|
+| Downloaded (`POST /api/reports`) | The caller |
+| Emailed by hand (`POST /api/reports/email`) | The caller who sends it |
+| Scheduled | The schedule's owner, as their account stands at the time of the run |
+
+Recipients are addresses, not accounts. Each gets the report its sender or owner may read,
+whoever the recipient is: having an account gives a recipient neither more nor less, and
+sending it to someone is the sender's decision. The rule cuts both ways for a schedule: its
+report grows when its owner is given a sub-board, or made an administrator, and shrinks when
+they lose one, and nobody confirms its recipients again.
+
+A board in the report whose parent board the reader cannot open is shown under its own name,
+as a board of its own: `parentBoardName` is null for it, so the Board Breakdown and the open
+work draw it as a row of its own and not nested. The parent is named (`A → S`) only when the
+reader can open it. A report of a sub-board shared with someone who cannot open its parent
+names the parent nowhere, the PDF's title and subject included.
+
+The Reports page lists the boards a report can be chosen of: for an ordinary user, the
+top-level boards they can open and each board they can open whose parent board they cannot
+(a sub-board shared with them on its own, which no report they could choose would otherwise
+reach); for an administrator, the top-level boards, as before.
+
+```mermaid
+flowchart TD
+    Reader["The reader: caller, sender, or the schedule's owner at the run"] --> Ids["getAccessibleBoardIds(reader)"]
+    Ids --> CanOpen["canOpen(boardId): a Set, or everything for an administrator"]
+    Scope["Boards of the scope"] --> Walk["collectSubBoardIds(boardIds, canOpen)"]
+    CanOpen --> Walk
+    Walk --> Sub{"A sub-board under a card of a board in the walk"}
+    Sub -->|reader can open it| Add["Added, and walked into in turn"]
+    Sub -->|reader cannot| Stop["Left out, and nothing beneath it is reached"]
+    Add --> Gen["generateReportForBoards(..., canOpen)"]
+    CanOpen --> Gen
+    Gen --> Parent{"Parent board openable?"}
+    Parent -->|yes| Nested["Named under its parent"]
+    Parent -->|no| Own["A board of its own, parent not named"]
+```
 
 A report emailed by hand carries the board's or grouping's name and the sender's username, and a scheduled report the schedule's name. Each is escaped where it is put into the mail's HTML, so a name with markup in it reads as typed and draws nothing; the subject keeps the name as typed, because a subject is plain text (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
 
@@ -464,10 +510,10 @@ Two figures appear side by side in the summary tiles, and the same two on the da
 
 | Figure | Definition |
 |--------|------------|
-| **Cards** | Non-archived kanban cards across every board *and sub-board* in scope, regardless of period |
+| **Cards** | Non-archived kanban cards across every board in scope *and each sub-board beneath it that the reader can open*, regardless of period |
 | **Tasks** | Cards plus the subtasks hanging off them (`totalCards + totalSubtasks`) |
 
-The dashboard row uses the same board → cards → sub-boards walk as the report engine (`src/routes/+page.server.ts`), so an all-boards report and the dashboard always quote the same card count. Historically the row only summed top-level boards, which is why it used to show fewer cards than the report.
+The dashboard row uses the same board → cards → sub-boards walk as the report engine (`src/routes/+page.server.ts`), and both stop at a sub-board their reader cannot open (cards 2130 and 2150), so an administrator's all-boards report and their dashboard quote the same card count again. Historically the row only summed top-level boards, which is why it used to show fewer cards than the report; and until card 2150 the report walked into every sub-board, opened or not, while the dashboard did not.
 
 ### Report Data Structure
 

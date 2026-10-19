@@ -6,6 +6,7 @@ import {
 	applyCardMove,
 	announceCardMoves,
 	recordUnblockedByMoves,
+	leftMilestoneOf,
 	CardMoveError,
 	type CardMove
 } from '$lib/server/card-moves';
@@ -30,6 +31,10 @@ import type { RequestHandler } from './$types';
  * position that was not a number used to be ignored, and the card kept the
  * position it had (`request.position ?? before.position` in card-moves.ts).
  * It is a 400 now.
+ *
+ * A move to another board takes the card out of a milestone of the board it
+ * left (card 2155), and the answer names that milestone as `leftMilestone`,
+ * null otherwise (the review's O3).
  */
 export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	const user = requireUser(locals.user);
@@ -72,6 +77,7 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	return json({
 		...move.card,
 		columnTitle: move.toColumn.title,
-		boardId: move.toBoardId
+		boardId: move.toBoardId,
+		leftMilestone: leftMilestoneOf(move)
 	});
 };

@@ -84,6 +84,11 @@ export type RecordedEffect =
 			html: string;
 			/** File names of what was attached. */
 			attachments: string[];
+			/**
+			 * What was attached, name and bytes, in the order of `attachments`:
+			 * a report's PDF is read from here with `pdfText` (tests/helpers/pdf.ts).
+			 */
+			files: { filename: string; content: Buffer }[];
 			inTransaction: boolean;
 	  };
 
@@ -170,7 +175,7 @@ export function effects(
 			to?: unknown;
 			subject?: unknown;
 			html?: unknown;
-			attachments?: { filename?: string }[];
+			attachments?: { filename?: string; content?: unknown }[];
 		}) => {
 			const recorded: Of<'email'> = {
 				kind: 'email',
@@ -178,6 +183,13 @@ export function effects(
 				subject: String(mail.subject ?? ''),
 				html: String(mail.html ?? ''),
 				attachments: (mail.attachments ?? []).map((a) => a.filename ?? ''),
+				files: (mail.attachments ?? []).map((a) => ({
+					filename: a.filename ?? '',
+					// Copied, so that what the test reads is what was handed over.
+					content: Buffer.from(
+						typeof a.content === 'string' ? Buffer.from(a.content) : a.content instanceof Uint8Array ? a.content : []
+					)
+				})),
 				inTransaction: sqlite.inTransaction
 			};
 			const refusal = options.mailRefusal?.({ to: recorded.to, subject: recorded.subject, html: recorded.html });

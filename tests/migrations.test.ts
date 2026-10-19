@@ -368,6 +368,9 @@ const FILE_0055 = '0055_replace_request_links.sql';
 /** The file of card 2168: who last set each webhook's address or secret. */
 const FILE_0056 = '0056_add_webhook_set_by.sql';
 
+/** The file of card 2155: every card in a milestone of another board taken out of it, once. */
+const FILE_0057 = '0057_cards_leave_other_boards_milestones.sql';
+
 /**
  * The indexes the model declares that a database from before 0053 lacks:
  * 0053's 39, with 0054's index on user_id and created_at in place of 0053's on
@@ -4823,13 +4826,14 @@ describe('the database the runner leaves, against the model', () => {
 			'0053_index_foreign_keys_end_sessions.sql',
 			FILE_0054,
 			FILE_0055,
-			FILE_0056
+			FILE_0056,
+			FILE_0057
 		]);
 		expect(report.tolerated).toEqual([]);
 		expect(report.rebuilt.map((r) => r.table)).toEqual(['columns', 'categories', 'settings', 'user_xp', 'invite_tokens']);
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(recordedIn(database)).toHaveLength(62);
+		expect(recordedIn(database)).toHaveLength(63);
 		expect(sequenceIn(database, 'categories')).toBe(3);
 		expect(foreignKeysOn(database)).toBe(true);
 		expect(differencesIn(database)).toEqual(NONE);
@@ -4878,7 +4882,7 @@ describe('the database the runner leaves, against the model', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056]);
+		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057]);
 		expect(report.rebuilt).toEqual([
 			{ table: 'boards', rows: 3, defaulted: [], differences: differed.boards },
 			{ table: 'categories', rows: 3, defaulted: [], differences: differed.categories }
@@ -4999,7 +5003,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056]);
+		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057]);
 		expect(report.schemaDifferences).toEqual([]);
 		const after = contentsOf(database);
 		expect(after.sessions).toEqual([]);
@@ -5311,7 +5315,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 	});
 
 	it('is the file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
-		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056]);
+		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057]);
 		const sql = sqlStatements(readFileSync(join(REAL_MIGRATIONS, FILE_0054), 'utf-8')).map((s) => s.text);
 		expect(sql).toEqual([
 			'DROP INDEX IF EXISTS `idx_activity_log_user_id`;',
@@ -5452,7 +5456,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056]);
+		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect((database.prepare('SELECT token FROM invite_tokens').all() as { token: string }[]).map((r) => r.token)).toEqual([
 			'used-long-ago'
@@ -5530,7 +5534,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057]);
 		expect(report.schemaDifferences).toEqual([]);
 		const links = linksIn(database);
 		expect(links).toHaveLength(3);
@@ -5563,7 +5567,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057]);
 		expect(linksIn(database)).toEqual([]);
 	});
 
@@ -5623,7 +5627,7 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0056]);
+		expect(report.applied).toEqual([FILE_0056, FILE_0057]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT id, url, secret, active, set_by FROM webhooks').all()).toEqual([
 			{ id: 1, url: 'https://hooks.example.test/x', secret: 's3cret', active: 1, set_by: null }
@@ -5652,5 +5656,154 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 
 	it('declares nothing to the rehearsal: it changes no row', () => {
 		expect(ONE_OFFS.filter((oneOff) => oneOff.file === FILE_0056)).toEqual([]);
+	});
+});
+
+// ─── 0057: no card in a milestone of another board ───────────────────────────
+
+describe('0057, which takes every card out of a milestone of another board once (card 2155)', () => {
+	/** The file's one statement, as it is written there. */
+	const STATEMENT = [
+		'UPDATE `cards` SET `milestone_id` = NULL',
+		'WHERE `milestone_id` IN (SELECT `id` FROM `milestones` WHERE `board_id` IS NOT NULL)',
+		'  AND (SELECT `board_id` FROM `milestones` WHERE `id` = `cards`.`milestone_id`)',
+		'      <> (SELECT `board_id` FROM `columns` WHERE `id` = `cards`.`column_id`);'
+	].join('\n');
+
+	/**
+	 * Query 3 of the plan (section 3.1, as its review's R2 replaced it), which
+	 * the owner runs on a copy of production before the deploy and
+	 * docs/deployment.md prints: exactly the cards 0057 takes out, by its own
+	 * WHERE, with left joins for the names.
+	 */
+	const QUERY_3 = `SELECT c.id AS card_id, c.title, c.archived_at, m.id AS milestone_id, m.name AS milestone,
+  m.status AS milestone_status, m.board_id AS milestone_board_id, mb.name AS milestone_board,
+  col.board_id AS card_board_id, cb.name AS card_board
+FROM cards c
+JOIN milestones m ON m.id = c.milestone_id
+LEFT JOIN columns col ON col.id = c.column_id
+LEFT JOIN boards mb ON mb.id = m.board_id
+LEFT JOIN boards cb ON cb.id = col.board_id
+WHERE c.milestone_id IN (SELECT id FROM milestones WHERE board_id IS NOT NULL)
+  AND (SELECT board_id FROM milestones WHERE id = c.milestone_id)
+      <> (SELECT board_id FROM columns WHERE id = c.column_id)
+ORDER BY m.id, c.id;`;
+
+	const STAMP = '2026-10-01 09:00:00';
+
+	/**
+	 * A database with every migration before 0057 applied and, unless `empty`,
+	 * boards A (1) and B (2) and a board 3 deleted with foreign keys off, as a
+	 * restore runs, so that its milestone is left. Milestones: 1 of A, 2 across
+	 * boards, 3 of the deleted board. Cards:
+	 *
+	 *   1  on B, in A's milestone        taken out
+	 *   2  on A, in A's milestone        kept
+	 *   3  on B, archived, in A's        taken out
+	 *   4  on B, in the goal across      kept
+	 *   5  on A, in the deleted board's  taken out
+	 *   6  on A, in a milestone gone     kept: there is no goal to read
+	 *   7  on A, in none                 kept
+	 */
+	function beforeIt(empty = false): Database.Database {
+		const database = memoryDb();
+		const before = Object.fromEntries(
+			realFiles.filter((f) => f < FILE_0057).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+		);
+		applyFilesOnly(database, migrationsDir(before));
+		if (empty) return database;
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x');
+			INSERT INTO boards (id, name, created_by) VALUES (1, 'A', 1), (2, 'B', 1), (3, 'Gone', 1);
+			INSERT INTO columns (id, board_id, title) VALUES (1, 1, 'To Do'), (2, 2, 'To Do');
+			INSERT INTO milestones (id, name, board_id, status) VALUES (1, 'Goal of A', 1, 'open'), (2, 'Across', NULL, 'open'), (3, 'Goal of Gone', 3, 'closed');
+			INSERT INTO cards (id, column_id, title, milestone_id, archived_at, created_at, updated_at) VALUES
+				(1, 2, 'Moved to B', 1, NULL, '${STAMP}', '${STAMP}'),
+				(2, 1, 'Stayed on A', 1, NULL, '${STAMP}', '${STAMP}'),
+				(3, 2, 'Archived on B', 1, '${STAMP}', '${STAMP}', '${STAMP}'),
+				(4, 2, 'Across on B', 2, NULL, '${STAMP}', '${STAMP}'),
+				(5, 1, 'Goal board gone', 3, NULL, '${STAMP}', '${STAMP}'),
+				(6, 1, 'Goal gone', 99, NULL, '${STAMP}', '${STAMP}'),
+				(7, 1, 'In none', NULL, NULL, '${STAMP}', '${STAMP}');
+			PRAGMA foreign_keys = OFF;
+			DELETE FROM boards WHERE id = 3;
+			PRAGMA foreign_keys = ON;
+		`);
+		return database;
+	}
+
+	const cardsIn = (database: Database.Database) =>
+		database.prepare('SELECT * FROM cards ORDER BY id').all() as Record<string, unknown>[];
+
+	it('is one UPDATE of cards, after a header comment', () => {
+		const sql = readFileSync(join(REAL_MIGRATIONS, FILE_0057), 'utf-8').replace(/\r\n/g, '\n');
+		expect(sqlStatements(sql).map((s) => s.text)).toEqual([STATEMENT]);
+		// What it changes, why, that it runs once and what people see (card 2106, decision 3).
+		for (const said of ['A one-off change to data', 'What people see:', 'Harmless where it finds nothing', 'Runs once.']) {
+			expect(sql, said).toContain(said);
+		}
+	});
+
+	it('takes out the cards on a board other than their milestone’s, and changes no other cell', () => {
+		const database = beforeIt();
+		const before = contentsOf(database);
+		const cardsBefore = cardsIn(database);
+		const state = stateOf(database);
+		// Query 3, run before it, lists exactly the cards it changes.
+		const listed = (database.prepare(QUERY_3).all() as { card_id: number; milestone_board: string | null }[]);
+		expect(listed.map((row) => row.card_id)).toEqual([1, 3, 5]);
+		expect(listed.find((row) => row.card_id === 5)!.milestone_board).toBeNull();
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0057]);
+		expect(report.schemaDifferences).toEqual([]);
+		const cardsAfter = cardsIn(database);
+		const changed = cardsAfter.filter((row, i) => JSON.stringify(row) !== JSON.stringify(cardsBefore[i])).map((row) => row.id);
+		expect(changed).toEqual(listed.map((row) => row.card_id));
+		// Each of them differs in its milestone alone: updated_at is as it was.
+		for (const [i, row] of cardsAfter.entries()) {
+			expect(row, `card ${row.id}`).toEqual(changed.includes(row.id as number) ? { ...cardsBefore[i], milestone_id: null } : cardsBefore[i]);
+		}
+		expect(cardsAfter.map((row) => row.updated_at)).toEqual(Array(7).fill(STAMP));
+		const after = contentsOf(database);
+		for (const table of Object.keys(before)) {
+			// The migration record, and its id counter, gain the file.
+			if (['cards', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
+			expect(after[table], table).toEqual(before[table]);
+		}
+
+		// The same statement again changes nothing, and neither does the next start.
+		expect(database.prepare(STATEMENT).run().changes).toBe(0);
+		expect(runMigrations({ database, migrationsDir: REAL_MIGRATIONS }).applied).toEqual([]);
+		expect(cardsIn(database)).toEqual(cardsAfter);
+
+		// The rehearsal: every row kept, and the change noted as the one-off declared for it.
+		const found: Findings = { problems: [], notes: [] };
+		compare(state, stateOf(database), report.applied, found);
+		expect(found).toEqual({
+			problems: [],
+			notes: [
+				`cards: milestone_id cleared where it named a milestone of another board in its 7 row(s) by ${FILE_0057}, a one-off declared in tests/rehearsal/one-offs.ts`
+			]
+		});
+	});
+
+	it('is harmless on an empty table, as a new installation has', () => {
+		const database = beforeIt(true);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0057]);
+		expect(cardsIn(database)).toEqual([]);
+	});
+
+	it('is declared to the rehearsal as a one-off that keeps every row of cards', () => {
+		expect(ONE_OFFS).toContainEqual({
+			file: FILE_0057,
+			table: 'cards',
+			change: 'milestone_id cleared where it named a milestone of another board',
+			keepsRows: true
+		});
 	});
 });

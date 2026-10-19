@@ -12,7 +12,7 @@ import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { cardComments, cards, sessions, settings, users, workDependencies } from '$lib/server/db/schema';
 import { getCompletionBlocker } from '$lib/server/card-completion';
-import { mailStatus, sendEmail, trySendEmail } from '$lib/server/email';
+import { mailStatus, sendEmail, sendEmailWithAttachment, trySendEmail } from '$lib/server/email';
 import { emit } from '$lib/server/events';
 import { logUiActivity } from '$lib/server/logActivity';
 import { createLogger } from '$lib/server/logger';
@@ -264,6 +264,23 @@ describe('effects()', () => {
 		});
 	});
 
+	it("records an attachment's bytes as well as its name", async () => {
+		makeSmtp();
+		const content = Buffer.from('%PDF-1.3 the bytes as they were handed over');
+
+		expect(
+			await sendEmailWithAttachment('reader@example.test', 'Report', '<p>Attached</p>', {
+				filename: 'report.pdf',
+				content,
+				contentType: 'application/pdf'
+			})
+		).toBe(true);
+
+		expect(sent.emails).toHaveLength(1);
+		expect(sent.emails[0].attachments).toEqual(['report.pdf']);
+		expect(sent.emails[0].files).toEqual([{ filename: 'report.pdf', content }]);
+	});
+
 	it('refuses mail to the addresses it is given, and keeps that mail apart', async () => {
 		sent.restore();
 		sent = effects({ refuseMailTo: ['refused@example.test'] });
@@ -275,7 +292,7 @@ describe('effects()', () => {
 
 		expect(sent.all.map((e) => e.kind === 'email' && e.to)).toEqual(['taken@example.test']);
 		expect(sent.refusedMail).toEqual([
-			{ kind: 'email', to: 'refused@example.test', subject: 'One', html: '<p>1</p>', attachments: [], inTransaction: false }
+			{ kind: 'email', to: 'refused@example.test', subject: 'One', html: '<p>1</p>', attachments: [], files: [], inTransaction: false }
 		]);
 		sent.clear();
 		expect(sent.refusedMail).toEqual([]);
@@ -296,7 +313,7 @@ describe('effects()', () => {
 
 		expect(sent.all).toEqual([]);
 		expect(sent.duringTransaction).toEqual([
-			{ kind: 'email', to: 'refused@example.test', subject: 'Too early', html: '<p>1</p>', attachments: [], inTransaction: true }
+			{ kind: 'email', to: 'refused@example.test', subject: 'Too early', html: '<p>1</p>', attachments: [], files: [], inTransaction: true }
 		]);
 		sent.clear();
 		expect(sent.duringTransaction).toEqual([]);
@@ -653,7 +670,7 @@ describe('the builders', () => {
 		expect(deeper.board.parentCardId).toBe(sub.cards[0].id);
 		expect(deeper.cards).toHaveLength(1);
 		// It is a sub-board to the application too: the parent cannot be completed.
-		expect(getCompletionBlocker(parent.id)).toMatch(/has 2 incomplete cards/);
+		expect(getCompletionBlocker(parent.id, owner)).toMatch(/has 2 incomplete cards/);
 	});
 });
 

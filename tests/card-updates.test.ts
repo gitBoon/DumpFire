@@ -67,11 +67,13 @@ const entries = () => db.select().from(activityLog).all();
 /** The row as a route answers it: through JSON. */
 /**
  * A row as `path` answers it: as stored from the internal tree, and with each
- * stored timestamp in ISO 8601 from the v1 API (card 2095, plan R1).
+ * stored timestamp in ISO 8601 from the v1 API (card 2095, plan R1). The
+ * internal tree adds `leftMilestone`, null for an update that moves the card
+ * to no other board (card 2155, the review's O3).
  */
 const asAnswered = (row: Card, path: string) => {
 	const copy = JSON.parse(JSON.stringify(row));
-	return path.startsWith('/api/v1/') ? onTheWire(copy) : copy;
+	return path.startsWith('/api/v1/') ? onTheWire(copy) : { ...copy, leftMilestone: null };
 };
 
 const category = (board: BoardFixture, name: string) =>

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.39
+version: 1.40
 status: As-Built
 date: 2026-10-19
 tags:
@@ -400,21 +400,25 @@ closed.
 
 Each now reads its session cookie when it is opened and asks at every heartbeat it sends
 (30 seconds; 25 for the log) whether that session is still there, has not expired and has
-an account. If not, the stream ends and sends nothing more. The board stream asks
-`sessionStillOpen()` in `src/lib/server/auth.ts`. The log stream and `/api/events`, which
-are let in for what the account's role was when they opened, ask `openSessionUser()`, which
-gives the account as it is now, and end as well when that role has changed. Each check is
-two reads, with nothing written or logged, and the session's expiry is not moved on, so an open
-tab does not keep a session alive.
+an account. If not, the stream ends and sends nothing more. Each asks `openSessionUser()` in
+`src/lib/server/auth.ts`, which gives the account as it is now. The log stream and
+`/api/events`, which are let in for what the account's role was when they opened, end as well
+when that role has changed. The board stream ends as well when its board has gone or that
+account can no longer open it (card 2170, below). The session check is two reads, and the
+board stream's adds one for the board row and at most four for `canViewBoard`, with nothing
+written or logged, and the session's expiry is not moved on, so an open tab does not keep a
+session alive.
 
 | What happened | The stream |
 |---------------|------------|
 | The session was deleted: a sign-out, a password change, a reset, an invite used, a restore, Reset Everything | Ends at its next heartbeat |
 | The session expired, or its account was deleted | Ends at its next heartbeat |
 | Another session of the same account ended | Goes on: only the session that opened it counts |
-| The account is no longer an administrator | The log stream ends at its next heartbeat, and so does `/api/events`, which sent it every board's events. The board stream goes on |
+| The account is no longer an administrator | The log stream ends at its next heartbeat, and so does `/api/events`, which sent it every board's events. The board stream goes on if the account, as an ordinary user, can still open the board, and otherwise ends as the next row says |
+| The account can no longer open the board: its share or its team's share taken away, taken out of that team, the board made private, or an administrator made an ordinary user who is not on it | The board stream sends one `update` with `{"type":"access"}`, on that stream alone, and ends at its next heartbeat. `/api/events` stops sending that board's events from its next heartbeat |
+| The board was deleted | The board stream hands on the board's own `{"type":"board","action":"deleted"}` event as the delete commits, then at its next heartbeat the access event, and ends |
 | An ordinary user was made an administrator | `/api/events` ends at its next heartbeat, and the page opens it again with every board's events |
-| The check itself failed (a database that cannot be read) | Ends, with one `WARN` line under `AUTH`: "Live stream ended: its session could not be checked", with the route and the error |
+| The check itself failed (a database that cannot be read), the session's or the board stream's access check | Ends, with no access event and one `WARN` line under `AUTH`: "Live stream ended: its session could not be checked", with the route and the error |
 
 What the person sees: a page that holds a stream (a board, the dashboard, All Tasks,
 Burndown) goes to the login page by itself within about 35 seconds of its session ending
@@ -427,10 +431,43 @@ and stays signed in: its stream opens again on the browser's new cookie. An admi
 made an ordinary user sees the audit console show it is disconnected, and an open All Tasks,
 dashboard or Burndown page refreshes once, its data read again for the account as it is now.
 
-The board stream still keeps the board access it was opened with: a user taken off a board
-goes on receiving that board's events while the session lasts, so that a deleted board's
-page is told by its event (card 2170 is to handle it). `/api/events` asks again whether an
-ordinary user may open each board, through a cache that keeps each answer about 30 seconds.
+**Access to the board, at every heartbeat (card 2170).** The board stream asked
+`canViewBoard` once, when it opened, and a user taken off the board went on receiving its
+events (card titles, column names, who did what) while the session lasted. At each heartbeat
+it now asks, after the session, whether the board row is still there and the account as it
+is now can open it. If not, it enqueues one last `update` with `{"type":"access"}` on its own
+stream (not emitted to anyone else) and ends: the board page re-reads on any `update` and
+shows its load's refusal, "You do not have access to this board" or "Board not found".
+
+- **A deleted board is still told first.** The delete's own event is delivered in the same
+  synchronous run as the commit (`emit` queues it with `afterCommit`), and a heartbeat is a
+  timer, which cannot come between. A stream closed after an `enqueue` still hands the
+  reader what was enqueued. Board ids are never used again (`AUTOINCREMENT`), so a stream on
+  a deleted board can receive nothing more, and ending it loses nothing.
+- **Opening it asks the same question.** `requireBoard(user, id, 'view')`: `404` "Board not
+  found" for a board that is not there, administrators included (an administrator was once
+  let in on any id, and held a listener on it for ever); `403` "No access to this board" for
+  one the caller cannot open; `400` "Invalid board ID" for an id that is not one. The page's
+  `keepStreamOpen()` treats `403` and `404` alike and stays closed.
+- **`/api/events` decides again at its heartbeat too.** It keeps each board's answer until
+  its next heartbeat, which forgets them all once the session and the role are checked; the
+  30-second clock it used to keep them by is gone. So a share taken away stops what it sends
+  of that board at one moment, its heartbeat, where it used to be within about 30 seconds of
+  whenever the answer was first kept.
+- **Not asked on every event**, of which a busy board sends several a second; and open
+  streams are not told when access changes, since every path that changes access (the share
+  and team routes, a team's membership, `isPublic`, a role, a deletion, a restore) would have
+  to, and one forgotten would be the fault again.
+
+What the person sees: someone taken off a board, or an administrator made an ordinary user
+who is not on it, sees the open board turn into "You do not have access to this board"
+within about 30 seconds, with nothing changed on the board meanwhile; in the browser's
+developer tools the stream's last message is `update` with `{"type":"access"}`. Any change
+on the board before then already turned the page into the refusal, because the page re-reads
+on every event and its load refuses. What the heartbeat closes is that one event, and
+everything a stream held open outside the page (a script, or `curl` with the cookie) went on
+receiving.
+
 See the sequence in [Architecture](architecture.md#an-open-stream-and-its-session). Covered by
 `tests/live-streams.test.ts`.
 
@@ -2175,9 +2212,40 @@ Rules that are not a plain board lookup:
 - **Task requests** may be read, answered, accepted or rejected only by the user or
   team they are addressed to, or an administrator (`request-access.ts`). Accepting one
   needs edit access to the board the card is created on, and any assignee must be able
-  to open that board.
+  to open that board. The inbox (`GET /api/requests`) gives a row's `desiredBoardId`,
+  `desiredBoardName` and `desiredBoardEmoji` only to a reader who can open that board, and
+  all three null to anyone else, each member of an addressed team judged for themselves
+  (card 2153): the accept dialog then starts at "Select a board…", where it preselected a
+  board missing from its own list.
 - **The global event stream** (`GET /api/events`) forwards only events from boards the
-  subscriber can view; the decision is cached per board for 30 seconds.
+  subscriber can view; each board's answer is kept until the stream's next heartbeat, which
+  forgets them all (card 2170). **The board stream** (`GET /api/boards/:id/events`) asks
+  again at each heartbeat whether its account can open the board, and ends with an access
+  event when not; see [An Open Stream and Its Session](#an-open-stream-and-its-session).
+- **A report is its reader's** (card 2150). A board or grouping report takes in only the
+  sub-boards its reader can open, and does not walk through one they cannot; a board whose
+  parent the reader cannot open is shown as a board of its own, the parent not named. The
+  reader is the caller for a download, the sender for a mailed report and the schedule's
+  owner, as their account stands at the run, for a scheduled one; recipients get that view
+  whoever they are. See [Whose Report It Is](backup-reporting.md#whose-report-it-is).
+- **The completion refusal names only a sub-board the caller can open** (card 2151).
+  `getCompletionBlocker(cardId, viewer)` checks first the unfinished sub-boards the caller
+  can open, and names one as before; when the only unfinished ones are sub-boards they
+  cannot open, every move route answers `409` "A sub-board you cannot open still has
+  incomplete cards that must be completed first. Ask this board's owner.", with no name and no count.
+- **Notices across boards** (card 2152). The "Unblocked" comment is stored once and read by
+  everyone who can open the waiting card's board, so it names the finished work by title
+  only when that work is on the same board, and otherwise reads `Unblocked: #12, a card on
+  another board, completed — nothing is blocking this card now.` or `Unblocked: a subtask on
+  another board completed — …`. The mails are one person's each: an assignee is mailed the
+  finished work's title when they can open its board, and "A card on a board you cannot
+  open" (or "A subtask on a board you cannot open") otherwise; the plan-created mail goes
+  only to recipients who can open the plan, each drawn from the plan as they would see it.
+  See [Critical-Path Planning](critical-path-planning.md#unblock-notification).
+- **A board's milestone holds only that board's cards** (card 2155). A move to another
+  board takes the card out of a milestone of a board other than the one it arrives on, in
+  the same update of the card, and the source board's `card_moved_away` entry says so; a
+  goal across boards keeps its cards. Migration 0057 took out those already in that state.
 - **Being assigned or having commented does not outlive board access.** `/api/my-tasks`
   omits cards on boards the caller can no longer open, and a former member cannot edit
   comments they wrote while they had access, by either API tree
@@ -2212,9 +2280,10 @@ Rules that are not a plain board lookup:
   from the card's board with a recursive `UNION` query, which ends on a loop already in
   the data. Access is not inherited through a parent, but linking is not without effect
   on who sees what. Since card 2130, those who can open the parent board see the linked
-  board on the card only if they can open it as well; until card 2150 is built, the
-  parent board's reports, scheduled ones included, take in the linked board's cards, for
-  readers who cannot open it too. The linked board's members who cannot open the parent board no
+  board on the card only if they can open it as well, and since card 2150 the parent
+  board's reports take in the linked board's cards only when whoever downloads, sends
+  or schedules the report can open it as well (a mailed report's reader is whoever sends
+  it, a scheduled one's its owner); whoever they send it to gets what that person can see. The linked board's members who cannot open the parent board no
   longer see it on their dashboard, which lists top-level boards and shows a sub-board on
   its parent's tile. And the parent board's editors can move the card to another board,
   taking the linked board with it. The confirmation says all of this (`subBoardLinkWarning`
@@ -2290,7 +2359,7 @@ flowchart LR
 | The public request form's boards | None to a holder of the form token; the boards they can open to a signed-in caller | `GET /api/requests/targets` | 2128, decision 6 |
 | Recent activity | The caller's own entries on boards they can open, the 20 or 10 newest counted after the filter. The counts beside it (completed, streak, cycle time) are not filtered: they name nothing | `GET /api/v1/me/stats`, the dashboard | 2126, decision 13 |
 | The other end of a dependency, and a plan's nodes | Still listed, so that blocked work stays blocked, but withheld when it is on a board the caller cannot open: its title reads "A card on a board you cannot open" or "A subtask on a board you cannot open", its board "A board you cannot open", its column is empty and its board, column, priority and milestone are null, with `withheld: true`. See [Critical-Path Planning](critical-path-planning.md#design-decisions-inside-that-flow) | Both trees' dependency routes and their answers, `GET /api/v1/cards/:id`, both summaries and both PDFs, the board page's Blocked chips, All Tasks, the plan page | 2129, decisions 7 and 8 |
-| A milestone's cards, and its burndown | A card on a board the caller cannot open, which a card moved off the milestone's board can be, is listed withheld, as a plan's node is. The burndown by milestone charts only the cards on boards the caller can open, and its notes say how many it leaves out | `GET /api/v1/milestones/:id`, `GET /api/burndown` and `GET /api/v1/burndown` with `milestoneId`, the burndown page | 2129's review |
+| A milestone's cards, and its burndown | A card on a board the caller cannot open is listed withheld, as a plan's node is. Since card 2155 a card moved off a milestone's board leaves the milestone, and migration 0057 took out those already moved; the withholding stays for a goal across boards and for an older backup restored. The burndown by milestone charts only the cards on boards the caller can open, and its notes say how many it leaves out | `GET /api/v1/milestones/:id`, `GET /api/burndown` and `GET /api/v1/burndown` with `milestoneId`, the burndown page | 2129's review |
 | A card's sub-boards | Those the caller can open. The dashboard's sub-board count, its All Tasks figures, their token cost and the spend by person cover only those | The board page, the card context, the dashboard | 2130, decision 9 |
 | A sub-board's breadcrumbs | A board above it that the caller cannot open, as "🔒 A board you cannot open" with no link. It stays in the chain, so the page still offers Delete Sub-board; the boards above that the caller can open keep their names and links | The board page | 2130, decision 10 |
 | "Link existing board" | The top-level boards the caller owns (card 2139), which they can always open | The board page | 2130, decision 11 |
@@ -2319,16 +2388,15 @@ to a board they can open, `404` or `403`, before anything is written. Whoever ac
 request chooses its board, as the inbox already asked them to. See
 [The Public Request Form](#the-public-request-form).
 
-**What remains, each a card of its own** (the plan's found nearby): a board or grouping
-report still takes in the cards of sub-boards its reader cannot open (card 2150); completing
-a card is refused while a sub-board the caller cannot open is unfinished, and the server's
-refusal names it (card 2151): the board page counts that sub-board's open cards before a drop
-onto Complete, without its name, and shows a refusal it did not stop in the server's words; the "Unblocked" comment and the plan-created mail carry another
-board's card title (card 2152); the inbox names a request's desired board to an addressee
-who cannot open it (card 2153); and a card moved to another board keeps a milestone of the board it left
-(card 2155). The dashboard's All Tasks walk follows only the
-sub-boards the caller can open, so it cannot reach one shared with them under a card of a
-board they cannot open, which `/all` counts.
+**What remained, each a card of its own, and is now closed** (cards 2150, 2151, 2152, 2153,
+2155 and 2170, in the bullets above): a report walking into sub-boards its reader cannot open,
+the completion refusal naming one, the "Unblocked" comment and the plan-created mail carrying
+another board's card title, the inbox naming a desired board, a card moved to another board
+keeping a milestone of the board it left, and an open board stream keeping the access it was
+opened with. The dashboard's All Tasks walk and the reports follow only the sub-boards the
+reader can open, so neither reaches one shared with them under a card of a board they cannot
+open, which `/all` counts; such a board is in the Reports page's board list, and can be
+reported on by itself.
 
 ### What Users Notice (cards 2126 to 2133)
 
@@ -2356,18 +2424,19 @@ was an empty list.
   waits on sees "A card on a board you cannot open" in place of its title: on the Blocked
   chip, in the card window, on All Tasks and on the plan. The card is still shown as
   blocked, and the ✕ still removes the link. The DumpFire wrapper prints the same text when
-  its key's user cannot open that board. A card moved to another board keeps its milestone
-  for now (card 2155), and shows on the plan in the same words to anyone who cannot open the board it
-  moved to. The milestone's burndown leaves it out for them, and its notes say that a card
-  is left out; the plan's PDF calls a step of such a card "a step of a card on a board you
+  its key's user cannot open that board. A card moved to another board now leaves a
+  milestone of the board it left (card 2155); a card of a goal across boards on a board
+  someone cannot open shows on the plan in the same words to them. The milestone's burndown
+  leaves it out for them, and its notes say that a card is left out; the plan's PDF calls a step of such a card "a step of a card on a board you
   cannot open".
 - **Sub-boards.** Someone who can open a board, but was never given one of its sub-boards,
   no longer sees it on the card, in the card window or on the dashboard, and it is not in
   their dashboard figures. Completing such a card is still refused while the sub-board is
   unfinished: dropped onto Complete, the board page says how many cards are open "on a
-  sub-board you cannot open", without its name, and offers no sub-board to open. A refusal
-  the page did not stop is shown in the server's words, which name the sub-board until card
-  2151 is done, and the card is put back. Someone given a
+  sub-board you cannot open", without its name, ends "Ask this board's owner.", and offers no
+  sub-board to open. A refusal
+  the page did not stop is shown in the server's words, which since card 2151 name only a
+  sub-board the caller can open, and the card is put back. Someone given a
   sub-board but not the board above it sees that board in the breadcrumbs as "🔒 A board
   you cannot open", with no link. An archived card on a sub-board is not counted, in the
   refusal or in any sub-board's progress (card 2205): a card held back only by archived
@@ -2394,6 +2463,43 @@ was an empty list.
 
 Every rule above has a regression test in `tests/access-control.test.ts` or in
 `tests/access-every-route.test.ts`; see [Testing](testing.md).
+
+### What Users Notice (cards 2150, 2151, 2152, 2153, 2155 and 2170)
+
+Administrators and the superadmin open every board. What changes for them is the board
+stream's `404` on a board that is not there, and the milestone rule for a move, which is
+everyone's.
+
+- **Reports.** A report downloaded, mailed or scheduled by someone who was not given every
+  sub-board of their board leaves those sub-boards out, with no line saying so. A report of
+  a sub-board shared with someone who cannot open its parent no longer names the parent.
+  Someone given a sub-board but not its parent board now finds that sub-board in the Reports
+  page's board list. A schedule's report follows its owner's access at each run, growing as
+  well as shrinking, and nobody confirms its recipients again.
+- **Completing a card.** Someone who cannot open a card's unfinished sub-board is told "A
+  sub-board you cannot open still has incomplete cards that must be completed first. Ask
+  this board's owner.", not its name or how many cards are open.
+- **"Unblocked".** The comment about a card on another board gives its number, not its
+  title: `Unblocked: #12, a card on another board, completed — …`. The DumpFire wrapper's
+  reference shows the same-board form, which stays true. An assignee who cannot open the
+  finished card's board is mailed "A card on a board you cannot open" in place of its title;
+  someone taken off the waiting card's board is not mailed at all.
+- **"Plan created".** An assignee who cannot open the plan (a former member of its board, or
+  someone who cannot open every board of a goal across boards) is no longer mailed when it is
+  created. Everyone else's mail is unchanged unless the chain runs through a board they
+  cannot open, where that step reads "A card on a board you cannot open".
+- **The inbox.** A request naming a board the reader cannot open shows them no board badge,
+  and its accept dialog does not preselect one.
+- **Moving a card to another board** takes it out of a milestone of the board it left, as it
+  already loses that board's labels and categories; a goal across boards is unaffected.
+  Through the API the move answers `milestoneId: null`, and the board's activity reads
+  `"T" moved to board "B" (To Do → To Do) and out of milestone "M"`. Whoever moves it is
+  told: both move answers name the milestone left as `leftMilestone`, and All Tasks says
+  `Moved. It left milestone "M"; moving it back does not put it back in.` At the deploy, the cards
+  that query 3 of [Deployment](deployment.md) lists leave their milestones.
+- **An open board** turns into "You do not have access to this board" within about 30 seconds
+  of its reader being taken off it, or of an administrator who is not on it being made an
+  ordinary user; a deleted board into "Board not found".
 
 ## The Public Request Form
 
@@ -3122,7 +3228,7 @@ which is what Reset Everything in the admin panel leaves.
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction; `checkCurrentPassword()`, the count of current-password guesses for a session, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `sessionStillOpen()` and `openSessionUser()`, which an open live stream asks at each heartbeat |
+| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction; `checkCurrentPassword()`, the count of current-password guesses for a session, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account |
 | `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
 | `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME` |
 | `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS` |

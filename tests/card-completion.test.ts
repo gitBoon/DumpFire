@@ -224,6 +224,52 @@ describe.each(routes)('completing a card by $name', ({ move, source }) => {
 		expectUnchanged(before);
 	});
 
+	// Card 2151. Access is not inherited from a parent board: an editor of A
+	// who was not given the sub-board was told its name and how many of its
+	// cards were open. The card is still refused; the message names nothing.
+	const HIDDEN_SUB_BOARD = "A sub-board you cannot open still has incomplete cards that must be completed first. Ask this board's owner.";
+
+	it('refuses an editor who cannot open the unfinished sub-board, naming no sub-board and counting nothing', async () => {
+		const editor = makeUser({ username: 'editor' });
+		addBoardMember(A.board, editor, 'editor');
+		const card = makeCard(A.cols['To Do']);
+		makeSubBoard(card, { owner, name: 'HIDDENSUB', cards: { 'To Do': 3 } });
+		const before = snapshotDb();
+
+		const res = await move(card, A.cols['Complete'], editor);
+
+		expect(res.status).toBe(409);
+		expect(res.body.message).toBe(HIDDEN_SUB_BOARD);
+		expect(res.body.message).not.toMatch(/HIDDENSUB|\d/);
+		expectUnchanged(before);
+	});
+
+	it('names the unfinished sub-board the editor can open, before one they cannot', async () => {
+		const editor = makeUser({ username: 'editor' });
+		addBoardMember(A.board, editor, 'editor');
+		const card = makeCard(A.cols['To Do']);
+		makeSubBoard(card, { owner, name: 'HIDDENSUB', cards: { 'To Do': 3 } });
+		const theirs = makeSubBoard(card, { owner, name: 'Theirs', cards: { 'To Do': 2 } });
+		addBoardMember(theirs.board, editor, 'viewer');
+
+		const res = await move(card, A.cols['Complete'], editor);
+
+		expect(res.status).toBe(409);
+		expect(res.body.message).toBe('Sub-board "Theirs" has 2 incomplete cards that must be completed first');
+	});
+
+	it("names the unfinished sub-board to its maker and to an administrator, who can open it", async () => {
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const card = makeCard(A.cols['To Do']);
+		makeSubBoard(card, { owner, name: 'HIDDENSUB', cards: { 'To Do': 3 } });
+
+		for (const who of [owner, admin]) {
+			const res = await move(card, A.cols['Complete'], who);
+			expect(res.status, who.username).toBe(409);
+			expect(res.body.message, who.username).toBe('Sub-board "HIDDENSUB" has 3 incomplete cards that must be completed first');
+		}
+	});
+
 	it('completes a card once its subtasks are done and its sub-board is finished', async () => {
 		const card = makeCard(A.cols['To Do']);
 		makeSubtask(card, { completed: true });
@@ -1276,7 +1322,7 @@ describe('archived cards on a sub-board (card 2205)', () => {
 		const T = makeSubBoard(other, { owner, name: 'T', cards: {} });
 		makeCard(T.cols['To Do'], { archivedAt: ARCHIVED });
 
-		expect(getCompletionBlocker(other.id)).toBeNull();
+		expect(getCompletionBlocker(other.id, owner)).toBeNull();
 		const shown = (await cardsOnA(owner)).find((card) => card.id === other.id);
 		expect(shown.subBoards.map(figuresOf)).toEqual([{ done: 0, total: 0 }]);
 	});

@@ -275,10 +275,27 @@ function getSubtasksForCards(cardIds: number[]): Map<number, SubtaskInfo[]> {
 }
 
 /**
- * Recursively collect all sub-board IDs reachable from the given board IDs.
- * Walks the board → cards → sub-boards chain to any depth.
+ * The boards one reader of a report can open, as a question asked of each id:
+ * `getAccessibleBoardIds`, where null (an administrator) opens everything.
+ * Built once for a report, and handed to the walk and the generator.
  */
-function collectSubBoardIds(boardIds: number[]): number[] {
+function openerFor(reader: SessionUser): (boardId: number) => boolean {
+	const open = getAccessibleBoardIds(reader);
+	if (open === null) return () => true;
+	const ids = new Set(open);
+	return (boardId) => ids.has(boardId);
+}
+
+/**
+ * Recursively collect all sub-board IDs reachable from the given board IDs.
+ * Walks the board → cards → sub-boards chain to any depth, following only
+ * the sub-boards the report's reader can open (card 2150). Access is not
+ * inherited from a parent board, so a sub-board they were not given is left
+ * out, and the walk does not go through it: a board beneath it that they can
+ * open is not reached either, as the dashboard's All Tasks walk stops there
+ * too. Nothing says that something was left out.
+ */
+function collectSubBoardIds(boardIds: number[], canOpen: (boardId: number) => boolean): number[] {
 	const allIds = new Set(boardIds);
 	let frontier = boardIds;
 	while (frontier.length > 0) {
@@ -301,7 +318,7 @@ function collectSubBoardIds(boardIds: number[]): number[] {
 			.where(inArray(boards.parentCardId, colCardIds))
 			.all()
 			.map(b => b.id)
-			.filter(id => !allIds.has(id));
+			.filter(id => !allIds.has(id) && canOpen(id));
 		if (subBoardIds.length === 0) break;
 		for (const id of subBoardIds) allIds.add(id);
 		frontier = subBoardIds;
@@ -317,6 +334,11 @@ function generateReportForBoards(
 	periodEnd: string,
 	scopeName: string,
 	scope: 'board' | 'category' | 'all',
+	/**
+	 * Whether the report's reader can open a board (`openerFor`). Asked of a
+	 * board's parent before the parent is named (card 2150).
+	 */
+	canOpen: (boardId: number) => boolean,
 	statusFilter: ReportStatusFilter = 'all',
 	/**
 	 * Narrow the report to one person's work. Filters on assignment, so a card
@@ -373,14 +395,18 @@ function generateReportForBoards(
 	const boardsInfo = db.select().from(boards).where(inArray(boards.id, boardIds)).all();
 	const boardMap = new Map(boardsInfo.map(b => [b.id, b]));
 
-	// Build parent board name prefix for sub-boards
+	// Build parent board name prefix for sub-boards. A parent is named only
+	// when the reader can open it (card 2150): a board in the report whose
+	// parent they cannot open is shown under its own name, as a board of its
+	// own, with nothing to say what it hangs from. The report may go to any
+	// address, so it holds no placeholder for the parent either.
 	const parentNameMap = new Map<number, string>();
 	for (const b of boardsInfo) {
 		if (b.parentCardId) {
 			const parentCard = db.select().from(cards).where(eq(cards.id, b.parentCardId)).get();
 			if (parentCard) {
 				const parentCol = db.select().from(columns).where(eq(columns.id, parentCard.columnId)).get();
-				if (parentCol) {
+				if (parentCol && canOpen(parentCol.boardId)) {
 					const parentBoard = boardMap.get(parentCol.boardId);
 					if (parentBoard) {
 						parentNameMap.set(b.id, parentBoard.name);
@@ -621,9 +647,10 @@ export function generateBoardReport(
 	if (!canViewBoard(user, boardId)) return null;
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) return null;
-	// Include all sub-boards recursively
-	const allBoardIds = collectSubBoardIds([boardId]);
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, board.name, 'board', statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
+	// Include the sub-boards the reader can open, recursively (card 2150)
+	const canOpen = openerFor(user);
+	const allBoardIds = collectSubBoardIds([boardId], canOpen);
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, board.name, 'board', canOpen, statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
 }
 
 export function generateCategoryReport(
@@ -633,15 +660,13 @@ export function generateCategoryReport(
 ): ReportData | null {
 	const cat = db.select().from(boardCategories).where(eq(boardCategories.id, categoryId)).get();
 	if (!cat) return null;
-	const accessibleIds = getAccessibleBoardIds(user);
-	let catBoards = db.select().from(boards).where(eq(boards.categoryId, categoryId)).all();
-	if (accessibleIds !== null) {
-		catBoards = catBoards.filter(b => accessibleIds.includes(b.id));
-	}
+	const canOpen = openerFor(user);
+	const catBoards = db.select().from(boards).where(eq(boards.categoryId, categoryId)).all()
+		.filter(b => canOpen(b.id));
 	if (catBoards.length === 0) return null;
-	// Include all sub-boards recursively
-	const allBoardIds = collectSubBoardIds(catBoards.map(b => b.id));
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, cat.name, 'category', statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
+	// Include the sub-boards the reader can open, recursively (card 2150)
+	const allBoardIds = collectSubBoardIds(catBoards.map(b => b.id), canOpen);
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, cat.name, 'category', canOpen, statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
 }
 
 export function generateAllBoardsReport(
@@ -651,9 +676,12 @@ export function generateAllBoardsReport(
 ): ReportData | null {
 	if (user.role !== 'admin' && user.role !== 'superadmin') return null;
 	// Start from top-level boards only, then expand to include sub-boards
+	// An administrator opens every board, so nothing is left out; asked all
+	// the same, so that the three reports walk by one rule.
+	const canOpen = openerFor(user);
 	const topLevelBoards = db.select().from(boards).where(isNull(boards.parentCardId)).all();
-	const allBoardIds = collectSubBoardIds(topLevelBoards.map(b => b.id));
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, 'All Boards', 'all', statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
+	const allBoardIds = collectSubBoardIds(topLevelBoards.map(b => b.id), canOpen);
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, 'All Boards', 'all', canOpen, statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
 }
 
 /**

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.32
+version: 1.33
 status: As-Built
 date: 2026-10-19
 tags:
@@ -2360,6 +2360,186 @@ Nothing is done to the database.
 - **0056 stays applied.** The older image logs one `[ERROR] [DB]` line for the recorded file it has no file for, and its schema check one for the column and the index its model lacks, and starts. It neither reads nor writes `set_by`: a webhook it makes names nobody.
 - **The webhook rules go with it.** It delivers to addresses inside the network again, follows redirects, lets an editor change an address or a secret or switch a webhook on, and has no cap. A webhook switched off by a reset meanwhile stays off; a schedule paused stays paused.
 - **Its restore fills a webhook's secret** by id, board and address again, without the setter.
+
+### The Update That Brings Migration 0057 and the Second Round of Read Leaks
+
+Six cards go out in one image, and this is the one note for them. Each closes a way for someone to read something of a board they cannot open. One migration, which changes data once; run query 3 (check 0o) before the deploy.
+
+- **Card 2150**: a report is its reader's. A board or grouping report takes in only the sub-boards its reader can open, and does not walk through one they cannot; a board whose parent the reader cannot open is drawn as a board of its own, the parent not named. The reader is the caller for a download, the sender for a mailed report, and the schedule's owner, as their account stands at each run, for a scheduled one. The Reports page lists, for an ordinary user, each board they can open whose parent board they cannot. See [Whose Report It Is](backup-reporting.md#whose-report-it-is).
+- **Card 2151**: completing a card held back only by sub-boards the caller cannot open is refused with `A sub-board you cannot open still has incomplete cards that must be completed first. Ask this board's owner.`, with no name and no count.
+- **Card 2152**: the "Unblocked" comment names finished work on another board by its number only, and each "Unblocked" and "Plan created" mail is drawn for its recipient; the plan mail goes only to those who can open the plan.
+- **Card 2153**: the inbox gives a request's desired board only to a reader who can open it, and so does the answer to an accept or a reject.
+- **Card 2155** brings migration `0057_cards_leave_other_boards_milestones.sql`: a move to another board takes the card out of a milestone of a board other than the one it arrives on, and 0057 takes out, once, the cards already in that state.
+- **Card 2170**: an open board stream asks at each heartbeat whether its account can still open the board, and ends with one `update` of `{"type":"access"}` when not; it no longer opens on a board that is not there. `/api/events` decides each board again at its heartbeat.
+
+0057 is one statement, which changes data and no structure:
+
+```sql
+UPDATE `cards` SET `milestone_id` = NULL
+WHERE `milestone_id` IN (SELECT `id` FROM `milestones` WHERE `board_id` IS NOT NULL)
+  AND (SELECT `board_id` FROM `milestones` WHERE `id` = `cards`.`milestone_id`)
+      <> (SELECT `board_id` FROM `columns` WHERE `id` = `cards`.`column_id`);
+```
+
+It leaves `updated_at` as it is (nobody edited the cards) and writes no activity entry. A goal across boards (no board) keeps every card, and so does a goal whose card is on its own board. Archived cards and closed goals are included. A goal whose board row is gone (deleted while foreign keys were off, as a restore runs) loses its cards too, since no column is on a board that is not there; a card naming a goal that no longer exists is left alone. So is a card whose column row is gone (deleted while foreign keys were off): it is shown nowhere, its board is unknown, and a comparison with an unknown board is never true, so it keeps its milestone and query 3 does not list it. It runs once: nothing repeats it at start-up or after a restore. Why: [Critical-Path Planning](critical-path-planning.md#constraints-worth-knowing).
+
+**Nothing repeats 0057.** It is recorded as applied, so a database that gets cards in a milestone of another board again afterwards keeps them: after going back to an older image, using it, and coming forward again, or after Import Backup of a backup made before this update. After either, run query 3 (check 0o) on the host and fix each card it lists by hand, as check 0o says: move it to its goal's board, make the goal one across boards, or take it out of the goal in its card window.
+
+```mermaid
+flowchart TD
+    Q3["0o: query 3, the cards 0057 takes out,<br/>on the host, read-only, kept in query-3-before.txt"] --> Keep{"A card listed that should<br/>stay with its goal?"}
+    Keep -->|"Yes"| Back["Move it back to the goal's board,<br/>or make the goal one across boards"]
+    Keep -->|"No"| Tell["Tell each listed goal's owner"]
+    Tell --> R
+    Back --> Q3
+    P["0p: report schedules that will hold fewer boards,<br/>on the host, read-only"] --> R
+    T["0q: pending requests that name a board,<br/>on the host, read-only"] --> R
+    R["0c: the rehearsal lists 0057,<br/>and notes the change to cards"] --> Deploy["Deploy as in Updating a Running Installation"]
+    Deploy --> First["First start: 0057 applied,<br/>the cards query 3 listed leave their milestones"]
+    First --> After["Checks 72 to 90"]
+```
+
+#### Before the deploy: checks 0o to 0q
+
+Each runs on the host, against the live database, read-only, as near the deploy as you can: a card moved to another board after the check is taken out too, which is the rule anyway. Save each query below in a file of its own beside you on the host, and pipe it in; nothing in the commands needs escaping, and each prints a table.
+
+**Check 0o: query 3, exactly the cards 0057 takes out of their milestones** (card 2155). It selects by 0057's own `WHERE`, with left joins for the names, so it lists what the statement changes and nothing else. `milestone_board` empty means the goal's board row is gone. Archived cards and closed goals are listed. A card whose column row is gone is not listed, and 0057 leaves it in its goal: no page shows such a card, and its board cannot be compared. Save it as `query-3.sql`:
+
+```sql
+SELECT c.id AS card_id, c.title, c.archived_at, m.id AS milestone_id, m.name AS milestone,
+  m.status AS milestone_status, m.board_id AS milestone_board_id, mb.name AS milestone_board,
+  col.board_id AS card_board_id, cb.name AS card_board
+FROM cards c
+JOIN milestones m ON m.id = c.milestone_id
+LEFT JOIN columns col ON col.id = c.column_id
+LEFT JOIN boards mb ON mb.id = m.board_id
+LEFT JOIN boards cb ON cb.id = col.board_id
+WHERE c.milestone_id IN (SELECT id FROM milestones WHERE board_id IS NOT NULL)
+  AND (SELECT board_id FROM milestones WHERE id = c.milestone_id)
+      <> (SELECT board_id FROM columns WHERE id = c.column_id)
+ORDER BY m.id, c.id;
+```
+
+```bash
+docker exec -i dumpfire node -e "
+const sql = require('fs').readFileSync(0, 'utf8');
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+console.table(db.prepare(sql).all());
+db.close();
+" < query-3.sql > query-3-before.txt
+```
+
+The table is wider than a terminal, so it goes to `query-3-before.txt`; open that file to read it. **Keep the file after the deploy**: nothing else records what 0057 changed, since the cards' `updated_at` and the activity log are left as they were. Each run writes over it, so after the last run before the deploy it holds exactly what 0057 changes.
+
+An empty table means 0057 changes nothing. Each row is a card that leaves its milestone at the deploy. Tell each listed goal's owner (whoever made it, `created_by` of its `milestones` row, or the owner of its board) which of their goal's cards leave it, as check 0p tells a schedule's owner. To keep one with its goal, do one of these on production before the deploy, then run the check again:
+
+1. **Move the card back to the goal's board** (All Tasks, Move). The goal stays as it is.
+2. **Make the goal one across boards** through the API, with an administrator's key; no screen changes a goal's board. Put `{"boardId":null}` in `goal.json`, then:
+
+   ```bash
+   curl.exe -s -X PATCH -H "Authorization: Bearer <administrator's API key>" -H "Content-Type: application/json" -d "@goal.json" https://<host>/api/v1/milestones/<milestone id>
+   ```
+
+   A goal across boards can then be opened only by people who can open every board its cards are on: a reader of the goal's board who cannot open the moved card's board loses the whole goal, not just that card.
+
+**Check 0p: report schedules that will hold fewer boards** (card 2150). Enabled schedules of a board or grouping owned by an ordinary user, and the sub-boards under them (any depth) that the owner cannot open: the boards each such report leaves out from the deploy on. Shares by team and public boards count as access. A board further down that the owner can open, under one they cannot, leaves the report too and is not listed. Save it as `query-1.sql`:
+
+```sql
+WITH RECURSIVE
+can_open(user_id, board_id) AS (
+  SELECT created_by, id FROM boards WHERE created_by IS NOT NULL
+  UNION SELECT user_id, board_id FROM board_members
+  UNION SELECT tm.user_id, bt.board_id FROM board_teams bt JOIN team_members tm ON tm.team_id = bt.team_id
+  UNION SELECT u.id, b.id FROM users u CROSS JOIN boards b WHERE b.is_public = 1
+),
+owners AS (
+  SELECT s.id AS schedule_id, s.name AS schedule, s.user_id, s.scope, s.scope_id
+  FROM report_schedules s JOIN users u ON u.id = s.user_id
+  WHERE s.enabled = 1 AND u.role = 'user' AND s.scope IN ('board', 'category')
+),
+tops(schedule_id, user_id, board_id) AS (
+  SELECT schedule_id, user_id, scope_id FROM owners WHERE scope = 'board'
+  UNION
+  SELECT o.schedule_id, o.user_id, b.id FROM owners o JOIN boards b ON b.category_id = o.scope_id
+  WHERE o.scope = 'category' AND (o.user_id, b.id) IN (SELECT user_id, board_id FROM can_open)
+),
+walk(schedule_id, user_id, board_id) AS (
+  SELECT schedule_id, user_id, board_id FROM tops
+  UNION
+  SELECT w.schedule_id, w.user_id, sb.id
+  FROM walk w JOIN columns col ON col.board_id = w.board_id
+  JOIN cards c ON c.column_id = col.id
+  JOIN boards sb ON sb.parent_card_id = c.id
+)
+SELECT o.schedule_id, o.schedule, sb.id AS sub_board_id, sb.name AS sub_board
+FROM walk w JOIN owners o ON o.schedule_id = w.schedule_id
+JOIN boards sb ON sb.id = w.board_id
+WHERE sb.parent_card_id IS NOT NULL
+  AND (w.user_id, sb.id) NOT IN (SELECT user_id, board_id FROM can_open)
+ORDER BY o.schedule_id, sb.id;
+```
+
+Run it as check 0o's command with `query-1.sql` in place of `query-3.sql` and `query-1.txt` in place of `query-3-before.txt`, so the record of check 0o is kept. Nothing to rule on: each row is a sub-board that schedule's recipients stop receiving, with no line in the report saying so. Tell its owner if it matters; giving the owner the sub-board puts it back.
+
+**Check 0q: pending requests that name a board** (card 2153), the only ones whose inbox badge can change. Save it as `query-2.sql` and run it the same way, into `query-2.txt`:
+
+```sql
+SELECT tr.id, tr.target_type, tr.target_id, b.name AS desired_board
+FROM task_requests tr JOIN boards b ON b.id = tr.desired_board_id
+WHERE tr.status = 'pending'
+ORDER BY tr.id;
+```
+
+A request addressed to someone who cannot open its board shows them no badge from the deploy on, and its accept dialog starts at "Select a board…".
+
+**In the rehearsal (check 0c)**, `Migration files applied` lists `0057_cards_leave_other_boards_milestones.sql` too, and, for an export that holds cards, a note under `Worth knowing`: `cards: milestone_id cleared where it named a milestone of another board in its N row(s) by 0057_cards_leave_other_boards_milestones.sql, a one-off declared in tests/rehearsal/one-offs.ts`. Expected, not a failure. N is every row of `cards`, not the number changed: the rehearsal compares row counts and cannot see an `UPDATE`, so query 3 is the one view of what 0057 changes. The rehearsal still fails if `cards` loses a row.
+
+#### What changes at the first start
+
+- **0057 is applied**: the cards check 0o listed (`query-3-before.txt`) leave their milestones, once; their goals' counts and plan pages no longer hold them. No structure changes, so the schema check has nothing to say, and a later start changes nothing.
+- **An affected goal's history changes with it.** Which goal a card is in is not historised: the burndown, the milestone PDF and a closed goal's final figures are drawn from the goal's cards as they are now, across the goal's whole window. So each goal check 0o listed shows, from the deploy on, a burndown, a PDF and (closed) final figures without the cards that left it, for every day back to its start, not only from the deploy. The same happens to a goal after every later move of one of its cards to another board. Keep a goal's PDF from before the deploy if its figures as they were matter.
+- **Reports** downloaded, mailed or scheduled by someone who was not given every sub-board of their board leave those sub-boards out (check 0p). A report of a sub-board shared with someone who cannot open its parent no longer names the parent. A schedule's report follows its owner's access at each run, growing as well as shrinking.
+- **"Unblocked" comments** written from now on about a card on another board read `Unblocked: #12, a card on another board, completed — nothing is blocking this card now.`; those written before stay as they are. The "Unblocked" mail gives an assignee who cannot open the finished card's board "A card on a board you cannot open" in place of its title, and the "Plan created" mail goes only to recipients who can open the plan.
+- **A move to another board** takes the card out of a milestone of the board it left, and the board's activity says so: `"T" moved to board "B" (To Do → To Do) and out of milestone "M"`. Through the API the move answers `milestoneId: null` and names the milestone left as `leftMilestone`, and All Tasks says `Moved. It left milestone "M"; moving it back does not put it back in.` in a toast.
+- **An open board** turns into "You do not have access to this board" within about 30 seconds of its reader losing access, where it went on receiving the board's events while the session lasted. `GET /api/boards/{id}/events` on a board that is not there is `404` for everyone, administrators included.
+- **No new log line** is written for any of it.
+
+**Owner to know.** A report leaves out the sub-boards its reader cannot open, with no line saying so, and its recipients get the sender's or the schedule owner's view whoever they are. Someone who cannot open a card's unfinished sub-board is told that a sub-board they cannot open is unfinished, not its name. An "Unblocked" comment about a card on another board gives its number, not its title. An assignee who cannot open a plan is no longer mailed when it is created. A request naming a board the reader cannot open shows no badge to them. Moving a card to another board takes it out of a milestone of the board it left, and All Tasks says so; a goal across boards keeps it. A goal that loses a card, at the deploy or by a later move, shows a burndown, PDF and final figures without it for its whole window. Someone taken off a board, or an administrator made an ordinary user who is not on it, sees the open board turn into a refusal within about 30 seconds.
+
+#### After the deploy
+
+Checks 72 to 90 run on production. Accounts: the superadmin (or an administrator), a second administrator `qa-admin2`, and an ordinary user `qa-reader`, each in a browser of their own, and an API key of the administrator's and of `qa-reader`'s. Data: board A with `qa-reader` as a member; under a card of A a sub-board S made by the administrator and not shared, with a card titled "S secret"; board B that `qa-reader` cannot open; a board P that `qa-reader` cannot open with a sub-board P1 shared with `qa-reader`; a board "QA spare" with `qa-reader` as a member. Mail set up; `qa-reader`'s address a mailbox you can read; `qa-reader` and `qa-admin2` with the "Card Moves" and "Planning" mail preferences on. In Windows PowerShell 5.1 send each request with `curl.exe` and its body from a file, as in checks 51 to 71.
+
+| # | Card | Do | Account and data | Expect | A fault if |
+|---|---|---|---|---|---|
+| 72 | 2150 | Reports, board A, download the PDF | `qa-reader` | No S and no "S secret" | Either |
+| 73 | 2150 | The same | The administrator | S nested under A, with "S secret" | S missing |
+| 74 | 2150 | Email the report of board A to your own address | `qa-reader` | The attached PDF has no S | S in it |
+| 75 | 2150 | Make a weekly schedule of board A to your own address, for today's weekday, a few minutes ahead in the server's time of day (UTC in the container unless `TZ` is set); wait for it | `qa-reader` | The mailed PDF has no S | S in it |
+| 76 | 2150 | Reports: P1 is in the board list; download its report | `qa-reader` | P1 alone, with P's name nowhere in it | P1 not listed, or P's name in it |
+| 77 | 2151 | Make `qa-reader` an editor of A. Put `{"columnId":<A's Complete column id>}` in `move.json`; `curl.exe -s -X PUT -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -d "@move.json" https://<host>/api/v1/cards/<the card that holds S>/move` | `qa-reader`'s key | `409` `{"message":"A sub-board you cannot open still has incomplete cards that must be completed first. Ask this board's owner."}` (a drag on the board page is stopped before it is sent, in the page's own words) | S's name, or the card completes |
+| 78 | 2151 | The same | The administrator's key | `409` naming S: `Sub-board "S" has 1 incomplete card that must be completed first` | The generic message |
+| 79 | 2152 | Card W on A assigned to `qa-reader`, waiting on card X on B; complete X | The administrator | On W, `Unblocked: #X, a card on another board, completed — nothing is blocking this card now.`; `qa-reader`'s mail says "A card on a board you cannot open" | X's title in either |
+| 80 | 2152 | The same with X on A | The administrator | The comment names X by title, as before | The number only |
+| 81 | 2152 | Through the API or the wrapper, attach to an empty milestone of A two cards, one assigned to `qa-reader` and `qa-admin2` and waiting on X on B | The administrator's key | `qa-reader`'s "Plan created" mail shows `#X A card on a board you cannot open` in the chain; `qa-admin2`'s shows X's title (whoever attaches is not mailed) | X's title in `qa-reader`'s |
+| 82 | 2153 | Send a request to `qa-reader` naming board B; as `qa-reader`, open Inbox, then Accept | The administrator, then `qa-reader` | No board badge; the dialog starts at "Select a board…" | B's name, or B preselected |
+| 83 | 2153 | Send the same request to the administrator; open Inbox | `qa-admin2`, then the administrator | The badge shows B | No badge |
+| 84 | 2155 | Open the milestones of the cards check 0o listed (`query-3-before.txt`) | The administrator | Those cards are no longer in them; the others unchanged | A listed card still in its milestone |
+| 85 | 2155 | From All Tasks, move a card of a milestone of A to B | The administrator | A toast `Moved. It left milestone "…"; moving it back does not put it back in.`; the card has no milestone; A's activity reads `… moved to board "B" (…) and out of milestone "…"`; the plan no longer lists it | It keeps the milestone, or no toast |
+| 86 | 2155 | The same with a card of a goal across boards | The administrator | It keeps the goal, and no toast about a milestone | It leaves it, or a toast says it did |
+| 87 | 2170 | `qa-reader` opens board A and leaves it open. As the administrator, take `qa-reader` off A (Share Board), then change nothing on A for a minute | `qa-reader`; the administrator | Within about 30 seconds `qa-reader`'s page shows "You do not have access to this board"; in their browser's developer tools (Network, the `events` request, EventStream) the last message is `update` with `{"type":"access"}` | The board still on screen after a minute |
+| 88 | 2170 | `qa-admin2`, not on A, opens board A. As the superadmin, make `qa-admin2` an ordinary user, then change nothing on A for a minute | `qa-admin2`; the superadmin | The same within about 30 seconds | The board still on screen |
+| 89 | 2170 | `qa-reader` has "QA spare" open. As the administrator, delete "QA spare" | `qa-reader`; the administrator | The page shows "Board not found" at once | The board stays |
+| 90 | 2170 | `qa-reader` back on A, with A open and left so, for several minutes while the administrator moves cards on A | `qa-reader`; the administrator | Each move appears; nothing else changes | The page goes to a refusal |
+
+Make `qa-admin2` an administrator again if it is kept, and delete the check accounts, boards and schedule afterwards.
+
+#### Going back to the previous image
+
+Nothing is done to the database.
+
+- **0057 stays applied.** The older image logs one `[ERROR] [DB]` line for the recorded file it has no file for, and starts. The cards it took out stay out of their milestones.
+- **The rules go with it.** The older image's reports walk into every sub-board again, its refusal and inbox name hidden boards, its "Unblocked" notices carry another board's title, a move leaves a card in its milestone, and an open board stream keeps the access it was opened with.
 
 ## Changing the Schema
 
