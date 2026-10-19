@@ -30,7 +30,7 @@ import ts from 'typescript';
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db } from '$lib/server/db';
-import { activityLog, cards, milestones, taskRequests, type Card, type CardComment } from '$lib/server/db/schema';
+import { activityLog, cardLabels, cards, milestones, taskRequests, type Card, type CardComment } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { ACTIONS, canonicalAction } from '$lib/server/logActivity';
 import { ACTIVITY_LABELS, activityLabel } from '$lib/utils/activity-labels';
@@ -43,8 +43,11 @@ import {
 	makeBoard,
 	makeCard,
 	makeComment,
+	makeDependency,
+	makeLabel,
 	makeMilestone,
 	makeSmtp,
+	makeSubtask,
 	makeUser,
 	makeWebhook,
 	resetDb,
@@ -341,6 +344,47 @@ function archivedScene(): Scene {
 	return s;
 }
 
+/** As `scene`, with a webhook on board A that takes every event, and nobody assigned. */
+function openScene(): Scene {
+	const s = scene();
+	makeWebhook(s.A.board);
+	return s;
+}
+
+/** As `cardScene`, with a label of board A, on the card when `on`. */
+function labelScene(on: boolean): Scene {
+	const s = cardScene();
+	const label = makeLabel(s.A.board, 'Urgent');
+	if (on) db.insert(cardLabels).values({ cardId: s.first.id, labelId: label.id }).run();
+	return s;
+}
+
+/**
+ * As `cardScene`, with an open subtask on the card that a second card waits
+ * on, and the card made from an accepted request: ticking the subtask reaches
+ * the "Unblocked" notice and the requester's mail.
+ */
+function subtaskScene(): Scene {
+	const s = cardScene();
+	const subtask = makeSubtask(s.first, { title: 'Draft it' });
+	const waiting = makeCard(s.A.cols['To Do'], { title: 'Waiting' });
+	assignCard(waiting, s.helper);
+	makeDependency({ blocked: waiting, blocker: subtask, createdBy: s.owner });
+	db.insert(taskRequests)
+		.values({
+			targetType: 'user',
+			targetId: s.owner.id,
+			requesterName: 'Rita',
+			requesterEmail: 'rita@example.test',
+			title: 'First',
+			status: 'accepted',
+			resolvedCardId: s.first.id,
+			accessToken: 'b'.repeat(64)
+		})
+		.run();
+	return s;
+}
+
 type ServiceTwin = {
 	/** The pair's row in section 3.1 of the plan. */
 	row: number;
@@ -554,6 +598,152 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		v1: (s) => api('PUT', `/api/v1/cards/${s.first.id}`, { user: s.owner, body: { archivedAt: null } }),
 		status: { internal: 200, v1: 200 },
 		sources: { internal: ['card_restored ui'], v1: ['api:card_restored api'] }
+	},
+	// Slice A2: what is on a card.
+	{
+		row: 6,
+		what: 'assigning someone to a card',
+		build: openScene,
+		internal: (s) => api('POST', `/api/cards/${s.first.id}/assignees`, { user: s.owner, body: { userId: s.helper.id } }),
+		v1: (s) => api('POST', `/api/v1/cards/${s.first.id}/assignees`, { user: s.owner, body: { userId: s.helper.id } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['assignee_added ui'], v1: ['api:assignee_added api'] }
+	},
+	{
+		row: 7,
+		what: 'taking someone off a card',
+		build: cardScene,
+		internal: (s) => api('DELETE', `/api/cards/${s.first.id}/assignees`, { user: s.owner, body: { userId: s.helper.id } }),
+		v1: (s) => api('DELETE', `/api/v1/cards/${s.first.id}/assignees`, { user: s.owner, body: { userId: s.helper.id } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['assignee_removed ui'], v1: ['api:assignee_removed api'] }
+	},
+	{
+		row: 9,
+		what: 'adding a comment',
+		build: cardScene,
+		internal: (s) => api('POST', `/api/cards/${s.first.id}/comments`, { user: s.owner, body: { content: 'Looks right' } }),
+		v1: (s) => api('POST', `/api/v1/cards/${s.first.id}/comments`, { user: s.owner, body: { content: 'Looks right' } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: ['comment_added ui', 'comment.added ui'], v1: ['api:comment_added api', 'comment.added api'] },
+		// Each tree's words for the entry (R2), and its order: the page's route
+		// writes the entry (queueing its webhook) before the mail, v1 after it.
+		entries: (() => {
+			const entry = (detail: string) => ({
+				boardId: 1,
+				cardId: 1,
+				userId: 1,
+				action: 'comment_added',
+				detail,
+				userName: 'owner',
+				userEmoji: '👤',
+				source: undefined
+			});
+			return { internal: [entry('on "First"')], v1: [entry('Commented on "First"')] };
+		})(),
+		told: (() => {
+			const webhook = (detail: string) => ({
+				webhook: 'comment.added',
+				boardId: 1,
+				data: { cardId: 1, action: 'comment_added', detail, source: undefined, user: 'owner' }
+			});
+			const mail = [
+				{ email: 'helper@example.test', subject: 'New comment on: First' },
+				{ email: 'viewer@example.test', subject: 'New comment on: First' }
+			];
+			return { internal: [webhook('on "First"'), ...mail], v1: [...mail, webhook('Commented on "First"')] };
+		})()
+	},
+	{
+		row: 10,
+		what: 'editing a comment',
+		build: cardScene,
+		internal: (s) =>
+			api('PUT', `/api/cards/${s.first.id}/comments/${s.comment.id}`, { user: s.owner, body: { content: 'As it is now' } }),
+		v1: (s) => api('PUT', `/api/v1/comments/${s.comment.id}`, { user: s.owner, body: { content: 'As it is now' } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['comment_edited ui'], v1: ['api:comment_edited api'] }
+	},
+	{
+		row: 12,
+		what: "putting a label on a card (the page's toggle, against v1's add)",
+		build: () => labelScene(false),
+		internal: (s) => api('PUT', '/api/labels', { user: s.owner, body: { cardId: s.first.id, labelId: 1 } }),
+		v1: (s) => api('POST', `/api/v1/cards/${s.first.id}/labels`, { user: s.owner, body: { labelId: 1 } }),
+		status: { internal: 200, v1: 201 },
+		sources: { internal: [], v1: [] },
+		// No label write records an entry, in either tree.
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 12,
+		what: "taking a label off a card (the page's toggle, against v1's remove)",
+		build: () => labelScene(true),
+		internal: (s) => api('PUT', '/api/labels', { user: s.owner, body: { cardId: s.first.id, labelId: 1 } }),
+		v1: (s) => api('DELETE', `/api/v1/cards/${s.first.id}/labels`, { user: s.owner, body: { labelId: 1 } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	{
+		row: 14,
+		what: 'adding a subtask',
+		build: cardScene,
+		internal: (s) => api('POST', '/api/subtasks', { user: s.owner, body: { cardId: s.first.id, title: 'Write it', priority: 'high' } }),
+		v1: (s) => api('POST', `/api/v1/cards/${s.first.id}/subtasks`, { user: s.owner, body: { title: 'Write it', priority: 'high' } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: ['subtask_created ui'], v1: ['api:subtask_created api'] },
+		// Each tree's words for the entry and type for the event (R2): the
+		// subtask's title and `subtask` from the page, more words and `card`
+		// through v1, which tells the board before it writes the entry.
+		entries: (() => {
+			const entry = (detail: string) => ({
+				boardId: 1,
+				cardId: 1,
+				userId: 1,
+				action: 'subtask_created',
+				detail,
+				userName: 'owner',
+				userEmoji: '👤',
+				source: undefined
+			});
+			return { internal: [entry('Write it')], v1: [entry('Created subtask "Write it" on "First"')] };
+		})(),
+		told: { internal: [{ event: 'update', boardId: 1, data: { type: 'subtask' } }], v1: [CARD_UPDATE] }
+	},
+	{
+		row: 15,
+		what: 'ticking a subtask off, which unblocks a card and mails the requester',
+		build: subtaskScene,
+		internal: (s) => api('PUT', '/api/subtasks/1', { user: s.owner, body: { completed: true } }),
+		v1: (s) => api('PUT', '/api/v1/subtasks/1', { user: s.owner, body: { completed: true } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['subtask_completed ui'], v1: ['api:subtask_completed api'] },
+		// The same notices (the "Unblocked" mail and its update, then the
+		// requester's mail); the page's route tells the board first, as
+		// `subtask`, v1 last, as `card` (R2).
+		told: (() => {
+			const notices = [
+				{ email: 'helper@example.test', subject: 'Unblocked: Waiting' },
+				CARD_UPDATE,
+				{ email: 'rita@example.test', subject: 'Subtask completed on your request: First' }
+			];
+			return {
+				internal: [{ event: 'update', boardId: 1, data: { type: 'subtask' } }, ...notices],
+				v1: [...notices, CARD_UPDATE]
+			};
+		})()
+	},
+	{
+		row: 16,
+		what: 'deleting a subtask',
+		build: subtaskScene,
+		internal: (s) => api('DELETE', '/api/subtasks/1', { user: s.owner }),
+		v1: (s) => api('DELETE', '/api/v1/subtasks/1', { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['subtask_deleted ui'], v1: ['api:subtask_deleted api'] },
+		// The event's type per tree (R2).
+		told: { internal: [{ event: 'update', boardId: 1, data: { type: 'subtask' } }], v1: [CARD_UPDATE] }
 	}
 ];
 
@@ -566,9 +756,10 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 
 			expect({ internal: internal.status, v1: v1.status }).toEqual(twin.status);
 			expect({ internal: internal.sources, v1: v1.sources }).toEqual(twin.sources);
-			// Something was written and told, so that the comparison below compares something.
+			// Something was written and told, so that the comparison below compares something;
+			// entries too, unless the pair records none and says so (a label on a card).
 			expect(internal.rows.length).toBeGreaterThan(0);
-			expect(internal.entries.length + v1.entries.length).toBeGreaterThan(0);
+			if (!twin.entries) expect(internal.entries.length + v1.entries.length).toBeGreaterThan(0);
 			expect(internal.told.length).toBeGreaterThan(0);
 			for (const part of ['rows', 'entries', 'told'] as const) {
 				const writtenIn = twin[part];
@@ -674,8 +865,233 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		});
 	});
 
-	it('has a case for each pair of the cards service, rows 1 to 5', () => {
-		expect([...new Set(SERVICE_TWINS.map((twin) => twin.row))]).toEqual([1, 2, 3, 4, 5]);
+	it("refuses a viewer, and an editor who is not a comment's author, in each tree's own words, rows 6 to 16, and writes and tells nothing", async () => {
+		const s = subtaskScene();
+		makeLabel(s.A.board, 'Urgent');
+		const helpers = makeComment(s.first, s.helper, 'The helper wrote this');
+		const viewer = { user: s.viewer };
+		const helper = { user: s.helper };
+		const before = snapshotDb();
+		const sent = effects();
+		const refusals: Record<string, unknown> = {};
+		try {
+			const ask = async (what: string, res: Promise<ApiResult>) => {
+				const { status, body } = await res;
+				refusals[what] = `${status} ${body?.message}`;
+			};
+			const card = `/api/cards/${s.first.id}`;
+			const v1Card = `/api/v1/cards/${s.first.id}`;
+			await ask('internal assign', api('POST', `${card}/assignees`, { ...viewer, body: { userId: s.viewer.id } }));
+			await ask('v1 assign', api('POST', `${v1Card}/assignees`, { ...viewer, body: { userId: s.viewer.id } }));
+			await ask('internal unassign', api('DELETE', `${card}/assignees`, { ...viewer, body: { userId: s.helper.id } }));
+			await ask('v1 unassign', api('DELETE', `${v1Card}/assignees`, { ...viewer, body: { userId: s.helper.id } }));
+			await ask('internal comment', api('POST', `${card}/comments`, { ...viewer, body: { content: 'No' } }));
+			await ask('v1 comment', api('POST', `${v1Card}/comments`, { ...viewer, body: { content: 'No' } }));
+			await ask('internal comment edit', api('PUT', `${card}/comments/${s.comment.id}`, { ...viewer, body: { content: 'No' } }));
+			await ask('v1 comment edit', api('PUT', `/api/v1/comments/${s.comment.id}`, { ...viewer, body: { content: 'No' } }));
+			await ask('internal comment edit, not the author', api('PUT', `${card}/comments/${s.comment.id}`, { ...helper, body: { content: 'No' } }));
+			await ask('v1 comment edit, not the author', api('PUT', `/api/v1/comments/${s.comment.id}`, { ...helper, body: { content: 'No' } }));
+			await ask('internal comment delete', api('DELETE', `${card}/comments/${helpers.id}`, viewer));
+			await ask('internal comment delete, not the author', api('DELETE', `${card}/comments/${s.comment.id}`, helper));
+			await ask('internal label', api('PUT', '/api/labels', { ...viewer, body: { cardId: s.first.id, labelId: 1 } }));
+			await ask('v1 label on', api('POST', `${v1Card}/labels`, { ...viewer, body: { labelId: 1 } }));
+			await ask('v1 label off', api('DELETE', `${v1Card}/labels`, { ...viewer, body: { labelId: 1 } }));
+			await ask('internal subtask', api('POST', '/api/subtasks', { ...viewer, body: { cardId: s.first.id, title: 'No' } }));
+			await ask('v1 subtask', api('POST', `${v1Card}/subtasks`, { ...viewer, body: { title: 'No' } }));
+			await ask('internal subtask tick', api('PUT', '/api/subtasks/1', { ...viewer, body: { completed: true } }));
+			await ask('v1 subtask tick', api('PUT', '/api/v1/subtasks/1', { ...viewer, body: { completed: true } }));
+			await ask('internal subtask delete', api('DELETE', '/api/subtasks/1', viewer));
+			await ask('v1 subtask delete', api('DELETE', '/api/v1/subtasks/1', viewer));
+			await sent.settle();
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+
+		expect(refusals).toEqual({
+			'internal assign': '403 No edit access',
+			'v1 assign': "403 No edit access to this card's board",
+			'internal unassign': '403 No edit access',
+			'v1 unassign': '403 No edit access',
+			'internal comment': '403 No edit access',
+			'v1 comment': '403 No edit access',
+			'internal comment edit': '403 No edit access to this board',
+			'v1 comment edit': '403 No edit access to this board',
+			'internal comment edit, not the author': '403 You can only edit your own comments',
+			'v1 comment edit, not the author': '403 You can only edit your own comments',
+			'internal comment delete': '403 No edit access to this board',
+			'internal comment delete, not the author': '403 You can only delete your own comments',
+			'internal label': '403 No edit access to this board',
+			'v1 label on': '403 No edit access to this board',
+			'v1 label off': '403 No edit access to this board',
+			'internal subtask': '403 No edit access to this board',
+			'v1 subtask': "403 No edit access to this card's board",
+			'internal subtask tick': '403 No edit access to this board',
+			'v1 subtask tick': "403 No edit access to this subtask's board",
+			'internal subtask delete': '403 No edit access to this board',
+			'v1 subtask delete': "403 No edit access to this subtask's board"
+		});
+		expectUnchanged(before);
+	});
+
+	it("answers what is not there, or not sound, in each tree's own words, rows 6 to 16", async () => {
+		const s = subtaskScene();
+		const outsider = makeUser({ username: 'outsider' });
+		makeLabel(s.A.board, 'Urgent');
+		const elsewhere = makeLabel(s.S.board, 'Elsewhere');
+		const other = makeCard(s.A.cols['To Do'], { title: 'Other' });
+		const as = { user: s.owner };
+		const refusals: Record<string, unknown> = {};
+		const ask = async (what: string, res: Promise<ApiResult>) => {
+			const { status, body } = await res;
+			refusals[what] = `${status} ${body?.message}`;
+		};
+		const card = `/api/cards/${s.first.id}`;
+		const v1Card = `/api/v1/cards/${s.first.id}`;
+		await ask('internal assign, no card', api('POST', '/api/cards/999/assignees', { ...as, body: { userId: s.helper.id } }));
+		await ask('v1 assign, no card', api('POST', '/api/v1/cards/999/assignees', { ...as, body: { userId: s.helper.id } }));
+		await ask('internal assign, no userId', api('POST', `${card}/assignees`, { ...as, body: {} }));
+		await ask('v1 assign, no userId', api('POST', `${v1Card}/assignees`, { ...as, body: {} }));
+		await ask('internal assign, no user', api('POST', `${card}/assignees`, { ...as, body: { userId: 999 } }));
+		await ask('v1 assign, no user', api('POST', `${v1Card}/assignees`, { ...as, body: { userId: 999 } }));
+		await ask('internal assign, an outsider', api('POST', `${card}/assignees`, { ...as, body: { userId: outsider.id } }));
+		await ask('v1 assign, an outsider', api('POST', `${v1Card}/assignees`, { ...as, body: { userId: outsider.id } }));
+		await ask('internal unassign, no card', api('DELETE', '/api/cards/999/assignees', { ...as, body: { userId: s.helper.id } }));
+		await ask('v1 unassign, no card', api('DELETE', '/api/v1/cards/999/assignees', { ...as, body: { userId: s.helper.id } }));
+		await ask('internal unassign, not assigned', api('DELETE', `${card}/assignees`, { ...as, body: { userId: s.viewer.id } }));
+		await ask('v1 unassign, not assigned', api('DELETE', `${v1Card}/assignees`, { ...as, body: { userId: s.viewer.id } }));
+		await ask('internal comment, no card', api('POST', '/api/cards/999/comments', { ...as, body: { content: 'No' } }));
+		await ask('v1 comment, no card', api('POST', '/api/v1/cards/999/comments', { ...as, body: { content: 'No' } }));
+		await ask('internal comment, empty', api('POST', `${card}/comments`, { ...as, body: { content: '  ' } }));
+		await ask('v1 comment, empty', api('POST', `${v1Card}/comments`, { ...as, body: { content: '  ' } }));
+		await ask('internal comment edit, no comment', api('PUT', `${card}/comments/999`, { ...as, body: { content: 'No' } }));
+		await ask('v1 comment edit, no comment', api('PUT', '/api/v1/comments/999', { ...as, body: { content: 'No' } }));
+		await ask('internal comment edit, on another card', api('PUT', `/api/cards/${other.id}/comments/${s.comment.id}`, { ...as, body: { content: 'No' } }));
+		await ask('internal comment edit, empty', api('PUT', `${card}/comments/${s.comment.id}`, { ...as, body: { content: '' } }));
+		await ask('v1 comment edit, empty', api('PUT', `/api/v1/comments/${s.comment.id}`, { ...as, body: { content: '' } }));
+		await ask('internal comment delete, no comment', api('DELETE', `${card}/comments/999`, as));
+		await ask('internal comment delete, on another card', api('DELETE', `/api/cards/${other.id}/comments/${s.comment.id}`, as));
+		await ask('internal label, no cardId', api('PUT', '/api/labels', { ...as, body: { labelId: 1 } }));
+		await ask('internal label, no card', api('PUT', '/api/labels', { ...as, body: { cardId: 999, labelId: 1 } }));
+		await ask('v1 label on, no card', api('POST', '/api/v1/cards/999/labels', { ...as, body: { labelId: 1 } }));
+		await ask('internal label, no labelId', api('PUT', '/api/labels', { ...as, body: { cardId: s.first.id } }));
+		await ask('v1 label on, no labelId', api('POST', `${v1Card}/labels`, { ...as, body: {} }));
+		await ask('v1 label off, no labelId', api('DELETE', `${v1Card}/labels`, { ...as, body: {} }));
+		await ask('internal label, no label', api('PUT', '/api/labels', { ...as, body: { cardId: s.first.id, labelId: 999 } }));
+		await ask('v1 label on, no label', api('POST', `${v1Card}/labels`, { ...as, body: { labelId: 999 } }));
+		await ask("internal label, another board's", api('PUT', '/api/labels', { ...as, body: { cardId: s.first.id, labelId: elsewhere.id } }));
+		await ask("v1 label on, another board's", api('POST', `${v1Card}/labels`, { ...as, body: { labelId: elsewhere.id } }));
+		await ask('v1 label off, not on the card', api('DELETE', `${v1Card}/labels`, { ...as, body: { labelId: 1 } }));
+		await ask('internal subtask, no cardId', api('POST', '/api/subtasks', { ...as, body: { title: 'No' } }));
+		await ask('internal subtask, no card', api('POST', '/api/subtasks', { ...as, body: { cardId: 999, title: 'No' } }));
+		await ask('v1 subtask, no card', api('POST', '/api/v1/cards/999/subtasks', { ...as, body: { title: 'No' } }));
+		await ask('internal subtask, no title', api('POST', '/api/subtasks', { ...as, body: { cardId: s.first.id } }));
+		await ask('v1 subtask, no title', api('POST', `${v1Card}/subtasks`, { ...as, body: {} }));
+		await ask('v1 subtask, a position that is no number', api('POST', `${v1Card}/subtasks`, { ...as, body: { title: 'No', position: 'top' } }));
+		await ask('internal subtask tick, no subtask', api('PUT', '/api/subtasks/999', { ...as, body: { completed: true } }));
+		await ask('v1 subtask tick, no subtask', api('PUT', '/api/v1/subtasks/999', { ...as, body: { completed: true } }));
+		await ask('internal subtask tick, nothing sent', api('PUT', '/api/subtasks/1', { ...as, body: {} }));
+		await ask('v1 subtask tick, nothing sent', api('PUT', '/api/v1/subtasks/1', { ...as, body: {} }));
+		await ask('internal subtask delete, no subtask', api('DELETE', '/api/subtasks/999', as));
+		await ask('v1 subtask delete, no subtask', api('DELETE', '/api/v1/subtasks/999', as));
+
+		expect(refusals).toEqual({
+			'internal assign, no card': '404 Card not found',
+			'v1 assign, no card': '404 Card not found',
+			'internal assign, no userId': '400 userId is required',
+			'v1 assign, no userId': '400 userId is required',
+			'internal assign, no user': '404 User not found',
+			'v1 assign, no user': '404 User not found',
+			'internal assign, an outsider': '400 User does not have access to this board',
+			'v1 assign, an outsider': '400 User does not have access to this board',
+			'internal unassign, no card': '404 Card not found',
+			'v1 unassign, no card': '404 Card not found',
+			'internal unassign, not assigned': '404 User is not assigned to this card',
+			'v1 unassign, not assigned': '404 User is not assigned to this card',
+			'internal comment, no card': '404 Card not found',
+			'v1 comment, no card': '404 Card not found',
+			'internal comment, empty': '400 Comment cannot be empty',
+			'v1 comment, empty': '400 Comment cannot be empty',
+			'internal comment edit, no comment': '404 Comment not found',
+			'v1 comment edit, no comment': '404 Comment not found',
+			'internal comment edit, on another card': '404 Comment not found',
+			'internal comment edit, empty': '400 Comment cannot be empty',
+			'v1 comment edit, empty': '400 Comment cannot be empty',
+			'internal comment delete, no comment': '404 Comment not found',
+			'internal comment delete, on another card': '404 Comment not found',
+			'internal label, no cardId': '400 Invalid card ID',
+			'internal label, no card': '404 Card not found',
+			'v1 label on, no card': '404 Card not found',
+			'internal label, no labelId': '400 Invalid label ID',
+			'v1 label on, no labelId': '400 labelId is required',
+			'v1 label off, no labelId': '400 labelId is required',
+			'internal label, no label': '404 Label not found',
+			'v1 label on, no label': '404 Label not found',
+			"internal label, another board's": '400 That label belongs to a different board',
+			"v1 label on, another board's": "400 Label does not belong to this card's board",
+			'v1 label off, not on the card': '404 Label not found on this card',
+			'internal subtask, no cardId': '400 Invalid card ID',
+			'internal subtask, no card': '404 Card not found',
+			'v1 subtask, no card': '404 Card not found',
+			'internal subtask, no title': '400 title is required',
+			'v1 subtask, no title': '400 title is required',
+			'v1 subtask, a position that is no number': '400 position must be a number',
+			'internal subtask tick, no subtask': '404 Subtask not found',
+			'v1 subtask tick, no subtask': '404 Subtask not found',
+			'internal subtask tick, nothing sent': '400 No valid fields to update',
+			'v1 subtask tick, nothing sent': '400 No valid fields to update',
+			'internal subtask delete, no subtask': '404 Subtask not found',
+			'v1 subtask delete, no subtask': '404 Subtask not found'
+		});
+	});
+
+	it("reads a card's comments and subtasks the same through either tree, and refuses an outsider in each tree's words, rows 8 and 13", async () => {
+		const s = subtaskScene();
+		const outsider = makeUser({ username: 'outsider' });
+		const ids = (body: unknown) => (body as { id: number }[]).map((row) => row.id);
+		const said = async (res: Promise<ApiResult>) => {
+			const { status, body } = await res;
+			return `${status} ${body?.message}`;
+		};
+
+		const comments = await api('GET', `/api/cards/${s.first.id}/comments`, { user: s.viewer });
+		const v1Comments = await api('GET', `/api/v1/cards/${s.first.id}/comments`, { user: s.viewer });
+		expect([comments.status, v1Comments.status]).toEqual([200, 200]);
+		expect(ids(comments.body)).toEqual([s.comment.id]);
+		expect(ids(v1Comments.body)).toEqual([s.comment.id]);
+		const subtasks = await api('GET', `/api/subtasks?cardId=${s.first.id}`, { user: s.viewer });
+		const v1Subtasks = await api('GET', `/api/v1/cards/${s.first.id}/subtasks`, { user: s.viewer });
+		expect([subtasks.status, v1Subtasks.status]).toEqual([200, 200]);
+		expect(ids(subtasks.body)).toEqual([1]);
+		expect(ids(v1Subtasks.body)).toEqual([1]);
+		// The page's list with no card named is empty, as it was.
+		expect((await api('GET', '/api/subtasks', { user: s.viewer })).body).toEqual([]);
+
+		expect({
+			'internal comments, an outsider': await said(api('GET', `/api/cards/${s.first.id}/comments`, { user: outsider })),
+			'v1 comments, an outsider': await said(api('GET', `/api/v1/cards/${s.first.id}/comments`, { user: outsider })),
+			'internal comments, no card': await said(api('GET', '/api/cards/999/comments', { user: s.owner })),
+			'v1 comments, no card': await said(api('GET', '/api/v1/cards/999/comments', { user: s.owner })),
+			'internal subtasks, an outsider': await said(api('GET', `/api/subtasks?cardId=${s.first.id}`, { user: outsider })),
+			'v1 subtasks, an outsider': await said(api('GET', `/api/v1/cards/${s.first.id}/subtasks`, { user: outsider })),
+			'internal subtasks, no card': await said(api('GET', '/api/subtasks?cardId=999', { user: s.owner })),
+			'v1 subtasks, no card': await said(api('GET', '/api/v1/cards/999/subtasks', { user: s.owner }))
+		}).toEqual({
+			'internal comments, an outsider': '403 No access',
+			'v1 comments, an outsider': '403 No access to this board',
+			'internal comments, no card': '404 Card not found',
+			'v1 comments, no card': '404 Card not found',
+			'internal subtasks, an outsider': '403 No access to this board',
+			'v1 subtasks, an outsider': "403 No access to this card's board",
+			'internal subtasks, no card': '404 Card not found',
+			'v1 subtasks, no card': '404 Card not found'
+		});
+	});
+
+	it('has a case for each pair moved so far that writes in both trees, rows 1 to 7, 9, 10, 12 and 14 to 16', () => {
+		// Rows 8 and 13 are reads and row 11 (a comment deleted) the page's alone:
+		// the cases below hold their words.
+		expect([...new Set(SERVICE_TWINS.map((twin) => twin.row))]).toEqual([1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 16]);
 	});
 
 	it('hands each service exactly the options its handler took before it moved, read from the source (R3)', () => {
@@ -737,6 +1153,105 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	],
 	'src/routes/api/v1/cards/[cardId]/move/+server.ts PUT': [
 		{ service: 'moveCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl') }] }
+	],
+	// Slice A2: what is on a card. Each tree's words (`says`, a constant of
+	// the route file where two handlers share them), and what each does
+	// differently today: v1's comment entry words and mail-first order, v1's
+	// subtask `position`, entry words and tell-first order, the page's
+	// subtask tick told first, and each tree's live event type for a subtask.
+	'src/routes/api/cards/[id]/assignees/+server.ts POST': [
+		{ service: 'assignToCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'ui', baseUrl: code('baseUrl'), says: code('NO_EDIT') }] }
+	],
+	'src/routes/api/cards/[id]/assignees/+server.ts DELETE': [
+		{ service: 'unassignFromCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'ui', says: code('NO_EDIT') }] }
+	],
+	'src/routes/api/v1/cards/[cardId]/assignees/+server.ts POST': [
+		{
+			service: 'assignToCard',
+			args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl'), says: code('NO_EDIT_TO_ASSIGN') }]
+		}
+	],
+	'src/routes/api/v1/cards/[cardId]/assignees/+server.ts DELETE': [
+		{ service: 'unassignFromCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'api', says: code('NO_EDIT_TO_UNASSIGN') }] }
+	],
+	'src/routes/api/cards/[id]/comments/+server.ts GET': [
+		{ service: 'listComments', args: [code('locals.user'), { cardId: code('cardId') }, { says: 'No access' }] }
+	],
+	'src/routes/api/v1/cards/[cardId]/comments/+server.ts GET': [
+		{ service: 'listComments', args: [code('locals.user'), { cardId: code('cardId') }, { says: 'No access to this board' }] }
+	],
+	'src/routes/api/cards/[id]/comments/+server.ts POST': [
+		{ service: 'addComment', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'ui', baseUrl: code('baseUrl'), says: 'No edit access' }] }
+	],
+	'src/routes/api/v1/cards/[cardId]/comments/+server.ts POST': [
+		{
+			service: 'addComment',
+			args: [
+				code('caller'),
+				{ cardId: code('cardId') },
+				code('body'),
+				{ source: 'api', baseUrl: code('baseUrl'), says: 'No edit access', commentedOn: true, mailBeforeEntry: true }
+			]
+		}
+	],
+	'src/routes/api/cards/[id]/comments/[commentId]/+server.ts PUT': [
+		{ service: 'editComment', args: [code('caller'), { commentId: code('commentId'), cardId: code('cardId') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/v1/comments/[commentId]/+server.ts PUT': [
+		{ service: 'editComment', args: [code('caller'), { commentId: code('commentId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/cards/[id]/comments/[commentId]/+server.ts DELETE': [
+		{ service: 'deleteComment', args: [code('caller'), { cardId: code('cardId'), commentId: code('commentId') }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/labels/+server.ts PUT': [{ service: 'toggleCardLabel', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
+	'src/routes/api/v1/cards/[cardId]/labels/+server.ts POST': [
+		{ service: 'addCardLabel', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/cards/[cardId]/labels/+server.ts DELETE': [
+		{ service: 'removeCardLabel', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/subtasks/+server.ts GET': [{ service: 'listSubtasks', args: [code('locals.user'), { cardId: code('cardId') }, {}] }],
+	'src/routes/api/v1/cards/[cardId]/subtasks/+server.ts GET': [
+		{ service: 'listSubtasks', args: [code('locals.user'), { cardId: code('cardId') }, { says: "No access to this card's board" }] }
+	],
+	'src/routes/api/subtasks/+server.ts POST': [
+		{ service: 'createSubtask', args: [code('caller'), {}, code('body'), { source: 'ui', eventType: 'subtask' }] }
+	],
+	'src/routes/api/v1/cards/[cardId]/subtasks/+server.ts POST': [
+		{
+			service: 'createSubtask',
+			args: [
+				code('caller'),
+				{ cardId: code('cardId') },
+				code('body'),
+				{
+					source: 'api',
+					says: "No edit access to this card's board",
+					allowPosition: true,
+					namesCard: true,
+					tellBeforeEntry: true,
+					eventType: 'card'
+				}
+			]
+		}
+	],
+	'src/routes/api/subtasks/[id]/+server.ts PUT': [
+		{
+			service: 'updateSubtask',
+			args: [code('caller'), { subtaskId: code('id') }, code('body'), { source: 'ui', baseUrl: code('baseUrl'), tellBeforeEntry: true, eventType: 'subtask' }]
+		}
+	],
+	'src/routes/api/v1/subtasks/[subtaskId]/+server.ts PUT': [
+		{
+			service: 'updateSubtask',
+			args: [code('caller'), { subtaskId: code('subtaskId') }, code('body'), { source: 'api', baseUrl: code('baseUrl'), says: code('NO_EDIT'), eventType: 'card' }]
+		}
+	],
+	'src/routes/api/subtasks/[id]/+server.ts DELETE': [
+		{ service: 'deleteSubtask', args: [code('caller'), { subtaskId: code('id') }, null, { source: 'ui', eventType: 'subtask' }] }
+	],
+	'src/routes/api/v1/subtasks/[subtaskId]/+server.ts DELETE': [
+		{ service: 'deleteSubtask', args: [code('caller'), { subtaskId: code('subtaskId') }, null, { source: 'api', says: code('NO_EDIT'), eventType: 'card' }] }
 	]
 };
 
@@ -757,7 +1272,12 @@ function written(node: ts.Expression, tree: ts.SourceFile): Written {
 	return code(node.getText(tree).replace(/\s+/g, ' '));
 }
 
-/** Every call of a service's function by a handler under src/routes/api, by `file METHOD`. A service is a module of src/lib/server that exports `READS`. */
+/**
+ * Every call of a service's function in a route file under src/routes (`+server.ts`,
+ * `+page.server.ts`, `+layout.server.ts`), by `file METHOD`, `file load`, `file
+ * actions.<name>`, or `file (in no handler)`. A service is a module of src/lib/server
+ * that exports `READS`.
+ */
 function serviceCalls(): Record<string, { service: string; args: Written[] }[]> {
 	const isService = new Map<string, boolean>();
 	const serviceModule = (specifier: string) => {
@@ -774,9 +1294,9 @@ function serviceCalls(): Record<string, { service: string; args: Written[] }[]> 
 		return isService.get(specifier)!;
 	};
 	const found: Record<string, { service: string; args: Written[] }[]> = {};
-	const files = (readdirSync(join(ROOT, 'src/routes/api'), { recursive: true }) as string[])
-		.map((file) => `src/routes/api/${file.split('\\').join('/')}`)
-		.filter((file) => file.endsWith('/+server.ts'))
+	const files = (readdirSync(join(ROOT, 'src/routes'), { recursive: true }) as string[])
+		.map((file) => `src/routes/${file.split('\\').join('/')}`)
+		.filter((file) => /\/\+(server|page\.server|layout\.server)\.ts$/.test(file))
 		.sort();
 	for (const file of files) {
 		const tree = ts.createSourceFile(file, readFileSync(join(ROOT, file), 'utf8'), ts.ScriptTarget.Latest, true);
@@ -787,27 +1307,46 @@ function serviceCalls(): Record<string, { service: string; args: Written[] }[]> 
 			if (bindings && ts.isNamedImports(bindings)) for (const element of bindings.elements) services.add(element.name.text);
 		}
 		if (services.size === 0) continue;
+		// Each handler: a method of a `+server.ts`, a `load`, and each form action
+		// (`actions.<name>`) of a `+page.server.ts`.
+		const handlers: [string, ts.Node][] = [];
 		for (const statement of tree.statements) {
-			const handlers: [string, ts.Node][] = [];
+			const named: [string, ts.Node][] = [];
 			if (ts.isVariableStatement(statement)) {
 				for (const declared of statement.declarationList.declarations) {
-					if (ts.isIdentifier(declared.name) && declared.initializer) handlers.push([declared.name.text, declared.initializer]);
+					if (ts.isIdentifier(declared.name) && declared.initializer) named.push([declared.name.text, declared.initializer]);
 				}
 			}
-			if (ts.isFunctionDeclaration(statement) && statement.name) handlers.push([statement.name.text, statement]);
-			for (const [method, node] of handlers) {
-				if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) continue;
-				const calls: { service: string; args: Written[] }[] = [];
-				const visit = (inner: ts.Node): void => {
-					if (ts.isCallExpression(inner) && ts.isIdentifier(inner.expression) && services.has(inner.expression.text)) {
-						calls.push({ service: inner.expression.text, args: inner.arguments.map((argument) => written(argument, tree)) });
-					}
-					ts.forEachChild(inner, visit);
-				};
-				visit(node);
-				if (calls.length > 0) found[`${file} ${method}`] = calls;
+			if (ts.isFunctionDeclaration(statement) && statement.name) named.push([statement.name.text, statement]);
+			for (const [name, node] of named) {
+				if (['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'load'].includes(name)) handlers.push([name, node]);
+				let value: ts.Node = node;
+				while (ts.isAsExpression(value) || ts.isSatisfiesExpression(value) || ts.isParenthesizedExpression(value)) value = value.expression;
+				if (name === 'actions' && ts.isObjectLiteralExpression(value)) {
+					for (const property of value.properties) handlers.push([`actions.${property.name?.getText(tree) ?? '?'}`, property]);
+				}
 			}
 		}
+		const callsIn = (node: ts.Node) => {
+			const calls: { service: string; args: Written[]; at: ts.CallExpression }[] = [];
+			const visit = (inner: ts.Node): void => {
+				if (ts.isCallExpression(inner) && ts.isIdentifier(inner.expression) && services.has(inner.expression.text)) {
+					calls.push({ service: inner.expression.text, args: inner.arguments.map((argument) => written(argument, tree)), at: inner });
+				}
+				ts.forEachChild(inner, visit);
+			};
+			visit(node);
+			return calls;
+		};
+		const placed = new Set<ts.CallExpression>();
+		for (const [method, node] of handlers) {
+			const calls = callsIn(node);
+			for (const { at } of calls) placed.add(at);
+			if (calls.length > 0) found[`${file} ${method}`] = calls.map(({ service, args }) => ({ service, args }));
+		}
+		// A call in no handler (a helper of the file) is pinned too, so none goes unread.
+		const elsewhere = callsIn(tree).filter(({ at }) => !placed.has(at));
+		if (elsewhere.length > 0) found[`${file} (in no handler)`] = elsewhere.map(({ service, args }) => ({ service, args }));
 	}
 	return found;
 }
@@ -1204,7 +1743,8 @@ describe('one set of activity labels, for the board page and All Tasks (card 221
 
 		// A string, `ACTIONS.x`, or a ternary of them, so that no name reaches the log unread.
 		expect(written.filter((call) => call.names === null)).toEqual([]);
-		expect(written.length).toBeGreaterThan(30);
+		// Card 2012 merges the two trees' call sites into one service each, so the count of sites falls while every action keeps its label.
+		expect(written.length).toBeGreaterThan(20);
 		const names = new Set([...Object.values(ACTIONS), ...written.flatMap((call) => call.names ?? [])].map(canonicalAction));
 		expect([...names].filter((name) => !Object.hasOwn(ACTIVITY_LABELS, name))).toEqual([]);
 		// Among them the one written through the API alone, which `ACTIONS` does not hold.

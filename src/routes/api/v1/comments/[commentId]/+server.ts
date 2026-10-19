@@ -2,11 +2,10 @@ import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { cardComments, cards, columns, users } from '$lib/server/db/schema';
-import { eq, sql } from 'drizzle-orm';
-import { canEditBoard, getBoardRole } from '$lib/server/board-access';
-import { emit } from '$lib/server/events';
-import { logActivity } from '$lib/server/logActivity';
-import { pathId, readBody, readText } from '$lib/server/request-body';
+import { eq } from 'drizzle-orm';
+import { getBoardRole } from '$lib/server/board-access';
+import { editComment } from '$lib/server/card-comments';
+import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -60,54 +59,14 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 	// One transaction: the comment is read and the caller checked in the one
 	// that changes it and writes the entry, which asks first whether the key or
-	// session is still open, and who its account is now (card 2253).
-	const edited = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		const ctx = loadComment(commentId);
-		if (!ctx) throw error(404, 'Comment not found');
-
-		// Having written a comment is not access to the board it is on. Someone
-		// taken off a board could go on rewriting what they had written there.
-		// Edit access, as for posting one and as the session route asks: view
-		// access was asked for here, and an author made a viewer could rewrite
-		// through this route what the other refused them, and could post nothing.
-		if (!canEditBoard(user, ctx.boardId)) throw error(403, 'No edit access to this board');
-
-		const isAdmin = user.role === 'admin' || user.role === 'superadmin';
-		if (ctx.comment.userId !== user.id && !isAdmin) {
-			throw error(403, 'You can only edit your own comments');
-		}
-
-		const content = readText(body, 'content', {
-			required: true,
-			trim: true,
-			min: 1,
-			max: 50000,
-			keep: ctx.comment.content,
-			says: { missing: 'Comment cannot be empty', empty: 'Comment cannot be empty' }
-		});
-
-		const updated = db.update(cardComments)
-			.set({ content, updatedAt: sql`(datetime('now'))` })
-			.where(eq(cardComments.id, commentId))
-			.returning()
-			.get();
-		if (!updated) throw error(404, 'Comment not found');
-
-		logActivity({
-			boardId: ctx.boardId,
-			cardId: ctx.comment.cardId,
-			userId: user.id,
-			action: 'api:comment_edited',
-			detail: `Edited a comment on "${ctx.cardTitle}"`,
-			userName: user.username,
-			userEmoji: user.emoji || '👤'
-		});
-
-		emit(ctx.boardId, 'update', { type: 'card' });
-
-		return withAuthor(updated);
-	});
+	// session is still open, and who its account is now (card 2253). Having
+	// written a comment is not access to the board it is on: edit access, as
+	// for posting one and as the session route asks (view access was asked for
+	// here, and an author made a viewer could rewrite through this route what
+	// the other refused them). The work is `editComment` in
+	// `$lib/server/card-comments`, which the session route shares (card 2012);
+	// the author is added to the answer in here, as the account is now.
+	const edited = writeAs(locals, (caller) => withAuthor(editComment(caller, { commentId }, body, { source: 'api' })));
 
 	return json(edited);
 };

@@ -2165,8 +2165,14 @@ describe("card 2253's rule itself", () => {
  * behavioural backstop, run unchanged.
  */
 
-/** The modules both API trees' handlers call for their work, each written to the rule above. Slice A1: the cards. */
-const SERVICES = ['src/lib/server/cards.ts'];
+/** The modules both API trees' handlers call for their work, each written to the rule above. Slice A1: the cards; A2: what is on a card. */
+const SERVICES = [
+	'src/lib/server/cards.ts',
+	'src/lib/server/card-assignees.ts',
+	'src/lib/server/card-comments.ts',
+	'src/lib/server/card-labels.ts',
+	'src/lib/server/subtasks.ts'
+];
 
 /**
  * What a handler that calls a service may call from `$lib/server/**` after
@@ -2818,8 +2824,14 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 
 	it('writes each service to the rule: READS, inWrite() first in every write, no inTransaction before it, nothing of the request (2, 3)', () => {
 		expect([...services.values()].flatMap((service) => service.findings)).toEqual([]);
-		// Something was read: the cards service's six writes.
+		// Something was read: the cards service's six writes, and A2's modules' writes and reads.
 		expect(services.get('src/lib/server/cards.ts')?.writes).toEqual(['createCard', 'updateCard', 'removeCard', 'moveCard', 'moveCards', 'restoreCardFor']);
+		expect(Object.fromEntries([...services].slice(1).map(([file, { reads, writes }]) => [file, { reads, writes }]))).toEqual({
+			'src/lib/server/card-assignees.ts': { reads: [], writes: ['assignToCard', 'unassignFromCard'] },
+			'src/lib/server/card-comments.ts': { reads: ['listComments'], writes: ['addComment', 'editComment', 'deleteComment'] },
+			'src/lib/server/card-labels.ts': { reads: [], writes: ['toggleCardLabel', 'addCardLabel', 'removeCardLabel'] },
+			'src/lib/server/subtasks.ts': { reads: ['listSubtasks'], writes: ['createSubtask', 'updateSubtask', 'deleteSubtask'] }
+		});
 	});
 
 	it('names on SERVICES every module under src/lib/server that imports inWrite or exports a function handed the caller, and nothing else; nothing re-exports a service or imports one with import() (4)', () => {
@@ -2844,6 +2856,22 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/routes/api/v1/boards/[boardId]/cards/+server.ts',
 			'src/routes/api/v1/cards/[cardId]/+server.ts',
 			'src/routes/api/v1/cards/[cardId]/move/+server.ts'
+		]);
+		// Slice A2: what is on a card, both trees.
+		const a2 = routes.filter((file) => /from '\$lib\/server\/(card-assignees|card-comments|card-labels|subtasks)'/.test(readFileSync(join(ROOT, file), 'utf8')));
+		expect(a2).toEqual([
+			'src/routes/api/cards/[id]/assignees/+server.ts',
+			'src/routes/api/cards/[id]/comments/+server.ts',
+			'src/routes/api/cards/[id]/comments/[commentId]/+server.ts',
+			'src/routes/api/labels/+server.ts',
+			'src/routes/api/subtasks/+server.ts',
+			'src/routes/api/subtasks/[id]/+server.ts',
+			'src/routes/api/v1/cards/[cardId]/assignees/+server.ts',
+			'src/routes/api/v1/cards/[cardId]/comments/+server.ts',
+			'src/routes/api/v1/cards/[cardId]/labels/+server.ts',
+			'src/routes/api/v1/cards/[cardId]/subtasks/+server.ts',
+			'src/routes/api/v1/comments/[commentId]/+server.ts',
+			'src/routes/api/v1/subtasks/[subtaskId]/+server.ts'
 		]);
 	});
 

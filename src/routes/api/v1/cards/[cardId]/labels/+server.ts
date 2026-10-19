@@ -2,11 +2,11 @@ import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { cards, columns, labels, cardLabels } from '$lib/server/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { canViewBoard } from '$lib/server/board-access';
-import { emit } from '$lib/server/events';
-import { pathId, readBody, readId } from '$lib/server/request-body';
-import { requireCard, requireUser } from '$lib/server/route-guards';
+import { addCardLabel, removeCardLabel } from '$lib/server/card-labels';
+import { pathId, readBody } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -50,28 +50,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	// transaction that puts the label on, once the body has arrived. It asks
 	// first whether the key or session is still open, and who its account is
 	// now (card 2253), and answers whether the label was already on; the
-	// answer is made once it has committed.
-	const done = writeAs(locals, (caller) => {
-		const { boardId } = requireCard(caller, cardId, 'edit');
-
-		const labelId = readId(body, 'labelId', { required: true, says: { missing: 'labelId is required' } });
-
-		// Verify label exists and belongs to the same board
-		const label = db.select().from(labels).where(eq(labels.id, labelId)).get();
-		if (!label) throw error(404, 'Label not found');
-		if (label.boardId !== boardId) throw error(400, 'Label does not belong to this card\'s board');
-
-		// Check if already assigned
-		const existing = db.select().from(cardLabels)
-			.where(and(eq(cardLabels.cardId, cardId), eq(cardLabels.labelId, labelId)))
-			.get();
-		if (existing) return { already: true, labelId };
-
-		db.insert(cardLabels).values({ cardId, labelId }).run();
-		emit(boardId, 'update', { type: 'label' });
-
-		return { already: false, labelId };
-	});
+	// answer is made once it has committed. The work is `addCardLabel` in
+	// `$lib/server/card-labels`, beside the page's toggle (card 2012).
+	const done = writeAs(locals, (caller) => addCardLabel(caller, { cardId }, body, { source: 'api' }));
 
 	if (done.already) return json({ message: 'Label already assigned' });
 	return json({ cardId, labelId: done.labelId }, { status: 201 });
@@ -90,19 +71,9 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 
 	// The card read, the caller checked and the label taken off in one
 	// transaction that asks first whether the key or session is still open,
-	// and who its account is now (card 2253).
-	writeAs(locals, (caller) => {
-		const { boardId } = requireCard(caller, cardId, 'edit');
-
-		const labelId = readId(body, 'labelId', { required: true, says: { missing: 'labelId is required' } });
-
-		const removed = db.delete(cardLabels)
-			.where(and(eq(cardLabels.cardId, cardId), eq(cardLabels.labelId, labelId)))
-			.run();
-		if (removed.changes === 0) throw error(404, 'Label not found on this card');
-
-		emit(boardId, 'update', { type: 'label' });
-	});
+	// and who its account is now (card 2253). The work is `removeCardLabel`
+	// (card 2012).
+	writeAs(locals, (caller) => removeCardLabel(caller, { cardId }, body, { source: 'api' }));
 
 	return json({ success: true });
 };
