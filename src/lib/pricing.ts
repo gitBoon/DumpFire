@@ -321,6 +321,12 @@ export function costOfEntry(e: CostInput): { usd: number | null; exact: boolean 
  * Entries whose model is unknown are counted in `unpricedTokens` rather than
  * being priced at zero — an unpriceable token is a gap in the data, and
  * pretending it was free would quietly understate every total containing one.
+ *
+ * A sum within a billionth of a dollar of zero is zero: entries that cancel out,
+ * a correction and what it corrects, leave a speck of floating-point rounding
+ * when priced one by one, where the grouped totals sum the tokens first and get
+ * exactly 0. Without this a card read "-<$0.01" in its own window and "$0.00" on
+ * the board.
  */
 export function costOf(entries: CostInput[]): CostResult {
 	let usd = 0;
@@ -340,7 +346,7 @@ export function costOf(entries: CostInput[]): CostResult {
 	}
 
 	return {
-		usd: priced > 0 ? usd : null,
+		usd: priced > 0 ? (Math.abs(usd) < 1e-9 ? 0 : usd) : null,
 		exact: priced > 0 && exact === priced,
 		unpricedTokens
 	};

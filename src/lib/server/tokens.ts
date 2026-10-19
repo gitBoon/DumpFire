@@ -271,6 +271,167 @@ export function resolveTarget(user: SessionUser, target: TokenTarget): number {
 	return boardId;
 }
 
+// ─── What a correction may take back ─────────────────────────────────────────
+
+/**
+ * One target's entries of one model, summed the way they are priced (card
+ * 2220): `blend` is the tokens of the entries priced at the assumed 90/10
+ * split, and the rest are the components of the measured and split entries
+ * (a split entry counts as measured with no cache, which prices the same).
+ */
+interface PricedSums {
+	blend: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWrite5mTokens: number;
+	cacheWrite1hTokens: number;
+}
+
+const COMPONENTS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWrite5mTokens', 'cacheWrite1hTokens'] as const;
+
+function noSums(): PricedSums {
+	return { blend: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0 };
+}
+
+/**
+ * What one entry adds to its target's sums: classed as `PRICED_AS` classes it,
+ * so a sum here is the sum the ledger prices. `sign` -1 is the entry taken away.
+ */
+function sumsOf(entry: { tokens: number } & { [K in keyof StoredBreakdown]: number | null }, sign: 1 | -1 = 1): PricedSums {
+	const out = noSums();
+	const measured = entry.cacheReadTokens !== null && entry.inputTokens !== null && entry.outputTokens !== null;
+	const split =
+		!measured && entry.inputTokens !== null && entry.outputTokens !== null &&
+		entry.tokens !== 0 && entry.inputTokens + entry.outputTokens === entry.tokens;
+	if (!measured && !split) {
+		out.blend = sign * entry.tokens;
+		return out;
+	}
+	out.inputTokens = sign * entry.inputTokens!;
+	out.outputTokens = sign * entry.outputTokens!;
+	if (measured) {
+		out.cacheReadTokens = sign * entry.cacheReadTokens!;
+		out.cacheWrite5mTokens = sign * (entry.cacheWrite5mTokens ?? 0);
+		out.cacheWrite1hTokens = sign * (entry.cacheWrite1hTokens ?? 0);
+	}
+	return out;
+}
+
+/** The sums of what is stored on one target for one model, the exact model string. */
+function recordedSums(target: TokenTarget, model: string | null): PricedSums {
+	const where = target.kind === 'card' ? 'tu.card_id = ? AND tu.subtask_id IS NULL' : 'tu.subtask_id = ?';
+	const row = sqlite
+		.prepare(
+			`SELECT COALESCE(SUM(CASE WHEN pricedAs = 'blend' THEN tokens ELSE 0 END), 0) AS blend,
+			        COALESCE(SUM(CASE WHEN pricedAs <> 'blend' THEN input_tokens ELSE 0 END), 0) AS inputTokens,
+			        COALESCE(SUM(CASE WHEN pricedAs <> 'blend' THEN output_tokens ELSE 0 END), 0) AS outputTokens,
+			        COALESCE(SUM(CASE WHEN pricedAs = 'measured' THEN cache_read_tokens ELSE 0 END), 0) AS cacheReadTokens,
+			        COALESCE(SUM(CASE WHEN pricedAs = 'measured' THEN COALESCE(cache_write_5m_tokens, 0) ELSE 0 END), 0) AS cacheWrite5mTokens,
+			        COALESCE(SUM(CASE WHEN pricedAs = 'measured' THEN COALESCE(cache_write_1h_tokens, 0) ELSE 0 END), 0) AS cacheWrite1hTokens
+			 FROM (SELECT tu.*, ${PRICED_AS} AS pricedAs FROM token_usage tu WHERE ${where} AND tu.model IS ?)`
+		)
+		.get(target.id, model) as PricedSums;
+	return row;
+}
+
+function addSums(a: PricedSums, b: PricedSums): PricedSums {
+	const out = { ...a };
+	out.blend += b.blend;
+	for (const k of COMPONENTS) out[k] += b[k];
+	return out;
+}
+
+/** "of claude-opus-5-5", or what stands for an entry with no model named. */
+const ofModel = (model: string | null) => (model === null ? 'of the entries with no model' : `of ${model}`);
+const counted = (n: number) => n.toLocaleString('en-GB');
+
+/**
+ * What a refused correction's message adds so that the next try can be right:
+ * the models the target's entries do name, when the correction named none, and
+ * for a card whose subtasks hold entries, that those are corrected on the subtask.
+ */
+function correctionHints(target: TokenTarget, model: string | null): string {
+	let out = '';
+	if (model === null) {
+		const where = target.kind === 'card' ? 'card_id = ? AND subtask_id IS NULL' : 'subtask_id = ?';
+		const named = (
+			sqlite
+				.prepare(`SELECT DISTINCT model FROM token_usage WHERE ${where} AND model IS NOT NULL ORDER BY model`)
+				.all(target.id) as { model: string }[]
+		).map((r) => r.model);
+		if (named.length) {
+			out += ` This ${target.kind} has entries of ${named.join(', ')}: send the model of the entries it corrects.`;
+		}
+	}
+	if (target.kind === 'card') {
+		const onSubtasks = sqlite
+			.prepare('SELECT 1 FROM token_usage tu JOIN subtasks s ON s.id = tu.subtask_id WHERE s.card_id = ? LIMIT 1')
+			.get(target.id);
+		if (onSubtasks) {
+			out += " Only the card's own entries count here: an entry on one of its subtasks is corrected on that subtask.";
+		}
+	}
+	return out;
+}
+
+/**
+ * Refuse an entry that would take a sum the ledger prices below zero (card 2220).
+ *
+ * A negative entry with no breakdown is priced at the blend, at the full input
+ * rate. The measured work it is usually meant to correct is mostly cache reads,
+ * at a tenth or less of that, so a bare total taken from it priced the card below
+ * zero. So a correction is held to what was recorded, on its own target (a card's
+ * own entries, or one subtask's) and of its own model: one with no breakdown
+ * takes back at most the tokens recorded without one, and one with a breakdown
+ * no part beyond what is recorded of that part. Only a sum the change lowers is
+ * looked at, so a positive entry is never refused for what is already stored.
+ *
+ * `pending` is what earlier entries of the same batch add, not yet written.
+ * `removing` is the entry id when the change is an entry taken away.
+ */
+function checkWithinRecorded(
+	target: TokenTarget,
+	model: string | null,
+	change: PricedSums,
+	pending: PricedSums = noSums(),
+	removing?: number
+): void {
+	const after = addSums(addSums(recordedSums(target, model), pending), change);
+	const where = `on this ${target.kind}`;
+	const parts = ['blend', ...COMPONENTS] as const;
+	const short = parts.find((k) => change[k] < 0 && after[k] < 0);
+	if (!short) return;
+	if (removing !== undefined) {
+		throw new TokenError(
+			400,
+			`Removing entry #${removing} would leave the ${model === null ? 'entries recorded with no model' : `${model} entries`} ${where} below zero: ` +
+				'remove the negative entries that correct it first.'
+		);
+	}
+	const before = after[short] - change[short];
+	const hints = correctionHints(target, model);
+	if (short === 'blend') {
+		// The measured parts there, so that one more try, with a breakdown, can be right.
+		const recorded = COMPONENTS.filter((k) => after[k] - change[k] > 0).map((k) => `${k} ${counted(after[k] - change[k])}`);
+		throw new TokenError(
+			400,
+			`A correction without a breakdown can take back at most ${counted(Math.max(before, 0))} tokens ${ofModel(model)} ${where}, ` +
+				'which is what was recorded there without a breakdown.' +
+				(recorded.length
+					? ' The rest were measured: send the breakdown of what is taken back, as positive numbers that add up to it, ' +
+						`each no more than is recorded (${recorded.join(', ')}).`
+					: '') +
+				hints
+		);
+	}
+	throw new TokenError(
+		400,
+		`${short} of this correction is ${counted(-change[short])}, more than the ${counted(before)} recorded ${model === null ? 'with no model' : `for ${model}`} ${where}.` +
+			hints
+	);
+}
+
 export interface RecordResult {
 	entryId: number;
 	boardId: number;
@@ -299,6 +460,8 @@ export function recordTokenUsage(
 	const noteText = clean(note, MAX_NOTE_LEN, 'note');
 	const split = validateBreakdown(amount, breakdown ?? {});
 	const boardId = resolveTarget(user, target);
+	// After the caller is checked, so a target's entries are read only for one who may edit them.
+	checkWithinRecorded(target, modelName, sumsOf({ tokens: amount, ...split }));
 
 	const cardId = target.kind === 'card' ? target.id : getSubtaskCardId(target.id)!;
 
@@ -360,6 +523,9 @@ export function recordTokenUsageBatch(
 	if (entries.length > 200) throw new TokenError(400, 'Batch too large (max 200 entries)');
 
 	const problems: BatchProblem[] = [];
+	// What the entries checked so far add to each target's sums of each model: an
+	// entry is held to what is stored and to the earlier entries of the batch.
+	const pending = new Map<string, PricedSums>();
 	const prepared: {
 		target: TokenTarget;
 		tokens: number;
@@ -392,6 +558,11 @@ export function recordTokenUsageBatch(
 			const note = clean(e.note, MAX_NOTE_LEN, 'note');
 			const split = validateBreakdown(tokens, e);
 			const boardId = resolveTarget(user, target);
+			const key = JSON.stringify([target.kind, target.id, model]);
+			const change = sumsOf({ tokens, ...split });
+			const before = pending.get(key) ?? noSums();
+			checkWithinRecorded(target, model, change, before);
+			pending.set(key, addSums(before, change));
 			const cardId = target.kind === 'card' ? target.id : getSubtaskCardId(target.id)!;
 			prepared.push({ target, tokens, model, note, split, calls, boardId, cardId });
 		} catch (err) {
@@ -430,7 +601,10 @@ export function recordTokenUsageBatch(
 	};
 }
 
-/** Remove one entry outright. For a correction prefer a negative entry. */
+/**
+ * Remove one entry outright. For a correction prefer a negative entry. An entry
+ * that negative entries balance is removed after them, not before (card 2220).
+ */
 export function deleteTokenEntry(user: SessionUser, entryId: number): { cardId: number; boardId: number } {
 	const entry = db.select().from(tokenUsage).where(eq(tokenUsage.id, entryId)).get();
 	if (!entry) throw new TokenError(404, `Token entry #${entryId} does not exist`);
@@ -440,6 +614,8 @@ export function deleteTokenEntry(user: SessionUser, entryId: number): { cardId: 
 		: { kind: 'subtask', id: entry.subtaskId! };
 	const boardId = resolveTarget(user, target);
 	const cardId = entry.cardId ?? getSubtaskCardId(entry.subtaskId!)!;
+	// Removing an entry a correction balances would leave the correction alone, below zero.
+	checkWithinRecorded(target, entry.model, sumsOf(entry, -1), noSums(), entryId);
 
 	db.delete(tokenUsage).where(eq(tokenUsage.id, entryId)).run();
 	return { cardId, boardId };
