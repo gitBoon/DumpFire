@@ -40,7 +40,7 @@
  * tested in `tests/write-as.test.ts`.
  */
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import ts from 'typescript';
 import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -534,7 +534,8 @@ describe('the rule itself', () => {
  * What it cannot see: a service the handler calls outside its callback that
  * writes. The review of each route slice looks for that, and the walks of
  * tests/access-every-route.test.ts (slice 2253-8) catch it for every handler
- * with a body.
+ * with a body. For the handlers card 2012 moves onto a service, the rule
+ * after this one sees it, by import.
  */
 
 /** The methods that change something, every one of which asks again at the write. */
@@ -741,6 +742,116 @@ function isDeclaredName(id: ts.Identifier): boolean {
 	);
 }
 
+/**
+ * By handler, a writeAs callback that lets its caller out, with why (card
+ * 2012, the re-check of A1). An entry that lets nothing out fails.
+ */
+const CALLER_LET_OUT_IN: Record<string, string> = {
+	'src/routes/api/v1/milestones/[milestoneId]/cards/bulk/+server.ts POST':
+		'It returns `actor: user` for the plan-created mail sent after the commit, which reads only its name and id ' +
+		"(notifyPlanCreated). No decision is made on it. Found by the re-check, reported, not changed: it is not part A1's route."
+};
+
+/** What hands a function on to run later, by the last part of the callee's name. */
+const RUNS_LATER = ['afterCommit', 'setTimeout', 'setImmediate', 'setInterval', 'queueMicrotask', 'then', 'catch', 'finally', 'on', 'once', 'addEventListener'];
+
+/**
+ * Where a writeAs callback lets its caller out (card 2012, the re-check of
+ * A1, 3): the account it is handed is the account as it is now, for this
+ * write, and is decided on inside the callback alone. Out of it, it is the
+ * caller as the gate read it all over again. Its caller is the parameter, and
+ * any name the callback binds to it or to `requireUser(` it `)`. Let out:
+ * assigned to anything not declared in the callback; returned, or put in what
+ * is returned (a call's result is that call's, not the caller); or kept by a
+ * function that is returned, assigned out, or handed to something that runs it
+ * later (`afterCommit`, a timer, a promise). A function run there and then
+ * (`.map`) lets nothing out.
+ */
+function escapesOf(callback: Callback, tree: ts.SourceFile): { line: number; how: string }[] {
+	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const [parameter] = callback.parameters;
+	if (!parameter || !ts.isIdentifier(parameter.name)) return [];
+	const names = new Set([parameter.name.text]);
+	const isCallerName = (node: ts.Node) => ts.isIdentifier(node) && names.has(node.text) && usedAsName(node) && !isDeclaredName(node);
+	// The names bound to the caller, followed until none is added.
+	for (let added = true; added; ) {
+		added = false;
+		const visit = (node: ts.Node): void => {
+			if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && !names.has(node.name.text)) {
+				const value = bare(node.initializer);
+				const isCaller =
+					isCallerName(value) || (ts.isCallExpression(value) && calleeOf(value, tree) === 'requireUser' && value.arguments.length > 0 && isCallerName(bare(value.arguments[0])));
+				if (isCaller) {
+					names.add(node.name.text);
+					added = true;
+				}
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(callback.body);
+	}
+	/** Whether `node` uses the caller anywhere in it. */
+	const usesCaller = (node: ts.Node): boolean => {
+		if (isCallerName(node)) return true;
+		return ts.forEachChild(node, usesCaller) === true;
+	};
+	/**
+	 * What a value lets out: the caller itself, a function that keeps it, or
+	 * nothing. A call's result is its own, and so is a field read off the
+	 * caller (`user.username`): a name or an id, not the account.
+	 */
+	const exposes = (node: ts.Node): 'value' | 'closure' | null => {
+		if (isCallerName(node)) return 'value';
+		if (ts.isFunctionLike(node)) return usesCaller(node) ? 'closure' : null;
+		if (ts.isCallExpression(node) || ts.isNewExpression(node)) return null;
+		if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && isCallerName(bare(node.expression))) return null;
+		let found: 'value' | 'closure' | null = null;
+		ts.forEachChild(node, (child) => {
+			found ??= exposes(child);
+		});
+		return found;
+	};
+	/** Whether a name is declared between `node` and the callback, the callback's parameters among them. */
+	const declaredInside = (node: ts.Node, name: string) => {
+		for (let scope: ts.Node | undefined = node.parent; scope; scope = scope.parent) {
+			if (declaredIn(scope).some((declared) => declared.name === name)) return true;
+			if (scope === callback) return false;
+		}
+		return false;
+	};
+	const found: { line: number; how: string }[] = [];
+	const said = (kind: 'value' | 'closure', what: string) => (kind === 'value' ? `it is ${what}` : `a function that keeps it is ${what}`);
+	// What it returns: its expression body, or each return not inside a function of its own.
+	const returns: ts.Expression[] = [];
+	if (!ts.isBlock(callback.body)) returns.push(callback.body);
+	const visitReturns = (node: ts.Node): void => {
+		if (ts.isReturnStatement(node) && node.expression) returns.push(node.expression);
+		if (!ts.isFunctionLike(node)) ts.forEachChild(node, visitReturns);
+	};
+	if (ts.isBlock(callback.body)) ts.forEachChild(callback.body, visitReturns);
+	const visit = (node: ts.Node): void => {
+		if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+			const kind = exposes(node.right);
+			const outside = !ts.isIdentifier(node.left) || !declaredInside(node, node.left.text);
+			if (kind && outside) found.push({ line: line(node), how: `${kind === 'value' ? '' : 'a function that keeps it is '}assigned to ${node.left.getText(tree)}, outside the callback` });
+		}
+		if (ts.isCallExpression(node)) {
+			const callee = calleeOf(node, tree);
+			const last = callee.split('.').at(-1)!;
+			if (RUNS_LATER.includes(last) && node.arguments.some((argument) => ts.isFunctionLike(argument) && usesCaller(argument))) {
+				found.push({ line: line(node), how: `a function that keeps it is handed to ${callee}` });
+			}
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(callback.body);
+	for (const returned of returns) {
+		const kind = exposes(returned);
+		if (kind) found.push({ line: line(returned), how: said(kind, 'returned') });
+	}
+	return found.sort((a, b) => a.line - b.line);
+}
+
 /** One handler of card 2253's rule: what it breaks, if anything. */
 function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: HandlerFunction): string[] {
 	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
@@ -925,6 +1036,12 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 		if (!usesIt) findings.push(`${at} gives writeAs at line ${line(call)} a callback that never uses its caller${DECIDE}`);
 		if (ts.getModifiers(callback)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
 			findings.push(`${at} gives writeAs at line ${line(call)} an async callback`);
+		}
+		const escapes = escapesOf(callback, tree);
+		if (CALLER_LET_OUT_IN[key] === undefined) {
+			for (const escape of escapes) findings.push(`${at} lets its writeAs callback's caller out at line ${escape.line}: ${escape.how}`);
+		} else if (escapes.length === 0) {
+			findings.push(`${at} is on CALLER_LET_OUT_IN and lets its caller out nowhere`);
 		}
 	}
 
@@ -1260,6 +1377,7 @@ describe('every write handler asks who the caller is at the write (card 2253)', 
 		expect(Object.keys(READS_IN).filter((key) => !writing.includes(key))).toEqual([]);
 		expect(Object.keys(USER_FIELDS_IN).filter((key) => !writing.includes(key))).toEqual([]);
 		expect(Object.keys(USER_FOR_A_LINE_IN).filter((key) => !writing.includes(key))).toEqual([]);
+		expect(Object.keys(CALLER_LET_OUT_IN).filter((key) => !writing.includes(key))).toEqual([]);
 		// R2's seven, and the test mail (slice 2253-5).
 		expect(Object.keys(STILL_CALLER_NOW)).toHaveLength(8);
 	});
@@ -1961,7 +2079,7 @@ describe("card 2253's rule itself", () => {
 		const file = 'src/routes/api/account/password/+server.ts';
 
 		expect(judged(route('(current) => writeAs(locals, (caller) => setPassword(caller, current))'), file)).toEqual([]);
-		expect(judged(route('(current) => { setPassword(current); return writeAs(locals, (caller) => caller); }'), file)).toEqual([
+		expect(judged(route('(current) => { setPassword(current); return writeAs(locals, (caller) => caller.id); }'), file)).toEqual([
 			"src/routes/api/account/password/+server.ts:1 PUT calls setPassword at line 3 in whilePasswordHolds's write, outside its writeAs (d)"
 		]);
 		expect(judged(route('(current) => setPassword(current)'), file)).toEqual([
@@ -1973,6 +2091,1081 @@ describe("card 2253's rule itself", () => {
 
 	it('cannot be passed by a write handler it cannot read', () => {
 		expect(judged('export const DELETE = makeHandler();')).toEqual(['src/routes/api/example/+server.ts:1 DELETE is not a function this test can read']);
+	});
+
+	it("finds the callback's caller let out: assigned outside, returned, or kept by a function returned or handed on to run later (card 2012, the re-check, 3)", () => {
+		const code = [
+			'export const POST = async ({ request, locals }) => {',
+			'\tconst body = await readBody(request);',
+			'\tlet u;',
+			'\twriteAs(locals, (caller) => { u = caller; return 0; });',
+			'\tsetThing(u, body);',
+			'\treturn json({});',
+			'};',
+			'export const PUT = async ({ request, locals }) => {',
+			'\tconst body = await readBody(request);',
+			'\tconst later = writeAs(locals, (caller) => () => requireCard(caller, 1, "edit"));',
+			'\tconst who = writeAs(locals, (caller) => ({ by: caller, at: 1 }));',
+			'\tconst me = writeAs(locals, (caller) => { const user = requireUser(caller); afterCommit(() => notify(user)); return 0; });',
+			// Used and let go inside the callback: a guard, a list worked through there and then, a card returned.
+			'\tconst card = writeAs(locals, (caller) => { const user = requireUser(caller); [1, 2].map((id) => requireCard(user, id, "edit")); return requireCard(caller, 1, "edit").card; });',
+			'\treturn json({ who, me, later, card });',
+			'};'
+		].join('\n');
+
+		expect(judged(code)).toEqual([
+			"src/routes/api/example/+server.ts:1 POST lets its writeAs callback's caller out at line 4: assigned to u, outside the callback",
+			"src/routes/api/example/+server.ts:8 PUT lets its writeAs callback's caller out at line 10: a function that keeps it is returned",
+			"src/routes/api/example/+server.ts:8 PUT lets its writeAs callback's caller out at line 11: it is returned",
+			"src/routes/api/example/+server.ts:8 PUT lets its writeAs callback's caller out at line 12: a function that keeps it is handed to afterCommit"
+		]);
+	});
+});
+
+// ─── One service per action, written only inside writeAs (card 2012) ────────
+
+/*
+ * Card 2012 moves each pair of handlers, the internal one and its /api/v1
+ * twin, onto one service in src/lib/server/ that both call, handed `caller`
+ * inside the handler's writeAs callback. Card 2253's rule above could not see
+ * a service the handler calls outside its callback that writes. This one
+ * decides by import, not by a list of names (R5 of the plan,
+ * docs/planning/card-2012-service-layer-and-pages.md), read from the source
+ * and failing closed:
+ *
+ *   1. in every write handler that calls a service (one moved onto it), each
+ *      call after its body to a function imported from `$lib/server/**` is
+ *      inside a writeAs callback, unless it is on OUTSIDE_WRITE with its
+ *      reason; what shapes the answer is made inside and returned; and a
+ *      service write is handed, first, the caller its own callback was
+ *      handed, as it is or through requireUser (the review of A1, 8);
+ *   2. each module on SERVICES has an explicit `READS` export naming its
+ *      read functions; every other function it exports is a write, and the
+ *      first statement of each is `inWrite();`; it exports nothing else in
+ *      any form, no default, no value that is not a function written there,
+ *      nothing from elsewhere. In a route file, a write is called only inside
+ *      a writeAs callback, and a read only in a GET or inside a callback;
+ *   3. no module on SERVICES names `inTransaction`, under any name, but in a
+ *      write, after its `inWrite()`; a read inserts, updates, deletes or runs
+ *      nothing; and none names `locals`, `App.Locals`, `RequestEvent` or
+ *      `getRequestEvent`, or imports `$app/server`;
+ *   4. SERVICES names every module under src/lib/server/ that imports
+ *      `inWrite` or exports, in any form, a function handed the caller (a
+ *      first parameter `caller` that is an account, or any first parameter
+ *      typed `SessionUser | null`), but those on NOT_SERVICES with why, and
+ *      nothing else; no module re-exports a service, and nothing imports one
+ *      with `import()`. A service write's options are an object written out
+ *      at the call, and a `says` among them words written out (the review, 4);
+ *   5. the rule itself, against made-up source.
+ *
+ * At run time `inWrite()` (src/lib/server/write-as.ts) refuses a service
+ * write outside a writeAs callback, a job's bare inTransaction among them
+ * (tests/write-as.test.ts). Card 2253's walks of
+ * tests/access-every-route.test.ts ("asked again at the write") are the
+ * behavioural backstop, run unchanged.
+ */
+
+/** The modules both API trees' handlers call for their work, each written to the rule above. Slice A1: the cards. */
+const SERVICES = ['src/lib/server/cards.ts'];
+
+/**
+ * What a handler that calls a service may call from `$lib/server/**` after
+ * its body outside its writeAs callback, by name, with why. Nothing it
+ * calls there reads a row a guard decides on, or writes.
+ */
+const OUTSIDE_WRITE: Record<string, string> = {
+	pathId: 'The id in the path, read as a number: no row. A handler with no body reads it before its writeAs.',
+	linkBaseUrl:
+		"The address the mail a write sends links to: the configured App URL or the server's origin, read before the " +
+		'transaction, as it decides nothing about the caller or the row.',
+	json: "v1's answer (`$lib/server/v1-json`), made from what the callback returned, once the write is committed."
+};
+
+/** The source file a `$lib/server/...` import names, or null for any other import. */
+function serverFileOf(specifier: string): string | null {
+	if (specifier !== '$lib/server' && !specifier.startsWith('$lib/server/')) return null;
+	const rest = specifier.slice('$lib/server'.length);
+	for (const candidate of [`src/lib/server${rest}.ts`, `src/lib/server${rest}/index.ts`]) {
+		try {
+			readFileSync(join(ROOT, candidate));
+			return candidate;
+		} catch {
+			// Not that one.
+		}
+	}
+	return `src/lib/server${rest}.ts`;
+}
+
+/** A module's imports from `$lib/server/**`: each local name, with the file and the name it is exported under. */
+function serverImportsOf(tree: ts.SourceFile): { names: Map<string, { file: string; name: string }>; namespaces: { file: string; line: number }[] } {
+	const names = new Map<string, { file: string; name: string }>();
+	const namespaces: { file: string; line: number }[] = [];
+	for (const statement of tree.statements) {
+		if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+		const clause = statement.importClause;
+		const file = serverFileOf(statement.moduleSpecifier.text);
+		if (!file || !clause || clause.isTypeOnly) continue;
+		if (clause.name) names.set(clause.name.text, { file, name: 'default' });
+		const bindings = clause.namedBindings;
+		if (bindings && ts.isNamespaceImport(bindings)) {
+			namespaces.push({ file, line: tree.getLineAndCharacterOfPosition(statement.getStart(tree)).line + 1 });
+		} else if (bindings) {
+			for (const element of bindings.elements) {
+				if (!element.isTypeOnly) names.set(element.name.text, { file, name: (element.propertyName ?? element.name).text });
+			}
+		}
+	}
+	return { names, namespaces };
+}
+
+/** What a service module exports and what breaks the rule in it: its reads, its writes, and the findings (2 and 3). */
+type ServiceReading = { reads: string[]; writes: string[]; findings: string[] };
+
+/**
+ * Everything a module exports, in source order, in every form it can
+ * (the review of A1, 1): its functions by name (`export function f`,
+ * `export const f = (…) =>`, `export { f }` of a function written here),
+ * its default export, every other value it exports (a constant, a class,
+ * `once((caller) => …)`), and what it re-exports from elsewhere. Types are
+ * left out: they write nothing.
+ */
+type ExportReading = {
+	functions: { name: string; fn: HandlerFunction; at: ts.Node }[];
+	defaults: { fn: HandlerFunction | undefined; value: ts.Node | undefined; at: ts.Node }[];
+	values: { name: string; value: ts.Node | undefined; at: ts.Node }[];
+	reexports: { specifier: string; at: ts.Node }[];
+};
+
+function exportsOf(tree: ts.SourceFile): ExportReading {
+	const reading: ExportReading = { functions: [], defaults: [], values: [], reexports: [] };
+	const asFunction = (node: ts.Node | undefined): HandlerFunction | undefined => {
+		const value = node && ts.isExpression(node) ? bare(node) : node;
+		return value && (ts.isArrowFunction(value) || ts.isFunctionExpression(value) || ts.isFunctionDeclaration(value)) ? value : undefined;
+	};
+	/** What a name written in this file is: its function, or the value it is declared with. */
+	const local = (name: string): { fn: HandlerFunction | undefined; value: ts.Node | undefined } => {
+		for (const statement of tree.statements) {
+			if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return { fn: statement, value: statement };
+			if ((ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) && statement.name?.text === name) return { fn: undefined, value: statement };
+			if (!ts.isVariableStatement(statement)) continue;
+			for (const declared of statement.declarationList.declarations) {
+				if (ts.isIdentifier(declared.name) && declared.name.text === name) return { fn: asFunction(declared.initializer), value: declared.initializer };
+			}
+		}
+		return { fn: undefined, value: undefined };
+	};
+	for (const statement of tree.statements) {
+		if (ts.isExportDeclaration(statement)) {
+			if (statement.isTypeOnly) continue;
+			if (statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+				reading.reexports.push({ specifier: statement.moduleSpecifier.text, at: statement });
+				continue;
+			}
+			if (!statement.exportClause || !ts.isNamedExports(statement.exportClause)) continue;
+			for (const element of statement.exportClause.elements) {
+				if (element.isTypeOnly) continue;
+				const { fn, value } = local((element.propertyName ?? element.name).text);
+				if (fn) reading.functions.push({ name: element.name.text, fn, at: element });
+				else reading.values.push({ name: element.name.text, value, at: element });
+			}
+			continue;
+		}
+		if (ts.isExportAssignment(statement)) {
+			reading.defaults.push({ fn: asFunction(statement.expression), value: statement.expression, at: statement });
+			continue;
+		}
+		const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined;
+		if (!modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)) continue;
+		const isDefault = modifiers.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
+		if (ts.isFunctionDeclaration(statement)) {
+			if (isDefault || !statement.name) reading.defaults.push({ fn: statement, value: statement, at: statement });
+			else reading.functions.push({ name: statement.name.text, fn: statement, at: statement });
+		} else if (ts.isVariableStatement(statement)) {
+			for (const declared of statement.declarationList.declarations) {
+				const fn = asFunction(declared.initializer);
+				const name = ts.isIdentifier(declared.name) ? declared.name.text : declared.name.getText(tree);
+				if (fn && ts.isIdentifier(declared.name)) reading.functions.push({ name, fn, at: declared });
+				else reading.values.push({ name, value: declared.initializer, at: declared });
+			}
+		} else if (ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) {
+			if (isDefault) reading.defaults.push({ fn: undefined, value: statement, at: statement });
+			else reading.values.push({ name: statement.name?.text ?? 'default', value: statement, at: statement });
+		}
+	}
+	return reading;
+}
+
+/**
+ * Whether a function is handed the caller first, as a service is: a first
+ * parameter `caller` that is an account (its type names `SessionUser`, or is
+ * not written), or one of any name whose type is exactly `SessionUser | null`,
+ * what a writeAs callback hands on. A guard's `SessionUser | null |
+ * undefined`, a helper's `SessionUser`, and gdrive-connect's `caller:
+ * ConnectCaller` are not.
+ */
+function handedTheCaller(fn: ts.SignatureDeclaration, tree: ts.SourceFile): boolean {
+	const [first] = fn.parameters;
+	if (!first || !ts.isIdentifier(first.name)) return false;
+	if (first.type === undefined) return first.name.text === 'caller';
+	const members = typeMembers(first.type.getText(tree), typeAliasesOf(tree));
+	if (first.name.text === 'caller' && members.has('SessionUser')) return true;
+	return members.size === 2 && members.has('SessionUser') && members.has('null');
+}
+
+/**
+ * The type names a file writes for another (the re-check of A1, 3): its own
+ * `type Caller = SessionUser | null`, and an import of `SessionUser` under
+ * another name (`SessionUser as Account`), so that a caller's type is read
+ * through them.
+ */
+function typeAliasesOf(tree: ts.SourceFile): Map<string, string> {
+	const aliases = new Map<string, string>();
+	for (const statement of tree.statements) {
+		if (ts.isTypeAliasDeclaration(statement)) aliases.set(statement.name.text, statement.type.getText(tree));
+		const bindings = ts.isImportDeclaration(statement) ? statement.importClause?.namedBindings : undefined;
+		if (bindings && ts.isNamedImports(bindings)) {
+			for (const element of bindings.elements) {
+				if (element.propertyName?.text === 'SessionUser') aliases.set(element.name.text, 'SessionUser');
+			}
+		}
+	}
+	return aliases;
+}
+
+/** The members of a union written as text, each alias read through to what it names: `Caller | undefined` → SessionUser, null, undefined. */
+function typeMembers(type: string, aliases: ReadonlyMap<string, string>, seen = new Set<string>()): Set<string> {
+	const members = new Set<string>();
+	for (const part of type.replace(/[()\s]/g, '').split('|').filter(Boolean)) {
+		const target = aliases.get(part);
+		if (target !== undefined && !seen.has(part)) {
+			for (const member of typeMembers(target, aliases, new Set([...seen, part]))) members.add(member);
+		} else {
+			members.add(part);
+		}
+	}
+	return members;
+}
+
+/** The file a module specifier names, from the file that names it: `$lib/server/…`, `$lib/…`, or a relative path. */
+function moduleFileOf(from: string, specifier: string): string | null {
+	if (specifier === '$lib/server' || specifier.startsWith('$lib/server/')) return serverFileOf(specifier);
+	let base: string;
+	if (specifier.startsWith('$lib/')) base = `src/lib/${specifier.slice('$lib/'.length)}`;
+	else if (specifier.startsWith('.')) base = posix.join(posix.dirname(from), specifier);
+	else return null;
+	for (const candidate of [`${base}.ts`, `${base}/index.ts`]) {
+		try {
+			readFileSync(join(ROOT, candidate));
+			return candidate;
+		} catch {
+			// Not that one.
+		}
+	}
+	return `${base}.ts`;
+}
+
+/**
+ * Rule 4 and its bans, over the modules given (the review of A1, 1): a
+ * module under src/lib/server/ that imports `inWrite`, or exports in any form
+ * a function handed the caller, must be on SERVICES, and one on SERVICES must
+ * be one of those; no module re-exports a service's functions, and nothing
+ * imports a service with `import()`, nor, in a route file, imports anything
+ * with an `import()` whose module is not written out.
+ */
+function judgeServiceModules(
+	files: { file: string; source: string }[],
+	services: readonly string[],
+	notServices: Record<string, string> = {}
+): string[] {
+	const findings: string[] = [];
+	const stillGiven = new Set<string>();
+	for (const { file, source } of files) {
+		const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+		const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+
+		if (file.startsWith('src/lib/server/') && file !== 'src/lib/server/write-as.ts') {
+			const reasons: string[] = [];
+			const writeAsNamespaces = new Set<string>();
+			for (const statement of tree.statements) {
+				if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+				const bindings = statement.importClause?.namedBindings;
+				const fromWriteAs = /(^|\/)write-as$/.test(statement.moduleSpecifier.text);
+				if (fromWriteAs && bindings && ts.isNamedImports(bindings) && bindings.elements.some((e) => (e.propertyName ?? e.name).text === 'inWrite')) {
+					reasons.push('it imports inWrite');
+				}
+				if (fromWriteAs && bindings && ts.isNamespaceImport(bindings)) writeAsNamespaces.add(bindings.name.text);
+			}
+			// inWrite through a namespace: `w.inWrite()` (the re-check of A1, 3).
+			let throughNamespace = false;
+			const lookForInWrite = (node: ts.Node): void => {
+				if (ts.isPropertyAccessExpression(node) && node.name.text === 'inWrite' && ts.isIdentifier(node.expression) && writeAsNamespaces.has(node.expression.text)) {
+					throughNamespace = true;
+				}
+				ts.forEachChild(node, lookForInWrite);
+			};
+			lookForInWrite(tree);
+			if (throughNamespace && !reasons.includes('it imports inWrite')) reasons.push('it imports inWrite');
+			const exported = exportsOf(tree);
+			const literals = (node: ts.Node | undefined): ts.SignatureDeclaration[] => {
+				const found: ts.SignatureDeclaration[] = [];
+				const visit = (inner: ts.Node): void => {
+					if (ts.isArrowFunction(inner) || ts.isFunctionExpression(inner) || ts.isFunctionDeclaration(inner)) found.push(inner);
+					ts.forEachChild(inner, visit);
+				};
+				if (node) visit(node);
+				return found;
+			};
+			const given = [
+				...exported.functions.map(({ name, fn }) => ({ name, fns: [fn] })),
+				...exported.defaults.map(({ fn, value }) => ({ name: 'default', fns: fn ? [fn] : literals(value) })),
+				...exported.values.map(({ name, value }) => ({ name, fns: literals(value) }))
+			];
+			for (const { name, fns } of given) {
+				if (fns.some((fn) => handedTheCaller(fn, tree))) reasons.push(`it exports ${name}, whose first parameter is the caller`);
+			}
+			const listed = services.includes(file);
+			// A module that is handed the caller and writes nothing, with why: only for a function, never for inWrite.
+			const excused = file in notServices && reasons.length > 0 && !reasons.includes('it imports inWrite');
+			if (excused) stillGiven.add(file);
+			if (!listed && !excused) for (const reason of reasons) findings.push(`${file} must be on SERVICES: ${reason} (4)`);
+			if (listed && reasons.length === 0) {
+				findings.push(`${file} is on SERVICES and is no service: it imports no inWrite and exports no function handed the caller (4)`);
+			}
+		}
+
+		const reexported = (target: string, at: ts.Node) =>
+			findings.push(`${file}:${line(at)} re-exports ${target}, a service: import its functions by name where they are called`);
+		const exported = exportsOf(tree);
+		for (const { specifier, at } of exported.reexports) {
+			const target = moduleFileOf(file, specifier);
+			if (target && services.includes(target)) reexported(target, at);
+		}
+		// And a name imported from a service, exported again: `export { createCard }`,
+		// `export const make = createCard`, `export default createCard` (the re-check of A1, 4).
+		const fromService = new Map<string, string>();
+		for (const statement of tree.statements) {
+			if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+			const target = moduleFileOf(file, statement.moduleSpecifier.text);
+			const clause = statement.importClause;
+			if (!target || !services.includes(target) || !clause || clause.isTypeOnly) continue;
+			if (clause.name) fromService.set(clause.name.text, target);
+			if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) fromService.set(clause.namedBindings.name.text, target);
+			if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+				for (const element of clause.namedBindings.elements) if (!element.isTypeOnly) fromService.set(element.name.text, target);
+			}
+		}
+		const namesAService = (node: ts.Node | undefined): string | undefined => {
+			const value = node && ts.isExpression(node) ? bare(node) : undefined;
+			if (!value) return undefined;
+			if (ts.isIdentifier(value)) return fromService.get(value.text);
+			if (ts.isPropertyAccessExpression(value) && ts.isIdentifier(value.expression)) return fromService.get(value.expression.text);
+			return undefined;
+		};
+		for (const statement of tree.statements) {
+			if (ts.isExportDeclaration(statement) && !statement.moduleSpecifier && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+				for (const element of statement.exportClause.elements) {
+					const target = fromService.get((element.propertyName ?? element.name).text);
+					if (target) reexported(target, element);
+				}
+			}
+		}
+		for (const { value, at } of [...exported.values, ...exported.defaults]) {
+			const target = namesAService(value);
+			if (target) reexported(target, at);
+		}
+		const visit = (node: ts.Node): void => {
+			if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+				const [module] = node.arguments;
+				if (module && ts.isStringLiteralLike(module)) {
+					const target = moduleFileOf(file, module.text);
+					if (target && services.includes(target)) findings.push(`${file}:${line(node)} imports ${target}, a service, with import(): import its functions by name`);
+				} else if (file.startsWith('src/routes/') || file.startsWith('src/lib/server/')) {
+					findings.push(`${file}:${line(node)} calls import() with a module that is not written out`);
+				}
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(tree);
+	}
+	for (const service of services) {
+		if (!files.some(({ file }) => file === service)) findings.push(`SERVICES names ${service}, which is not a module here (4)`);
+	}
+	for (const file of Object.keys(notServices)) {
+		if (!stillGiven.has(file)) findings.push(`NOT_SERVICES names ${file}, which no longer exports a function handed the caller (or imports inWrite) (4)`);
+	}
+	return findings;
+}
+
+/**
+ * The modules that export a function handed the caller and are not services,
+ * by file, with why. Each writes nothing; one that imports inWrite cannot be
+ * here, and an entry whose module no longer exports such a function fails.
+ */
+const NOT_SERVICES: Record<string, string> = {
+	'src/lib/server/request-access.ts':
+		'requireRequest is a guard: it reads the request and refuses, and writes nothing. Its first parameter is ' +
+		'`SessionUser | null` because the public request routes are called by nobody signed in.'
+};
+
+/** Rules 2 and 3 for one service module. */
+function judgeService(file: string, source: string): ServiceReading {
+	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const findings: string[] = [];
+
+	// READS: an exported const, a list of names written out.
+	let reads: string[] | undefined;
+	for (const statement of tree.statements) {
+		if (!ts.isVariableStatement(statement) || !ts.getModifiers(statement)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)) continue;
+		for (const declared of statement.declarationList.declarations) {
+			if (!ts.isIdentifier(declared.name) || declared.name.text !== 'READS') continue;
+			let value = declared.initializer;
+			while (value && (ts.isAsExpression(value) || ts.isSatisfiesExpression(value) || ts.isParenthesizedExpression(value))) value = value.expression;
+			if (value && ts.isArrayLiteralExpression(value) && value.elements.every((element) => ts.isStringLiteralLike(element))) {
+				reads = value.elements.map((element) => (element as ts.StringLiteralLike).text);
+			} else {
+				findings.push(`${file}:${line(declared)} READS is not a list of names written out`);
+				reads = [];
+			}
+		}
+	}
+	if (reads === undefined) {
+		findings.push(`${file} has no READS export naming its read functions`);
+		reads = [];
+	}
+
+	// Where inWrite comes from: write-as, by its own name. And every name
+	// inTransaction is imported under (the review of A1, 3).
+	const imported = new Map<string, string>();
+	const transactionNames = new Set(['inTransaction']);
+	for (const statement of tree.statements) {
+		if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+		const bindings = statement.importClause?.namedBindings;
+		if (bindings && ts.isNamedImports(bindings)) {
+			for (const element of bindings.elements) {
+				imported.set(element.name.text, `${statement.moduleSpecifier.text} ${(element.propertyName ?? element.name).text}`);
+				if ((element.propertyName ?? element.name).text === 'inTransaction') transactionNames.add(element.name.text);
+			}
+		}
+		if (statement.moduleSpecifier.text === '$app/server') findings.push(`${file}:${line(statement)} imports $app/server (3)`);
+	}
+	/** `inTransaction` under any name it is imported by, or reached through a namespace: `t.inTransaction`. */
+	const namesTransaction = (node: ts.Node): boolean =>
+		(ts.isIdentifier(node) && transactionNames.has(node.text) && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)) ||
+		(ts.isPropertyAccessExpression(node) && node.name.text === 'inTransaction');
+	const isInWrite = (statement: ts.Statement | undefined) =>
+		statement !== undefined &&
+		ts.isExpressionStatement(statement) &&
+		ts.isCallExpression(statement.expression) &&
+		ts.isIdentifier(statement.expression.expression) &&
+		statement.expression.expression.text === 'inWrite' &&
+		statement.expression.arguments.length === 0 &&
+		/(^|\/)write-as inWrite$/.test(imported.get('inWrite') ?? '');
+
+	const exported = exportsOf(tree);
+	const writes: string[] = [];
+	/** Each write's body after its inWrite(): where inTransaction may be named. */
+	const afterInWrite: ts.Node[] = [];
+	for (const { name, fn, at } of exported.functions) {
+		if (reads.includes(name)) continue;
+		writes.push(name);
+		const first = fn.body && ts.isBlock(fn.body) ? fn.body.statements[0] : undefined;
+		if (!isInWrite(first)) {
+			findings.push(`${file}:${line(at)} ${name} is a write (it is not on READS) and its first statement is not inWrite() (2)`);
+			continue;
+		}
+		afterInWrite.push(...(fn.body as ts.Block).statements.slice(1));
+	}
+	// Nothing else is exported but READS: no default, no value a test cannot read for a write, nothing from elsewhere.
+	for (const { at } of exported.defaults) findings.push(`${file}:${line(at)} has a default export: a service exports its functions by name (2)`);
+	for (const { name, at } of exported.values) {
+		if (name !== 'READS') findings.push(`${file}:${line(at)} exports ${name}, which is not a function written here: a service exports its functions and READS alone (2)`);
+	}
+	for (const { specifier, at } of exported.reexports) findings.push(`${file}:${line(at)} re-exports from ${specifier}: a service exports only what it writes here (2)`);
+	for (const name of reads) {
+		if (!exported.functions.some((e) => e.name === name)) findings.push(`${file} names ${name} on READS, and exports no such function (2)`);
+	}
+
+	// (3): a read writes nothing: no insert, update, delete, run, exec or statement
+	// prepared (the re-check of A1, 5), and no transaction of its own; nor does a
+	// function of the module it calls, followed one level.
+	const writesIn = (body: ts.Node) => {
+		const writing = callsIn(body, true).filter((call) => {
+			const callee = call.expression;
+			return (ts.isPropertyAccessExpression(callee) && ['insert', 'update', 'delete', 'run', 'exec', 'prepare'].includes(callee.name.text)) || namesTransaction(callee);
+		});
+		return writing.filter((call) => !writing.some((other) => other !== call && within(call, other)));
+	};
+	/** A function written in this module, by name: a declaration, or a constant that holds one. */
+	const moduleFunction = (name: string): HandlerFunction | undefined => {
+		for (const statement of tree.statements) {
+			if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return statement;
+			if (!ts.isVariableStatement(statement)) continue;
+			for (const declared of statement.declarationList.declarations) {
+				const value = declared.initializer && bare(declared.initializer);
+				if (ts.isIdentifier(declared.name) && declared.name.text === name && value && (ts.isArrowFunction(value) || ts.isFunctionExpression(value))) return value;
+			}
+		}
+		return undefined;
+	};
+	for (const { name, fn } of exported.functions) {
+		if (!reads.includes(name) || !fn.body) continue;
+		const direct = new Set(writesIn(fn.body));
+		for (const call of callsIn(fn.body, true)) {
+			if (direct.has(call)) {
+				findings.push(`${file}:${line(call)} ${name} is on READS and writes: ${calleeOf(call, tree)} (3)`);
+				continue;
+			}
+			const helper = ts.isIdentifier(call.expression) ? moduleFunction(call.expression.text) : undefined;
+			if (!helper?.body || helper === fn) continue;
+			for (const inner of writesIn(helper.body)) {
+				findings.push(`${file}:${line(inner)} ${name} is on READS and writes: ${calleeOf(inner, tree)} (through ${call.expression.getText(tree)}) (3)`);
+			}
+		}
+	}
+
+	// (3): inTransaction only after a write's inWrite(); nothing of the request.
+	const visit = (node: ts.Node): void => {
+		if (namesTransaction(node) && !ts.isImportSpecifier(node.parent) && !afterInWrite.some((statement) => within(node, statement))) {
+			// Its import is no use of it.
+			const as = node.getText(tree);
+			findings.push(`${file}:${line(node)} names inTransaction${as === 'inTransaction' ? '' : ` (as ${as})`} other than in a write after its inWrite() (3)`);
+		}
+		if (ts.isIdentifier(node)) {
+			if (['locals', 'RequestEvent', 'getRequestEvent'].includes(node.text)) findings.push(`${file}:${line(node)} names ${node.text} (3)`);
+			if (node.text === 'App' && ts.isQualifiedName(node.parent) && node.parent.right.text === 'Locals') findings.push(`${file}:${line(node)} names App.Locals (3)`);
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(tree);
+	return { reads, writes, findings: [...new Set(findings)] };
+}
+
+/**
+ * Rules 1 and 2 for one route file: the calls of every write handler in it
+ * that calls a service, and every call of a service's function anywhere in
+ * it. `services` is each service module's file with its reads and writes.
+ */
+function judgeServiceCalls(file: string, source: string, services: Map<string, { reads: string[]; writes: string[] }>): string[] {
+	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const findings: string[] = [];
+	const { names, namespaces } = serverImportsOf(tree);
+	for (const namespace of namespaces) {
+		if (services.has(namespace.file)) findings.push(`${file}:${namespace.line} imports ${namespace.file} as a namespace: import its functions by name`);
+	}
+	const serviceOf = (local: string) => {
+		const from = names.get(local);
+		const service = from && services.get(from.file);
+		if (!from || !service) return undefined;
+		return { ...from, read: service.reads.includes(from.name), write: service.writes.includes(from.name) };
+	};
+	if (![...names.keys()].some((local) => serviceOf(local))) return findings;
+
+	const handlers = handlersOf(tree);
+	const writeAsCallbacks = callsIn(tree, true)
+		.filter((call) => calleeOf(call, tree) === 'writeAs')
+		.map((call) => call.arguments[1])
+		.filter(isCallback);
+	const insideCallback = (node: ts.Node) => writeAsCallbacks.some((callback) => within(node, callback));
+	/** The file's constants that hold a text written out: what a `says` may name. */
+	const texts = new Set<string>();
+	for (const statement of tree.statements) {
+		if (!ts.isVariableStatement(statement) || (statement.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
+		for (const declared of statement.declarationList.declarations) {
+			if (ts.isIdentifier(declared.name) && declared.initializer && ts.isStringLiteralLike(declared.initializer)) texts.add(declared.name.text);
+		}
+	}
+
+	/**
+	 * (1), the review of A1, 8: a write is handed the caller its own writeAs
+	 * callback was handed, as it is or through requireUser, and nothing else.
+	 * (4): its options are an object written out at the call, and a `says`
+	 * among them a text written out, or a constant of the file that holds one:
+	 * never words made from data.
+	 */
+	/** Whether a name used at `node` is declared by something nearer than the file: a scope between them declares it. */
+	const declaredNearer = (node: ts.Node, name: string) => {
+		for (let scope: ts.Node | undefined = node.parent; scope && !ts.isSourceFile(scope); scope = scope.parent) {
+			if (declaredIn(scope).some((declared) => declared.name === name)) return true;
+		}
+		return false;
+	};
+	const judgeWriteCall = (call: ts.CallExpression, name: string) => {
+		const callback = writeAsCallbacks.filter((c) => within(call, c)).sort((a, b) => b.getStart(tree) - a.getStart(tree))[0];
+		const [parameter] = callback?.parameters ?? [];
+		const callerName = parameter && ts.isIdentifier(parameter.name) ? parameter.name.text : undefined;
+		const isCaller = (node: ts.Expression | undefined) => node !== undefined && callerName !== undefined && ts.isIdentifier(node) && node.text === callerName;
+		const [first] = call.arguments;
+		const handed =
+			isCaller(first) || (first !== undefined && ts.isCallExpression(first) && calleeOf(first, tree) === 'requireUser' && isCaller(first.arguments[0]));
+		if (!handed) {
+			findings.push(`${file}:${line(call)} calls ${name} with ${first ? first.getText(tree) : 'nothing'} first, not the caller its writeAs callback is handed (1)`);
+		}
+		// The caller is known by its name, so the name must mean it (the re-check of A1, 1): the call
+		// sits in the callback itself, with no function between them, and nothing in the callback
+		// declares the name again or assigns to it.
+		if (callback) {
+			for (let at: ts.Node | undefined = call.parent; at && at !== callback; at = at.parent) {
+				if (ts.isFunctionLike(at)) {
+					findings.push(`${file}:${line(call)} calls ${name} inside a function written in its writeAs callback: call it in the callback itself (1)`);
+					break;
+				}
+			}
+			const visit = (node: ts.Node): void => {
+				if (ts.isIdentifier(node) && node.text === callerName) {
+					if (isDeclaredName(node) || (ts.isFunctionDeclaration(node.parent) && node.parent.name === node)) {
+						findings.push(`${file}:${line(node)} declares ${callerName} again inside its writeAs callback (1)`);
+					}
+					const parent = node.parent;
+					const assigned =
+						(ts.isBinaryExpression(parent) && parent.left === node && parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+						((ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
+							(parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken));
+					if (assigned) findings.push(`${file}:${line(node)} assigns to ${callerName}, the caller its writeAs callback is handed (1)`);
+				}
+				ts.forEachChild(node, visit);
+			};
+			visit(callback.body);
+		}
+		const options = call.arguments[call.arguments.length - 1];
+		if (!options || !ts.isObjectLiteralExpression(options) || options.properties.some((p) => ts.isSpreadAssignment(p))) {
+			findings.push(`${file}:${line(call)} hands ${name} options that are not an object written out at the call (4)`);
+			return;
+		}
+		for (const property of options.properties) {
+			if (property.name && ts.isComputedPropertyName(property.name)) {
+				findings.push(`${file}:${line(call)} hands ${name} options with a computed key (4)`);
+				continue;
+			}
+			// The key by its name, quoted or not.
+			const key = property.name && (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name) || ts.isNumericLiteral(property.name)) ? property.name.text : undefined;
+			if (key !== 'says') continue;
+			const value = ts.isPropertyAssignment(property) ? property.initializer : ts.isShorthandPropertyAssignment(property) ? property.name : undefined;
+			// A name only if it is the file's constant: nothing nearer declares it.
+			const written =
+				value !== undefined &&
+				(ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value) || (ts.isIdentifier(value) && texts.has(value.text) && !declaredNearer(value, value.text)));
+			if (!written) findings.push(`${file}:${line(call)} hands ${name} a says that is not a text written out (4)`);
+		}
+	};
+
+	// (2): each use of a service's function: called, and where.
+	const visitUses = (node: ts.Node): void => {
+		if (ts.isIdentifier(node) && usedAsName(node) && !isDeclaredName(node) && !ts.isImportSpecifier(node.parent) && !ts.isImportClause(node.parent)) {
+			const service = serviceOf(node.text);
+			if (service) {
+				const call = ts.isCallExpression(node.parent) && node.parent.expression === node ? node.parent : undefined;
+				const handler = handlers.find(({ fn }) => fn !== undefined && within(node, fn));
+				if (!call) {
+					findings.push(`${file}:${line(node)} uses ${node.text} of ${service.file} other than by calling it`);
+				} else if (service.write && !insideCallback(call)) {
+					findings.push(`${file}:${line(call)} calls ${node.text}, a write of ${service.file}, outside a writeAs callback (2)`);
+				} else if (service.write) {
+					judgeWriteCall(call, node.text);
+				} else if (service.read && !insideCallback(call) && handler?.method !== 'GET') {
+					findings.push(`${file}:${line(call)} calls ${node.text}, a read of ${service.file}, outside a GET and outside a writeAs callback (2)`);
+				} else if (!service.read && !service.write) {
+					findings.push(`${file}:${line(call)} calls ${node.text}, which ${service.file} exports as neither a read nor a write`);
+				}
+			}
+		}
+		ts.forEachChild(node, visitUses);
+	};
+	visitUses(tree);
+
+	// (1): in each write handler that uses a service, every call after its body
+	// to $lib/server/** inside a callback, or on OUTSIDE_WRITE.
+	for (const { method, fn } of handlers) {
+		if (!WRITING.includes(method) || !fn?.body) continue;
+		let usesAService = false;
+		const look = (node: ts.Node): void => {
+			if (ts.isIdentifier(node) && usedAsName(node) && serviceOf(node.text)) usesAService = true;
+			else ts.forEachChild(node, look);
+		};
+		look(fn.body);
+		if (!usesAService) continue;
+		// Where the body has been read, as card 2253's rule has it: the end of the
+		// read, or, for a handler with no body, its first writeAs. What comes
+		// before is card 2115's rule's, and a quick check's.
+		const read = bodyReadOf(tree, fn, givenTo(fn).isTheRequest);
+		const firstWrite = callsIn(fn.body)
+			.filter((call) => calleeOf(call, tree) === 'writeAs')
+			.sort((a, b) => a.getStart(tree) - b.getStart(tree))[0];
+		const from = read ? read.getEnd() : (firstWrite?.getStart(tree) ?? fn.body.getEnd());
+		for (const call of callsIn(fn.body, true)) {
+			if (call.getStart(tree) < from || insideCallback(call)) continue;
+			const callee = calleeOf(call, tree);
+			const root = callee.split('.')[0].split('(')[0];
+			if (!names.has(root) || ['writeAs', 'stillCallerNow'].includes(root) || root in OUTSIDE_WRITE) continue;
+			findings.push(`${file}:${line(call)} ${method} calls ${callee} after its body outside its writeAs callback (1)`);
+		}
+	}
+	return [...new Set(findings)];
+}
+
+describe('one service per action, written only inside writeAs (card 2012)', () => {
+	const services = new Map(SERVICES.map((file) => [file, judgeService(file, readFileSync(join(ROOT, file), 'utf8'))] as const));
+	const routes = filesUnder('src/routes', (path) => /\/\+(server|page\.server|layout\.server)\.ts$/.test(path));
+
+	it('calls nothing from $lib/server after the body outside writeAs in a handler that calls a service, and calls a service write only in a callback (1, 2)', () => {
+		const findings = routes.flatMap((file) => judgeServiceCalls(file, readFileSync(join(ROOT, file), 'utf8'), services));
+
+		// Each names the file, the line and the call. Call it inside the
+		// writeAs callback and return what the answer needs.
+		expect(findings).toEqual([]);
+	});
+
+	it('writes each service to the rule: READS, inWrite() first in every write, no inTransaction before it, nothing of the request (2, 3)', () => {
+		expect([...services.values()].flatMap((service) => service.findings)).toEqual([]);
+		// Something was read: the cards service's six writes.
+		expect(services.get('src/lib/server/cards.ts')?.writes).toEqual(['createCard', 'updateCard', 'removeCard', 'moveCard', 'moveCards', 'restoreCardFor']);
+	});
+
+	it('names on SERVICES every module under src/lib/server that imports inWrite or exports a function handed the caller, and nothing else; nothing re-exports a service or imports one with import() (4)', () => {
+		const files = filesUnder('src', (path) => path.endsWith('.ts')).map((file) => ({ file, source: readFileSync(join(ROOT, file), 'utf8') }));
+
+		expect(judgeServiceModules(files, SERVICES, NOT_SERVICES)).toEqual([]);
+		// Read: the modules of src/lib/server, the routes, and the one that writes.
+		expect(files.filter(({ file }) => file.startsWith('src/lib/server/')).length).toBeGreaterThanOrEqual(60);
+		expect(files.some(({ file }) => file === 'src/lib/server/cards.ts')).toBe(true);
+	});
+
+	it('was looked for: the route files, the moved handlers among them, and a service that writes', () => {
+		expect(routes.length).toBeGreaterThanOrEqual(120);
+		expect(routes).toContain('src/routes/api/v1/cards/[cardId]/move/+server.ts');
+		const callers = routes.filter((file) => /from '\$lib\/server\/cards'/.test(readFileSync(join(ROOT, file), 'utf8')));
+		expect(callers).toEqual([
+			'src/routes/api/boards/[id]/archive/+server.ts',
+			'src/routes/api/cards/+server.ts',
+			'src/routes/api/cards/[id]/+server.ts',
+			'src/routes/api/cards/[id]/restore/+server.ts',
+			'src/routes/api/cards/reorder/+server.ts',
+			'src/routes/api/v1/boards/[boardId]/cards/+server.ts',
+			'src/routes/api/v1/cards/[cardId]/+server.ts',
+			'src/routes/api/v1/cards/[cardId]/move/+server.ts'
+		]);
+	});
+
+	describe('the rule itself (5)', () => {
+		const SERVICE = new Map([['src/lib/server/things.ts', { reads: ['listThings'], writes: ['makeThing'] }]]);
+		const calls = (code: string) => judgeServiceCalls('src/routes/api/example/+server.ts', code, SERVICE);
+		const head = [
+			"import { json } from '$lib/server/v1-json';",
+			"import { linkBaseUrl } from '$lib/server/email';",
+			"import { pathId, readBody } from '$lib/server/request-body';",
+			"import { listThings, makeThing } from '$lib/server/things';",
+			"import { shape } from '$lib/server/shapes';",
+			"import { writeAs } from '$lib/server/write-as';"
+		];
+
+		it('finds a service write called after the body outside its callback, by file, line and callee, and lets OUTSIDE_WRITE through', () => {
+			const code = [
+				...head,
+				'export const POST = async ({ params, request, locals, url }) => {',
+				'\tconst id = pathId(params.id, "thing");',
+				'\tconst body = await readBody(request);',
+				'\tconst baseUrl = linkBaseUrl(url);',
+				'\twriteAs(locals, (caller) => caller);',
+				'\tconst made = makeThing(null, id, body, { baseUrl });',
+				'\treturn json(shape(made));',
+				'};'
+			].join('\n');
+
+			expect(calls(code)).toEqual([
+				'src/routes/api/example/+server.ts:12 calls makeThing, a write of src/lib/server/things.ts, outside a writeAs callback (2)',
+				'src/routes/api/example/+server.ts:12 POST calls makeThing after its body outside its writeAs callback (1)',
+				'src/routes/api/example/+server.ts:13 POST calls shape after its body outside its writeAs callback (1)'
+			]);
+		});
+
+		it('passes a handler whose service call and answer shaping are inside the callback, and a read in a GET', () => {
+			const code = [
+				...head,
+				'export const POST = async ({ params, request, locals, url }) => {',
+				'\tconst id = pathId(params.id, "thing");',
+				'\tconst body = await readBody(request);',
+				'\tconst baseUrl = linkBaseUrl(url);',
+				'\tconst made = writeAs(locals, (caller) => shape(makeThing(caller, id, body, { baseUrl })));',
+				'\treturn json(made);',
+				'};',
+				'export const GET = async ({ locals }) => json(listThings(locals.user));'
+			].join('\n');
+
+			expect(calls(code)).toEqual([]);
+		});
+
+		it('finds a read outside a GET and its callback, a service passed on uncalled, and a service imported as a namespace', () => {
+			const code = [
+				...head,
+				"import * as things from '$lib/server/things';",
+				'export const DELETE = async ({ locals }) => {',
+				'\tconst all = listThings(locals.user);',
+				'\twriteAs(locals, (caller) => [caller].map(makeThing));',
+				'};'
+			].join('\n');
+
+			expect(calls(code)).toEqual([
+				'src/routes/api/example/+server.ts:7 imports src/lib/server/things.ts as a namespace: import its functions by name',
+				'src/routes/api/example/+server.ts:9 calls listThings, a read of src/lib/server/things.ts, outside a GET and outside a writeAs callback (2)',
+				// Before the first writeAs of a handler with no body: (2)'s, not (1)'s.
+				'src/routes/api/example/+server.ts:10 uses makeThing of src/lib/server/things.ts other than by calling it'
+			]);
+		});
+
+		it('leaves a handler that calls no service to card 2253\'s rule', () => {
+			const code = [...head, 'export const PUT = async ({ request, locals }) => {', '\tconst body = await readBody(request);', '\treturn json(shape(body));', '};'].join('\n');
+
+			expect(calls(code)).toEqual([]);
+		});
+
+		const service = (code: string) => judgeService('src/lib/server/things.ts', code).findings;
+		const WRITE_AS = "import { inWrite } from './write-as';\nimport { inTransaction } from './db/transaction';\n";
+
+		it('passes a service written to the rule', () => {
+			const code = [
+				WRITE_AS + "export const READS = ['listThings'] as const;",
+				'export function listThings(user) { return []; }',
+				'export function makeThing(caller, id) {',
+				'\tinWrite();',
+				'\treturn inTransaction(() => id);',
+				'}'
+			].join('\n');
+
+			expect(service(code)).toEqual([]);
+		});
+
+		it('finds a write without inWrite() first, one that opens its own transaction first, a read on no list, and the request named', () => {
+			const code = [
+				WRITE_AS + "import { getRequestEvent } from '$app/server';",
+				'export function listThings(user) { return []; }',
+				'export function makeThing(caller, id) {',
+				'\treturn inTransaction(() => { inWrite(); return id; });',
+				'}',
+				'export const dropThing = (caller, locals: App.Locals) => inWrite();'
+			].join('\n');
+
+			expect(service(code)).toEqual([
+				'src/lib/server/things.ts has no READS export naming its read functions',
+				'src/lib/server/things.ts:3 imports $app/server (3)',
+				'src/lib/server/things.ts:4 listThings is a write (it is not on READS) and its first statement is not inWrite() (2)',
+				'src/lib/server/things.ts:5 makeThing is a write (it is not on READS) and its first statement is not inWrite() (2)',
+				'src/lib/server/things.ts:8 dropThing is a write (it is not on READS) and its first statement is not inWrite() (2)',
+				'src/lib/server/things.ts:3 names getRequestEvent (3)',
+				'src/lib/server/things.ts:6 names inTransaction other than in a write after its inWrite() (3)',
+				'src/lib/server/things.ts:8 names locals (3)',
+				'src/lib/server/things.ts:8 names App.Locals (3)'
+			]);
+		});
+
+		it('finds a write exported by name, a default export, an exported value that is not a function written here, and a re-export (the review, 1)', () => {
+			const code = [
+				WRITE_AS + 'export const READS = [] as const;',
+				'function f(caller) { return caller; }',
+				'export { f };',
+				'export default function (caller) { inWrite(); }',
+				'export const w = once((caller) => caller);',
+				"export * from './elsewhere';",
+				"export { g } from './elsewhere';",
+				'export type Shape = { id: number };'
+			].join('\n');
+
+			expect(service(code)).toEqual([
+				'src/lib/server/things.ts:5 f is a write (it is not on READS) and its first statement is not inWrite() (2)',
+				'src/lib/server/things.ts:6 has a default export: a service exports its functions by name (2)',
+				'src/lib/server/things.ts:7 exports w, which is not a function written here: a service exports its functions and READS alone (2)',
+				'src/lib/server/things.ts:8 re-exports from ./elsewhere: a service exports only what it writes here (2)',
+				'src/lib/server/things.ts:9 re-exports from ./elsewhere: a service exports only what it writes here (2)'
+			]);
+		});
+
+		it('finds inTransaction under another name, and a read that writes (the review, 3)', () => {
+			const code = [
+				"import { inWrite } from './write-as';",
+				"import { inTransaction as tx } from './db/transaction';",
+				"import * as t from './db/transaction';",
+				"export const READS = ['listThings'];",
+				'export function listThings(user) { db.insert(things).values({}).run(); return tx(() => 1); }',
+				'export function makeThing(caller) {',
+				'\ttx(() => 1);',
+				'\tinWrite();',
+				'}',
+				'export function dropThing(caller) { inWrite(); return t.inTransaction(() => 1); }',
+				'export function keepThing(caller) { t.inTransaction(() => 1); }'
+			].join('\n');
+
+			expect(service(code)).toEqual([
+				'src/lib/server/things.ts:6 makeThing is a write (it is not on READS) and its first statement is not inWrite() (2)',
+				'src/lib/server/things.ts:11 keepThing is a write (it is not on READS) and its first statement is not inWrite() (2)',
+				'src/lib/server/things.ts:5 listThings is on READS and writes: db.insert(things).values({}).run (3)',
+				'src/lib/server/things.ts:5 listThings is on READS and writes: tx (3)',
+				'src/lib/server/things.ts:5 names inTransaction (as tx) other than in a write after its inWrite() (3)',
+				'src/lib/server/things.ts:7 names inTransaction (as tx) other than in a write after its inWrite() (3)',
+				'src/lib/server/things.ts:11 names inTransaction (as t.inTransaction) other than in a write after its inWrite() (3)'
+			]);
+		});
+
+		it('finds a service called with anything but its callback\'s caller first, and options or says not written out at the call (the review, 4 and 8)', () => {
+			const code = [
+				...head,
+				'const WORDS = "Not yours";',
+				'export const PUT = async ({ request, locals }) => {',
+				'\tconst body = await readBody(request);',
+				'\tconst made = writeAs(locals, () => makeThing(locals.user, 1, body, { says: WORDS }));',
+				'\twriteAs(locals, (caller) => makeThing(requireUser(caller), 1, body, { says: `Not ${body.who}` }));',
+				'\twriteAs(locals, (caller) => makeThing(caller, 1, body, opts));',
+				'\twriteAs(locals, (caller) => makeThing(caller, 1, body, { ...opts }));',
+				'\treturn json(made);',
+				'};'
+			].join('\n');
+
+			expect(calls(code)).toEqual([
+				'src/routes/api/example/+server.ts:10 calls makeThing with locals.user first, not the caller its writeAs callback is handed (1)',
+				'src/routes/api/example/+server.ts:11 hands makeThing a says that is not a text written out (4)',
+				'src/routes/api/example/+server.ts:12 hands makeThing options that are not an object written out at the call (4)',
+				'src/routes/api/example/+server.ts:13 hands makeThing options that are not an object written out at the call (4)'
+			]);
+		});
+
+		it('finds a service write called inside a function in its callback, the caller declared again inside it, or assigned to (the re-check, 1)', () => {
+			const code = [
+				...head,
+				'export const PUT = async ({ request, locals }) => {',
+				'\tconst body = await readBody(request);',
+				'\twriteAs(locals, (caller) => { const run = (caller) => makeThing(caller, 1, body, {}); return run(getUser(7)); });',
+				'\twriteAs(locals, (caller) => [caller].map((caller) => makeThing(caller, 1, body, {})));',
+				'\twriteAs(locals, (caller) => { { const caller = getUser(7); makeThing(caller, 1, body, {}); } });',
+				'\twriteAs(locals, (caller) => { caller = getUser(7); return makeThing(caller, 1, body, {}); });',
+				'\twriteAs(locals, (caller) => makeThing(caller, 1, body, {}));',
+				'\treturn json({});',
+				'};'
+			].join('\n');
+
+			expect(calls(code)).toEqual([
+				'src/routes/api/example/+server.ts:9 calls makeThing inside a function written in its writeAs callback: call it in the callback itself (1)',
+				'src/routes/api/example/+server.ts:9 declares caller again inside its writeAs callback (1)',
+				'src/routes/api/example/+server.ts:10 calls makeThing inside a function written in its writeAs callback: call it in the callback itself (1)',
+				'src/routes/api/example/+server.ts:10 declares caller again inside its writeAs callback (1)',
+				'src/routes/api/example/+server.ts:11 declares caller again inside its writeAs callback (1)',
+				'src/routes/api/example/+server.ts:12 assigns to caller, the caller its writeAs callback is handed (1)'
+			]);
+		});
+
+		it("finds says under a quoted key, a computed key, and a name a callback declares over the file's constant (the re-check, 2)", () => {
+			const code = [
+				...head,
+				'const NO = "Not yours";',
+				'export const PUT = async ({ request, locals }) => {',
+				'\tconst body = await readBody(request);',
+				"\twriteAs(locals, (caller) => makeThing(caller, 1, body, { 'says': body.t }));",
+				"\twriteAs(locals, (caller) => makeThing(caller, 1, body, { ['says']: NO }));",
+				'\twriteAs(locals, (caller) => { const NO = String(body.t); return makeThing(caller, 1, body, { says: NO }); });',
+				'\twriteAs(locals, (caller) => makeThing(caller, 1, body, { says: NO }));',
+				'\treturn json({});',
+				'};'
+			].join('\n');
+
+			expect(calls(code)).toEqual([
+				'src/routes/api/example/+server.ts:10 hands makeThing a says that is not a text written out (4)',
+				'src/routes/api/example/+server.ts:11 hands makeThing options with a computed key (4)',
+				'src/routes/api/example/+server.ts:12 hands makeThing a says that is not a text written out (4)'
+			]);
+		});
+
+		it('finds inWrite through a namespace, the caller under a type alias, a service re-exported by name or as a value, and a computed import() in src/lib/server (the re-check, 3 and 4)', () => {
+			const files = [
+				{ file: 'src/lib/server/i.ts', source: "import * as w from './write-as';\nexport function act(x: number) { w.inWrite(); }" },
+				{ file: 'src/lib/server/j.ts', source: "import type { SessionUser } from './auth';\ntype Caller = SessionUser | null;\nexport function f(caller: Caller) {}" },
+				{ file: 'src/lib/server/k.ts', source: "import type { SessionUser as Account } from './auth';\nexport function g(user: Account | null) {}" },
+				{ file: 'src/lib/server/l.ts', source: "import type { SessionUser as Account } from './auth';\ntype Who = Account | null | undefined;\nexport function h(caller: Who) {}" },
+				{ file: 'src/lib/server/m.ts', source: "import { createCard } from './cards';\nexport { createCard };" },
+				{ file: 'src/lib/server/n.ts', source: "import { createCard } from '$lib/server/cards';\nexport const make = createCard;" },
+				{ file: 'src/lib/server/o.ts', source: 'export async function load(name: string) { return import(name); }' },
+				{ file: 'src/lib/server/cards.ts', source: "import { inWrite } from './write-as';\nexport function createCard(caller: SessionUser | null) { inWrite(); }" }
+			];
+
+			expect(judgeServiceModules(files, ['src/lib/server/cards.ts'])).toEqual([
+				'src/lib/server/i.ts must be on SERVICES: it imports inWrite (4)',
+				'src/lib/server/j.ts must be on SERVICES: it exports f, whose first parameter is the caller (4)',
+				'src/lib/server/k.ts must be on SERVICES: it exports g, whose first parameter is the caller (4)',
+				'src/lib/server/l.ts must be on SERVICES: it exports h, whose first parameter is the caller (4)',
+				'src/lib/server/m.ts:2 re-exports src/lib/server/cards.ts, a service: import its functions by name where they are called',
+				'src/lib/server/n.ts:2 re-exports src/lib/server/cards.ts, a service: import its functions by name where they are called',
+				'src/lib/server/o.ts:1 calls import() with a module that is not written out'
+			]);
+		});
+
+		it('finds a read that execs or prepares a statement, itself or through a function of its module (the re-check, 5)', () => {
+			const code = [
+				"import { inWrite } from './write-as';",
+				"export const READS = ['listThings', 'countThings'];",
+				'function stamp() { sqlite.exec("UPDATE things SET n = 1"); }',
+				'export function listThings(user) { stamp(); return sqlite.prepare("SELECT 1").all(); }',
+				'export function countThings(user) { return 0; }'
+			].join('\n');
+
+			expect(service(code)).toEqual([
+				'src/lib/server/things.ts:3 listThings is on READS and writes: sqlite.exec (through stamp) (3)',
+				'src/lib/server/things.ts:4 listThings is on READS and writes: sqlite.prepare (3)'
+			]);
+		});
+
+		it('puts on SERVICES every module that imports inWrite or exports, in any form, a function handed the caller; and bans re-exporting or import() of one (the review, 1)', () => {
+			const SESSION = "import type { SessionUser } from './auth';\n";
+			const files = [
+				{ file: 'src/lib/server/a.ts', source: SESSION + 'function f(caller: SessionUser | null) {}\nexport { f };' },
+				{ file: 'src/lib/server/b.ts', source: SESSION + 'export default function (caller: SessionUser | null) {}' },
+				{ file: 'src/lib/server/c.ts', source: SESSION + 'export const w = once((caller: SessionUser | null) => caller);' },
+				{ file: 'src/lib/server/d.ts', source: SESSION + 'export function act(user: SessionUser | null, id: number) {}' },
+				{ file: 'src/lib/server/e.ts', source: "import { inWrite } from './write-as';\nexport function act(user: SessionUser) { inWrite(); }" },
+				{
+					file: 'src/lib/server/f.ts',
+					source:
+						SESSION +
+						'export function helper(user: SessionUser, id: number) {}\nexport function guard(user: SessionUser | null | undefined) {}\nexport function connect(caller: ConnectCaller) {}'
+				},
+				{ file: 'src/lib/server/g.ts', source: "export * from './cards';" },
+				{ file: 'src/lib/server/h.ts', source: "export { createCard as make } from '$lib/server/cards';" },
+				{ file: 'src/routes/api/x/+server.ts', source: "export const POST = async () => { const { createCard } = await import('$lib/server/cards'); await import(name); };" },
+				{ file: 'src/lib/server/cards.ts', source: "import { inWrite } from './write-as';\nexport function createCard(caller: SessionUser | null) { inWrite(); }" },
+				{ file: 'src/lib/server/old.ts', source: 'export function x() {}' }
+			];
+
+			expect(judgeServiceModules(files, ['src/lib/server/cards.ts', 'src/lib/server/old.ts'])).toEqual([
+				'src/lib/server/a.ts must be on SERVICES: it exports f, whose first parameter is the caller (4)',
+				'src/lib/server/b.ts must be on SERVICES: it exports default, whose first parameter is the caller (4)',
+				'src/lib/server/c.ts must be on SERVICES: it exports w, whose first parameter is the caller (4)',
+				'src/lib/server/d.ts must be on SERVICES: it exports act, whose first parameter is the caller (4)',
+				'src/lib/server/e.ts must be on SERVICES: it imports inWrite (4)',
+				'src/lib/server/g.ts:1 re-exports src/lib/server/cards.ts, a service: import its functions by name where they are called',
+				'src/lib/server/h.ts:1 re-exports src/lib/server/cards.ts, a service: import its functions by name where they are called',
+				'src/routes/api/x/+server.ts:1 imports src/lib/server/cards.ts, a service, with import(): import its functions by name',
+				'src/routes/api/x/+server.ts:1 calls import() with a module that is not written out',
+				'src/lib/server/old.ts is on SERVICES and is no service: it imports no inWrite and exports no function handed the caller (4)'
+			]);
+			// NOT_SERVICES excuses a guard handed the caller, never a module that imports inWrite, and an entry that excuses nothing fails.
+			const [, , , d, e, f] = files;
+			expect(judgeServiceModules([d, e, f], [], { [d.file]: 'a guard', [e.file]: 'no', [f.file]: 'nothing to excuse' })).toEqual([
+				'src/lib/server/e.ts must be on SERVICES: it imports inWrite (4)',
+				'NOT_SERVICES names src/lib/server/e.ts, which no longer exports a function handed the caller (or imports inWrite) (4)',
+				'NOT_SERVICES names src/lib/server/f.ts, which no longer exports a function handed the caller (or imports inWrite) (4)'
+			]);
+		});
+
+		it('finds an inWrite that is not write-as\'s, and a name on READS that is no function', () => {
+			const code = [
+				"import { inWrite } from './elsewhere';",
+				"export const READS = ['nothing'];",
+				'export function makeThing(caller) {',
+				'\tinWrite();',
+				'}'
+			].join('\n');
+
+			expect(service(code)).toEqual([
+				'src/lib/server/things.ts:3 makeThing is a write (it is not on READS) and its first statement is not inWrite() (2)',
+				'src/lib/server/things.ts names nothing on READS, and exports no such function (2)'
+			]);
+		});
 	});
 });
 

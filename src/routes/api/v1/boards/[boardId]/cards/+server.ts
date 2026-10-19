@@ -1,23 +1,10 @@
-import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { cards, columns, subtasks } from '$lib/server/db/schema';
 import { eq, asc, and, isNull, sql } from 'drizzle-orm';
-import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
+import { createCard } from '$lib/server/cards';
 import { linkBaseUrl } from '$lib/server/email';
-import { normaliseReportingFields } from '$lib/server/reporting-fields';
-import { PRIORITIES, requireCardCategory } from '$lib/server/card-fields';
-import {
-	pathId,
-	readBody,
-	readChoice,
-	readColour,
-	readDate,
-	readId,
-	readNumber,
-	readQueryId,
-	readText
-} from '$lib/server/request-body';
+import { pathId, readBody, readQueryId } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -108,6 +95,9 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
  * A card created in a Complete column is completed as it is created, as a
  * card moved into one is (card 2134): see `$lib/server/card-create`. The
  * answer is the card as written, with its `completedAt`.
+ *
+ * The work is `createCard` in `$lib/server/cards`, which the internal create
+ * shares (card 2012), given this board.
  */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
 	requireUser(locals.user);
@@ -121,58 +111,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 	// It asks first whether the key or session is still open, and who its
 	// account is now (card 2253): a key revoked while the body arrived is a
 	// 401, with no card, no entry and no webhook.
-	const card = writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		requireBoard(user, boardId, 'edit');
-
-		const columnId = readId(body, 'columnId', { required: true, says: { missing: 'columnId is required' } });
-		const title = readText(body, 'title', {
-			required: true,
-			trim: true,
-			min: 1,
-			max: 500,
-			says: { missing: 'title is required', empty: 'title is required' }
-		});
-		const description = readText(body, 'description', { max: 50000 });
-		const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true });
-		const colorTag = readColour(body, 'colorTag', { allowEmpty: true });
-		const categoryId = readId(body, 'categoryId', { nullable: true });
-		const dueDate = readDate(body, 'dueDate', { nullable: true });
-		const businessValue = readText(body, 'businessValue', { max: 10000 });
-		const position = readNumber(body, 'position', {});
-		// The five reporting fields, each in its own vocabulary, with its own 400.
-		const reporting = normaliseReportingFields(body);
-
-		// Verify the column belongs to this board
-		const col = db.select().from(columns).where(eq(columns.id, columnId)).get();
-		if (!col || col.boardId !== boardId) {
-			throw error(400, 'Column does not belong to this board');
-		}
-		if (categoryId != null) requireCardCategory(categoryId, boardId);
-
-		const card = db.insert(cards)
-			.values({
-				columnId,
-				categoryId: categoryId ?? null,
-				title,
-				description: description ?? '',
-				position: position ?? 0,
-				priority: priority ?? 'medium',
-				colorTag: colorTag ?? '',
-				dueDate: dueDate ?? null,
-				businessValue: businessValue ?? '',
-				createdBy: user.id,
-				...reporting
-			})
-			.returning()
-			.get();
-
-		// The `card_created` entry and, in a Complete column, the completion; then
-		// the live update and, for a completion, the celebration, after the commit.
-		const creation = recordCardCreated({ card, column: col, actor: user, source: 'api' });
-		announceCardCreated(creation, user, baseUrl);
-		return creation.card;
-	});
+	const card = writeAs(locals, (caller) => createCard(caller, { boardId }, body, { source: 'api', baseUrl }));
 
 	return json(card, { status: 201 });
 };

@@ -1,17 +1,10 @@
-import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { requireCard, requireColumn, requireUser } from '$lib/server/route-guards';
+import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
-import {
-	applyCardMove,
-	announceCardMoves,
-	recordUnblockedByMoves,
-	leftMilestoneOf,
-	CardMoveError,
-	type CardMove
-} from '$lib/server/card-moves';
+import { leftMilestoneOf } from '$lib/server/card-moves';
+import { moveCard } from '$lib/server/cards';
 import { linkBaseUrl } from '$lib/server/email';
-import { pathId, readBody, readId, readNumber } from '$lib/server/request-body';
+import { pathId, readBody } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
@@ -35,6 +28,9 @@ import type { RequestHandler } from './$types';
  * A move to another board takes the card out of a milestone of the board it
  * left (card 2155), and the answer names that milestone as `leftMilestone`,
  * null otherwise (the review's O3).
+ *
+ * The work is `moveCard` in `$lib/server/cards`, which shares its moves with
+ * the internal reorder (card 2012).
  */
 export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	requireUser(locals.user);
@@ -46,41 +42,17 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	// One transaction: both access checks read the rows the move then changes,
 	// and the move, its activity entry and the "Unblocked" notices are saved
 	// together or not at all. It asks first whether the key or session is
-	// still open, and who its account is now (card 2253); a refusal is not a
-	// CardMoveError, and passes the catch below as it is.
-	let move: CardMove;
-	try {
-		move = writeAs(locals, (caller) => {
-			const user = requireUser(caller);
-			requireCard(user, cardId, 'edit');
-			const targetColumnId = readId(body, 'columnId', { required: true, says: { missing: 'columnId is required' } });
-			const position = readNumber(body, 'position', {});
-
-			// Edit access to the board the card is going to, as well as the one it is on.
-			const target = requireColumn(user, targetColumnId, 'edit');
-
-			const applied = applyCardMove({
-				cardId,
-				toColumnId: target.column.id,
-				position,
-				actor: user,
-				source: 'api'
-			});
-
-			// Nothing is announced before the commit, or at all if this rolls back.
-			const unblocked = recordUnblockedByMoves([applied], user);
-			announceCardMoves([applied], unblocked, user, 'api', baseUrl);
-			return applied;
-		});
-	} catch (e) {
-		if (e instanceof CardMoveError) throw error(e.status, e.message);
-		throw e;
-	}
-
-	return json({
-		...move.card,
-		columnTitle: move.toColumn.title,
-		boardId: move.toBoardId,
-		leftMilestone: leftMilestoneOf(move)
+	// still open, and who its account is now (card 2253). The answer is made
+	// in it too, from the move.
+	const moved = writeAs(locals, (caller) => {
+		const move = moveCard(caller, { cardId }, body, { source: 'api', baseUrl });
+		return {
+			...move.card,
+			columnTitle: move.toColumn.title,
+			boardId: move.toBoardId,
+			leftMilestone: leftMilestoneOf(move)
+		};
 	});
+
+	return json(moved);
 };
