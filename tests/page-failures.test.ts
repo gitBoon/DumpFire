@@ -1244,7 +1244,7 @@ describe('a request’s pages, for a link that no longer works (card 2158)', () 
 	 */
 	function replyPage(answers: (url: string) => Answer): Page {
 		const tree = scriptOf(REPLY);
-		const functions = ['loadData', 'pollMessages', 'showLinkGone', 'stopPolling']
+		const functions = ['loadData', 'readThread', 'pollMessages', 'showLinkGone', 'stopPolling']
 			.map((name) => functionNamed(tree, name).getText())
 			.join('\n');
 		const js = ts.transpileModule(functions, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -1265,11 +1265,12 @@ describe('a request’s pages, for a link that no longer works (card 2158)', () 
 			'fetch',
 			'setInterval',
 			'clearInterval',
-			"let request = null, messages = [], loading = true, errorMsg = '', linkGone = false, pollInterval = null;\n" +
+			'failureMessage',
+			"let request = null, messages = [], loading = true, errorMsg = '', threadError = '', linkGone = false, pollInterval = null;\n" +
 				"const requestId = 5, token = 'the-link';\nfunction scrollToBottom() {}\n" +
 				`${js}\n` +
 				'return { loadData, pollMessages, get state() { return { request, linkGone, polling: pollInterval }; } };'
-		)(fetch, setInterval, clearInterval);
+		)(fetch, setInterval, clearInterval, failureMessage);
 		return Object.assign(page, { asked, started, stopped }) as Page;
 	}
 
@@ -4722,5 +4723,616 @@ describe('the SFTP host key on the admin page, src/routes/admin/+page.svelte (ca
 		}
 		expect(hostKeyBox![1]).toBe("dest.type === 'sftp' && byName(hostKeyChecks, dest.name)");
 		expect(row).toContain('{@const check = byName(hostKeyChecks, dest.name)!}');
+	});
+});
+
+// ─── Pages that said nothing when a read or a send failed (cards 2262, 2263, 2272) ───
+//
+// The Audit Log swallowed every failure, and kept the rows of the search
+// before under it. The inbox's conversation, its Accept and Reject, its list
+// and its thread read acted on a success alone, and a request that got no
+// answer threw and left a button on "..." for good; the requester's reply page
+// the same for a reply. Each now says what the server said, on a line where
+// the reader is looking, keeps what was typed, and clears its flag in a
+// `finally`. The functions are run as written, with stand-ins for `fetch`.
+
+/** The named functions of a page's script, as written, made into JavaScript that can be run. */
+function runnable(tree: ts.SourceFile, names: string[]): string {
+	return ts.transpileModule(names.map((name) => functionNamed(tree, name).getText()).join('\n'), {
+		compilerOptions: { target: ts.ScriptTarget.ES2022 }
+	}).outputText;
+}
+
+/** A stand-in `fetch` that gives each request to `answer`, and keeps what it was asked, as `METHOD url`. */
+function fetchBy(answer: (url: string, init?: RequestInit) => Response | Promise<Response>) {
+	const asked: string[] = [];
+	const fetch = async (url: string, init?: RequestInit) => {
+		asked.push(`${init?.method ?? 'GET'} ${url}`);
+		return answer(url, init);
+	};
+	return { fetch, asked };
+}
+
+const answered = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+const noAnswer = () => {
+	throw new TypeError('Failed to fetch');
+};
+
+describe('the Audit Log says why an answer failed, src/routes/audit/+page.svelte (card 2262)', () => {
+	const audit = svelteFile('src/routes/audit/+page.svelte');
+	const loading = functionNamed(audit.tree, 'loadAudit');
+
+	/** `loadAudit` as written, with a page of two rows, a stand-in `fetch` and the page's state as plain variables. */
+	function auditLog(answer: (url: string) => Response | Promise<Response>) {
+		const { fetch, asked } = fetchBy(answer);
+		const page = new Function(
+			'fetch',
+			'failureMessage',
+			"let auditRows = [], auditLoading = false, auditExhausted = false, auditError = '', auditAsked = 0;\n" +
+				"const AUDIT_PAGE = 2;\nlet fBoardId = '', fUserId = '', fAction = '', fSource = '', fFrom = '', fTo = '';\n" +
+				`${runnable(audit.tree, ['loadAudit', 'clearAudit'])}\n` +
+				'return { loadAudit, get state() { return { rows: auditRows.map((row) => row.id), loading: auditLoading, exhausted: auditExhausted, error: auditError }; } };'
+		)(fetch, failureMessage) as { loadAudit: (reset: boolean) => Promise<void>; readonly state: { rows: number[]; loading: boolean; exhausted: boolean; error: string } };
+		return Object.assign(page, { asked });
+	}
+
+	const REVERSED = () => answered(400, { message: '`from` is after `to`' });
+	const PAGE = (...ids: number[]) => () => answered(200, { data: ids.map((id) => ({ id })) });
+
+	it('shows no earlier answer under a refused Apply, says the server’s words, and clears them on the next answer that works', async () => {
+		let next: () => Response = PAGE(1, 2);
+		const page = auditLog(() => next());
+
+		await page.loadAudit(true);
+		expect(page.state).toEqual({ rows: [1, 2], loading: false, exhausted: false, error: '' });
+
+		next = REVERSED;
+		await page.loadAudit(true);
+		// The rows of the search before were left on screen under the refusal.
+		expect(page.state).toEqual({ rows: [], loading: false, exhausted: true, error: '`from` is after `to`' });
+
+		next = PAGE(3);
+		await page.loadAudit(true);
+		expect(page.state).toEqual({ rows: [3], loading: false, exhausted: true, error: '' });
+	});
+
+	it('keeps the rows read for a refused Load more, with the button to try again', async () => {
+		let next: () => Response = PAGE(1, 2);
+		const page = auditLog(() => next());
+		await page.loadAudit(true);
+
+		next = () => answered(503, { message: 'Service Unavailable' });
+		await page.loadAudit(false);
+		expect(page.state).toEqual({ rows: [1, 2], loading: false, exhausted: false, error: 'Service Unavailable' });
+		expect(page.asked.at(-1)).toContain('offset=2');
+	});
+
+	it('says when no answer came, and stops saying "Loading…", for Apply and for Load more', async () => {
+		let next: () => Response = PAGE(1, 2);
+		const page = auditLog(() => next());
+		await page.loadAudit(true);
+
+		next = noAnswer;
+		await page.loadAudit(false);
+		expect(page.state).toEqual({ rows: [1, 2], loading: false, exhausted: false, error: 'No answer from the server. The audit log was not read.' });
+		await page.loadAudit(true);
+		expect(page.state).toEqual({ rows: [], loading: false, exhausted: true, error: 'No answer from the server. The audit log was not read.' });
+	});
+
+	it('shows no older answer over a newer Apply’s, refused or not, and stops saying "Loading…" only for the newest (the review)', async () => {
+		const replies: ((res: Response) => void)[] = [];
+		const page = auditLog(() => new Promise<Response>((done) => replies.push(done)));
+
+		const older = page.loadAudit(true);
+		const newer = page.loadAudit(true);
+		replies[1](PAGE(3)());
+		await newer;
+		expect(page.state).toEqual({ rows: [3], loading: false, exhausted: true, error: '' });
+
+		replies[0](REVERSED());
+		await older;
+		expect(page.state).toEqual({ rows: [3], loading: false, exhausted: true, error: '' });
+
+		// The other way about: the older answer, a page that worked, comes first and is not shown; the newer still loads.
+		const first = page.loadAudit(true);
+		const second = page.loadAudit(true);
+		replies[2](PAGE(1, 2)());
+		await first;
+		expect(page.state).toEqual({ rows: [3], loading: true, exhausted: true, error: '' });
+		replies[3](PAGE(4)());
+		await second;
+		expect(page.state).toEqual({ rows: [4], loading: false, exhausted: true, error: '' });
+	});
+
+	it('reads a failure with failureMessage on the failed side alone, and clears its flag in a finally', () => {
+		const asked = callsOf(loading, 'failureMessage');
+		expect(asked.map(sideOf)).toEqual(['failed']);
+		expect(asked[0].arguments[1].getText()).toBe("'The audit log could not be read.'");
+		expect(statementsOf(loading, 'auditError = failure').map(sideOf)).toEqual(['failed']);
+		expect(callsOf(loading, 'res.json').map(sideOf)).toEqual(['ok']);
+		expect(statementsOf(loading, "auditError = ''").map(sideOf)).toEqual(['ok']);
+		expect(loading.getText()).not.toMatch(/catch\s*\{\s*\/\* silent \*\/\s*\}/);
+		expect(finallyBlocks(loading)).toEqual(['{ if (asked === auditAsked) auditLoading = false; }']);
+		expect(loading.getText().match(/auditLoading = false/g)).toHaveLength(1);
+		expect(audit.tree.getText()).toMatch(/import \{[^}]*\bfailureMessage\b[^}]*\} from '\$lib\/api';/);
+	});
+
+	it('shows the line under the filters, and "No audit entries match these filters." only without it', () => {
+		expect(audit.around('{auditError}').at(-1)).toEqual({ condition: 'auditError', inElse: false });
+		expect(audit.markup).toMatch(/\{#if auditError\}\s*<p class="audit-error" role="alert">\{auditError\}<\/p>\s*\{\/if\}/);
+		const line = audit.markup.indexOf('{auditError}');
+		expect(line).toBeGreaterThan(audit.markup.indexOf('onclick={() => loadAudit(true)}>Apply</button>'));
+		expect(line).toBeLessThan(audit.markup.indexOf('Loading audit log…'));
+		expect(audit.around('No audit entries match these filters.').at(-1)).toEqual({ condition: '!auditError', inElse: false });
+	});
+});
+
+describe('the inbox says when a request, a message or a read failed, src/routes/inbox/+page.svelte (cards 2263 and 2272)', () => {
+	const inbox = svelteFile('src/routes/inbox/+page.svelte');
+	const fn = (name: string) => functionNamed(inbox.tree, name);
+	const REQUEST = { id: 7, title: 'A request', status: 'pending' };
+
+	type Inbox = {
+		loadRequests: () => Promise<void>;
+		acceptRequest: () => Promise<void>;
+		rejectRequest: () => Promise<void>;
+		openChat: (req: typeof REQUEST) => Promise<void>;
+		closeChat: () => void;
+		pollChatMessages: (id: number) => Promise<void>;
+		sendChatMessage: () => Promise<void>;
+		readonly state: Record<string, any>;
+		set: (name: 'acceptModal' | 'rejectModal', value: Record<string, unknown>) => void;
+		type: (text: string) => void;
+		asked: string[];
+		/** The request id each poll started was for. */
+		polled: number[];
+	};
+
+	/**
+	 * The inbox's reads and sends as written, with a stand-in `fetch` and
+	 * timer. Each window's state starts as the page declares it, read from its
+	 * `$state(...)`, so a field the page leaves out is left out here too.
+	 */
+	function inboxPage(answer: (url: string, init?: RequestInit) => Response | Promise<Response>): Inbox {
+		const { fetch, asked } = fetchBy(answer);
+		// A poll started is counted against the request the window shows when it starts.
+		let view: Inbox | undefined;
+		const polled: number[] = [];
+		const startPoll = () => {
+			polled.push(view!.state.chatModal.request?.id);
+			return 'timer';
+		};
+		const declared = (name: string) => {
+			const found = new RegExp(`let ${name} = \\$state<[^\\n]*>\\(([\\s\\S]*?)\\);`).exec(inbox.tree.getText());
+			expect(found, name).not.toBeNull();
+			return found![1];
+		};
+		const page = new Function(
+			'fetch',
+			'failureMessage',
+			'setInterval',
+			'clearInterval',
+			"let requests = [], loading = true, listError = '';\n" +
+				`let acceptModal = ${declared('acceptModal')};\nlet rejectModal = ${declared('rejectModal')};\nlet chatModal = ${declared('chatModal')};\n` +
+				'let chatPollInterval = null;\nfunction scrollChatToBottom() {}\n' +
+				`${runnable(inbox.tree, ['loadRequests', 'acceptRequest', 'rejectRequest', 'openChat', 'closeChat', 'readThread', 'pollChatMessages', 'sendChatMessage'])}\n` +
+				'return { loadRequests, acceptRequest, rejectRequest, openChat, closeChat, pollChatMessages, sendChatMessage,\n' +
+				'  get state() { return { requests, loading, listError, acceptModal, rejectModal, chatModal }; },\n' +
+				'  set(name, value) { if (name === "acceptModal") acceptModal = value; else rejectModal = value; },\n' +
+				'  type(text) { chatModal.newMsg = text; } };'
+		)(fetch, failureMessage, startPoll, () => {});
+		view = Object.assign(page, { asked, polled }) as Inbox;
+		return view;
+	}
+
+	describe('the conversation’s send (card 2263)', () => {
+		it.each([
+			[400, 'Request is already resolved'],
+			[401, 'Not authenticated'],
+			[400, 'message must be at most 5000 characters']
+		])('says a %i refusal under the box in the server’s words, keeps the text and lets it be sent again', async (status, message) => {
+			let sending: Response | (() => never) = answered(status, { message });
+			const page = inboxPage((url, init) => (init?.method === 'POST' ? (typeof sending === 'function' ? sending() : sending) : answered(200, [])));
+			await page.openChat(REQUEST);
+			page.type('  Is this still wanted?  ');
+
+			await page.sendChatMessage();
+			expect(page.state.chatModal).toMatchObject({ error: message, newMsg: '  Is this still wanted?  ', sending: false });
+			// The thread is not read again for a message that was not sent.
+			expect(page.asked).toEqual(['GET /api/requests/7/messages', 'POST /api/requests/7/messages']);
+
+			sending = answered(201, { id: 1 });
+			await page.sendChatMessage();
+			expect(page.state.chatModal).toMatchObject({ error: '', newMsg: '', sending: false });
+			expect(page.asked.at(-1)).toBe('GET /api/requests/7/messages');
+		});
+
+		it('says when no answer came, and Send is not left on "..."', async () => {
+			const page = inboxPage((url, init) => (init?.method === 'POST' ? noAnswer() : answered(200, [])));
+			await page.openChat(REQUEST);
+			page.type('Hello');
+
+			await page.sendChatMessage();
+			expect(page.state.chatModal).toMatchObject({
+				error: 'No answer from the server. The message may not have been sent.',
+				newMsg: 'Hello',
+				sending: false
+			});
+		});
+
+		it('says nothing in a window that was closed, or shows another request, by the time the answer came', async () => {
+			let release: (res: Response) => void = () => {};
+			const page = inboxPage((url, init) => (init?.method === 'POST' ? new Promise<Response>((done) => (release = done)) : answered(200, [])));
+			await page.openChat(REQUEST);
+			page.type('Hello');
+
+			const sent = page.sendChatMessage();
+			page.closeChat();
+			await page.openChat({ ...REQUEST, id: 8 });
+			page.type('Typed in the other window');
+			release(answered(400, { message: 'Request is already resolved' }));
+			await sent;
+
+			// It threw on `chatModal.request.id` once the window had closed.
+			expect(page.state.chatModal).toMatchObject({ request: { id: 8 }, error: '', newMsg: 'Typed in the other window' });
+		});
+
+		it('leaves another window’s send on its way when an earlier window’s answer comes (the review)', async () => {
+			const releases: Record<string, (res: Response) => void> = {};
+			const page = inboxPage((url, init) => (init?.method === 'POST' ? new Promise<Response>((done) => (releases[url] = done)) : answered(200, [])));
+			await page.openChat(REQUEST);
+			page.type('Hello');
+			const first = page.sendChatMessage();
+			page.closeChat();
+			await page.openChat({ ...REQUEST, id: 8 });
+			page.type('From the other window');
+			const second = page.sendChatMessage();
+			expect(page.state.chatModal.sending).toBe(true);
+
+			releases['/api/requests/7/messages'](answered(201, { id: 1 }));
+			await first;
+			expect(page.state.chatModal).toMatchObject({ request: { id: 8 }, sending: true, newMsg: 'From the other window' });
+
+			releases['/api/requests/8/messages'](answered(201, { id: 2 }));
+			await second;
+			expect(page.state.chatModal).toMatchObject({ request: { id: 8 }, sending: false, newMsg: '' });
+		});
+
+		it('sends once for a second Send, or Ctrl+Enter, while one is on its way, and keeps what was typed after it was sent (the review)', async () => {
+			let release: (res: Response) => void = () => {};
+			const page = inboxPage((url, init) => (init?.method === 'POST' ? new Promise<Response>((done) => (release = done)) : answered(200, [])));
+			await page.openChat(REQUEST);
+			page.type('Hello');
+
+			const sent = page.sendChatMessage();
+			await page.sendChatMessage();
+			expect(page.asked.filter((a) => a.startsWith('POST'))).toHaveLength(1);
+
+			page.type('Hello, and one more thing');
+			release(answered(201, { id: 1 }));
+			await sent;
+			expect(page.state.chatModal).toMatchObject({ newMsg: 'Hello, and one more thing', sending: false, error: '' });
+			expect(page.asked.at(-1)).toBe('GET /api/requests/7/messages');
+		});
+
+		it('reads a failure with failureMessage on the failed side alone, clears the box only for a success, and clears its flag in a finally', () => {
+			const send = fn('sendChatMessage');
+			const asked = callsOf(send, 'failureMessage');
+			expect(asked.map(givenTo)).toEqual(['chatModal.error']);
+			expect(asked.map(sideOf)).toEqual(['failed']);
+			expect(statementsOf(send, "chatModal.newMsg = ''").map(sideOf)).toEqual(['ok']);
+			expect(finallyBlocks(send)).toEqual(['{ if (chatModal.request?.id === req.id) chatModal.sending = false; }']);
+			expect(send.getText()).toMatch(/^async function sendChatMessage\(\) \{\s*if \(chatModal\.sending\) return;/);
+			expect(send.getText().match(/chatModal\.sending = false/g)).toHaveLength(1);
+			// The request is taken before the first await, and not read from the window after it.
+			expect(send.getText()).not.toContain('chatModal.request.id');
+			expect(inbox.tree.getText()).toMatch(/import \{[^}]*\bfailureMessage\b[^}]*\} from '\$lib\/api';/);
+		});
+
+		it('shows the line under the box, inside the window', () => {
+			expect(inbox.around('{chatModal.error}').at(-1)).toEqual({ condition: 'chatModal.error', inElse: false });
+			expect(inbox.markup).toMatch(/\{#if chatModal\.error\}\s*<p class="chat-error" role="alert">\{chatModal\.error\}<\/p>\s*\{\/if\}/);
+			expect(inbox.markup.indexOf('{chatModal.error}')).toBeGreaterThan(inbox.markup.indexOf('<div class="chat-input-area">'));
+		});
+	});
+
+	describe('Accept, Reject, the list and the thread (card 2272)', () => {
+		const ACCEPTING = { show: true, request: REQUEST, boardId: 1, columnId: 2, assigneeId: null, sending: false, error: '' };
+		const REJECTING = { show: true, request: REQUEST, reason: 'Not this quarter', sending: false, error: '' };
+
+		it('says a refused or unanswered Accept in its window, which stays open with what was chosen', async () => {
+			let next: () => Response = () => answered(400, { message: 'Column not found on this board' });
+			const page = inboxPage((url, init) => (init?.method === 'PATCH' ? next() : answered(200, [])));
+
+			page.set('acceptModal', { ...ACCEPTING });
+			await page.acceptRequest();
+			expect(page.state.acceptModal).toEqual({ ...ACCEPTING, error: 'Column not found on this board' });
+
+			next = noAnswer;
+			await page.acceptRequest();
+			expect(page.state.acceptModal).toEqual({ ...ACCEPTING, error: 'No answer from the server. The request may not have been accepted.' });
+			expect(page.asked).toEqual(['PATCH /api/requests/7', 'PATCH /api/requests/7']);
+
+			next = () => answered(200, { ok: true });
+			await page.acceptRequest();
+			expect(page.state.acceptModal).toMatchObject({ show: false, request: null, sending: false, error: '' });
+			expect(page.asked.at(-1)).toBe('GET /api/requests');
+		});
+
+		it('says a refused or unanswered Reject in its window, and keeps the reason typed', async () => {
+			let next: () => Response = () => answered(400, { message: 'Request already resolved' });
+			const page = inboxPage((url, init) => (init?.method === 'PATCH' ? next() : answered(200, [])));
+
+			page.set('rejectModal', { ...REJECTING });
+			await page.rejectRequest();
+			expect(page.state.rejectModal).toEqual({ ...REJECTING, error: 'Request already resolved' });
+
+			next = noAnswer;
+			await page.rejectRequest();
+			expect(page.state.rejectModal).toEqual({ ...REJECTING, error: 'No answer from the server. The request may not have been rejected.' });
+
+			next = () => answered(200, { ok: true });
+			await page.rejectRequest();
+			expect(page.state.rejectModal).toMatchObject({ show: false, request: null, reason: '', sending: false, error: '' });
+		});
+
+		it.each(['accept', 'reject'] as const)(
+			'reads the list again when %s is refused because someone else resolved the request first, and for no other refusal (the review)',
+			async (action) => {
+				let next: () => Response = () => answered(400, { message: 'Request already resolved' });
+				const page = inboxPage((url, init) => (init?.method === 'PATCH' ? next() : answered(200, [])));
+				const send = () => {
+					page.set(`${action}Modal`, action === 'accept' ? { ...ACCEPTING } : { ...REJECTING });
+					return action === 'accept' ? page.acceptRequest() : page.rejectRequest();
+				};
+
+				await send();
+				expect(page.asked).toEqual(['PATCH /api/requests/7', 'GET /api/requests']);
+				expect(page.state[`${action}Modal`]).toMatchObject({ show: true, error: 'Request already resolved', sending: false });
+
+				next = () => answered(403, { message: 'No edit access to this board' });
+				await send();
+				expect(page.asked.slice(2)).toEqual(['PATCH /api/requests/7']);
+
+				// The words compared are the route's own.
+				expect(readFileSync(join(ROOT, 'src/routes/api/requests/[id]/+server.ts'), 'utf8')).toContain(
+					"throw error(400, 'Request already resolved');"
+				);
+			}
+		);
+
+		it.each(['accept', 'reject'] as const)(
+			'says nothing in, does not close, and leaves the send of, a %s window that shows another request when the answer comes (the review)',
+			async (action) => {
+				let release: (res: Response) => void = () => {};
+				const page = inboxPage((url, init) => (init?.method === 'PATCH' ? new Promise<Response>((done) => (release = done)) : answered(200, [])));
+				const modal = `${action}Modal` as const;
+				const open = action === 'accept' ? ACCEPTING : REJECTING;
+				const other = { ...open, request: { ...REQUEST, id: 8 }, sending: true };
+
+				for (const answer of [answered(200, { ok: true }), answered(400, { message: 'Column not found on this board' })]) {
+					page.set(modal, { ...open });
+					const sent = action === 'accept' ? page.acceptRequest() : page.rejectRequest();
+					page.set(modal, { ...other });
+					release(answer);
+					await sent;
+					expect(page.state[modal], String(answer.status)).toEqual(other);
+				}
+				// The accepted one is still read out of the list.
+				expect(page.asked).toEqual(['PATCH /api/requests/7', 'GET /api/requests', 'PATCH /api/requests/7']);
+			}
+		);
+
+		it('says why the list was not read in place of the list, empty, and never stays on "Loading..."', async () => {
+			let next: () => Response = () => answered(200, [REQUEST]);
+			const page = inboxPage(() => next());
+
+			await page.loadRequests();
+			expect(page.state).toMatchObject({ requests: [REQUEST], loading: false, listError: '' });
+
+			next = () => answered(500, { message: 'Internal Error' });
+			await page.loadRequests();
+			expect(page.state).toMatchObject({ requests: [], loading: false, listError: 'The inbox could not be read.' });
+
+			next = noAnswer;
+			await page.loadRequests();
+			expect(page.state).toMatchObject({ requests: [], loading: false, listError: 'No answer from the server. The inbox was not read.' });
+
+			next = () => answered(200, [REQUEST]);
+			await page.loadRequests();
+			expect(page.state).toMatchObject({ requests: [REQUEST], loading: false, listError: '' });
+		});
+
+		it('says why the thread was not read where it would be, clears it on the next read that works, and polls whatever happened', async () => {
+			let next: () => Response = () => answered(403, { message: 'This request is not addressed to you' });
+			const page = inboxPage(() => next());
+
+			await page.openChat(REQUEST);
+			expect(page.state.chatModal).toMatchObject({ messages: [], readError: 'This request is not addressed to you' });
+
+			next = () => answered(200, [{ id: 1, message: 'Hi' }]);
+			await page.pollChatMessages(7);
+			expect(page.state.chatModal).toMatchObject({ messages: [{ id: 1, message: 'Hi' }], readError: '' });
+
+			next = noAnswer;
+			await page.openChat(REQUEST);
+			expect(page.state.chatModal).toMatchObject({ messages: [], readError: 'No answer from the server. The conversation was not read.' });
+		});
+
+		it('puts no request’s messages into a window that shows another one by the time they came', async () => {
+			const replies: Record<string, (res: Response) => void> = {};
+			const page = inboxPage((url) => new Promise<Response>((done) => (replies[url] = done)));
+
+			const first = page.openChat(REQUEST);
+			page.closeChat();
+			const second = page.openChat({ ...REQUEST, id: 8 });
+			replies['/api/requests/8/messages'](answered(200, [{ id: 2, message: 'For 8' }]));
+			await second;
+			replies['/api/requests/7/messages'](answered(200, [{ id: 1, message: 'For 7' }]));
+			await first;
+			expect(page.state.chatModal).toMatchObject({ request: { id: 8 }, messages: [{ id: 2, message: 'For 8' }] });
+			// One poll, the open window's: the closed one's read, answered late, starts none.
+			expect(page.polled).toEqual([8]);
+
+			// A poll of the first request, answered late, likewise.
+			const late = page.pollChatMessages(7);
+			replies['/api/requests/7/messages'](answered(200, [{ id: 1 }, { id: 3 }]));
+			await late;
+			expect(page.state.chatModal.messages).toEqual([{ id: 2, message: 'For 8' }]);
+		});
+
+		it('reads each failure with failureMessage on the failed side alone, and clears each flag in a finally', () => {
+			const said = (name: string) => callsOf(fn(name), 'failureMessage');
+			expect(said('acceptRequest').map(givenTo)).toEqual(['acceptModal.error']);
+			expect(said('rejectRequest').map(givenTo)).toEqual(['rejectModal.error']);
+			expect(said('loadRequests').map(givenTo)).toEqual(['listError']);
+			expect(said('readThread').map(givenTo)).toEqual(['chatModal.readError']);
+			for (const name of ['acceptRequest', 'rejectRequest', 'loadRequests', 'readThread']) expect(said(name).map(sideOf), name).toEqual(['failed']);
+			expect(finallyBlocks(fn('acceptRequest'))).toEqual(['{ if (acceptModal.request?.id === req.id) acceptModal.sending = false; }']);
+			expect(finallyBlocks(fn('rejectRequest'))).toEqual(['{ if (rejectModal.request?.id === req.id) rejectModal.sending = false; }']);
+			expect(finallyBlocks(fn('loadRequests'))).toEqual(['{ loading = false; }']);
+			// Each window is closed for a success alone.
+			for (const [name, modal] of [['acceptRequest', 'acceptModal'], ['rejectRequest', 'rejectModal']]) {
+				expect(assignmentsTo(fn(name), modal).map(sideOf), name).toEqual(['ok']);
+			}
+		});
+
+		it('gives every window it opens or closes an empty line and no send on its way', () => {
+			for (const modal of ['acceptModal', 'rejectModal', 'chatModal']) {
+				const set = [...inbox.source.matchAll(new RegExp(`${modal} = \\{([^}]*)\\}`, 'g'))].map((m) => m[1]);
+				expect(set.length, modal).toBeGreaterThan(1);
+				for (const fields of set) {
+					expect(fields, modal).toContain("sending: false");
+					expect(fields, modal).toContain("error: ''");
+				}
+			}
+			expect(inbox.source.match(/chatModal = \{[^}]*\}/g)!.every((set) => set.includes("readError: ''"))).toBe(true);
+		});
+
+		it('shows each line where its window or list is read, and disables Accept and Reject while one is on its way', () => {
+			// Accept's and Reject's above their buttons.
+			for (const modal of ['acceptModal', 'rejectModal']) {
+				expect(inbox.markup).toMatch(new RegExp(`\\{#if ${modal}\\.error\\}\\s*<p class="modal-error" role="alert">\\{${modal}\\.error\\}</p>\\s*\\{/if\\}\\s*<div class="modal-actions">`));
+			}
+			expect(inbox.markup).toContain('disabled={!acceptModal.boardId || !acceptModal.columnId || acceptModal.sending}');
+			expect(inbox.markup).toContain('<button class="btn-reject-confirm" disabled={rejectModal.sending} onclick={rejectRequest}>');
+			// The list's in place of the list.
+			expect(inbox.markup).toMatch(/\{:else if listError\}\s*<p class="inbox-error" role="alert">\{listError\}<\/p>\s*\{:else if pendingRequests\.length === 0/);
+			// The thread's in the thread, and "No messages yet" only without it.
+			expect(inbox.markup).toMatch(/<div class="chat-messages" bind:this=\{chatMessagesEl\}>\s*\{#if chatModal\.readError\}\s*<p class="chat-read-error" role="alert">\{chatModal\.readError\}<\/p>\s*\{\/if\}/);
+			expect(inbox.around('No messages yet. Start the conversation!').at(-1)).toEqual({ condition: 'chatModal.messages.length === 0 && !chatModal.readError', inElse: false });
+		});
+	});
+});
+
+describe('the requester’s reply page says when a reply was not sent, src/routes/request/[id]/reply/+page.svelte (card 2272)', () => {
+	const REPLY = 'src/routes/request/[id]/reply/+page.svelte';
+	const tree = scriptOf(REPLY);
+
+	/**
+	 * `sendReply` as written, with a stand-in `fetch`; the thread's reload and
+	 * the link form are counted, not run, and so is a reload of the whole page
+	 * (`loadData`, which shows "Loading..." in place of everything).
+	 */
+	function replyBox(answer: (url: string, init?: RequestInit) => Response | Promise<Response>) {
+		const { fetch, asked } = fetchBy(answer);
+		const page = new Function(
+			'fetch',
+			'failureMessage',
+			"let newMessage = '', sending = false, errorMsg = '', reloaded = 0, wholePage = 0, linkGone = false;\nconst requestId = 5, token = 'the-link';\n" +
+				'async function readThread() { reloaded++; }\nasync function loadData() { wholePage++; }\nfunction showLinkGone() { linkGone = true; }\n' +
+				`${runnable(tree, ['sendReply'])}\n` +
+				'return { sendReply, type(text) { newMessage = text; }, get state() { return { newMessage, sending, errorMsg, reloaded, linkGone }; }, get wholePage() { return wholePage; } };'
+		)(fetch, failureMessage) as { sendReply: () => Promise<void>; type: (text: string) => void; readonly state: Record<string, unknown>; readonly wholePage: number };
+		return Object.assign(page, { asked });
+	}
+
+	it('says a refusal in the server’s words and keeps the text; no answer says so, and "Sending..." is not left on', async () => {
+		let next: () => Response = () => answered(400, { message: 'message must be at most 5000 characters' });
+		const page = replyBox(() => next());
+		page.type('Any news?');
+
+		await page.sendReply();
+		expect(page.state).toEqual({ newMessage: 'Any news?', sending: false, errorMsg: 'message must be at most 5000 characters', reloaded: 0, linkGone: false });
+
+		next = noAnswer;
+		await page.sendReply();
+		expect(page.state).toEqual({ newMessage: 'Any news?', sending: false, errorMsg: 'No answer from the server. The reply may not have been sent.', reloaded: 0, linkGone: false });
+
+		// A 404 is a link that no longer works (card 2158), as it was.
+		next = () => answered(404, { message: 'Request not found' });
+		await page.sendReply();
+		expect(page.state).toMatchObject({ newMessage: 'Any news?', sending: false, linkGone: true });
+
+		next = () => answered(201, { id: 1 });
+		await page.sendReply();
+		expect(page.state).toMatchObject({ newMessage: '', sending: false, errorMsg: '', reloaded: 1 });
+		// The thread alone is read again, and the page is not replaced by "Loading..." (the review).
+		expect(page.wholePage).toBe(0);
+	});
+
+	it('sends once for a second Send Reply, or Ctrl+Enter, while one is on its way, and keeps what was typed after it was sent (the review)', async () => {
+		let release: (res: Response) => void = () => {};
+		const page = replyBox(() => new Promise<Response>((done) => (release = done)));
+		page.type('Any news?');
+
+		const sent = page.sendReply();
+		await page.sendReply();
+		expect(page.asked).toEqual(['POST /api/requests/5/messages']);
+
+		page.type('Any news? And one more thing');
+		release(answered(201, { id: 1 }));
+		await sent;
+		expect(page.state).toMatchObject({ newMessage: 'Any news? And one more thing', sending: false, reloaded: 1 });
+	});
+
+	it('reads a failure with failureMessage, and clears its flag in a finally', () => {
+		const send = functionNamed(tree, 'sendReply');
+		expect(callsOf(send, 'failureMessage').map(givenTo)).toEqual(['errorMsg']);
+		expect(callsOf(send, 'res.json')).toEqual([]);
+		expect(finallyBlocks(send)).toEqual(['{ sending = false; }']);
+		expect(send.getText().match(/sending = false/g)).toHaveLength(1);
+		expect(send.getText()).toMatch(/^async function sendReply\(\) \{\s*if \(sending \|\| /);
+		expect(callsOf(send, 'loadData')).toEqual([]);
+	});
+
+	describe('its thread read (the review)', () => {
+		/** `loadData`, `readThread` and `pollMessages` as written, with a stand-in `fetch` and timer. */
+		function thread(answer: (url: string) => Response | Promise<Response>) {
+			const { fetch } = fetchBy(answer);
+			return new Function(
+				'fetch',
+				'failureMessage',
+				'setInterval',
+				'clearInterval',
+				"let request = null, messages = [], loading = true, errorMsg = '', threadError = '', linkGone = false, pollInterval = null;\n" +
+					"const requestId = 5, token = 'the-link';\nfunction scrollToBottom() {}\n" +
+					`${runnable(tree, ['loadData', 'readThread', 'pollMessages', 'showLinkGone', 'stopPolling'])}\n` +
+					'return { loadData, pollMessages, get state() { return { loading, messages, threadError, linkGone, polling: pollInterval }; } };'
+			)(fetch, failureMessage, () => 'timer', () => {}) as { loadData: () => Promise<void>; pollMessages: () => Promise<void>; readonly state: Record<string, unknown> };
+		}
+		const REQUEST = answered(200, { id: 5, title: 'A request', status: 'pending' });
+
+		it('says why the thread was not read where it would be, and the next poll that works clears it', async () => {
+			let messages: () => Response | never = () => answered(500, { message: 'Internal Error' });
+			const page = thread((url) => (url.includes('/messages') ? messages() : REQUEST.clone()));
+
+			await page.loadData();
+			expect(page.state).toEqual({ loading: false, messages: [], threadError: 'The conversation could not be read.', linkGone: false, polling: 'timer' });
+
+			messages = () => answered(200, [{ id: 1, message: 'Hi' }]);
+			await page.pollMessages();
+			expect(page.state).toMatchObject({ messages: [{ id: 1, message: 'Hi' }], threadError: '' });
+
+			messages = noAnswer;
+			await page.loadData();
+			expect(page.state).toMatchObject({ loading: false, threadError: 'No answer from the server. The conversation was not read.' });
+		});
+
+		it('shows the line in the thread, and "No messages yet" only without it', () => {
+			const reply = svelteFile(REPLY);
+			expect(reply.markup).toMatch(/<div class="messages-thread" bind:this=\{threadEl\}>\s*\{#if threadError\}\s*<p class="thread-error" role="alert">\{threadError\}<\/p>\s*\{\/if\}/);
+			expect(reply.around('No messages yet. Start the conversation below.').at(-1)).toEqual({ condition: 'messages.length === 0 && !threadError', inElse: false });
+		});
 	});
 });

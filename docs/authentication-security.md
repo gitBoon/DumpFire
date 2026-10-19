@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.50
+version: 1.51
 status: As-Built
 date: 2026-10-19
 tags:
@@ -2622,6 +2622,11 @@ everyone's.
   then gives the number alone, one naming a subtask reads "a subtask on another board"
   (unless every subtask it names has the title of one of the card's own subtasks, which go
   with it and can be read on it), and neither is marked "(edited)". Notices on cards moved before then keep their names.
+  The moved card's own name goes too (card 2261): on every card not on the board it
+  arrives on, a notice naming it gives its number alone, and one naming one of its
+  subtasks (found through the dependency rows still recorded) reads "a subtask on another
+  board", again not marked "(edited)". Notices naming cards moved before then keep their
+  names.
 - **"Plan created".** An assignee who cannot open the plan (a former member of its board, or
   someone who cannot open every board of a goal across boards) is no longer mailed when it is
   created. Everyone else's mail is unchanged unless the chain runs through a board they
@@ -2749,8 +2754,9 @@ What each control is for:
   wrong token, `404` "This confirmation link is not valid.", and the request, its thread
   and a reply answer its link `404` as for a request that is not there when there is no
   session, so the thread page shows the link as gone rather than offering "Confirm it"; a
-  signed-in account the request is not addressed to is answered `403` ("Access denied", or
-  "Invalid or missing link token" on a reply), as for a wrong token under card 2132. One rule says when it has
+  signed-in account is answered `404` too, where it was `403` ("Access denied", or
+  "Invalid or missing link token" on a reply): since card 2260 an unconfirmed request is
+  not there to anyone signed in without its link. One rule says when it has
   lapsed (`hasLapsed` in `request-access.ts`), and every route that takes the link asks it.
 - **Confirmation is a button, not a link.** The emailed link opens a page; the request
   is confirmed by the POST the button makes. Mail scanners open links before the
@@ -2765,7 +2771,16 @@ What each control is for:
   requester too, whatever the request's state, where a wrong token was `403` and a reply
   to a resolved or unconfirmed request `400`. A reply from the team with no session is
   `401` before the request is looked for. A signed-in caller is still answered `403` for
-  a request that is not theirs. A token that is not text is answered as a wrong one is.
+  a request that is not theirs, but for one nobody has confirmed (card 2260): until its
+  requester confirms it, it is not the team's, and the request, its thread, an accept, a
+  reject and a reply from the team answer every signed-in caller without its link `404`
+  "Request not found", the person or team it is addressed to and administrators included,
+  where they read it with the requester's address (the inbox never listed it) and an accept
+  or a reply was `400 … already resolved`. One rule says it (`awaitsConfirmation` in
+  `request-access.ts`, asked by `canHandleRequest`, `canReadRequest` and `requireRequest`,
+  and by the accept and reject route before it asks whose the request is). Its own link
+  opens it as before, without the address. An administrator can still delete one by its
+  id. A token that is not text is answered as a wrong one is.
   Until card 2117 it reached the comparison and threw, a `500` for a request that is there
   and a `404` for one that is not, which told the ids of real requests from the rest. The
   reply page reads any failure as a link that no longer works, and starts its five-second

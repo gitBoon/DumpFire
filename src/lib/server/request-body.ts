@@ -861,3 +861,15 @@ export function readQueryDate(value: string | null, name: string, edge: Edge = '
 	if (stored === null) error(400, says ?? `${name} is not a date`);
 	return stored;
 }
+
+/**
+ * A range whose `from` is after its `to` is a 400, `` `from` is after `to` ``.
+ * Both ends come from `readQueryDate`, in the stored form, so they compare as
+ * text. Equal bounds name one second and pass, and so does a range open at
+ * either end. The four routes that read a range ask this (card 2262): two
+ * answered a reversed one with an empty page, which reads as "no entries",
+ * and the other two said so in a check of their own.
+ */
+export function refuseReversedRange(from: Stamp | undefined, to: Stamp | undefined): void {
+	if (from !== undefined && to !== undefined && from > to) error(400, '`from` is after `to`');
+}

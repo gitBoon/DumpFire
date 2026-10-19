@@ -1,7 +1,7 @@
 ---
 title: "Burndown Charts"
 category: Reporting & Analytics
-version: 1.5
+version: 1.6
 status: As-Built
 date: 2026-10-19
 tags:
@@ -459,7 +459,14 @@ finished or not. On the all-boards view of real data it ran from 1,450 to 1,812
 against 158–200 open, which squashed the remaining line into the bottom tenth of
 the chart. Work in play starts at the remaining work, so both lines share one
 scale, and the gap between them means something. All-time scope is still in the
-hover, the table and the API.
+CSV (`all_cards`) and the API (`series[].scope`), but not on the page: it was an
+"All cards ever" column in the table and a row in the hover until card 2269,
+and it only ever repeated Work in play. Work in play starts at all-time scope
+less what was finished before the window and moves by the same added and
+dropped each day, so the two differ by that one constant on every day, and were
+the same column when nothing had been finished before the window. The page
+gives the constant once instead, in the chart's explanation: "Finished before
+this period: N" (`summarise(series).doneStart`).
 
 - The **colours are the chart's own tokens**, not the theme accent. They were
   run through the dataviz palette validator against the light and dark surfaces
@@ -472,8 +479,9 @@ hover, the table and the API.
   at max(14 days, 1.5× the window) so history is never squashed. Anything beyond
   is pointed at from the right edge.
 - **Hover** shows a crosshair and a tooltip: the day's remaining, work in play,
-  finished since start, the ideal value, all cards ever, and what was added,
-  finished and dropped that day.
+  finished since start, the ideal value, and what was added, finished and
+  dropped that day. The tooltip is the chart's own, so the full page, the
+  board's stats panel and the milestone page show the same rows.
 - **The legend explains itself.** Each entry has a hover explanation. The keys
   are drawn as inline SVG with prefixed classes, because sharing the chart's
   `.area` class once gave the Remaining key the wash's 10% opacity and made it

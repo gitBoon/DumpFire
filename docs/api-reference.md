@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.61
+version: 1.62
 status: As-Built
 date: 2026-10-19
 tags:
@@ -851,7 +851,8 @@ new; these answers and fields are:
   completed — nothing is blocking this card now.`, or `Unblocked: a subtask on another board
   completed — …`, where it gave the other board's title. Work on the same board is named by
   its title as before; comments written before are unchanged (item 62). A card moved to
-  another board takes its notices in this form too (card 2256, item 71).
+  another board takes its notices in this form too (card 2256, item 71), and is named so in
+  other cards' notices on every card not on the board it arrives on (card 2261, item 76).
 - **A milestone is given to a board only when every card in it is on that board** (card
   2179), on `PATCH /milestones/:milestoneId` with `boardId`, archived cards included:
   otherwise `400` `Some cards in this milestone are not on that board (archived cards count
@@ -904,7 +905,7 @@ new; these answers and fields are:
   one) has the title of one of the card's own subtasks, which go with it and can be read on
   it, the rest of each kept and its `updatedAt` unchanged. They went on
   naming the work to readers of the board the card arrived on. Comments of cards moved
-  before are unchanged (item 71).
+  before are unchanged (item 71). Card 2261 (item 76, below) is the other direction.
 - **`GET /reports/activity` names a milestone only to a reader who can open it** (card
   2257): a card's `milestoneName` is `null` when the key's user cannot open its milestone
   (`GET /milestones/:milestoneId` would be `403`), with `milestoneId` as before, and
@@ -958,6 +959,18 @@ new; these answers and fields are:
   on `POST /api/requests/{id}/messages`. Every limit is as it was, and the texts for a field
   that is missing or empty are unchanged. A script that matched one of the old texts no
   longer matches it (item 75).
+- **A card moved to another board is no longer named in other cards' "Unblocked"
+  comments** (card 2261), on `PUT /cards/:cardId/move`, as `GET /cards/:cardId/comments`
+  reads them, on every card not on the board it arrives on: `Unblocked: #12 "<title>"
+  completed — …` naming it becomes `Unblocked: #12, a card on another board, completed —
+  …`, and `Unblocked: subtask "<title>" completed — …` naming one of its subtasks, on a card
+  that waited on that subtask as its dependencies still record, becomes `Unblocked: a
+  subtask on another board completed — …`, the rest of each kept and its `updatedAt`
+  unchanged. They went on naming the card to readers who may not open the board it moved
+  to. A notice on a card of the board it arrives on is left as it is, and so is a subtask
+  notice on a card that also waits on a subtask of the same title that is not the moved
+  card's, which may have written it. Comments naming cards moved before are unchanged
+  (item 76).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -1409,10 +1422,20 @@ API:
   inbox. `GET /api/requests/{id}`, `GET /api/requests/{id}/messages` and a reply as the
   requester answer its link from a caller with no session `404` `Request not found`, as
   for a request that is not there, so the thread page shows the link as gone where it
-  offered "Confirm it"; a signed-in account the request is not addressed to is answered
-  `403` (`Access denied` on the read and the thread, `Invalid or missing link token` on a
-  reply), as for a wrong token under card 2132. The request is still deleted by the form
-  when it takes the next anonymous request.
+  offered "Confirm it"; a signed-in account is answered `404` `Request not found` too, as
+  for any unconfirmed request since card 2260 (below), where one the request is not
+  addressed to was answered `403`. The request is still deleted by the form when it takes
+  the next anonymous request.
+- **A request nobody has confirmed is not there for the team** (card 2260). An anonymous
+  request waiting for its requester to confirm it is answered `404` `Request not found` to
+  every signed-in caller without its link, the user or team it is addressed to and
+  administrators included: on `GET /api/requests/{id}` and `GET /api/requests/{id}/messages`,
+  where they read it with the requester's address (the inbox never listed it); on
+  `PATCH /api/requests/{id}` (accept and reject) and a reply from the team
+  (`POST /api/requests/{id}/messages`), where both were `400` `… already resolved`; and to
+  a signed-in account it is not addressed to, where it was `403`. Its own link opens it as
+  before, without the address, and once confirmed it is read and answered as any pending
+  request. `DELETE /api/requests/{id}` (administrators) still deletes one.
 - **The lists the pages read give what the caller may be told** (card 2128).
   `GET /api/users` gives every user's `id`, `username` and `emoji`, and `email`, `role` and
   `createdAt` to an administrator alone, where every signed-in caller was given every
@@ -1761,6 +1784,14 @@ API:
   being the whole of that day, and anything else `400` `from is not a date` or
   `to is not a date`, where each was compared as text, unchecked. The Audit page sends the
   last day of its range as the date chosen.
+- **`GET /api/audit` and `GET /api/logs` refuse a `from` after its `to`** (card 2262), as
+  `GET /audit-log` does: `400` `` `from` is after `to` ``, where each answered `200` with an
+  empty page. Equal bounds name one second and are allowed. The Audit page says the
+  refusal, and any other failure, under its filters in the server's words
+  (`No answer from the server. The audit log was not read.` when there is none). A failed
+  Apply empties the list, where it said "No audit entries match these filters." or kept the
+  rows of the search before; a failed Load more keeps the rows already shown. An answer to
+  an earlier Apply that comes after a newer one's is not shown.
 - **`POST /api/account/api-keys` reads `expiresAt` in the same forms** (card 2095),
   `YYYY-MM-DD HH:MM:SS` included, and stores and answers it as `YYYY-MM-DD HH:MM:SS` in UTC,
   where it answered ISO 8601. A date is 00:00 UTC that day, as before; `null` is no expiry;
@@ -2476,7 +2507,9 @@ is needed on both). Goes through the same service as a drag in the web UI:
   ends ` and out of milestone "<name>"` when the move took the card out of one of that
   board's milestones. The card's "Unblocked" comments that name work of the board it left
   by its title are rewritten to name it by its number, or as "a subtask on another board",
-  with `updatedAt` unchanged (card 2256; see `GET /cards/:cardId/comments`).
+  with `updatedAt` unchanged (card 2256; see `GET /cards/:cardId/comments`), and so are
+  other cards' notices naming it or one of its subtasks, on every card not on the board it
+  arrives on (card 2261).
 - onto one of its own sub-boards: a card's sub-boards go with it, so a move onto one, or
   onto a board beneath one at any depth, is refused with 409 and nothing moves:
   `Card "<title>" cannot go onto "<board>", which hangs beneath it` (card 2141).

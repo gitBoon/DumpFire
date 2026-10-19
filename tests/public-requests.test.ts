@@ -44,7 +44,7 @@ import { requestMessages, taskRequests, users } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { issueFormToken, verifyFormToken } from '$lib/server/request-tokens';
-import { hasLapsed, unconfirmedCutoff, UNVERIFIED_LIFETIME_DAYS } from '$lib/server/request-access';
+import { canHandleRequest, canReadRequest, hasLapsed, unconfirmedCutoff, UNVERIFIED_LIFETIME_DAYS } from '$lib/server/request-access';
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { makeBoard, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
@@ -384,6 +384,138 @@ describe('confirming a request', () => {
 		expect(reply).toEqual({ status: 400, body: { message: 'Request is already resolved' } });
 		expect(db.select().from(requestMessages).all()).toHaveLength(0);
 		expect(mail.sent).toEqual([]);
+	});
+});
+
+/**
+ * Card 2260. A request made without an account waits for its requester to
+ * confirm it, and until then it is not the team's. The inbox never listed one,
+ * but the person it was addressed to, a member of the team it was addressed to
+ * and every administrator could read it by its id, with the requester's
+ * address, before the requester had stood behind it. Every caller without its
+ * link is now answered as for a request that is not there, on every route.
+ */
+describe("a request nobody has confirmed is not the team's to read (card 2260)", () => {
+	const NOT_FOUND = { status: 404, body: { message: 'Request not found' } };
+	const MINUTE_MS = 60 * 1000;
+	const DAY_MS = 24 * 60 * MINUTE_MS;
+	let admin: SessionUser;
+
+	beforeEach(() => {
+		admin = makeUser({ role: 'admin', username: 'admin' });
+	});
+
+	/** A request made without an account, addressed to `staff`, not confirmed, made `ageMs` ago, and its link. */
+	async function unconfirmed(ageMs = 0) {
+		const { body } = await submitAnonymously();
+		if (ageMs > 0) {
+			db.update(taskRequests).set({ createdAt: stamp(new Date(Date.now() - ageMs)) }).where(eq(taskRequests.id, body.id)).run();
+		}
+		mail.sent.length = 0;
+		expect(requestRow(body.id).status).toBe('unverified');
+		return { id: body.id as number, token: requestRow(body.id).accessToken! };
+	}
+
+	/** What `user` is answered for the request and its thread. */
+	const reads = async (id: number, user: SessionUser) =>
+		[await api('GET', `/api/requests/${id}`, { user }), await api('GET', `/api/requests/${id}/messages`, { user })].map(
+			({ status, body }) => ({ status, body })
+		);
+
+	it('answers the request and its thread 404 to the person it is addressed to and to an administrator', async () => {
+		const { id } = await unconfirmed();
+
+		expect(await reads(id, staff)).toEqual([NOT_FOUND, NOT_FOUND]);
+		expect(await reads(id, admin)).toEqual([NOT_FOUND, NOT_FOUND]);
+	});
+
+	it('answers an accept, a reject and a reply from the team 404, writing nothing and mailing nobody', async () => {
+		const { id } = await unconfirmed();
+		const before = snapshotDb();
+
+		for (const user of [staff, admin]) {
+			const accept = await api('PATCH', `/api/requests/${id}`, {
+				user,
+				body: { action: 'accept', boardId: A.board.id, columnId: A.cols['To Do'].id }
+			});
+			const reject = await api('PATCH', `/api/requests/${id}`, { user, body: { action: 'reject', rejectReason: 'No' } });
+			const reply = await api('POST', `/api/requests/${id}/messages`, { user, body: { message: 'On it' } });
+			expect([accept, reject, reply].map(({ status, body }) => ({ status, body }))).toEqual([NOT_FOUND, NOT_FOUND, NOT_FOUND]);
+		}
+
+		expectUnchanged(before);
+		expect(mail.sent).toEqual([]);
+	});
+
+	it('answers someone signed in it is not addressed to 404 too, where it was 403', async () => {
+		const { id } = await unconfirmed();
+
+		expect(await reads(id, other)).toEqual([NOT_FOUND, NOT_FOUND]);
+		const accept = await api('PATCH', `/api/requests/${id}`, { user: other, body: { action: 'reject' } });
+		const reply = await api('POST', `/api/requests/${id}/messages`, { user: other, body: { message: 'Hello' } });
+		expect([accept, reply].map(({ status, body }) => ({ status, body }))).toEqual([NOT_FOUND, NOT_FOUND]);
+	});
+
+	it('answers a lapsed one 404 to the person it is addressed to, and to a signed-in caller holding its link', async () => {
+		const { id, token } = await unconfirmed(7 * DAY_MS + MINUTE_MS);
+
+		expect(await reads(id, staff)).toEqual([NOT_FOUND, NOT_FOUND]);
+		const withLink = await api('GET', `/api/requests/${id}?token=${token}`, { user: other });
+		expect({ status: withLink.status, body: withLink.body }).toEqual(NOT_FOUND);
+	});
+
+	it("still opens by the requester's own link, with no session and signed in, without the address", async () => {
+		const { id, token } = await unconfirmed();
+
+		for (const user of [undefined, staff]) {
+			const read = await api('GET', `/api/requests/${id}?token=${token}`, { user });
+			const thread = await api('GET', `/api/requests/${id}/messages?token=${token}`, { user });
+			expect(read.status).toBe(200);
+			expect(read.body.status).toBe('unverified');
+			expect(read.body.requesterEmail).toBeNull();
+			expect(thread.status).toBe(200);
+			expect(thread.body).toEqual([]);
+		}
+	});
+
+	it("is the team's once confirmed: read with the address, and accepted", async () => {
+		const { id, token } = await unconfirmed();
+		expect((await api('POST', `/api/requests/${id}/confirm`, { body: { token } })).status).toBe(200);
+
+		const read = await api('GET', `/api/requests/${id}`, { user: staff });
+		expect(read.status).toBe(200);
+		expect(read.body.requesterEmail).toBe(REQUESTER);
+		const accept = await api('PATCH', `/api/requests/${id}`, {
+			user: staff,
+			body: { action: 'accept', boardId: A.board.id, columnId: A.cols['To Do'].id }
+		});
+		expect(accept.status).toBe(200);
+		expect(requestRow(id).status).toBe('accepted');
+	});
+
+	it('leaves a pending request as it was: read by the person it is addressed to, 403 to someone else', async () => {
+		const res = await api('POST', '/api/requests', { user: other, body: submission({ desiredBoardId: null }) });
+		expect(requestRow(res.body.id).status).toBe('pending');
+
+		expect((await api('GET', `/api/requests/${res.body.id}`, { user: staff })).status).toBe(200);
+		expect((await api('GET', `/api/requests/${res.body.id}`, { user: admin })).status).toBe(200);
+		const outsider = makeUser({ username: 'outsider' });
+		expect((await api('GET', `/api/requests/${res.body.id}`, { user: outsider })).status).toBe(403);
+	});
+
+	it('canHandleRequest and canReadRequest are false for an unconfirmed request, an administrator included', async () => {
+		const { id } = await unconfirmed();
+		const row = requestRow(id);
+
+		for (const user of [staff, admin]) {
+			expect(canHandleRequest(user, row)).toBe(false);
+			expect(canReadRequest(user, row)).toBe(false);
+		}
+		// The author rule cannot let one in either: an unconfirmed request made signed in is not one there is, but the rule refuses it itself.
+		expect(canReadRequest(staff, { ...row, requesterUserId: staff.id, targetId: other.id })).toBe(false);
+		// Confirmed, the same rules let them in.
+		const pending = { ...row, status: 'pending' };
+		expect([canHandleRequest(staff, pending), canReadRequest(admin, pending)]).toEqual([true, true]);
 	});
 });
 

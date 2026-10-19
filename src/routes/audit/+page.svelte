@@ -11,6 +11,7 @@
 	import { onMount } from 'svelte';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import { parseStamp } from '$lib/timestamps';
+	import { failureMessage } from '$lib/api';
 
 	let { data }: { data: PageData } = $props();
 
@@ -135,6 +136,10 @@
 	let auditRows = $state<AuditRow[]>([]);
 	let auditLoading = $state(false);
 	let auditExhausted = $state(false);
+	/** Why the last read of the log failed, in the server's words, under the filters (card 2262). */
+	let auditError = $state('');
+	/** How many reads of the log have been asked for: only the newest one's answer is shown. */
+	let auditAsked = 0;
 	let auditLoaded = false;
 	const AUDIT_PAGE = 100;
 
@@ -148,6 +153,9 @@
 	let fTo = $state('');
 
 	async function loadAudit(reset: boolean) {
+		// An answer to a read asked for before a newer one, refused or not, is
+		// not shown: it would replace or clear the newer Apply's rows (the review).
+		const asked = ++auditAsked;
 		auditLoading = true;
 		try {
 			const params = new URLSearchParams();
@@ -163,13 +171,35 @@
 			params.set('offset', String(reset ? 0 : auditRows.length));
 
 			const res = await fetch(`/api/audit?${params}`);
-			if (res.ok) {
-				const body = await res.json();
-				auditRows = reset ? body.data : [...auditRows, ...body.data];
-				auditExhausted = body.data.length < AUDIT_PAGE;
+			// A refusal (a `from` after its `to`, card 2262) is said in the
+			// server's words. Every failure was swallowed, and a refused Apply
+			// left the rows of the search before on screen, answering a question
+			// that was no longer asked; a refused Load more keeps what was read.
+			if (!res.ok) {
+				const failure = await failureMessage(res, 'The audit log could not be read.');
+				if (asked !== auditAsked) return;
+				auditError = failure;
+				if (reset) clearAudit();
+				return;
 			}
-		} catch { /* silent */ }
-		auditLoading = false;
+			const body = await res.json();
+			if (asked !== auditAsked) return;
+			auditError = '';
+			auditRows = reset ? body.data : [...auditRows, ...body.data];
+			auditExhausted = body.data.length < AUDIT_PAGE;
+		} catch {
+			if (asked !== auditAsked) return;
+			auditError = 'No answer from the server. The audit log was not read.';
+			if (reset) clearAudit();
+		} finally {
+			if (asked === auditAsked) auditLoading = false;
+		}
+	}
+
+	/** No rows, and no Load more, under a failed Apply. */
+	function clearAudit() {
+		auditRows = [];
+		auditExhausted = true;
 	}
 
 	function openAuditTab() {
@@ -372,10 +402,15 @@
 				<button class="ct-btn primary" onclick={() => loadAudit(true)}>Apply</button>
 			</div>
 
+			{#if auditError}
+				<p class="audit-error" role="alert">{auditError}</p>
+			{/if}
 			{#if auditLoading && auditRows.length === 0}
 				<div class="console-empty">Loading audit log…</div>
 			{:else if auditRows.length === 0}
-				<div class="console-empty">No audit entries match these filters.</div>
+				{#if !auditError}
+					<div class="console-empty">No audit entries match these filters.</div>
+				{/if}
 			{:else}
 				<div class="audit-table-wrap">
 					<table class="audit-table">
@@ -656,4 +691,9 @@
 		white-space: pre-wrap; word-break: break-word;
 	}
 	.audit-more { display: flex; justify-content: center; padding: var(--space-sm); }
+	.audit-error {
+		margin: var(--space-sm) var(--space-md) 0; padding: 7px 10px;
+		background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2);
+		border-radius: var(--radius-md); color: var(--accent-rose); font-size: 0.8rem;
+	}
 </style>

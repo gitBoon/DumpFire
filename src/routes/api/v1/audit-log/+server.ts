@@ -5,7 +5,7 @@ import { activityLog } from '$lib/server/db/schema';
 import { eq, desc, and, gte, lte, like, notLike, sql } from 'drizzle-orm';
 import { actionCondition, canonicalAction, readSource } from '$lib/server/logActivity';
 import { isAdmin } from '$lib/server/board-access';
-import { readLimit, readOffset, readQueryDate, readQueryId } from '$lib/server/request-body';
+import { readLimit, readOffset, readQueryDate, readQueryId, refuseReversedRange } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /** Default page size. Stated here, in the docs, and in every response. */
@@ -65,10 +65,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const to = readQueryDate(url.searchParams.get('to'), 'to', 'upper');
 	// The stored form orders moments as text, so a reversed pair is caught
 	// here (card 2217): it was answered with an empty page, which reads as "no
-	// entries". Equal bounds name one second, and are allowed.
-	if (from !== undefined && to !== undefined && from > to) {
-		throw error(400, '`from` is after `to`');
-	}
+	// entries". Equal bounds name one second, and are allowed. One check for
+	// the four routes that read a range (card 2262).
+	refuseReversedRange(from, to);
 	const limit = readLimit(url.searchParams.get('limit'), { max: MAX_LIMIT, fallback: DEFAULT_LIMIT });
 	const offset = readOffset(url.searchParams.get('offset'));
 

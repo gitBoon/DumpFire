@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.43
+version: 1.44
 status: As-Built
 date: 2026-10-19
 tags:
@@ -847,6 +847,15 @@ made through the API, and with Source Web application those made on a page. The 
 last minute's included (card 2095). Every time on the page, in both tabs, is the stored time,
 which is UTC, shown in your browser's own time zone, and the Live Console shows it to the
 second.
+
+A **From** after its **To** is refused (card 2262): Apply shows "`from` is after `to`" in a
+line under the filters, above an empty list. Any other failure is said there too, in the
+server's words, or "No answer from the server. The audit log was not read." when none came.
+A refused Apply shows no rows, so nothing found by the search before is mistaken for its
+answer; a refused **Load more** keeps the rows already shown. The next Apply that works
+clears the line. Apply pressed again before the first answer comes shows the newest answer
+alone: an earlier one that comes after it, refused or not, is not shown. Until 19 October 2026 a reversed range showed "No audit entries match these
+filters.", or the earlier rows, and every failure was silent.
 
 ### A board beneath one of its own cards
 

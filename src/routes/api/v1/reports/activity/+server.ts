@@ -2,7 +2,7 @@ import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { buildActivityReport } from '$lib/server/activity-report';
 import { isAdmin } from '$lib/server/board-access';
-import { pathId, readQueryCount, readQueryDate, readQueryId } from '$lib/server/request-body';
+import { pathId, readQueryCount, readQueryDate, readQueryId, refuseReversedRange } from '$lib/server/request-body';
 import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
@@ -48,9 +48,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		readQueryDate(url.searchParams.get('from'), 'from', 'lower') ??
 		stamp(new Date(Date.now() - 30 * 86_400_000));
 
-	if (from > to) {
-		throw error(400, '`from` is after `to`');
-	}
+	// The one check of the four routes that read a range (card 2262).
+	refuseReversedRange(from, to);
 
 	const boardIdsParam = url.searchParams.get('boardIds');
 	let boardIds: number[] | null = null;
