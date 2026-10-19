@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.53
+version: 1.54
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1303,6 +1303,17 @@ API:
   for, where it was `404`, `400` or `401` by the request. The holder of the link is told
   the state as before, and a signed-in caller is still answered `403` for a request that
   is not theirs.
+- **The link of a request nobody confirmed within seven days opens nothing** (card 2243).
+  `POST /api/requests/{id}/confirm` with the right token is `404`
+  `This confirmation link is not valid.` for an unconfirmed request made more than seven
+  days ago, as for a wrong token, where it confirmed it, mailed the team and put it in the
+  inbox. `GET /api/requests/{id}`, `GET /api/requests/{id}/messages` and a reply as the
+  requester answer its link from a caller with no session `404` `Request not found`, as
+  for a request that is not there, so the thread page shows the link as gone where it
+  offered "Confirm it"; a signed-in account the request is not addressed to is answered
+  `403` (`Access denied` on the read and the thread, `Invalid or missing link token` on a
+  reply), as for a wrong token under card 2132. The request is still deleted by the form
+  when it takes the next anonymous request.
 - **The lists the pages read give what the caller may be told** (card 2128).
   `GET /api/users` gives every user's `id`, `username` and `emoji`, and `email`, `role` and
   `createdAt` to an administrator alone, where every signed-in caller was given every

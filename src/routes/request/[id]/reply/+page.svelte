@@ -33,8 +33,9 @@
 
 	let request = $state<RequestInfo | null>(null);
 	/**
-	 * The link does not open the thread: wrong, replaced (card 2158), or for a
-	 * request that is not there, which the server answers alike (card 2132).
+	 * The link does not open the thread: wrong, replaced (card 2158), for a
+	 * request nobody confirmed within seven days (card 2243), or for a request
+	 * that is not there, which the server answers alike (card 2132).
 	 * The page then offers to mail the current link instead.
 	 */
 	let linkGone = $state(false);

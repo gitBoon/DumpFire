@@ -5,8 +5,8 @@ import { taskRequests, requestMessages, cards, cardAssignees, cardComments, user
 import { eq, asc } from 'drizzle-orm';
 import { canViewBoard, isAdmin } from '$lib/server/board-access';
 import { requireColumn } from '$lib/server/route-guards';
-import { canHandleRequest, canReadRequest, requesterAddress, requireRequest } from '$lib/server/request-access';
-import { publicRequest, requestTokenMatches } from '$lib/server/request-tokens';
+import { canHandleRequest, canReadRequest, linkOpens, requesterAddress, requireRequest } from '$lib/server/request-access';
+import { publicRequest } from '$lib/server/request-tokens';
 import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } from '$lib/server/notifications';
 import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
 import { linkBaseUrl } from '$lib/server/email';
@@ -24,7 +24,10 @@ import type { RequestHandler } from './$types';
  * and an address is not a secret.
  *
  * A caller with no session and without the link is answered 404, whether the
- * request is there or not (card 2132): it was 403 for one that is there.
+ * request is there or not (card 2132): it was 403 for one that is there. The
+ * link of a request nobody confirmed within seven days is answered alike (card
+ * 2243), so the requester's thread page shows the link as gone, and no longer
+ * offers "Confirm it" for a request the confirm route refuses.
  *
  * The requester's address goes to a signed-in reader only, and it is the one
  * their mail goes to: the account's email as it is now, for a request made
@@ -37,7 +40,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	// Being signed in is not enough on its own — it used to be, so any account
 	// could read any request.
 	const isAuthed = (row: TaskRequest) => !!locals.user && canReadRequest(locals.user, row);
-	const request = requireRequest(locals.user, id, (row) => isAuthed(row) || requestTokenMatches(row, token), 'Access denied');
+	const request = requireRequest(locals.user, id, (row) => isAuthed(row) || linkOpens(row, token), 'Access denied');
 
 	return json({
 		id: request.id,

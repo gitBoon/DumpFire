@@ -21,7 +21,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	MODEL_PRICES,
 	VERSION_AFTER_KEY,
@@ -41,6 +41,7 @@ import {
 	getCardTokenTotal,
 	getCardTokenTotals,
 	getUserSpendByPeriod,
+	spendPeriodStarts,
 	deleteTokenEntry,
 	recordTokenUsage,
 	recordTokenUsageBatch,
@@ -49,6 +50,31 @@ import {
 import { sqlite } from '$lib/server/db';
 import { addBoardMember, makeBoard, makeCard, makeSubtask, makeUser, resetDb } from './helpers/fixtures';
 import { api } from './helpers/api';
+import { stamp } from '$lib/timestamps';
+
+/**
+ * Runs `body` with the clock at `iso` (for `Date` alone) and the process in
+ * time zone `zone`, and puts both back. The spend windows are UTC days
+ * (card 2255); these are the moments a local rule gets wrong.
+ */
+function inZoneAt<T>(zone: string, iso: string, body: () => T): T {
+	const was = process.env.TZ;
+	process.env.TZ = zone;
+	vi.useFakeTimers({ toFake: ['Date'] });
+	vi.setSystemTime(new Date(iso));
+	try {
+		return body();
+	} finally {
+		vi.useRealTimers();
+		if (was === undefined) delete process.env.TZ;
+		else process.env.TZ = was;
+	}
+}
+
+/** 00:30 on Monday 19 October in London (British summer time), 23:30 on the 18th in UTC. */
+const LONDON_JUST_AFTER_MIDNIGHT = ['Europe/London', '2026-10-18T23:30:00Z'] as const;
+/** 22:30 on Saturday 31 October in New York, 02:30 on 1 November in UTC. */
+const NEW_YORK_EVENING = ['America/New_York', '2026-11-01T02:30:00Z'] as const;
 
 describe('the 5.5 models', () => {
 	it('each resolves to its own row, at its published rate', () => {
@@ -206,7 +232,11 @@ describe('one entry, priced the same in the card window as in the card total', (
 			expect(rows.reduce((sum, usd) => sum + usd, 0)).toBeCloseTo(total.costUsd!, 10);
 		});
 
-		it('every grouped total prices each entry as the card does, when one model has measured and total-only entries', () => {
+		// Run where the server's local day is not the UTC day, with the entries
+		// stamped at that moment (card 2255): under London in the hour after
+		// midnight, "today" was the local day, and left out every entry the ledger
+		// had grouped under the UTC one.
+		for (const [zone, at] of [LONDON_JUST_AFTER_MIDNIGHT, NEW_YORK_EVENING]) it(`every grouped total prices each entry as the card does, when one model has measured and total-only entries (${zone}, ${at})`, () => inZoneAt(zone, at, () => {
 			// The grouped totals sum a model's entries before pricing them. They used to
 			// price the whole group at the blend when any one entry had no breakdown, so
 			// this card read $0.1427 in its own window and $0.441 on the board, the
@@ -226,6 +256,8 @@ describe('one entry, priced the same in the card window as in the card total', (
 			sqlite
 				.prepare('UPDATE token_usage SET cache_read_tokens = NULL, cache_write_5m_tokens = NULL, cache_write_1h_tokens = NULL WHERE id = ?')
 				.run(legacy.entryId);
+			// The ledger's own clock is SQLite's, which the fake clock does not move.
+			sqlite.prepare('UPDATE token_usage SET created_at = ?').run(stamp());
 
 			// $0.07 measured (above); 8,190 x $5 + 910 x $25 at the blend, $0.0637;
 			// 800 x $5 + 200 x $25 from the split, $0.009.
@@ -244,6 +276,49 @@ describe('one entry, priced the same in the card window as in the card total', (
 			// Not every entry is measured, so no figure says it is exact.
 			expect(getCardTokenTotal(card.id).costExact).toBe(false);
 			expect(getCardTokenTotals([card.id]).get(card.id)?.costExact).toBe(false);
+		}));
+
+		// ─── The spend windows are UTC days, as the ledger groups them (card 2255) ─
+
+		it("spendPeriodStarts gives the UTC calendar, whatever the server's zone", () => {
+			// 00:30 on Monday the 19th in London is still Sunday the 18th in UTC, in the week of the 12th.
+			expect(inZoneAt(...LONDON_JUST_AFTER_MIDNIGHT, () => spendPeriodStarts())).toEqual({
+				today: '2026-10-18', week: '2026-10-12', month: '2026-10-01', year: '2026-01-01', all: ''
+			});
+			// 22:30 on Saturday 31 October in New York is Sunday 1 November in UTC.
+			expect(inZoneAt(...NEW_YORK_EVENING, () => spendPeriodStarts())).toEqual({
+				today: '2026-11-01', week: '2026-10-26', month: '2026-11-01', year: '2026-01-01', all: ''
+			});
+		});
+
+		it("a person's spend today is the ledger's UTC day, under London after midnight and under New York in the evening", () => {
+			const owner = makeUser();
+			const { board, cols } = makeBoard({ owner });
+			const card = makeCard(cols['To Do']);
+			/** One entry of `tokens`, stamped `at` in the stored form. */
+			const entryAt = (at: string, tokens: number) => {
+				const { entryId } = recordTokenUsage(owner, { kind: 'card', id: card.id }, tokens, 'claude-opus-5-5', 'work');
+				sqlite.prepare('UPDATE token_usage SET created_at = ? WHERE id = ?').run(at, entryId);
+			};
+			entryAt('2026-10-18 23:59:00', 100);
+			entryAt('2026-10-19 12:00:00', 1000);
+			entryAt('2026-10-19 23:30:00', 2000);
+			const today = () => getUserSpendByPeriod([board.id]).today.reduce((sum, r) => sum + r.tokens, 0);
+
+			// At 23:31 UTC on the 19th: 00:31 on the 20th in London, 19:31 on the 19th in New York.
+			for (const zone of ['Europe/London', 'America/New_York']) {
+				expect(inZoneAt(zone, '2026-10-19T23:31:00Z', today), zone).toBe(3000);
+			}
+			// At 02:30 UTC on the 20th, 22:30 on the 19th in New York: the 19th's entries are yesterday's.
+			entryAt('2026-10-20 02:00:00', 4000);
+			expect(inZoneAt('America/New_York', '2026-10-20T02:30:00Z', today)).toBe(4000);
+		});
+
+		it('says on the Spend window itself, not only in a tooltip, that its days are UTC days', () => {
+			const source = readFileSync(join(process.cwd(), 'src/lib/components/SpendModal.svelte'), 'utf8');
+			const markup = source.slice(source.indexOf('</script>'));
+			// Under the period buttons, where it is read with them.
+			expect(markup).toMatch(/\{\/each\}\s*<\/div>\s*(?:<!--[^]*?-->\s*)?<p class="period-note">Days are counted in UTC\.<\/p>/);
 		});
 
 		// ─── A correction is held to what was recorded (card 2220) ───────────────

@@ -5,7 +5,8 @@ import { and, eq } from 'drizzle-orm';
 import { notifyTaskRequest } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { checkRateLimit } from '$lib/server/rate-limit';
-import { requestReplyUrl, requestTokenMatches } from '$lib/server/request-tokens';
+import { requestReplyUrl } from '$lib/server/request-tokens';
+import { linkOpens } from '$lib/server/request-access';
 import { addressToCount } from '$lib/server/client-address';
 import { pathId, readBody } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
@@ -47,8 +48,10 @@ export const POST: RequestHandler = async ({ params, request, url, getClientAddr
 
 	const existing = db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
 	// One answer for "no such request" and "wrong token", so the ids of real
-	// requests cannot be picked out by trying numbers.
-	if (!existing || !requestTokenMatches(existing, token)) {
+	// requests cannot be picked out by trying numbers. And for a request nobody
+	// confirmed within seven days (card 2243): it confirmed however old its link
+	// was, mailing the team. The row is left for the form's clean-up.
+	if (!existing || !linkOpens(existing, token)) {
 		throw error(404, 'This confirmation link is not valid.');
 	}
 

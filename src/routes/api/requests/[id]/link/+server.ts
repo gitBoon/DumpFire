@@ -6,11 +6,10 @@ import { NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } f
 import { notifyRequesterNewLink } from '$lib/server/notifications';
 import { checkRateLimit } from '$lib/server/rate-limit';
 import { addressToCount } from '$lib/server/client-address';
-import { UNVERIFIED_LIFETIME_DAYS, requesterAddress } from '$lib/server/request-access';
+import { hasLapsed, requesterAddress } from '$lib/server/request-access';
 import { requestConfirmUrl, requestReplyUrl } from '$lib/server/request-tokens';
 import { readBody, readText } from '$lib/server/request-body';
 import { createLogger } from '$lib/server/logger';
-import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('REQUESTS');
@@ -135,8 +134,7 @@ export const POST: RequestHandler = async ({ params, request, url, getClientAddr
 	const address = found ? requesterAddress(found) : null;
 	const unconfirmed = found?.status === 'unverified';
 	// One the form would have cleared by now is not there (R3).
-	const cutoff = stamp(new Date(Date.now() - UNVERIFIED_LIFETIME_DAYS * 24 * 60 * MINUTE));
-	const tooOld = unconfirmed && found!.createdAt < cutoff;
+	const tooOld = !!found && hasLapsed(found);
 
 	if (found && address !== null && found.accessToken && !tooOld && comparable(given) === comparable(address)) {
 		// After the answer (S3): see the comment above.

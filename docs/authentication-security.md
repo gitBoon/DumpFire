@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.41
+version: 1.42
 status: As-Built
 date: 2026-10-19
 tags:
@@ -2602,7 +2602,14 @@ What each control is for:
   inbox, and the only email it sends goes to the address the requester gave. The team
   is notified when the requester confirms. An unconfirmed request more than 7 days old is
   deleted when the next anonymous request is made (the form clears them as it takes one);
-  until then it is still in the table, and no new link is ever mailed for it.
+  until then it is still in the table, no new link is ever mailed for it, and its
+  confirmation link no longer confirms it (card 2243): the confirmation answers it as a
+  wrong token, `404` "This confirmation link is not valid.", and the request, its thread
+  and a reply answer its link `404` as for a request that is not there when there is no
+  session, so the thread page shows the link as gone rather than offering "Confirm it"; a
+  signed-in account the request is not addressed to is answered `403` ("Access denied", or
+  "Invalid or missing link token" on a reply), as for a wrong token under card 2132. One rule says when it has
+  lapsed (`hasLapsed` in `request-access.ts`), and every route that takes the link asks it.
 - **Confirmation is a button, not a link.** The emailed link opens a page; the request
   is confirmed by the POST the button makes. Mail scanners open links before the
   recipient does, and a link that confirmed on sight would let a request made with
