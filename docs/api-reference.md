@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.58
+version: 1.59
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1318,7 +1318,15 @@ API:
     Drive's `serviceAccountJson`, which hold a file pasted in, at most 20,000. Any other
     field of a destination is not kept, where each was stored as sent.
     `POST /api/admin/backup/test` reads its destination the same way, and
-    `POST /api/admin/backup/gdrive/auth` its `code` and `destName` as text.
+    `POST /api/admin/backup/gdrive/auth` its `code` and `destName` as text. Card 2251 adds
+    `state`, read as text the same way (`state must be text`): the state of the consent
+    address the same session's `GET` built, sent back from the whole address Google's page
+    leads to. A missing, unknown, expired (ten minutes) or used one, or one another session,
+    account or destination started, is `400` `This connection was not started from this
+    session, or has expired or been used. Press Connect again, and paste the whole address
+    Google's page leads to.`, with nothing sent to Google; the `GET` puts a PKCE
+    `code_challenge` (S256) in the consent address and answers `Cache-Control: no-store`, and
+    the code is exchanged with its verifier.
   - `POST /api/admin/backup`: a body that is missing, is not JSON or is not an object is
     `400`, where it was read as `{}` and a backup run to every destination. `destination`
     is text.

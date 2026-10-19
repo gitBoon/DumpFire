@@ -43,6 +43,7 @@ import {
 } from '$lib/server/db/schema';
 import { createSession, generateApiKey, type SessionUser } from '$lib/server/auth';
 import { resetMailStatus } from '$lib/server/email';
+import { forgetConnects } from '$lib/server/gdrive-connect';
 import { forgetDeliveries, forgetWebhookWarnings } from '$lib/server/webhooks';
 
 let seq = 0;
@@ -106,6 +107,8 @@ export function resetDb(): void {
 	forgetWebhookWarnings();
 	// And each webhook's last delivery result (card 2178).
 	forgetDeliveries();
+	// And the Google Drive Connects under way, which a restart ends (card 2251).
+	forgetConnects();
 }
 
 export type Role = 'user' | 'admin' | 'superadmin';

@@ -2796,6 +2796,8 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		// POST /api/admin/backup/gdrive/auth
 		['POST /api/admin/backup/gdrive/auth', 'chief', at('/api/admin/backup/gdrive/auth'), () => ({ destName: 'Drive' }), 'Missing code or destName'],
 		['POST /api/admin/backup/gdrive/auth', 'chief', at('/api/admin/backup/gdrive/auth'), () => ({ code: 5, destName: 'Drive' }), 'code must be text'],
+		// Card 2251: the state from the address Google's page leads to, read as text as the code is.
+		['POST /api/admin/backup/gdrive/auth', 'chief', at('/api/admin/backup/gdrive/auth'), () => ({ code: 'x', destName: 'Drive', state: 5 }), 'state must be text'],
 		// POST /api/admin/backup/test
 		['POST /api/admin/backup/test', 'chief', at('/api/admin/backup/test'), () => ({ type: 'sftp' }), 'Missing destination type or name'],
 		['POST /api/admin/backup/test', 'chief', at('/api/admin/backup/test'), () => ({ name: 'Box', type: 'ftp' }), 'type must be one of: sftp, s3, gdrive, onedrive'],

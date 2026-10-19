@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.40
+version: 1.41
 status: As-Built
 date: 2026-10-19
 tags:
@@ -380,6 +380,20 @@ A list that names two destinations alike is not saved at all, whatever else chan
 - **Test** fetches the folder before listing it, for either sign-in method, so it says when the folder cannot be reached rather than "0 existing files".
 - **The badge.** Connect records the scope Google granted. The row says `✅ Connected` for a connection that reaches only DumpFire's files, and `⚠️ Connected · all of Drive` for any other, with a line under it saying how to narrow it. There is no button to connect it again: connecting again over the old grant would leave the old grant working. Every connection made before this change shows ⚠️, and keeps working as it did, with the whole of Drive, until it is narrowed.
 - A Connect that fails is one `[ERROR] [GDRIVE] Google Drive Connect failed for destination "G": …` line (it read "OAuth token exchange failed …" before: it now also covers the calls to Drive and the save).
+
+**Connecting: the whole address, from the session that started it** (card 2251). Connect takes a code only from the browser session that pressed Connect, so a code or address somebody else sends you cannot connect their Google account as your backup destination, unless they also had the consent address your Connect opened: that address holds the check, and whoever holds it can finish the Connect it started. Never open a consent address someone sends you, and never share yours.
+
+1. **🔗 Connect** on the destination's row. Google's consent window opens. Its address holds `state=` (a long random value, new at every Connect), `code_challenge=` and `code_challenge_method=S256`.
+2. Approve. Google leads to an address beginning `http://localhost/?state=…&code=…`, on a page that does not load: that is expected.
+3. Copy the **whole address** from that window's address bar, not only the code, paste it into the box DumpFire shows (its placeholder reads `Paste the whole address, starting http://localhost/?state=…`) and press ✅ Connect.
+
+What else you may see:
+
+- **Only the code pasted**, or an address without its `state`: the page sends nothing and says "Paste the whole address from the browser's address bar: it holds the code and the check that this connection was started here." The box stays open for the whole address.
+- **Access refused in Google's window**: the address holds `error=access_denied`; the page sends nothing and says "Google says access was not granted (access_denied). Press Connect again and allow access." Any other `error=` value: "Google answered with an error (*the value*). Press Connect again."
+- **"This connection was not started from this session, or has expired or been used. Press Connect again, and paste the whole address Google's page leads to."** The server refused the address, exchanged nothing and saved nothing, and wrote one `[WARN] [GDRIVE] Google Drive Connect refused for destination "G": …` line, filed under your account (its meta `stateSent` says whether the paste held a state at all). It says the same for every reason, without saying which: the address came from another browser or session, another account or another destination; more than ten minutes passed since Connect was pressed; the address was pasted before (each one works once, even when it was refused); Connect was pressed again for the same destination in the same session, which replaces the one before; or the server restarted meanwhile. Press Connect and start again.
+
+A connection already made is not affected: this changes only how a new one is made.
 
 **To narrow a connection made before this change**, in this order. Removing access first is the order that works: removing it after might end the new connection too.
 

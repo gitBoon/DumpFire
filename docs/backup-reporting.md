@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.19
+version: 1.20
 status: As-Built
 date: 2026-10-19
 tags:
@@ -296,27 +296,38 @@ Each destination implements three operations:
 (`DRIVE_FILE_SCOPE` in `src/lib/drive-scope.ts`), the files DumpFire makes, where it asked for
 the whole of Drive; a service account already asked for `drive.file`. A token refreshes with
 the scopes it was granted, so a connection made before keeps the whole of Drive until it is
-connected again. The Connect, in order:
+connected again. The Connect, in order (the `GET`, the state and PKCE from card 2251):
 
 ```mermaid
 sequenceDiagram
     participant P as Admin page
-    participant R as POST gdrive/auth
+    participant R as gdrive/auth route
+    participant M as Pending Connects (memory)
     participant G as Google
-    P->>R: code, destination name
-    R->>G: exchange the code
-    G-->>R: refresh token, granted scope
-    alt no refresh token
-        R-->>P: No refresh token received, nothing made or saved
-    else Folder ID empty
-        R->>G: files.create, the folder DumpFire backups (made YYYY-MM-DD)
-        G-->>R: its id
-    else Folder ID set
-        R->>G: files.get (reachFolder)
-        G-->>R: a folder not in the trash, or refused
+    P->>R: GET ?dest=G (session cookie)
+    R->>M: startConnect: state, verifier, bound to the session, account and destination, 10 minutes
+    R-->>P: authUrl with state, code_challenge (S256), Cache-Control no-store
+    P->>G: consent in a new window
+    G-->>P: http://localhost/?state=…&code=…, copied by hand
+    P->>R: POST code, state, destination name (read from the whole address)
+    R->>M: takeConnect (removed once presented, whatever follows)
+    alt refused: not found, expired, another session, account or destination
+        R-->>P: 400, one sentence, nothing exchanged or saved, one WARN line
+    else bound to this session
+        R->>G: getToken with the code and the code_verifier
+        G-->>R: refresh token, granted scope (or invalid_grant)
+        alt no refresh token
+            R-->>P: No refresh token received, nothing made or saved
+        else Folder ID empty
+            R->>G: files.create, the folder DumpFire backups (made YYYY-MM-DD)
+            G-->>R: its id
+        else Folder ID set
+            R->>G: files.get (reachFolder)
+            G-->>R: a folder not in the trash, or refused
+        end
+        R->>R: read the settings again, the same client id, secret and Folder ID?
+        R-->>P: saved with the token, grantedScope and folder, or refused and a made folder deleted
     end
-    R->>R: read the settings again, the same client id, secret and Folder ID?
-    R-->>P: saved with the token, grantedScope and folder, or refused and a made folder deleted
 ```
 
 - A folder that cannot be reached refuses the Connect with nothing saved, the destination
@@ -335,6 +346,37 @@ sequenceDiagram
   either sign-in method, and says when it cannot reach it; with no Folder ID it answers as
   before.
 - A failed Connect is one `ERROR` line, `Google Drive Connect failed for destination "…": …`.
+
+**Who started the Connect** (card 2251). The `POST` used to exchange any code it was sent, so a
+code from somebody else's consent, pasted by a superadmin who was led to, connected that
+person's Google account (with the Folder ID empty, every later backup went to a folder in it).
+`src/lib/server/gdrive-connect.ts` now holds each Connect under way, in memory:
+
+| What | How |
+|---|---|
+| `state` | 32 random bytes from `node:crypto`, base64url (43 characters), new at every `GET`; never the destination's name, which it was |
+| Bound to | the SHA-256 of the session's token (`locals.credential`; no token is held), the account's id and the destination's name; a request with no credential is bound to its account alone |
+| PKCE | a `code_verifier` of 32 random bytes, kept only here; the consent address carries `code_challenge` (its SHA-256, base64url) and `code_challenge_method=S256`; the exchange is `getToken({ code, codeVerifier })` (google-auth-library 10.6.2) |
+| Lifetime | `CONNECT_LIFETIME_MS`, ten minutes; the expired swept at every Connect started and every state presented |
+| Once | `takeConnect` removes a state the first time a `POST` presents it, whether the check then passes or not |
+| How many | one per session and destination (a new `GET` replaces the older); at most `MOST_PENDING`, 20, the oldest dropped |
+| A restart | ends every Connect under way: press Connect again |
+
+- `state` is read as text after `code` and `destName` (`state must be text`). A missing, empty,
+  unknown, expired or used state, or one another session, account or destination started, is
+  `400 {"message":"This connection was not started from this session, or has expired or been used. Press Connect again, and paste the whole address Google's page leads to."}`,
+  with nothing exchanged or written and one `WARN` line under `GDRIVE`: `Google Drive Connect
+  refused for destination "G": its state was not one this session started, or had expired or
+  been used`, filed under the account (`user_id`) with the meta `{"stateSent":false}` for a
+  `POST` with no state (or an empty one) and `{"stateSent":true}` for one whose state failed;
+  the answer is the same sentence for both. The check comes before the destination is looked up.
+- The `GET` answers `Cache-Control: no-store`. It stays a `GET`: another site that sends the
+  browser to it makes a pending Connect whose state and verifier it never sees, and can at most
+  replace one in progress.
+- The admin page reads `code` and `state` from the whole address pasted, and sends neither for
+  a bare code, nor for an address holding Google's `error=` (consent refused is
+  `error=access_denied`): it says why instead (the admin guide, Configuring Backups).
+- Connections made before are untouched: a stored refresh token is not checked again.
 
 ### Retention Cleanup
 
@@ -820,6 +862,7 @@ Individual card reports can be generated for completion notifications. These inc
 | `src/lib/server/backup-secrets.ts` | ~1,400 | What a backup leaves out because it is a secret (card 2169), and what the admin routes mask and keep (cards 2187 and 2190: `SECRET_MASK`, `maskDestination()`, `keepMaskedSecrets()`, `keepMailPassword()`): `clearSecrets()`, `readSecretsHere()` and `fillSecretGaps()` for a restore, `credentialsMissing()`, `secretsToEnter()` for the start-up line, and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
 | `src/lib/server/backup-destinations.ts` | ~670 | SFTP, S3, Google Drive, OneDrive destination implementations; `readDestination()`; `reachFolder()` and `makeDumpfireFolder()` for Google Drive (card 2188) |
 | `src/lib/drive-scope.ts` | ~40 | `DRIVE_FILE_SCOPE`, `driveScopeIsNarrow()` and `dumpfireFolderName()`, read by the server and the admin page (card 2188) |
+| `src/lib/server/gdrive-connect.ts` | ~120 | The Google Drive Connects under way, in memory: `startConnect()` (state and PKCE challenge), `takeConnect()` (once, bound to the session, account and destination, ten minutes), `forgetConnects()` for the tests (card 2251) |
 | `src/lib/server/reports.ts` | ~1,900 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()`, `claimScheduleRun()` and the timer's `runDueReportSchedulesOnce()`; `takeReportMail()`, the day's 100 addresses (card 2182) |
 | `src/routes/api/reports/email/+server.ts` | ~170 | A report emailed on demand, and its answer |
 | `src/lib/report-schedule-time.ts` | ~210 | `nextRunAfter()`, `canonicalTimeZone()`, `readTimeOfDay()` and `DEFAULT_SCHEDULE_TIME_ZONE`: when a schedule is next sent, in its own zone, for the routes, the scheduler and the page (cards 2144 and 2159) |

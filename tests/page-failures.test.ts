@@ -3966,3 +3966,68 @@ describe('the admin page’s invite whose mail was not sent, src/routes/admin/+p
 		expect(blocksAround(source, at).some((b) => b.condition === 'isSuperadmin' && !b.inElse)).toBe(true);
 	});
 });
+
+describe('the Google Drive Connect’s paste box, src/routes/admin/+page.svelte (card 2251)', () => {
+	const file = 'src/routes/admin/+page.svelte';
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const tree = scriptOf(file);
+	// The page is CRLF in the working copy: lines are joined with \n to read the markup.
+	const markup = source.slice(source.indexOf('</script>')).replace(/\r\n/g, '\n');
+	const box = markup.slice(markup.indexOf('<!-- Google Drive OAuth code entry -->'), markup.indexOf('<!-- Toast -->'));
+	const exchange = () => functionNamed(tree, 'exchangeGDriveCode');
+
+	/** Decision 5's words, and R12's for an address Google ended with an error. */
+	const PASTE_WHOLE_ADDRESS =
+		"Paste the whole address from the browser's address bar: it holds the code and the check that this connection was started here.";
+	const ACCESS_DENIED = 'Google says access was not granted (access_denied). Press Connect again and allow access.';
+	const OTHER_ERROR = '`Google answered with an error (${googleError}). Press Connect again.`';
+
+	it('says decision 5’s words, word for word', () => {
+		expect(tree.getText().replace(/\r\n/g, '\n')).toContain(`const PASTE_WHOLE_ADDRESS =\n\t\t"${PASTE_WHOLE_ADDRESS}";`);
+	});
+
+	it('sends the state read from the pasted address with its code', () => {
+		const fn = exchange();
+		expect(fn.getText()).toContain("const code = address?.searchParams.get('code');");
+		expect(fn.getText()).toContain("const state = address?.searchParams.get('state');");
+		expect(fn.getText()).toContain('body: JSON.stringify({ code, state, destName: gdriveConnecting })');
+		// The pasted text is no longer sent as the code when it is not an address.
+		expect(fn.getText()).not.toContain('not a URL, use as-is');
+	});
+
+	it.each([
+		['a bare code, or an address without its state', 'PASTE_WHOLE_ADDRESS'],
+		['an address holding error=access_denied', ACCESS_DENIED],
+		['an address holding any other error', OTHER_ERROR]
+	])('says what is wrong with %s and returns before anything is sent (decision 5, R12)', (_case, words) => {
+		const fn = exchange();
+		const said = callsOf(fn, 'showToast').filter((call) => call.getText().includes(words));
+		const sends = callsOf(fn, 'sent');
+
+		expect(said, words).toHaveLength(1);
+		expect(sends).toHaveLength(1);
+		// A statement of the function itself, an `if` whose branch says it and
+		// returns, ahead of the call that sends.
+		const guard = ts.findAncestor(said[0], (node) => ts.isIfStatement(node) && node.parent === fn.body) as ts.IfStatement | undefined;
+		expect(guard, words).toBeDefined();
+		const branch = guard!.thenStatement;
+		expect(ts.isBlock(branch) && branch.statements.some((statement) => ts.isReturnStatement(statement)), words).toBe(true);
+		expect(guard!.getEnd()).toBeLessThan(sends[0].getStart());
+		expect(said[0].getText()).toContain("'error'");
+	});
+
+	it('reads Google’s error before the code, so an address holding both is not sent', () => {
+		const text = exchange().getText();
+		expect(text.indexOf("address?.searchParams.get('error')")).toBeGreaterThan(-1);
+		expect(text.indexOf("address?.searchParams.get('error')")).toBeLessThan(text.indexOf("address?.searchParams.get('code')"));
+		expect(text).toContain("googleError === 'access_denied'");
+	});
+
+	it('asks for the whole address, in the instructions and the placeholder (R12)', () => {
+		expect(box).toContain('placeholder="Paste the whole address, starting http://localhost/?state=…"');
+		expect(box).not.toContain('authorization code here');
+		expect(box).toContain(
+			"Copy the <strong>whole address</strong> from your browser's address bar, not only the code: it holds the code and the check that this connection was started here. Paste it below:"
+		);
+	});
+});
