@@ -130,6 +130,17 @@ describe('/api/report-schedules', () => {
 		);
 	});
 
+	// Card 2159: the zone a schedule's time is read in.
+	it('answers 400 for a time zone the server does not know, an offset, or no name', async () => {
+		for (const timeZone of ['Mars/Base', '+01:00', '', 'E'.repeat(65), 5]) {
+			await refused(
+				post(user, { ...weekly, scopeId: mine.board.id, timeZone }),
+				400,
+				'timeZone must be a time zone name, such as Europe/London'
+			);
+		}
+	});
+
 	it('still creates a schedule that is in order', async () => {
 		const id = await makeSchedule(user, mine);
 
@@ -206,6 +217,22 @@ describe('/api/report-schedules/:id', () => {
 			"Report mail can reach at most 100 addresses a day from one account, and this schedule's 2 would make 102. " +
 				'The schedule was not changed. Try again in 24 hour(s).'
 		);
+	});
+
+	// Card 2159, decision 12: a schedule turned on or re-timed is dated again,
+	// and one that cannot be dated is refused, with nothing changed.
+	it('answers 400 for a zone it does not know, and for turning on or re-timing a schedule that cannot be dated', async () => {
+		const id = await makeSchedule(user, mine);
+		const put = (body: unknown) => () => api('PUT', `/api/report-schedules/${id}`, { user, body });
+
+		await refused(put({ timeZone: 'Mars/Base' }), 400, 'timeZone must be a time zone name, such as Europe/London');
+
+		// A time stored before it was checked, as a restored row may hold.
+		db.update(reportSchedules).set({ timeOfDay: '9', enabled: false }).run();
+		const unreadable = 'its time of day "9" is not a time from 00:00 to 23:59';
+		await refused(put({ dayOfWeek: 3 }), 400, `The schedule was not changed: ${unreadable}`);
+		await refused(put({ timeZone: 'Europe/London' }), 400, `The schedule was not changed: ${unreadable}`);
+		await refused(put({ enabled: true }), 400, `This schedule cannot be turned on: ${unreadable}. Turn it on with a time, day and zone that can be read, or delete it and make it again.`);
 	});
 
 	it('reads an empty time as 09:00, and keeps a value stored before it was checked when it is sent back', async () => {

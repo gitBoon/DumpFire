@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.30
+version: 1.31
 status: As-Built
 date: 2026-10-19
 tags:
@@ -317,6 +317,7 @@ erDiagram
         int day_of_week
         int day_of_month
         text time_of_day
+        text time_zone
         bool enabled
         text recipients
         int period_days
@@ -1091,6 +1092,14 @@ of about zero.
     `timestampColumns(database)` in `src/lib/server/db/timestamps.ts` finds every such
     TEXT column by the rule (37 on the model), leaving out SQLite's own tables,
     `__drizzle_migrations` and `__new_*` leftovers of a rebuild.
+  - **A wall-clock time is not a moment** (card 2159). `report_schedules.time_of_day` is
+    `HH:MM` on a clock, and `report_schedules.time_zone` the IANA zone it is read in
+    (`Europe/London`; migration `0058`, `NOT NULL DEFAULT 'UTC'`, which every schedule made
+    before it was given). Neither ends in `_at`, so the conversion leaves both alone; a
+    schedule's `next_run_at` and `last_run_at` are moments in the stored form like any
+    other. `nextRunAfter` in `src/lib/report-schedule-time.ts` turns the pair into the next
+    moment, afresh from now each time, so a weekly run stays on its wall-clock time across a
+    clock change. `schema.ts` says so in its header.
   - **One helper writes and reads them**, `src/lib/timestamps.ts`, used by the server and
     the pages alike: `stamp(date)` gives the stored form, and every write from JavaScript
     goes through it; `toStamp(input, edge)` reads what a caller sends (the stored form,

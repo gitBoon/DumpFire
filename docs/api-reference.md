@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.51
+version: 1.52
 status: As-Built
 date: 2026-10-19
 tags:
@@ -993,10 +993,19 @@ API:
   - `PUT /api/report-schedules/{id}`: `enabled` a boolean; `name` 1 to 200 characters;
     `frequency` `weekly` or `monthly`, where another was ignored; `dayOfWeek` 0 to 6 and
     `dayOfMonth` 1 to 28, whole numbers (31 was stored as 28); `timeOfDay` `HH:MM`, `''` being
-    09:00, where any text was stored; `recipients` addresses separated by commas,
-    semicolons or lines, as the reports page takes them, and stored separated by commas, at
-    most 2,000 characters; `statusFilter` one of its values, where another was stored as `all`.
-    The answer is the schedule as it was written.
+    09:00, where any text was stored; `timeZone` a time zone name this server knows, such as
+    `Europe/London`, stored as the server names it (`europe/london` is `Europe/London`), where
+    an unknown name, an offset (`+01:00`, `−01:00`) or more than 64 characters is `400`
+    `timeZone must be a time zone name, such as Europe/London` (card 2159); `recipients`
+    addresses separated by commas, semicolons or lines, as the reports page takes them, and
+    stored separated by commas, at most 2,000 characters; `statusFilter` one of its values,
+    where another was stored as `all`. The answer is the schedule as it was written.
+    Turning the schedule on, or a new `frequency`, `dayOfWeek`, `dayOfMonth`, `timeOfDay` or
+    `timeZone`, works its next run out again from now, in its zone (cards 2144 and 2159); any
+    other change leaves it. A timing the scheduler cannot date is `400`
+    `The schedule was not changed: its time of day "9" is not a time from 00:00 to 23:59`, or,
+    turning it on, `400`
+    `This schedule cannot be turned on: its time of day "9" is not a time from 00:00 to 23:59. Turn it on with a time, day and zone that can be read, or delete it and make it again.`
 - **The share window offers Owner only on a row already stored as owner.** No share makes
   anyone an owner now (`role` above), so the choice it offered on every person's row was
   always refused, and the window threw the answer away: the role snapped back with nothing
@@ -1179,7 +1188,8 @@ API:
   - `POST /api/report-schedules`: as `PUT /api/report-schedules/{id}` reads them, and
     `periodDays` a whole number from 1 to 366, `detailLevel` `summary` or `detailed`, and
     `statusFilter` one of its values, where another was stored as `detailed` or `all`;
-    `scopeId` an id. The board or the grouping is looked for, and the caller checked,
+    `scopeId` an id; no `timeZone` is `UTC`, and a timing that cannot be dated is `400`
+    `The schedule was not saved: …`. The board or the grouping is looked for, and the caller checked,
     before the other fields are read: a board that is not there is `404`
     `Board not found`, where an administrator's schedule of it was made, and a board the
     caller cannot see is `403` whatever else the body holds.
@@ -1489,14 +1499,15 @@ API:
     `Reports can be emailed to at most 100 addresses a day from one account, and this would make 104. Try again in 5 hour(s).`
     (minutes under an hour), with nothing built or sent, taken after the `503` and before
     the PDF. A schedule made (`POST`), turned on, or given a new `frequency`, `dayOfWeek`,
-    `dayOfMonth` or `timeOfDay` (`PUT`) takes its addresses from the same 100: `429`
+    `dayOfMonth`, `timeOfDay` or `timeZone` while it is on after the change (`PUT`) takes its
+    addresses from the same 100, since each can bring a send forward to any time: `429`
     `Report mail can reach at most 100 addresses a day from one account, and this schedule's 10 would make 104. The schedule was not saved. Try again in 5 hour(s).`
     (`… was not changed.` on the `PUT`), nothing saved. Otherwise a `PUT` that changes
     `recipients` takes the addresses the new list adds, those not in the stored list (one
     address changed to ten takes nine), refused in the same way with
     `this schedule's 9 new addresses would make 109`; the stored list sent back in another
-    order or case, or cut down, a change of name or filter, and turning one off take
-    nothing; a delete gives nothing back; a scheduled run takes nothing. The day is 24 hours
+    order or case, or cut down, a change of name or filter, re-timing one that stays off,
+    and turning one off take nothing; a delete gives nothing back; a scheduled run takes nothing. The day is 24 hours
     from the account's first take, in memory, so up to 200 can go across one day's end and
     the next's start.
   - `POST` and `PUT /api/report-schedules`: more than 10 addresses is `400`

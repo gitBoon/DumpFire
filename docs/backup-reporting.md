@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.18
+version: 1.19
 status: As-Built
 date: 2026-10-19
 tags:
@@ -556,13 +556,49 @@ Configured per-user via the Reports page:
 | `scopeId` | number | Board or category ID |
 | `frequency` | weekly/monthly | How often |
 | `dayOfWeek` | 0-6 | Day for weekly reports |
-| `dayOfMonth` | 1-28 | Day for monthly reports |
-| `timeOfDay` | HH:MM, 00:00 to 23:59; empty is 09:00 | When to generate |
+| `dayOfMonth` | 1-28 | Day for monthly reports. A value above 28 kept from before is read as 28 |
+| `timeOfDay` | HH:MM, 00:00 to 23:59; empty is 09:00 | When to generate: a wall-clock time in `timeZone` |
+| `timeZone` | An IANA zone name, such as `Europe/London`, at most 64 characters; stored as the server names it (`europe/london` is `Europe/London`, `Etc/UTC` is `UTC`). None is `UTC` | The zone `timeOfDay` is read in (card 2159, migration `0058`). The Reports page sends its creator's browser zone |
 | `recipients` | Up to 10 addresses, separated by commas, semicolons or spaces (tabs and new lines too), an address written `<address>` read as the one inside; each part must be an address. Stored as the addresses it is sent to, lower-cased, each once, separated by `, ` | Where to send |
-| `periodDays` | 1-366 | Lookback period in days |
+| `periodDays` | 1-366 | Lookback period in days: from the same time by the schedule's clock that many dates before the run, in its `timeZone`, so a week across a clock change is still Monday 09:00 to Monday 09:00 (card 2159). The mail's "Period" is written in that zone too |
 | `detailLevel` | summary/detailed | Metrics and listings only, or full descriptions, business value and subtasks |
 | `statusFilter` | all/completed/in_progress/todo | Which slice to list (see Status Filter); stored in `report_schedules.status_filter`, migration `0041` |
 | `enabled` | boolean | Active toggle |
+
+**A time in a zone (card 2159).** A schedule's time is a wall-clock time in its own zone, so
+"weekly on Monday at 09:00 Europe/London" is sent at 09:00 in London all year: 08:00 UTC in
+British summer time, 09:00 UTC in winter. It used to be set with `setHours` on the server's
+own clock, so on a server on UTC (the image sets no `TZ`) it was sent at 10:00 all summer.
+`nextRunAfter` in `src/lib/report-schedule-time.ts` works every run out afresh from now,
+never by adding seven days to the last, and the server's own zone plays no part:
+
+- **A time the clocks jump over** (01:30 in the UK on the last Sunday in March) is sent an
+  hour later by the clock, 02:30 BST, the moment 01:30 GMT would have been.
+- **A time that happens twice** (01:30 on the last Sunday in October) is sent once, at the
+  first.
+- **A zone the server does not know**, an offset such as `+01:00` or `−01:00` (either
+  minus sign), or more than 64 characters is `400` `timeZone must be a time zone name, such as Europe/London`. Zone rules
+  come with Node's own build in the image; a government's change to its clocks reaches the
+  schedules with a later Node 22 image.
+- **Schedules made before card 2159** were given `UTC` by migration `0058`, the zone they had
+  been running in, so each is sent when it always was. The page offers "Use my time zone
+  (Europe/London)" on any schedule whose zone is not the viewer's; only the schedule's owner
+  can press it.
+
+**When the next run moves (card 2159).** `POST` works out the first run in the schedule's
+zone. `PUT` works the next run out again from now when it sends a new `frequency`,
+`dayOfWeek`, `dayOfMonth`, `timeOfDay` or `timeZone`, and when it turns the schedule on; any
+other change leaves it, so a rename does not move a run that is due. So turning a schedule
+back on sends nothing at once for a run missed while it was off, a working-copy restore's
+schedules included; it is sent at its next time. A changed time takes effect at once, where
+the old time used to be sent once more. A new zone takes the schedule's addresses from the
+day's 100, as a new time does, since it can bring a send forward to any time; a schedule
+that is off after the change takes nothing. A timing the scheduler cannot date is refused,
+with nothing changed: `400` `The schedule was not changed: its time of day "9" is not a time
+from 00:00 to 23:59`, or, turning one on, `400` `This schedule cannot be turned on: its time
+of day "9" is not a time from 00:00 to 23:59. Turn it on with a time, day and zone that can
+be read, or delete it and make it again.` A `PUT` that sends `enabled: true` with a timing
+that can be read, `{"enabled": true, "timeOfDay": "10:00"}`, turns such a schedule on.
 
 Who a report may reach (card 2182), told in full in
 [Who a Report Can Be Mailed To](notifications-email.md#who-a-report-can-be-mailed-to):
@@ -578,8 +614,8 @@ Who a report may reach (card 2182), told in full in
 - **The day's 100 addresses.** One account's report mail reaches at most 100 addresses in a
   24-hour window counted from its first take (so up to 200 across one window's end and the
   next's start): the reports it emails by hand, and the schedules it makes, turns on or
-  re-times, each of which takes the schedule's addresses, because each can bring a send
-  forward; and a change of a schedule's list, which takes the addresses it adds, those not
+  re-times while on, each of which takes the schedule's addresses, because each can bring a
+  send forward; and a change of a schedule's list, which takes the addresses it adds, those not
   in the stored list (one address changed to ten takes nine). The stored list sent back in
   another order or case, or cut down, a change of name or filter, and turning a schedule
   off take nothing, and nothing is given back when a schedule is deleted. Past it, `429`
@@ -609,16 +645,48 @@ Every minute the timer of `initReportScheduler()` calls `runDueReportSchedulesOn
 `src/lib/server/reports.ts`, with the time it is then, and that calls
 `runDueReportSchedules(now)` unless the last minute's run is still going. Both are exported
 so that the tests can call them with a time of their own; under test the timer is off
-(`SCHEDULERS=off`). A run takes each enabled schedule whose `nextRunAt` has come, as its
-owner: the report is built with the owner's access, as if they had asked for it.
+(`SCHEDULERS=off`). A run takes each enabled schedule whose `nextRunAt` has come, or that has
+none, as its owner: the report is built with the owner's access, as if they had asked for
+it.
+
+**The next run first, then the claim, then the send (card 2144).** For each schedule due, in
+this order:
+
+1. Its next run is worked out from now, in its own zone (`nextRunAfter`). A schedule whose
+   next run cannot be worked out is switched off, with one `ERROR` line, and nothing is sent
+   (below).
+2. A schedule with no next run (a restored or hand-made row) is given one, and nothing is
+   sent: it is not mailed the moment it arrives. A next run that cannot be read counts as
+   none: `NaN-NaN-NaN NaN:NaN:NaN`, which the image before card 2144 wrote for a time it could
+   not read, was after every moment when compared as text, so such a schedule was never due.
+   Where the schedule cannot be dated either, step 1 switches it off and clears the value.
+3. The run is claimed: one conditional write, `UPDATE report_schedules SET last_run_at = now,
+   next_run_at = next, updated_at = now WHERE id = ? AND enabled = 1 AND next_run_at <= now`,
+   in the stored form (`stamp()`), made before the report is built (`claimScheduleRun`). A
+   claim that changes no row means another run has it, and the schedule is skipped. SQLite
+   takes the write lock, so of two ticks, or two processes on one database, only one sends.
+4. The report and its PDF are built from the row as claimed, so a change of recipients made
+   in between is honoured, and sent.
+
+The next run used to be worked out after the sends: a time it could not read was sent at
+every minute's tick, and a weekly day of -2 gave a next run in the past and did the same.
+
+**At most once.** Because the claim moves `lastRunAt` and `nextRunAt` before anything is
+sent, a failure after it, or a restart during the sends (a deploy), loses the rest of that
+run, which is not sent again. Before card 2144 the same run was sent again to every recipient
+at the next start. For mail to outside addresses that is the right way round.
 
 **One run at a time.** A run can take longer than the minute between ticks: about 35 seconds
-for each address a slow mail server holds up, and the PDF before that. A schedule's next run
-is written only once its mail has gone, so a tick that started while the last run was still
-sending found the same schedule due and sent its report a second time. A module flag now
-marks a run in progress: a tick that finds it set does nothing and answers `false`, and the
-flag is cleared in a `finally`, so a run that throws does not stop the scheduler. A schedule
-that came due during a run is still due at the next tick that runs.
+for each address a slow mail server holds up, and the PDF before that. A module flag marks a
+run in progress: a tick that finds it set does nothing and answers `false`, and the flag is
+cleared in a `finally`, so a run that throws does not stop the scheduler. A schedule that came
+due during a run is still due at the next tick that runs. The claim would stop a second send
+on its own; the flag keeps one process from doing two ticks' work at once.
+
+**At the start.** `initReportScheduler()` gives every schedule with no next run its first,
+enabled or not, through the same function, and switches off one it cannot date. It never
+throws: a failure is logged at `ERROR` and the timer starts all the same. A schedule with no
+next run and a time that could not be read used to stop the server starting.
 
 ```mermaid
 sequenceDiagram
@@ -635,15 +703,26 @@ sequenceDiagram
         Once-->>Timer: false, and nothing is run
     else no run is going: the flag is set
         Once->>Run: run
-        Run->>DB: Enabled schedules whose nextRunAt <= now
+        Run->>DB: Enabled schedules whose nextRunAt is empty or not after now
         DB-->>Run: Matching schedules
 
         loop Each schedule
-            Run->>Run: reportRecipients(recipients)
-            opt more than 10 addresses (card 2182)
+            Run->>Run: nextRunAfter(schedule, now), in its own zone
+            alt the next run cannot be worked out (card 2144)
+                Run->>DB: nextRunAt = null, if it cannot be read
+                Run->>DB: enabled = 0, where it is still 1
+                Run->>Log: ERROR switched off, naming the field, if this run changed the row
+                Note over Run: nothing built or sent, next schedule
+            else no next run yet, or one that cannot be read
+                Run->>DB: nextRunAt = the run found, where it is still as read
+                Note over Run: nothing sent, next schedule
+            else more than 10 addresses (card 2182)
                 Run->>DB: enabled = 0, where it is still 1
                 Run->>Log: ERROR switched off, if this run changed the row
                 Note over Run: nothing built or sent, next schedule
+            else a run is due
+                Run->>DB: claim: lastRunAt = now, nextRunAt = next,<br/>where it is on and nextRunAt is not after now
+                DB-->>Run: the row as claimed, or none: another run has it, next schedule
             end
             Run->>Engine: generateReport by scope + statusFilter, as the owner
             alt no report: none named, gone, or none the owner can read
@@ -662,7 +741,6 @@ sequenceDiagram
                     Run->>Log: ERROR not emailed to the addresses named,<br/>S of N reached, and why
                 end
             end
-            Run->>DB: lastRunAt = now, nextRunAt = the next run
         end
         Run-->>Once: done
         Once-->>Timer: true, the flag cleared (finally)
@@ -683,23 +761,42 @@ nothing at all for a schedule that produced no report.
 | No report: a board or grouping schedule that names none (`scopeId` empty) | `WARN` | `... produced no report, so nothing was sent: the schedule has no board` (`the schedule has no grouping` for a grouping) |
 | No report: a report on every board, and its owner is not an administrator | `WARN` | `... produced no report, so nothing was sent: a report on every board is for an administrator, and the schedule's owner is not one` |
 | No recipients | `WARN` | `Scheduled report generated but no recipients configured: "<name>"` |
+| Its next run cannot be worked out (card 2144) | `ERROR` | `Report schedule 12 "Weekly sales", owner "pat" (user 7), was switched off: its time of day "9" is not a time from 00:00 to 23:59, so its next run cannot be worked out. Nothing was sent. Its owner can turn it on again with a time, day and zone that can be read, or delete it and make it again.`, with the owner as the line's user. The other faults: `its frequency "daily" is not weekly or monthly`, `its day of the week -2 is not a whole number from 0 (Sunday) to 6 (Saturday)`, `its day of the month 0 is not a whole number of 1 or more`, `its time zone "Mars/Base" is not one this server knows`. A stored value is named to its first 80 characters, then `…`. Once, as the line below: written only by the run, or the start, that changed the row |
 | More than 10 addresses, kept from before the cap (card 2182) | `ERROR` | `Report schedule 12 "Weekly sales", owner "pat" (user 7), was switched off: it is sent to 15 addresses, and the most is 10. Nothing was sent. Its owner can delete it and make it again with at most 10.`, with the owner as the line's user. Once: the switch-off is written only where the schedule is still on, and only the run that changed the row writes the line |
 | A list that also holds parts that are not addresses, kept from before (card 2182) | As the line | The emailed, not-emailed or no-recipients line above ends `Left out, as not email addresses: "alice", "smith".` Those parts are never sent to; the addresses are, and the schedule is not switched off for them |
 
 - **A schedule moves on to its next run whatever was sent.** `lastRunAt` and `nextRunAt` are
-  written after each of the cases above, and nothing is sent again before the next run: a
-  retry would mail the report a second time to everyone it did reach. A schedule with no
-  report also moves on, and goes on logging its `WARN` line at each run until it is mended
-  or deleted.
-- **A schedule whose report throws is tried again at the next minute.** An error while the
-  report or its PDF is made is logged at `ERROR`, `Failed to run scheduled report "<name>"`,
-  and the schedule is left as it was, so it is still due a minute later, and fails again.
-  Card 2144 is to settle it.
+  written by the claim, before each of the cases above, and nothing is sent again before the
+  next run: a retry would mail the report a second time to everyone it did reach. A schedule
+  with no report also moves on, and goes on logging its `WARN` line at each run until it is
+  mended or deleted.
+- **A schedule whose report throws is not tried again before its next run** (card 2144). An
+  error while the report or its PDF is made is logged at `ERROR`, `Failed to run scheduled
+  report "<name>". It is not sent again before its next run.`; the run was claimed, so the
+  schedule is due again at its next time. It used to be left as it was, and failed again
+  every minute. A claim that meets another connection's write lock throws the same way
+  before anything is built, is logged without the second sentence, and leaves the schedule
+  due for the next tick.
+- **A schedule switched off because its next run cannot be worked out is not run again**
+  until its owner mends it. Turning it on alone is refused with the same reason; a `PUT`
+  that sends `enabled: true` with a time, day and zone that can be read (`{"enabled": true,
+  "timeOfDay": "10:00"}`) turns it on and works its next run out again. The Reports page
+  shows the reason in place of "Next" and offers no **Use my time zone**; it cannot change a
+  time, so there its owner deletes it and makes it again.
 - **A schedule switched off for more than 10 addresses is not run again** until it is
   remade with 10 or fewer, or a `PUT` sends a list of 10 or fewer with `enabled: true`. Its
-  last and next run are left as they were, so a schedule turned back on that way is due at
-  the scheduler's next tick, and the `PUT` takes its addresses from the day's 100. Its owner sees why on the Reports page, with its
-  addresses to copy; the administrators see the `ERROR` line on the Audit page.
+  last run is left as it was; turning it back on works its next run out again from now
+  (card 2159), and the `PUT` takes its addresses from the day's 100. Its owner sees why on
+  the Reports page, with its addresses to copy; the administrators see the `ERROR` line on
+  the Audit page.
+- **The Reports page shows a schedule's time with its zone** (card 2159): the badge reads
+  "Weekly on Mon at 09:00 Europe/London", "Last" and "Next" are written in the schedule's own
+  zone with its short name ("Next: 26 Oct 2026, 09:00 GMT"), and the form says under the
+  time "In your time zone, Europe/London". Where the schedule's zone is not the viewer's,
+  Next is followed by the viewer's own time ("Next: 26 Oct 2026, 09:00 UTC (10:00 your
+  time)", with the date as well when it is another day there), and **Use my time zone** by
+  a line saying it reads the time in the viewer's zone from now on and works the next run
+  out again. The viewer's zone is read in the browser once the page has loaded.
 - **Every scheduled mail names the account that set it up**: "Set up by `<username>`" above
   "— DumpFire Automated Reports", the username escaped (card 2182), as the report emailed by
   hand says "Sent by `<username>` via DumpFire".
@@ -723,7 +820,8 @@ Individual card reports can be generated for completion notifications. These inc
 | `src/lib/server/backup-secrets.ts` | ~1,400 | What a backup leaves out because it is a secret (card 2169), and what the admin routes mask and keep (cards 2187 and 2190: `SECRET_MASK`, `maskDestination()`, `keepMaskedSecrets()`, `keepMailPassword()`): `clearSecrets()`, `readSecretsHere()` and `fillSecretGaps()` for a restore, `credentialsMissing()`, `secretsToEnter()` for the start-up line, and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
 | `src/lib/server/backup-destinations.ts` | ~670 | SFTP, S3, Google Drive, OneDrive destination implementations; `readDestination()`; `reachFolder()` and `makeDumpfireFolder()` for Google Drive (card 2188) |
 | `src/lib/drive-scope.ts` | ~40 | `DRIVE_FILE_SCOPE`, `driveScopeIsNarrow()` and `dumpfireFolderName()`, read by the server and the admin page (card 2188) |
-| `src/lib/server/reports.ts` | ~1,700 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()` and the timer's `runDueReportSchedulesOnce()`; `takeReportMail()`, the day's 100 addresses (card 2182) |
+| `src/lib/server/reports.ts` | ~1,900 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()`, `claimScheduleRun()` and the timer's `runDueReportSchedulesOnce()`; `takeReportMail()`, the day's 100 addresses (card 2182) |
 | `src/routes/api/reports/email/+server.ts` | ~170 | A report emailed on demand, and its answer |
+| `src/lib/report-schedule-time.ts` | ~210 | `nextRunAfter()`, `canonicalTimeZone()`, `readTimeOfDay()` and `DEFAULT_SCHEDULE_TIME_ZONE`: when a schedule is next sent, in its own zone, for the routes, the scheduler and the page (cards 2144 and 2159) |
 | `src/lib/report-recipients.ts` | ~70 | `reportRecipients()` and `MAX_REPORT_RECIPIENTS`: the one reading of a list of recipients, for the routes, the scheduler and the page (card 2182) |
 | `src/lib/server/snapshots.ts` | ~85 | Daily card count snapshots for the CFD (burndowns use card timestamps) |

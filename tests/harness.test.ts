@@ -104,6 +104,7 @@ const TEST_FILES = [
 	'report-mail.test.ts',
 	'report-access.test.ts',
 	'report-recipients.test.ts',
+	'report-schedules.test.ts',
 	'request-body.test.ts',
 	'schedulers.test.ts',
 	'sub-board-depth.test.ts',

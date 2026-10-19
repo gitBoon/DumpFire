@@ -327,14 +327,22 @@ describe('report schedules: 10 addresses each, 20 an account', () => {
 		});
 		expectUnchanged(before);
 
-		// Switched off takes nothing; switched on again, or re-timed, would bring a send forward.
+		// Switched off takes nothing; switched on again, or re-timed while on,
+		// would bring a send forward. Re-timed while it stays off, it would not
+		// (the review of cards 2144 and 2159, O-N2): tests/report-schedules.test.ts.
 		expect((await change(ids[0], { enabled: false })).status).toBe(200);
 		const offBefore = snapshotDb();
 		const NOT_CHANGED =
 			"Report mail can reach at most 100 addresses a day from one account, and this schedule's 10 would make 110. " +
 			'The schedule was not changed. Try again in 24 hour(s).';
-		for (const body of [{ enabled: true }, { timeOfDay: '10:30' }, { frequency: 'monthly' }, { dayOfWeek: 3 }]) {
-			const res = await change(ids[0], body);
+		for (const [id, body] of [
+			[ids[0], { enabled: true }],
+			[ids[0], { enabled: true, timeOfDay: '10:30' }],
+			[ids[2], { timeOfDay: '10:30' }],
+			[ids[2], { frequency: 'monthly' }],
+			[ids[2], { dayOfWeek: 3 }]
+		] as const) {
+			const res = await change(id, body);
 			expect(res.status, JSON.stringify(body)).toBe(429);
 			expect(res.body).toEqual({ message: NOT_CHANGED });
 		}
@@ -416,15 +424,16 @@ describe('the scheduled run', () => {
 describe('a schedule made, run and deleted, over and over (R1)', () => {
 	it('is held to the day’s 100 addresses: the eleventh schedule of 10 is refused', { timeout: 60_000 }, async () => {
 		vi.useFakeTimers({ toFake: ['Date'] });
-		const start = new Date(2026, 9, 14, 9, 0, 30);
+		// In UTC, the zone a schedule made with none is read in (card 2159).
+		const start = new Date(Date.UTC(2026, 9, 14, 9, 0, 30));
 		vi.setSystemTime(start);
 		const at = (minutes: number) => `09:${String(minutes).padStart(2, '0')}`;
 
 		// Three rounds: made for the next minute, sent at that minute, deleted.
 		for (let round = 1; round <= 3; round++) {
-			const made = await schedule(addresses(10, round * 100).join(', '), owner, { dayOfWeek: start.getDay(), timeOfDay: at(round) });
+			const made = await schedule(addresses(10, round * 100).join(', '), owner, { dayOfWeek: start.getUTCDay(), timeOfDay: at(round) });
 			expect(made.status, `round ${round}`).toBe(201);
-			vi.setSystemTime(new Date(2026, 9, 14, 9, round, 30));
+			vi.setSystemTime(new Date(Date.UTC(2026, 9, 14, 9, round, 30)));
 			await runDueReportSchedules(new Date());
 			expect((await api('DELETE', `/api/report-schedules/${made.body.id}`, { user: owner })).status).toBe(200);
 		}

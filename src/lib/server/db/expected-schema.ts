@@ -348,6 +348,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`next_run_at` text,",
 		"\t`created_at` text DEFAULT (datetime('now')) NOT NULL,",
 		"\t`updated_at` text DEFAULT (datetime('now')) NOT NULL,",
+		"\t`time_zone` text DEFAULT 'UTC' NOT NULL,",
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),

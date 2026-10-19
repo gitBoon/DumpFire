@@ -13,7 +13,7 @@ import {
 	boards, columns, cards, cardAssignees, users, subtasks,
 	boardCategories, reportSchedules
 } from './db/schema';
-import { eq, inArray, isNull, isNotNull, and } from 'drizzle-orm';
+import { eq, inArray, isNull, isNotNull, and, or, lte } from 'drizzle-orm';
 import { getAccessibleBoardIds, canViewBoard } from './board-access';
 import { completeColumnIds, isCompleteColumnTitle } from '$lib/column-role';
 import { escapeHtml } from '$lib/escape-html';
@@ -24,6 +24,7 @@ import { takeAllowance } from './rate-limit';
 import { readId, readQueryDate, readText, type RequestBody } from './request-body';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import { parseStamp, stamp, toStamp, type Stamp } from '$lib/timestamps';
+import { canonicalTimeZone, nextRunAfter, sameTimeDaysBefore } from '$lib/report-schedule-time';
 
 const log = createLogger('REPORTS');
 
@@ -249,11 +250,13 @@ function getColumnMap(boardIds: number[]): Map<number, ColumnInfo> {
  * the server's local time (card 2095, A5). `—` for nothing, or for a value
  * that is not a date.
  */
-export function formatDate(iso: string): string {
+export function formatDate(iso: string, timeZone?: string): string {
 	if (!iso) return '—';
 	const d = parseStamp(iso);
 	if (!d) return '—';
-	return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+	// The day in `timeZone` where one is given, as a scheduled report's period
+	// is written in its schedule's zone (card 2159); the server's otherwise.
+	return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone });
 }
 
 function getSubtasksForCards(cardIds: number[]): Map<number, SubtaskInfo[]> {
@@ -1528,40 +1531,169 @@ export function overCapScheduleWords(count: number): string {
 
 let reportTimer: ReturnType<typeof setInterval> | null = null;
 
-function computeNextRunAt(schedule: typeof reportSchedules.$inferSelect): string {
-	const now = new Date();
-	const [h, m] = (schedule.timeOfDay || '09:00').split(':').map(Number);
+type ReportScheduleRow = typeof reportSchedules.$inferSelect;
 
-	if (schedule.frequency === 'weekly') {
-		const target = new Date(now);
-		target.setHours(h, m, 0, 0);
-		const dayDiff = (schedule.dayOfWeek - target.getDay() + 7) % 7;
-		target.setDate(target.getDate() + (dayDiff === 0 && target <= now ? 7 : dayDiff));
-		return stamp(target);
-	}
-
-	const target = new Date(now);
-	target.setHours(h, m, 0, 0);
-	target.setDate(Math.min(schedule.dayOfMonth, 28));
-	if (target <= now) {
-		target.setMonth(target.getMonth() + 1);
-	}
-	return stamp(target);
-}
-
-function getPeriodForSchedule(schedule: typeof reportSchedules.$inferSelect, now: Date): { start: string; end: string } {
-	const end = stamp(now);
-	const start = new Date(now);
-	start.setDate(start.getDate() - (schedule.periodDays || 7));
-	return { start: stamp(start), end };
+/** A schedule's owner as a log line names them, so an administrator knows whom to tell. */
+function ownerWords(schedule: ReportScheduleRow): string {
+	const ownedBy = db.select({ username: users.username }).from(users).where(eq(users.id, schedule.userId)).get();
+	return ownedBy ? `owner "${ownedBy.username}" (user ${schedule.userId})` : `owner user ${schedule.userId}`;
 }
 
 /**
- * Run each enabled schedule that is due at `now`: build its report, mail it,
- * and give it its next run. The timer of `initReportScheduler` calls it every
- * minute, through `runDueReportSchedulesOnce`, which skips a tick while the
- * last run is still going; it is exported for the tests, where that timer is
- * off (`SCHEDULERS=off`).
+ * Switch off a schedule whose next run cannot be worked out, and say so once
+ * (card 2144, decision 5). Nothing is sent and `last_run_at` is left. The
+ * write is conditional on the schedule being on, and the ERROR line written
+ * only when it changed the row (the review's R4): of two runs that meet it,
+ * or of every start that meets it switched off with no next run, only the one
+ * that switched it off says so. It used to be sent at every minute's tick, as
+ * its next run was worked out after the sends, and threw there.
+ *
+ * A next run it cannot read is cleared as well, on or off, while it still
+ * holds that value (the review's O-S1): the start-up conversion of timestamps
+ * named `NaN-NaN-NaN NaN:NaN:NaN`, the value the image before card 2144 wrote
+ * for a time it could not read, at every start.
+ */
+function switchOffUndatable(schedule: ReportScheduleRow, fault: string, nowStr: Stamp): void {
+	if (schedule.nextRunAt && !hasReadableNextRun(schedule)) {
+		db.update(reportSchedules)
+			.set({ nextRunAt: null })
+			.where(and(eq(reportSchedules.id, schedule.id), eq(reportSchedules.nextRunAt, schedule.nextRunAt)))
+			.run();
+	}
+	const switched = db.update(reportSchedules)
+		.set({ enabled: false, updatedAt: nowStr })
+		.where(and(eq(reportSchedules.id, schedule.id), eq(reportSchedules.enabled, true)))
+		.run();
+	if (switched.changes !== 1) return;
+	// Its owner is the line's user, so the Audit page finds it by user. Its
+	// owner can turn it on again with a timing that can be read in the same
+	// `PUT` (the review's S-N3); the page cannot change a timing.
+	log.error(
+		`Report schedule ${schedule.id} "${schedule.name}", ${ownerWords(schedule)}, was switched off: ${fault}, so its next run cannot be worked out. ` +
+			'Nothing was sent. Its owner can turn it on again with a time, day and zone that can be read, or delete it and make it again.',
+		undefined,
+		{ userId: schedule.userId }
+	);
+}
+
+/**
+ * Whether a schedule has a next run that can be read as a moment. None, an
+ * empty one, and one that cannot be read (`NaN-NaN-NaN NaN:NaN:NaN`) count as
+ * no next run (the review's O-S1). Compared as text, that value was after
+ * every moment, so the schedule was never due: neither sent nor switched off.
+ */
+function hasReadableNextRun(schedule: ReportScheduleRow): boolean {
+	return toStamp(schedule.nextRunAt) !== null;
+}
+
+/**
+ * Give a schedule with no next run its first one, and send nothing (decision
+ * 7): a restored or hand-made row is not mailed the moment it arrives. Or
+ * switch it off, if its next run cannot be worked out. Written only while it
+ * still has none, or still holds the one that could not be read, so that two
+ * runs give it one once.
+ */
+function giveFirstRun(schedule: ReportScheduleRow, now: Date, nowStr: Stamp): void {
+	const next = nextRunAfter(schedule, now);
+	if ('fault' in next) {
+		switchOffUndatable(schedule, next.fault, nowStr);
+		return;
+	}
+	db.update(reportSchedules)
+		.set({ nextRunAt: stamp(next.at) })
+		.where(and(
+			eq(reportSchedules.id, schedule.id),
+			or(isNull(reportSchedules.nextRunAt), eq(reportSchedules.nextRunAt, schedule.nextRunAt ?? ''))
+		))
+		.run();
+}
+
+/**
+ * Claim a schedule's run that is due at `now`, moving its last and next run,
+ * before anything is built or sent (card 2144, decision 4). One conditional
+ * write: it changes the row only while the schedule is on and still due, so
+ * of two runs that met the schedule due, whether two ticks or two processes
+ * on the one database, only one has the claim; SQLite takes the write lock,
+ * so both cannot. Hands back the row as claimed, or undefined when another
+ * run has it. Exported for the tests.
+ *
+ * The run is then sent at most once: a failure after the claim, or a restart
+ * during the sends, is not sent again (the review's R13). It used to be
+ * written after the sends, so a run that took over a minute was sent again by
+ * the next tick, and a restart sent it again to everyone.
+ */
+export function claimScheduleRun(id: number, now: Date, next: Date): ReportScheduleRow | undefined {
+	const nowStr = stamp(now);
+	return db.update(reportSchedules)
+		.set({ lastRunAt: nowStr, nextRunAt: stamp(next), updatedAt: nowStr })
+		.where(and(
+			eq(reportSchedules.id, id),
+			eq(reportSchedules.enabled, true),
+			isNotNull(reportSchedules.nextRunAt),
+			lte(reportSchedules.nextRunAt, nowStr)
+		))
+		.returning()
+		.get();
+}
+
+/**
+ * Switch off a schedule whose list is over the cap (card 2182), made before
+ * there was one, and say so once; true when it is over. Read as every route
+ * and the page read it. Nothing is sent. The write is conditional, so that of
+ * two runs that meet it only the one that switched it off says so.
+ */
+function switchOffOverCap(schedule: ReportScheduleRow, nowStr: Stamp): boolean {
+	const count = reportRecipients(schedule.recipients).addresses.length;
+	if (count <= MAX_REPORT_RECIPIENTS) return false;
+	const switched = db.update(reportSchedules)
+		.set({ enabled: false, updatedAt: nowStr })
+		.where(and(eq(reportSchedules.id, schedule.id), eq(reportSchedules.enabled, true)))
+		.run();
+	if (switched.changes === 1) {
+		// Naming its owner, who is the line's user, so the Audit page finds it
+		// by user and an administrator knows whom to tell.
+		log.error(
+			`Report schedule ${schedule.id} "${schedule.name}", ${ownerWords(schedule)}, was switched off: ${overCapScheduleWords(count)}. ` +
+				`Nothing was sent. Its owner can delete it and make it again with at most ${MAX_REPORT_RECIPIENTS}.`,
+			undefined,
+			{ userId: schedule.userId }
+		);
+	}
+	return true;
+}
+
+/**
+ * The days a scheduled report run at `now` covers: up to `now`, from the same
+ * time by the schedule's clock `periodDays` dates earlier, in the stored form
+ * (card 2159, the review's O-S4). Seven days from Monday 09:00 in London,
+ * across the autumn change, is from the Monday before at 09:00 BST. It used
+ * to be `setDate` on the server's clock, so on a server on UTC the window
+ * began an hour off the schedule's time in any week with a clock change.
+ * Exported for the tests.
+ */
+export function getPeriodForSchedule(
+	schedule: Pick<ReportScheduleRow, 'periodDays' | 'timeZone'>,
+	now: Date
+): { start: string; end: string } {
+	const start = sameTimeDaysBefore(now, schedule.periodDays || 7, schedule.timeZone);	return { start: stamp(start), end: stamp(now) };
+}
+
+/**
+ * Run each enabled schedule that is due at `now`. The timer of
+ * `initReportScheduler` calls it every minute, through
+ * `runDueReportSchedulesOnce`, which skips a tick while the last run is still
+ * going; it is exported for the tests, where that timer is off
+ * (`SCHEDULERS=off`).
+ *
+ * For each schedule due (cards 2144 and 2159), in this order:
+ *   1. its next run is worked out from now, in its own zone (`nextRunAfter`).
+ *      One that cannot be worked out is switched off, with one ERROR line,
+ *      and nothing is sent (`switchOffUndatable`);
+ *   2. one with no next run, or one that cannot be read, is given one, and
+ *      nothing is sent (`giveFirstRun`);
+ *   3. the run is claimed (`claimScheduleRun`), which moves its last and next
+ *      run; a claim another run has is skipped;
+ *   4. the report is built from the row as claimed, and sent.
  *
  * The system log says what happened (card 2113). Each send's result is
  * counted: one WARN line when every recipient was sent the report, or one
@@ -1581,35 +1713,37 @@ export async function runDueReportSchedules(now: Date): Promise<void> {
 		.where(eq(reportSchedules.enabled, true))
 		.all();
 
-	for (const schedule of activeSchedules) {
-		if (schedule.nextRunAt && schedule.nextRunAt > nowStr) continue;
+	for (const selected of activeSchedules) {
+		// A next run that cannot be read is none (the review's O-S1).
+		const dueAt = toStamp(selected.nextRunAt);
+		if (dueAt && dueAt > nowStr) continue;
 
+		// Once claimed, a failure does not send the run again before the next.
+		let claimed = false;
 		try {
-			// Read as every route and the page read it (card 2182). A schedule
-			// over the cap, made before there was one, is switched off before
-			// its report is built, and sends nothing. The write is conditional,
-			// so that of two runs that meet it only the one that switched it
-			// off says so.
-			const { addresses: recipients, notAddresses } = reportRecipients(schedule.recipients);
-			if (recipients.length > MAX_REPORT_RECIPIENTS) {
-				const switched = db.update(reportSchedules)
-					.set({ enabled: false, updatedAt: nowStr })
-					.where(and(eq(reportSchedules.id, schedule.id), eq(reportSchedules.enabled, true)))
-					.run();
-				if (switched.changes === 1) {
-					// Naming its owner, who is the line's user, so the Audit page
-					// finds it by user and an administrator knows whom to tell.
-					const ownedBy = db.select({ username: users.username }).from(users).where(eq(users.id, schedule.userId)).get();
-					const owner = ownedBy ? `owner "${ownedBy.username}" (user ${schedule.userId})` : `owner user ${schedule.userId}`;
-					log.error(
-						`Report schedule ${schedule.id} "${schedule.name}", ${owner}, was switched off: ${overCapScheduleWords(recipients.length)}. ` +
-							`Nothing was sent. Its owner can delete it and make it again with at most ${MAX_REPORT_RECIPIENTS}.`,
-						undefined,
-						{ userId: schedule.userId }
-					);
-				}
+			const next = nextRunAfter(selected, now);
+			if ('fault' in next) {
+				switchOffUndatable(selected, next.fault, nowStr);
 				continue;
 			}
+			if (!dueAt) {
+				giveFirstRun(selected, now, nowStr);
+				continue;
+			}
+
+			// Over the cap (card 2182): switched off before the claim, and
+			// nothing sent.
+			if (switchOffOverCap(selected, nowStr)) continue;
+
+			// From here the row as claimed, not as selected when the run began: a
+			// change made between the two is honoured (the review's R12). A
+			// claim that meets another connection's write lock throws, is logged
+			// below, and leaves the schedule due for the next tick.
+			const schedule = claimScheduleRun(selected.id, now, next.at);
+			if (!schedule) continue;
+			claimed = true;
+			if (switchOffOverCap(schedule, nowStr)) continue;
+			const { addresses: recipients, notAddresses } = reportRecipients(schedule.recipients);
 			// A part that is not an address is never sent to, and is named in
 			// the run's line; the schedule still reaches the addresses it holds.
 			const leftOut = notAddresses.length === 0
@@ -1644,7 +1778,9 @@ export async function runDueReportSchedules(now: Date): Promise<void> {
 				const schedDetailLevel = schedule.detailLevel === 'summary' ? 'summary' : 'detailed';
 				const pdfBuffer = await generateReportPdf(reportData, schedDetailLevel as 'summary' | 'detailed');
 				const reportName = `${schedule.name} - ${schedule.frequency === 'weekly' ? 'Weekly' : 'Monthly'} Report`;
-				const periodLabel = `${formatDate(start)} - ${formatDate(end)}`;
+				// The days by the schedule's clock, as its time is read (card 2159).
+				const zone = canonicalTimeZone(schedule.timeZone) ?? undefined;
+				const periodLabel = `${formatDate(start, zone)} - ${formatDate(end, zone)}`;
 
 				if (recipients.length > 0) {
 					const notReached: string[] = [];
@@ -1705,15 +1841,10 @@ export async function runDueReportSchedules(now: Date): Promise<void> {
 							: `the board it covers (id ${schedule.scopeId}) is gone, or the schedule's owner can no longer read it`;
 				log.warn(`Scheduled report "${schedule.name}" produced no report, so nothing was sent: ${why}`);
 			}
-
-			const nextRun = computeNextRunAt(schedule);
-			db.update(reportSchedules)
-				.set({ lastRunAt: nowStr, nextRunAt: nextRun, updatedAt: nowStr })
-				.where(eq(reportSchedules.id, schedule.id))
-				.run();
-
 		} catch (err) {
-			log.error(`Failed to run scheduled report "${schedule.name}"`, err);
+			// After the claim, the run has moved on (the review's O-N4).
+			const after = claimed ? '. It is not sent again before its next run.' : '';
+			log.error(`Failed to run scheduled report "${selected.name}"${after}`, err);
 		}
 	}
 }
@@ -1727,11 +1858,13 @@ let scheduleRunInFlight = false;
  *
  * A run can take longer than the minute between ticks: about 35 s for each
  * address a slow mail server holds up, and the PDF before that. A schedule's
- * next run is written only once its mail has gone, so a tick that started
- * while the last run was still sending found the same schedule due and sent
- * its report a second time. A schedule that came due while the run was going
- * is still due at the next tick that runs. The `finally` clears the flag when
- * a run throws, so one failure does not stop the scheduler.
+ * next run used to be written only once its mail had gone, so a tick that
+ * started while the last run was still sending found the same schedule due
+ * and sent its report a second time. The claim (`claimScheduleRun`) now
+ * closes that on its own, across processes too; the skip keeps one process
+ * from running two ticks' work at once. A schedule that came due while the
+ * run was going is still due at the next tick that runs. The `finally` clears
+ * the flag when a run throws, so one failure does not stop the scheduler.
  */
 export async function runDueReportSchedulesOnce(now: Date): Promise<boolean> {
 	if (scheduleRunInFlight) return false;
@@ -1744,20 +1877,41 @@ export async function runDueReportSchedulesOnce(now: Date): Promise<boolean> {
 	}
 }
 
+/**
+ * Give every schedule with no next run its first one, enabled or not, or
+ * switch it off if its next run cannot be worked out (decision 7). A next run
+ * that cannot be read is none (the review's O-S1), so the rows are read in
+ * full and picked out here: one read at start, of at most 20 an account.
+ * Each in its own `try`, so
+ * one row cannot stop the rest.
+ */
+function dateSchedulesWithNoNextRun(now: Date): void {
+	const nowStr = stamp(now);
+	const undated = db.select().from(reportSchedules).all().filter((schedule) => !hasReadableNextRun(schedule));
+	for (const schedule of undated) {
+		try {
+			giveFirstRun(schedule, now, nowStr);
+		} catch (err) {
+			log.error(`Report schedule ${schedule.id} "${schedule.name}" could not be given its next run`, err);
+		}
+	}
+}
+
+/**
+ * Date the schedules with no next run, then start the timer. Called as the
+ * server starts (`startSchedulers`, from src/hooks.server.ts), outside any
+ * `try`, so it never throws: one schedule whose time could not be read used
+ * to stop the server starting with a `RangeError` (card 2144, decision 7).
+ */
 export function initReportScheduler(): void {
 	if (reportTimer) {
 		clearInterval(reportTimer);
 	}
 
-	const uninitialised = db.select().from(reportSchedules)
-		.where(isNull(reportSchedules.nextRunAt))
-		.all();
-	for (const schedule of uninitialised) {
-		const nextRun = computeNextRunAt(schedule);
-		db.update(reportSchedules)
-			.set({ nextRunAt: nextRun })
-			.where(eq(reportSchedules.id, schedule.id))
-			.run();
+	try {
+		dateSchedulesWithNoNextRun(new Date());
+	} catch (err) {
+		log.error('Report schedules with no next run could not be dated at start; the scheduler starts all the same', err);
 	}
 
 	reportTimer = setInterval(async () => {
