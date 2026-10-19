@@ -29,6 +29,12 @@
  * The first test fails if a route or a method has no entry, so a new route
  * cannot be added without saying who may call it.
  *
+ * Every write handler is also walked twice from the table (card 2253, "asked
+ * again at the write" below): its allowed caller's key or session ended while
+ * the request is under way is refused 401, and an administrator's or the
+ * superadmin's role lowered meanwhile is refused as the lower role is, with
+ * nothing written either way.
+ *
  * The cast, on two boards:
  *
  *   owner     owns board A
@@ -63,6 +69,7 @@
  * board they cannot open is recorded the same way, with `shows`.
  */
 import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hashSync } from 'bcryptjs';
@@ -98,9 +105,10 @@ import {
 	type Milestone,
 	type Subtask,
 	type TaskRequest,
-	type Team
+	type Team,
+	userXp
 } from '$lib/server/db/schema';
-import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
 import { canEditBoard, canViewBoard, getBoardRole } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
@@ -134,8 +142,9 @@ import {
 	testUploadsDir
 } from './helpers/fixtures';
 import { gate, gateRoutes } from './helpers/gate';
+import { sendAround, type HeldCredential } from './helpers/held-body';
 import { watchReads } from './helpers/reads';
-import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { diffSnapshots, expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 import { loadKeys, pageLoad } from './helpers/actions';
 import { stamp } from '$lib/timestamps';
 
@@ -551,6 +560,20 @@ type Case = {
 	/** The answer is a stream with no end. The allowed caller's request goes through the gate and is cancelled. */
 	stream?: true;
 	/**
+	 * The request the walks of card 2253 send with its body held back, where
+	 * the case's own is answered before its body is read and so has no window
+	 * to walk: the import refuses a body not sent as a .db backup before it
+	 * reads a byte of it.
+	 */
+	held?: (w: World) => Req;
+	/**
+	 * Why the allowed request, answered with a success, changes no row: it
+	 * reads, or what it does leaves the database. Every other allowed write
+	 * is shown by the walks' controls to change one, so that "nothing changed"
+	 * in a refusal is a check that can fail.
+	 */
+	writesNothing?: string;
+	/**
 	 * A refusal may also be this: a bulk endpoint refuses with a 409 that names
 	 * every entry at fault, the ones the caller may not touch among them. A 409
 	 * is taken for a refusal only when it says so: "No edit access to ...".
@@ -678,6 +701,10 @@ const TOKENS = { tokens: 1200, model: 'claude-opus-5-5' };
 const TEAM_NAMES =
 	"a team's name is listed to every signed-in caller and to the public form, as a username is: the share dialog and the form need it; its members are not";
 
+/** Why a report, made or mailed, changes no row. */
+const REPORT_READS = 'a report is read from the rows, and written into none';
+const REPORT_MAILED = "a mailed report leaves the process, and the day's allowance it takes is counted in memory, not in a row";
+
 /** Why the allowed caller of a route that reaches a backup destination is not sent there. */
 const NO_DESTINATION = 'the request names no destination: a success would connect to a backup destination';
 
@@ -757,7 +784,8 @@ const TABLE: Record<string, Case | Case[]> = {
 	),
 	'PUT /api/account/emoji': signedIn(() => json('/api/account/emoji', { emoji: '🦊' })),
 	'GET /api/account/notifications': signedIn(() => '/api/account/notifications'),
-	'PUT /api/account/notifications': signedIn(() => json('/api/account/notifications', { cardAssigned: false })),
+	// A key the page saves: one it does not know is left alone, and saves nothing new.
+	'PUT /api/account/notifications': signedIn(() => json('/api/account/notifications', { email_assigned: false })),
 	'PUT /api/account/password': signedIn(() =>
 		withSession('/api/account/password', { currentPassword: PASSWORD, newPassword: 'another long password' })
 	),
@@ -776,7 +804,9 @@ const TABLE: Record<string, Case | Case[]> = {
 	'GET /api/admin/backup': superadmin(() => '/api/admin/backup'),
 	'PUT /api/admin/backup': superadmin(() => json('/api/admin/backup', { schedule: 'disabled', destinations: [] })),
 	// With no destination configured it answers that there is none and copies nothing.
-	'POST /api/admin/backup': superadmin(() => json('/api/admin/backup', {})),
+	'POST /api/admin/backup': superadmin(() => json('/api/admin/backup', {}), {
+		writesNothing: 'with no destination there is no copy to make, and no row to write of one'
+	}),
 	'GET /api/admin/backup/gdrive/auth': superadmin(() => '/api/admin/backup/gdrive/auth', {
 		answers: 400,
 		because: NO_DESTINATION
@@ -795,17 +825,29 @@ const TABLE: Record<string, Case | Case[]> = {
 	'GET /api/admin/export': superadmin(() => '/api/admin/export'),
 	'POST /api/admin/import': superadmin(() => json('/api/admin/import', { notABackup: true }), {
 		answers: 400,
-		because: 'the body is JSON and not a .db backup, which is refused before it is read: a success would replace the database'
+		because: 'the body is JSON and not a .db backup, which is refused before it is read: a success would replace the database',
+		// Sent as a backup is, and read: it is not one, which is found once it is in.
+		held: () => ({
+			path: '/api/admin/import',
+			body: new TextEncoder().encode('not a SQLite database'),
+			headers: { 'content-type': 'application/octet-stream' }
+		})
 	}),
 	'POST /api/admin/purge-archived': admin(() => '/api/admin/purge-archived'),
-	'POST /api/admin/reset-xp': admin(() => '/api/admin/reset-xp'),
+	'POST /api/admin/reset-xp': admin(() => '/api/admin/reset-xp', {
+		// Some XP to reset, so that the reset is a write.
+		setup: () => void db.insert(userXp).values({ name: 'owner', xp: 120 }).run()
+	}),
 	'POST /api/admin/reset': superadmin(() => '/api/admin/reset'),
 	'GET /api/admin/smtp': superadmin(() => '/api/admin/smtp'),
 	'PUT /api/admin/smtp': superadmin(() =>
 		json('/api/admin/smtp', { host: 'smtp.example.test', port: 587, fromAddress: 'dumpfire@example.test' })
 	),
-	'POST /api/admin/smtp': superadmin(() => json('/api/admin/smtp', { to: 'someone@example.test' }), { setup: makeSmtp }),
-	'POST /api/admin/vacuum': admin(() => '/api/admin/vacuum'),
+	'POST /api/admin/smtp': superadmin(() => json('/api/admin/smtp', { to: 'someone@example.test' }), {
+		setup: makeSmtp,
+		writesNothing: 'the test mail leaves the process, and writes no row'
+	}),
+	'POST /api/admin/vacuum': admin(() => '/api/admin/vacuum', { writesNothing: 'VACUUM rewrites the file, not a row' }),
 	'GET /api/logs': admin(() => '/api/logs'),
 	'GET /api/logs/stream': admin(() => '/api/logs/stream', { stream: true }),
 
@@ -1142,36 +1184,39 @@ const TABLE: Record<string, Case | Case[]> = {
 		(w) => `/api/report-schedules/${w.scheduleId}`
 	),
 	'POST /api/reports': [
-		view((w) => json('/api/reports', { scope: 'board', scopeId: w.A.board.id, ...WEEK })),
+		view((w) => json('/api/reports', { scope: 'board', scopeId: w.A.board.id, ...WEEK }), { writesNothing: REPORT_READS }),
 		view((w) => json('/api/reports', { scope: 'category', scopeId: w.groupingOfA.id, ...WEEK }), {
-			of: 'a grouping of boards'
+			of: 'a grouping of boards',
+			writesNothing: REPORT_READS
 		}),
 		// The answer is a PDF. What is in it for each caller is tested below the
 		// table, where the report is read before it is drawn.
 		signedIn((w) => json('/api/reports', { scope: 'category', scopeId: w.grouping.id, ...WEEK }), {
-			of: 'a grouping with a board the caller can open'
+			of: 'a grouping with a board the caller can open',
+			writesNothing: REPORT_READS
 		}),
-		admin(() => json('/api/reports', { scope: 'all', ...WEEK }), { of: 'every board' })
+		admin(() => json('/api/reports', { scope: 'all', ...WEEK }), { of: 'every board', writesNothing: REPORT_READS })
 	],
 	'POST /api/reports/email': [
 		view(
 			(w) =>
 				json('/api/reports/email', { scope: 'board', scopeId: w.A.board.id, ...WEEK, recipients: ['someone@example.test'] }),
-			{ setup: makeSmtp }
+			{ setup: makeSmtp, writesNothing: REPORT_MAILED }
 		),
 		view(
 			(w) =>
 				json('/api/reports/email', { scope: 'category', scopeId: w.groupingOfA.id, ...WEEK, recipients: ['someone@example.test'] }),
-			{ of: 'a grouping of boards', setup: makeSmtp }
+			{ of: 'a grouping of boards', setup: makeSmtp, writesNothing: REPORT_MAILED }
 		),
 		signedIn(
 			(w) =>
 				json('/api/reports/email', { scope: 'category', scopeId: w.grouping.id, ...WEEK, recipients: ['someone@example.test'] }),
-			{ of: 'a grouping with a board the caller can open', setup: makeSmtp }
+			{ of: 'a grouping with a board the caller can open', setup: makeSmtp, writesNothing: REPORT_MAILED }
 		),
 		admin(() => json('/api/reports/email', { scope: 'all', ...WEEK, recipients: ['someone@example.test'] }), {
 			of: 'every board',
-			setup: makeSmtp
+			setup: makeSmtp,
+			writesNothing: REPORT_MAILED
 		})
 	],
 
@@ -1221,6 +1266,13 @@ const TABLE: Record<string, Case | Case[]> = {
 					columnId: w.A.cols['To Do'].id
 				}),
 			{ of: 'accepting one onto a board' }
+		),
+		// An administrator handles any request by role, as its addressee does (canHandleRequest).
+		own(
+			'admin',
+			['outsider', 'editor'],
+			(w) => json(`/api/requests/${w.request.id}`, { action: 'reject', reason: 'Not this quarter' }),
+			{ of: "the owner's, by an administrator" }
 		)
 	],
 	'DELETE /api/requests/[id]': admin((w) => `/api/requests/${w.request.id}`),
@@ -1231,7 +1283,8 @@ const TABLE: Record<string, Case | Case[]> = {
 	// the link goes only to the address the request was made with. Mail is set
 	// up, or the route answers 503 before it looks anything up.
 	'POST /api/requests/[id]/link': open((w) => json(`/api/requests/${w.request.id}/link`, { email: 'rita@example.test' }), {
-		setup: makeSmtp
+		setup: makeSmtp,
+		writesNothing: 'the link the request has is read and mailed, after the answer; no row is written'
 	}),
 	'GET /api/requests/[id]/messages': [
 		link((w) => `/api/requests/${w.request.id}/messages`, {
@@ -1253,6 +1306,9 @@ const TABLE: Record<string, Case | Case[]> = {
 			(w) => json(`/api/requests/${w.teamRequest.id}/messages`, { message: 'On it' }),
 			{ of: 'an answer from a member of the team it is addressed to' }
 		),
+		own('admin', ['outsider', 'editor'], (w) => json(`/api/requests/${w.request.id}/messages`, { message: 'On it' }), {
+			of: 'an answer from an administrator'
+		}),
 		link((w) => json(`/api/requests/${w.request.id}/messages`, { message: 'Thanks', senderType: 'requester' }), {
 			of: 'a reply from the requester',
 			withLink: (w) =>
@@ -1292,16 +1348,31 @@ const TABLE: Record<string, Case | Case[]> = {
 	'GET /api/teams': signedIn(() => '/api/teams', { tellsEveryone: TEAM_NAMES }),
 	'POST /api/teams': signedIn(() => json('/api/teams', { name: 'A team' })),
 	// `editor` is a member of the team and does not own it.
-	'PUT /api/teams/[id]': own('owner', ['outsider', 'editor'], (w) => json(`/api/teams/${w.team.id}`, { name: 'Renamed' })),
-	'DELETE /api/teams/[id]': own('owner', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}`),
-	'POST /api/teams/[id]/members/[userId]': own('owner', ['outsider', 'editor'], (w) =>
-		json(`/api/teams/${w.team.id}/members/${w.viewer.id}`, { userId: w.viewer.id })
-	),
-	'DELETE /api/teams/[id]/members/[userId]': own(
-		'owner',
-		['outsider', 'editor'],
-		(w) => `/api/teams/${w.team.id}/members/${w.editor.id}`
-	),
+	// An administrator manages any team by role, as its owner does (requireTeamManager).
+	'PUT /api/teams/[id]': [
+		own('owner', ['outsider', 'editor'], (w) => json(`/api/teams/${w.team.id}`, { name: 'Renamed' })),
+		own('admin', ['outsider', 'editor'], (w) => json(`/api/teams/${w.team.id}`, { name: 'Renamed' }), {
+			of: "the owner's team, by an administrator"
+		})
+	],
+	'DELETE /api/teams/[id]': [
+		own('owner', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}`),
+		own('admin', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}`, { of: "the owner's team, by an administrator" })
+	],
+	'POST /api/teams/[id]/members/[userId]': [
+		own('owner', ['outsider', 'editor'], (w) =>
+			json(`/api/teams/${w.team.id}/members/${w.viewer.id}`, { userId: w.viewer.id })
+		),
+		own('admin', ['outsider', 'editor'], (w) => json(`/api/teams/${w.team.id}/members/${w.viewer.id}`, { userId: w.viewer.id }), {
+			of: "to the owner's team, by an administrator"
+		})
+	],
+	'DELETE /api/teams/[id]/members/[userId]': [
+		own('owner', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}/members/${w.editor.id}`),
+		own('admin', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}/members/${w.editor.id}`, {
+			of: "from the owner's team, by an administrator"
+		})
+	],
 
 	// ── Card templates ────────────────────────────────────────────────────
 	'GET /api/templates': [
@@ -1615,7 +1686,8 @@ const TABLE: Record<string, Case | Case[]> = {
 		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}/cards/bulk`, { cardIds: [w.A.card.id] })),
 		across((w) => json(`/api/v1/milestones/${w.B.milestone.id}/cards/bulk`, { cardIds: [w.A.card.id] }), {
 			of: "another board's card",
-			refusedAs: 409
+			refusedAs: 409,
+			writesNothing: 'the card is in board A\'s milestone, not the one named: it is answered as skipped, and nothing is taken out'
 		})
 	],
 	'GET /api/v1/milestones/[milestoneId]/pdf': view((w) => `/api/v1/milestones/${w.A.milestone.id}/pdf`),
@@ -1899,6 +1971,8 @@ describe('the table', () => {
 				if (c.answers !== undefined) expect(c.refusedAs, key).not.toBe(c.answers);
 				expect([401, 403], `${key}: answers is a status a refusal has`).not.toContain(c.answers);
 				if (c.kind === 'link') expect(c.withLink, key).toBeDefined();
+				// A reason, and only where the allowed caller is answered a success.
+				if (c.writesNothing !== undefined) expect([c.writesNothing !== '', c.answers], key).toEqual([true, undefined]);
 				if (c.kind === 'form') expect(c.withToken, key).toBeDefined();
 				// A route a link opens has a `link` case beside the `own` one.
 				if (c.opensByLink) expect([c.kind, cases.some((other) => other.kind === 'link')], key).toEqual(['own', true]);
@@ -2132,6 +2206,271 @@ for (const [key, entry] of Object.entries(TABLE)) {
 		}
 	});
 }
+
+// ─── Asked again at the write (card 2253) ──────────────────────────────────
+
+/**
+ * Every write handler asks, in the transaction that writes, whether the key
+ * or session the gate let it in with is still open, and who its account is
+ * now (`writeAs` and `stillCallerNow`, src/lib/server/write-as.ts). Two walks
+ * hold every write handler of the tree to it, each case of its entry in turn.
+ *
+ * Walk 1: the credential ends while the request is under way. A request with
+ * a body is sent through the gate as the case's allowed caller with the body
+ * held back (`sendAround`). Once the gate has let it in, the caller's session
+ * row is deleted (their API key's row under /api/v1, where the gate takes no
+ * session), and then the body is let go. A request with no body has no such
+ * window, the gate and the handler being a few synchronous steps apart; its
+ * handler is called with the credential already ended, which is what it would
+ * meet at the write. Either way: 401 in the gate's words, not one row
+ * changed, no file written and nothing sent.
+ *
+ * Walk 2: a role lowered meanwhile. For every case an administrator, or the
+ * superadmin, is let into by their role and an ordinary account is refused,
+ * the same, with the role lowered by SQL meanwhile as a role change commits
+ * it: an administrator to `user`, the superadmin to `admin`. Refused as the
+ * lower role is, a batch with its 409 listing every item, and nothing changed.
+ * The handler with no body is given the account as the gate read it, with the
+ * credential still open, and the role already lowered.
+ *
+ * Each case of each walk has its control: the same, with nothing ended or
+ * lowered, answered as the table's allowed case is, so that a walk is not
+ * refusing on its own. The handlers walked are read from the route modules
+ * themselves, as the table's first test reads them: a write handler added to
+ * the tree is walked, or fails here for want of an entry.
+ */
+
+const WRITES: Method[] = ['POST', 'PUT', 'PATCH', 'DELETE'];
+
+/** Every write handler of the tree, `METHOD /pattern`, read from the route modules. */
+const TREE_WRITES: string[] = [];
+for (const pattern of routePatterns()) {
+	for (const method of await routeMethods(pattern)) {
+		if ((WRITES as string[]).includes(method)) TREE_WRITES.push(`${method} ${pattern}`);
+	}
+}
+
+/**
+ * Walk 1's caller: the case's allowed caller. A public route answers anyone,
+ * and is walked by `outsider`, signed in; the holder of a request's link is
+ * `owner`, signed in, sending the link.
+ */
+function walker(c: Case): Exclude<Who, 'nobody'> {
+	const who = allowedBy(c);
+	return who === 'nobody' ? 'outsider' : who;
+}
+
+/** Walk 1's request: the one the case holds, the link's where it has one, or its own. */
+function walked(c: Case, w: World): Exclude<Req, string> {
+	return parts(c.held?.(w) ?? (c.kind === 'link' ? c.withLink!(w) : c.req(w)));
+}
+
+/**
+ * Walk 2's caller and what their role is lowered to, for a case an
+ * administrator or the superadmin is let into by role and an ordinary account
+ * is refused; null for any other. An administrator may open, edit and own
+ * every board by role, as `view`, `edit`, `owner` and `across` ask.
+ */
+function lowered(c: Case): { who: 'admin' | 'chief'; from: SessionUser['role']; to: SessionUser['role'] } | null {
+	if (c.kind === 'superadmin' || (c.kind === 'own' && c.mine === 'chief')) return { who: 'chief', from: 'superadmin', to: 'admin' };
+	if (['view', 'edit', 'owner', 'across', 'admin'].includes(c.kind) || (c.kind === 'own' && c.mine === 'admin')) {
+		return { who: 'admin', from: 'admin', to: 'user' };
+	}
+	return null;
+}
+
+/**
+ * A credential of `who` made for the walk, as the gate would have let the
+ * request in with it: an API key under /api/v1, a session anywhere else.
+ * `end` deletes its row, as a sign-out, a reset or a revoke commits it.
+ */
+function credentialOf(pattern: string, who: Exclude<Who, 'nobody'>): {
+	held: HeldCredential;
+	locals: Credential;
+	end: () => void;
+	words: string;
+} {
+	if (pattern.startsWith('/api/v1/')) {
+		const key = makeApiKey(w[who], 'A key of the walk');
+		const id = db.select().from(apiKeys).all().find((row) => key.startsWith(row.keyPrefix))!.id;
+		return {
+			held: { key },
+			locals: { kind: 'api key', id },
+			end: () => void db.delete(apiKeys).where(eq(apiKeys.id, id)).run(),
+			words: 'Invalid or expired API key'
+		};
+	}
+	const token = makeSession(w[who]);
+	return {
+		held: { session: token },
+		locals: { kind: 'session', token },
+		end: () => void db.delete(sessions).where(eq(sessions.id, token)).run(),
+		words: 'Not authenticated'
+	};
+}
+
+/**
+ * The request sent as a walk sends it: with its body held, through the gate,
+ * `meanwhile` run once the gate has let it in; or, with no body, `meanwhile`
+ * run first and the handler called with the credential and the account as the
+ * gate read them. `ran` says whether `meanwhile` ran: a held request the gate
+ * answered before its body was read never reached the window.
+ */
+async function sendWalked(
+	method: Method,
+	req: Exclude<Req, string>,
+	who: Exclude<Who, 'nobody'>,
+	credential: ReturnType<typeof credentialOf>,
+	meanwhile: () => void
+): Promise<{ status: number; body: any; ran: boolean }> {
+	let ran = false;
+	const during = () => {
+		meanwhile();
+		ran = true;
+	};
+	if (req.body !== undefined) {
+		// The table's session cookie names nobody's session: the walk's own is sent.
+		const { cookie: _cookie, ...headers } = req.headers ?? {};
+		const res = await sendAround(method, req.path, credential.held, req.body, during, { headers });
+		return { ...res, ran };
+	}
+	during();
+	const res = await api(method, req.path, { user: w[who], credential: credential.locals, headers: asCaller(req.headers, who) });
+	return { status: res.status, body: res.body, ran };
+}
+
+/**
+ * The files the import writes in the working directory before it restores.
+ * None is left by a refusal. The walk's import is not a backup, so even its
+ * control writes neither, and this check cannot fail here: what proves the
+ * import leaves none when refused is tests/write-as.test.ts (slice 2253-5's
+ * import tests, R1), which sends a real backup with the working directory
+ * pointed at a temporary one, and sees the safety file written when it is let
+ * in. A real backup is not sent here: let in, it would write both files in
+ * the repository and replace the database under the rest of this file.
+ */
+const importLeftovers = () =>
+	['.restore-temp.db', '.pre-restore-safety.json'].filter((file) => existsSync(join(process.cwd(), file)));
+
+/** The items a batch was sent, and the ones its 409 lists. */
+const itemsSent = (body: any): unknown[] => body?.links ?? body?.entries ?? body?.cardIds ?? [];
+const itemsListed = (body: any): unknown[] => body?.forbidden ?? body?.problems ?? [];
+
+/**
+ * The control's expectation: answered as the table's allowed case is, and,
+ * where that is a success that writes, with a row changed since `before`,
+ * taken at the moment the walk's own snapshot is. So the walk's "nothing
+ * changed" is seen to be a check that fails when a write goes through.
+ */
+function expectAllowedAnswer(c: Case, res: { status: number; body: unknown }, before: DbSnapshot | undefined): void {
+	if (c.answers) {
+		expect(res.status, JSON.stringify(res.body)).toBe(c.answers);
+		return;
+	}
+	expect(res.status, JSON.stringify(res.body)).toBeLessThan(400);
+	if (!c.writesNothing) expect(diffSnapshots(before!, snapshotDb()), 'the rows the allowed request changed').not.toEqual([]);
+}
+
+describe('asked again at the write (card 2253)', () => {
+	it('walks every write handler of the tree, each with an entry in the table', () => {
+		const unwalked = TREE_WRITES.filter((key) => !(key in TABLE));
+		expect(unwalked, `write handlers with no entry to walk: ${unwalked.join(', ')}`).toEqual([]);
+		// It looked: the tree has the write handlers it had when the walks were written, or more.
+		expect(TREE_WRITES.length).toBeGreaterThanOrEqual(133);
+		// Walk 2 reaches every handler whose entry lets an administrator or the superadmin in by role.
+		const byRole = TREE_WRITES.filter((key) => [TABLE[key] ?? []].flat().some((c) => lowered(c)));
+		expect(byRole.length).toBeGreaterThanOrEqual(100);
+	});
+
+	for (const key of TREE_WRITES) {
+		const [method, pattern] = key.split(' ') as [Method, string];
+		const entry = TABLE[key];
+		if (!entry) continue;
+
+		describe(key, () => {
+			for (const c of [entry].flat()) {
+				const who = walker(c);
+
+				it(titled(c, `walk 1: refuses ${CALLED[who]} 401, and changes nothing, when their credential ends meanwhile`), async () => {
+					c.setup?.(w);
+					const req = walked(c, w);
+					expectPathOf(pattern, req.path);
+					const credential = credentialOf(pattern, who);
+					const files = uploadedFiles();
+					const leftovers = importLeftovers();
+					let before: DbSnapshot | undefined;
+
+					const res = await sendWalked(method, req, who, credential, () => {
+						credential.end();
+						before = snapshotDb();
+					});
+					await sent.settle();
+
+					expect(res.ran, 'the credential was ended while the request was under way').toBe(true);
+					expect({ status: res.status, body: res.body }).toEqual({ status: 401, body: { message: credential.words } });
+					expectUnchanged(before!);
+					expect(uploadedFiles(), 'the files in the uploads folder').toEqual(files);
+					expect(importLeftovers(), 'what the import writes before it restores').toEqual(leftovers);
+					expect(sent.all).toEqual([]);
+				});
+
+				it(titled(c, `walk 1's control: answers ${CALLED[who]} as the table does, when nothing ends meanwhile`), async () => {
+					c.setup?.(w);
+					const req = walked(c, w);
+					let before: DbSnapshot | undefined;
+					const res = await sendWalked(method, req, who, credentialOf(pattern, who), () => {
+						before = snapshotDb();
+					});
+					await sent.settle();
+					expect(res.ran).toBe(true);
+					expectAllowedAnswer(c, res, before);
+				});
+
+				const lower = lowered(c);
+				if (!lower) continue;
+
+				it(titled(c, `walk 2: refuses ${CALLED[lower.who]} as a ${lower.to} is, and changes nothing, when their role is lowered meanwhile`), async () => {
+					c.setup?.(w);
+					const req = parts(c.held?.(w) ?? c.req(w));
+					expectPathOf(pattern, req.path);
+					const credential = credentialOf(pattern, lower.who);
+					const files = uploadedFiles();
+					let before: DbSnapshot | undefined;
+
+					const res = await sendWalked(method, req, lower.who, credential, () => {
+						db.update(users).set({ role: lower.to }).where(eq(users.id, w[lower.who].id)).run();
+						before = snapshotDb();
+					});
+					await sent.settle();
+
+					expect(res.ran, 'the role was lowered while the request was under way').toBe(true);
+					expect(refusals(c, 'outsider'), `answered ${res.status} ${JSON.stringify(res.body)}`).toContain(res.status);
+					if (res.status === 409) {
+						// A batch is refused whole, and says so of every item it was sent.
+						expect(JSON.stringify(res.body), 'a 409 that refuses says so').toMatch(/No (edit )?access/);
+						expect(itemsListed(res.body)).toHaveLength(itemsSent(req.body).length);
+					}
+					expectUnchanged(before!);
+					expect(uploadedFiles(), 'the files in the uploads folder').toEqual(files);
+					expect(sent.all).toEqual([]);
+				});
+
+				it(titled(c, `walk 2's control: answers ${CALLED[lower.who]} as the table does, when their role is set to what it was meanwhile`), async () => {
+					c.setup?.(w);
+					const req = parts(c.held?.(w) ?? c.req(w));
+					let before: DbSnapshot | undefined;
+					const res = await sendWalked(method, req, lower.who, credentialOf(pattern, lower.who), () => {
+						db.update(users).set({ role: lower.from }).where(eq(users.id, w[lower.who].id)).run();
+						before = snapshotDb();
+					});
+					await sent.settle();
+					expect(res.ran).toBe(true);
+					expectAllowedAnswer(c, res, before);
+				});
+			}
+		});
+	}
+});
 
 // ─── What the table cannot say ─────────────────────────────────────────────
 

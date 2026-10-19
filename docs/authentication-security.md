@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.51
+version: 1.52
 status: As-Built
 date: 2026-10-19
 tags:
@@ -39,7 +39,8 @@ tags:
   - mentions
   - fonts
   - ssrf
-description: "Deep-dive into DumpFire's authentication system, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, and how attachments are served"
+  - write-as
+description: "Deep-dive into DumpFire's authentication system, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -266,6 +267,208 @@ flowchart LR
 The limits are in `src/lib/server/body-limits.ts`, and the proxy's own are in
 [Upload Size Limits](deployment.md#upload-size-limits). Covered by
 `tests/body-limits.test.ts`.
+
+### Asked Again at the Write (card 2253)
+
+**Every write asks, in the transaction that writes, whether the key or session the gate let
+it in with is still open, and who its account is now, and decides who the caller is with
+that.** The gate decides who is calling before a request's body is read, and a body can take
+as long as the caller likes to arrive: up to Node's request timeout of 300 seconds, on a slow
+link or held open on purpose. A password reset, a key deleted, a sign-out or a role lowered,
+committed meanwhile, was met by nothing: the write went through as the caller the gate had
+read. Before this card only four handlers asked again (the two webhook writes and the two
+report-schedule writes), and they asked only whether the credential was open, not what its
+account now was. Now every `POST`, `PUT`, `PATCH` and `DELETE` under `src/routes/api`, both
+trees (133 handlers in 95 files), asks.
+
+```mermaid
+sequenceDiagram
+    participant C as Caller (key or session)
+    participant G as Gate (hooks.server.ts)
+    participant H as Write handler
+    participant W as writeAs (write-as.ts)
+    participant S as stillAuthenticated (auth.ts)
+    participant DB as SQLite
+    participant A as Someone else
+    C->>G: POST, PUT, PATCH or DELETE, body still arriving
+    G->>G: locals.credential = null, then the key or session found:<br/>locals.user and locals.credential set
+    G->>H: handed on
+    H->>H: quick check, binding no name (requireUser(locals.user);)<br/>await the body
+    A->>DB: password reset, key deleted, sign-out or role lowered, committed
+    C->>H: the rest of the body
+    H->>W: writeAs(locals, (caller) => the write)
+    W->>DB: BEGIN IMMEDIATE
+    W->>S: stillAuthenticated(locals)
+    S->>DB: the key or session, and its account, as they are now
+    alt key or session ended, or its account gone
+        S-->>C: 401 in the gate's words, ROLLBACK, nothing written
+    else open
+        S->>W: the account as it is now (locals.user set to it)
+        W->>H: write(caller): every guard and role test given caller
+        alt role or access lowered
+            H-->>C: the guard's own 403 or 404 (a batch's 409), ROLLBACK, nothing written
+        else allowed
+            H->>DB: the write, COMMIT
+            H-->>C: the answer, made after writeAs returns
+        end
+    end
+```
+
+**The rules.**
+
+- **One helper, called by every write handler.** `writeAs(locals, (caller) => …)` in
+  `src/lib/server/write-as.ts` is `inTransaction(() => write(stillAuthenticated(locals)))`:
+  the check is the first statement of the transaction that writes, the callback must not be
+  async, a throw rolls back, and inside another transaction it is a savepoint. Every decision
+  about the caller (`require*` guards, role tests, `requireAssignableRole`, a service handed
+  the user) is made inside the callback with `caller`, never with `locals.user` nor a name
+  taken from it before the body. A check before the body may stay, as a quick refusal in the
+  same words, but decides nothing.
+- **What it reads and answers.** `stillAuthenticated(locals)` (`src/lib/server/auth.ts`) reads
+  the credential the gate recorded: a key through `keyHolder`, a session through
+  `findSession`, the account through `sessionUserOf`. A key deleted, expired or whose account
+  is gone is `401 Invalid or expired API key`; a session the same, `401 Not authenticated`;
+  otherwise it answers the account as it is now and sets `locals.user` to it, so what the
+  handler answers after the transaction is consistent. It throws outside a transaction.
+- **No key or session.** The gate sets `locals.credential = null` as the first statement of
+  `handle`, before any branch, so every request it hands on carries it set. `null` (a public
+  request route, with nobody signed in) answers `null`, and the handler's own rule decides with
+  `caller === null`. A caller who came with a session that ended meanwhile is refused `401`,
+  never treated as anonymous, on the public request routes too. `undefined` (a handler reached
+  with no gate) is answered `locals.user` only under vitest; anywhere else it is `401 Not
+  authenticated` and one line, word for word:
+  `[ERROR] [AUTH] A write reached its handler with no credential recorded by the gate: <METHOD> <path>; refused 401; this is a fault in DumpFire, not in the request: report this line`,
+  filed under the account when there is one, with five frames of the stack as its meta. The
+  path is written as the gate writes it, so an invite's token is never logged.
+- **A role lowered meanwhile has no answer of its own.** The guard, given the account as it is
+  now, refuses as it would have refused that account at the gate: an administrator lowered to
+  `user` while creating an account is `403 Forbidden`, as a `user` is; a batch under `/api/v1`
+  (`POST /dependencies/bulk`, `POST /tokens/bulk`, and `POST` and `DELETE
+  /milestones/{id}/cards/bulk`) is refused whole with its `409`, listing every item.
+- **What cannot run in a transaction asks `stillCallerNow(locals)`**, the statement right after
+  its body, with nothing awaited between it and the call it guards; better-sqlite3 is
+  synchronous, so nothing runs between the check and the start of that call. Eight handlers,
+  each held by name in the source rule:
+
+  | Handler | Why not `writeAs` | The check guards |
+  |---|---|---|
+  | `POST /api/admin/vacuum` | `VACUUM` cannot run in a transaction | `sqlite.exec('VACUUM')`. The check is the first statement (no body), with no quick check before it |
+  | `POST /api/admin/import` | the restore opens its own transaction, and files are written first | the temporary copy. Asked once the upload is in, before `.restore-temp.db` and `.pre-restore-safety.json` are written, so a refusal leaves neither; nothing is asked after the restore, whose database is the backup's |
+  | `POST /api/reports` | it reads only, after a body | the first `generate*Report` |
+  | `POST /api/reports/email` | mail leaves the process | the first `generate*Report`, and, **asked a second time** after the PDF is made, the sends. The second check decides again what the mail relies on: scope `all` asks `isAdmin` (`403 Only admins can generate all-boards reports`), scope `board` `canViewBoard`, and scope `category` that every board of the grouping in the PDF is still one the sender can open (`403 Failed to generate report or no access`). A refusal sends nothing; the day's allowance it took stays taken |
+  | `POST /api/admin/backup` | the backup leaves the process | `runBackup` |
+  | `POST /api/admin/backup/test` | a stored secret leaves the process | `createDestination`; the Test's ERROR lines are filed under the superadmin the check answers |
+  | `POST /api/admin/backup/gdrive/auth` | the code goes to Google | `getToken`. The Connect's save after Google answers is a `writeAs`: refused there (the session ended or the superadmin lowered while Google answered) it is `401` or `403`, with the folder it made removed and nothing saved, not `200 { success: false }`. A Connect refused at its first check takes no state |
+  | `POST /api/admin/smtp` | the test mail leaves the process | `sendTestEmail`, to the address given or the superadmin's own as it is now |
+
+- **A `writeAs` that only names the caller.** Where the caller is needed before an await no
+  transaction can hold, a `writeAs` whose callback writes nothing asks who is calling, and the
+  write's own `writeAs` asks everything again: the three current-password routes
+  (`PUT /api/account/password`, `PUT /api/account/email`, `POST /api/account/api-keys`)
+  before the password is checked, `POST /api/users` and `PUT /api/users/{id}/password` before
+  the hash, and `POST /api/admin/reset` before it ends every session, so that its failure line
+  can name who reset. What they look at in between stays outside a transaction, as before.
+- **The current-password routes** write inside
+  `whilePasswordHolds(…, () => writeAs(locals, (caller) => …), wrong)`: the credential check
+  and the write commit or roll back with the password check (a nested transaction is a
+  savepoint). `whilePasswordHolds` may run its transaction twice, its one retry when the
+  stored hash changed between the check and the write; the first run returns before it calls
+  the write, so the `writeAs` runs once a request. The password change asks twice, both before
+  it rotates its own session; nothing asks after the rotation, which would meet the rotated
+  session and be refused.
+- **Effects stay after the write.** `emit`, `logActivity` and the notify functions may be
+  called inside the callback (they wait for the commit); a file, mail, a fetch, a cookie, a
+  redirect or the answer is made after `writeAs` returns. A refused write emits nothing, mails
+  nothing and fires no webhook. An upload refused at its write removes the file it wrote.
+- **One transaction where there were two steps.** Handlers that checked and then wrote with no
+  transaction of their own are now one `writeAs` each, with the same answers: the comment and
+  card category deletes, the favourite, the dashboard grouping create and delete, the team
+  delete and the team member delete, a goal's change and delete (`PATCH` and
+  `DELETE /api/milestones/{id}`, their services savepoints inside), the key revoke, the
+  requester's reply, the request confirmation and the new request link, and under `/api/v1`
+  the grouping create, the grouping, category and label deletes, the two token records, the
+  token entry delete, the milestone change and the milestone card add and remove.
+- **A brief write lock where none was taken.** The outermost transaction is `BEGIN IMMEDIATE`,
+  so `stillCallerNow` takes the write lock for the moment it reads, with nothing written: in
+  `POST /api/reports`, the report mail, the backup run, the Test, the Connect and the test
+  mail. `POST /api/requests/{id}/link`, the new link a requester asks for, now takes it through
+  `writeAs` for a read alone, for a caller with no session too; it is rate-limited before its
+  body. The other public request routes (`POST /api/requests`, `…/confirm`, `…/messages`)
+  already took the lock when they wrote, and still do; `…/messages` counts a requester's replies
+  inside its `writeAs`, not before the body. On the one connection SQLite has, in WAL mode, a
+  lock held for one read is not noticed.
+
+```mermaid
+flowchart TD
+    Tx["writeAs or stillCallerNow:<br/>BEGIN IMMEDIATE, stillAuthenticated(locals)"] --> Cred{"locals.credential"}
+    Cred -->|"undefined: no gate"| Vitest{"under vitest?"}
+    Vitest -->|"yes"| Same["locals.user as it is"]
+    Vitest -->|"no"| NoGate["401 Not authenticated,<br/>one ERROR [AUTH] line naming the request"]
+    Cred -->|"null: a public route, nobody signed in"| Null["null: the handler's own rule decides"]
+    Cred -->|"api key: its row id"| Key{"keyHolder: the key unexpired,<br/>its account there?"}
+    Cred -->|"session: its token"| Sess{"findSession: the session unexpired,<br/>its account there?"}
+    Key -->|"no"| R401k["401 Invalid or expired API key"]
+    Sess -->|"no"| R401s["401 Not authenticated"]
+    Key -->|"yes"| Now["the account as it is now;<br/>locals.user set to it"]
+    Sess -->|"yes"| Now
+    Same --> Guards["the callback's guards, given caller"]
+    Null --> Guards
+    Now --> Guards
+```
+
+**What a user or a script may notice.** Nothing, while their key or session holds and their
+role is as it was. A write whose key or session ended, or whose account's role or access
+changed, while its body was arriving is refused `401` or `403` with nothing written.
+`DELETE /api/report-schedules/{id}` asked nothing before: a session a reset had ended could
+still delete a schedule; now `401`. For a credential that has already ended, some refusals of
+the body now come before the `401`, since each check comes after its body is read: the test
+mail's `400` for its address, and `readBody`'s `400` for a body that is not JSON or not an
+object in the backup run, the Test and the Connect. An empty reorder (`PUT /api/cards/reorder`
+with `updates: []`) is answered `200` before `writeAs`, with nothing written and nothing asked.
+
+**What `stillCallerNow` does not cover.** It holds up to the call it guards. What runs after an
+await that follows that call runs on the check already made: the second and later recipients
+of a report mail, a long backup across several destinations, the Connect's folder steps after
+Google's exchange, and the sub-boards a board's or grouping's report takes in, which are not
+asked again. Each began under a caller who was still signed in and still allowed.
+
+**What is not prevented.**
+
+- **A write that committed before the credential ended** stands; only a write still arriving
+  is refused. The effects it queued on its commit run.
+- **Reads.** `GET` handlers answer with the caller the gate read. An open live stream asks its
+  session at each heartbeat instead ([An Open Stream and Its Session](#an-open-stream-and-its-session)).
+- **The four form actions** (`login`, `logout`, `setup`, `invite/[token]`) are outside: none
+  acts under a credential the caller already had, except `logout`, which ends it.
+- **A service that writes outside the callback** would not be seen by the source rule, which
+  reads route files only; every route's service calls were reviewed to be inside, and the walks
+  below meet any that is not for every handler.
+- **A reverse proxy that holds a body until it is complete** closes the window before DumpFire
+  sees the request; one that passes a body on as it arrives does not. Either way the check
+  holds; hands-on checks 186 and 187 in
+  [Deployment](deployment.md#every-write-asked-again-at-the-write) measure which production has.
+
+**How it is held.** `tests/check-at-the-write.test.ts` reads every handler under
+`src/routes/api` through the TypeScript syntax tree and fails closed: a handler that calls
+neither `writeAs` nor `stillCallerNow`; an `inTransaction` in a route file; a database write
+outside a `writeAs` callback; `locals.user`, or a name bound from it, read after the body or
+inside a callback; the locals copied, renamed or handed to anything but the two; a
+`stillCallerNow` not on its list of eight, or an `await` between it and what it guards; a
+current-password route whose write is not a `writeAs` inside `whilePasswordHolds`. Before the
+body only the guards of `QUICK_CHECKS` (`requireUser`, `requireSuperadmin`, `requireAdmin`,
+`refuseOwnAccount`, each reading no row) may take `locals.user`, in a call that binds no name.
+Four narrow allowances, each by handler with its reason: `QUICK_CHECKS_IN` (`requireCard` before
+the attachment upload, so that a caller with no access is not sent 25 MB first, and
+`screenAnonymous` before the public form's body); `READS_IN` (the import's safety copy reads
+every table with `sqlite.prepare(…).all()` outside a transaction, as the restore must run
+outside one); `USER_FIELDS_IN` (`.user` on a name declared inside the mail settings' callback
+is the mail server's user name, not the caller); and `USER_FOR_A_LINE_IN` (the reset's catch
+may name `locals.user` in its failure line where the fault stopped the first check naming the
+account). `tests/write-as.test.ts` holds the helper and each route slice's shapes, and
+`tests/access-every-route.test.ts` walks every write handler of the tree twice: its allowed
+caller's key or session ended while the body is held (401, nothing written; a request with no
+body is handed the ended credential), and an administrator's or the superadmin's role lowered
+meanwhile (refused as the lower role is, nothing written), each case with its control.
 
 ## Session Management
 
@@ -1193,13 +1396,15 @@ before a request's body is read, and a body can take as long as the caller likes
 webhook created or changed (`POST /api/v1/boards/{id}/webhooks`, `PUT /api/v1/webhooks/{id}`),
 or a report schedule created or changed (`POST /api/report-schedules`, `PUT
 /api/report-schedules/{id}`), by a request the gate let in before the reset and whose body
-arrived after it, was written, for the account just taken back, on and running. Each of those
-four now asks again, inside the transaction that writes, that the key or the session the gate
-let it in with is still open (`stillAuthenticated` in `src/lib/server/auth.ts`, reading
+arrived after it, was written, for the account just taken back, on and running. Every write
+route now asks again, inside the transaction that writes, that the key or the session the gate
+let it in with is still open, and who its account is now (`writeAs` in
+`src/lib/server/write-as.ts`, through `stillAuthenticated` in `src/lib/server/auth.ts`, reading
 `locals.credential`, which the gate sets beside `locals.user`), and answers `401` in the gate's
 own words, "Invalid or expired API key" for a key and "Not authenticated" for a session, with
-nothing written. No other write route asks yet: each still writes what a request let in before
-a reset sends after it.
+nothing written (card 2253). A request let in before a reset and sending its body after it
+writes nothing anywhere; the report-schedule delete, which asked nothing before, asks too. See
+[Asked Again at the Write](#asked-again-at-the-write-card-2253).
 
 A switched-off webhook keeps naming its setter, so a second reset counts it again only if it
 was switched on in between. After taking an account back, look over once the webhooks with no
@@ -2283,6 +2488,8 @@ sequenceDiagram
 | `requireParentCard(user, parentCardId)` | the parent card's column; the caller must be able to edit that board | creating a sub-board, both API trees |
 | `requireSubBoardLink(user, boardId, parentCardId)` | `requireBoardOwner` on the board being linked, then `requireParentCard`, then `wouldLoop` (`sub-boards.ts`); `null` asks only the first | putting an existing board under a card, or taking it out from under one, on `PUT /api/boards/:id` |
 | `requireManagedAccount(user, userId, says)` | no board: the role of the account and of the caller | setting a user's password, sending a user an invite, changing a user, deleting a user |
+| `requireAdmin(user, says?)` | no row: the caller's role; `403` in the route's words (`Forbidden` unless given) for anyone who is not an administrator, nobody signed in included (card 2253) | the user routes, the request delete, the five administrators' routes under `/api/admin/`; the quick check before a body, and asked again of `caller` inside `writeAs` |
+| `refuseOwnAccount(user, userId, says)` | no row: `403` for the caller's own account. Not a guard on its own, as it lets a null caller through: `requireUser` or `requireAdmin` is asked first (card 2253) | setting a user's password, whose check of the caller's own account comes before its role test; deleting a user and sending an invite make their own check of it inside `writeAs` |
 
 `need` is `'view'` or `'edit'`. Every guard answers 401 for no caller, 404 for no such
 row and 403 for a row on a board the caller may not view or edit.
@@ -2293,14 +2500,22 @@ that is changed: a card cannot be moved to another board, or a caller's access r
 between the check and the write, and a row deleted while the body was arriving is a 404 and
 not an update that finds nothing. The handlers card 2115 moved call their guard inside the
 transaction that writes, so a refusal thrown there rolls it back and a 403 or a 404 has
-written nothing. A `DELETE` that reads no body checks and writes with no transaction, which
-is as safe: the database calls are synchronous and nothing is awaited between the two, so
-no other request runs between them. Before the body only what reads no row is asked: the
-session the gate read (`requireUser`, `requireSuperadmin`, `isAdmin`) and the id in the
-path (`pathId`). An upload is the one request that checks twice: once before the file is read,
-so that a caller with no access is not sent 25 MB first, and again with the row. The
-public request form and its confirmation ask their rate limits and the form token first,
-and the import its media type: none of them a row.
+written nothing. A `DELETE` that reads no body checked and wrote with no transaction until
+card 2253, which was as safe: the database calls are synchronous and nothing is awaited
+between the two, so no other request runs between them. Before the body only what reads no row is asked: the
+session the gate read, through a guard of `QUICK_CHECKS` (`requireUser`, `requireSuperadmin`,
+`requireAdmin`, `refuseOwnAccount`) in a call that binds no name, and the id in the path
+(`pathId`). `isAdmin` is no longer asked before the body in a write handler: the source rule
+lets no other call take `locals.user` there. Since card 2253 such a check is a quick refusal
+that decides nothing, and every write that has one checks twice, not only the upload (the
+vacuum and the reset have none, and ask first at the write): every guard is asked again inside the
+`writeAs` that writes, given the account as it is now, and every handler, a `DELETE` with no
+body included, checks and writes in one transaction (see
+[Asked Again at the Write](#asked-again-at-the-write-card-2253)). An upload is the one request
+whose first check reads a row (`requireCard`, before the file is read, so that a caller with no
+access is not sent 25 MB first), and it asks the row again inside its `writeAs`. The public
+request form and its confirmation ask their rate limits and the form token first, and the
+import its media type: none of them a row.
 `tests/check-at-the-write.test.ts` reads every handler under `src/routes/api` and fails on
 any other call made before the body (card 2115), and on a handler whose text reads a body
 where the test cannot find the read. Until 2026-10-14 twenty-two handlers, eleven in each
@@ -3476,12 +3691,13 @@ which is what Reset Everything in the admin panel leaves.
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction; `checkCurrentPassword()`, the count of current-password guesses for a session, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account |
+| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentPassword()`, the count of current-password guesses for a session, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account |
+| `src/lib/server/write-as.ts` | Who the caller is, asked again at the write (card 2253): `writeAs(locals, (caller) => …)`, the one transaction every write handler writes in, beginning with `stillAuthenticated()`; `stillCallerNow(locals)`, the same question in a transaction of its own, for the eight handlers whose work cannot run in one. See [Asked Again at the Write](#asked-again-at-the-write-card-2253) |
 | `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
 | `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME` |
 | `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS` |
 | `src/lib/server/board-access.ts` | Board-level role resolution and permission checks; `isAdmin()` |
-| `src/lib/server/route-guards.ts` | Per-route guards that resolve the board from the row and throw 401/404/403; `requireManagedAccount()`, `requireTeamManager()` and `requireSuperadmin()`, which look at no board; `requireSubBoardLink()`, who may put a board under a card |
+| `src/lib/server/route-guards.ts` | Per-route guards that resolve the board from the row and throw 401/404/403; `requireManagedAccount()`, `requireTeamManager()` and `requireSuperadmin()`, which look at no board; `requireAdmin()` and `refuseOwnAccount()`, which read no row (card 2253); `requireSubBoardLink()`, who may put a board under a card |
 | `src/lib/server/sub-boards.ts` | `wouldLoop()`, whether putting a board under a card would make a loop, by a walk that ends on a loop already in the data; `linkableBoards()`, what the board page offers to link |
 | `src/lib/server/list-access.ts` | What a list answers a caller, decided in one place and filtered before any limit: `recentActivityFor()`, `listUsersFor()`, `listTeamsFor()`, `boardCategoryRule()` and `boardCategoriesFor()`, `categoryRule()` and `cardCategoriesFor()`, `subBoardsFor()`. See [What a List Gives](#what-a-list-gives) |
 | `src/lib/server/planning.ts` | Besides the plan: the viewer every reader of a dependency or a plan must pass, and `withhold()`, which shows work on a board the viewer cannot open as "A card on a board you cannot open" |
@@ -3490,7 +3706,7 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/request-access.ts` | Who may read, answer and resolve a task request; `requesterAddress()`, the one address a requester is mailed at and the team is shown (card 2171) |
 | `src/lib/server/request-tokens.ts` | Form tokens and per-request tokens for callers without an account |
 | `src/routes/api/requests/[id]/link/+server.ts` | The new link a requester asks for when theirs no longer works (card 2158): one answer for every ask, the link mailed only to the request's address (`requesterAddress()`, card 2171), after the answer and within three limits (`mayMail()`); a `503` in plain words, its reason in the log |
-| `src/hooks.server.ts` | Request-level auth guard and the list of public routes, the v1 rate limit, the JSON answer to every failure under `/api/v1/`, and `handleError` |
+| `src/hooks.server.ts` | Request-level auth guard and the list of public routes; `locals.credential`, set to `null` as the first statement of `handle` and then to the key or session found, which `stillAuthenticated()` reads at the write; the v1 rate limit, the JSON answer to every failure under `/api/v1/`, and `handleError` |
 | `src/lib/server/gate-answers.ts` | The gate's own answers: whether a request is a navigation, the `401` for an internal route with no session, its redirects in the form SvelteKit gives them, and the security headers with `secured()`, which moves a page's Content-Security-Policy to report only while `cspMode()` says `CSP_MODE=report-only` (card 2162) |
 | `svelte.config.js` | `kit.csp`: the pages' Content-Security-Policy, each directive with why it is there. See [The Content-Security-Policy](#the-content-security-policy) |
 | `src/app.html` | The theme script, with `nonce="%sveltekit.nonce%"`; no link to any other site |

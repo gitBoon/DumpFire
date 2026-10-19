@@ -46,7 +46,7 @@ const ROOT = process.cwd();
  * Answers this test cannot classify and that are right as they are, as
  * `'path/from/the/repository/root.ts:line': 'why'`.
  *
- * Two entries. An entry that no longer matches a finding fails the test, so
+ * Three entries. An entry that no longer matches a finding fails the test, so
  * that the list cannot outlive its reasons.
  */
 const ALLOWED: Record<string, string> = {

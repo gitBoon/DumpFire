@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.62
+version: 1.63
 status: As-Built
 date: 2026-10-19
 tags:
@@ -971,6 +971,19 @@ new; these answers and fields are:
   notice on a card that also waits on a subtask of the same title that is not the moved
   card's, which may have written it. Comments naming cards moved before are unchanged
   (item 76).
+- **A write is asked again at the write** (card 2253), every `POST`, `PUT`, `PATCH` and
+  `DELETE` of both trees, as the webhook writes alone were (item 57): a write whose key or
+  session ended (revoked, expired, a sign-out, or a password reset), or whose account's role
+  or access changed, while its body was arriving is refused with nothing written, no webhook
+  fired and no mail sent. An ended key is `401` `Invalid or expired API key`, an ended session
+  `401` `Not authenticated`, the gate's own words; a role or access lowered is refused as the
+  account now is, `403` or `404` in the operation's own words, and `POST /dependencies/bulk`,
+  `POST /tokens/bulk`, and `POST` and `DELETE /milestones/:milestoneId/cards/bulk` with their
+  `409`, listing every item. In the web application,
+  `DELETE /api/report-schedules/{id}`, which asked nothing, asks too: a session a reset had
+  ended could still delete a schedule, and is now `401`. Nothing changes for a key or session
+  that still holds and an account whose role is as it was (item 77). See
+  [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
