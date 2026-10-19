@@ -12,10 +12,11 @@ import { count, eq, desc } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { inTransaction } from '$lib/server/db/transaction';
 import { REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS, takeReportMail } from '$lib/server/reports';
-import { readBody, readChoice, readId, readNumber, readReportRecipients, readText, readTime } from '$lib/server/request-body';
+import { readBody, readChoice, readId, readNumber, readReportRecipients, readText, readTime, readTimeZone } from '$lib/server/request-body';
 import { requireBoard } from '$lib/server/route-guards';
 import { stillAuthenticated } from '$lib/server/auth';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
+import { DEFAULT_SCHEDULE_TIME_ZONE, nextRunAfter } from '$lib/report-schedule-time';
 import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
@@ -53,6 +54,11 @@ export const GET: RequestHandler = async ({ locals }) => {
  * it was sent: a time of "9", from which the scheduler cannot work out a next
  * run, sent the report every minute, and an unknown detail level or status
  * filter was stored as another.
+ *
+ * When it is sent (cards 2144 and 2159): `timeZone`, an IANA name, is the zone
+ * its time is read in, stored as the server names it; none is UTC, and a name
+ * the server does not know is 400. The first run is worked out in that zone
+ * by `nextRunAfter`, as the scheduler works out every run after it.
  *
  * Who it may reach (card 2182): `recipients` is read as the scheduler sends
  * it (`readReportRecipients`), at most 10 addresses (400); an account has at
@@ -118,22 +124,18 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		const detailLevel = readChoice(body, 'detailLevel', { from: REPORT_DETAIL_LEVELS }) ?? 'detailed';
 		const statusFilter = readChoice(body, 'statusFilter', { from: REPORT_STATUS_FILTERS }) ?? 'all';
 
-		// Calculate next run
-		const now = new Date();
-		const [h, m] = timeOfDay.split(':').map(Number);
-		let nextRunAt: Date;
+		// The zone the time is read in (card 2159): the page sends its creator's
+		// browser zone. A caller that sends none gets UTC, which is what such a
+		// caller got when the time was read on the server's clock, on UTC.
+		const timeZone = readTimeZone(body, 'timeZone', {}) ?? DEFAULT_SCHEDULE_TIME_ZONE;
 
-		if (frequency === 'weekly') {
-			nextRunAt = new Date(now);
-			nextRunAt.setHours(h, m, 0, 0);
-			const diff = (dayOfWeek - nextRunAt.getDay() + 7) % 7;
-			nextRunAt.setDate(nextRunAt.getDate() + (diff === 0 && nextRunAt <= now ? 7 : diff));
-		} else {
-			nextRunAt = new Date(now);
-			nextRunAt.setHours(h, m, 0, 0);
-			nextRunAt.setDate(dayOfMonth);
-			if (nextRunAt <= now) nextRunAt.setMonth(nextRunAt.getMonth() + 1);
-		}
+		// Dated by the scheduler's own function, in the schedule's zone (cards
+		// 2144 and 2159). The time was set with `setHours` on the server's clock,
+		// so 09:00 was 10:00 in British summer time on a server on UTC. Card
+		// 2117's readers have refused a bad field by now; a fault left is a 400
+		// all the same, never the 500 of a time `setHours` could not read.
+		const next = nextRunAfter({ frequency, dayOfWeek, dayOfMonth, timeOfDay, timeZone }, new Date());
+		if ('fault' in next) throw error(400, `The schedule was not saved: ${next.fault}`);
 
 		// An account that already has more keeps them all, and makes no more.
 		const held = db.select({ n: count() }).from(reportSchedules).where(eq(reportSchedules.userId, user.id)).get()?.n ?? 0;
@@ -158,13 +160,14 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			dayOfWeek,
 			dayOfMonth,
 			timeOfDay,
+			timeZone,
 			enabled: true,
 			recipients,
 			periodDays,
 			detailLevel,
 			statusFilter,
 			// The stored form, as the scheduler compares it (card 2095).
-			nextRunAt: stamp(nextRunAt)
+			nextRunAt: stamp(next.at)
 		}).returning().get();
 	});
 

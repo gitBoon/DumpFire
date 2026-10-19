@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.21
+version: 1.22
 status: As-Built
 date: 2026-10-19
 tags:
@@ -787,7 +787,7 @@ account on the Audit page too. What is bounded is how many.
 | 10 distinct addresses a call | `POST /api/reports/email`, before the board or the caller's access is looked at, administrators included | `400` `A report can be emailed to at most 10 addresses at a time, and this names 12. Nothing was sent.` |
 | 10 addresses a schedule | `POST /api/report-schedules`; `PUT /api/report-schedules/{id}` when it sends a changed list | `400` `A schedule can be sent to at most 10 addresses, and this names 12. The schedule was not saved.` (`The schedule was not changed.` for the `PUT`) |
 | 20 schedules an account | `POST /api/report-schedules`, counting the caller's own | `409` `You have 20 report schedules, the most one account may have. Delete one first.` An account that already has more keeps them all, and is told `You have 25 report schedules, and the most one account may have is 20. Delete 6 first.` |
-| 100 addresses a day an account | The report emailed by hand; every schedule made, turned on or re-timed; and the addresses a changed list adds | `429` `Reports can be emailed to at most 100 addresses a day from one account, and this would make 104. Try again in 5 hour(s).`; for a schedule, `Report mail can reach at most 100 addresses a day from one account, and this schedule's 10 would make 104. The schedule was not saved. Try again in 5 hour(s).` (`was not changed.` for the `PUT`, and `this schedule's 4 new addresses would make 104` when a changed list is what does not fit) |
+| 100 addresses a day an account | The report emailed by hand; every schedule made, turned on, or re-timed while on; and the addresses a changed list adds | `429` `Reports can be emailed to at most 100 addresses a day from one account, and this would make 104. Try again in 5 hour(s).`; for a schedule, `Report mail can reach at most 100 addresses a day from one account, and this schedule's 10 would make 104. The schedule was not saved. Try again in 5 hour(s).` (`was not changed.` for the `PUT`, and `this schedule's 4 new addresses would make 104` when a changed list is what does not fit) |
 
 Each refusal is whole: nothing is sent, saved or counted. The wait is in hours, rounded up,
 for an hour or more, and in minutes under an hour.
@@ -861,14 +861,17 @@ addresses within minutes.
   access and the `503` for a server with no mail set up, and before the PDF is built. A call
   refused for any of those spends nothing. What it takes is not given back when the mail
   server refuses a send: the attempt was made.
-- **A schedule pays when it is made, turned on or re-timed**, because each of those can bring
+- **A schedule pays when it is made, turned on or re-timed while on**, because each of those can bring
   a send forward. A schedule made for the next minute is sent at the scheduler's next tick,
   and deleting it makes room for another: by the plan's probe, one account mailed 10, 20,
   then 30 outside addresses in six minutes of clock that way, and with 20 schedules it would
   have been 200 a minute. So `POST /api/report-schedules` takes the new schedule's
   addresses, and `PUT /api/report-schedules/{id}` takes the schedule's addresses as they will
   be after the change when it turns the schedule on (`enabled: true` on one that is off) or
-  sends a `frequency`, `dayOfWeek`, `dayOfMonth` or `timeOfDay` other than the one stored.
+  sends a `frequency`, `dayOfWeek`, `dayOfMonth`, `timeOfDay` or `timeZone` other than the
+  one stored. A new zone (card 2159), like a new time, can bring a send forward to any time,
+  the next minute included, and is paid for in the same way. A schedule that is off after
+  the change sends nothing, so re-timing it takes nothing; turning it on pays then.
 - **A changed list pays for the addresses it adds.** When a `PUT` does neither of those and
   sends a list that reads differently from the stored one, it takes the addresses of the
   new list that are not in the stored list: a schedule of one address given ten takes nine.
@@ -917,8 +920,8 @@ Report schedule 12 "Weekly sales", owner "pat" (user 7), was switched off: it is
   and nothing changes. `enabled: true` on one still on, as a page sends the row back with
   a new name, is not a turning on and is accepted. A `PUT` that sends a list of 10 or fewer
   and `enabled: true` together is accepted, and when that turns the schedule on it takes the
-  new list's addresses from the day's 100. Turned back on, it keeps the run time it had,
-  which is past, so it is sent at the scheduler's next tick.
+  new list's addresses from the day's 100. Turned back on, its next run is worked out again
+  from now (card 2159), so it is sent at its next time, not at once.
 - **Before the deploy**, the query in
   [The Update That Brings the Limits on Report Mail](deployment.md#the-update-that-brings-the-limits-on-report-mail)
   lists each schedule's addresses as this rule counts them: any above 10 is switched off at
@@ -945,7 +948,7 @@ flowchart TD
     On -->|"yes"| On400["400 cannot be turned on"]
     On -->|"no"| Count{"POST: 20 schedules already?"}
     Count -->|"yes"| Full["409, nothing saved"]
-    Count -->|"no"| Pays{"Made, turned on,<br/>or re-timed?"}
+    Count -->|"no"| Pays{"Made, turned on,<br/>or re-timed while on?"}
     Pays -->|"yes"| Take{"takeReportMail:<br/>do all its addresses fit in the day's 100?"}
     Pays -->|"no"| Added{"PUT: a changed list with<br/>addresses not in the stored one?"}
     Added -->|"no"| Save["Saved"]

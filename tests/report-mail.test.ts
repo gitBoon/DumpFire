@@ -309,10 +309,11 @@ describe('the scheduled report, runDueReportSchedules', () => {
 		const id = dueSchedule(A.board.id, 'a@example.test');
 		const now = new Date();
 
-		// The first run awaits its PDF, and its schedule is still due while it
-		// does: its next run is written once the mail has gone.
+		// The first run awaits its PDF. Its schedule's run was claimed before it
+		// (card 2144), so a second run would find nothing due; the tick is
+		// skipped all the same.
 		const first = runDueReportSchedulesOnce(now);
-		expect(scheduleRow(id).lastRunAt).toBeNull();
+		expect(scheduleRow(id).lastRunAt).toBe(stamp(now));
 		expect(await runDueReportSchedulesOnce(now)).toBe(false);
 		expect(await first).toBe(true);
 

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.34
+version: 1.35
 status: As-Built
 date: 2026-10-19
 tags:
@@ -2746,6 +2746,144 @@ Nothing is done to the database: no migration was applied.
 
 - **The rules go with it.** The older image gives a milestone to another board with its cards, writes the other board's name into a move's entries and events, mails anyone a comment names by the old matcher, begins a board history on the second board, and lists every board in `boardIds`. Entries written by this image say "another board" and stay so.
 - **Coming forward again**, the third backfill takes out of their milestones the cards the older image left in a milestone of another board, and logs how many.
+
+### The Update That Brings Migration 0058 and Report Schedules Sent Once and On Time
+
+Two cards go out in one image, and this is the one note for them, with the after-deploy checks of the two that shipped before them in the same plan (cards 2149 and 2156, names escaped in report mail and the limit on a requester's replies). One migration, no value changed. **Run check 0v before 25 October 2026**: its cross-check only works while British summer time lasts.
+
+- **Card 2144**: the scheduler works a schedule's next run out before it sends, and claims the run with one conditional write before the report is built, so a run is sent at most once: never again by the next tick when a slow mail server holds a run past the minute, nor by a second process. A schedule whose next run cannot be worked out (a time such as `9`, a weekly day of `-2` or `7`, a frequency other than weekly or monthly) is switched off at its next due minute with one `ERROR` line, and nothing is sent; it was sent at every minute's tick. A schedule with no next run is given one and sent nothing. The start never throws for a schedule: one with no next run and an unreadable time used to stop the server starting.
+- **Card 2159** brings migration `0058_add_report_schedule_time_zone.sql`, a column `report_schedules.time_zone`: each schedule's time is read in its own zone, an IANA name such as `Europe/London`, all year. The Reports page sends its creator's browser zone with a new schedule, shows the zone in the badge ("at 09:00 Europe/London"), writes Last and Next in the schedule's zone, and offers **Use my time zone (Europe/London)** on a schedule whose zone is not the viewer's. A `PUT` that turns a schedule on, or changes its frequency, day, time or zone, works its next run out again from now: turning one back on no longer sends it at once for a run missed while it was off, and a changed time no longer sends the old one once more.
+
+0058 is one statement. It keeps every row and gives each the literal, `UTC`, the zone the image runs in (it sets no `TZ`), so every schedule that exists is sent at exactly the moments it was:
+
+```sql
+ALTER TABLE `report_schedules` ADD COLUMN `time_zone` text DEFAULT 'UTC' NOT NULL;
+```
+
+The same literal is the model's default (`schema.ts`) and the zone of a schedule made through the route with none (`DEFAULT_SCHEDULE_TIME_ZONE`). If production runs in another zone, the image is not deployed as it is: the literal is changed in all three places and the image rebuilt, or every schedule moves by the difference. Check 0v says which.
+
+```mermaid
+flowchart TD
+    V["0v: the zone the server runs in, and query 1,<br/>before 25 October 2026"] --> Same{"UTC?"}
+    Same -->|"No"| Stop["Do not deploy. Change the literal in 0058,<br/>schema.ts and report-schedule-time.ts, rebuild"]
+    Same -->|"Yes"| W["0w: query 2, schedules the scheduler cannot date"]
+    W --> X["0x: query 3, a requester's busiest hour"]
+    X --> Y["0y: the rehearsal lists 0058"]
+    Y --> Deploy["Deploy as in Updating a Running Installation"]
+    Deploy --> First["First start: 0058 applied, every schedule UTC,<br/>query 2's rows switched off at their next due minute,<br/>or at once with no next run or a NaN one"]
+    First --> After["Checks 110 to 123, the last on 29 March 2027"]
+    After --> Owners["Each owner presses Use my time zone<br/>on each schedule that should follow UK time"]
+```
+
+#### Before the deploy: checks 0v to 0y
+
+Each runs on the host, against the live database, read-only. Save a query as `query-0v.sql` (and so on) and run it with this command, which opens the database read-only and writes the table to a file, since it is wider than a terminal:
+
+```bash
+docker exec -i dumpfire node -e "
+const sql = require('fs').readFileSync(0, 'utf8');
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+console.table(db.prepare(sql).all());
+db.close();
+" < query-0v.sql > query-0v.txt
+```
+
+**Check 0v: the zone production's schedules run in** (card 2159). First the zone the server process runs in; it decides:
+
+```bash
+docker exec dumpfire node -e "console.log(process.env.TZ || '(TZ not set)', Intl.DateTimeFormat().resolvedOptions().timeZone)"
+```
+
+Expect `(TZ not set) UTC` (or `Etc/UTC` in place of `UTC`, which is the same zone). Anything else, `Europe/London` above all (a `TZ` set on the container, or the host's `/etc/localtime` mounted into it), means the literal in 0058 is wrong for production: stop, and do not deploy this image.
+
+Then query 1, the cross-check, which reads what the schedules have actually done. It only works on a date in British summer time, so run it **before 25 October 2026**:
+
+```sql
+SELECT id, name, enabled, frequency, day_of_week, day_of_month, time_of_day,
+       next_run_at, strftime('%H:%M', next_run_at) AS next_run_utc,
+       last_run_at, strftime('%H:%M', last_run_at) AS last_run_utc
+FROM report_schedules
+ORDER BY id;
+```
+
+For each row with a `last_run_at` (or `next_run_at`) on a date before 25 October 2026: where `last_run_utc` is `time_of_day`, or a minute after it at most, the server runs on UTC; where it is an hour earlier, it runs on UK time. A `next_run_at` on 25 October or later says nothing either way. It is a fault if the rows say UK time, or if the two lines disagree; either way, do not deploy as it is. An empty table means there is nothing to move, and the zone line decides alone.
+
+**Check 0w: query 2, schedules the scheduler cannot date** (card 2144). Each row is a schedule whose next run cannot be worked out. Each one that is enabled is switched off at its next due minute after the deploy (or at the first start, if it has no next run or one that cannot be read), with one `ERROR` line naming it and its owner, and sends nothing; turning it on is then refused, unless the same `PUT` sends a time, day and zone that can be read. Today some of these are sent at every minute's tick; others (`9:5`, `09:00:00`, a weekly day of `7`) are sent at a time today's code guesses.
+
+```sql
+SELECT id, user_id, name, enabled, frequency, day_of_week, day_of_month, time_of_day, next_run_at
+FROM report_schedules
+WHERE frequency NOT IN ('weekly', 'monthly')
+   OR NOT (time_of_day = '' OR time_of_day GLOB '[01][0-9]:[0-5][0-9]' OR time_of_day GLOB '2[0-3]:[0-5][0-9]')
+   OR (frequency = 'weekly' AND (typeof(day_of_week) <> 'integer' OR day_of_week NOT BETWEEN 0 AND 6))
+   OR (frequency = 'monthly' AND (typeof(day_of_month) <> 'integer' OR day_of_month < 1));
+```
+
+Expect an empty table: no page writes such a timing. A row whose `next_run_at` reads `NaN-NaN-NaN NaN:NaN:NaN` was written by the image before this one for a time it could not read (one more mail, then that); under that image it is never due, so it is neither sent nor switched off, and the start-up conversion names it at every start. This image reads a next run that cannot be read as none: at the first start such a row is switched off (its `ERROR` line written if it was on) and its `next_run_at` cleared, so the conversion names it at that start and at none after. For each row, tell its owner (`user_id`) before the deploy: they put it right through `PUT /api/report-schedules/{id}` (a `timeOfDay` of `HH:MM`, a `dayOfWeek` from 0 to 6) or delete it and make it again, or it is accepted that the deploy switches it off. Switched off, it can still be turned on by its owner with a `PUT` that sends `enabled: true` and a timing that can be read, such as `{"enabled": true, "timeOfDay": "10:00"}`.
+
+**Check 0x: query 3, a requester's busiest hour** (card 2156, already on production). The most replies a requester has sent to one request within any hour, from each of their replies. The limit is 20 an hour, cleared by a reply from the team; it is a fault if any count is above 10, because a genuine thread then comes near it: raise `REPLIES_PER_HOUR` in `src/routes/api/requests/[id]/messages/+server.ts` to twice the highest.
+
+```sql
+SELECT a.request_id, a.created_at AS from_reply, COUNT(b.id) AS replies_in_the_hour
+FROM request_messages a
+JOIN request_messages b
+  ON b.request_id = a.request_id
+ AND b.sender_type = 'requester'
+ AND b.created_at >= a.created_at
+ AND b.created_at < datetime(a.created_at, '+1 hour')
+WHERE a.sender_type = 'requester'
+GROUP BY a.id
+ORDER BY replies_in_the_hour DESC
+LIMIT 10;
+```
+
+**Check 0y: the rehearsal.** `npm run rehearse -- <export.db>` on an Admin Export copy, with the new code, as check 0c runs it (see [Testing](testing.md#rehearsing-the-runner-against-a-copy-of-a-real-database)). Expect `0058_add_report_schedule_time_zone.sql` among the files applied, `PASSED`, no schema difference, and the row count of `report_schedules` unchanged; nothing under `Worth knowing` for it, since it is no one-off. It is a fault if it prints `FAILED`, or a difference naming `report_schedules`.
+
+#### What changes at the first start
+
+- **0058 is applied**: `[WARN] [DB] Applied migration: 0058_add_report_schedule_time_zone.sql`. Every schedule reads `UTC`, and its `next_run_at` and `last_run_at` are as they were.
+- **The scheduler starts and never throws.** Each schedule with no next run, or with one that cannot be read (`NaN-NaN-NaN NaN:NaN:NaN`), is given one; one of query 2's rows among them is switched off then, with its `ERROR` line if it was on, and a next run that could not be read is cleared. Each other row of query 2 that is enabled is switched off at its next due minute.
+- **On the Reports page**: every existing schedule reads "at 09:00 UTC", Last and Next in UTC, unchanged in moment, and offers **Use my time zone (Europe/London)** to a viewer in the UK, with a line under it saying what it does; while UK summer time lasts, Next is followed by the time in the viewer's zone ("Next: 26 Oct 2026, 09:00 UTC" in winter, "(10:00 your time)" after it in summer). A schedule the scheduler cannot date shows "Cannot be sent: …" in place of Next, and no zone button.
+- **No answer of the v1 API changes; the Reports page and the web application's schedule routes do.** `GET /api/report-schedules` and the two schedule routes answer `timeZone` with each schedule, and `POST` and `PUT` take it. They have two new `400`s: `timeZone must be a time zone name, such as Europe/London`, and a timing the scheduler cannot date (`The schedule was not saved: …`, `The schedule was not changed: …`, `This schedule cannot be turned on: …`). A `PUT` that turns a schedule on, or re-times it, answers with its next run worked out again from now.
+
+**Owner to know.**
+
+- **Existing schedules keep arriving an hour late in British summer time until each is moved.** Only a schedule's owner can see it or change it, so each user with a schedule presses **Use my time zone** on each one that should follow UK time; an administrator cannot do it for them. British summer time ends on 25 October 2026, so a schedule left in UTC arrives on time in the UK through the winter: **press it before 28 March 2027, when UK summer time starts again** (a Monday schedule left in UTC is first an hour late on Monday 29 March). Check 123 is on that date.
+- **A schedule made on the page is sent at the time shown, in its creator's zone, all year.**
+- **Turning a schedule back on sends it at its next time**, never at once for a run missed while it was off. That includes every schedule turned back on after a working-copy restore, which turns them all off, and after a password reset, which pauses them.
+- **At most once.** A run is claimed before its report is built, so a restart during its sends (a deploy at the minute a schedule is due) loses the rest of that run; it is not sent again. Before, the whole run was sent again to everyone at the next start.
+- **A new zone takes the schedule's addresses from the account's 100 a day**, as a new time does: like a new time, it can bring a send forward to any time, the next minute included. A schedule that is off after the change takes nothing; turning it on pays then.
+
+#### After the deploy
+
+Checks 110 to 123 run on production unless marked **local**. A local check runs against a local instance started with `DB_PATH` set to a scratch file and its own mail settings, never production's database or mail; check 121 needs `SCHEDULERS=on` as well, because the schedulers are off under the dev server without it. Accounts: the owner of each existing schedule; an administrator; a second account that follows a board. Mail set up, to your own address; a scratch board.
+
+| # | Card | Do | Account and data | Expect | A fault if |
+|---|---|---|---|---|---|
+| 110 | 2144, 2159 | The **Audit** page's system log, right after the start | An administrator | `Applied migration: 0058_add_report_schedule_time_zone.sql` and `Report scheduler initialized`; no `ERROR` from `REPORTS`, except one per row of query 2 that had no next run | A `RangeError`, or the server does not start |
+| 111 | 2159 | **Reports**, **Schedules**, as the owner of an existing schedule | Each owner | "at 09:00 UTC"; Next in UTC and the same moment as before; **Use my time zone (Europe/London)** under it | No zone shown, or Next moved |
+| 112 | 2159 | Press **Use my time zone** on each schedule that should follow UK time | The same | The badge says Europe/London; Next is written in UK time and, before 25 October 2026, is an hour earlier than before | An error, or Next unchanged before 25 October |
+| 113 | 2144, 2159 | Make a scratch schedule, weekly for today, three minutes from now by your clock, to your own address, on the scratch board; wait | Mail set up; the scratch board | One mail, at that time by your clock | An hour late, two mails, or none |
+| 114 | 2159 | Turn that schedule off and on again | The same | No mail at once; Next is the same time next week | A mail at once |
+| 115 | 2149 | Rename the scratch board to `R&D <b>bold</b> <a href="#x">link</a>` and email its report to yourself from **Generate** | The same | The mail shows the name as typed, angle brackets and all, with no bold and no link; the subject shows it as typed | Bold text or a link in the mail |
+| 116 | 2149 | Make a second scratch schedule named `R&D <b>bold</b> <a href="#x">link</a>`, three minutes ahead, to your own address | The same | The scheduled mail shows the name as text | Markup drawn |
+| 117 | 2149 | Comment on a card of a board the second account follows | The second account | Their mail looks as before, and its "View Task" link opens the card | A broken link, or `&amp;` shown |
+| 118 | 2159 | On 26 October 2026, after the clocks go back | Check 112's schedules | A weekly Monday 09:00 Europe/London schedule arrives at 09:00 GMT | 08:00 or 10:00 |
+| 119 | 2159 | Open the Reports page in a browser whose zone is UTC (or any other), on a schedule in Europe/London | Any owner | The badge still says Europe/London, Next is in UK time with `GMT` or `BST`, and the button reads **Use my time zone (UTC)** | Next in the browser's zone |
+| 120 | 2156 | **Local.** As a requester with a request's link, send 21 replies within an hour | A local request and its link | Twenty saved and mailed; the 21st says "Too many replies to this request in the last hour. Try again in N minute(s).", and the text stays in the box | The 21st saved or mailed, or the text cleared |
+| 121 | 2144 | **Local**, with `SCHEDULERS=on`. In the scratch database, set one schedule's `time_of_day` to `9` and its `next_run_at` to the past, and a second's `time_of_day` to `9` and its `next_run_at` to `NaN-NaN-NaN NaN:NaN:NaN`; wait a minute | Two local schedules | One `ERROR` line naming each; on the Reports page both are off, with "Cannot be sent: its time of day "9" …" and no **Use my time zone**; the second's `next_run_at` is empty; no mail; turning one on is refused with the reason | A mail, an `ERROR` line each minute, or the second still on |
+| 122 | 2149 | **Local.** A backup destination named `<b>x</b>` with a host that does not exist, "notify on failure" on, **Run Backup Now** | The local superadmin | The failure mail shows the name and the error as text | Markup drawn |
+| 123 | 2159 | On Monday 29 March 2027, after the UK's clocks went forward the day before | Check 112's schedules, and any schedule left in UTC | A weekly Monday 09:00 Europe/London schedule arrives at 09:00 BST; one left in UTC arrives at 10:00 BST, and its owner presses **Use my time zone** on it | The moved schedule at 08:00 or 10:00 |
+
+Delete the two scratch schedules and the scratch board after check 116.
+
+#### Going back to the previous image
+
+Nothing is done to the database.
+
+- **0058 stays applied.** The older image logs one `[ERROR] [DB]` line for the recorded file it has no file for, and its schema check one for the column its model lacks, and starts. It neither reads nor writes `time_zone`: it reads every schedule's time on the server's clock again (UTC), and a schedule it makes is given `UTC` by the column's default.
+- **The old order comes back**: a run is sent again by a tick that meets it while it is still sending, a schedule it cannot date is sent at every tick, and turning one on sends it at once.
+- **Coming forward again**, a schedule moved to Europe/London is read in Europe/London again; one made by the older image reads in UTC.
 
 ## Changing the Schema
 

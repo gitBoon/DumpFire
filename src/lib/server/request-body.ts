@@ -75,6 +75,7 @@
 import { error } from '@sveltejs/kit';
 import { isCoverValue, isHexColour } from '$lib/colours';
 import { reportRecipients } from '$lib/report-recipients';
+import { canonicalTimeZone } from '$lib/report-schedule-time';
 import { parseStamp, toStamp, type Edge, type Stamp } from '$lib/timestamps';
 
 /** A request body: a JSON object, none of whose fields has been looked at. */
@@ -415,6 +416,25 @@ export function readTime<R extends TimeRule>(body: RequestBody, name: string, ru
 		if (sent === '' && rule.empty !== undefined) return rule.empty;
 		if (!TIME_OF_DAY.test(sent)) refuse(rule, 'invalid', wrong);
 		return sent;
+	}) as Read<string, R>;
+}
+
+/**
+ * A time zone's name, handed back as this server names it
+ * (`canonicalTimeZone`): `europe/london` is `Europe/London`, `Etc/UTC` is
+ * `UTC`. A name the server does not know, an offset such as `+01:00`, and
+ * more than 64 characters are refused (card 2159).
+ *
+ *     type     not text: `<name> must be a time zone name, such as Europe/London`
+ *     invalid  text that is not one, in the same words
+ */
+export function readTimeZone<R extends Rule>(body: RequestBody, name: string, rule: R): Read<string, R> {
+	const wrong = `${name} must be a time zone name, such as Europe/London`;
+	return field(body, name, rule, wrong, (sent) => {
+		if (typeof sent !== 'string') refuse(rule, 'type', wrong);
+		const zone = canonicalTimeZone(sent);
+		if (zone === null) refuse(rule, 'invalid', wrong);
+		return zone;
 	}) as Read<string, R>;
 }
 

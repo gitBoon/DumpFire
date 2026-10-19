@@ -126,6 +126,7 @@ import {
 	readQueryId,
 	readText,
 	readTime,
+	readTimeZone,
 	readTimestamp,
 	readUrl,
 	type Refusal,
@@ -202,6 +203,7 @@ const FIELD_READERS: {
 	{ name: 'readChoice', read: (body, rule) => readChoice(body, 'f', { ...rule, from: ['low', 'high'] }), good: 'low', bad: 'urgent' },
 	{ name: 'readDate', read: (body, rule) => readDate(body, 'f', rule), good: '2026-10-14', bad: '2026-02-30' },
 	{ name: 'readTime', read: (body, rule) => readTime(body, 'f', rule), good: '09:00', bad: '24:00' },
+	{ name: 'readTimeZone', read: (body, rule) => readTimeZone(body, 'f', rule), good: 'Europe/London', bad: 'Mars/Base' },
 	{ name: 'readTimestamp', read: (body, rule) => readTimestamp(body, 'f', rule), good: '2026-10-14 09:00:00', bad: 'soon' },
 	{ name: 'readUrl', read: (body, rule) => readUrl(body, 'f', rule), good: 'https://example.test/h', bad: 'ftp://example.test' },
 	{ name: 'readEmail', read: (body, rule) => readEmail(body, 'f', rule), good: 'a@example.test', bad: 'a' },
@@ -464,6 +466,23 @@ describe('readTime', () => {
 
 	it('reads empty text as what the rule says it means', () => {
 		expect(time('', { empty: '09:00' })).toEqual(handed('09:00'));
+	});
+});
+
+describe('readTimeZone', () => {
+	const WRONG = 'timeZone must be a time zone name, such as Europe/London';
+	const zone = (sent: unknown) => outcome(() => readTimeZone({ timeZone: sent }, 'timeZone', {}));
+
+	it('hands back a zone the server knows, by the name the server gives it (card 2159)', () => {
+		expect(zone('Europe/London')).toEqual(handed('Europe/London'));
+		expect(zone('europe/london')).toEqual(handed('Europe/London'));
+		expect(zone('Etc/UTC')).toEqual(handed('UTC'));
+	});
+
+	it('refuses a name it does not know, an offset, empty text, more than 64 characters, and anything not text', () => {
+		for (const sent of ['Mars/Base', '+01:00', '', 'E'.repeat(65), 5, null]) {
+			expect(zone(sent), JSON.stringify(sent)).toEqual(refused(WRONG));
+		}
 	});
 });
 

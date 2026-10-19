@@ -28,6 +28,8 @@ import { sql } from 'drizzle-orm';
 // is a day, `YYYY-MM-DD`. The rule is how the conversion at every start finds
 // the timestamp columns (`timestampColumns`, in timestamps.ts beside this
 // file), so a new moment is named `*_at` and needs no list kept by hand.
+// A `time_of_day` is a wall-clock time, read in the row's `time_zone`; neither
+// is a moment (card 2159).
 
 // ─── Users & Auth ────────────────────────────────────────────────────────────
 
@@ -748,7 +750,12 @@ export const reportSchedules = sqliteTable('report_schedules', {
 		.default(sql`(datetime('now'))`),
 	updatedAt: text('updated_at')
 		.notNull()
-		.default(sql`(datetime('now'))`)
+		.default(sql`(datetime('now'))`),
+	// The IANA zone `time_of_day` is read in, such as 'Europe/London' (card
+	// 2159, migration 0058). 'UTC' for a schedule made before there was one, and
+	// for a caller that sends none: the same literal as 0058's DEFAULT and
+	// DEFAULT_SCHEDULE_TIME_ZONE in src/lib/report-schedule-time.ts.
+	timeZone: text('time_zone').notNull().default('UTC')
 }, (table) => [
 	index('idx_report_schedules_user_id').on(table.userId)
 ]);

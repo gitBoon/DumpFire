@@ -373,6 +373,9 @@ const FILE_0056 = '0056_add_webhook_set_by.sql';
 /** The file of card 2155: every card in a milestone of another board taken out of it, once. */
 const FILE_0057 = '0057_cards_leave_other_boards_milestones.sql';
 
+/** The file of card 2159: the time zone a report schedule's time is read in. */
+const FILE_0058 = '0058_add_report_schedule_time_zone.sql';
+
 /**
  * The indexes the model declares that a database from before 0053 lacks:
  * 0053's 39, with 0054's index on user_id and created_at in place of 0053's on
@@ -4932,8 +4935,8 @@ describe('the database the runner leaves, against the model', () => {
 		// Measured on production: no categories, and three have existed.
 		database.exec("INSERT INTO sqlite_sequence (name, seq) VALUES ('categories', 3)");
 		// Where it starts. Every difference card 2006 set out to close, the 39
-		// indexes of 0053 (card 2106), the column of 0056 (card 2168), and no
-		// other.
+		// indexes of 0053 (card 2106), the column of 0056 (card 2168), the
+		// column of 0058 (card 2159), and no other.
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'cards.first_completed_at: the column is in the model but not in the database',
 			'categories.board_id: is NOT NULL; the model has it nullable',
@@ -4941,6 +4944,7 @@ describe('the database the runner leaves, against the model', () => {
 			'categories: foreign key in the model but not in the database: (board_id) references boards(id), on update NO ACTION, on delete SET NULL',
 			'columns.wip_limit: is nullable; the model has it NOT NULL',
 			'invite_tokens.token: is nullable; the model has it NOT NULL',
+			'report_schedules.time_zone: the column is in the model but not in the database',
 			'settings.key: is nullable; the model has it NOT NULL',
 			'task_requests.access_token: the column is in the model but not in the database',
 			'task_requests: index in the model but not in the database: unique index task_requests_access_token_idx on (access_token)',
@@ -4961,13 +4965,14 @@ describe('the database the runner leaves, against the model', () => {
 			FILE_0054,
 			FILE_0055,
 			FILE_0056,
-			FILE_0057
+			FILE_0057,
+			FILE_0058
 		]);
 		expect(report.tolerated).toEqual([]);
 		expect(report.rebuilt.map((r) => r.table)).toEqual(['columns', 'categories', 'settings', 'user_xp', 'invite_tokens']);
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(recordedIn(database)).toHaveLength(63);
+		expect(recordedIn(database)).toHaveLength(64);
 		expect(sequenceIn(database, 'categories')).toBe(3);
 		expect(foreignKeysOn(database)).toBe(true);
 		expect(differencesIn(database)).toEqual(NONE);
@@ -4990,7 +4995,7 @@ describe('the database the runner leaves, against the model', () => {
 		seed(database);
 		// Where it starts: `boards` with neither of its foreign keys right,
 		// none of the 39 indexes of 0053 (card 2106), and no column of 0056
-		// (card 2168).
+		// (card 2168) or 0058 (card 2159).
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'boards: foreign key not in the model: (created_by) references users(id), on update NO ACTION, on delete NO ACTION',
 			'boards: foreign key in the model but not in the database: (created_by) references users(id), on update NO ACTION, on delete SET NULL',
@@ -4998,6 +5003,7 @@ describe('the database the runner leaves, against the model', () => {
 			'categories.board_id: is NOT NULL; the model has it nullable',
 			'categories: foreign key not in the model: (board_id) references boards(id), on update NO ACTION, on delete CASCADE',
 			'categories: foreign key in the model but not in the database: (board_id) references boards(id), on update NO ACTION, on delete SET NULL',
+			'report_schedules.time_zone: the column is in the model but not in the database',
 			'time_entries: the table is not in the model',
 			'webhooks.set_by: the column is in the model but not in the database',
 			'webhooks: foreign key in the model but not in the database: (set_by) references users(id), on update NO ACTION, on delete SET NULL',
@@ -5016,7 +5022,7 @@ describe('the database the runner leaves, against the model', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057]);
+		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
 		expect(report.rebuilt).toEqual([
 			{ table: 'boards', rows: 3, defaulted: [], differences: differed.boards },
 			{ table: 'categories', rows: 3, defaulted: [], differences: differed.categories }
@@ -5137,7 +5143,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057]);
+		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
 		expect(report.schemaDifferences).toEqual([]);
 		const after = contentsOf(database);
 		expect(after.sessions).toEqual([]);
@@ -5449,7 +5455,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 	});
 
 	it('is the file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
-		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057]);
+		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
 		const sql = sqlStatements(readFileSync(join(REAL_MIGRATIONS, FILE_0054), 'utf-8')).map((s) => s.text);
 		expect(sql).toEqual([
 			'DROP INDEX IF EXISTS `idx_activity_log_user_id`;',
@@ -5590,7 +5596,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057]);
+		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect((database.prepare('SELECT token FROM invite_tokens').all() as { token: string }[]).map((r) => r.token)).toEqual([
 			'used-long-ago'
@@ -5668,7 +5674,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
 		expect(report.schemaDifferences).toEqual([]);
 		const links = linksIn(database);
 		expect(links).toHaveLength(3);
@@ -5701,7 +5707,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
 		expect(linksIn(database)).toEqual([]);
 	});
 
@@ -5761,7 +5767,7 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0056, FILE_0057]);
+		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT id, url, secret, active, set_by FROM webhooks').all()).toEqual([
 			{ id: 1, url: 'https://hooks.example.test/x', secret: 's3cret', active: 1, set_by: null }
@@ -5896,7 +5902,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058]);
 		expect(report.schemaDifferences).toEqual([]);
 		const cardsAfter = cardsIn(database);
 		const changed = cardsAfter.filter((row, i) => JSON.stringify(row) !== JSON.stringify(cardsBefore[i])).map((row) => row.id);
@@ -5935,7 +5941,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058]);
 		expect(cardsIn(database)).toEqual([]);
 	});
 
@@ -5946,5 +5952,66 @@ ORDER BY m.id, c.id;`;
 			change: 'milestone_id cleared where it named a milestone of another board',
 			keepsRows: true
 		});
+	});
+});
+
+// ─── 0058: the time zone a report schedule's time is read in ─────────────────
+
+describe("0058, which adds the time zone a report schedule's time is read in (card 2159)", () => {
+	/** A database with every migration before 0058 applied, and a schedule made before it. */
+	function beforeIt(): Database.Database {
+		const database = memoryDb();
+		const before = Object.fromEntries(
+			realFiles.filter((f) => f < FILE_0058).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+		);
+		applyFilesOnly(database, migrationsDir(before));
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x');
+			INSERT INTO boards (id, name, created_by) VALUES (1, 'A', 1);
+			INSERT INTO report_schedules (id, user_id, name, scope, scope_id, frequency, day_of_week, time_of_day, recipients,
+				last_run_at, next_run_at, created_at, updated_at)
+			VALUES (1, 1, 'Weekly', 'board', 1, 'weekly', 1, '09:00', 'a@example.test',
+				'2026-10-12 09:00:00', '2026-10-19 09:00:00', '2026-01-01 00:00:00', '2026-10-12 09:00:00');
+		`);
+		return database;
+	}
+
+	it('is the column, with its default, after a header comment', () => {
+		const sql = readFileSync(join(REAL_MIGRATIONS, FILE_0058), 'utf-8');
+		expect(sqlStatements(sql).map((s) => s.text)).toEqual([
+			"ALTER TABLE `report_schedules` ADD COLUMN `time_zone` text DEFAULT 'UTC' NOT NULL;"
+		]);
+		for (const said of ['Keeps every row', 'Runs once.']) expect(sql, said).toContain(said);
+	});
+
+	it('gives every schedule UTC, changes nothing else, and does nothing at the next start', () => {
+		const database = beforeIt();
+		const before = contentsOf(database);
+		const scheduleBefore = database.prepare('SELECT * FROM report_schedules').get() as Record<string, unknown>;
+		const state = stateOf(database);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0058]);
+		expect(report.schemaDifferences).toEqual([]);
+		expect(database.prepare('SELECT * FROM report_schedules').get()).toEqual({ ...scheduleBefore, time_zone: 'UTC' });
+		const after = contentsOf(database);
+		for (const table of Object.keys(before)) {
+			// The migration record, and its id counter, gain the file; each schedule gains the column.
+			if (['report_schedules', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
+			expect(after[table], table).toEqual(before[table]);
+		}
+		// The rehearsal: every row kept, nothing to note.
+		const found: Findings = { problems: [], notes: [] };
+		compare(state, stateOf(database), report.applied, found);
+		expect(found).toEqual({ problems: [], notes: [] });
+
+		const again = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		expect(again.applied).toEqual([]);
+		expect(contentsOf(database)).toEqual(after);
+	});
+
+	it('declares nothing to the rehearsal: it keeps every row and changes no value a row held', () => {
+		expect(ONE_OFFS.filter((oneOff) => oneOff.file === FILE_0058)).toEqual([]);
 	});
 });

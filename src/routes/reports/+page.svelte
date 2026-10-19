@@ -15,6 +15,8 @@
 	import { toasts } from '$lib/stores/toast';
 	import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 	import { parseStamp } from '$lib/timestamps';
+	import { canonicalTimeZone, nextRunAfter } from '$lib/report-schedule-time';
+	import { onMount } from 'svelte';
 
 	let { data }: { data: PageData } = $props();
 	let currentTheme = $state('light');
@@ -289,6 +291,34 @@
 	let schedStatusFilter = $state<StatusFilter>('all');
 	let schedCreating = $state(false);
 
+	/**
+	 * The viewer's own time zone, as the browser gives it (card 2159). Read on
+	 * mount only: during the server's render it would be the server's zone. A
+	 * new schedule is sent with it, so "09:00" is 09:00 where its creator is.
+	 * Null until then, and where the browser gives none it knows.
+	 */
+	let browserZone = $state<string | null>(null);
+	onMount(() => {
+		browserZone = canonicalTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
+	});
+
+	/**
+	 * Whether a schedule is read in a zone other than the viewer's: then it
+	 * offers "Use my time zone". Both names through this browser's
+	 * `canonicalTimeZone`, since engines spell some zones differently
+	 * (`Asia/Kolkata` and `Asia/Calcutta`): a raw comparison would offer the
+	 * button for ever (the review's R7).
+	 */
+	function inAnotherZone(zone: string): boolean {
+		return browserZone !== null && canonicalTimeZone(zone) !== browserZone;
+	}
+
+	/** Why a schedule cannot be sent, as the scheduler would say, or null when it can. */
+	function timingFault(schedule: PageData['schedules'][number]): string | null {
+		const next = nextRunAfter(schedule, new Date());
+		return 'fault' in next ? next.fault : null;
+	}
+
 	let schedScope = $derived<'board' | 'category' | 'all'>(
 		schedTarget === 'all' ? 'all' : schedTarget.startsWith('cat:') ? 'category' : 'board'
 	);
@@ -321,6 +351,8 @@
 						dayOfWeek: schedDayOfWeek,
 						dayOfMonth: schedDayOfMonth,
 						timeOfDay: schedTime,
+						// Without one the server reads the time in UTC.
+						timeZone: browserZone ?? undefined,
 						recipients: schedRecipients
 							.split(/[,;\n]/)
 							.map((e) => e.trim())
@@ -369,6 +401,31 @@
 		await invalidateAll();
 	}
 
+	/**
+	 * Read a schedule's time in the viewer's zone from now on (card 2159): the
+	 * server works its next run out again. How a schedule made before there
+	 * were zones, which reads its time in UTC, is moved to UK time.
+	 */
+	async function useMyTimeZone(scheduleId: number) {
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = await fetch(`/api/report-schedules/${scheduleId}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ timeZone: browserZone })
+			});
+		} catch {
+			toasts.add('No answer from the server. The schedule may not have been changed.', 'error', started);
+			return;
+		}
+		if (!res.ok) {
+			toasts.add(await failureMessage(res, 'The schedule was not changed.'), 'error', started);
+			return;
+		}
+		await invalidateAll();
+	}
+
 	async function deleteSchedule(scheduleId: number) {
 		const started = toasts.navigation();
 		const failure = await deleteFailure(() => fetch(`/api/report-schedules/${scheduleId}`, { method: 'DELETE' }), 'schedule');
@@ -382,12 +439,45 @@
 	// Helpers
 	const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-	function formatDateTime(dateStr: string): string {
+	/**
+	 * A schedule's last or next run, written in the schedule's own zone with the
+	 * zone's short name ("19 Oct 2026, 09:00 BST"), as its time of day is
+	 * (card 2159): in the viewer's zone, "at 09:00" sat beside "Next: 10:00".
+	 * In the viewer's zone where this browser does not know the schedule's.
+	 */
+	function formatDateTime(dateStr: string, zone: string): string {
 		if (!dateStr) return '—';
 		// A schedule's times are in the stored form, UTC with no zone: read as UTC.
 		const d = parseStamp(dateStr);
 		if (!d) return '—';
-		return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+		const timeZone = canonicalTimeZone(zone) ?? undefined;
+		return d.toLocaleString('en-GB', {
+			day: 'numeric',
+			month: 'short',
+			year: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit',
+			timeZone,
+			timeZoneName: timeZone ? 'short' : undefined
+		});
+	}
+
+	/**
+	 * A schedule's next run in the viewer's own time, to follow it where the two
+	 * zones differ (the review's O-S3): " (10:00 your time)", with the date too
+	 * when it is another day there. Empty where the zones are the same, or where
+	 * this browser does not know the schedule's zone, as Next is then written in
+	 * the viewer's zone already.
+	 */
+	function viewerTime(dateStr: string, zone: string): string {
+		const scheduleZone = canonicalTimeZone(zone);
+		if (!browserZone || !scheduleZone || !inAnotherZone(zone)) return '';
+		const d = parseStamp(dateStr);
+		if (!d) return '';
+		const viewer = browserZone;
+		const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: viewer });
+		const day = (timeZone: string) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone });
+		return day(viewer) === day(scheduleZone) ? ` (${time} your time)` : ` (${day(viewer)}, ${time} your time)`;
 	}
 
 	function getScopeLabel(scope: string, scopeId: number | null): string {
@@ -687,6 +777,7 @@
 							<div class="form-group">
 								<label for="sched-time">Time</label>
 								<input type="time" id="sched-time" bind:value={schedTime} />
+								<span class="form-hint">{browserZone ? `In your time zone, ${browserZone}` : 'In UTC'}</span>
 							</div>
 						</div>
 						<div class="form-row">
@@ -739,12 +830,13 @@
 					<div class="schedules-list">
 						{#each data.schedules as schedule}
 							{@const sentTo = reportRecipients(schedule.recipients).addresses}
+							{@const fault = timingFault(schedule)}
 							<div class="schedule-card" class:disabled={!schedule.enabled}>
 								<div class="schedule-info">
 									<div class="schedule-name">{schedule.name}</div>
 									<div class="schedule-meta">
 										<span class="scope-badge">{getScopeLabel(schedule.scope, schedule.scopeId)}</span>
-										<span class="freq-badge">{schedule.frequency === 'weekly' ? `Weekly on ${dayNames[schedule.dayOfWeek]}` : `Monthly on day ${schedule.dayOfMonth}`} at {schedule.timeOfDay}</span>
+										<span class="freq-badge">{schedule.frequency === 'weekly' ? `Weekly on ${dayNames[schedule.dayOfWeek]}` : `Monthly on day ${schedule.dayOfMonth}`} at {schedule.timeOfDay} {schedule.timeZone}</span>
 										<span class="freq-badge">Last {schedule.periodDays} days</span>
 										<span class="freq-badge">{schedule.detailLevel === 'summary' ? '📊 Summary' : '📋 Detailed'}</span>
 										{#if schedule.statusFilter && schedule.statusFilter !== 'all'}
@@ -769,10 +861,21 @@
 										<span class="no-recipients-warn">⚠️ No recipients configured</span>
 									{/if}
 									{#if schedule.lastRunAt}
-										<span class="schedule-last-run">Last: {formatDateTime(schedule.lastRunAt)}</span>
+										<span class="schedule-last-run">Last: {formatDateTime(schedule.lastRunAt, schedule.timeZone)}</span>
 									{/if}
-									{#if schedule.nextRunAt}
-										<span class="schedule-next-run">Next: {formatDateTime(schedule.nextRunAt)}</span>
+									{#if fault}
+										<!-- The scheduler switches such a schedule off and sends nothing (card 2144),
+										     and clears a next run it cannot read. Turning it on is refused unless the
+										     same request sends a timing that can be read, which this page cannot
+										     send. The zone button is not offered: a new zone is refused for any other
+										     fault, and would leave the schedule off for that one. -->
+										<span class="schedule-fault">Cannot be sent: {fault}. Delete it and make it again, or turn it on through the API with a time, day and zone that can be read.</span>
+									{:else if schedule.nextRunAt}
+										<span class="schedule-next-run">Next: {formatDateTime(schedule.nextRunAt, schedule.timeZone)}{viewerTime(schedule.nextRunAt, schedule.timeZone)}</span>
+									{/if}
+									{#if !fault && inAnotherZone(schedule.timeZone)}
+										<button class="zone-btn" onclick={() => useMyTimeZone(schedule.id)}>Use my time zone ({browserZone})</button>
+										<span class="zone-hint">Reads its time in {browserZone} from now on, and works its next run out again.</span>
 									{/if}
 								</div>
 								<div class="schedule-actions">
@@ -1135,6 +1238,19 @@
 		overflow-wrap: anywhere;
 	}
 	.over-cap-hint { font-size: 0.68rem; color: var(--text-tertiary); }
+	.schedule-fault { font-size: 0.7rem; color: var(--priority-high); font-weight: 600; }
+	.zone-btn {
+		align-self: flex-start;
+		margin-top: 2px;
+		padding: 1px 8px;
+		border-radius: var(--radius-full);
+		background: var(--bg-elevated);
+		color: var(--accent-purple);
+		font-size: 0.68rem;
+		cursor: pointer;
+	}
+	.zone-btn:hover { background: var(--glass-hover); }
+	.zone-hint { font-size: 0.65rem; color: var(--text-tertiary); }
 
 	.scope-badge {
 		font-size: 0.65rem;

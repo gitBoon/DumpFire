@@ -1,0 +1,30 @@
+-- The time zone a report schedule's time is read in (card 2159, 2026-10-19).
+--
+-- report_schedules.time_zone holds an IANA zone name, such as Europe/London,
+-- and time_of_day is the wall-clock time in that zone: "09:00 Europe/London" is
+-- 08:00 UTC in British summer time and 09:00 UTC in winter. Neither column is
+-- a moment, and neither ends in _at, so the timestamp conversion at every start
+-- leaves both alone. The time used to be read on the server's own clock, so a
+-- server on UTC sent a schedule made for 09:00 UK time at 10:00 all summer.
+-- The Reports page now sends its creator's browser zone with a new schedule; a
+-- caller that sends none gets UTC.
+--
+-- Every schedule that exists is given the zone it has been running in: UTC,
+-- the zone the image runs in (it sets no TZ), so each is sent at the moments
+-- it was sent before, and the page now says so ("at 09:00 UTC"). Its owner
+-- moves it with "Use my time zone" on the Reports page. The literal is the same
+-- in src/lib/server/db/schema.ts and src/lib/report-schedule-time.ts
+-- (DEFAULT_SCHEDULE_TIME_ZONE); the deployment checks measure production's zone
+-- before the deploy, and a different literal here would be a schema difference
+-- at every start.
+--
+-- Keeps every row, and changes no value a row held: ADD COLUMN with a constant
+-- default gives every row the new column with that value. So nothing is
+-- declared to the rehearsal in tests/rehearsal/one-offs.ts.
+--
+-- Runs once. The runner records this file by name and never runs it again,
+-- and it would not survive a second run: "duplicate column" is tolerated only
+-- in a fixed list of older files, and this is not one of them. A backup made
+-- before this file has no column, and its schedules are restored with UTC.
+
+ALTER TABLE `report_schedules` ADD COLUMN `time_zone` text DEFAULT 'UTC' NOT NULL;

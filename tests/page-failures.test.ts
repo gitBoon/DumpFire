@@ -2044,6 +2044,8 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'sendReportEmail', reads: 'failureMessage' },
 		{ name: 'createSchedule', reads: 'failureMessage', done: ['showNewSchedule = false', "schedName = ''", 'await invalidateAll()'] },
 		{ name: 'toggleSchedule', reads: 'failureMessage', done: ['await invalidateAll()'] },
+		// Card 2159: a schedule's time read in the viewer's zone from now on.
+		{ name: 'useMyTimeZone', reads: 'failureMessage', done: ['await invalidateAll()'] },
 		{ name: 'deleteSchedule', reads: 'deleteFailure', done: ['await invalidateAll()'] }
 	],
 	'src/lib/components/CardModal.svelte': [
