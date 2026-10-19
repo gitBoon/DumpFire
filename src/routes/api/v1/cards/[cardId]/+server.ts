@@ -160,14 +160,10 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			min: 1,
 			max: 500,
 			keep: card.title,
-			says: { empty: 'title cannot be empty', invalid: 'Title too long (max 500 chars)' }
+			says: { empty: 'title cannot be empty' }
 		});
 		if (title !== undefined) updateData.title = title;
-		const description = readText(body, 'description', {
-			max: 50000,
-			keep: card.description,
-			says: { invalid: 'Description too long (max 50000 chars)' }
-		});
+		const description = readText(body, 'description', { max: 50000, keep: card.description });
 		if (description !== undefined) updateData.description = description;
 		const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true, keep: card.priority });
 		if (priority !== undefined) updateData.priority = priority;

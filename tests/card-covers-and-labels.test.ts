@@ -237,7 +237,7 @@ describe('recurrence, which nothing acts on', () => {
 const LABEL_REFUSALS: [Record<string, unknown>, string][] = [
 	[{ name: ['x'] }, 'name must be text'],
 	[{ name: 5 }, 'name must be text'],
-	[{ name: 'x'.repeat(201) }, 'Label name too long (max 200 chars)'],
+	[{ name: 'x'.repeat(201) }, 'name must be at most 200 characters'],
 	[{ color: 'red; background: url(https://evil.example.test/)' }, 'color must be a colour written #rrggbb'],
 	[{ color: '#fff' }, 'color must be a colour written #rrggbb'],
 	[{ color: 5 }, 'color must be a colour written #rrggbb'],

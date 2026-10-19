@@ -70,7 +70,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			trim: true,
 			min: 1,
 			max: 500,
-			says: { missing: 'title is required', empty: 'title is required', invalid: 'Title too long (max 500 chars)' }
+			says: { missing: 'title is required', empty: 'title is required' }
 		});
 		const description = readText(body, 'description', { max: 50000 });
 		const priority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true });

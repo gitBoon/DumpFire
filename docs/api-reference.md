@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.57
+version: 1.58
 status: As-Built
 date: 2026-10-19
 tags:
@@ -179,10 +179,11 @@ number or an id is read.
 
 | A field | Holds | Refused with, for example |
 |---------|-------|---------------------------|
-| A name: of a board, a column, a label, a category, a board category or a milestone | Text, trimmed, of 1 to 200 characters | `name must be text`, `name is required`, `name cannot be empty`, `Board name too long (max 200 chars)` |
-| A card's or a subtask's `title` | Text, trimmed, of 1 to 500 characters | `title must be text`, `title is required`, `title cannot be empty`, `Title too long (max 500 chars)` |
-| `description`, `onHoldNote` | Text of at most 50,000 characters | `description must be text`, `Description too long (max 50000 chars)` |
-| A comment's `content` | Text, trimmed, of 1 to 50,000 characters | `content must be text`, `Comment cannot be empty` |
+| A name: of a board, a label, a category, a board category or a milestone | Text, trimmed, of 1 to 200 characters | `name must be text`, `name is required`, `name cannot be empty`, `name must be at most 200 characters` |
+| A column's `title` | Text, trimmed, of 1 to 200 characters | `title is required`, `title must be at most 200 characters` |
+| A card's or a subtask's `title` | Text, trimmed, of 1 to 500 characters | `title must be text`, `title is required`, `title cannot be empty`, `title must be at most 500 characters` |
+| `description`, `onHoldNote` | Text of at most 50,000 characters | `description must be text`, `description must be at most 50000 characters` |
+| A comment's `content` | Text, trimmed, of 1 to 50,000 characters | `content must be text`, `Comment cannot be empty`, `content must be at most 50000 characters` |
 | `businessValue` | Text of at most 10,000 characters | `businessValue must be at most 10000 characters` |
 | `emoji` | Text of 1 to 32 characters | `emoji cannot be empty` |
 | `priority` | `low`, `medium`, `high` or `critical`, in any case. It is stored in lower case | `priority must be one of: low, medium, high, critical` |
@@ -921,6 +922,42 @@ new; these answers and fields are:
   empty page. Equal bounds name one second and are allowed. Its entries are newest first,
   and by id, newest first, within one second, so paging with `offset` neither repeats nor
   skips an entry of the second a page ends in (item 74).
+- **A text field past its length limit is refused in one wording, in both trees** (card
+  2218): `400` `<field> must be at most <max> characters`, the field's own name as sent and
+  the limit written as a plain number, which is what every route with no wording of its own
+  already answered. On the API, `Title too long (max 500 chars)` becomes
+  `title must be at most 500 characters` on `POST /boards/:boardId/cards`,
+  `PUT /cards/:cardId`, `POST /cards/:cardId/subtasks` and `PUT /subtasks/:subtaskId`;
+  `Description too long (max 50000 chars)` becomes
+  `description must be at most 50000 characters` on `POST /boards/:boardId/cards` and
+  `PUT /cards/:cardId`; `Board name too long (max 200 chars)` (`POST /boards`,
+  `PUT /boards/:boardId`), `Name too long (max 200 chars)` (`POST /board-categories`,
+  `PUT /board-categories/:categoryId`, `POST /boards/:boardId/categories`,
+  `PUT /categories/:categoryId`), `Label name too long (max 200 chars)`
+  (`POST /boards/:boardId/labels`, `PUT /labels/:labelId`) and
+  `name too long (max 200 chars)` (`POST /milestones`, `PATCH /milestones/:milestoneId`)
+  become `name must be at most 200 characters`; `Column title too long (max 200 chars)`
+  becomes `title must be at most 200 characters` on `POST /boards/:boardId/columns` and
+  `PUT /columns/:columnId`; and `Comment too long (max 50000 chars)` becomes
+  `content must be at most 50000 characters` on `PUT /comments/:commentId`, as
+  `POST /cards/:cardId/comments` answered. The web application's routes under `/api/` change
+  in the same way: the title, description, name and column title texts above on
+  `POST /api/cards`, `PUT /api/cards/{id}`, `POST /api/subtasks`, `PUT /api/subtasks/{id}`,
+  `POST /api/boards`, `POST /api/board-categories`, `POST /api/categories`, `POST` and
+  `PATCH /api/labels`, `POST /api/columns`, `PUT /api/columns/{id}`, `POST /api/milestones`
+  and `PATCH /api/milestones/{id}`, the milestone service behind the last two included;
+  `Business value too long (max 10000 chars)` becomes
+  `businessValue must be at most 10000 characters` on `POST /api/cards` and
+  `PUT /api/cards/{id}`; on `POST /api/requests`, `Title too long (max 500 chars)`,
+  `Description too long (max 10000 chars)` and `Business value too long (max 5000 chars)`
+  become `title must be at most 500 characters`,
+  `description must be at most 10000 characters` and
+  `businessValue must be at most 5000 characters`; `Key name too long (max 100 chars)`
+  becomes `name must be at most 100 characters` on `POST /api/account/api-keys`; and
+  `Message too long (max 5000 characters)` becomes `message must be at most 5000 characters`
+  on `POST /api/requests/{id}/messages`. Every limit is as it was, and the texts for a field
+  that is missing or empty are unchanged. A script that matched one of the old texts no
+  longer matches it (item 75).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -1120,8 +1157,8 @@ API:
     text, trimmed, of 1 to 500 characters, required on a create, where a missing one gave
     "Untitled" or "New subtask" and an empty one was stored on an update; `description` and
     `onHoldNote` at most 50,000 characters, `businessValue` at most 10,000
-    (`Title too long (max 500 chars)`, `Description too long (max 50000 chars)` and
-    `Business value too long (max 10000 chars)` as before); `priority` `low`, `medium`,
+    (`title must be at most 500 characters`, `description must be at most 50000 characters`
+    and `businessValue must be at most 10000 characters`, card 2218); `priority` `low`, `medium`,
     `high` or `critical` in any case, stored in lower case; `dueDate` a date written
     `YYYY-MM-DD`, `''` or `null` clearing it; `colorTag` a colour written `#rrggbb`, or
     `''`; `position` a number; `pinned` and `completed` `true` or `false`, where `"false"`
@@ -1301,7 +1338,7 @@ API:
     to the rest without a word; the first save of the mail settings with no From address
     is `400` `fromAddress must be an email address`; and a name past the new limits, a
     board's or a column's renamed past 200 characters among them, is `400`
-    (`name must be at most 200 characters`, `Column title too long (max 200 chars)`). The
+    (`name must be at most 200 characters`, `title must be at most 200 characters`). The
     board page says that a column's rename was refused, in the server's words, and keeps
     the old title (card 2134); it showed the new title until the next load.
 - **Every id in the path or the query string of those routes is read as an id**: `1.5`,
@@ -3085,7 +3122,7 @@ Fetch a single comment (requires view access to the card's board).
 
 #### `PUT /api/v1/comments/:commentId`
 
-Edit a comment's text: `{ "content": "Replacement text" }`. Only the comment's author or an admin may edit, and the author only while they can still edit the board the comment is on, which is what posting a comment asks for: someone taken off a board, or left on it as a viewer, is answered `403` with `No edit access to this board` for a comment they wrote there. A viewer can still read it. Sets `updatedAt`, logs `api:comment_edited` to the activity feed and pushes a live board update. The comment is looked for and the caller checked before `content` is read, which is held to the rule of a new comment, `Comment too long (max 50000 chars)` past it. The text is stored trimmed and otherwise as sent (no tag prefixing).
+Edit a comment's text: `{ "content": "Replacement text" }`. Only the comment's author or an admin may edit, and the author only while they can still edit the board the comment is on, which is what posting a comment asks for: someone taken off a board, or left on it as a viewer, is answered `403` with `No edit access to this board` for a comment they wrote there. A viewer can still read it. Sets `updatedAt`, logs `api:comment_edited` to the activity feed and pushes a live board update. The comment is looked for and the caller checked before `content` is read, which is held to the rule of a new comment, `content must be at most 50000 characters` past it (card 2218; it was `Comment too long (max 50000 chars)`). The text is stored trimmed and otherwise as sent (no tag prefixing).
 
 ### Webhooks
 

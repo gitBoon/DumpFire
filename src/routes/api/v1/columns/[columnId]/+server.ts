@@ -77,7 +77,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			min: 1,
 			max: 200,
 			keep: column.title,
-			says: { empty: 'title cannot be empty', invalid: 'Column title too long (max 200 chars)' }
+			says: { empty: 'title cannot be empty' }
 		});
 		if (title !== undefined) updates.title = title;
 		const color = readColour(body, 'color', { keep: column.color });

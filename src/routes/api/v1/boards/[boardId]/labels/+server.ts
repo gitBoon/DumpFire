@@ -35,7 +35,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			trim: true,
 			min: 1,
 			max: 200,
-			says: { missing: 'name is required', empty: 'name is required', invalid: 'Label name too long (max 200 chars)' }
+			says: { missing: 'name is required', empty: 'name is required' }
 		});
 		const color = readColour(body, 'color', {});
 

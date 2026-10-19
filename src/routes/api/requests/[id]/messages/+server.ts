@@ -100,7 +100,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 			trim: true,
 			min: 1,
 			max: 5000,
-			says: { missing: 'Message is required', empty: 'Message is required', invalid: 'Message too long (max 5000 characters)' }
+			says: { missing: 'Message is required', empty: 'Message is required' }
 		});
 
 	let sType: string;

@@ -45,7 +45,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			min: 1,
 			max: 200,
 			keep: label.name,
-			says: { empty: 'name cannot be empty', invalid: 'Label name too long (max 200 chars)' }
+			says: { empty: 'name cannot be empty' }
 		});
 		if (name !== undefined) updates.name = name;
 		const color = readColour(body, 'color', { keep: label.color });

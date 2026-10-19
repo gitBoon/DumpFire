@@ -1140,7 +1140,7 @@
 			</div>
 		{/if}
 		<div class="title-field" class:title-error={titleError}>
-			<input id="card-title" class="modal-title-input" type="text" placeholder="What needs to be done?" bind:value={title} oninput={() => (titleError = false)} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()} autofocus />
+			<input id="card-title" class="modal-title-input" type="text" placeholder="What needs to be done?" maxlength="500" bind:value={title} oninput={() => (titleError = false)} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()} autofocus />
 			{#if titleError}<span class="title-error-msg">A title is required</span>{/if}
 		</div>
 
@@ -1182,7 +1182,7 @@
 					{/if}
 				</div>
 			{:else}
-			<textarea id="card-desc" placeholder="Add a description…" bind:value={description} rows="3"></textarea>
+			<textarea id="card-desc" placeholder="Add a description…" maxlength="50000" bind:value={description} rows="3"></textarea>
 			{/if}
 			<div class="desc-hint">Supports markdown formatting</div>
 		</div>
@@ -1288,7 +1288,7 @@
 		{#if showBusinessValue}
 		<div class="form-group">
 			<label for="card-bv">Business Value / Justification</label>
-			<textarea id="card-bv" placeholder="Why is this important? What value does it deliver?" bind:value={businessValue} rows="2"></textarea>
+			<textarea id="card-bv" placeholder="Why is this important? What value does it deliver?" maxlength="10000" bind:value={businessValue} rows="2"></textarea>
 		</div>
 		{/if}
 

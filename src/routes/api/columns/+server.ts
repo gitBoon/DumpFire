@@ -31,7 +31,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			trim: true,
 			min: 1,
 			max: 200,
-			says: { missing: 'title is required', empty: 'title is required', invalid: 'Column title too long (max 200 chars)' }
+			says: { missing: 'title is required', empty: 'title is required' }
 		});
 		const position = readNumber(body, 'position', {});
 		const color = readColour(body, 'color', {});

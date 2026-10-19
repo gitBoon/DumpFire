@@ -148,7 +148,7 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 		trim: true,
 		min: 1,
 		max: 500,
-		says: { missing: 'Title is required', empty: 'Title is required', invalid: 'Title too long (max 500 chars)' }
+		says: { missing: 'Title is required', empty: 'Title is required' }
 	});
 	const targetType =
 		readChoice(body, 'targetType', { nullable: true, from: ['user', 'team'], says: { type: 'Invalid target type', invalid: 'Invalid target type' } }) ??
@@ -159,8 +159,8 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 	// session it is not read at all, so that the form cannot be used to find
 	// which boards there are; signed in, it is optional, and one they can open.
 	const desiredBoardId = locals.user ? (readId(body, 'desiredBoardId', { nullable: true }) ?? null) : null;
-	const description = readText(body, 'description', { max: 10000, says: { invalid: 'Description too long (max 10000 chars)' } }) ?? '';
-	const businessValue = readText(body, 'businessValue', { max: 5000, says: { invalid: 'Business value too long (max 5000 chars)' } }) ?? '';
+	const description = readText(body, 'description', { max: 10000 }) ?? '';
+	const businessValue = readText(body, 'businessValue', { max: 5000 }) ?? '';
 	const safePriority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true }) ?? 'medium';
 	const requesterName = readText(body, 'requesterName', { trim: true, max: 200 });
 

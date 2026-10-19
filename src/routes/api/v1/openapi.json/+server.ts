@@ -183,6 +183,16 @@ const spec = {
 			'where every subtask sent with no position was put at 0; subtasks already at 0 keep it. GET /api/v1/cards/{cardId}/subtasks and the subtasks of GET /api/v1/cards/{cardId} are ordered by position, then id, where they had no order. ' +
 			'(74) GET /api/v1/audit-log answers a from after its to with 400 "`from` is after `to`", as GET /api/v1/reports/activity does, where it answered 200 with an empty page; equal bounds name one second and are allowed. ' +
 			'Its entries are newest first, and by id, newest first, within one second, so paging with offset neither repeats nor skips an entry of the second a page ends in. ' +
+			'(75) a text field past its length limit is answered 400 in one wording, the request-body readers\' own, "<field> must be at most <max> characters", where some operations had their own: ' +
+			'on POST /api/v1/boards/{boardId}/cards, PUT /api/v1/cards/{cardId}, POST /api/v1/cards/{cardId}/subtasks and PUT /api/v1/subtasks/{subtaskId}, `Title too long (max 500 chars)` is `title must be at most 500 characters`; ' +
+			'on POST /api/v1/boards/{boardId}/cards and PUT /api/v1/cards/{cardId}, `Description too long (max 50000 chars)` is `description must be at most 50000 characters`; ' +
+			'`name must be at most 200 characters` replaces `Board name too long (max 200 chars)` on POST /api/v1/boards and PUT /api/v1/boards/{boardId}, ' +
+			'`Name too long (max 200 chars)` on POST /api/v1/board-categories, PUT /api/v1/board-categories/{categoryId}, POST /api/v1/boards/{boardId}/categories and PUT /api/v1/categories/{categoryId}, ' +
+			'`Label name too long (max 200 chars)` on POST /api/v1/boards/{boardId}/labels and PUT /api/v1/labels/{labelId}, ' +
+			'and `name too long (max 200 chars)` on POST /api/v1/milestones and PATCH /api/v1/milestones/{milestoneId}; ' +
+			'on POST /api/v1/boards/{boardId}/columns and PUT /api/v1/columns/{columnId}, `Column title too long (max 200 chars)` is `title must be at most 200 characters`; ' +
+			'and on PUT /api/v1/comments/{commentId}, `Comment too long (max 50000 chars)` is `content must be at most 50000 characters`, as POST /api/v1/cards/{cardId}/comments already answered. ' +
+			'Every limit is as it was, and the web application\'s routes answer in the same words; a caller that matched the old text no longer matches it. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +

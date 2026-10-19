@@ -213,7 +213,7 @@ describe('PUT /api/v1/cards/:cardId', () => {
 
 		const res = await expectRefused(put(s.owner, s.first.id, { milestoneId: s.goal.id, title: 'x'.repeat(501) }), 400);
 
-		expect(res.body.message).toBe('Title too long (max 500 chars)');
+		expect(res.body.message).toBe('title must be at most 500 characters');
 		// It used to be `goal`: the milestone was written before the title was looked at.
 		expect(cardRow(s.first.id).milestoneId).toBe(s.current.id);
 		expect(cardRow(s.first.id).title).toBe('First');
@@ -227,7 +227,7 @@ describe('PUT /api/v1/cards/:cardId', () => {
 			400
 		);
 
-		expect(res.body.message).toBe('Description too long (max 50000 chars)');
+		expect(res.body.message).toBe('description must be at most 50000 characters');
 		expect(cardRow(s.first.id).milestoneId).toBe(s.current.id);
 	});
 
@@ -242,7 +242,7 @@ describe('PUT /api/v1/cards/:cardId', () => {
 			400
 		);
 
-		expect(res.body.message).toBe('Title too long (max 500 chars)');
+		expect(res.body.message).toBe('title must be at most 500 characters');
 	});
 
 	it('refuses a milestone the caller may not use, and writes none of the other fields', async () => {
@@ -481,7 +481,7 @@ describe('POST /api/v1/boards', () => {
 		await expectRefused(post(null, { name: 'Roadmap' }), 401);
 		expect((await expectRefused(post(s.owner, { name: '   ' }), 400)).body.message).toBe('name is required');
 		expect((await expectRefused(post(s.owner, { name: 'x'.repeat(201) }), 400)).body.message).toBe(
-			'Board name too long (max 200 chars)'
+			'name must be at most 200 characters'
 		);
 		// The name is looked at before the parent card is looked for, as it was.
 		expect((await expectRefused(post(s.owner, { name: '', parentCardId: 99999 }), 400)).body.message).toBe(
@@ -613,7 +613,7 @@ describe('POST /api/v1/boards/:boardId/cards', () => {
 		expect(
 			(await expectRefused(post(s.owner, s.A.board.id, { columnId: column, title: 'x'.repeat(501) }), 400)).body
 				.message
-		).toBe('Title too long (max 500 chars)');
+		).toBe('title must be at most 500 characters');
 		// The administrator may edit both boards, so this is refused for the column alone.
 		expect(
 			(
@@ -679,7 +679,7 @@ describe('POST /api/v1/cards/:cardId/subtasks', () => {
 			'title is required'
 		);
 		expect((await expectRefused(post(s.owner, s.first.id, { title: 'x'.repeat(501) }), 400)).body.message).toBe(
-			'Title too long (max 500 chars)'
+			'title must be at most 500 characters'
 		);
 		// Who may edit is settled before what was sent is looked at, as it was.
 		await expectRefused(post(s.viewer, s.first.id, {}), 403);
@@ -1203,7 +1203,7 @@ describe('PUT /api/v1/comments/:commentId', () => {
 		expect((await expectRefused(put(s.owner, 99999, '   '), 404)).body.message).toBe('Comment not found');
 		expect((await expectRefused(put(s.owner, s.comment.id, '   '), 400)).body.message).toBe('Comment cannot be empty');
 		expect((await expectRefused(put(s.owner, s.comment.id, 'x'.repeat(50001)), 400)).body.message).toBe(
-			'Comment too long (max 50000 chars)'
+			'content must be at most 50000 characters'
 		);
 		expect((await expectRefused(put(s.owner, 99999, 'Edited'), 404)).body.message).toBe('Comment not found');
 		// One answer that is not as it was: changing a comment asks for edit

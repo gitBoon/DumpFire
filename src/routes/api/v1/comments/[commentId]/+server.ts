@@ -82,7 +82,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			min: 1,
 			max: 50000,
 			keep: ctx.comment.content,
-			says: { missing: 'Comment cannot be empty', empty: 'Comment cannot be empty', invalid: 'Comment too long (max 50000 chars)' }
+			says: { missing: 'Comment cannot be empty', empty: 'Comment cannot be empty' }
 		});
 
 		const updated = db.update(cardComments)

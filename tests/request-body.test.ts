@@ -1417,15 +1417,15 @@ describe('the handlers card 2115 moved onto the readers', () => {
 		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({}), 'title is required'],
 		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: '  ' }), 'title is required'],
 		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: 5 }), 'title must be text'],
-		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: long(201) }), 'Column title too long (max 200 chars)'],
+		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: long(201) }), 'title must be at most 200 characters'],
 		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: 'Review', position: 'top' }), 'position must be a number'],
 		['POST /api/v1/boards/:boardId/columns', (w) => `/api/v1/boards/${w.boardId}/columns`, () => ({ title: 'Review', color: '' }), COLOUR_RULE],
 		['POST /api/v1/boards/:boardId/columns', () => '/api/v1/boards/1e3/columns', () => ({ title: 'Review' }), 'Invalid board ID'],
 		['POST /api/v1/boards/:boardId/labels', (w) => `/api/v1/boards/${w.boardId}/labels`, () => ({}), 'name is required'],
-		['POST /api/v1/boards/:boardId/labels', (w) => `/api/v1/boards/${w.boardId}/labels`, () => ({ name: long(201) }), 'Label name too long (max 200 chars)'],
+		['POST /api/v1/boards/:boardId/labels', (w) => `/api/v1/boards/${w.boardId}/labels`, () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['POST /api/v1/boards/:boardId/labels', (w) => `/api/v1/boards/${w.boardId}/labels`, () => ({ name: 'Urgent', color: 3 }), COLOUR_RULE],
 		['POST /api/v1/boards/:boardId/categories', (w) => `/api/v1/boards/${w.boardId}/categories`, () => ({ name: '' }), 'name is required'],
-		['POST /api/v1/boards/:boardId/categories', (w) => `/api/v1/boards/${w.boardId}/categories`, () => ({ name: long(201) }), 'Name too long (max 200 chars)'],
+		['POST /api/v1/boards/:boardId/categories', (w) => `/api/v1/boards/${w.boardId}/categories`, () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['POST /api/v1/boards/:boardId/categories', (w) => `/api/v1/boards/${w.boardId}/categories`, () => ({ name: { text: 'Bug' } }), 'name must be text'],
 		// POST /api/v1/boards/:boardId/webhooks
 		['POST /api/v1/boards/:boardId/webhooks', (w) => `/api/v1/boards/${w.boardId}/webhooks`, () => ({}), 'URL is required'],
@@ -1444,18 +1444,18 @@ describe('the handlers card 2115 moved onto the readers', () => {
 		// The five things a key updates.
 		['PUT /api/v1/labels/:labelId', (w) => `/api/v1/labels/${w.labelId}`, () => ({}), 'No valid fields to update'],
 		['PUT /api/v1/labels/:labelId', (w) => `/api/v1/labels/${w.labelId}`, () => ({ name: '' }), 'name cannot be empty'],
-		['PUT /api/v1/labels/:labelId', (w) => `/api/v1/labels/${w.labelId}`, () => ({ name: long(201) }), 'Label name too long (max 200 chars)'],
+		['PUT /api/v1/labels/:labelId', (w) => `/api/v1/labels/${w.labelId}`, () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['PUT /api/v1/labels/:labelId', (w) => `/api/v1/labels/${w.labelId}`, () => ({ color: null }), COLOUR_RULE],
 		['PUT /api/v1/labels/:labelId', () => '/api/v1/labels/1.5', () => ({ name: 'x' }), 'Invalid label ID'],
 		['PUT /api/v1/categories/:categoryId', (w) => `/api/v1/categories/${w.categoryId}`, () => ({ name: '' }), 'name cannot be empty'],
-		['PUT /api/v1/categories/:categoryId', (w) => `/api/v1/categories/${w.categoryId}`, () => ({ name: long(201) }), 'Name too long (max 200 chars)'],
+		['PUT /api/v1/categories/:categoryId', (w) => `/api/v1/categories/${w.categoryId}`, () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['PUT /api/v1/categories/:categoryId', (w) => `/api/v1/categories/${w.categoryId}`, () => ({ color: 9 }), COLOUR_RULE],
 		['PUT /api/v1/board-categories/:categoryId', (w) => `/api/v1/board-categories/${w.groupingId}`, () => ({ name: ' ' }), 'name cannot be empty'],
-		['PUT /api/v1/board-categories/:categoryId', (w) => `/api/v1/board-categories/${w.groupingId}`, () => ({ name: long(201) }), 'Name too long (max 200 chars)'],
+		['PUT /api/v1/board-categories/:categoryId', (w) => `/api/v1/board-categories/${w.groupingId}`, () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['PUT /api/v1/board-categories/:categoryId', (w) => `/api/v1/board-categories/${w.groupingId}`, () => ({}), 'No valid fields to update'],
 		['PUT /api/v1/columns/:columnId', (w) => `/api/v1/columns/${w.columnId}`, () => ({}), 'No valid fields to update'],
 		['PUT /api/v1/columns/:columnId', (w) => `/api/v1/columns/${w.columnId}`, () => ({ title: '' }), 'title cannot be empty'],
-		['PUT /api/v1/columns/:columnId', (w) => `/api/v1/columns/${w.columnId}`, () => ({ title: long(201) }), 'Column title too long (max 200 chars)'],
+		['PUT /api/v1/columns/:columnId', (w) => `/api/v1/columns/${w.columnId}`, () => ({ title: long(201) }), 'title must be at most 200 characters'],
 		['PUT /api/v1/columns/:columnId', (w) => `/api/v1/columns/${w.columnId}`, () => ({ position: 'top' }), 'position must be a number'],
 		['PUT /api/v1/columns/:columnId', (w) => `/api/v1/columns/${w.columnId}`, () => ({ showAddCard: 'false' }), 'showAddCard must be true or false'],
 		['PUT /api/v1/webhooks/:webhookId', (w) => `/api/v1/webhooks/${w.webhookId}`, () => ({}), 'No fields to update'],
@@ -1667,12 +1667,13 @@ describe('the handlers of /api/v1/ that card 2117’s second slice moved onto th
 		// POST /api/v1/boards: a board has no row to guard, so its fields are read first.
 		['POST /api/v1/boards', () => '/api/v1/boards', () => ({}), 'name is required'],
 		['POST /api/v1/boards', () => '/api/v1/boards', () => ({ name: 5 }), 'name must be text'],
-		['POST /api/v1/boards', () => '/api/v1/boards', () => ({ name: long(201) }), 'Board name too long (max 200 chars)'],
+		['POST /api/v1/boards', () => '/api/v1/boards', () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['POST /api/v1/boards', () => '/api/v1/boards', () => ({ name: 'Roadmap', emoji: '' }), 'emoji cannot be empty'],
 		['POST /api/v1/boards', () => '/api/v1/boards', () => ({ name: 'Roadmap', parentCardId: 'a card' }), 'parentCardId must be an id'],
 		// PUT /api/v1/boards/:boardId
 		['PUT /api/v1/boards/:boardId', (w) => `/api/v1/boards/${w.boardId}`, () => ({ name: ['A'] }), 'name must be text'],
 		['PUT /api/v1/boards/:boardId', (w) => `/api/v1/boards/${w.boardId}`, () => ({ name: '  ' }), 'name cannot be empty'],
+		['PUT /api/v1/boards/:boardId', (w) => `/api/v1/boards/${w.boardId}`, () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['PUT /api/v1/boards/:boardId', (w) => `/api/v1/boards/${w.boardId}`, () => ({ emoji: long(33) }), 'emoji must be at most 32 characters'],
 		['PUT /api/v1/boards/:boardId', (w) => `/api/v1/boards/${w.boardId}`, () => ({ categoryId: 1.5 }), 'categoryId must be an id'],
 		['PUT /api/v1/boards/:boardId', (w) => `/api/v1/boards/${w.boardId}`, () => ({ isPublic: 'true' }), 'isPublic must be true or false'],
@@ -1680,14 +1681,16 @@ describe('the handlers of /api/v1/ that card 2117’s second slice moved onto th
 		// POST /api/v1/board-categories
 		['POST /api/v1/board-categories', () => '/api/v1/board-categories', () => ({}), 'name is required'],
 		['POST /api/v1/board-categories', () => '/api/v1/board-categories', () => ({ name: { text: 'G' } }), 'name must be text'],
+		['POST /api/v1/board-categories', () => '/api/v1/board-categories', () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['POST /api/v1/board-categories', () => '/api/v1/board-categories', () => ({ name: 'G', color: 'red' }), 'color must be a colour written #rrggbb'],
 		['POST /api/v1/board-categories', () => '/api/v1/board-categories', () => ({ name: 'G', color: '#fff' }), 'color must be a colour written #rrggbb'],
 		// POST /api/v1/boards/:boardId/cards
 		['POST /api/v1/boards/:boardId/cards', cards_, () => ({ title: 'Raised' }), 'columnId is required'],
 		['POST /api/v1/boards/:boardId/cards', cards_, () => ({ columnId: 'one', title: 'Raised' }), 'columnId must be an id'],
 		['POST /api/v1/boards/:boardId/cards', cards_, (w) => card(w, { title: 5 }), 'title must be text'],
-		['POST /api/v1/boards/:boardId/cards', cards_, (w) => card(w, { title: long(501) }), 'Title too long (max 500 chars)'],
+		['POST /api/v1/boards/:boardId/cards', cards_, (w) => card(w, { title: long(501) }), 'title must be at most 500 characters'],
 		['POST /api/v1/boards/:boardId/cards', cards_, (w) => card(w, { description: 5 }), 'description must be text'],
+		['POST /api/v1/boards/:boardId/cards', cards_, (w) => card(w, { description: long(50001) }), 'description must be at most 50000 characters'],
 		['POST /api/v1/boards/:boardId/cards', cards_, (w) => card(w, { priority: 'urgent' }), PRIORITY],
 		['POST /api/v1/boards/:boardId/cards', cards_, (w) => card(w, { dueDate: '2026-02-30' }), 'dueDate must be a date written YYYY-MM-DD'],
 		['POST /api/v1/boards/:boardId/cards', cards_, (w) => card(w, { colorTag: 'red;background:url(//x.io)' }), 'colorTag must be a colour written #rrggbb, or empty'],
@@ -1727,12 +1730,13 @@ describe('the handlers of /api/v1/ that card 2117’s second slice moved onto th
 		['PUT /api/v1/subtasks/:subtaskId', (w) => `/api/v1/subtasks/${w.subtaskId}`, () => ({}), 'No valid fields to update'],
 		['PUT /api/v1/subtasks/:subtaskId', (w) => `/api/v1/subtasks/${w.subtaskId}`, () => ({ completed: 'false' }), 'completed must be true or false'],
 		['PUT /api/v1/subtasks/:subtaskId', (w) => `/api/v1/subtasks/${w.subtaskId}`, () => ({ title: '' }), 'title cannot be empty'],
+		['PUT /api/v1/subtasks/:subtaskId', (w) => `/api/v1/subtasks/${w.subtaskId}`, () => ({ title: long(501) }), 'title must be at most 500 characters'],
 		['PUT /api/v1/subtasks/:subtaskId', (w) => `/api/v1/subtasks/${w.subtaskId}`, () => ({ position: 'top' }), 'position must be a number'],
 		['PUT /api/v1/subtasks/:subtaskId', (w) => `/api/v1/subtasks/${w.subtaskId}`, () => ({ priority: 'urgent' }), PRIORITY],
 		// PUT /api/v1/comments/:commentId
 		['PUT /api/v1/comments/:commentId', (w) => `/api/v1/comments/${w.commentId}`, () => ({ content: 5 }), 'content must be text'],
 		['PUT /api/v1/comments/:commentId', (w) => `/api/v1/comments/${w.commentId}`, () => ({ content: ' ' }), 'Comment cannot be empty'],
-		['PUT /api/v1/comments/:commentId', (w) => `/api/v1/comments/${w.commentId}`, () => ({ content: long(50001) }), 'Comment too long (max 50000 chars)'],
+		['PUT /api/v1/comments/:commentId', (w) => `/api/v1/comments/${w.commentId}`, () => ({ content: long(50001) }), 'content must be at most 50000 characters'],
 		// The dependency batch: an entry that is not an object, and a kind that is no kind (decision 18).
 		['POST /api/v1/dependencies/bulk', () => '/api/v1/dependencies/bulk', () => ({ links: [null] }), 'links[0] must be an object'],
 		['POST /api/v1/dependencies/bulk', () => '/api/v1/dependencies/bulk', (w) => ({ links: [{ blocked: w.cardId, blocker: w.cardId }, 7] }), 'links[1] must be an object'],
@@ -1746,10 +1750,12 @@ describe('the handlers of /api/v1/ that card 2117’s second slice moved onto th
 		['POST /api/v1/dependencies/bulk', () => '/api/v1/dependencies/bulk', () => ({ links: [] }), 'links is empty'],
 		// The milestones.
 		['POST /api/v1/milestones', () => '/api/v1/milestones', () => ({ name: 5 }), 'name must be text'],
+		['POST /api/v1/milestones', () => '/api/v1/milestones', () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['POST /api/v1/milestones', () => '/api/v1/milestones', () => ({ name: 'Ship it', targetDate: 'soon' }), 'targetDate must be a date written YYYY-MM-DD'],
 		['POST /api/v1/milestones', () => '/api/v1/milestones', () => ({ name: 'Ship it', boardId: 'A' }), 'boardId must be an id'],
 		['POST /api/v1/milestones', () => '/api/v1/milestones', () => ({ name: 'Ship it', description: 7 }), 'description must be text'],
 		['PATCH /api/v1/milestones/:milestoneId', (w) => `/api/v1/milestones/${w.milestoneId}`, () => ({ name: null }), 'name must be text'],
+		['PATCH /api/v1/milestones/:milestoneId', (w) => `/api/v1/milestones/${w.milestoneId}`, () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['PATCH /api/v1/milestones/:milestoneId', (w) => `/api/v1/milestones/${w.milestoneId}`, () => ({ status: 'done' }), 'status must be open or closed'],
 		['PATCH /api/v1/milestones/:milestoneId', (w) => `/api/v1/milestones/${w.milestoneId}`, () => ({ targetDate: '2026-13-01' }), 'targetDate must be a date written YYYY-MM-DD'],
 		['PATCH /api/v1/milestones/:milestoneId', (w) => `/api/v1/milestones/${w.milestoneId}`, () => ({ boardId: 1.5 }), 'boardId must be an id'],
@@ -2162,7 +2168,7 @@ describe('the web application’s work routes that card 2117’s third slice mov
 		['POST /api/boards', at('/api/boards'), () => ({}), 'name is required'],
 		['POST /api/boards', at('/api/boards'), () => ({ name: 5 }), 'name must be text'],
 		['POST /api/boards', at('/api/boards'), () => ({ name: '   ' }), 'name is required'],
-		['POST /api/boards', at('/api/boards'), () => ({ name: long(201) }), 'Board name too long (max 200 chars)'],
+		['POST /api/boards', at('/api/boards'), () => ({ name: long(201) }), 'name must be at most 200 characters'],
 		['POST /api/boards', at('/api/boards'), () => ({ name: 'Roadmap', emoji: '' }), 'emoji cannot be empty'],
 		['POST /api/boards', at('/api/boards'), () => ({ name: 'Roadmap', parentCardId: 'a card' }), 'parentCardId must be an id'],
 		['POST /api/boards', at('/api/boards'), () => ({ name: 'Roadmap', categoryId: 1.5 }), 'categoryId must be an id'],
@@ -2177,7 +2183,7 @@ describe('the web application’s work routes that card 2117’s third slice mov
 		// POST /api/categories
 		['POST /api/categories', at('/api/categories'), (w) => ({ boardId: w.boardId }), 'name is required'],
 		['POST /api/categories', at('/api/categories'), () => ({ boardId: 'A', name: 'C' }), 'Invalid board ID'],
-		['POST /api/categories', at('/api/categories'), (w) => ({ boardId: w.boardId, name: long(201) }), 'Name too long (max 200 chars)'],
+		['POST /api/categories', at('/api/categories'), (w) => ({ boardId: w.boardId, name: long(201) }), 'name must be at most 200 characters'],
 		['POST /api/categories', at('/api/categories'), (w) => ({ boardId: w.boardId, name: 'C', color: '#fff' }), COLOUR],
 		// POST /api/columns
 		['POST /api/columns', at('/api/columns'), () => ({ title: 'X' }), 'Invalid board ID'],
@@ -2203,13 +2209,13 @@ describe('the web application’s work routes that card 2117’s third slice mov
 		['POST /api/cards', at('/api/cards'), () => ({ title: 'Raised' }), 'Invalid column ID'],
 		['POST /api/cards', at('/api/cards'), (w) => card(w, { title: 5 }), 'title must be text'],
 		['POST /api/cards', at('/api/cards'), (w) => card(w, { title: ' ' }), 'title is required'],
-		['POST /api/cards', at('/api/cards'), (w) => card(w, { title: long(501) }), 'Title too long (max 500 chars)'],
-		['POST /api/cards', at('/api/cards'), (w) => card(w, { description: long(50001) }), 'Description too long (max 50000 chars)'],
+		['POST /api/cards', at('/api/cards'), (w) => card(w, { title: long(501) }), 'title must be at most 500 characters'],
+		['POST /api/cards', at('/api/cards'), (w) => card(w, { description: long(50001) }), 'description must be at most 50000 characters'],
 		['POST /api/cards', at('/api/cards'), (w) => card(w, { priority: 'urgent' }), PRIORITY],
 		['POST /api/cards', at('/api/cards'), (w) => card(w, { dueDate: '2026-02-30' }), DATE('dueDate')],
 		['POST /api/cards', at('/api/cards'), (w) => card(w, { colorTag: 'red' }), COLOUR_TAG],
 		['POST /api/cards', at('/api/cards'), (w) => card(w, { position: 'top' }), 'position must be a number'],
-		['POST /api/cards', at('/api/cards'), (w) => card(w, { businessValue: long(10001) }), 'Business value too long (max 10000 chars)'],
+		['POST /api/cards', at('/api/cards'), (w) => card(w, { businessValue: long(10001) }), 'businessValue must be at most 10000 characters'],
 		['POST /api/cards', at('/api/cards'), (w) => card(w, { categoryId: 0 }), 'categoryId must be an id'],
 		['POST /api/cards', at('/api/cards'), (w) => card(w, { summary: 5 }), 'summary must be a string or null'],
 		// PUT /api/cards/:id
@@ -2222,7 +2228,7 @@ describe('the web application’s work routes that card 2117’s third slice mov
 		['PUT /api/cards/:id', ofCard, () => ({ colorTag: '#fff' }), COLOUR_TAG],
 		['PUT /api/cards/:id', ofCard, () => ({ position: 'top' }), 'position must be a number'],
 		['PUT /api/cards/:id', ofCard, () => ({ coverUrl: 5 }), 'coverUrl must be a colour written #rrggbb, one of the preset gradients, or null'],
-		['PUT /api/cards/:id', ofCard, () => ({ businessValue: long(10001) }), 'Business value too long (max 10000 chars)'],
+		['PUT /api/cards/:id', ofCard, () => ({ businessValue: long(10001) }), 'businessValue must be at most 10000 characters'],
 		['PUT /api/cards/:id', ofCard, () => ({ closeReason: 7 }), 'closeReason must be a string or null'],
 		['PUT /api/cards/:id', ofCard, () => ({ columnId: 'next' }), 'Invalid column ID'],
 		['PUT /api/cards/:id', at('/api/cards/1e3'), () => ({ title: 'x' }), 'Invalid card ID'],
@@ -2749,7 +2755,7 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		// POST /api/account/api-keys: every field before a password is checked or counted.
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => ({ password: 'x' }), 'Key name is required'],
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ name: 5 }), 'name must be text'],
-		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ name: long(101) }), 'Key name too long (max 100 chars)'],
+		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ name: long(101) }), 'name must be at most 100 characters'],
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ password: 5 }), 'Password is required'],
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ expiresAt: 'banana' }), 'expiresAt must be a timestamp, such as 2027-01-01T09:00:00Z'],
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ expiresAt: '2020-01-01T00:00:00Z' }), 'expiresAt must be in the future'],
@@ -2842,7 +2848,7 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		// POST /api/requests/:id/messages
 		['POST /api/requests/:id/messages', 'owner', replies, () => ({ message: 5 }), 'message must be text'],
 		['POST /api/requests/:id/messages', 'owner', replies, () => ({ message: '  ' }), 'Message is required'],
-		['POST /api/requests/:id/messages', 'owner', replies, () => ({ message: long(5001) }), 'Message too long (max 5000 characters)'],
+		['POST /api/requests/:id/messages', 'owner', replies, () => ({ message: long(5001) }), 'message must be at most 5000 characters'],
 		['POST /api/requests/:id/messages', 'owner', replies, () => ({ message: 'Any news?', senderType: 'staff' }), 'senderType must be one of: requester, admin'],
 		// POST /api/teams, as PUT reads a team.
 		['POST /api/teams', 'owner', at('/api/teams'), () => ({ name: 5 }), 'name must be text'],
@@ -3468,7 +3474,7 @@ describe('the review fixes to card 2117’s slices 2 to 5 (version 1.7)', () => 
 				['/api/report-schedules', { name: '   ', scope: 'board', scopeId: w.boardId, frequency: 'weekly' }, 'Missing required fields: name, scope, frequency'],
 				['/api/templates', { boardId: w.boardId, name: 'T', title: 'T', subtasks: [{ title: 'A step', description: null, priority: 'medium' }] }, 'subtasks[0].description must be text'],
 				['/api/templates', { boardId: w.boardId, name: 'x'.repeat(201), title: 'T' }, 'name must be at most 200 characters'],
-				['/api/boards', { name: 'x'.repeat(201) }, 'Board name too long (max 200 chars)']
+				['/api/boards', { name: 'x'.repeat(201) }, 'name must be at most 200 characters']
 			];
 			const answers = [];
 			for (const [path, body] of CASES) {
@@ -3665,6 +3671,185 @@ describe('the second fix pass to card 2117’s slices 2 to 5 (version 1.8)', () 
 	});
 
 	type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+});
+
+describe('one wording for a length limit (card 2218)', () => {
+	/**
+	 * A length limit worded its own way, as the overrides card 2218 deleted
+	 * did: `Title too long (max 500 chars)`. The readers' own words are
+	 * `<name> must be at most <max> characters`, and with no override they
+	 * cannot drift. The check is of the code's shape, not its words: a reader
+	 * given a `max` may only be given a `says` written out in place, whose
+	 * `invalid`, if it has one, is a text ending in the readers' own words with
+	 * the same number. What it cannot see, and does not claim: a route that
+	 * throws its own 400 (`error(400, 'Title too long')`), and a rule handed to
+	 * the reader by name rather than written in the call (`readWebhookUrl`'s).
+	 */
+	const OWN_WORDS = /too long|\(max \d/i;
+
+	/**
+	 * The readers that refuse text over its `max` in `<name> must be at most
+	 * <max> characters`, read from the module, so a new one is checked too.
+	 */
+	const LENGTH_READERS = (() => {
+		const tree = ts.createSourceFile('request-body.ts', readFileSync(join(ROOT, 'src/lib/server/request-body.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+		return tree.statements
+			.filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.body !== undefined)
+			.filter((reader) => reader.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+			.filter((reader) => /must be at most \$\{[^}]+\} characters`/.test(reader.body!.getText(tree)))
+			.map((reader) => reader.name!.text)
+			.sort();
+	})();
+
+	/** A property's name as written: `says`, `'says'` and `['says']` alike; undefined for a spread or a name worked out. */
+	function keyOf(property: ts.ObjectLiteralElementLike): string | undefined {
+		const name = property.name;
+		if (name === undefined) return undefined;
+		if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) return name.text;
+		if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression)) return name.expression.text;
+		return undefined;
+	}
+
+	/** `node` without brackets, `as` or `satisfies` round it. */
+	function bare(node: ts.Expression): ts.Expression {
+		let inner = node;
+		while (ts.isParenthesizedExpression(inner) || ts.isAsExpression(inner) || ts.isSatisfiesExpression(inner)) inner = inner.expression;
+		return inner;
+	}
+
+	/**
+	 * Every call of a length reader in `source` whose rule has a `max` and
+	 * could word that limit its own way, as `file:line why: code`.
+	 */
+	function ownWords(file: string, source: string): string[] {
+		const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+		const found: string[] = [];
+		const report = (node: ts.Node, why: string) =>
+			found.push(`${file}:${tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1} ${why}: ${node.getText(tree).replace(/\s+/g, ' ')}`);
+		/** A text or template as written, each `${…}` kept as it is written. */
+		const written = (text: ts.StringLiteralLike | ts.TemplateExpression) =>
+			ts.isTemplateExpression(text)
+				? text.head.text + text.templateSpans.map((span) => '${' + span.expression.getText(tree) + '}' + span.literal.text).join('')
+				: text.text;
+		const check = (rule: ts.ObjectLiteralExpression) => {
+			const max = rule.properties.find((property) => keyOf(property) === 'max');
+			if (max === undefined) return;
+			// The number as the reader's words would hold it: `500`, or `${LONGEST_TEXT}`, `${max}` where a template names it.
+			const held = ts.isPropertyAssignment(max) ? bare(max.initializer) : ts.isShorthandPropertyAssignment(max) ? max.name : undefined;
+			const limit = held === undefined ? undefined : ts.isNumericLiteral(held) ? held.text : '${' + held.getText(tree) + '}';
+			for (const property of rule.properties) if (ts.isSpreadAssignment(property)) report(property, 'a spread in the rule may carry a says');
+			const says = rule.properties.find((property) => keyOf(property) === 'says');
+			if (says === undefined) return;
+			const given = ts.isPropertyAssignment(says) ? bare(says.initializer) : undefined;
+			if (given === undefined || !ts.isObjectLiteralExpression(given)) return report(says, 'says is not written out in place');
+			for (const entry of given.properties) {
+				const key = keyOf(entry);
+				if (key === undefined) {
+					report(entry, 'a says entry whose name cannot be read');
+					continue;
+				}
+				if (key !== 'invalid') continue;
+				const text = ts.isPropertyAssignment(entry) ? bare(entry.initializer) : undefined;
+				if (text === undefined || !(ts.isStringLiteralLike(text) || ts.isTemplateExpression(text))) {
+					report(entry, 'invalid is not written as a text');
+				} else if (limit === undefined || !written(text).endsWith(`must be at most ${limit} characters`)) {
+					report(entry, `invalid does not end "must be at most ${limit} characters"`);
+				}
+			}
+		};
+		const visit = (node: ts.Node) => {
+			if (ts.isCallExpression(node)) {
+				const callee = bare(node.expression);
+				const reader = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : undefined;
+				const rule = node.arguments[2] === undefined ? undefined : bare(node.arguments[2]);
+				if (reader !== undefined && LENGTH_READERS.includes(reader) && rule !== undefined && ts.isObjectLiteralExpression(rule)) check(rule);
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(tree);
+		return found;
+	}
+
+	const found = FILES.flatMap((file) => ownWords(file, readFileSync(join(ROOT, file), 'utf8')));
+
+	it('no route file or server module gives a reader a length limit in its own words', () => {
+		// Each line names the file, the line and why: delete the `invalid` override, so the reader's own words answer.
+		expect(found).toEqual([]);
+	});
+
+	it('knows the length readers from the module itself', () => {
+		expect(LENGTH_READERS).toEqual(['readEmailText', 'readReportRecipients', 'readText', 'readUrl']);
+	});
+
+	it('catches each way round the readers’ words, by shape and not by wording', () => {
+		const of = (code: string) => ownWords('example.ts', code);
+		// An override in other words, whatever they are.
+		expect(of("readText(body, 'title', { max: 5, says: { invalid: 'Title too long (max 5 chars)' } });")).toHaveLength(1);
+		expect(of("readText(body, 'title', { max: 5, says: { invalid: 'title must be shorter than 6 characters' } });")).toHaveLength(1);
+		// The readers' words with the wrong number.
+		expect(of("readText(body, 'title', { max: 5, says: { invalid: 'title must be at most 50 characters' } });")).toHaveLength(1);
+		expect(of("readUrl(body, 'url', { max: 500, says: { invalid: 'url must be at most 1500 characters' } });")).toHaveLength(1);
+		// A constant for the text, a shared says, and the says shorthand.
+		expect(of("const TOO_LONG = 'Title too long'; readText(body, 'title', { max: 5, says: { invalid: TOO_LONG } });")).toHaveLength(1);
+		expect(of("readText(body, 'title', { max: 5, says: SAYS }); readText(body, 'name', { max: 9, says: SAYS });")).toHaveLength(2);
+		expect(of("const says = { invalid: 'Title too long' }; readText(body, 'title', { max: 5, says });")).toHaveLength(1);
+		// A helper's call, for the says or for its text.
+		expect(of("readEmailText(body, 'to', { max: 5, says: saysFor('to') });")).toHaveLength(1);
+		expect(of("readText(body, 'title', { max: 5, says: { invalid: tooLong('title', 5) } });")).toHaveLength(1);
+		// Quoted names, a whole-says text, and spreads.
+		expect(of("readText(body, 'title', { 'max': 5, 'says': { 'invalid': 'Title too long' } });")).toHaveLength(1);
+		expect(of("readText(body, 'title', { max: 5, ['says']: { invalid: 'Title too long' } });")).toHaveLength(1);
+		expect(of("readText(body, 'name', { max: 5, says: `name too long` });")).toHaveLength(1);
+		expect(of("readText(body, 'title', { ...RULE, max: 5 });")).toHaveLength(1);
+		expect(of("readReportRecipients(body, 'to', { max: 5, says: { ...COMMON } });")).toHaveLength(1);
+		// Each is named by file and line.
+		expect(of("\n\nreadText(body, 'title', { max: 5, says: SAYS });")[0]).toMatch(/^example\.ts:3 says is not written out in place: /);
+	});
+
+	it('passes the readers’ own words, with a path in front or a named number, and what is not a length reader’s', () => {
+		const of = (code: string) => ownWords('example.ts', code);
+		expect(of("readText(step, 'title', { max: 500, says: { type: `${at}.title must be text`, invalid: `${at}.title must be at most 500 characters` } });")).toEqual([]);
+		expect(of("readText(entry, 'name', { max: LONGEST_TEXT, says: { invalid: `${prefix}name must be at most ${LONGEST_TEXT} characters` } });")).toEqual([]);
+		expect(of("readText(entry, field, { max, keep, says: { invalid: `${prefix}${field} must be at most ${max} characters` } });")).toEqual([]);
+		expect(of("readText(body, 'title', { max: 5, says: { empty: 'title cannot be empty' } });")).toEqual([]);
+		expect(of("readText(body, 'title', { max: 5 });")).toEqual([]);
+		// No max: a minimum's words are the route's own (the password routes' SHORT).
+		expect(of("readText(body, 'password', { min: 8, says: { invalid: SHORT } });")).toEqual([]);
+		// Not a length reader: a number's range, a choice.
+		expect(of("readNumber(body, 'port', { max: 65535, says: { invalid: 'port must be a whole number from 1 to 65535' } });")).toEqual([]);
+		expect(of("readChoice(body, 'scope', { from: SCOPES, says: SCOPE });")).toEqual([]);
+		// Outside the check, as said above: a route's own throw.
+		expect(of("throw error(400, 'Title too long (max 500 chars)');")).toEqual([]);
+	});
+
+	it('lets no one type past a card’s or a request’s limits in the card window or the request page', () => {
+		const source = (path: string) => readFileSync(join(ROOT, path), 'utf8');
+		// The routes' limits the boxes hold to.
+		for (const route of ['src/routes/api/cards/+server.ts', 'src/routes/api/cards/[id]/+server.ts']) {
+			expect(source(route)).toMatch(/readText\(body, 'title', \{[^}]*max: 500,/);
+			expect(source(route)).toMatch(/readText\(body, 'description', \{ max: 50000[ ,]/);
+			expect(source(route)).toMatch(/readText\(body, 'businessValue', \{ max: 10000[ ,]/);
+		}
+		const requests = source('src/routes/api/requests/+server.ts');
+		expect(requests).toMatch(/readText\(body, 'title', \{[^}]*max: 500,/);
+		expect(requests).toContain("readText(body, 'description', { max: 10000 })");
+		expect(requests).toContain("readText(body, 'businessValue', { max: 5000 })");
+
+		const modal = source('src/lib/components/CardModal.svelte');
+		expect(modal).toContain('placeholder="What needs to be done?" maxlength="500" bind:value={title}');
+		expect(modal).toContain('placeholder="Add a description…" maxlength="50000" bind:value={description}');
+		expect(modal).toContain('placeholder="Why is this important? What value does it deliver?" maxlength="10000" bind:value={businessValue}');
+		const request = source('src/routes/request/+page.svelte');
+		expect(request).toContain('placeholder="Brief summary of your request..." class="form-input" maxlength="500"');
+		expect(request).toContain('rows="5" class="form-textarea" maxlength="10000"');
+		expect(request).toContain('rows="3" class="form-textarea" maxlength="5000"');
+	});
+
+	it('the milestone service’s own check of a name says what the readers say', () => {
+		const service = readFileSync(join(ROOT, 'src/lib/server/milestones.ts'), 'utf8');
+		expect(service.split('\n').filter((line) => OWN_WORDS.test(line))).toEqual([]);
+		expect(service.split("'name must be at most 200 characters'").length - 1).toBe(2);
+	});
 });
 
 /** The distinct entries of `list`, sorted. */

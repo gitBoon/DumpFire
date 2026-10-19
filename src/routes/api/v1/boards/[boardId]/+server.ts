@@ -61,7 +61,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			min: 1,
 			max: 200,
 			keep: board.name,
-			says: { empty: 'name cannot be empty', invalid: 'Board name too long (max 200 chars)' }
+			says: { empty: 'name cannot be empty' }
 		});
 		if (name !== undefined) updates.name = name;
 		const emoji = readText(body, 'emoji', { min: 1, max: 32, keep: board.emoji });
