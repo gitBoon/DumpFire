@@ -3,6 +3,7 @@ import { boards, columns, cards, categories, labels, cardLabels, cardAssignees, 
 import { eq, and, isNull, inArray, asc } from 'drizzle-orm';
 import { readQueryId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 import type { RequestHandler } from './$types';
 
 /** Escape a value for CSV: wrap in quotes if it contains commas, quotes, or newlines. */
@@ -139,9 +140,9 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 			.all()
 		: [];
 
-	// Get subtasks
+	// Get subtasks, each card's by position and then id (card 2223)
 	const allSubtasks = cardIds.length > 0
-		? db.select().from(subtasks).where(inArray(subtasks.cardId, cardIds)).all()
+		? db.select().from(subtasks).where(inArray(subtasks.cardId, cardIds)).orderBy(...SUBTASK_ORDER).all()
 		: [];
 
 	// Build CSV

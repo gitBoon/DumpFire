@@ -29,6 +29,8 @@ const MAX_LIMIT = 500;
  *   ?to=ISO          — To date (inclusive). Each is a date, a timestamp in
  *                      ISO 8601 or `YYYY-MM-DD HH:MM:SS` (UTC), or a 400
  *                      (`from is not a date`); a bare `to` is the whole day.
+ *                      A `from` after its `to` is a 400 (`` `from` is after
+ *                      `to` ``); equal bounds name one second.
  *   ?limit=N         — Max results (default 100, max 500). A whole number,
  *                      rounded down and held between 1 and 500: -1 is 1, and
  *                      not every row, which is what SQLite gave for it.
@@ -61,6 +63,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	// `to` lost the whole of its day, and `from=yesterday` was taken.
 	const from = readQueryDate(url.searchParams.get('from'), 'from', 'lower');
 	const to = readQueryDate(url.searchParams.get('to'), 'to', 'upper');
+	// The stored form orders moments as text, so a reversed pair is caught
+	// here (card 2217): it was answered with an empty page, which reads as "no
+	// entries". Equal bounds name one second, and are allowed.
+	if (from !== undefined && to !== undefined && from > to) {
+		throw error(400, '`from` is after `to`');
+	}
 	const limit = readLimit(url.searchParams.get('limit'), { max: MAX_LIMIT, fallback: DEFAULT_LIMIT });
 	const offset = readOffset(url.searchParams.get('offset'));
 
@@ -112,7 +120,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	})
 	.from(activityLog)
 	.where(where)
-	.orderBy(desc(activityLog.createdAt))
+	// Newest first, and by id within a second (card 2217): entries are stored
+	// in whole seconds, and ordered by the time alone, a page boundary inside
+	// one second could give an entry twice and skip another.
+	.orderBy(desc(activityLog.createdAt), desc(activityLog.id))
 	.limit(limit)
 	.offset(offset)
 	.all();

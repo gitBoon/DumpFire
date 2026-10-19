@@ -194,6 +194,20 @@ export function cardGroups(
 }
 
 /**
+ * A card's subtask nodes in the graph, in the card's own order (card 2223): by
+ * where each stands in `listed`, the card's list from the page load (position,
+ * then id), and a node the list does not hold after the rest, by id, as
+ * `cardGroups` places such a row. The graph sorted them by id, so a subtask
+ * moved to the top by a `PUT` of its `position` stayed where it was there
+ * while the table moved it.
+ */
+export function orderSubtaskNodes<T extends { id: number }>(nodes: readonly T[], listed: readonly { id: number }[] | undefined): T[] {
+	const at = new Map((listed ?? []).map((s, i) => [s.id, i]));
+	const rank = (n: T) => at.get(n.id) ?? Infinity;
+	return [...nodes].sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+}
+
+/**
  * The state filter's counts: cards and ordered subtasks, as they were before a
  * card could be opened to its plain subtasks, which have no Startable or
  * Blocked and are never what a filter finds.

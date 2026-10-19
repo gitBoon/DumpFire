@@ -14,6 +14,7 @@ import { normaliseReportingFields } from '$lib/server/reporting-fields';
 import { changedFields } from '$lib/server/card-changes';
 import { setCardMilestone, takeCardOutOfMilestone, MilestoneError } from '$lib/server/milestones';
 import { PRIORITIES, requireCardCategory } from '$lib/server/card-fields';
+import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 import {
 	pathId,
 	readBody,
@@ -53,9 +54,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const card = db.select().from(cards).where(eq(cards.id, cardId)).get();
 	if (!card) throw error(404, 'Card not found');
 
-	// Fetch subtasks
+	// Fetch subtasks, by position and then id (card 2223)
 	const cardSubtasks = db.select().from(subtasks)
 		.where(eq(subtasks.cardId, cardId))
+		.orderBy(...SUBTASK_ORDER)
 		.all();
 
 	// Fetch label IDs

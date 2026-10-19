@@ -33,6 +33,7 @@
 		expandAllTargets,
 		openCardsKey,
 		openCardsToStore,
+		orderSubtaskNodes,
 		readOpenCards,
 		stateCounts as countStates,
 		tableRows,
@@ -157,7 +158,10 @@
 		new Set((summary.criticalPathNodes as WorkRef[]).map(key))
 	);
 
-	/** Subtask nodes grouped by the card they belong to. */
+	/**
+	 * Subtask nodes grouped by the card they belong to, each card's in its own
+	 * order, as the table lists them (card 2223): they were sorted by id.
+	 */
 	const subtasksByCard = $derived.by(() => {
 		const m = new Map<number, Node[]>();
 		for (const n of nodes) {
@@ -165,7 +169,7 @@
 			if (!m.has(n.parentCardId)) m.set(n.parentCardId, []);
 			m.get(n.parentCardId)!.push(n);
 		}
-		for (const list of m.values()) list.sort((a, b) => a.id - b.id);
+		for (const [cardId, list] of m) m.set(cardId, orderSubtaskNodes(list, data.subtasks[cardId]));
 		return m;
 	});
 

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.35
+version: 1.36
 status: As-Built
 date: 2026-10-19
 tags:
@@ -33,7 +33,7 @@ tags:
   - attachment-sweep
   - webhooks
   - webhook-allow-list
-description: "Docker deployment, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, and production configuration for DumpFire"
+description: "Docker deployment, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -2884,6 +2884,59 @@ Nothing is done to the database.
 - **0058 stays applied.** The older image logs one `[ERROR] [DB]` line for the recorded file it has no file for, and its schema check one for the column its model lacks, and starts. It neither reads nor writes `time_zone`: it reads every schedule's time on the server's clock again (UTC), and a schedule it makes is given `UTC` by the column's default.
 - **The old order comes back**: a run is sent again by a tick that meets it while it is still sending, a schedule it cannot date is sent at every tick, and turning one on sends it at once.
 - **Coming forward again**, a schedule moved to Europe/London is read in Europe/London again; one made by the older image reads in UTC.
+
+### Notices on Cards Moved Before Card 2256
+
+Card 2256 rewrites a card's "Unblocked" notices when the card moves to another board, so that they name no work of the board it left (see [Authentication & Security](authentication-security.md), "Unblocked"). It leaves alone the notices of cards moved before it is deployed: such a notice may still name, by its title, a card or a subtask of the board the card left, to readers of the board it is on now. These two queries find them. Run each once, on the host, against the live database, read-only, before the deploy of the image that brings card 2256. Nothing in the deploy depends on the answer.
+
+Save the first as `query-2256-card.sql` and the second as `query-2256-subtask.sql`, and run each with this command, which opens the database read-only and writes the table to a file:
+
+```bash
+docker exec -i dumpfire node -e "
+const sql = require('fs').readFileSync(0, 'utf8');
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+console.table(db.prepare(sql).all());
+db.close();
+" < query-2256-card.sql > query-2256-card.txt
+```
+
+and again with `query-2256-subtask.sql` and `query-2256-subtask.txt`. Each query is one `SELECT`, and the database is opened read-only, so neither can change anything.
+
+The card form, `query-2256-card.sql`: notices naming, by title, a card on a board other than the one their own card is on now.
+
+```sql
+-- Card 2256: Unblocked notices naming, by title, a card on another board than their own card's.
+-- Read-only: one SELECT. 'Unblocked: #' is 12 characters, so the id starts at character 13.
+SELECT cc.id AS comment_id, cc.card_id, co.board_id AS card_board,
+       bc.board_id AS named_card_board, substr(cc.content, 1, 120) AS content
+  FROM card_comments cc
+  JOIN cards c    ON c.id = cc.card_id
+  JOIN columns co ON co.id = c.column_id
+  JOIN cards b    ON b.id = CAST(substr(cc.content, 13, instr(substr(cc.content, 13), ' ') - 1) AS INTEGER)
+  JOIN columns bc ON bc.id = b.column_id
+ WHERE cc.content LIKE 'Unblocked: #% "%" completed — nothing is blocking %'
+   AND bc.board_id <> co.board_id
+ ORDER BY cc.id;
+```
+
+The subtask form, `query-2256-subtask.sql`: a subtask's notice names no id, so it finds notices naming a subtask by title on a card that arrived from another board after the notice was written.
+
+```sql
+-- Card 2256, the subtask form: notices naming a subtask by title on a card that
+-- arrived from another board after the notice was written. Read-only: one SELECT.
+SELECT cc.id AS comment_id, cc.card_id, substr(cc.content, 1, 120) AS content
+  FROM card_comments cc
+ WHERE cc.content LIKE 'Unblocked: subtask "%" completed — nothing is blocking %'
+   AND EXISTS (SELECT 1 FROM activity_log al
+                WHERE al.card_id = cc.card_id
+                  AND al.action IN ('card_moved_in', 'api:card_moved_in')
+                  AND al.created_at >= cc.created_at)
+ ORDER BY cc.id;
+```
+
+**What a row means.** Each row is one comment (`comment_id`, on card `card_id`) that names work by its title where some readers of its card's board may not be able to open that work. In the card form, `card_board` is the board the card is on and `named_card_board` the board of the card it names; it also lists a notice whose own card stayed where it was while the card it names moved away later, which nothing rewrites either, so a row is one case or the other. A notice naming a card since deleted is not listed. In the subtask form, a row may name one of the card's own subtasks, which moved with it and can be read on it: that one is harmless. The subtask form finds a card by the move logged when it arrived; before 14 September 2026 only a move through the API logged that, so a card moved before then by the board page is not found by it. Expect no rows, or a few. Keep both files where only an administrator can read them: they hold the text of notices from every board.
+
+**A row can be left.** The update rewrites none of these notices and changes nothing for them: each reads as it did before the deploy. A one-off rewrite of the rows found would change stored comments, and would be its own card, not part of this deploy.
 
 ## Changing the Schema
 

@@ -109,6 +109,7 @@ const TEST_FILES = [
 	'request-body.test.ts',
 	'schedulers.test.ts',
 	'sub-board-depth.test.ts',
+	'subtask-order.test.ts',
 	'test-helpers.test.ts',
 	'timestamps.test.ts',
 	'todo-page.test.ts',
