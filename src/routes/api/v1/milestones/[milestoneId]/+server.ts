@@ -12,6 +12,7 @@ import {
 import { pathId, readBody, readChoice, readDate, readId, readText } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { boardsOpenTo, WITHHELD_CARD_TITLE } from '$lib/server/planning';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** What a milestone's `status` may be. */
@@ -77,24 +78,34 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * (403), and hold every card of the milestone (400): `updateMilestone`.
  */
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const id = pathId(params.milestoneId, 'milestone');
 	const body = await readBody(request);
 	try {
-		const milestone = requireMilestone(user, id, true);
-		const name = readText(body, 'name', {
-			trim: true,
-			min: 1,
-			max: 200,
-			keep: milestone.name,
-			says: { empty: 'name cannot be empty' }
-		});
-		const description = readText(body, 'description', { max: 50000, keep: milestone.description });
-		const targetDate = readDate(body, 'targetDate', { nullable: true, keep: milestone.targetDate });
-		const status = readChoice(body, 'status', { from: STATUSES, keep: milestone.status, says: 'status must be open or closed' });
-		const boardId = readId(body, 'boardId', { nullable: true, keep: milestone.boardId });
+		// The milestone read, the caller checked and the change made in one
+		// transaction that asks first whether the key or session is still open,
+		// and who its account is now (card 2253). `updateMilestone`'s own
+		// transaction is a savepoint inside it. The check and the change were
+		// two steps with no transaction around them.
+		const changed = writeAs(locals, (caller) => {
+			const user = requireUser(caller);
+			const milestone = requireMilestone(user, id, true);
+			const name = readText(body, 'name', {
+				trim: true,
+				min: 1,
+				max: 200,
+				keep: milestone.name,
+				says: { empty: 'name cannot be empty' }
+			});
+			const description = readText(body, 'description', { max: 50000, keep: milestone.description });
+			const targetDate = readDate(body, 'targetDate', { nullable: true, keep: milestone.targetDate });
+			const status = readChoice(body, 'status', { from: STATUSES, keep: milestone.status, says: 'status must be open or closed' });
+			const boardId = readId(body, 'boardId', { nullable: true, keep: milestone.boardId });
 
-		return json(updateMilestone(user, id, { name, description, targetDate, status, boardId }));
+			return updateMilestone(user, id, { name, description, targetDate, status, boardId });
+		});
+
+		return json(changed);
 	} catch (e) {
 		if (e instanceof MilestoneError) throw error(e.status, e.message);
 		throw e;
@@ -108,12 +119,15 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
  * never deleted. The response says how many were released.
  */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const id = pathId(params.milestoneId, 'milestone');
 
 	try {
-		const { released } = deleteMilestone(locals.user, id);
+		// `deleteMilestone`'s own transaction is a savepoint inside one that asks
+		// first whether the key or session is still open, and who its account is
+		// now (card 2253).
+		const { released } = writeAs(locals, (caller) => deleteMilestone(requireUser(caller), id));
 		return json({ success: true, cardsReleased: released });
 	} catch (e) {
 		if (e instanceof MilestoneError) throw error(e.status, e.message);

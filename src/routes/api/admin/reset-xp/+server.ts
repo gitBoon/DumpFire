@@ -1,15 +1,16 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { sqlite } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
+import { requireAdmin } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ locals }) => {
-	if (!locals.user || (locals.user.role !== 'admin' && locals.user.role !== 'superadmin')) {
-		throw error(403, 'Forbidden');
-	}
+	requireAdmin(locals.user);
 
-	// Everybody's XP or nobody's.
-	inTransaction(() => {
+	// Everybody's XP or nobody's, by an administrator as the account is now
+	// (card 2253).
+	writeAs(locals, (caller) => {
+		requireAdmin(caller);
 		sqlite.prepare('UPDATE user_xp SET xp = 0').run();
 	});
 	return json({ success: true });

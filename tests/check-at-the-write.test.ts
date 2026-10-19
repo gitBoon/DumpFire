@@ -566,7 +566,11 @@ const STILL_CALLER_NOW: Record<string, { reason: string; guards: RegExp[] }> = {
 		reason: "A destination's stored secret leaves the process.",
 		guards: [/^createDestination$/]
 	},
-	'src/routes/api/admin/backup/gdrive/auth/+server.ts POST': { reason: 'The code goes to Google.', guards: [/(^|\.)getToken$/] }
+	'src/routes/api/admin/backup/gdrive/auth/+server.ts POST': { reason: 'The code goes to Google.', guards: [/(^|\.)getToken$/] },
+	'src/routes/api/admin/smtp/+server.ts POST': {
+		reason: 'The test mail leaves the process, and the route writes nothing (slice 2253-5, as the review ruled).',
+		guards: [/^sendTestEmail$/]
+	}
 };
 
 /**
@@ -595,6 +599,41 @@ const QUICK_CHECKS_IN: Record<string, { guards: string[]; reason: string }> = {
 	}
 };
 
+/**
+ * By handler, the statements asked of `sqlite` outside writeAs that only read
+ * (slice 2253-5, the reviewer to agree): `sqlite.prepare` of a SELECT written
+ * in the handler, run with `.all()` or `.get()`. Anywhere else, anything asked
+ * of `sqlite` outside writeAs is taken for a write.
+ */
+const READS_IN: Record<string, string> = {
+	'src/routes/api/admin/import/+server.ts POST':
+		'The safety copy reads every table the restore replaces, after the check and before the restore, outside any ' +
+		'transaction, as the restore itself must run outside one; it writes nothing to the database.'
+};
+
+/**
+ * By handler, the objects whose field named `user` is no account, read and
+ * set inside writeAs (slice 2253-5, the reviewer to agree). Anywhere else, a
+ * `.user` read after the body is taken for the caller as the gate read it.
+ */
+const USER_FIELDS_IN: Record<string, { of: string[]; reason: string }> = {
+	'src/routes/api/admin/smtp/+server.ts PUT': {
+		of: ['existing', 'config'],
+		reason: "`user` there is the mail server's user name (SmtpConfig.user): the stored one kept, and the one sent saved."
+	}
+};
+
+/**
+ * By handler, where `locals.user` may be read after the body for a log line
+ * alone: inside a catch clause, and nowhere else in it (the slices 5–7 review).
+ * Names bound from it there are not followed; the catch decides nothing.
+ */
+const USER_FOR_A_LINE_IN: Record<string, string> = {
+	'src/routes/api/admin/reset/+server.ts POST':
+		'The failure line names who reset; when a fault in the database stops the first writeAs asking who that is now, ' +
+		'the line names the account the gate let in. The reset has failed by then, and the catch answers 500.'
+};
+
 /** (d): the handlers that ask for the current password, whose write runs in `whilePasswordHolds`. */
 const CURRENT_PASSWORD = [
 	'src/routes/api/account/password/+server.ts PUT',
@@ -614,66 +653,11 @@ const NOT_YET: string[] = [
 	// Slice 2253-2 (cards and what is on them, internal): all 30 moved.
 	// Slice 2253-3 (boards, groupings, teams, goals, templates, internal): all 21 moved.
 	// Slice 2253-4 (accounts, users, requests, reports, internal): all 19 moved.
-	// Slice 2253-5: the superadmin's and administrators' routes (13).
-	'src/routes/api/admin/backup/+server.ts PUT',
-	'src/routes/api/admin/backup/+server.ts POST',
-	'src/routes/api/admin/backup/gdrive/auth/+server.ts POST',
-	'src/routes/api/admin/backup/test/+server.ts POST',
-	'src/routes/api/admin/boards/[id]/clear-cards/+server.ts POST',
-	'src/routes/api/admin/boards/[id]/clear-categories/+server.ts POST',
-	'src/routes/api/admin/import/+server.ts POST',
-	'src/routes/api/admin/purge-archived/+server.ts POST',
-	'src/routes/api/admin/reset-xp/+server.ts POST',
-	'src/routes/api/admin/reset/+server.ts POST',
-	'src/routes/api/admin/smtp/+server.ts PUT',
-	'src/routes/api/admin/smtp/+server.ts POST',
-	'src/routes/api/admin/vacuum/+server.ts POST',
-	// Slice 2253-6: boards side of /api/v1 (16).
-	'src/routes/api/v1/board-categories/+server.ts POST',
-	'src/routes/api/v1/board-categories/[categoryId]/+server.ts PUT',
-	'src/routes/api/v1/board-categories/[categoryId]/+server.ts DELETE',
-	'src/routes/api/v1/boards/+server.ts POST',
-	'src/routes/api/v1/boards/[boardId]/+server.ts PUT',
-	'src/routes/api/v1/boards/[boardId]/+server.ts DELETE',
-	'src/routes/api/v1/boards/[boardId]/cards/+server.ts POST',
-	'src/routes/api/v1/boards/[boardId]/categories/+server.ts POST',
-	'src/routes/api/v1/boards/[boardId]/columns/+server.ts POST',
-	'src/routes/api/v1/boards/[boardId]/labels/+server.ts POST',
-	'src/routes/api/v1/categories/[categoryId]/+server.ts PUT',
-	'src/routes/api/v1/categories/[categoryId]/+server.ts DELETE',
-	'src/routes/api/v1/columns/[columnId]/+server.ts PUT',
-	'src/routes/api/v1/columns/[columnId]/+server.ts DELETE',
-	'src/routes/api/v1/labels/[labelId]/+server.ts PUT',
-	'src/routes/api/v1/labels/[labelId]/+server.ts DELETE',
-	// Slice 2253-7: cards side of /api/v1 (28).
-	'src/routes/api/v1/cards/[cardId]/+server.ts PUT',
-	'src/routes/api/v1/cards/[cardId]/+server.ts DELETE',
-	'src/routes/api/v1/cards/[cardId]/assignees/+server.ts POST',
-	'src/routes/api/v1/cards/[cardId]/assignees/+server.ts DELETE',
-	'src/routes/api/v1/cards/[cardId]/comments/+server.ts POST',
-	'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts POST',
-	'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts DELETE',
-	'src/routes/api/v1/cards/[cardId]/labels/+server.ts POST',
-	'src/routes/api/v1/cards/[cardId]/labels/+server.ts DELETE',
-	'src/routes/api/v1/cards/[cardId]/move/+server.ts PUT',
-	'src/routes/api/v1/cards/[cardId]/subtasks/+server.ts POST',
-	'src/routes/api/v1/cards/[cardId]/tokens/+server.ts POST',
-	'src/routes/api/v1/comments/[commentId]/+server.ts PUT',
-	'src/routes/api/v1/dependencies/bulk/+server.ts POST',
-	'src/routes/api/v1/milestones/+server.ts POST',
-	'src/routes/api/v1/milestones/[milestoneId]/+server.ts PATCH',
-	'src/routes/api/v1/milestones/[milestoneId]/+server.ts DELETE',
-	'src/routes/api/v1/milestones/[milestoneId]/cards/+server.ts POST',
-	'src/routes/api/v1/milestones/[milestoneId]/cards/+server.ts DELETE',
-	'src/routes/api/v1/milestones/[milestoneId]/cards/bulk/+server.ts POST',
-	'src/routes/api/v1/milestones/[milestoneId]/cards/bulk/+server.ts DELETE',
-	'src/routes/api/v1/subtasks/[subtaskId]/+server.ts PUT',
-	'src/routes/api/v1/subtasks/[subtaskId]/+server.ts DELETE',
-	'src/routes/api/v1/subtasks/[subtaskId]/dependencies/+server.ts POST',
-	'src/routes/api/v1/subtasks/[subtaskId]/dependencies/+server.ts DELETE',
-	'src/routes/api/v1/subtasks/[subtaskId]/tokens/+server.ts POST',
-	'src/routes/api/v1/tokens/[entryId]/+server.ts DELETE',
-	'src/routes/api/v1/tokens/bulk/+server.ts POST'
+	// Slice 2253-5 (the superadmin's and administrators' routes): all 13 moved.
+	// Slice 2253-6 (boards side of /api/v1): all 16 moved.
+	// Slice 2253-7 (cards side of /api/v1): all 28 moved. Every write handler
+	// keeps the rule; the list stays, empty, as the guard that a handler put
+	// back on it must break the rule.
 ];
 
 type WriteFinding = { file: string; handler: string | null; finding: string };
@@ -876,10 +860,16 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 		bindings.add(declaration);
 		return true;
 	};
+	/** Inside a catch clause of a handler USER_FOR_A_LINE_IN names: where `locals.user` may name a log line. */
+	const forALine = (node: ts.Node): boolean => {
+		if (USER_FOR_A_LINE_IN[key] === undefined) return false;
+		for (let scope: ts.Node | undefined = node.parent; scope && scope !== fn; scope = scope.parent) if (ts.isCatchClause(scope)) return true;
+		return false;
+	};
 	for (let changed = true; changed; ) {
 		changed = false;
 		for (const declaration of declarations) {
-			if (bindings.has(declaration)) continue;
+			if (bindings.has(declaration) || forALine(declaration)) continue;
 			const value = declaration.initializer && bare(declaration.initializer);
 			if (!value) continue;
 			const fromEvent = given.eventName && ts.isIdentifier(value) && value.text === given.eventName;
@@ -899,7 +889,7 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 			for (const hit of hits) consumed.add(hit);
 		}
 		for (const assignment of assignments) {
-			if (bindings.has(assignment)) continue;
+			if (bindings.has(assignment) || forALine(assignment)) continue;
 			const hits = fromUser(assignment.right);
 			if (hits.length === 0) continue;
 			const name = assignment.left.text;
@@ -938,6 +928,39 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 		}
 	}
 
+	/** Whether `node` is the handler's own event, by the name its parameter gives it. */
+	const ownEvent = (node: ts.Expression) => {
+		const held = bare(node);
+		return given.eventName !== undefined && ts.isIdentifier(held) && held.text === given.eventName;
+	};
+	/** A read of a field named `locals`: `x.locals`, `x['locals']`. */
+	const isLocalsRead = (node: ts.Node): node is ts.PropertyAccessExpression | ts.ElementAccessExpression =>
+		(ts.isPropertyAccessExpression(node) && node.name.text === 'locals') ||
+		(ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && node.argumentExpression.text === 'locals');
+	/** Whether `node` takes anything from any locals: the handler's by a name, any `.locals`, or the request event. */
+	const fromLocals = (node: ts.Node): boolean => {
+		let found = false;
+		const look = (inner: ts.Node): void => {
+			if (found) return;
+			if ((ts.isIdentifier(inner) && isTheLocals(inner)) || isLocalsRead(inner)) found = true;
+			else if (ts.isCallExpression(inner) && /(^|\.)getRequestEvent$/.test(calleeOf(inner, tree))) found = true;
+			else ts.forEachChild(inner, look);
+		};
+		look(node);
+		return found;
+	};
+	/**
+	 * Whether a name resolves, by scope, to a const or let declared inside
+	 * `callback`, from something that is not the locals, and never assigned
+	 * again: what USER_FIELDS_IN's names must be.
+	 */
+	const declaredHereFromNoLocals = (id: ts.Identifier, callback: Callback): boolean => {
+		const declaration = declarationOf(id, id.text);
+		if (!declaration || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name) || !within(declaration, callback)) return false;
+		if (!declaration.initializer || fromLocals(declaration.initializer)) return false;
+		return !assignments.some((assignment) => assignment.left.text === id.text && declarationOf(assignment, id.text) === declaration);
+	};
+
 	// Decisions on the caller as the gate read it, anywhere, in source order.
 	const decisions: { node: ts.Node; finding: string }[] = [];
 	for (const [name, binding] of tainted) {
@@ -954,7 +977,19 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 				node.parent.arguments.includes(node as ts.Expression) &&
 				ts.isExpressionStatement(node.parent.parent) &&
 				quickChecks.includes(calleeOf(node.parent, tree));
-			if (node.getStart(tree) < boundary) {
+			// A field named `user` that USER_FIELDS_IN says is no account: on a name
+			// that resolves, by scope, to a const or let declared inside this
+			// writeAs callback, from something that is not the locals, and never
+			// assigned again (the slices 5–7 review).
+			const notAnAccount =
+				callback !== undefined &&
+				ts.isPropertyAccessExpression(node) &&
+				ts.isIdentifier(node.expression) &&
+				(USER_FIELDS_IN[key]?.of ?? []).includes(node.expression.text) &&
+				declaredHereFromNoLocals(node.expression, callback);
+			if (notAnAccount || (isLocalsUser(node) && forALine(node))) {
+				// Let stand.
+			} else if (node.getStart(tree) < boundary) {
 				if (!quickCheck) {
 					decisions.push({
 						node,
@@ -971,6 +1006,21 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 		}
 		if ((ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) && isTheLocals(node.expression)) {
 			decisions.push({ node, finding: `${at} copies the locals at line ${line(node)}${DECIDE}` });
+		}
+		// The locals under a name given by assignment, which is not followed as a
+		// declaration is, and any locals but the handler's own (the slices 5–7
+		// review): `held = locals`, `getRequestEvent().locals`, `other.locals`.
+		if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && isTheLocals(node.right)) {
+			decisions.push({ node, finding: `${at} assigns the locals to ${node.left.getText(tree)} at line ${line(node)}${DECIDE}` });
+		}
+		if (isLocalsRead(node) && !ownEvent(node.expression)) {
+			decisions.push({ node, finding: `${at} reads ${node.getText(tree)} at line ${line(node)}, not the locals the handler is given${DECIDE}` });
+		}
+		if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer && taking(node.name, 'locals').length > 0 && !ownEvent(node.initializer)) {
+			decisions.push({
+				node,
+				finding: `${at} takes locals out of ${node.initializer.getText(tree)} at line ${line(node)}, not the locals the handler is given${DECIDE}`
+			});
 		}
 		if (ts.isCallExpression(node) && !named(node, 'writeAs') && !named(node, 'stillCallerNow') && node.arguments.some((argument) => isTheLocals(argument))) {
 			decisions.push({ node, finding: `${at} gives the locals to ${calleeOf(node, tree)} at line ${line(node)}${DECIDE}` });
@@ -1012,10 +1062,26 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 	// that `db.insert(…).values(…).run()` is one. What a check guards is its
 	// own (the vacuum's sqlite.exec).
 	const writes = callsIn(body, true).filter((call) => WRITE_CALL.test(calleeOf(call, tree)));
+	/** `sqlite.prepare('SELECT …').all()` or `.get()`, the SQL written there: a read, where READS_IN lets one stand. */
+	const isSelect = (call: ts.CallExpression) => {
+		const [sql] = call.arguments;
+		const text = sql && (ts.isStringLiteralLike(sql) ? sql.text : ts.isTemplateExpression(sql) ? sql.head.text : undefined);
+		const run = call.parent;
+		return (
+			calleeOf(call, tree) === 'sqlite.prepare' &&
+			text !== undefined &&
+			/^\s*SELECT\s/i.test(text) &&
+			ts.isPropertyAccessExpression(run) &&
+			(run.name.text === 'all' || run.name.text === 'get') &&
+			ts.isCallExpression(run.parent) &&
+			run.parent.expression === run
+		);
+	};
 	for (const call of writes.sort(byStart)) {
 		if (writes.some((other) => other !== call && within(other, call))) continue;
 		if (insideCallback(call)) continue;
 		if (listed?.guards.some((guard) => guard.test(calleeOf(call, tree)))) continue;
+		if (READS_IN[key] !== undefined && isSelect(call)) continue;
 		findings.push(`${at} writes outside writeAs at line ${line(call)} (${calleeOf(call, tree)})`);
 	}
 
@@ -1161,11 +1227,41 @@ describe('every write handler asks who the caller is at the write (card 2253)', 
 		expect(new Set(NOT_YET).size).toBe(NOT_YET.length);
 	});
 
+	it('asks the import once, with nothing awaited between its check and the restore (the slices 5–7 review)', () => {
+		// (c) holds the import only to its first guarded call, the temporary copy;
+		// the restore after it must run on the same check, with nothing awaited.
+		const file = 'src/routes/api/admin/import/+server.ts';
+		const tree = ts.createSourceFile(file, readFileSync(join(ROOT, file), 'utf8'), ts.ScriptTarget.Latest, true);
+		const post = handlersOf(tree).find(({ method }) => method === 'POST')?.fn;
+		const body = post?.body;
+		expect(body).toBeDefined();
+		const calls = callsIn(body!, true);
+		const checks = calls.filter((call) => calleeOf(call, tree) === 'stillCallerNow');
+		const restores = calls.filter((call) => calleeOf(call, tree) === 'restoreFromBackup');
+		expect(checks).toHaveLength(1);
+		expect(restores).toHaveLength(1);
+		const [check] = checks;
+		const [restore] = restores;
+		expect(check.getEnd()).toBeLessThan(restore.getStart(tree));
+
+		const awaited: string[] = [];
+		const visit = (node: ts.Node): void => {
+			if (ts.isAwaitExpression(node) && node.getStart(tree) > check.getEnd() && node.getStart(tree) < restore.getStart(tree)) awaited.push(node.getText(tree));
+			ts.forEachChild(node, visit);
+		};
+		visit(body!);
+		expect(awaited).toEqual([]);
+	});
+
 	it('names on STILL_CALLER_NOW and CURRENT_PASSWORD only write handlers there are', () => {
 		expect(Object.keys(STILL_CALLER_NOW).filter((key) => !writing.includes(key))).toEqual([]);
 		expect(CURRENT_PASSWORD.filter((key) => !writing.includes(key))).toEqual([]);
 		expect(Object.keys(QUICK_CHECKS_IN).filter((key) => !writing.includes(key))).toEqual([]);
-		expect(Object.keys(STILL_CALLER_NOW)).toHaveLength(7);
+		expect(Object.keys(READS_IN).filter((key) => !writing.includes(key))).toEqual([]);
+		expect(Object.keys(USER_FIELDS_IN).filter((key) => !writing.includes(key))).toEqual([]);
+		expect(Object.keys(USER_FOR_A_LINE_IN).filter((key) => !writing.includes(key))).toEqual([]);
+		// R2's seven, and the test mail (slice 2253-5).
+		expect(Object.keys(STILL_CALLER_NOW)).toHaveLength(8);
 	});
 
 	it('was looked for in the whole tree, and finds the handlers moved so far keeping it', () => {
@@ -1251,7 +1347,67 @@ describe('every write handler asks who the caller is at the write (card 2253)', 
 			'src/routes/api/users/[id]/+server.ts PUT',
 			'src/routes/api/users/[id]/+server.ts DELETE',
 			'src/routes/api/users/[id]/invite/+server.ts POST',
-			'src/routes/api/users/[id]/password/+server.ts PUT'
+			'src/routes/api/users/[id]/password/+server.ts PUT',
+			// Slice 2253-5: the superadmin's and administrators' routes.
+			'src/routes/api/admin/backup/+server.ts PUT',
+			'src/routes/api/admin/backup/+server.ts POST',
+			'src/routes/api/admin/backup/gdrive/auth/+server.ts POST',
+			'src/routes/api/admin/backup/test/+server.ts POST',
+			'src/routes/api/admin/boards/[id]/clear-cards/+server.ts POST',
+			'src/routes/api/admin/boards/[id]/clear-categories/+server.ts POST',
+			'src/routes/api/admin/import/+server.ts POST',
+			'src/routes/api/admin/purge-archived/+server.ts POST',
+			'src/routes/api/admin/reset-xp/+server.ts POST',
+			'src/routes/api/admin/reset/+server.ts POST',
+			'src/routes/api/admin/smtp/+server.ts PUT',
+			'src/routes/api/admin/smtp/+server.ts POST',
+			'src/routes/api/admin/vacuum/+server.ts POST',
+			// Slice 2253-6: boards side of /api/v1.
+			'src/routes/api/v1/board-categories/+server.ts POST',
+			'src/routes/api/v1/board-categories/[categoryId]/+server.ts PUT',
+			'src/routes/api/v1/board-categories/[categoryId]/+server.ts DELETE',
+			'src/routes/api/v1/boards/+server.ts POST',
+			'src/routes/api/v1/boards/[boardId]/+server.ts PUT',
+			'src/routes/api/v1/boards/[boardId]/+server.ts DELETE',
+			'src/routes/api/v1/boards/[boardId]/cards/+server.ts POST',
+			'src/routes/api/v1/boards/[boardId]/categories/+server.ts POST',
+			'src/routes/api/v1/boards/[boardId]/columns/+server.ts POST',
+			'src/routes/api/v1/boards/[boardId]/labels/+server.ts POST',
+			'src/routes/api/v1/categories/[categoryId]/+server.ts PUT',
+			'src/routes/api/v1/categories/[categoryId]/+server.ts DELETE',
+			'src/routes/api/v1/columns/[columnId]/+server.ts PUT',
+			'src/routes/api/v1/columns/[columnId]/+server.ts DELETE',
+			'src/routes/api/v1/labels/[labelId]/+server.ts PUT',
+			'src/routes/api/v1/labels/[labelId]/+server.ts DELETE',
+			// Slice 2253-7: cards side of /api/v1.
+			'src/routes/api/v1/cards/[cardId]/+server.ts PUT',
+			'src/routes/api/v1/cards/[cardId]/+server.ts DELETE',
+			'src/routes/api/v1/cards/[cardId]/assignees/+server.ts POST',
+			'src/routes/api/v1/cards/[cardId]/assignees/+server.ts DELETE',
+			'src/routes/api/v1/cards/[cardId]/comments/+server.ts POST',
+			'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts POST',
+			'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts DELETE',
+			'src/routes/api/v1/cards/[cardId]/labels/+server.ts POST',
+			'src/routes/api/v1/cards/[cardId]/labels/+server.ts DELETE',
+			'src/routes/api/v1/cards/[cardId]/move/+server.ts PUT',
+			'src/routes/api/v1/cards/[cardId]/subtasks/+server.ts POST',
+			'src/routes/api/v1/cards/[cardId]/tokens/+server.ts POST',
+			'src/routes/api/v1/comments/[commentId]/+server.ts PUT',
+			'src/routes/api/v1/dependencies/bulk/+server.ts POST',
+			'src/routes/api/v1/milestones/+server.ts POST',
+			'src/routes/api/v1/milestones/[milestoneId]/+server.ts PATCH',
+			'src/routes/api/v1/milestones/[milestoneId]/+server.ts DELETE',
+			'src/routes/api/v1/milestones/[milestoneId]/cards/+server.ts POST',
+			'src/routes/api/v1/milestones/[milestoneId]/cards/+server.ts DELETE',
+			'src/routes/api/v1/milestones/[milestoneId]/cards/bulk/+server.ts POST',
+			'src/routes/api/v1/milestones/[milestoneId]/cards/bulk/+server.ts DELETE',
+			'src/routes/api/v1/subtasks/[subtaskId]/+server.ts PUT',
+			'src/routes/api/v1/subtasks/[subtaskId]/+server.ts DELETE',
+			'src/routes/api/v1/subtasks/[subtaskId]/dependencies/+server.ts POST',
+			'src/routes/api/v1/subtasks/[subtaskId]/dependencies/+server.ts DELETE',
+			'src/routes/api/v1/subtasks/[subtaskId]/tokens/+server.ts POST',
+			'src/routes/api/v1/tokens/[entryId]/+server.ts DELETE',
+			'src/routes/api/v1/tokens/bulk/+server.ts POST'
 		]) {
 			expect(keeps(key), key).toBe(true);
 		}
@@ -1427,6 +1583,144 @@ describe("card 2253's rule itself", () => {
 		expect(judged(code, form)).toEqual([
 			`${form}:1 POST reads locals.user at line 6 before the body other than in a quick check that binds no name (${QUICK}, screenAnonymous): decide inside writeAs with caller`,
 			`${form}:1 POST reads locals.user at line 7 before the body other than in a quick check that binds no name (${QUICK}, screenAnonymous): decide inside writeAs with caller`
+		]);
+	});
+
+	it('lets a SELECT asked of sqlite outside writeAs stand only where READS_IN says, and nothing else asked of it (slice 2253-5)', () => {
+		const code = [
+			'export const POST = async ({ request, locals }) => {',
+			'\tconst buffer = await request.arrayBuffer();',
+			'\trequireSuperadmin(stillCallerNow(locals));',
+			'\twriteFileSync("restore.db", buffer);',
+			'\tsqlite.prepare("SELECT * FROM cards").all();',
+			'\tsqlite.prepare(`SELECT * FROM "${table}"`).get(1);',
+			'\tsqlite.prepare("DELETE FROM cards").all();',
+			'\tsqlite.prepare("SELECT 1").run();',
+			'\tsqlite.exec("SELECT 1");',
+			'\treturn json({});',
+			'};'
+		].join('\n');
+		const restore = 'src/routes/api/admin/import/+server.ts';
+
+		expect(judged(code)).toEqual([
+			'src/routes/api/example/+server.ts:1 POST writes outside writeAs at line 5 (sqlite.prepare)',
+			'src/routes/api/example/+server.ts:1 POST writes outside writeAs at line 6 (sqlite.prepare)',
+			'src/routes/api/example/+server.ts:1 POST writes outside writeAs at line 7 (sqlite.prepare)',
+			'src/routes/api/example/+server.ts:1 POST writes outside writeAs at line 8 (sqlite.prepare)',
+			'src/routes/api/example/+server.ts:1 POST writes outside writeAs at line 9 (sqlite.exec)',
+			'src/routes/api/example/+server.ts:1 POST calls stillCallerNow and is not on STILL_CALLER_NOW (b)'
+		]);
+		expect(judged(code, restore)).toEqual([
+			`${restore}:1 POST writes outside writeAs at line 7 (sqlite.prepare)`,
+			`${restore}:1 POST writes outside writeAs at line 8 (sqlite.prepare)`,
+			`${restore}:1 POST writes outside writeAs at line 9 (sqlite.exec)`
+		]);
+	});
+
+	it('lets a field named user stand only on the objects USER_FIELDS_IN names, declared inside writeAs (slice 2253-5)', () => {
+		const code = [
+			'export const PUT = async ({ request, locals }) => {',
+			'\tconst body = await readBody(request);',
+			'\tconst other = read();',
+			'\tconst saved = writeAs(locals, (caller) => {',
+			'\t\trequireSuperadmin(caller);',
+			'\t\tconst existing = read();',
+			'\t\tconst config = {};',
+			'\t\tconfig.user = existing?.user;',
+			'\t\treturn other.user;',
+			'\t});',
+			'\treturn json(saved.user);',
+			'};'
+		].join('\n');
+		const mail = 'src/routes/api/admin/smtp/+server.ts';
+		const DECIDE = ': decide inside writeAs with caller';
+
+		expect(judged(code)).toEqual([
+			`src/routes/api/example/+server.ts:1 PUT reads config.user at line 8${DECIDE}`,
+			`src/routes/api/example/+server.ts:1 PUT reads existing?.user at line 8${DECIDE}`,
+			`src/routes/api/example/+server.ts:1 PUT reads other.user at line 9${DECIDE}`,
+			`src/routes/api/example/+server.ts:1 PUT reads saved.user at line 11${DECIDE}`
+		]);
+		expect(judged(code, mail)).toEqual([`${mail}:1 PUT reads other.user at line 9${DECIDE}`, `${mail}:1 PUT reads saved.user at line 11${DECIDE}`]);
+	});
+
+	it('lets no field named user stand in the mail save on a name declared outside the callback, reassigned, or taken from the locals (the slices 5–7 review probes)', () => {
+		const code = [
+			'export const PUT = async ({ request, locals }) => {',
+			'\tlet config = {};',
+			'\tconfig = locals;',
+			'\tconst body = await readBody(request);',
+			'\twriteAs(locals, (caller) => {',
+			'\t\trequireSuperadmin(caller);',
+			'\t\tconst existing = getRequestEvent().locals;',
+			'\t\tlet other = read();',
+			'\t\tother = read();',
+			'\t\treturn [config.user.id, existing.user, other.user];',
+			'\t});',
+			'};'
+		].join('\n');
+		const mail = 'src/routes/api/admin/smtp/+server.ts';
+		const DECIDE = ': decide inside writeAs with caller';
+
+		expect(judged(code, mail)).toEqual([
+			`${mail}:1 PUT assigns the locals to config at line 3${DECIDE}`,
+			`${mail}:1 PUT reads getRequestEvent().locals at line 7, not the locals the handler is given${DECIDE}`,
+			`${mail}:1 PUT reads config.user at line 10${DECIDE}`,
+			`${mail}:1 PUT reads existing.user at line 10${DECIDE}`,
+			`${mail}:1 PUT reads other.user at line 10${DECIDE}`
+		]);
+	});
+
+	it('lets locals.user name a log line only inside a catch, and only in the reset (the slices 5–7 review)', () => {
+		const code = [
+			'export const POST = async ({ locals }) => {',
+			'\tlet actor;',
+			'\ttry {',
+			'\t\tactor = writeAs(locals, (caller) => requireSuperadmin(caller));',
+			'\t} catch (e) {',
+			'\t\tconst who = actor ?? locals.user;',
+			'\t\tlog.error(`failed for ${who?.username}`);',
+			'\t\tthrow e;',
+			'\t}',
+			'\treturn json({ by: locals.user.id });',
+			'};'
+		].join('\n');
+		const reset = 'src/routes/api/admin/reset/+server.ts';
+		const DECIDE = ': decide inside writeAs with caller';
+
+		expect(judged(code)).toEqual([
+			`src/routes/api/example/+server.ts:1 POST binds who from locals.user at line 6; quick checks bind no name${DECIDE}`,
+			`src/routes/api/example/+server.ts:1 POST uses who, bound from locals.user at line 6, at line 7${DECIDE}`,
+			`src/routes/api/example/+server.ts:1 POST reads locals.user at line 10${DECIDE}`
+		]);
+		expect(judged(code, reset)).toEqual([`${reset}:1 POST reads locals.user at line 10${DECIDE}`]);
+	});
+
+	it('finds the locals assigned to a name, and any locals but the handler’s own read, in every handler (the slices 5–7 review)', () => {
+		const code = [
+			'export const POST = async ({ request, locals }) => {',
+			'\tconst body = await readBody(request);',
+			'\tlet held;',
+			'\theld = locals;',
+			'\tconst event = getRequestEvent();',
+			'\tconst { locals: other } = getRequestEvent();',
+			'\twriteAs(locals, (caller) => requireCard(caller, event.locals ? 1 : event["locals"] ? 2 : 3, "edit"));',
+			'};',
+			'export const PUT = async (event) => {',
+			'\tconst { locals } = event;',
+			'\tconst body = await event.request.json();',
+			'\twriteAs(event.locals, (caller) => requireCard(caller, 1, "edit"));',
+			'};'
+		].join('\n');
+		const DECIDE = ': decide inside writeAs with caller';
+		const at = 'src/routes/api/example/+server.ts:1 POST';
+
+		// The handler's own event, its locals taken out of it, pass (PUT).
+		expect(judged(code)).toEqual([
+			`${at} assigns the locals to held at line 4${DECIDE}`,
+			`${at} takes locals out of getRequestEvent() at line 6, not the locals the handler is given${DECIDE}`,
+			`${at} reads event.locals at line 7, not the locals the handler is given${DECIDE}`,
+			`${at} reads event["locals"] at line 7, not the locals the handler is given${DECIDE}`
 		]);
 	});
 

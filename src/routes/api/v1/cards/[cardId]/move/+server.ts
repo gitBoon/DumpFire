@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { inTransaction } from '$lib/server/db/transaction';
 import { requireCard, requireColumn, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import {
 	applyCardMove,
 	announceCardMoves,
@@ -37,7 +37,7 @@ import type { RequestHandler } from './$types';
  * null otherwise (the review's O3).
  */
 export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const cardId = pathId(params.cardId, 'card');
 
 	const body = await readBody(request);
@@ -45,10 +45,13 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 
 	// One transaction: both access checks read the rows the move then changes,
 	// and the move, its activity entry and the "Unblocked" notices are saved
-	// together or not at all.
+	// together or not at all. It asks first whether the key or session is
+	// still open, and who its account is now (card 2253); a refusal is not a
+	// CardMoveError, and passes the catch below as it is.
 	let move: CardMove;
 	try {
-		move = inTransaction(() => {
+		move = writeAs(locals, (caller) => {
+			const user = requireUser(caller);
 			requireCard(user, cardId, 'edit');
 			const targetColumnId = readId(body, 'columnId', { required: true, says: { missing: 'columnId is required' } });
 			const position = readNumber(body, 'position', {});

@@ -5,11 +5,11 @@ import { boards, columns } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
-import { inTransaction } from '$lib/server/db/transaction';
 import { deleteBoard } from '$lib/server/deletes';
 import { pathId, readBody, readBoolean, readId, readText } from '$lib/server/request-body';
 import { requireBoard, requireBoardCategory, requireBoardOwner, requireUser } from '$lib/server/route-guards';
 import { stamp } from '$lib/timestamps';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -39,14 +39,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * owner's to send, or an administrator's.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
 	const body = await readBody(request);
 
 	// One transaction: the board is read and the caller checked in the one that
 	// changes it and writes its activity entry. A failure between the two
 	// writes used to leave a board changed with nothing to say who changed it.
-	const updated = inTransaction(() => {
+	// It asks first whether the key or session is still open, and who its
+	// account is now (card 2253).
+	const updated = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const board = requireBoard(user, boardId, 'edit');
 
 		// An editor changes what is on a board, and not who can see it. Sent by
@@ -111,13 +114,16 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 /** DELETE /api/v1/boards/:boardId — Delete a board and all its data. */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
 
 	// One transaction: the caller is checked in the same one that deletes the
-	// board. Every sub-board at every depth goes with it, where this used to
-	// name one level of them; what else goes is in $lib/server/deletes.ts.
-	inTransaction(() => {
+	// board, which asks first whether the key or session is still open, and who
+	// its account is now (card 2253). Every sub-board at every depth goes with
+	// it, where this used to name one level of them; what else goes is in
+	// $lib/server/deletes.ts.
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// Only owners and admins can delete boards. A board that is not there
 		// is 404 to everyone, before who is asking is looked at.
 		requireBoardOwner(user, boardId, 'Only board owners and admins can delete boards');

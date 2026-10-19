@@ -1,7 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cardComments, cards, columns, users } from '$lib/server/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { canEditBoard, getBoardRole } from '$lib/server/board-access';
@@ -9,6 +8,7 @@ import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
 import { pathId, readBody, readText } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** Resolve a comment together with the card and board it belongs to. */
@@ -54,13 +54,15 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * the caller checked, as the session route reads it.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const commentId = pathId(params.commentId, 'comment');
 	const body = await readBody(request);
 
 	// One transaction: the comment is read and the caller checked in the one
-	// that changes it and writes the entry.
-	const edited = inTransaction(() => {
+	// that changes it and writes the entry, which asks first whether the key or
+	// session is still open, and who its account is now (card 2253).
+	const edited = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const ctx = loadComment(commentId);
 		if (!ctx) throw error(404, 'Comment not found');
 

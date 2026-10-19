@@ -545,15 +545,19 @@ function preCardWithRows(): Database.Database {
 /**
  * Make `database` do the work of a transaction and then fail, as it would if
  * the COMMIT could not be written: the work is rolled back and the caller gets
- * the error.
+ * the error. With `restoreOnly`, only a transaction begun with foreign keys
+ * off fails, which is the restore's: the import route asks who is calling in
+ * a transaction of its own first (card 2253), and that one is let through.
  */
-function failAtCommit(database: Database.Database, message: string): void {
+function failAtCommit(database: Database.Database, message: string, { restoreOnly = false }: { restoreOnly?: boolean } = {}): void {
 	const real = database.transaction.bind(database) as (fn: (...args: unknown[]) => unknown) => unknown;
 	vi.spyOn(database, 'transaction').mockImplementation(((fn: (...args: unknown[]) => unknown) =>
-		real((...args: unknown[]) => {
-			fn(...args);
-			throw new Error(message);
-		})) as unknown as typeof database.transaction);
+		restoreOnly && database.pragma('foreign_keys', { simple: true }) !== 0
+			? real(fn)
+			: real((...args: unknown[]) => {
+					fn(...args);
+					throw new Error(message);
+				})) as unknown as typeof database.transaction);
 }
 
 // ─── A migration that fails ──────────────────────────────────────────────────
@@ -4335,7 +4339,7 @@ describe('restoring a backup taken before the latest migrations', () => {
 			const { response, logged } = await upload(backup, () => {
 				// Read here, with the administrator who uploads it already made.
 				before = dataIn(sqlite);
-				failAtCommit(sqlite, 'disk I/O error');
+				failAtCommit(sqlite, 'disk I/O error', { restoreOnly: true });
 			});
 
 			expect(response.status).toBe(500);

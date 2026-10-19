@@ -1,10 +1,10 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { inTransaction } from '$lib/server/db/transaction';
 import { listMilestones, createMilestone, requireMilestoneBoard, MilestoneError } from '$lib/server/milestones';
 import { logActivity } from '$lib/server/logActivity';
 import { readBody, readDate, readId, readQueryId, readText } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -41,12 +41,15 @@ export const GET: RequestHandler = async ({ url, locals }) => {
  * most 50,000; `targetDate` a date written `YYYY-MM-DD`, or null.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 	try {
 		// One transaction: the board is read and the caller checked in the one
-		// that creates the milestone and writes its entry.
-		const created = inTransaction(() => {
+		// that creates the milestone and writes its entry, which asks first
+		// whether the key or session is still open, and who its account is now
+		// (card 2253).
+		const created = writeAs(locals, (caller) => {
+			const user = requireUser(caller);
 			const boardId = readId(body, 'boardId', { nullable: true }) ?? null;
 			if (boardId !== null) requireMilestoneBoard(user, boardId);
 

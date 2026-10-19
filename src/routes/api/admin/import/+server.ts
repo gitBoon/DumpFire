@@ -73,6 +73,7 @@ import { resetFormSecretCache } from '$lib/server/request-tokens';
 import { KNOWN_BROWSER_SECRET_KEY, resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { reportBoardLoops } from '$lib/server/startup-checks';
+import { stillCallerNow } from '$lib/server/write-as';
 import { failedCheckSentence, secretsKeptSentence, secretsToEnterSentence } from '$lib/server/backup-secrets';
 
 const log = createLogger('IMPORT');
@@ -169,6 +170,14 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 
 	try {
 		const buffer = Buffer.from(await request.arrayBuffer());
+		// Asked again once the upload is in, before anything is written (card
+		// 2253): a session that ended while it arrived, or an account that is
+		// no longer the superadmin, is refused here, with no temporary copy and
+		// no safety file on disk. Asked once: the restore opens its own
+		// transaction, and after it the database to ask is the backup's, not the
+		// one the caller was let in by. Nothing is awaited from here to the
+		// restore.
+		requireSuperadmin(stillCallerNow(locals));
 
 		// Validate it's a SQLite file (magic header: "SQLite format 3\0")
 		const header = buffer.slice(0, 16).toString('ascii');

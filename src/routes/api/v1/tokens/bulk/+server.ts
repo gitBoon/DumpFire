@@ -1,10 +1,10 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { inTransaction } from '$lib/server/db/transaction';
 import { recordTokenUsageBatch, getCardTokenTotals, TokenError } from '$lib/server/tokens';
 import { emit } from '$lib/server/events';
 import { readBody, readObjects } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -32,7 +32,7 @@ import type { RequestHandler } from './$types';
  * entry's fields are held to tokens.ts's own rules, and to nothing stricter.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 	const entries = readObjects(body, 'entries', {
 		required: true,
@@ -42,9 +42,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// One transaction around the batch writer, which checks each entry's
 		// card or subtask and the caller's access to it before it writes. With
 		// those reads in the same transaction as the writes, what was checked is
-		// what is written to.
-		const result = inTransaction(() => {
-			const recorded = recordTokenUsageBatch(user, entries);
+		// what is written to. It asks first whether the key or session is still
+		// open, and who its account is now (card 2253): once for the whole
+		// batch, so a refusal writes none of it.
+		const result = writeAs(locals, (caller) => {
+			const recorded = recordTokenUsageBatch(requireUser(caller), entries);
 			for (const boardId of recorded.boardIds) emit(boardId, 'update', { type: 'card' });
 			return recorded;
 		});

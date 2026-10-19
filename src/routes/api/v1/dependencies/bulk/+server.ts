@@ -1,7 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cards, columns, subtasks } from '$lib/server/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { canEditBoard } from '$lib/server/board-access';
@@ -17,6 +16,7 @@ import { logActivity } from '$lib/server/logActivity';
 import { emit } from '$lib/server/events';
 import { asObject, readBody, readChoice, readId, readList, readObjects } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** What each end of a link may be. */
@@ -52,7 +52,7 @@ const WORK_KINDS = ['card', 'subtask'] as const;
  * its fields are read before the boards of its ends are looked at.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 	const rawLinks = readObjects(body, 'links', { nullable: true, min: 1, says: { empty: 'links is empty' } });
 	const chain = readList(body, 'chain', { nullable: true });
@@ -132,8 +132,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// One transaction from the validation to the activity entry. The graph the
 	// batch is checked against is read in it, so a link written by another
 	// request cannot close a loop between the check and the write, and the
-	// links are recorded with the entry that says so or not at all.
-	const outcome = inTransaction(() => {
+	// links are recorded with the entry that says so or not at all. It asks
+	// first whether the key or session is still open, and who its account is
+	// now (card 2253): once for the whole batch, so a refusal writes none of it.
+	const outcome = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const validation = validateDependencyBatch(links);
 
 		// ── Access: resolve every referenced node's board once, not once per link.

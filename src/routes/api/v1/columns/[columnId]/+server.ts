@@ -6,10 +6,10 @@ import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { completionRoleRefusal } from '$lib/server/card-completion';
 import { emit } from '$lib/server/events';
-import { inTransaction } from '$lib/server/db/transaction';
 import { deleteColumn } from '$lib/server/deletes';
 import { pathId, readBody, readColour, readBoolean, readNumber, readText } from '$lib/server/request-body';
 import { requireColumn, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** Look up the column and verify access. Returns the column or throws. */
@@ -62,14 +62,15 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * nothing is written (card 2134): see `completionRoleRefusal`.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const columnId = pathId(params.columnId, 'column');
 	const body = await readBody(request);
 
 	// The column is read and the caller checked in the transaction that
-	// changes it, once the body has arrived.
-	const updated = inTransaction(() => {
-		const { column, boardId } = requireColumn(user, columnId, 'edit');
+	// changes it, once the body has arrived, which asks first whether the key
+	// or session is still open, and who its account is now (card 2253).
+	const updated = writeAs(locals, (caller) => {
+		const { column, boardId } = requireColumn(caller, columnId, 'edit');
 
 		const updates: Partial<typeof columns.$inferInsert> = {};
 		const title = readText(body, 'title', {
@@ -113,16 +114,16 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 /** DELETE /api/v1/columns/:columnId — Delete a column and all its cards. */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const columnId = pathId(params.columnId, 'column');
 
-	const user = locals.user;
-
 	// One transaction: the column is read and the caller checked in the same
-	// one that deletes it. Its cards go with it, and what goes with them is in
-	// $lib/server/deletes.ts.
-	inTransaction(() => {
+	// one that deletes it, which asks first whether the key or session is still
+	// open, and who its account is now (card 2253). Its cards go with it, and
+	// what goes with them is in $lib/server/deletes.ts.
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const col = getColumnWithAccess(columnId, user, true);
 
 		deleteColumn(columnId, user, 'api');

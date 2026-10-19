@@ -3843,14 +3843,20 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 			"Press Connect again, and paste the whole address Google's page leads to.";
 		const WARNED = 'WARN GDRIVE Google Drive Connect refused for destination "G": its state was not one this session started, or had expired or been used';
 		const H = { ...G, name: 'H', clientId: 'h-client.apps.example.test' };
-		/** Two sessions of the one superadmin, as the gate keeps each (decision 2). */
-		const LAPTOP: Credential = { kind: 'session', token: 'chief-laptop-session-2251' };
-		const PHONE: Credential = { kind: 'session', token: 'chief-phone-session-2251' };
+		/**
+		 * Two sessions of the one superadmin, as the gate keeps each (decision 2).
+		 * Open ones: the Connect asks again, once its body is in, whether the
+		 * session is still open (card 2253).
+		 */
+		let LAPTOP: Credential;
+		let PHONE: Credential;
 		const BASE64URL_32_BYTES = /^[A-Za-z0-9_-]{43}$/;
 		/** A second superadmin, made before anything is snapshotted. */
 		let deputy: SessionUser;
 		beforeEach(() => {
 			deputy = makeUser({ username: 'deputy', role: 'superadmin' });
+			LAPTOP = { kind: 'session', token: makeSession(chief) };
+			PHONE = { kind: 'session', token: makeSession(chief) };
 		});
 
 		/** What `run` answers, and the lines at WARN and above written meanwhile: the tests keep ERROR and above otherwise. */
@@ -3986,7 +3992,8 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 		it('holds at most twenty Connects at once, dropping the oldest (decision 4)', async () => {
 			store(G);
 			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
-			const session = (n: number): Credential => ({ kind: 'session', token: `session-${n}` });
+			const tokens = Array.from({ length: 21 }, () => makeSession(chief));
+			const session = (n: number): Credential => ({ kind: 'session', token: tokens[n] });
 			const states: (string | null)[] = [];
 			for (let n = 0; n <= 20; n++) states.push((await begin({ credential: session(n) })).state);
 

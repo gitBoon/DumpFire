@@ -1,12 +1,12 @@
-import { json, error } from '@sveltejs/kit';
+import { error, isHttpError, json } from '@sveltejs/kit';
 import { sqlite } from '$lib/server/db';
 import { restorableTables } from '$lib/server/db/restore';
-import { inTransaction } from '$lib/server/db/transaction';
-import { SESSION_COOKIE_NAME } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { resetFormSecretCache } from '$lib/server/request-tokens';
 import { resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { moveToTrash, type TrashResult, type UploadFile } from '$lib/server/uploads';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 
@@ -46,11 +46,15 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
  * administrator who could reset could make themselves that.
  */
 export const POST: RequestHandler = async ({ locals, cookies }) => {
-	const actor = requireSuperadmin(locals.user);
-
+	let actor: SessionUser | undefined;
 	let cleared: { tables: number; rows: number; files: UploadFile[] };
 	try {
-		cleared = inTransaction(() => {
+		// Who resets, as the account is now (card 2253), named for the lines
+		// below, which are written whether the reset commits or fails. The
+		// reset's own writeAs asks again, with nothing between the two.
+		actor = writeAs(locals, (caller) => requireSuperadmin(caller));
+		cleared = writeAs(locals, (caller) => {
+			requireSuperadmin(caller);
 			// Holds the foreign key checks until the commit, so that the tables can
 			// be cleared in any order, and switches itself off there. `PRAGMA
 			// foreign_keys` cannot be changed inside a transaction and is not touched.
@@ -82,10 +86,17 @@ export const POST: RequestHandler = async ({ locals, cookies }) => {
 			return { tables: tables.length, rows, files };
 		});
 	} catch (e) {
+		// Refused at the write (card 2253): an answer already, and nothing was
+		// cleared or tried, so no line.
+		if (isHttpError(e)) throw e;
+		// For the line alone: the account as it is now, or, where a fault in the
+		// database stopped even that being asked, the one the gate let in. It
+		// decides nothing; the reset has failed (the slices 5–7 review).
+		const who = actor ?? locals.user;
 		log.error(
-			`A reset by ${actor.username} (ID: ${actor.id}) failed, and nothing was cleared: ${messageOf(e)}`,
+			`A reset by ${who?.username} (ID: ${who?.id}) failed, and nothing was cleared: ${messageOf(e)}`,
 			e,
-			{ userId: actor.id }
+			{ userId: who?.id ?? null }
 		);
 		throw error(500, `The reset failed and nothing was cleared: ${messageOf(e)}`);
 	}

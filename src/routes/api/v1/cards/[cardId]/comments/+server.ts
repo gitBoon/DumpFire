@@ -1,7 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cardComments, cards, columns, users } from '$lib/server/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
@@ -10,6 +9,8 @@ import { linkBaseUrl } from '$lib/server/email';
 import { logActivity } from '$lib/server/logActivity';
 import { processMentions } from '$lib/server/mentions';
 import { pathId, readBody, readText } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/cards/:cardId/comments — List all comments on a card (newest first). */
@@ -55,17 +56,18 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * the card was told 400 for an empty comment, where it is refused.
  */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-
-	const user = locals.user;
+	requireUser(locals.user);
 
 	const cardId = pathId(params.cardId, 'card');
 	const body = await readBody(request);
 
 	// One transaction: the card is read and the caller checked in the one that
 	// writes the comment and its entry. The mail below is worked out in here
-	// and sent once it is committed.
-	const comment = inTransaction(() => {
+	// and sent once it is committed. It asks first whether the key or session
+	// is still open, and who its account is now (card 2253); the answer names
+	// the commenter as they are now, so it is made in here too.
+	const comment = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const card = db.select({ columnId: cards.columnId, title: cards.title }).from(cards).where(eq(cards.id, cardId)).get();
 		if (!card) throw error(404, 'Card not found');
 
@@ -116,12 +118,12 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 			userEmoji: user.emoji || '👤'
 		});
 
-		return comment;
+		return {
+			...comment,
+			username: user.username,
+			userEmoji: user.emoji || '👤'
+		};
 	});
 
-	return json({
-		...comment,
-		username: user.username,
-		userEmoji: user.emoji || '👤'
-	}, { status: 201 });
+	return json(comment, { status: 201 });
 };

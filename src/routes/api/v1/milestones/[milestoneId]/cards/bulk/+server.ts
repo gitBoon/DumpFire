@@ -1,7 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cards, columns, milestones } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
 import { canEditBoard, getAccessibleBoardIds, type Actor } from '$lib/server/board-access';
@@ -13,6 +12,7 @@ import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readIds, type RequestBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { stamp } from '$lib/timestamps';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 interface CardRow {
@@ -118,7 +118,7 @@ function planNotice(milestoneId: number, name: string, viewer: Actor): PlanCreat
  * too (R5); a card in one they cannot is listed under `problems`.
  */
 export const POST: RequestHandler = async ({ params, request, url, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const milestoneId = pathId(params.milestoneId, 'milestone');
 	const body = await readBody(request);
 
@@ -126,8 +126,12 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 	// the cards are read in it, so what was checked is what is written to, and
 	// every card is attached or none is. The cards used to be written one
 	// statement at a time with nothing around them, and a failure part of the
-	// way left some attached under a contract that says nothing is.
-	const outcome = inTransaction(() => {
+	// way left some attached under a contract that says nothing is. It asks
+	// first whether the key or session is still open, and who its account is
+	// now (card 2253): once for the whole batch, so a refusal attaches none.
+	// It hands back who attached them, for the mail sent after the commit.
+	const outcome = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		let milestone;
 		try {
 			milestone = requireMilestone(user, milestoneId, true);
@@ -216,7 +220,7 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 		const touched = new Set(toAttach.map((c) => c.boardId));
 		for (const boardId of touched) emit(boardId, 'update', { type: 'card' });
 
-		return { rejected: false as const, milestone, toAttach, alreadyIn, movedFromOtherGoal, touched, wasEmpty };
+		return { rejected: false as const, milestone, toAttach, alreadyIn, movedFromOtherGoal, touched, wasEmpty, actor: user };
 	});
 
 	if (outcome.rejected) {
@@ -231,7 +235,7 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 			{ status: 409 }
 		);
 	}
-	const { milestone, toAttach, alreadyIn, movedFromOtherGoal, touched, wasEmpty } = outcome;
+	const { milestone, toAttach, alreadyIn, movedFromOtherGoal, touched, wasEmpty, actor } = outcome;
 
 	if (wasEmpty && toAttach.length > 0) {
 		// Never let a notification failure fail the attach. This is after the
@@ -240,8 +244,8 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 		try {
 			notifyPlanCreated(
 				toAttach.map((c) => c.cardId),
-				user.username,
-				user.id,
+				actor.username,
+				actor.id,
 				linkBaseUrl(url),
 				planNoticeFor(milestoneId, milestone.name)
 			);
@@ -266,12 +270,15 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
  * skipped rather than erroring. The cards themselves are untouched.
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const milestoneId = pathId(params.milestoneId, 'milestone');
 	const body = await readBody(request);
 
-	// One transaction, as for the attach: every card is taken out or none is.
-	const outcome = inTransaction(() => {
+	// One transaction, as for the attach: every card is taken out or none is,
+	// and it asks first whether the key or session is still open, and who its
+	// account is now (card 2253).
+	const outcome = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		try {
 			requireMilestone(user, milestoneId, true);
 		} catch (e) {

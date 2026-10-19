@@ -1,11 +1,12 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { inTransaction } from '$lib/server/db/transaction';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { getWorkDependencies, type WorkKind, type WorkRef } from '$lib/server/planning';
 import { addDependencyLink, cycleAnswer, removeDependencyLink } from '$lib/server/dependency-refusals';
 import { pathId, readBody, readId, type RequestBody } from '$lib/server/request-body';
 import { getCardBoardId } from '$lib/server/work-access';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -98,18 +99,20 @@ function resolveEnds(cardId: number, body: RequestBody): { blocked: WorkRef; blo
  * is rejected with 409 and the offending chain listed.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const cardId = pathId(params.cardId, 'card');
 
-	const user = locals.user;
 	const body = await readBody(request);
 
 	// One transaction from the access checks to the activity entry. The graph
 	// the link is checked against is read in it, so a link written by another
 	// request cannot close a loop between the check and the write, and the
-	// link is recorded with the entry that says so or not at all.
-	const outcome = inTransaction(() => {
+	// link is recorded with the entry that says so or not at all. It asks first
+	// whether the key or session is still open, and who its account is now
+	// (card 2253).
+	const outcome = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const boardId = getCardBoardId(cardId);
 		if (!boardId) throw error(404, 'Card not found');
 		if (!canEditBoard(user, boardId)) throw error(403, 'No edit access to this card\'s board');
@@ -147,16 +150,17 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
  * which end of the pair stores the row.
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const cardId = pathId(params.cardId, 'card');
 
-	const user = locals.user;
 	const body = await readBody(request);
 
 	// One transaction: the card is read and the caller checked in the one that
-	// removes the link and writes the entry.
-	const removed = inTransaction(() => {
+	// removes the link and writes the entry, which asks first whether the key
+	// or session is still open, and who its account is now (card 2253).
+	const removed = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// The card in the path is whichever end the caller is looking at, so
 		// they must be able to read it. Whether they may remove the link is not
 		// asked of this card's board: it is asked of the board of the end that

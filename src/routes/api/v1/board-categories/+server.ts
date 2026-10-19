@@ -5,6 +5,7 @@ import { boardCategories } from '$lib/server/db/schema';
 import { readBody, readColour, readText } from '$lib/server/request-body';
 import { boardCategoriesFor } from '$lib/server/list-access';
 import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -38,14 +39,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	});
 	const color = readColour(body, 'color', {});
 
-	const category = db
-		.insert(boardCategories)
-		.values({
-			name,
-			color: color ?? '#6366f1'
-		})
-		.returning()
-		.get();
+	// Made in a transaction that asks first whether the key or session is
+	// still open (card 2253). Any signed-in caller may make one, so the account
+	// as it is now is asked nothing more.
+	const category = writeAs(locals, (caller) => {
+		requireUser(caller);
+		return db
+			.insert(boardCategories)
+			.values({
+				name,
+				color: color ?? '#6366f1'
+			})
+			.returning()
+			.get();
+	});
 
 	return json(category, { status: 201 });
 };

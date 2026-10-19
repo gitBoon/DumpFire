@@ -24,6 +24,7 @@ import { getBackupConfig } from '$lib/server/backup';
 import { keepMaskedSecrets } from '$lib/server/backup-secrets';
 import { readBody } from '$lib/server/request-body';
 import { requireSuperadmin } from '$lib/server/route-guards';
+import { stillCallerNow } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 
@@ -40,6 +41,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// R10): its fields by its type, and a secret sent masked kept as the save
 	// keeps it (card 2190), or refused with its words.
 	const body = await readBody(request);
+	// Asked again once the body is in, with nothing awaited before the
+	// destination is made and a stored secret can leave with it (card 2253):
+	// a session that has ended, or an account that is no longer the
+	// superadmin, connects to nothing. The Test writes nothing. Its lines are
+	// filed under the superadmin who asked, as the Connect's and the backup
+	// settings' are.
+	const byCaller = { userId: requireSuperadmin(stillCallerNow(locals)).id };
 	const existing = getBackupConfig();
 	const sent = readDestination(
 		body,
@@ -62,7 +70,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			log.error(
 				result.hostKey !== undefined
 					? `SFTP host key mismatch for ${at}: presented ${fingerprintPart(result.hostKey)}, confirmed ${fingerprintPart(result.confirmedHostKey)}. Nothing was sent.`
-					: `SFTP host key type not offered for ${at}: confirmed ${result.confirmedHostKey}. Nothing was sent.`
+					: `SFTP host key type not offered for ${at}: confirmed ${result.confirmedHostKey}. Nothing was sent.`,
+				undefined,
+				byCaller
 			);
 		}
 		return json(result);
@@ -73,12 +83,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		if (err instanceof HostKeySignatureFailed && destConfig.type === 'sftp') {
 			log.error(
 				`SFTP host key signature failed for destination "${destConfig.name}" at ${destConfig.host}:${destConfig.port || 22}: ` +
-					`confirmed ${fingerprintPart(err.confirmed)}. Nothing was sent.`
+					`confirmed ${fingerprintPart(err.confirmed)}. Nothing was sent.`,
+				undefined,
+				byCaller
 			);
 			const answer: SftpTestResult = { success: false, message: err.message, confirmedHostKey: err.confirmed };
 			return json(answer);
 		}
-		log.error(`Destination test failed for "${destConfig.name}" (${destConfig.type}): ${err.message}`);
+		log.error(`Destination test failed for "${destConfig.name}" (${destConfig.type}): ${err.message}`, undefined, byCaller);
 		return json({ success: false, message: err.message || 'Test failed' });
 	}
 };
