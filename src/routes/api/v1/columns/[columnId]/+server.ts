@@ -1,57 +1,22 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { db } from '$lib/server/db';
-import { columns } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
-import { canViewBoard, canEditBoard } from '$lib/server/board-access';
-import { completionRoleRefusal } from '$lib/server/card-completion';
-import { emit } from '$lib/server/events';
-import { deleteColumn } from '$lib/server/deletes';
-import { pathId, readBody, readColour, readBoolean, readNumber, readText } from '$lib/server/request-body';
+import { deleteColumnFor, updateColumn } from '$lib/server/columns';
+import { pathId, readBody } from '$lib/server/request-body';
 import { requireColumn, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
-/** Look up the column and verify access. Returns the column or throws. */
-function getColumnWithAccess(columnId: number, user: any, requireEdit: boolean) {
-	const col = db.select().from(columns).where(eq(columns.id, columnId)).get();
-	if (!col) throw error(404, 'Column not found');
-
-	if (requireEdit) {
-		if (!canEditBoard(user, col.boardId)) throw error(403, 'No edit access to this board');
-	} else {
-		if (!canViewBoard(user, col.boardId)) throw error(403, 'No access to this board');
-	}
-
-	return col;
-}
-
 /**
- * A WIP limit as the database takes it: a whole number, 0 or more, where 0
- * means no limit.
- *
- * `columns.wip_limit` is NOT NULL, so a limit is cleared by storing 0. A null
- * was once passed straight to the database, which refused it, and clearing a
- * limit answered 500. Here a null, or anything else that is not a finite
- * number, becomes 0; so does a negative number; and a fraction loses its
- * fractional part. A number sent as text ("5") is read as that number.
- *
- * The same function is in `api/columns/[id]/+server.ts`. Keep the two alike.
+ * GET /api/v1/columns/:columnId — Get a single column. A column that is not
+ * there is 404, then one on a board the caller cannot open 403
+ * (`requireColumn`, in the words its own copy of the guard had).
  */
-function wipLimitOf(value: unknown): number {
-	const number = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
-	if (typeof number !== 'number' || !Number.isFinite(number)) return 0;
-	return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(number)));
-}
-
-/** GET /api/v1/columns/:columnId — Get a single column. */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const columnId = pathId(params.columnId, 'column');
 
-	const col = getColumnWithAccess(columnId, locals.user, false);
-	return json(col);
+	return json(requireColumn(locals.user, columnId, 'view').column);
 };
 
 /**
@@ -59,7 +24,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  *
  * A title that would make the column a Complete column, or stop it being
  * one, is `409` while the column holds any card, archived ones included, and
- * nothing is written (card 2134): see `completionRoleRefusal`.
+ * nothing is written (card 2134): see `completionRoleRefusal`. The work, the
+ * WIP limit's reading with it, is `updateColumn` in `$lib/server/columns`,
+ * which `PUT /api/columns/:id` shares (card 2012).
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -69,50 +36,12 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// The column is read and the caller checked in the transaction that
 	// changes it, once the body has arrived, which asks first whether the key
 	// or session is still open, and who its account is now (card 2253).
-	const updated = writeAs(locals, (caller) => {
-		const { column, boardId } = requireColumn(caller, columnId, 'edit');
-
-		const updates: Partial<typeof columns.$inferInsert> = {};
-		const title = readText(body, 'title', {
-			trim: true,
-			min: 1,
-			max: 200,
-			keep: column.title,
-			says: { empty: 'title cannot be empty' }
-		});
-		if (title !== undefined) updates.title = title;
-		const color = readColour(body, 'color', { keep: column.color });
-		if (color !== undefined) updates.color = color;
-		const position = readNumber(body, 'position', { keep: column.position });
-		if (position !== undefined) updates.position = position;
-		// The WIP limit keeps its own, wider reading: see wipLimitOf.
-		if ('wipLimit' in body) updates.wipLimit = wipLimitOf(body.wipLimit);
-		const showAddCard = readBoolean(body, 'showAddCard', { keep: column.showAddCard });
-		if (showAddCard !== undefined) updates.showAddCard = showAddCard;
-
-		if (Object.keys(updates).length === 0) {
-			throw error(400, 'No valid fields to update');
-		}
-
-		const row = db.update(columns)
-			.set(updates)
-			.where(eq(columns.id, columnId))
-			.returning()
-			.get();
-
-		// Decided on the title as stored. A refusal throws, and the write goes
-		// with the transaction.
-		const refusal = completionRoleRefusal(column, row.title);
-		if (refusal) throw error(409, refusal);
-
-		emit(boardId, 'update', { type: 'column' });
-		return row;
-	});
+	const updated = writeAs(locals, (caller) => updateColumn(caller, { columnId }, body, { source: 'api' }));
 
 	return json(updated);
 };
 
-/** DELETE /api/v1/columns/:columnId — Delete a column and all its cards. */
+/** DELETE /api/v1/columns/:columnId — Delete a column and all its cards (`deleteColumnFor`, card 2012). */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	requireUser(locals.user);
 
@@ -122,13 +51,7 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// one that deletes it, which asks first whether the key or session is still
 	// open, and who its account is now (card 2253). Its cards go with it, and
 	// what goes with them is in $lib/server/deletes.ts.
-	writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		const col = getColumnWithAccess(columnId, user, true);
-
-		deleteColumn(columnId, user, 'api');
-		emit(col.boardId, 'update', { type: 'column' });
-	});
+	writeAs(locals, (caller) => deleteColumnFor(caller, { columnId }, null, { source: 'api' }));
 
 	return json({ success: true });
 };

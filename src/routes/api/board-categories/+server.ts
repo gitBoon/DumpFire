@@ -1,7 +1,6 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
-import { boardCategories } from '$lib/server/db/schema';
-import { readBody, readColour, readText } from '$lib/server/request-body';
+import { createBoardGrouping } from '$lib/server/board-groupings';
+import { readBody } from '$lib/server/request-body';
 import { boardCategoriesFor } from '$lib/server/list-access';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -25,34 +24,16 @@ export const GET: RequestHandler = async ({ locals }) => {
  * read at once (card 2117): `name` text, trimmed, of 1 to 200 characters, and
  * `color` a colour written `#rrggbb`, as `POST /api/v1/board-categories`
  * reads them. A name that was missing or empty gave "New Category", and any
- * colour was stored.
+ * colour was stored. The work is `createBoardGrouping` in
+ * `$lib/server/board-groupings`, which the v1 route shares (card 2012).
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const name = readText(body, 'name', {
-		required: true,
-		trim: true,
-		min: 1,
-		max: 200,
-		says: { missing: 'name is required', empty: 'name is required' }
-	});
-	const color = readColour(body, 'color', {});
-
-	// Made in a transaction that asks first whether the session is still open
-	// (card 2253). Any signed-in caller may make one, so the account as it is
-	// now is asked nothing more.
-	const category = writeAs(locals, (caller) => {
-		requireUser(caller);
-		return db
-			.insert(boardCategories)
-			.values({
-				name,
-				color: color ?? '#6366f1'
-			})
-			.returning()
-			.get();
-	});
+	// Made, its fields read, in a transaction that asks first whether the
+	// session is still open (card 2253). Any signed-in caller may make one, so
+	// the account as it is now is asked nothing more.
+	const category = writeAs(locals, (caller) => createBoardGrouping(caller, {}, body, { source: 'ui' }));
 	return json(category, { status: 201 });
 };
