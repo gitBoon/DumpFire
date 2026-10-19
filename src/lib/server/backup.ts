@@ -20,7 +20,7 @@ import { createLogger } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { KNOWN_BROWSER_SECRET_KEY } from './known-browsers';
 import { REQUEST_FORM_SECRET_KEY } from './request-tokens';
-import { backupSealKey, clearSecrets, credentialsMissing, sealCopy } from './backup-secrets';
+import { backupSealKey, clearSecrets, credentialsMissing, hostKeyMissing, sealCopy } from './backup-secrets';
 
 const log = createLogger('BACKUP');
 
@@ -436,10 +436,12 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 	// another server they are entered again, and until then Backup History
 	// says so where it would have shown a library's error. Asked before the
 	// copy is made, which stops the server answering for seconds: a run with
-	// no destination that can take it makes none (the plan's N2).
+	// no destination that can take it makes none (the plan's N2). Nor is an
+	// SFTP destination whose host key is not confirmed (card 2250, decision
+	// 6): it would send its password, and the backup, to whoever answered.
 	const ready: DestinationConfig[] = [];
 	for (const destConfig of destinations) {
-		const missing = credentialsMissing(destConfig);
+		const missing = credentialsMissing(destConfig) ?? hostKeyMissing(destConfig);
 		if (missing === null) ready.push(destConfig);
 		else await failed(destConfig, missing, 0, 0);
 	}

@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.59
+version: 1.60
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1327,6 +1327,29 @@ API:
     Google's page leads to.`, with nothing sent to Google; the `GET` puts a PKCE
     `code_challenge` (S256) in the consent address and answers `Cache-Control: no-store`, and
     the code is exchanged with its verifier.
+    Card 2250 adds an SFTP destination's `hostKey`, its server's confirmed host key: text,
+    either `<type> SHA256:<43 characters>` (the type `ssh-ed25519`, `ecdsa-sha2-nistp256`,
+    `ecdsa-sha2-nistp384`, `ecdsa-sha2-nistp521` or `ssh-rsa`) or the line `ssh-keygen -l`
+    prints, pasted whole (`256 SHA256:… root@nas (ED25519)`; an RSA key of 1,024 bits or
+    more), stored as `<type> SHA256:<43>`, and `''` for none; anything else is `400` `destinations[0].hostKey must be an SSH host key
+    fingerprint with its type: the line ssh-keygen -l prints (256 SHA256:… root@nas
+    (ED25519)), or the type and fingerprint (ssh-ed25519 SHA256:…), the fingerprint being
+    SHA256: and 43 characters` (with no `destinations[0].` on the test route). The `GET` shows
+    it as stored. Not a secret, but a save or a test that keeps a masked password or private
+    key is refused `400` when it changes, empties or leaves out a stored key (`… this changes
+    its host key.`); a save that adds one where none was stored keeps it, but a test keeps a
+    masked secret only with exactly the stored key, none for none, so a test cannot send the
+    stored secret to a key it names. A field not sent is not kept, so send it with every save
+    of an SFTP destination. Without one, no backup is sent to an SFTP destination and nothing
+    secret reaches it: a Test's first look connects only as far as the key the server
+    presents, and sends nothing. `POST /api/admin/backup/test` of an SFTP destination answers
+    `{ success, message }` as before, plus `hostKey`, the key the server presented as `<type>
+    SHA256:<43>`, when none is confirmed (nothing secret is sent: the Test only looks at the
+    key) or it did not match, and `confirmedHostKey`, the stored key, when a key was refused:
+    both for a key that did not match, `confirmedHostKey` alone for a server that no longer
+    offers a key of the confirmed type, or that shows the confirmed key but cannot sign with
+    it. A refusal writes one `[ERROR] [BACKUP]` line. Every host key failure's message begins
+    `SFTP host key not confirmed: ` or `SFTP host key refused: `.
   - `POST /api/admin/backup`: a body that is missing, is not JSON or is not an object is
     `400`, where it was read as `{}` and a backup run to every destination. `destination`
     is text.

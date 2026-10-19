@@ -75,6 +75,13 @@
  * restore, masked by the GET and kept by a save and a test, with nothing else
  * to change.
  *
+ * An SFTP destination's confirmed host key (card 2250) is no secret: it stays
+ * in a copy and the GET shows it. But it decides where a secret may go, so a
+ * save or a test that changes or removes it needs the secret typed again
+ * (`differences`), a restore never takes one from a backup (`fillSecretGaps`),
+ * and `runBackup` does not try an SFTP destination without one
+ * (`hostKeyMissing`).
+ *
  * No SDK is imported here: the destination types are read as plain objects.
  */
 import type Database from 'better-sqlite3';
@@ -85,6 +92,7 @@ import { getDbPath, sqlite } from './db';
 // A name or a title as a sentence prints it: each control character, a line
 // break above all, as a space (the log's own cleaner, card 2214).
 import { printable } from './logger';
+import { HOST_KEY_NOT_CONFIRMED, confirmedHostKey, hostKeyText } from './ssh-host-key';
 
 /** The setting that lists the webhooks a backup left without their secrets. */
 export const WEBHOOK_SECRETS_LEFT_OUT_KEY = 'webhook_secrets_left_out';
@@ -167,7 +175,9 @@ const FIELD_WORDS: Record<string, string> = {
 	tenantId: 'tenant ID',
 	folderPath: 'folder path',
 	// A service account's JSON naming another `client_email` or `private_key_id`.
-	serviceAccount: 'service account'
+	serviceAccount: 'service account',
+	// An SFTP destination's confirmed host key changed or removed (card 2250, decision 8).
+	hostKey: 'host key'
 };
 
 /** What `runBackup` and Backup History say of a destination whose credentials are not entered (decision 8). */
@@ -260,11 +270,15 @@ function lacks(destination: Entry, sftp: boolean): boolean {
 	}
 }
 
-/** What a destination needs entered, as decision 5's sentence says it. */
+/**
+ * What a destination needs entered, as decision 5's sentence says it. A
+ * restore never takes an SFTP host key from a backup (card 2250, decision 9),
+ * so an SFTP destination's key is confirmed again by its Test.
+ */
 function needs(destination: Entry): string {
 	switch (destination.type) {
 		case 'sftp':
-			return 'SFTP: its password or private key';
+			return 'SFTP: its password or private key, then Test to confirm its host key';
 		case 's3':
 			return 'S3: its secret access key';
 		case 'gdrive':
@@ -283,6 +297,32 @@ function needs(destination: Entry): string {
 export function credentialsMissing(destination: unknown): string | null {
 	if (!isEntry(destination) || !lacks(destination, false)) return null;
 	return destination.type === 'gdrive' && isOauth(destination) ? GDRIVE_NOT_CONNECTED : CREDENTIALS_NOT_ENTERED;
+}
+
+/** Whether `destination` is an SFTP one with no confirmed host key: none, or text that does not read as one (card 2250). */
+const lacksHostKey = (destination: unknown): boolean =>
+	isEntry(destination) && destination.type === 'sftp' && confirmedHostKey(destination.hostKey) === null;
+
+/**
+ * Why `runBackup` does not try `destination`, beside `credentialsMissing`, or
+ * null: an SFTP destination with no confirmed host key (card 2250, decision
+ * 6), one with neither password nor key among them, since it would still
+ * upload the database to whoever answers. Its words go to Backup History, the
+ * ERROR line and the failure mail.
+ */
+export function hostKeyMissing(destination: unknown): string | null {
+	return lacksHostKey(destination) ? HOST_KEY_NOT_CONFIRMED : null;
+}
+
+/**
+ * The name of every SFTP destination in `database`'s backup settings with no
+ * confirmed host key, in the order they are listed: what the start-up line
+ * names (card 2250, decision 7). Reads, and writes nothing.
+ */
+export function unconfirmedHostKeys(database: Database.Database): string[] {
+	return destinationsIn(settingOf(database, 'backup_config'))
+		.filter(lacksHostKey)
+		.map((destination) => String(destination.name ?? ''));
 }
 
 // ─── The marker ──────────────────────────────────────────────────────────────
@@ -909,11 +949,16 @@ const hostAsCompared = (host: string): string => trimHost(host).replace(/[A-Z]+/
  *
  * An SFTP `remotePath` has no default: one stored empty uploads elsewhere than
  * the form's "/backups", so the two are not the same.
+ *
+ * An SFTP `hostKey` is its fingerprint alone, `SHA256:…`, '' for none (card
+ * 2250, decision 8): the type is inside the blob the fingerprint covers.
  */
 function inUse(destination: Entry, field: string): unknown {
 	const value = destination[field];
 	const empty = value === undefined || value === null || value === '';
 	switch (field) {
+		case 'hostKey':
+			return confirmedHostKey(value)?.fingerprint ?? '';
 		case 'host':
 			return typeof value === 'string' ? hostAsCompared(value) : empty ? '' : value;
 		case 'port':
@@ -955,10 +1000,26 @@ function sameInFields(destination: Entry): readonly string[] {
  * sent against the stored one (`keeping`), where JSON that is not an object
  * was masked whole and sent back so (the plan's R7): two that are not objects
  * are the same, since what is kept is the stored entry's own value.
+ *
+ * A save also compares an SFTP destination's `hostKey`, as a narrowing
+ * (card 2250, decision 8): it differs where the stored entry has a key and the
+ * one sent has another fingerprint, or none. A key sent where none is stored
+ * does not differ: it only narrows where the secret may go, so the first
+ * confirmation keeps the password, and changing or removing a confirmed key
+ * needs it typed again. A test (`keeping` 'test') compares it exactly, the
+ * stored key or none against the one sent (the card 2250 review's M1): only a
+ * save may add a key, where it is seen, so that a Test cannot send the stored
+ * password to a key of the caller's choosing. A restore does not compare it:
+ * it takes no key from a backup (`fillSecretGaps`).
  */
-function differences(a: Entry, b: Entry, keeping = false): string[] {
+function differences(a: Entry, b: Entry, keeping: Keeping = false): string[] {
 	if (a.type !== b.type || !isKnownType(a.type)) return ['type'];
 	const differ = sameInFields(a).filter((field) => inUse(a, field) !== inUse(b, field));
+	if (keeping && a.type === 'sftp') {
+		const confirmed = inUse(b, 'hostKey');
+		const sent = inUse(a, 'hostKey');
+		if (keeping === 'test' ? keyAsStored(a) !== keyAsStored(b) : confirmed !== '' && sent !== confirmed) differ.push('hostKey');
+	}
 	if (a.type === 'gdrive' && !isOauth(a)) {
 		const ours = serviceAccount(a.serviceAccountJson);
 		const theirs = serviceAccount(b.serviceAccountJson);
@@ -974,14 +1035,29 @@ function differences(a: Entry, b: Entry, keeping = false): string[] {
 }
 
 /** Whether `b` is the same account and the same place as `a`, in every field that is not secret (R1). */
-const sameEntry = (a: Entry, b: Entry, keeping = false) => differences(a, b, keeping).length === 0;
+const sameEntry = (a: Entry, b: Entry, keeping: Keeping = false) => differences(a, b, keeping).length === 0;
+
+/**
+ * Whether `differences` is asked for a restore (false), or for a masked secret
+ * kept by a save or by a test: they differ only in an SFTP host key (card
+ * 2250 and its review's M1).
+ */
+type Keeping = false | 'save' | 'test';
+
+/** An SFTP destination's host key as stored, `<type> SHA256:…`, or '' for none: what a test's must equal exactly. */
+const keyAsStored = (destination: Entry): string => {
+	const key = confirmedHostKey(destination.hostKey);
+	return key === null ? '' : hostKeyText(key);
+};
 
 /**
  * `restored` with the secrets of `here` in it: a service account's JSON is
  * taken whole. A Google Drive refresh token brings the scope this server
  * recorded for it, and none where it recorded none (card 2188, decision 7):
  * the scope a backup names is the backup's word, and the badge on the admin
- * page reads it.
+ * page reads it. An SFTP destination takes the host key of the entry here it
+ * was matched with, or none (card 2250, R4): a host key is this server's
+ * trust, never the backup's word.
  */
 function withSecretsOf(restored: Entry, here: Entry): Entry {
 	const filled: Entry = { ...restored };
@@ -992,11 +1068,22 @@ function withSecretsOf(restored: Entry, here: Entry): Entry {
 	for (const field of SECRET_FIELDS[restored.type as string]) {
 		if (field in here) filled[field] = here[field];
 	}
+	if (restored.type === 'sftp') {
+		delete filled.hostKey;
+		if (has(here.hostKey)) filled.hostKey = here.hostKey;
+	}
 	if (restored.type === 'gdrive') {
 		delete filled.grantedScope;
 		if (has(filled.refreshToken) && has(here.grantedScope)) filled.grantedScope = here.grantedScope;
 	}
 	return filled;
+}
+
+/** An SFTP destination a backup holds, copied without its `hostKey` field where it has one; anything else as it is (card 2250, R4). */
+function withoutHostKey(restored: unknown): unknown {
+	if (!isEntry(restored) || restored.type !== 'sftp' || !('hostKey' in restored)) return restored;
+	const { hostKey: _fromTheBackup, ...rest } = restored;
+	return rest;
 }
 
 /** A board's name in `database`, or null where it is not there. */
@@ -1026,7 +1113,10 @@ function boardName(database: Database.Database, boardId: number): string | null 
  *     on). None, or more than one: not filled. A
  *     Google Drive OAuth destination is filled only when both its client
  *     secret and its refresh token are empty, and then both are taken; an
- *     SFTP one whose match here has neither either is as it is here;
+ *     SFTP one whose match here has neither either is as it is here. Every
+ *     SFTP destination loses the host key the backup gives it, filled or not,
+ *     sealed or not, and one filled, or as it is here, takes the key of its
+ *     match here, or none (card 2250, R4);
  *   - a webhook `listed` in the backup's marker that has no secret, from the
  *     webhook here with the same id, board, address and setter (`set_by`,
  *     none and none alike), switched on or off as the marker says it was. The
@@ -1092,7 +1182,15 @@ export function fillSecretGaps(
 	}
 	if (config) {
 		let changed = false;
-		const destinations = (config.destinations as unknown[]).map((destination) => {
+		const destinations = (config.destinations as unknown[]).map((restored) => {
+			// A restore never takes an SFTP host key from a backup (card 2250,
+			// decision 9 and R4): a crafted backup could otherwise pin a key of its
+			// choosing beside the real host's name, waiting for the password to be
+			// typed again. So every SFTP entry loses its key first, on every path
+			// below, and only `withSecretsOf` and the "neither here either" case
+			// give it the key of the entry here it was matched with.
+			const destination = withoutHostKey(restored);
+			if (destination !== restored) changed = true;
 			if (!isEntry(destination) || !isKnownType(destination.type) || !lacks(destination, true)) return destination;
 			const name = String(destination.name ?? '');
 			const listIt = () => {
@@ -1106,8 +1204,13 @@ export function fillSecretGaps(
 			const matches = here.destinations.filter((candidate) => sameEntry(destination, candidate));
 			if (matches.length !== 1) return listIt();
 			const match = matches[0];
-			// An SFTP destination with neither here either is as it is here.
-			if (destination.type === 'sftp' && lacks(match, true)) return destination;
+			// An SFTP destination with neither here either is as it is here, with
+			// the key it has here, or none.
+			if (destination.type === 'sftp' && lacks(match, true)) {
+				if (!has(match.hostKey)) return destination;
+				changed = true;
+				return { ...destination, hostKey: match.hostKey };
+			}
 			if (lacks(match, true)) return listIt();
 			changed = true;
 			kept.destinations.push(name);
@@ -1353,7 +1456,7 @@ const DRIVE_REMEDY = {
  * Google account unless every stored destination it could be was connected
  * with `drive.file` alone (R2).
  */
-function refusal(destination: Entry, masked: string[], stored: Entry[], matches: Entry[]): string {
+function refusal(destination: Entry, masked: string[], stored: Entry[], matches: Entry[], keeping: 'save' | 'test'): string {
 	const name = printable(String(destination.name ?? ''));
 	const named = `Backup destination "${name}"`;
 	const sameName = stored.filter((entry) => entry.name === destination.name);
@@ -1374,7 +1477,7 @@ function refusal(destination: Entry, masked: string[], stored: Entry[], matches:
 		could = [];
 	} else {
 		const closest = sameName
-			.map((entry) => ({ entry, changes: differences(destination, entry, true) }))
+			.map((entry) => ({ entry, changes: differences(destination, entry, keeping) }))
 			.reduce((best, next) => (next.changes.length < best.changes.length ? next : best));
 		why = `this changes its ${inWords(closest.changes.map((field) => FIELD_WORDS[field] ?? field))}`;
 		could = [closest.entry];
@@ -1407,16 +1510,24 @@ function refusal(destination: Entry, masked: string[], stored: Entry[], matches:
  * `grantedScope` belongs to the refresh token (card 2188, decision 7): it is
  * never taken from the request, only from the stored entry whose masked token
  * is kept; a token typed, empty or not sent has none.
+ *
+ * `use` is 'test' for the test route: there an SFTP destination's host key
+ * must be the stored one exactly, none for none, for its masked secret to be
+ * kept (the card 2250 review's M1), where a save may add one.
  */
-export function keepMaskedSecrets<T>(incoming: T, stored: readonly unknown[]): { destination: T } | { refusal: string } {
+export function keepMaskedSecrets<T>(
+	incoming: T,
+	stored: readonly unknown[],
+	use: 'save' | 'test' = 'save'
+): { destination: T } | { refusal: string } {
 	const destination: Entry = { ...(incoming as Entry) };
 	delete destination.grantedScope;
 	const masked = maskedFields(destination);
 	if (masked.length === 0) return { destination: destination as T };
 
 	const entries = stored.filter(isEntry);
-	const matches = entries.filter((entry) => sameEntry(destination, entry, true));
-	if (matches.length !== 1) return { refusal: refusal(destination, masked, entries, matches) };
+	const matches = entries.filter((entry) => sameEntry(destination, entry, use));
+	if (matches.length !== 1) return { refusal: refusal(destination, masked, entries, matches, use) };
 
 	const match = matches[0];
 	for (const field of masked) destination[field] = has(match[field]) ? match[field] : '';

@@ -305,7 +305,16 @@ describe('Google Drive retention', () => {
 describe('a destination without listForRetention', () => {
 	it('is counted from list() and its oldest removed with delete(), as before', async () => {
 		sftp.names = Array.from({ length: 8 }, (_, i) => `dumpfire-backup-2026-04-0${i + 1}T00-00-00.db`);
-		await backUp({ type: 'sftp', name: 'Offsite', host: 'sftp.example.test', port: 22, username: 'backup', remotePath: '/backups' });
+		// With its host key confirmed, without which a run does not try it (card 2250).
+		await backUp({
+			type: 'sftp',
+			name: 'Offsite',
+			host: 'sftp.example.test',
+			port: 22,
+			username: 'backup',
+			remotePath: '/backups',
+			hostKey: 'ssh-ed25519 SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7GekmavrY'
+		});
 
 		// Nine with the upload, seven kept.
 		expect(sftp.deleted).toEqual(['dumpfire-backup-2026-04-01T00-00-00.db', 'dumpfire-backup-2026-04-02T00-00-00.db']);

@@ -151,6 +151,15 @@ function outcome(read: () => unknown): Outcome {
 const handed = (value: unknown): Outcome => ({ value });
 const refused = (message: string): Outcome => ({ refused: 400, message });
 
+/** An SSH host key's fingerprint as `ssh-keygen -l` prints it: SHA256: and 43 characters (card 2250). */
+const FINGERPRINT = 'SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7GekmavrY';
+
+/** R5's refusal of a host key, for the destination at `at` (none for a body that is one destination). */
+const HOST_KEY = (at: string | null) =>
+	`${at === null ? '' : `${at}.`}hostKey must be an SSH host key fingerprint with its type: the line ssh-keygen -l prints ` +
+	'(256 SHA256:… root@nas (ED25519)), or the type and fingerprint (ssh-ed25519 SHA256:…), the fingerprint being SHA256: ' +
+	'and 43 characters';
+
 /** A request as the gate hands it on: its reading guarded. */
 function guarded(body: string): Request {
 	const request = new Request('http://localhost/api/x', { method: 'POST', headers: { 'content-type': 'application/json' }, body });
@@ -2750,6 +2759,8 @@ describe('the accounts, administration, teams, reports and requests that card 21
 	const replies = (w: World) => `/api/requests/${w.requestId}/messages`;
 	const ofOwner = (w: World) => `/api/users/${w.owner.id}`;
 	const DESTINATION = 'destinations[0]';
+	/** A save of one SFTP destination holding `hostKey` (card 2250). */
+	const hostKeyed = (hostKey: unknown) => ({ destinations: [{ name: 'Box', type: 'sftp', host: 'box.example.test', username: 'backup', hostKey }] });
 
 	const CASES: Case[] = [
 		// POST /api/account/api-keys: every field before a password is checked or counted.
@@ -2791,6 +2802,25 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => ({ destinations: [{ name: 'Box', type: 'ftp' }] }), `${DESTINATION}.type must be one of: sftp, s3, gdrive, onedrive`],
 		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => ({ destinations: [{ name: 'Box', type: 'sftp', port: '22a' }] }), `${DESTINATION}.port must be a whole number`],
 		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => ({ destinations: [{ name: 'Box', type: 's3', bucket: ['b'] }] }), `${DESTINATION}.bucket must be text`],
+		// Card 2250, R5: an SFTP host key fingerprint with its type, in one of two forms, or nothing.
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`255 ${FINGERPRINT} root@nas (ECDSA)`), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`1024 ${FINGERPRINT} root@nas (DSA)`), HOST_KEY(DESTINATION)],
+		// The review's S5: an RSA key of fewer than 1,024 bits is no key a server should be trusted by.
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`1023 ${FINGERPRINT} root@nas (RSA)`), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`512 ${FINGERPRINT} root@nas (RSA)`), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`256 ${FINGERPRINT} root@nas (ED25519-SK)`), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(FINGERPRINT), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`ssh-dss ${FINGERPRINT}`), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`SSH-ED25519 ${FINGERPRINT}`), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed('ssh-ed25519 SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7Gek-av_Y'), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`ssh-ed25519 ${FINGERPRINT.slice(0, -1)}`), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`ssh-ed25519 ${FINGERPRINT}A`), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`ssh-ed25519 ${FINGERPRINT}=`), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed('ssh-ed25519 SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7GekmavrZ'), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed('ssh-ed25519 MD5:16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48'), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed('256 MD5:16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48 root@nas (ED25519)'), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(`ssh-ed25519 sha256:${FINGERPRINT.slice(7)}`), HOST_KEY(DESTINATION)],
+		['PUT /api/admin/backup', 'chief', at('/api/admin/backup'), () => hostKeyed(5), `${DESTINATION}.hostKey must be text`],
 		// POST /api/admin/backup
 		['POST /api/admin/backup', 'chief', at('/api/admin/backup'), () => ({ destination: 5 }), 'destination must be text'],
 		// POST /api/admin/backup/gdrive/auth
@@ -2802,6 +2832,7 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		['POST /api/admin/backup/test', 'chief', at('/api/admin/backup/test'), () => ({ type: 'sftp' }), 'Missing destination type or name'],
 		['POST /api/admin/backup/test', 'chief', at('/api/admin/backup/test'), () => ({ name: 'Box', type: 'ftp' }), 'type must be one of: sftp, s3, gdrive, onedrive'],
 		['POST /api/admin/backup/test', 'chief', at('/api/admin/backup/test'), () => ({ name: 'Box', type: 'sftp', port: 70000 }), 'port must be a whole number from 1 to 65535'],
+		['POST /api/admin/backup/test', 'chief', at('/api/admin/backup/test'), () => ({ name: 'Box', type: 'sftp', hostKey: FINGERPRINT }), HOST_KEY(null)],
 		// PUT /api/admin/smtp: the body was handed on whole, and a port of "abc" stored.
 		['PUT /api/admin/smtp', 'chief', at('/api/admin/smtp'), () => ({ port: 'abc' }), 'port must be a whole number'],
 		['PUT /api/admin/smtp', 'chief', at('/api/admin/smtp'), () => ({ port: 70000 }), 'port must be from 1 to 65535'],
@@ -3587,11 +3618,36 @@ describe('the second fix pass to card 2117’s slices 2 to 5 (version 1.8)', () 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		const stored = JSON.parse(setting('backup_config')!).destinations[0];
 		expect(stored.port).toBeNull();
-		// The destination connects to 22, as `port || 22` did.
-		expect(new SftpDestination(stored)['getConnectConfig']().port).toBe(22);
+		// The destination connects to 22, as `port || 22` did, once its host key
+		// is confirmed: with none it connects nowhere (card 2250, R7).
+		expect(new SftpDestination({ ...stored, hostKey: `ssh-ed25519 ${FINGERPRINT}` })['getConnectConfig']().port).toBe(22);
 
 		const mail = await api('PUT', '/api/admin/smtp', { user: w.chief, body: { port: null } });
 		expect({ status: mail.status, answer: mail.body }).toEqual({ status: 400, answer: { message: 'port must be a whole number' } });
+	});
+
+	it('saves an SFTP host key in one form, the type and the fingerprint, from either form an administrator copies, and empty for none (card 2250, R5)', async () => {
+		const w = world();
+		const box = { type: 'sftp', name: 'Box', host: 'box.example.test', port: 22, username: 'backup', remotePath: '/b' };
+		const savedAs = async (hostKey: unknown) => {
+			const res = await api('PUT', '/api/admin/backup', { user: w.chief, body: { destinations: [{ ...box, hostKey }] } });
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			return JSON.parse(setting('backup_config')!).destinations[0].hostKey;
+		};
+
+		// The line ssh-keygen -l prints, pasted whole: the bits and the comment dropped.
+		expect(await savedAs(`256 ${FINGERPRINT} root@nas (ED25519)`)).toBe(`ssh-ed25519 ${FINGERPRINT}`);
+		expect(await savedAs(`384 ${FINGERPRINT} root@nas.example.test (ECDSA)`)).toBe(`ecdsa-sha2-nistp384 ${FINGERPRINT}`);
+		expect(await savedAs(`256 ${FINGERPRINT} (ECDSA)`)).toBe(`ecdsa-sha2-nistp256 ${FINGERPRINT}`);
+		expect(await savedAs(`521 ${FINGERPRINT} a comment (with spaces) (ECDSA)`)).toBe(`ecdsa-sha2-nistp521 ${FINGERPRINT}`);
+		expect(await savedAs(`3072 ${FINGERPRINT} root@nas (RSA)\n`)).toBe(`ssh-rsa ${FINGERPRINT}`);
+		expect(await savedAs(`1024 ${FINGERPRINT} root@nas (RSA)`)).toBe(`ssh-rsa ${FINGERPRINT}`);
+		// The type and the fingerprint, with spaces and tabs around and between them.
+		expect(await savedAs(` \tssh-ed25519   ${FINGERPRINT} `)).toBe(`ssh-ed25519 ${FINGERPRINT}`);
+		expect(await savedAs(`ssh-rsa ${FINGERPRINT}`)).toBe(`ssh-rsa ${FINGERPRINT}`);
+		// Empty for none.
+		expect(await savedAs('')).toBe('');
+		expect(await savedAs('  ')).toBe('');
 	});
 
 	it('copies to a duplicate only the stored values the server takes, and leaves the rest to its defaults', () => {

@@ -245,6 +245,25 @@
 	let testingDest = $state<string | null>(null);
 	let editingDest = $state<string | null>(null);
 
+	/**
+	 * What an SFTP Test said of the server's host key (card 2250): the key the
+	 * server presented, where none is confirmed or it did not match, and the
+	 * confirmed one, where a key was refused. Shown in a box under the
+	 * destination until its next Test, by the destination's name.
+	 */
+	interface HostKeyCheck {
+		message: string;
+		presented: string | null;
+		confirmed: string | null;
+	}
+	let hostKeyChecks = $state<Record<string, HostKeyCheck | null>>({});
+	/**
+	 * Each destination's latest Test, by name (the card 2250 review's S3): a
+	 * number moved on by every Test and by every save or removal of the
+	 * destination, so that an answer that comes back after either says nothing.
+	 */
+	const hostKeyTests: Record<string, number> = {};
+
 	// Destination form fields (shared for add/edit)
 	let destName = $state('');
 	let destHost = $state('');
@@ -252,6 +271,8 @@
 	let destUsername = $state('');
 	let destPassword = $state('');
 	let destPrivateKey = $state('');
+	// An SFTP destination's confirmed host key, `<type> SHA256:…`, sent with every save of one (card 2250).
+	let destHostKey = $state('');
 	let destRemotePath = $state('/backups');
 	let destRegion = $state('us-east-1');
 	let destBucket = $state('');
@@ -314,7 +335,7 @@
 
 	function resetDestForm() {
 		destName = ''; destHost = ''; destPort = 22; destUsername = ''; destPassword = '';
-		destPrivateKey = ''; destRemotePath = '/backups'; destRegion = 'us-east-1';
+		destPrivateKey = ''; destHostKey = ''; destRemotePath = '/backups'; destRegion = 'us-east-1';
 		destBucket = ''; destAccessKey = ''; destSecretKey = ''; destPrefix = 'dumpfire/';
 		destEndpoint = ''; destServiceAccountJson = ''; destFolderId = '';
 		destGdriveAuthMethod = 'oauth'; destGdriveClientId = ''; destGdriveClientSecret = ''; destGdriveRefreshToken = '';
@@ -328,6 +349,7 @@
 			destHost = (dest.host as string) || ''; destPort = (dest.port as number) || 22;
 			destUsername = (dest.username as string) || ''; destPassword = (dest.password as string) || '';
 			destPrivateKey = (dest.privateKey as string) || ''; destRemotePath = (dest.remotePath as string) || '/backups';
+			destHostKey = (dest.hostKey as string) || '';
 		} else if (dest.type === 's3') {
 			destRegion = (dest.region as string) || 'us-east-1'; destBucket = (dest.bucket as string) || '';
 			destAccessKey = (dest.accessKeyId as string) || ''; destSecretKey = (dest.secretAccessKey as string) || '';
@@ -348,7 +370,9 @@
 
 	function buildDestConfig(): DestinationUI {
 		if (newDestType === 'sftp') {
-			return { type: 'sftp', name: destName, host: destHost, port: destPort, username: destUsername, password: destPassword, privateKey: destPrivateKey, remotePath: destRemotePath };
+			// The host key goes with every save: a field not sent is not kept, and a
+			// key removed with the password masked is refused (card 2250).
+			return { type: 'sftp', name: destName, host: destHost, port: destPort, username: destUsername, password: destPassword, privateKey: destPrivateKey, remotePath: destRemotePath, hostKey: destHostKey };
 		} else if (newDestType === 's3') {
 			return { type: 's3', name: destName, region: destRegion, bucket: destBucket, accessKeyId: destAccessKey, secretAccessKey: destSecretKey, prefix: destPrefix, endpoint: destEndpoint || undefined };
 		} else if (newDestType === 'gdrive') {
@@ -365,8 +389,16 @@
 		}
 	}
 
-	async function loadBackupConfig() {
-		backupLoading = true;
+	/**
+	 * Read the backup settings from the server. `quiet` leaves the section as
+	 * it is while it reads, for the read after a destination is saved (the card
+	 * 2250 review's M3), so that the list holds the secrets masked as the server
+	 * shows them and never one typed, which a later save would send as typed.
+	 * True when the settings were read and put on the page.
+	 */
+	async function loadBackupConfig(quiet = false): Promise<boolean> {
+		if (!quiet) backupLoading = true;
+		let read = false;
 		try {
 			const res = await fetch('/api/admin/backup');
 			if (res.ok) {
@@ -379,10 +411,15 @@
 				backupNotifyEmail = d.notifyEmail || '';
 				backupDestinations = d.destinations || [];
 				backupHistory = d.history || [];
+				read = true;
 			}
 		} catch {}
-		backupLoading = false;
+		if (!quiet) backupLoading = false;
+		return read;
 	}
+
+	/** A destination saved whose settings could not be read back: the list may still hold a secret as typed (M3). */
+	const SETTINGS_UNREAD = 'Saved, but the page could not read the settings back: reload the page before editing again.';
 
 	/**
 	 * Save the backup settings and destinations as the page shows them. True
@@ -422,21 +459,28 @@
 	async function addDestination() {
 		if (!destName.trim()) { showToast('Destination name is required', 'error'); return; }
 		if (backupDestinations.some(d => d.name === destName.trim())) { showToast('A destination with that name already exists', 'error'); return; }
+		const started = toasts.navigation();
 		const was = backupDestinations;
-		backupDestinations = [...backupDestinations, buildDestConfig()];
+		const added = buildDestConfig();
+		backupDestinations = [...backupDestinations, added];
 		if (!(await saveBackupConfig())) {
 			// Not saved: off the list again, and still in the form as typed.
 			backupDestinations = was;
 			return;
 		}
+		// A box left by a destination of this name removed before is not this one's.
+		forgetHostKeyCheck(added.name);
 		resetDestForm();
 		showAddDestination = false;
+		// The list as the server holds it, the secret typed masked again (M3).
+		if (!(await loadBackupConfig(true))) showToast(SETTINGS_UNREAD, 'error', started);
 	}
 
 	async function updateDestination() {
 		if (!editingDest || !destName.trim()) return;
 		const idx = backupDestinations.findIndex(d => d.name === editingDest);
 		if (idx === -1) return;
+		const started = toasts.navigation();
 		const was = backupDestinations;
 		const updated = [...backupDestinations];
 		updated[idx] = buildDestConfig();
@@ -445,14 +489,30 @@
 			backupDestinations = was;
 			return;
 		}
+		// What its last Test said of its host key may no longer hold, under its
+		// old name or its new one.
+		forgetHostKeyCheck(editingDest);
+		if (updated[idx].name !== editingDest) forgetHostKeyCheck(updated[idx].name);
 		editingDest = null;
 		resetDestForm();
+		// The list as the server holds it, the secret typed masked again (M3).
+		if (!(await loadBackupConfig(true))) showToast(SETTINGS_UNREAD, 'error', started);
 	}
 
 	async function removeDestination(name: string) {
 		const was = backupDestinations;
 		backupDestinations = backupDestinations.filter(d => d.name !== name);
-		if (!(await saveBackupConfig())) backupDestinations = was;
+		if (!(await saveBackupConfig())) {
+			backupDestinations = was;
+			return;
+		}
+		forgetHostKeyCheck(name);
+	}
+
+	/** Forget what the last Test of `name` said of its host key, and silence any Test of it still on its way (S3). */
+	function forgetHostKeyCheck(name: string) {
+		hostKeyTests[name] = (hostKeyTests[name] ?? 0) + 1;
+		hostKeyChecks = { ...hostKeyChecks, [name]: null };
 	}
 
 	function startEditDestination(dest: DestinationUI) {
@@ -464,6 +524,10 @@
 	async function testDestination(dest: DestinationUI) {
 		testingDest = dest.name;
 		const started = toasts.navigation();
+		// This Test's number: an answer that comes back after a later Test, or
+		// after the destination was saved or removed, says nothing (S3).
+		const ticket = (hostKeyTests[dest.name] ?? 0) + 1;
+		hostKeyTests[dest.name] = ticket;
 		try {
 			const res = await sent(
 				() =>
@@ -477,11 +541,59 @@
 			if (!res) return;
 			// Answered: whether the destination could be reached is in the answer.
 			const result = await answerBody(res);
+			if (hostKeyTests[dest.name] !== ticket) return;
+			// An SFTP Test that speaks of the host key is shown in the box under
+			// the destination, with Confirm where the key is not confirmed yet, and
+			// not in a toast as well (card 2250). Any other answer clears the box.
+			const check = dest.type === 'sftp' ? hostKeyCheckOf(result) : null;
+			hostKeyChecks = { ...hostKeyChecks, [dest.name]: check };
+			if (check !== null) return;
 			const said = typeof result?.message === 'string' && result.message ? result.message : null;
 			showToast(said || (result?.success ? 'Connection successful' : 'Connection failed'), result?.success ? 'success' : 'error', started);
 		} finally {
 			testingDest = null;
 		}
+	}
+
+	/**
+	 * What an SFTP Test's answer says of the host key (card 2250, decision 10
+	 * and R3), or null where it says nothing of it: `hostKey` alone is a key
+	 * not confirmed yet, both a key that did not match, `confirmedHostKey`
+	 * alone a server that no longer offers a key of the confirmed type, or
+	 * one that showed the confirmed key and could not sign with it (S4).
+	 */
+	function hostKeyCheckOf(result: any): HostKeyCheck | null {
+		const presented = typeof result?.hostKey === 'string' && result.hostKey ? result.hostKey : null;
+		const confirmed = typeof result?.confirmedHostKey === 'string' && result.confirmedHostKey ? result.confirmedHostKey : null;
+		if (presented === null && confirmed === null) return null;
+		return { message: typeof result?.message === 'string' ? result.message : '', presented, confirmed };
+	}
+
+	/**
+	 * Confirm the host key a Test showed (card 2250, decision 3): the
+	 * destination is saved with exactly that key, as the ordinary save of the
+	 * whole list, and only once it is saved is it tested again, now with its
+	 * password or private key. A key added where none was keeps the masked
+	 * password; a refused save puts the list back, with the server's reason.
+	 */
+	async function confirmHostKey(name: string, key: string | null) {
+		if (!key) return;
+		const idx = backupDestinations.findIndex(d => d.name === name);
+		if (idx === -1) return;
+		const started = toasts.navigation();
+		const was = backupDestinations;
+		const updated = [...backupDestinations];
+		updated[idx] = { ...updated[idx], hostKey: key };
+		backupDestinations = updated;
+		if (!(await saveBackupConfig())) {
+			backupDestinations = was;
+			return;
+		}
+		// Tested as the server now holds it, read again: its secret masked and its
+		// key as stored, which is all a Test keeps a masked secret for (M1, M3).
+		// Where it could not be read back, it is tested as it was sent.
+		if (!(await loadBackupConfig(true))) showToast(SETTINGS_UNREAD, 'error', started);
+		await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx]);
 	}
 
 	async function runManualBackup() {
@@ -1673,6 +1785,10 @@
 										<button class="btn-ghost btn-xs" style="color: var(--accent-indigo)" onclick={() => connectGDriveOAuth(dest.name)}>🔗 Connect</button>
 									{/if}
 								{/if}
+								<!-- An SFTP destination with no confirmed host key is not backed up to until one is confirmed (card 2250 review, S1). -->
+								{#if dest.type === 'sftp' && !dest.hostKey}
+									<span style="font-size: 0.68rem; color: var(--accent-amber)">⚠️ Host key not confirmed — press Test</span>
+								{/if}
 								<button class="btn-ghost btn-xs" onclick={() => testDestination(dest)} disabled={testingDest === dest.name}>
 									{testingDest === dest.name ? '⏳' : '🧪'} Test
 								</button>
@@ -1697,6 +1813,26 @@
 								Connected with access to all of this Google account's Drive. To narrow it: first remove DumpFire's access in the Google account (Google Account, Security, Your connections to third-party apps and services), then remove this destination, add it again with the Folder ID left empty, and connect it. See the admin guide, Configuring Backups.
 							</p>
 						{/if}
+						<!-- What the last Test said of an SFTP server's host key (card 2250): the server's words, then Confirm for a key not confirmed yet, both keys for one that did not match, and no Confirm where the confirmed type is no longer offered (there is no key to confirm). -->
+						{#if dest.type === 'sftp' && hostKeyChecks[dest.name]}
+							{@const check = hostKeyChecks[dest.name]!}
+							<div class="host-key-box">
+								<p>{check.message}</p>
+								{#if check.presented && !check.confirmed}
+									<p>Presented: <code>{check.presented}</code></p>
+									<p>Confirm saves this key on the destination and runs the Test again, which then uses its password or private key with this server and no other.</p>
+									<div class="form-row" style="justify-content: flex-end">
+										<button class="btn-primary btn-xs" disabled={backupSaving} onclick={() => confirmHostKey(dest.name, check.presented)}>✅ Confirm this key</button>
+									</div>
+								{:else if check.presented}
+									<p>Presented: <code>{check.presented}</code></p>
+									<p>Confirmed: <code>{check.confirmed}</code></p>
+									<p>To accept the new key, check it on the server, then Edit the destination, paste it in the Host key box and type the password or private key again.</p>
+								{:else}
+									<p>Confirmed: <code>{check.confirmed}</code></p>
+								{/if}
+							</div>
+						{/if}
 
 						<!-- Inline edit form -->
 						{#if editingDest === dest.name}
@@ -1714,6 +1850,15 @@
 										<input type="password" placeholder="Password" bind:value={destPassword} class="form-input" />
 										<input type="text" placeholder="Remote path" bind:value={destRemotePath} class="form-input" />
 									</div>
+									<!-- The server's host key (card 2250): changing or clearing a confirmed one needs the password or private key typed again. -->
+									<div class="form-row">
+										<input type="text" placeholder="Paste the line ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub prints, or leave it empty and press Test" bind:value={destHostKey} class="form-input" style="font-family: monospace; font-size: 0.72rem" />
+									</div>
+									<!-- As the add form has (card 2250 review, M2): a stored key shows masked, as the password does, and is kept while it stays so; pasted again, it is what the save sends. -->
+									<details style="margin-top: var(--space-xs)">
+										<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer">Advanced: Private Key auth</summary>
+										<textarea placeholder="Paste private key (PEM format)" bind:value={destPrivateKey} class="form-input" rows="3" style="margin-top: var(--space-xs); font-family: monospace; font-size: 0.7rem; width: 100%"></textarea>
+									</details>
 								{:else if newDestType === 's3'}
 									<div class="form-row">
 										<input type="text" placeholder="Bucket" bind:value={destBucket} class="form-input" />
@@ -1799,6 +1944,10 @@
 							<div class="form-row">
 								<input type="password" placeholder="Password" bind:value={destPassword} class="form-input" />
 								<input type="text" placeholder="Remote path (e.g. /backups)" bind:value={destRemotePath} class="form-input" />
+							</div>
+							<!-- The server's host key (card 2250): left empty, the first Test shows the key the server presents, to confirm. -->
+							<div class="form-row">
+								<input type="text" placeholder="Paste the line ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub prints, or leave it empty and press Test" bind:value={destHostKey} class="form-input" style="font-family: monospace; font-size: 0.72rem" />
 							</div>
 							<details style="margin-top: var(--space-xs)">
 								<summary style="font-size: 0.72rem; color: var(--text-tertiary); cursor: pointer">Advanced: Private Key auth</summary>
@@ -2769,6 +2918,14 @@
 		padding: 0 var(--space-lg) var(--space-md);
 		font-size: 0.72rem; color: var(--text-tertiary);
 	}
+	.host-key-box {
+		margin: 0 var(--space-lg) var(--space-md); padding: var(--space-sm) var(--space-md);
+		border: 1px solid var(--accent-amber); border-radius: var(--radius-sm);
+		font-size: 0.72rem; color: var(--text-secondary);
+		display: flex; flex-direction: column; gap: var(--space-xs);
+	}
+	.host-key-box p { margin: 0; }
+	.host-key-box code { font-size: 0.7rem; word-break: break-all; }
 
 	.dest-type-badge {
 		font-size: 0.65rem; font-weight: 700; padding: 2px 8px;

@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.22
+version: 1.23
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1562,7 +1562,7 @@ What is not sent:
 | `src/lib/board/sse.ts`, `src/routes/board/[id]/+layout.svelte` | The board page's stream, opened as the page mounts and closed as it goes; the layout makes the page afresh for each board, so the stream follows the board shown (card 2184) |
 | `src/lib/server/webhooks.ts` | Webhook dispatch on board events: `dispatchWebhook()`, each webhook in its own `try` (card 2145); `deliver()` on the webhooks' own agents (card 2161), its `WARN`s one line per webhook and kind of refusal per hour; `refusalAsWritten()` and `activeWebhooksRefused()`, for delivery and the start-up line; `presentWebhook()`, with `lastDelivery`; each webhook's last result held in memory, `deliveryResultFor()`, `forgetDelivery()` and `deliveryReason()` (card 2178); `MAX_WEBHOOKS_PER_BOARD`, `refuseWebhookOverCap()` and `boardsOverWebhookCap()` (card 2201) |
 | `src/lib/server/webhook-address.ts` | Where a webhook may send (card 2161): `insideReason()`, `addressRefusal()`, `allowInside()` and `parseAllowInside()` for `WEBHOOK_ALLOW_INSIDE`, `guardedLookup()`, `readWebhookUrl()` |
-| `src/lib/server/startup-checks.ts` | Among its twelve start-up lines, the ignored entries of `WEBHOOK_ALLOW_INSIDE`, the boards over the webhook cap, and the webhooks that are on and refused as written |
+| `src/lib/server/startup-checks.ts` | Among its thirteen start-up lines, the ignored entries of `WEBHOOK_ALLOW_INSIDE`, the boards over the webhook cap, and the webhooks that are on and refused as written |
 | `src/lib/server/logActivity.ts` | Writes the activity entry and queues the webhook for it |
 | `src/lib/server/db/transaction.ts` | `afterCommit()`: holds every notification until the write it reports is committed |
 | `src/lib/server/mentions.ts` | Extract @mentions from comment text: `parseMentions()` through `findMentions`, against every account's username, then `notifyMention()` for each account found |

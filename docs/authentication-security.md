@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.46
+version: 1.47
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1485,8 +1485,8 @@ superadmin...", for everybody else who is not the superadmin, an administrator i
 | `GET /api/admin/export` | Download every password hash and email and every webhook's address. It held every session id and unused invite token too, and until card 2169 the mail password, every backup destination's credentials and every webhook's signing secret. It carries a seal made with a key no backup holds, so that only this server fills its secrets back into it, unchanged |
 | `POST /api/admin/import` | Replace every account with accounts of their own |
 | `POST /api/admin/reset` | Clear every account, and be the superadmin of the installation they then set up |
-| `GET`, `PUT`, `POST /api/admin/backup` | Add a destination of their own and have the whole database sent to it. The `GET` masks every secret field of every destination (card 2187; it answered a Google Drive refresh token as stored), and a `PUT` keeps a masked secret only for the one stored destination that is the same in type, name and every setting that is not secret (card 2190; it was taken by the destination's place in the list) |
-| `POST /api/admin/backup/test` | Have a stored destination's password sent to a host of their choosing, which until card 2190 a test whose secrets were masked did: it connected with the stored ones whatever host it named. Now a masked secret is used only for an unchanged destination, by the `PUT`'s rule, and any other is refused `400` before anything connects |
+| `GET`, `PUT`, `POST /api/admin/backup` | Add a destination of their own and have the whole database sent to it. The `GET` masks every secret field of every destination (card 2187; it answered a Google Drive refresh token as stored), and a `PUT` keeps a masked secret only for the one stored destination that is the same in type, name and every setting that is not secret (card 2190; it was taken by the destination's place in the list), and, for SFTP, whose confirmed host key it keeps or adds where none was stored (card 2250; below): a key added is saved, and shown on the destination |
+| `POST /api/admin/backup/test` | Have a stored destination's password sent to a host of their choosing, which until card 2190 a test whose secrets were masked did: it connected with the stored ones whatever host it named. Now a masked secret is used only for an unchanged destination, by the `PUT`'s rule, and any other is refused `400` before anything connects; for SFTP its host key must be the stored one exactly, none for none, since a Test that could add one would send the stored password to the key it named (the card 2250 review's M1). An SFTP Test with no host key confirmed sends no secret at all and answers the key presented (`hostKey`); one with a key refuses any other before a credential is sent, answering both keys (card 2250; below) |
 | `GET`, `POST /api/admin/backup/gdrive/auth` | Connect a Google Drive of their own as a destination. Connect asks Google for `drive.file`, DumpFire's own files, where it asked for the whole of Drive (card 2188). The `POST` takes a code only with the state the same session's `GET` put in the consent address, once and within ten minutes, and exchanges it with that Connect's PKCE verifier (card 2251; below) |
 | `GET`, `PUT`, `POST /api/admin/smtp` | Point mail at a server of their own and the App URL at a host of their own, and read an invite meant for somebody else. A `PUT` keeps a masked or missing mail password only while the host, port, user name and "Allow mail without a checked, encrypted connection" are as stored, and turning that setting on or off from the panel needs the password typed and writes a `WARN` line naming who (cards 2190 and 2189), so a session in the wrong hands cannot send the stored password elsewhere, or lower its protection, without knowing it. The host is compared trimmed of ASCII spaces and tabs, ASCII letters in any case, and stored as it was saved while the password is kept, so the host compared is the host connected to (the review-fix pass's S1). A restore also brings the setting in, with the backup's other mail settings and with neither: it keeps this server's password only where the setting is this server's, and its "To enter again" line names the box where it differs (S5) |
 
@@ -1559,6 +1559,70 @@ user and team routes.
   account approved (`drive.file` returns no identity), so it cannot refuse it. It is
   limited: `drive.file` reaches only the files DumpFire makes, and any superadmin can
   already edit every destination.
+- **An SFTP destination connects only to the host key it was confirmed with** (card 2250).
+  `SftpDestination` connected with no `hostVerifier`, and ssh2 accepts any host key without
+  one, so whatever answered for the host on the network path (the LAN, the ISP, a DNS answer
+  for its name) received the password, or a signature made with the private key, in
+  `ssh-userauth`, and then the backup. Now each SFTP destination holds `hostKey`, `<type>
+  SHA256:<43>` (`src/lib/server/ssh-host-key.ts`), and every connect but a Test's first look
+  goes through `getConnectConfig()`, which adds a `hostVerifier` comparing the SHA-256
+  fingerprint of the key the server presents with the stored one and pins
+  `algorithms.serverHostKey` to its type. ssh2 asks the verifier inside the key exchange and
+  authenticates only after the handshake completes, so a key refused is refused before any
+  credential is sent (`HostKeyMismatch`), and a server that no longer offers a key of the
+  pinned type ends the negotiation before any key is presented (`HostKeyTypeNotOffered`).
+  ssh2 checks the server's signature over the exchange after the verifier said yes, so a
+  replay of the real server's public key by something without its private key ends there,
+  still before any credential, and is named (`HostKeySignatureFailed`, "SFTP host key
+  refused: the server at H:P showed the confirmed key but could not prove it holds it —
+  something on the network may be answering for it. Nothing was sent.", one `[ERROR]
+  [BACKUP] SFTP host key signature failed …` line naming the confirmed fingerprint; the
+  card 2250 review's S4). An `ssh-keygen -l` line for an RSA key of fewer than 1,024 bits is
+  refused as a key that does not read (S5).
+  With no key stored, `getConnectConfig()` throws `HostKeyNotConfirmed` and opens nothing, so
+  an upload, a listing or a delete cannot reach an unconfirmed host however it is called, and
+  `runBackup` does not try such a destination (`hostKeyMissing()`). A Test with no key stored
+  makes the one connect without it: a configuration of its own with no password, private key
+  or passphrase, and a verifier that records the key and answers `false`, so the connection
+  ends in the key exchange and the key is shown to be confirmed (`hostKey` in the answer).
+  Confirming saves exactly the text shown, by the ordinary `PUT`, never what the server
+  presents at the moment of saving. The key is no secret (`maskDestination` shows it, a backup
+  holds it), but it decides where the secret may go, so the save-and-test rule of card 2190
+  compares it as a narrowing on a save: a key added where none was stored keeps a masked
+  secret; one changed, emptied or left out of the entry sent is refused `400`, naming "host
+  key". A Test compares it exactly (`keepMaskedSecrets(…, 'test')`): with a secret masked, its
+  key must be the stored one, none where none is stored, or it is refused `400` the same way
+  and nothing connects (the card 2250 review's M1), so only a save, whose key the page then
+  shows, can add one. A restore never takes one from a backup (below).
+
+  ```mermaid
+  sequenceDiagram
+      participant D as DumpFire
+      participant M as Something on the path
+      participant S as The SFTP server
+      D->>M: connect to nas.example:22 (hostKey confirmed: SHA256:OLD)
+      M-->>D: presents its own key SHA256:NEW in the key exchange
+      Note over D: hostVerifier: SHA256:NEW is not SHA256:OLD, answers false
+      D--xM: "Host denied", the connection ends before ssh-userauth
+      Note over D: no password or key sent; the Test, the run<br/>and one ERROR line name both keys
+  ```
+
+- **Not prevented: the first look, and a confirmation not checked** (card 2250). The Test
+  that shows a key trusts nothing, and Confirm saves what the superadmin was shown; whether
+  it is the server's own key is known only by comparing it on the server (`ssh-keygen -lf`),
+  which the page and the guides ask for every time. Until a destination's key is confirmed,
+  someone who holds the superadmin's session and is also on the network path can press Test,
+  be shown their own key and press Confirm, which saves that key, a key added where none was
+  keeping the masked password, and tests again at once, so the password goes to them
+  there and then. The comparison on the server has to come before Confirm, not after. A save
+  writes no log or audit line, so a saved key is no lasting record: whoever then has the
+  password can save the real key back. A Test cannot send it on its own: one that
+  names a key with the password masked is refused unless it is the stored key (the card
+  2250 review's M1). That is no worse than before
+  card 2250, when the password went to whoever answered with neither step, and it closes for
+  each destination once its key is confirmed; the deployment guide makes confirming every SFTP
+  destination the first step after the deploy. A database put in place by hand keeps whatever
+  keys the file holds: nothing reads it on the way in.
 
 Covered by the `superadmin` kind in `tests/access-every-route.test.ts`, which has an entry
 for every one of these routes, and by `tests/backups.test.ts`.
@@ -1808,7 +1872,14 @@ flowchart TD
   would upload this server's database, with this server's credentials, to a bucket or folder
   the backup chose, and have retention delete backups there. A Drive OAuth destination is
   filled only when both its client secret and its refresh token are empty, and a refresh
-  token filled brings this server's `grantedScope` with it, or none (card 2188). A webhook listed
+  token filled brings this server's `grantedScope` with it, or none (card 2188). An SFTP
+  destination never keeps the `hostKey` the backup gives it, filled or not, sealed or not: it
+  is removed first, on every path, and one filled, or with neither secret here either, takes
+  the key of the entry here it was matched with, or none (card 2250). A crafted backup could
+  otherwise pin a key of its choosing beside the real host's name, waiting for the password
+  to be typed again; the restore's own match does not compare the key, so a backup made
+  before card 2250 still fills, and `needs()` lists an SFTP destination as "SFTP: its password
+  or private key, then Test to confirm its host key". A webhook listed
   in the backup's `webhook_secrets_left_out` is filled from the webhook here with the same id,
   board, address and setter (`set_by`, none and none alike: card 2168), and switched on or off
   as the list says it was. A secret here set by another account than the one the backup's row
@@ -1845,7 +1916,11 @@ flowchart TD
   authentication accepts it; the restore's answer still lists one it could not fill. After a
   restore onto another server, then, an SFTP destination left with neither password nor key is
   tried against the real host at every scheduled run, and its failed logins may trip a lockout
-  there: enter its credentials, or remove it (the review's S5).
+  there: enter its credentials, or remove it (the review's S5). Since card 2250 that holds
+  only once its host key is confirmed again: an SFTP destination with no confirmed key,
+  credentials or none, is not tried, with "SFTP host key not confirmed: nothing was sent to
+  this destination. …" (`hostKeyMissing()`), and a thirteenth start-up line,
+  `reportUnconfirmedHostKeys()`, names each such destination.
 - **A backup alone no longer rebuilds a lost server.** On a server that still runs, restore
   with Import Backup, which keeps this server's secrets. A server rebuilt from nothing needs
   the mail password, every destination's credentials and every webhook's secret from

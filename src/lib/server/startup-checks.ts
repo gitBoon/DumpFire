@@ -1,5 +1,5 @@
 /**
- * startup-checks.ts — twelve things about an installation that are said in the
+ * startup-checks.ts — thirteen things about an installation that are said in the
  * system log when the server starts, because nothing else would say them.
  *
  * None stops the server and none changes anything. They are looked for by
@@ -33,7 +33,10 @@
  * still sent, and nothing else says why no webhook can be added to one. The
  * twelfth is each webhook that is on and is refused as its address is written
  * (the review of card 2161, O1): it is not sent at any event, and a board's
- * owner may not know why until an event's line says so.
+ * owner may not know why until an event's line says so. The thirteenth is
+ * each SFTP backup destination with no confirmed host key (card 2250): no
+ * backup is sent to it until its key is confirmed, and where failure mail is
+ * off nothing else says so.
  *
  * And one that does stop the server, after the migrations and before it
  * listens: `refuseUserlessBesideAnother`, when the database in use has no
@@ -55,7 +58,7 @@ import { maskSecretsInLog } from './secret-paths';
 import { signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
-import { secretsToEnter, secretsToEnterSentence } from './backup-secrets';
+import { secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './backup-secrets';
 import { parseAllowInside } from './webhook-address';
 import { activeWebhooksRefused, boardsOverWebhookCap, MAX_WEBHOOKS_PER_BOARD } from './webhooks';
 
@@ -497,8 +500,38 @@ export function reportSecretsToEnter(): boolean {
 	return true;
 }
 
+/** How many SFTP destinations the line of destinations with no confirmed host key names. The rest are counted. */
+const UNCONFIRMED_HOST_KEYS_NAMED = 20;
+
 /**
- * Say all twelve, if they are so. Called once, from hooks.server.ts, as the
+ * One WARN line at every start while any SFTP backup destination has no
+ * confirmed host key (card 2250, decision 7), naming each, the first 20 and
+ * then how many more. Returns whether it was said.
+ *
+ * `runBackup` does not try such a destination, and says so in Backup History
+ * and the failure mail; where mail is off, this line in `docker logs` is what
+ * tells the deploy that every SFTP destination needs Test and Confirm before
+ * its scheduled backups go again. A destination with neither password nor key
+ * is named too: it would still upload the database to whoever answers.
+ */
+export function reportUnconfirmedHostKeys(): boolean {
+	const names = unconfirmedHostKeys(sqlite);
+	if (names.length === 0) return false;
+
+	const named = names
+		.slice(0, UNCONFIRMED_HOST_KEYS_NAMED)
+		.map((name) => `"${printable(name)}"`)
+		.join(', ');
+	const more = names.length > UNCONFIRMED_HOST_KEYS_NAMED ? `; and ${names.length - UNCONFIRMED_HOST_KEYS_NAMED} more` : '';
+	log.warn(
+		`${names.length} SFTP backup destination(s) have no confirmed host key, and nothing is sent to them until one is ` +
+			`confirmed: ${named}${more}. In Admin, Scheduled Backups, press Test on each and confirm the key it shows.`
+	);
+	return true;
+}
+
+/**
+ * Say all thirteen, if they are so. Called once, from hooks.server.ts, as the
  * server loads.
  *
  * It never throws, whatever goes wrong in looking: a fault here must not be
@@ -518,7 +551,8 @@ export function reportInstallation(): void {
 		reportSecretsToEnter,
 		() => reportWebhookAllowInside(),
 		reportWebhooksOverCap,
-		reportWebhooksRefused
+		reportWebhooksRefused,
+		reportUnconfirmedHostKeys
 	]) {
 		try {
 			check();
