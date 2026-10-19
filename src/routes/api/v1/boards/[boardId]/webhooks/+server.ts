@@ -2,10 +2,9 @@ import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { inTransaction } from '$lib/server/db/transaction';
 import { pathId, readBody, readChoices, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
-import { stillAuthenticated } from '$lib/server/auth';
+import { writeAs } from '$lib/server/write-as';
 import { canSeeWebhookSecret, presentWebhook, refuseWebhookOverCap, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { readWebhookUrl } from '$lib/server/webhook-address';
 import type { RequestHandler } from './$types';
@@ -45,15 +44,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * last check, made immediately before the insert in the same transaction.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
 	const body = await readBody(request);
 
-	// The key is asked again, the board looked for and the caller checked in
-	// the transaction that saves the webhook, once the body has arrived: a
-	// reset that ended the key while the body was arriving is a 401 here.
-	const hook = inTransaction(() => {
-		stillAuthenticated(locals);
+	// The key is asked again, and who its account is now, the board looked
+	// for and the caller checked in the transaction that saves the webhook,
+	// once the body has arrived: a reset that ended the key while the body
+	// was arriving is a 401 here, and an account that lost its access
+	// meanwhile is refused as it now is (card 2253).
+	const hook = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		requireBoard(user, boardId, 'edit');
 
 		const url = readWebhookUrl(body, { required: true, says: { missing: 'URL is required' } })!;

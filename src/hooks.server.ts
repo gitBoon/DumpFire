@@ -289,8 +289,9 @@ async function handleRequest(event: RequestEvent, resolve: ResolveFn, path: stri
 		markApiKeyUsed(key.id);
 		event.locals.user = key.user;
 		// The key itself, by its row, so that a handler can ask in the
-		// transaction that writes whether it is still open: a body may arrive
-		// long after this, and a reset end the key meanwhile (`stillAuthenticated`).
+		// transaction that writes whether it is still open, and who its account
+		// is now: a body may arrive long after this, and a reset end the key or a
+		// role change lower its account meanwhile (`writeAs`, card 2253).
 		event.locals.credential = { kind: 'api key', id: key.id };
 
 		let response: Response;
@@ -371,6 +372,11 @@ async function handleRequest(event: RequestEvent, resolve: ResolveFn, path: stri
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
+	// No key and no session until one is found, on every request the gate
+	// hands on, whichever way: a write handler refuses a request that reaches
+	// it with none recorded (`stillAuthenticated`, card 2253). The v1 branch
+	// and the session branch of handleRequest set it again as they find one.
+	event.locals.credential = null;
 	// Every rule here and in handleRequest is decided on this, the path as the
 	// router sees it, and none on the address as it was sent: see routedPath.
 	const routed = routedPath(event);

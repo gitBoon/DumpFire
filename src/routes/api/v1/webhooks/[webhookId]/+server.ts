@@ -5,10 +5,10 @@ import { webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireBoard, requireUser, type Need } from '$lib/server/route-guards';
 import { canSeeWebhookSecret, forgetDelivery, presentWebhook, storedEvents, WEBHOOK_EVENTS } from '$lib/server/webhooks';
-import { inTransaction } from '$lib/server/db/transaction';
 import { pathId, readBody, readBoolean, readChoices, readText } from '$lib/server/request-body';
 import { readWebhookUrl } from '$lib/server/webhook-address';
-import { stillAuthenticated, type SessionUser } from '$lib/server/auth';
+import type { SessionUser } from '$lib/server/auth';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** The webhook, if the caller may view or edit the board it belongs to. */
@@ -57,16 +57,18 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * 2168).
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const webhookId = pathId(params.webhookId, 'webhook');
 	const body = await readBody(request);
 
-	// The key is asked again, the webhook read and the caller checked in the
-	// transaction that changes it, once the body has arrived. A key a reset
-	// ended meanwhile is 401. A webhook deleted meanwhile is 404: the update
-	// found nothing, and the answer was a 500.
-	const { updated, reveal } = inTransaction(() => {
-		stillAuthenticated(locals);
+	// The key is asked again, and who its account is now, the webhook read and
+	// the caller checked in the transaction that changes it, once the body has
+	// arrived. A key a reset ended meanwhile is 401, and an administrator
+	// lowered meanwhile is refused as they now are (card 2253). A webhook
+	// deleted meanwhile is 404: the update found nothing, and the answer was
+	// a 500.
+	const { updated, reveal } = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const { hook, reveal } = requireWebhook(user, webhookId, 'edit');
 
 		if (!reveal && (Object.hasOwn(body, 'url') || Object.hasOwn(body, 'secret'))) {
@@ -111,13 +113,16 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
  * DELETE /api/v1/webhooks/:webhookId — Delete a webhook.
  *
  * Its last delivery result, held in memory (card 2178), is forgotten once the
- * delete has committed.
+ * delete has committed. The webhook is read, the caller checked and the row
+ * deleted in one transaction that asks first whether the key is still open,
+ * and who its account is now (card 2253).
  */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	const webhookId = pathId(params.webhookId, 'webhook');
-	requireWebhook(locals.user, webhookId, 'edit');
-
-	db.delete(webhooks).where(eq(webhooks.id, webhookId)).run();
+	writeAs(locals, (caller) => {
+		requireWebhook(caller, webhookId, 'edit');
+		db.delete(webhooks).where(eq(webhooks.id, webhookId)).run();
+	});
 	forgetDelivery(webhookId);
 
 	return json({ success: true });

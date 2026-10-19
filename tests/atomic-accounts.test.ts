@@ -96,6 +96,7 @@ import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects, type RecordedEffect } from './helpers/effects';
 import { addBoardMember, makeApiKey, makeBoard, makeCard, makeSmtp, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
 import { gate } from './helpers/gate';
+import { sendAround } from './helpers/held-body';
 import { watchReads } from './helpers/reads';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { parseStamp, stamp } from '$lib/timestamps';
@@ -1443,51 +1444,9 @@ describe('what taking an account back switches off (card 2168)', () => {
 	});
 
 	describe('a create or a change whose body arrives after the reset (the review, S1)', () => {
-		/**
-		 * A JSON body the test lets go of. The gate decides who is calling before
-		 * it hands the body on, so once the body is first asked for the request
-		 * has been let in; `release` then sends it, and ends it.
-		 */
-		const heldBody = (value: unknown) => {
-			let asked!: () => void;
-			const wasAsked = new Promise<void>((resolve) => (asked = resolve));
-			let controller!: ReadableStreamDefaultController<Uint8Array>;
-			const body = new ReadableStream<Uint8Array>(
-				{
-					start: (c) => void (controller = c),
-					pull: () => asked()
-				},
-				{ highWaterMark: 0 }
-			);
-			const release = () => {
-				controller.enqueue(new TextEncoder().encode(JSON.stringify(value)));
-				controller.close();
-			};
-			return { body, wasAsked, release };
-		};
-
-		/** Sends the request, lets the reset (or nothing) happen once the gate has let it in, then the body. */
-		const sendAround = async (
-			method: string,
-			path: string,
-			credential: { key: string } | { session: string },
-			value: unknown,
-			meanwhile: () => Promise<unknown>
-		) => {
-			const held = heldBody(value);
-			// Asked for as a page's script asks: SvelteKit answers a refusal to a
-			// request that asks for nothing in particular with its error page.
-			const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json' };
-			if ('key' in credential) headers.authorization = `Bearer ${credential.key}`;
-			else headers.cookie = `${SESSION_COOKIE_NAME}=${credential.session}`;
-			const sent = gate(method, path, { headers, body: held.body });
-			await held.wasAsked;
-			await meanwhile();
-			held.release();
-			const res = await sent;
-			return { status: res.status, body: await res.json() };
-		};
-
+		// The request is sent through the gate with its body held back, the
+		// reset (or nothing) made once the gate has let it in, and then the body:
+		// `sendAround` in ./helpers/held-body.ts.
 		const hooksOn = (boardId: number) =>
 			sqlite.prepare('SELECT id, url, active, set_by AS setBy FROM webhooks WHERE board_id = ? ORDER BY id').all(boardId);
 		const schedulesOf = (userId: number) =>

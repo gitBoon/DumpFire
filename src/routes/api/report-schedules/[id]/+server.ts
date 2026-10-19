@@ -10,8 +10,8 @@ import { db } from '$lib/server/db';
 import { reportSchedules } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { overCapScheduleWords, REPORT_STATUS_FILTERS, takeReportMail } from '$lib/server/reports';
-import { inTransaction } from '$lib/server/db/transaction';
-import { stillAuthenticated } from '$lib/server/auth';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import {
 	pathId,
 	readBody,
@@ -53,18 +53,19 @@ const FREQUENCIES = ['weekly', 'monthly'] as const;
  * its next run out again from now; a timing that cannot be dated is 400.
  */
 export const PUT: RequestHandler = async ({ locals, params, request }) => {
-	const user = locals.user;
-	if (!user) throw error(401, 'Unauthorized');
+	// A quick refusal, binding no name: who the caller is is decided below.
+	requireUser(locals.user);
 
 	const scheduleId = pathId(params.id, 'schedule');
 	const body = await readBody(request);
 
 	// The schedule is looked for among the caller's own in the transaction
 	// that changes it, once the body has arrived, and the answer is the row
-	// as that transaction wrote it. The session is asked again first: a reset
-	// that ended it while the body was arriving is a 401.
-	const updated = inTransaction(() => {
-		stillAuthenticated(locals);
+	// as that transaction wrote it. The session is asked again first, and who
+	// its account is now: a reset that ended it while the body was arriving is
+	// a 401 (card 2253).
+	const updated = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const schedule = db.select().from(reportSchedules)
 			.where(and(eq(reportSchedules.id, scheduleId), eq(reportSchedules.userId, user.id)))
 			.get();
@@ -165,17 +166,24 @@ export const PUT: RequestHandler = async ({ locals, params, request }) => {
 	return json(updated);
 };
 
+/**
+ * DELETE — remove a schedule of the caller's own: looked for, and deleted, in
+ * one transaction that asks first whether the session is still open (card
+ * 2253). It asked nothing: a session ended by a reset could still delete.
+ */
 export const DELETE: RequestHandler = async ({ locals, params }) => {
-	const user = locals.user;
-	if (!user) throw error(401, 'Unauthorized');
+	requireUser(locals.user);
 
 	const scheduleId = pathId(params.id, 'schedule');
-	const schedule = db.select().from(reportSchedules)
-		.where(and(eq(reportSchedules.id, scheduleId), eq(reportSchedules.userId, user.id)))
-		.get();
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
+		const schedule = db.select().from(reportSchedules)
+			.where(and(eq(reportSchedules.id, scheduleId), eq(reportSchedules.userId, user.id)))
+			.get();
 
-	if (!schedule) throw error(404, 'Schedule not found');
+		if (!schedule) throw error(404, 'Schedule not found');
 
-	db.delete(reportSchedules).where(eq(reportSchedules.id, scheduleId)).run();
+		db.delete(reportSchedules).where(eq(reportSchedules.id, scheduleId)).run();
+	});
 	return json({ success: true });
 };

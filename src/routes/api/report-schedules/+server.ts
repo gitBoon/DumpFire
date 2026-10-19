@@ -10,11 +10,10 @@ import { db } from '$lib/server/db';
 import { reportSchedules, boards, boardCategories } from '$lib/server/db/schema';
 import { count, eq, desc } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
-import { inTransaction } from '$lib/server/db/transaction';
 import { REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS, takeReportMail } from '$lib/server/reports';
 import { readBody, readChoice, readId, readNumber, readReportRecipients, readText, readTime, readTimeZone } from '$lib/server/request-body';
-import { requireBoard } from '$lib/server/route-guards';
-import { stillAuthenticated } from '$lib/server/auth';
+import { requireBoard, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import { DEFAULT_SCHEDULE_TIME_ZONE, nextRunAfter } from '$lib/report-schedule-time';
 import { stamp } from '$lib/timestamps';
@@ -67,15 +66,17 @@ export const GET: RequestHandler = async ({ locals }) => {
  * write: a schedule made for the next minute brings a send forward.
  */
 export const POST: RequestHandler = async ({ locals, request }) => {
-	const user = locals.user;
-	if (!user) throw error(401, 'Unauthorized');
+	// A quick refusal, binding no name: who the caller is is decided below.
+	requireUser(locals.user);
 	const body = await readBody(request);
 
-	// One transaction: the session is asked again (a reset that ended it while
-	// the body was arriving is a 401), and the board or the grouping is looked
-	// for, and the caller checked, in the one that makes the schedule.
-	const created = inTransaction(() => {
-		stillAuthenticated(locals);
+	// One transaction: the session is asked again, and who its account is now
+	// (a reset that ended it while the body was arriving is a 401, and an
+	// administrator lowered meanwhile is refused an all-boards schedule), and
+	// the board or the grouping is looked for, and the caller checked, in the
+	// one that makes the schedule (card 2253).
+	const created = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const scope = readChoice(body, 'scope', {
 			required: true,
 			from: REPORT_SCOPES,
