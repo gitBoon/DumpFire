@@ -25,6 +25,7 @@ import { readId, readQueryDate, readText, type RequestBody } from './request-bod
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import { parseStamp, stamp, toStamp, type Stamp } from '$lib/timestamps';
 import { canonicalTimeZone, nextRunAfter, sameTimeDaysBefore } from '$lib/report-schedule-time';
+import { SUBTASK_ORDER } from './subtask-order';
 
 const log = createLogger('REPORTS');
 
@@ -262,8 +263,10 @@ export function formatDate(iso: string, timeZone?: string): string {
 function getSubtasksForCards(cardIds: number[]): Map<number, SubtaskInfo[]> {
 	const result = new Map<number, SubtaskInfo[]>();
 	if (cardIds.length === 0) return result;
+	// Each card's in its own order, by position and then id (card 2223).
 	const allSubtasks = db.select().from(subtasks)
 		.where(inArray(subtasks.cardId, cardIds))
+		.orderBy(...SUBTASK_ORDER)
 		.all();
 	for (const st of allSubtasks) {
 		if (!result.has(st.cardId)) result.set(st.cardId, []);
@@ -702,8 +705,8 @@ export function generateCardReport(cardId: number): ReportData | null {
 	const board = db.select().from(boards).where(eq(boards.id, col.boardId)).get();
 	if (!board) return null;
 
-	// Get subtasks
-	const cardSubtasks = db.select().from(subtasks).where(eq(subtasks.cardId, cardId)).all();
+	// Get subtasks, by position and then id (card 2223)
+	const cardSubtasks = db.select().from(subtasks).where(eq(subtasks.cardId, cardId)).orderBy(...SUBTASK_ORDER).all();
 	const subtaskInfos: SubtaskInfo[] = cardSubtasks.map(st => ({
 		title: st.title,
 		completed: st.completed,

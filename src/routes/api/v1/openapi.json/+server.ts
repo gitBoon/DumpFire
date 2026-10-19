@@ -117,7 +117,7 @@ const spec = {
 			'(54) a timestamp sent as the from or to of GET /api/v1/audit-log and GET /api/v1/reports/activity is read as ISO 8601, with or without a fraction and with Z or an offset, ' +
 			'as YYYY-MM-DD HH:MM:SS in UTC, or as a date, and anything else is answered 400 "from is not a date" or "to is not a date": the audit log compared what it was sent as text, unchecked, ' +
 			'so a bound written another way gained or lost the day at its end, and the activity report refused YYYY-MM-DD HH:MM:SS; a bound with an offset is read in UTC, and a date alone as `to` ' +
-			'is the whole of that day, to 23:59:59 UTC, in the audit log as in the report, where the audit log left that day out. ' +
+			'is the whole of that day, to 23:59:59 UTC, in the audit log as in the report, where the audit log left that day out. A from after its to is answered 400 "`from` is after `to`" by both (item 74). ' +
 			'(55) PUT /api/v1/cards/{cardId} reads an archivedAt that is text as the moment it names, so the archivedAt a GET answered, sent back, is the stamp the card holds and changes nothing, ' +
 			'in ISO 8601 with any fraction or offset or as YYYY-MM-DD HH:MM:SS; null still restores the card, and any other value, true and a number included, is still answered 400. ' +
 			'(56) a webhook\'s url, on POST /api/v1/boards/{boardId}/webhooks and PUT /api/v1/webhooks/{webhookId}, may not point inside the network as written, and is answered 400 ' +
@@ -179,6 +179,10 @@ const spec = {
 			'where they went on naming the work to readers of the board it arrived on; comments of cards moved before are unchanged. ' +
 			'(72) GET /api/v1/reports/activity gives a card\'s milestoneName only when the key\'s user can open that milestone (as GET /api/v1/milestones/{milestoneId} would answer 200), ' +
 			'and otherwise null, milestoneId as before, and its milestones list leaves out a milestone they cannot open, where a goal across boards was named to anyone who could open one of its boards. ' +
+			'(73) POST /api/v1/cards/{cardId}/subtasks with no position puts the new subtask after the card\'s last one (one more than the largest position, or 0 for its first), as the web application places it, ' +
+			'where every subtask sent with no position was put at 0; subtasks already at 0 keep it. GET /api/v1/cards/{cardId}/subtasks and the subtasks of GET /api/v1/cards/{cardId} are ordered by position, then id, where they had no order. ' +
+			'(74) GET /api/v1/audit-log answers a from after its to with 400 "`from` is after `to`", as GET /api/v1/reports/activity does, where it answered 200 with an empty page; equal bounds name one second and are allowed. ' +
+			'Its entries are newest first, and by id, newest first, within one second, so paging with offset neither repeats nor skips an entry of the second a page ends in. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -545,7 +549,7 @@ const spec = {
 					colorTag: { type: ['string', 'null'], description: 'A colour written #rrggbb, or an empty string for none; one stored before this rule is returned as stored' },
 					dueDate: { type: ['string', 'null'] },
 					completed: { type: 'boolean' },
-					position: { type: 'number', description: 'Order within the card, lowest first. Not always a whole number.' }
+					position: { type: 'number', description: 'Order within the card, lowest first, and by id where two share it. Not always a whole number.' }
 				},
 				required: ['id', 'cardId', 'title', 'description', 'priority', 'colorTag', 'dueDate', 'completed', 'position']
 			},
@@ -1145,7 +1149,7 @@ const spec = {
 					updatedAt: { type: 'string', format: 'date-time' },
 					boardId: { type: 'integer', description: 'The board the card is on' },
 					columnTitle: { type: 'string', description: 'Title of the column the card is in' },
-					subtasks: { type: 'array', items: { $ref: '#/components/schemas/Subtask' } },
+					subtasks: { type: 'array', items: { $ref: '#/components/schemas/Subtask' }, description: 'Ordered by position, then id (item 73)' },
 					labelIds: { type: 'array', items: { type: 'integer' } },
 					assignees: { type: 'array', items: { $ref: '#/components/schemas/Assignee' } },
 					isBlocked: { type: 'boolean', description: 'true when at least one thing the card waits on is not finished' },
@@ -2859,7 +2863,7 @@ const spec = {
 				tags: ['Cards'],
 				summary: 'Get a single card',
 				description:
-					'Returns the card with the board and column it is on, its subtasks, label IDs and assignees, and what it waits on and what waits on it, ' +
+					'Returns the card with the board and column it is on, its subtasks (ordered by position, then id), label IDs and assignees, and what it waits on and what waits on it, ' +
 					'so that whether it can be started is known without a second request. An archived card is returned like any other.',
 				operationId: 'getCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
@@ -3266,11 +3270,12 @@ const spec = {
 			get: {
 				tags: ['Subtasks'],
 				summary: 'List subtasks',
+				description: 'The card\'s subtasks, ordered by position, then id: subtasks at one position in the order they were made. Until 2026-10-14 they had no order (item 73).',
 				operationId: 'listSubtasks',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				responses: {
 					'200': {
-						description: 'Subtask list',
+						description: 'Subtask list, ordered by position, then id',
 						content: {
 							'application/json': {
 								schema: {
@@ -3316,7 +3321,12 @@ const spec = {
 									},
 									colorTag: { type: 'string', pattern: '^(#[0-9a-fA-F]{6})?$', description: 'A colour written #rrggbb and trimmed, or empty for none' },
 									dueDate: { type: ['string', 'null'], format: 'date', description: 'A day of the calendar written YYYY-MM-DD. null, or empty text, for none.' },
-									position: { type: 'number', default: 0 }
+									position: {
+										type: 'number',
+										description:
+											'Where it sits among the card\'s subtasks, lowest first. Not sent: after the last one (one more than the largest position, or 0 for the card\'s first), ' +
+											'as the web application places it (until 2026-10-14 it was 0, item 73)'
+									}
 								}
 							},
 							example: { title: 'Write the migration', priority: 'high' }
@@ -5148,7 +5158,7 @@ const spec = {
 				tags: ['Audit'],
 				summary: 'Get audit log',
 				description:
-					'Returns activity log entries from every board, newest first, a page at a time. Administrators only. ' +
+					'Returns activity log entries from every board, newest first, and by id within a second, a page at a time. Administrators only. ' +
 					'The filters all apply together. A page holds 100 entries unless `limit` says otherwise, and 500 at most: ' +
 					'read `pagination.hasMore`, and ask for the next page with `offset`, before taking a page for the whole answer.',
 				operationId: 'getAuditLog',
@@ -5243,7 +5253,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'source is neither ui nor api, boardId, userId or cardId is not a whole number of 1 or more (`Invalid board ID`), or from or to is not a date or a timestamp (`from is not a date`)',
+						description: 'source is neither ui nor api, boardId, userId or cardId is not a whole number of 1 or more (`Invalid board ID`), from or to is not a date or a timestamp (`from is not a date`), or from is after to ("`from` is after `to`", item 74)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'source must be "ui" or "api"' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },

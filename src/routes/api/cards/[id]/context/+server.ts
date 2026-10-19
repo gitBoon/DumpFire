@@ -21,12 +21,13 @@ import {
 	boardTeams,
 	teamMembers
 } from '$lib/server/db/schema';
-import { eq, asc, inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { canViewBoard } from '$lib/server/board-access';
 import { milestonesForBoard } from '$lib/server/milestones';
 import { cardCategoriesFor, subBoardsFor } from '$lib/server/list-access';
 import { subBoardProgress } from '$lib/server/card-completion';
 import { pathId } from '$lib/server/request-body';
+import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ params, locals }) => {
@@ -49,7 +50,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		.select()
 		.from(subtasks)
 		.where(eq(subtasks.cardId, cardId))
-		.orderBy(asc(subtasks.position))
+		.orderBy(...SUBTASK_ORDER)
 		.all();
 
 	const labelIds = db

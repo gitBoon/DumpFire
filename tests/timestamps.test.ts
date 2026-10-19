@@ -916,6 +916,68 @@ describe.each([
 	});
 });
 
+describe('the audit log refuses a reversed range, and keeps entries of one second in one order (card 2217)', () => {
+	let admin: ReturnType<typeof makeUser>;
+	let boardId = 0;
+	const entry = (at: string) =>
+		Number(
+			sqlite
+				.prepare("INSERT INTO activity_log (board_id, user_id, action, created_at) VALUES (?, ?, 'card_moved', ?)")
+				.run(boardId, admin.id, at).lastInsertRowid
+		);
+
+	beforeEach(() => {
+		admin = makeUser({ role: 'admin' });
+		boardId = makeBoard({ owner: admin }).board.id;
+		for (const at of ['2026-10-13 12:00:00', '2026-10-14 21:30:00', '2026-10-14 23:00:00', '2026-10-15 00:00:00']) entry(at);
+	});
+
+	it('GET /api/v1/audit-log answers a `from` after its `to` with 400 `from` is after `to`, as the activity report does', async () => {
+		for (const query of [
+			'from=2026-10-15&to=2026-10-14',
+			`from=${encodeURIComponent('2026-10-14T10:00:00Z')}&to=${encodeURIComponent('2026-10-14 09:59:59')}`
+		]) {
+			const res = await api('GET', `/api/v1/audit-log?boardId=${boardId}&${query}`, { user: admin });
+			expect([res.status, res.body], query).toEqual([400, { message: '`from` is after `to`' }]);
+		}
+	});
+
+	it('equal bounds name one second, and one bare day as both bounds is the whole day', async () => {
+		const at = async (query: string) => {
+			const res = await api('GET', `/api/v1/audit-log?boardId=${boardId}&${query}`, { user: admin });
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			return (res.body.data as { createdAt: string }[]).map((row) => toStamp(row.createdAt)).sort();
+		};
+		const second = encodeURIComponent('2026-10-14 23:00:00');
+		expect(await at(`from=${second}&to=${second}`)).toEqual(['2026-10-14 23:00:00']);
+		expect(await at('from=2026-10-14&to=2026-10-14')).toEqual(['2026-10-14 21:30:00', '2026-10-14 23:00:00']);
+	});
+
+	it.each(['/api/audit', '/api/v1/audit-log'])(
+		'%s: entries of one second come back newest id first, so paging one at a time gives each once',
+		async (route) => {
+			// Stored in whole seconds since card 2095, so a burst of work shares a
+			// second; ordered by the time alone, its entries came in whatever order
+			// SQLite read them, and `offset` could give one twice and skip another.
+			const ids = [entry('2026-10-16 09:00:00'), entry('2026-10-16 09:00:00'), entry('2026-10-16 09:00:00')];
+			const pages: number[] = [];
+			for (const offset of [0, 1, 2]) {
+				const res = await api('GET', `${route}?boardId=${boardId}&from=2026-10-16&limit=1&offset=${offset}`, { user: admin });
+				expect(res.status, JSON.stringify(res.body)).toBe(200);
+				pages.push(...(res.body.data as { id: number }[]).map((row) => row.id));
+			}
+			expect(pages).toEqual([...ids].reverse());
+		}
+	);
+
+	it('both audit routes order by the time and then the id, newest first', () => {
+		for (const file of ['src/routes/api/v1/audit-log/+server.ts', 'src/routes/api/audit/+server.ts']) {
+			const source = readFileSync(join(process.cwd(), file), 'utf-8');
+			expect(source, file).toContain('.orderBy(desc(activityLog.createdAt), desc(activityLog.id))');
+		}
+	});
+});
+
 describe('a timestamp a caller sends that cannot be read is a 400 that names it (decision 10)', () => {
 	const SESSION = { cookie: `${SESSION_COOKIE_NAME}=a-session` };
 

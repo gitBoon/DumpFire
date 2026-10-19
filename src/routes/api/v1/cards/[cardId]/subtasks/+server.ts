@@ -8,6 +8,7 @@ import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { logActivity } from '$lib/server/logActivity';
 import { PRIORITIES } from '$lib/server/card-fields';
+import { SUBTASK_ORDER, nextSubtaskPosition } from '$lib/server/subtask-order';
 import { pathId, readBody, readChoice, readColour, readDate, readNumber, readText } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import type { RequestHandler } from './$types';
@@ -20,7 +21,7 @@ function getCardBoardId(cardId: number): number | null {
 	return col?.boardId ?? null;
 }
 
-/** GET /api/v1/cards/:cardId/subtasks — List all subtasks for a card. */
+/** GET /api/v1/cards/:cardId/subtasks — List all subtasks for a card, by position and then id. */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
@@ -36,6 +37,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const cardSubtasks = db.select()
 		.from(subtasks)
 		.where(eq(subtasks.cardId, cardId))
+		.orderBy(...SUBTASK_ORDER)
 		.all();
 
 	return json(cardSubtasks);
@@ -43,6 +45,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 /**
  * POST /api/v1/cards/:cardId/subtasks — Create a new subtask on a card.
+ * With no `position` it goes after the card's last one (card 2223).
  *
  * The card is looked for and the caller checked (404, then 403) before any
  * field is read (400).
@@ -83,7 +86,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 				priority: priority ?? 'medium',
 				colorTag: colorTag ?? '',
 				dueDate: dueDate ?? null,
-				position: position ?? 0
+				// Not sent: after the card's last one, as the web application
+				// places it (card 2223). It was 0, so a card filled by a script
+				// had every subtask at 0.
+				position: position ?? nextSubtaskPosition(cardId)
 			})
 			.returning()
 			.get();

@@ -81,7 +81,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const entries = db.select()
 		.from(activityLog)
 		.where(where)
-		.orderBy(desc(activityLog.createdAt))
+		// Newest first, and by id within a second (card 2217), so a page
+		// boundary inside one second neither repeats nor skips an entry.
+		.orderBy(desc(activityLog.createdAt), desc(activityLog.id))
 		.limit(limit)
 		.offset(offset)
 		.all();

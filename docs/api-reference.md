@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.56
+version: 1.57
 status: As-Built
 date: 2026-10-19
 tags:
@@ -767,7 +767,8 @@ new; these answers and fields are:
   what it was sent with the stored time as text, unchecked, so a bound written in the other
   form gained or lost the day at its end, and a date alone as `to` left that whole day out;
   the activity report refused `YYYY-MM-DD HH:MM:SS`. A date alone as `to` is now the whole
-  of that day, to 23:59:59 UTC, in both (item 54).
+  of that day, to 23:59:59 UTC, in both (item 54). A `from` after its `to` is `400`
+  `` `from` is after `to` `` in both (card 2217, item 74).
 - **An `archivedAt` that is text, on `PUT /cards/:cardId`, is read as the moment it names**
   (card 2095), so the `archivedAt` a `GET` answered, sent back in ISO 8601 with any fraction
   or offset, or as `YYYY-MM-DD HH:MM:SS`, is the stamp the card holds and changes nothing.
@@ -908,6 +909,18 @@ new; these answers and fields are:
   (`GET /milestones/:milestoneId` would be `403`), with `milestoneId` as before, and
   `milestones` leaves such a milestone out. A goal across boards was named to anyone who
   could open one of its boards (item 72).
+- **A subtask made with no `position` goes after the card's last one** (card 2223), on
+  `POST /cards/:cardId/subtasks`: one more than the largest position on the card, or 0 for
+  its first, as the web application places it. Every subtask sent with no `position` was
+  put at 0, so a card filled by a script had them all there. Subtasks already at 0 keep it.
+  `GET /cards/:cardId/subtasks` and the `subtasks` of `GET /cards/:cardId` are ordered by
+  position, then id, so subtasks at one position read in the order they were made; they had
+  no order (item 73).
+- **`GET /audit-log` refuses a `from` after its `to`** (card 2217): `400`
+  `` `from` is after `to` ``, as `GET /reports/activity` answers, where it was `200` with an
+  empty page. Equal bounds name one second and are allowed. Its entries are newest first,
+  and by id, newest first, within one second, so paging with `offset` neither repeats nor
+  skips an entry of the second a page ends in (item 74).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2027,7 +2040,12 @@ by `source=api` for what was done through the API.
 `from` and `to` are read as [Timestamps](#timestamps) says: ISO 8601, `YYYY-MM-DD HH:MM:SS`
 in UTC, or a date, a date alone as `to` being the whole of that day; anything else is `400`
 `from is not a date` or `to is not a date`. Until 2026-10-14 they were compared with the
-stored time as text, unchecked, and a date alone as `to` left that day out.
+stored time as text, unchecked, and a date alone as `to` left that day out. A `from` after
+its `to` is `400` `` `from` is after `to` ``, as the activity report answers; equal bounds
+name one second. Until 2026-10-14 a reversed pair was `200` with an empty page (card 2217).
+
+Entries come newest first, and by id within a second, newest first, so paging with
+`offset` neither repeats nor skips an entry of the second a page ends in (card 2217).
 
 `pagination` carries `total` and `hasMore` — check it, because a full default
 page of 100 used to be indistinguishable from a complete result.
@@ -2241,7 +2259,7 @@ and no `api:card_completed` entry.
 
 #### `GET /api/v1/cards/:cardId`
 
-Get a card with subtasks, labels, and assignees.
+Get a card with subtasks (ordered by position, then id), labels, and assignees.
 
 #### `PUT /api/v1/cards/:cardId`
 
@@ -2430,7 +2448,8 @@ Remove an assignee: `{ "userId": 2 }`. Removing someone who is not assigned to t
 
 #### `GET /api/v1/cards/:cardId/subtasks`
 
-List subtasks for a card.
+List subtasks for a card, ordered by position, then id: subtasks at one position in the
+order they were made. Until 2026-10-14 they had no order (card 2223).
 
 #### `POST /api/v1/cards/:cardId/subtasks`
 
@@ -2443,11 +2462,12 @@ Create a subtask.
 | `priority` | string | | `low` / `medium` / `high` / `critical`, in any case, stored in lower case |
 | `colorTag` | string | | A colour written `#rrggbb`, or `''` for none |
 | `dueDate` | string or null | | A day of the calendar written `YYYY-MM-DD`; `''` is none |
-| `position` | number | | Position in the card's list |
+| `position` | number | | Position in the card's list, lowest first. Not sent: after the card's last one (one more than the largest position, or 0 for its first), as the web application places it. Until 2026-10-14 it was 0 (card 2223) |
 
 #### `PUT /api/v1/subtasks/:subtaskId`
 
-Update a subtask: any of the fields above, and `completed`. Set `"completed": true` to mark
+Update a subtask: any of the fields above, and `completed`; a field not sent, `position`
+included, is left as it is (only a new subtask is placed after the last). Set `"completed": true` to mark
 done; it is `true` or `false`, and `"false"` is `400`, where it was stored as true. A value
 the subtask already holds, sent back unchanged, is accepted as it is, and a body with none
 of the fields is `400` `No valid fields to update`. The card or subtask is looked for, and

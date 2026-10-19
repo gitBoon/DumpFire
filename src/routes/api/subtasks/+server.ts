@@ -2,11 +2,12 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { subtasks } from '$lib/server/db/schema';
-import { eq, asc } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { requireCard, requireUser } from '$lib/server/route-guards';
 import { logUiActivity, actorOf, ACTIONS } from '$lib/server/logActivity';
 import { PRIORITIES } from '$lib/server/card-fields';
+import { SUBTASK_ORDER, nextSubtaskPosition } from '$lib/server/subtask-order';
 import { readBody, readChoice, readColour, readDate, readId, readQueryId, readText } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
@@ -20,7 +21,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	requireCard(locals.user, cardId, 'view');
 
-	const all = db.select().from(subtasks).where(eq(subtasks.cardId, cardId)).orderBy(asc(subtasks.position)).all();
+	const all = db.select().from(subtasks).where(eq(subtasks.cardId, cardId)).orderBy(...SUBTASK_ORDER).all();
 	return json(all);
 };
 
@@ -58,9 +59,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const colorTag = readColour(body, 'colorTag', { allowEmpty: true });
 		const dueDate = readDate(body, 'dueDate', { nullable: true });
 
-		const existing = db.select().from(subtasks).where(eq(subtasks.cardId, cardId)).all();
-		const maxPos = existing.length > 0 ? Math.max(...existing.map((s) => s.position)) + 1 : 0;
-
 		const subtask = db
 			.insert(subtasks)
 			.values({
@@ -70,7 +68,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				priority: priority ?? 'medium',
 				colorTag: colorTag ?? '',
 				dueDate: dueDate ?? null,
-				position: maxPos
+				position: nextSubtaskPosition(cardId)
 			})
 			.returning()
 			.get();

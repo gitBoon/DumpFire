@@ -9,6 +9,7 @@ import { milestonesForBoard } from '$lib/server/milestones';
 import { linkableBoards, MAX_SUB_BOARD_DEPTH } from '$lib/server/sub-boards';
 import { cardCategoriesFor, hiddenOpenCountsFor, subBoardsFor } from '$lib/server/list-access';
 import { subBoardProgress } from '$lib/server/card-completion';
+import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ params, locals }) => {
@@ -111,7 +112,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 					.select()
 					.from(subtasks)
 					.where(inArray(subtasks.cardId, cardIds))
-					.orderBy(asc(subtasks.position))
+					.orderBy(...SUBTASK_ORDER)
 					.all()
 			: [];
 

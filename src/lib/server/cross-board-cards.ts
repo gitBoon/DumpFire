@@ -28,6 +28,7 @@ import { getBlockedStateForCards } from '$lib/server/planning';
 import { milestoneNamesForCards } from '$lib/server/milestones';
 import { boardAncestry } from '$lib/server/board-tree';
 import { placeBoards } from '$lib/board-tree';
+import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 
 type ColumnRow = typeof columns.$inferSelect;
 
@@ -67,7 +68,7 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 
 	const cardIds = allCards.map(c => c.id);
 	const allSubtasks = cardIds.length > 0
-		? db.select().from(subtasks).where(inArray(subtasks.cardId, cardIds)).orderBy(asc(subtasks.position)).all()
+		? db.select().from(subtasks).where(inArray(subtasks.cardId, cardIds)).orderBy(...SUBTASK_ORDER).all()
 		: [];
 
 	const allCardLabels = cardIds.length > 0
