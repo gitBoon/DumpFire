@@ -80,6 +80,7 @@ import {
 	cardTemplates,
 	categories,
 	inviteTokens,
+	milestones,
 	reportSchedules,
 	sessions,
 	taskRequests,
@@ -695,6 +696,10 @@ const intoGoal =
 			)
 			.run();
 
+/** Take board B's card out of board B's milestone, which then holds no card. */
+const emptyMilestoneOfB = (w: World): void =>
+	void db.update(cards).set({ milestoneId: null }).where(eq(cards.id, w.B.card.id)).run();
+
 /**
  * The card board A is put under, in the case of `PUT /api/boards/[id]` that
  * links it: on a third board, which `owner` may edit and does not own. Made by
@@ -1066,8 +1071,16 @@ const TABLE: Record<string, Case | Case[]> = {
 			answers: 400,
 			because: 'a milestone of one board takes no card of another, whoever asks'
 		}),
+		// Board B's milestone holds board B's card, so it is not given to board A
+		// (card 2179); once it is empty, it is.
 		across((w) => json(`/api/milestones/${w.B.milestone.id}`, { boardId: w.A.board.id }), {
-			of: 'moving it to another board'
+			of: 'moving it to another board',
+			answers: 400,
+			because: 'a milestone that holds cards of another board is not given to it, whoever asks'
+		}),
+		across((w) => json(`/api/milestones/${w.B.milestone.id}`, { boardId: w.A.board.id }), {
+			of: 'moving an empty one to another board',
+			setup: emptyMilestoneOfB
 		}),
 		// `editor` can see it, its card being on board A, and did not make it.
 		own('owner', ['outsider', 'editor', 'viewer'], (w) => json(`/api/milestones/${w.goal.id}`, { name: 'Renamed' }), {
@@ -1544,8 +1557,16 @@ const TABLE: Record<string, Case | Case[]> = {
 	],
 	'PATCH /api/v1/milestones/[milestoneId]': [
 		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}`, { name: 'Renamed' })),
+		// Board B's milestone holds board B's card, so it is not given to board A
+		// (card 2179); once it is empty, it is.
 		across((w) => json(`/api/v1/milestones/${w.B.milestone.id}`, { boardId: w.A.board.id }), {
-			of: 'moving it to another board'
+			of: 'moving it to another board',
+			answers: 400,
+			because: 'a milestone that holds cards of another board is not given to it, whoever asks'
+		}),
+		across((w) => json(`/api/v1/milestones/${w.B.milestone.id}`, { boardId: w.A.board.id }), {
+			of: 'moving an empty one to another board',
+			setup: emptyMilestoneOfB
 		}),
 		own('owner', ['outsider', 'editor', 'viewer'], (w) => json(`/api/v1/milestones/${w.goal.id}`, { name: 'Renamed' }), {
 			of: 'one with no board',
@@ -3884,6 +3905,28 @@ describe('the other end of a dependency, to a caller who cannot open its board (
 			]);
 		});
 
+		it('lists the milestone with the ids of the boards its cards are on that the caller can open, and counts every card (card 2206)', async () => {
+			type Listed = { id: number; boardIds: number[]; cardCount: number };
+			const lists = async (who: Caller): Promise<Record<string, Listed[]>> => ({
+				'GET /api/v1/milestones': await answer('GET', '/api/v1/milestones', who),
+				'GET /api/milestones': await answer('GET', '/api/milestones', who),
+				'the plan page': (await pageData('/plan', who)).milestones as Listed[]
+			});
+			const ofA = (list: Listed[]) => list.find((m) => m.id === w.A.milestone.id)!;
+
+			// The read of one lists the card withheld, so the list counts it and gives no id of its board.
+			for (const [name, list] of Object.entries(await lists('viewer'))) {
+				expect(ofA(list).boardIds, name).toEqual([w.A.board.id]);
+				expect(ofA(list).cardCount, name).toBe(3);
+			}
+			for (const who of ['editsA', 'admin'] as const) {
+				for (const [name, list] of Object.entries(await lists(who))) {
+					expect([...ofA(list).boardIds].sort((a, b) => a - b), `${who}: ${name}`).toEqual([w.A.board.id, w.B.board.id].sort((a, b) => a - b));
+					expect(ofA(list).cardCount, `${who}: ${name}`).toBe(3);
+				}
+			}
+		});
+
 		it('charts the milestone for a viewer of board A on board A alone, in both trees, and says a card is left out', async () => {
 			for (const path of ['/api/burndown', '/api/v1/burndown']) {
 				const hiddenFrom = await answer('GET', `${path}?milestoneId=${w.A.milestone.id}`, 'viewer');
@@ -4131,5 +4174,133 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 			}
 		}
 		expect(offered).toBeGreaterThan(0);
+	});
+});
+
+// ─── Giving a milestone to another board (card 2179) ────────────────────────
+
+describe('giving a milestone to another board (card 2179)', () => {
+	type Caller = Exclude<Who, 'nobody'>;
+
+	/** Decision 2's refusal, as the review's R2 worded it: no count and no board's name. */
+	const NOT_ON_THAT_BOARD =
+		'Some cards in this milestone are not on that board (archived cards count too). ' +
+		'Take those cards out of it first, or make the milestone cross-board instead; ' +
+		'only its creator or an administrator can change a cross-board milestone afterwards.';
+
+	/** Both routes that change a milestone: one function decides for both. */
+	const ROUTES = [
+		['PATCH /api/v1/milestones/[milestoneId]', (id: number) => `/api/v1/milestones/${id}`],
+		['PATCH /api/milestones/[id]', (id: number) => `/api/milestones/${id}`]
+	] as const;
+
+	const patch = (path: string, who: Caller, body: unknown) => api('PATCH', path, { user: w[who], body });
+
+	/** The milestone's board, and the cards in it, archived ones included. */
+	const held = (id: number) => ({
+		boardId: db.select({ boardId: milestones.boardId }).from(milestones).where(eq(milestones.id, id)).get()?.boardId,
+		cards: db
+			.select({ id: cards.id })
+			.from(cards)
+			.where(eq(cards.milestoneId, id))
+			.all()
+			.map((card) => card.id)
+			.sort((a, b) => a - b)
+	});
+
+	const takeOut = (card: Card) => db.update(cards).set({ milestoneId: null }).where(eq(cards.id, card.id)).run();
+
+	describe.each(ROUTES)('%s', (_route, path) => {
+		it("refuses to give board B's milestone, which holds a card of board B, to board A, and a viewer of board A still reads nothing of it", async () => {
+			const before = snapshotDb();
+
+			const res = await patch(path(w.B.milestone.id), 'both', { boardId: w.A.board.id });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(400);
+			expect(res.body.message).toBe(NOT_ON_THAT_BOARD);
+			expectUnchanged(before);
+			expect((await api('GET', `/api/v1/milestones/${w.B.milestone.id}`, { user: w.viewer })).status).toBe(403);
+			const listed = await api('GET', `/api/v1/milestones?boardId=${w.A.board.id}`, { user: w.viewer });
+			expect(listed.status).toBe(200);
+			expect((listed.body as { id: number }[]).map((m) => m.id)).not.toContain(w.B.milestone.id);
+			expect(JSON.stringify(listed.body)).not.toContain(MARK_B);
+		});
+
+		it('counts an archived card: a milestone holding only an archived card of board B is not given to board A either', async () => {
+			takeOut(w.B.card);
+			db.update(cards).set({ milestoneId: w.B.milestone.id }).where(eq(cards.id, w.B.archived.id)).run();
+			const before = snapshotDb();
+
+			const res = await patch(path(w.B.milestone.id), 'both', { boardId: w.A.board.id });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(400);
+			expect(res.body.message).toBe(NOT_ON_THAT_BOARD);
+			expectUnchanged(before);
+		});
+
+		it('refuses a goal across boards holding a card of each board, and gives it to board A once its card of board B is taken out', async () => {
+			const goal = makeMilestone({ name: `${MARK} goal of both`, createdBy: w.both, cards: [w.A.loose, w.B.loose] });
+			const before = snapshotDb();
+
+			const refused = await patch(path(goal.id), 'both', { boardId: w.A.board.id });
+
+			expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+			expect(refused.body.message).toBe(NOT_ON_THAT_BOARD);
+			expectUnchanged(before);
+
+			takeOut(w.B.loose);
+			const given = await patch(path(goal.id), 'both', { boardId: w.A.board.id });
+
+			expect(given.status, JSON.stringify(given.body)).toBe(200);
+			expect(held(goal.id)).toEqual({ boardId: w.A.board.id, cards: [w.A.loose.id] });
+			const read = await api('GET', `/api/v1/milestones/${goal.id}`, { user: w.viewer });
+			expect(read.status).toBe(200);
+			expect((read.body.cards as { id: number }[]).map((card) => card.id)).toEqual([w.A.loose.id]);
+			expect(JSON.stringify(read.body)).not.toContain(MARK_B);
+		});
+
+		it('makes a milestone holding a card of its board a goal across boards, as before, with the card still in it', async () => {
+			const res = await patch(path(w.B.milestone.id), 'both', { boardId: null });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(held(w.B.milestone.id)).toEqual({ boardId: null, cards: [w.B.card.id] });
+			// A goal across boards is opened by whoever can open every board its cards are on.
+			expect((await api('GET', `/api/v1/milestones/${w.B.milestone.id}`, { user: w.viewer })).status).toBe(403);
+		});
+
+		it('gives an empty milestone to another board, and takes its own board sent back as no change', async () => {
+			const own = await patch(path(w.B.milestone.id), 'both', { boardId: w.B.board.id });
+			expect(own.status, JSON.stringify(own.body)).toBe(200);
+			expect(held(w.B.milestone.id)).toEqual({ boardId: w.B.board.id, cards: [w.B.card.id] });
+
+			takeOut(w.B.card);
+			const moved = await patch(path(w.B.milestone.id), 'both', { boardId: w.A.board.id });
+			expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+			expect(held(w.B.milestone.id)).toEqual({ boardId: w.A.board.id, cards: [] });
+		});
+
+		it('answers 404 Board not found for a board that is not there, to an administrator and to an editor alike', async () => {
+			const before = snapshotDb();
+
+			for (const [who, id] of [
+				['admin', w.B.milestone.id],
+				['owner', w.A.milestone.id]
+			] as const) {
+				const res = await patch(path(id), who, { boardId: 999999 });
+				expect(res.status, `${who}: ${JSON.stringify(res.body)}`).toBe(404);
+				expect(res.body.message, who).toBe('Board not found');
+			}
+			expectUnchanged(before);
+		});
+
+		it('refuses a caller who cannot edit the board sent with 403, before anything of the milestone’s cards is said', async () => {
+			const before = snapshotDb();
+
+			const res = await patch(path(w.B.milestone.id), 'editsB', { boardId: w.A.board.id });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(403);
+			expect(res.body.message).toBe('No edit access to that board');
+			expectUnchanged(before);
+		});
 	});
 });

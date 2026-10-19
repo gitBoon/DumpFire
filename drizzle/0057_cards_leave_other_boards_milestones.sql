@@ -31,11 +31,14 @@
 -- keeps every row, so the rehearsal still expects `cards` to keep all of its
 -- rows, and notes the change.
 --
--- Runs once. The runner records this file by name and never runs it again,
--- and nothing repeats it at start-up or after a restore: a milestone moved to
--- another board can still take its cards with it until card 2179 refuses
--- that, and a repair at start-up would then take cards out of a goal with
--- nobody having asked.
+-- Runs once. The runner records this file by name and never runs it again.
+-- Card 2179 repeats the same statement as a backfill (runBackfills in
+-- src/lib/server/db/migrate.ts, CARDS_LEAVE_OTHER_BOARDS_MILESTONES), at every
+-- start and after every restore, so that a restored older backup is repaired
+-- too. It is safe to repeat because card 2179 also refuses giving a milestone
+-- to another board while it holds cards of other boards: no write makes such
+-- a card any more, so an ordinary start finds none to take out. A test holds
+-- the two copies to the same text.
 
 UPDATE `cards` SET `milestone_id` = NULL
 WHERE `milestone_id` IN (SELECT `id` FROM `milestones` WHERE `board_id` IS NOT NULL)

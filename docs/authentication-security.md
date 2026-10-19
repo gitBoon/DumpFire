@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.40
+version: 1.41
 status: As-Built
 date: 2026-10-19
 tags:
@@ -2493,13 +2493,47 @@ everyone's.
 - **Moving a card to another board** takes it out of a milestone of the board it left, as it
   already loses that board's labels and categories; a goal across boards is unaffected.
   Through the API the move answers `milestoneId: null`, and the board's activity reads
-  `"T" moved to board "B" (To Do → To Do) and out of milestone "M"`. Whoever moves it is
+  `"T" moved to board "B" (To Do → To Do) and out of milestone "M"` (since card 2181,
+  `"T" moved to another board (To Do → To Do) and out of milestone "M"`). Whoever moves it is
   told: both move answers name the milestone left as `leftMilestone`, and All Tasks says
   `Moved. It left milestone "M"; moving it back does not put it back in.` At the deploy, the cards
   that query 3 of [Deployment](deployment.md) lists leave their milestones.
 - **An open board** turns into "You do not have access to this board" within about 30 seconds
   of its reader being taken off it, or of an administrator who is not on it being made an
   ordinary user; a deleted board into "Board not found".
+
+### What Users Notice (cards 2179, 2181, 2198, 2199, 2206 and 2207)
+
+Each closes a way to read, or be mailed, something of a board the reader cannot open, or
+reaches people a mention could not. Administrators open every board; what changes for them
+is the milestone rule, the activity text and the mention rule, which are everyone's.
+
+- **Giving a goal to another board.** Through the API a milestone is given a new board only
+  when every card in it, archived ones included, is on that board; otherwise `400`. The
+  new board's readers would have read the other cards' titles in it. Making it a goal across
+  boards still works, and no page sends a board for a goal. A board id that does not exist
+  is `404` for everyone, where an administrator was answered `500` and anyone else `403`.
+  The same repair as 0057's runs at every start and after every restore, so a backup taken
+  before 0057 comes back with such cards taken out of their goals, counted in the restore's
+  result.
+- **A move between boards.** Neither board's activity names the other board, for anyone:
+  `"T" moved to another board (To Do → Done)` and `"T" moved from another board (To Do →
+  Done)`, and the live events carry no board name. Someone who can open both boards finds
+  both entries in All Tasks, each under its board. Entries written before still name the
+  other board.
+- **Mentions.** Someone named in a comment on a board they cannot open is not mailed, and
+  the author is not told. A mention is the longest username the text after `@` begins
+  with, in any case, so names with capitals, dots, hyphens and spaces can be mentioned,
+  `@jane.doe` never reaches `jane`, and an email address is not a mention.
+- **The milestone list.** `boardIds` gives only boards the caller can open; the counts still
+  count every card, as the read of one milestone lists such a card withheld.
+- **The board history** of a card with no recorded creation begins with the board it
+  started on. A board the caller cannot open keeps its place without its name.
+
+Covered by `tests/access-every-route.test.ts`, `tests/atomic-moves.test.ts`,
+`tests/live-streams.test.ts`, `tests/atomic-creation.test.ts`, `tests/mail-escaping.test.ts`,
+`tests/mentions.test.ts`, `tests/card-completion.test.ts` and `tests/migrations.test.ts`;
+see [Testing](testing.md).
 
 ## The Public Request Form
 
@@ -3127,16 +3161,28 @@ each mention becomes a `<span class="mention-chip">` made with `createElement` a
 `textContent`. It is the function the server's `parseMentions` reads to decide who is mailed,
 so for text written as text the page chips what the server mails, in code, fenced blocks and
 link text too; a chip in a link's text is a `span` inside the link, which is valid. The
-server reads the stored text and the page the text of the HTML drawn, so until card 2207 the
-two differ where a comment is written as HTML: a mention inside an HTML comment, an
+server reads the stored text and the page the text of the HTML drawn, so the two differ
+where a comment is written as HTML: a mention inside an HTML comment, an
 attribute or a link's address is mailed but not chipped, and one written with an entity,
 `&#64;name`, is chipped but not mailed. A link's address, its title and an
 image's alt text are attributes, and keep their text: an email address in a comment is a
-working `mailto:` link. Today's rule is `@` followed by letters, digits or `_`, so
-`a@example.com` still mails an account called `example`, and its link text shows a chip on
-`@example`; card 2207 changes the rule in that one function. The card window passes its
-board's usernames as `mentions` (the rule does not read them yet); a description is drawn
-with none, and has no chips.
+working `mailto:` link. Card 2207 changed the rule, in that one function, and not what
+each side reads, so the difference for text written as HTML stays. The rule: a mention
+starts at an `@` that begins the text or follows anything but a letter, a digit or `_`, so
+`a@example.com` holds none and mails nobody; its name is the longest username the text
+after the `@` begins with, case ignored, ending a word. The card window passes the usernames
+of the card's own board as `mentions` (its owner, its members, the members of the teams it
+is shared with, and administrators), and chips only those, on the board page, the plan, All
+Tasks and All To Do alike: All Tasks and All To Do read them with the card's context
+(`GET /api/cards/:id/context`) since the review of card 2198, and before it gave every
+account, so a chip there could name someone who was not mailed. The server matches every
+account's username and then mails only those who can open the board (card 2198), so the two
+differ only for a public board, where someone who is none of those people is mailed and not
+chipped. Only the first 200 `@` of a text that could start a name are looked up (an `@` at
+the end or before a space or another `@` is not), and each is checked against the usernames
+that begin with its next letter, not against every account, because the server finds them
+inside the comment's write: a mention after the first 200 is not mailed and not chipped. A
+description is drawn with none, and has no chips.
 
 **The policy is the second line.** The sanitiser removes, before the browser sees them,
 what the policy's `style-src-elem` and `img-src` would refuse in a description or comment,

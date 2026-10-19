@@ -111,8 +111,15 @@ function print(found) {
 		}
 		console.log(
 			`Filled in: first_completed_at on ${first.backfilled.firstCompletedAt} card(s), ` +
-				`access_token on ${first.backfilled.accessTokens} request(s)`
+				`access_token on ${first.backfilled.accessTokens} request(s), ` +
+				`${first.backfilled.releasedFromMilestones} card(s) taken out of a milestone of another board`
 		);
+		// Which, the first 50 by card and milestone, as the start's WARN line names them.
+		if (first.backfilled.released.length > 0) {
+			const more = first.backfilled.releasedFromMilestones - first.backfilled.released.length;
+			const named = first.backfilled.released.map((r) => `card ${r.cardId} left milestone ${r.milestoneId}`).join(', ');
+			console.log(`    ${named}${more > 0 ? `; and ${more} more` : ''}`);
+		}
 
 		// Card 2095: what the first start converts, column by column. On an
 		// export of production this is the measurement of what it holds.

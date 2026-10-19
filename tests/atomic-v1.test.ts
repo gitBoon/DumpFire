@@ -1056,6 +1056,8 @@ describe('POST /api/v1/cards/:cardId/comments', () => {
 		const member = makeUser({ username: 'member' });
 		const mentioned = makeUser({ username: 'mentioned' });
 		addBoardMember(s.A.board, member, 'editor');
+		// Someone named is mailed only on a board they can open (card 2198).
+		addBoardMember(s.A.board, mentioned, 'viewer');
 		db.insert(taskRequests)
 			.values({
 				targetType: 'user',
@@ -1114,6 +1116,7 @@ describe('POST /api/v1/cards/:cardId/comments', () => {
 		expect(run.effects.map(name)).toEqual([
 			'email to viewer@example.test: New comment on: First',
 			'email to member@example.test: New comment on: First',
+			'email to mentioned@example.test: New comment on: First',
 			'email to mentioned@example.test: owner mentioned you: First',
 			'email to rita@example.test: New comment on your request: Please build this',
 			'webhook comment.added'

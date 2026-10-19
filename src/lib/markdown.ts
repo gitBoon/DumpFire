@@ -41,11 +41,12 @@
  *   would have to survive the class rule. Where a mention is is
  *   `findMentions` (`$lib/mentions`), the rule the server mails by, so for
  *   text written as text the page chips what the server mails, code and link
- *   text included. The server reads the stored text, not this HTML, so until
- *   card 2207 the two differ where the text is written as HTML: a mention in
- *   an HTML comment, an attribute or a link's address is mailed and not
- *   chipped, and one written with an entity (`&#64;name`) is chipped and not
- *   mailed.
+ *   text included, for the names it is given (card 2207: a name is a
+ *   username, and the card window gives its board's people). The server
+ *   reads the stored text, not this HTML, so the two differ where the text is
+ *   written as HTML: a mention in an HTML comment, an attribute or a link's
+ *   address is mailed and not chipped, and one written with an entity
+ *   (`&#64;name`) is chipped and not mailed.
  *
  * With no DOM (a server render) nothing is cleaned, so nothing is rendered:
  * the text comes back HTML-escaped, and nothing throws.

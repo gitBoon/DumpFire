@@ -44,9 +44,11 @@ import {
 	makeCard,
 	makeSmtp,
 	makeSubtask,
+	makeTeam,
 	makeUser,
 	makeWebhook,
 	resetDb,
+	shareBoardWithTeam,
 	type BoardFixture
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -317,6 +319,8 @@ describe('POST /api/cards/:id/comments', () => {
 		const member = makeUser({ username: 'member' });
 		const mentioned = makeUser({ username: 'mentioned' });
 		addBoardMember(s.A.board, member, 'editor');
+		// Someone named is mailed only on a board they can open (card 2198).
+		addBoardMember(s.A.board, mentioned, 'viewer');
 		db.insert(taskRequests)
 			.values({
 				targetType: 'user',
@@ -377,6 +381,7 @@ describe('POST /api/cards/:id/comments', () => {
 			'webhook comment.added',
 			'email to viewer@example.test: New comment on: First',
 			'email to member@example.test: New comment on: First',
+			'email to mentioned@example.test: New comment on: First',
 			'email to mentioned@example.test: owner mentioned you: First',
 			'email to rita@example.test: New comment on your request: Please build this'
 		]);
@@ -435,6 +440,67 @@ describe('POST /api/cards/:id/comments', () => {
 		expect((await expectRefused(post(s.viewer, s.first.id, 'Hello'), 403)).body.message).toBe('No edit access');
 		expect((await expectRefused(post(s.outsider, s.first.id, 'Hello'), 403)).body.message).toBe('No edit access');
 		await expectRefused(post(null, s.first.id, 'Hello'), 401);
+	});
+});
+
+describe('who a mention mails (card 2198)', () => {
+	const ROUTES = [
+		['POST /api/cards/{id}/comments', (card: Card) => `/api/cards/${card.id}/comments`],
+		['POST /api/v1/cards/{id}/comments', (card: Card) => `/api/v1/cards/${card.id}/comments`]
+	] as const;
+
+	/** Who was told they were mentioned, and every address mailed at all. */
+	async function commentAs(owner: SessionUser, path: string, content: string) {
+		const sent = effects();
+		try {
+			const res = await api('POST', path, { user: owner, body: { content } });
+			await sent.settle();
+			return {
+				res,
+				mentioned: sent.emails.filter((e) => e.subject === 'owner mentioned you: First').map((e) => e.to),
+				mailed: sent.emails.map((e) => e.to)
+			};
+		} finally {
+			sent.restore();
+		}
+	}
+
+	it.each(ROUTES)('%s mails only those named who can open the board, and saves the comment as before', async (_route, path) => {
+		const s = scene();
+		const teamMate = makeUser({ username: 'teammate' });
+		shareBoardWithTeam(s.A.board, makeTeam([teamMate]), 'viewer');
+		const content = '@outsider, @viewer, @teammate and @admin: have a look';
+
+		const { res, mentioned, mailed } = await commentAs(s.owner, path(s.first), content);
+
+		expect(res.status).toBe(201);
+		expect(res.body).toMatchObject({ cardId: s.first.id, userId: s.owner.id, content });
+		expect(mentioned.sort()).toEqual(['admin@example.test', 'teammate@example.test', 'viewer@example.test']);
+		// Nothing at all to someone who cannot open the board: not the mention, and nothing else.
+		expect(mailed).not.toContain('outsider@example.test');
+	});
+
+	it.each(ROUTES)('%s does not mail someone named who was taken off the board', async (_route, path) => {
+		const s = scene();
+		const gone = makeUser({ username: 'gone' });
+		addBoardMember(s.A.board, gone, 'editor');
+		db.delete(boardMembers).where(eq(boardMembers.userId, gone.id)).run();
+
+		const { res, mailed } = await commentAs(s.owner, path(s.first), 'Over to you, @gone');
+
+		expect(res.status).toBe(201);
+		expect(mailed).not.toContain('gone@example.test');
+	});
+
+	it.each(ROUTES)('%s mails someone named on a public board, which anyone may open (a guard)', async (_route, path) => {
+		const s = scene();
+		const open = makeBoard({ owner: s.owner, name: 'Open', isPublic: true });
+		const card = makeCard(open.cols['To Do'], { title: 'First' });
+
+		const { res, mentioned } = await commentAs(s.owner, path(card), 'Over to you, @outsider');
+
+		expect(res.status).toBe(201);
+		expect(mentioned).toEqual(['outsider@example.test']);
 	});
 });
 

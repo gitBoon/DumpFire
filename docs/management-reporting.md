@@ -1,9 +1,9 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.4
+version: 1.5
 status: As-Built
-date: 2026-10-15
+date: 2026-10-19
 tags:
   - reporting
   - audit-log
@@ -242,6 +242,33 @@ A card that changes board mid-window appears in the log under two different
 `boardId`s — 13 cards did in one 30-day window. The events always recorded the
 board correctly at the time; what was missing was any way to read the sequence
 back. `GET /api/v1/cards/:cardId/board-history` returns the spans, oldest first.
+
+**Where the history begins** (card 2199). `getCardBoardHistory` reads the card's
+`card_created`, `card_moved_away` and `card_moved_in` entries, bare or with `api:`, in the
+order they were written (`created_at`, then `id`), and the first one decides. A creation or
+an arrival begins a span of its own. A departure first means the card was on that board
+before any entry says it arrived anywhere (it was made before entries were written), so a
+span on that board, from the card's own `created_at` to the departure, comes first. Times
+cannot decide it: a move writes its departure and its arrival in the same second, and
+`created_at` is kept to the second, so the two tie; the departure is written first and has
+the lower id. Until card 2199 the first board was given only when the departure was
+strictly earlier than the first arrival, so a card with no recorded creation began on its
+second board. A card whose creation was recorded begins on that board, once.
+
+```mermaid
+flowchart TD
+    E["The card's entries,<br/>by created_at, then id"] --> F{"The first one"}
+    F -->|"card_created"| C["A span from the creation"]
+    F -->|"card_moved_away"| D["A span on that board,<br/>from the card's created_at<br/>to the departure"]
+    F -->|"none"| N["One span: the board it is on now"]
+    C --> A["Then a span from each arrival"]
+    D --> A
+    A --> L["The last span is current,<br/>or the card's own board is added"]
+```
+
+A board the caller cannot open keeps its id and dates in the answer, with `boardName`
+`Board not visible to you`: hiding it would make the sequence lie, and since card 2181 the
+move's own entries name no board, so the name is not given here either.
 
 ## A note on timestamps
 

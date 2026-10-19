@@ -396,3 +396,23 @@ describe('the mails to a card\'s assignees', () => {
 		expect(sent.emails.map((mail) => mail.to)).toEqual([outsider.email]);
 	});
 });
+
+describe('the mail about a mention (card 2198)', () => {
+	it('notifyMention mails nobody named who cannot open the board, and one who can', async () => {
+		const owner = makeUser();
+		const named = makeUser();
+		const { board, cols } = makeBoard({ owner, name: 'Private' });
+		const card = makeCard(cols['To Do'], { title: 'Secret' });
+		const send = () => notifications.notifyMention(named, 'owner', card.id, 'Secret', 'Over to you', board.id, 'https://dumpfire.example.test');
+
+		send();
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+
+		// The same call, once they can open the board.
+		addBoardMember(board, named, 'viewer');
+		send();
+		await sent.settle();
+		expect(sent.emails.map((mail) => mail.to)).toEqual([named.email]);
+	});
+});

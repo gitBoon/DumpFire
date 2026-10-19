@@ -2566,6 +2566,20 @@ describe.each(['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])('
 		const said = functionNamed(page, 'saveCard').getText().replace(/\s+/g, ' ');
 		for (const name of REPORTING) expect(said).toContain(`${name}: cardData.${name}`);
 	});
+
+	// Review of card 2198: the window was given every account, so a mention
+	// of someone off the card's board was drawn as a chip and not mailed.
+	it("gives the window the people of the card's own board, read with the card's context, not every account", () => {
+		const markup = readFileSync(join(ROOT, file), 'utf8');
+		expect(markup).not.toContain('boardUsers={data.allUsers}');
+		expect(markup).toContain('boardUsers={editingBoardUsers}');
+		expect(callsOf(functionNamed(page, 'openCard'), 'loadBoardUsers').map((call) => call.getText())).toEqual(['loadBoardUsers(card.id)']);
+		const load = functionNamed(page, 'loadBoardUsers').getText();
+		expect(load).toContain('fetch(`/api/cards/${cardId}/context`)');
+		expect(load).toContain('const body = await res.json();');
+		// An answer for a card no longer open is not used.
+		expect(load).toContain('if (editingCard?.id === cardId) editingBoardUsers = body.boardUsers;');
+	});
 });
 
 describe('Purge on the archived page, src/routes/archived/+page.svelte', () => {

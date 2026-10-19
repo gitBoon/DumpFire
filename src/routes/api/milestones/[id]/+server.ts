@@ -51,7 +51,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * text of at most 50,000; `targetDate` a date written `YYYY-MM-DD`, or null;
  * `status` `open` or `closed`; `boardId` an id, or null for a goal across
  * boards. A value the milestone already holds, sent back unchanged, is
- * accepted as it is.
+ * accepted as it is. A board sent must be there (404), editable (403), and
+ * hold every card of the milestone (400): `updateMilestone`.
  */
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 	const user = requireUser(locals.user);

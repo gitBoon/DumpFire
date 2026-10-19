@@ -614,19 +614,24 @@ export function getCardBoardHistory(cardId: number): {
 
 	const spans: { boardId: number; boardName: string; from: string; to: string | null; current: boolean }[] = [];
 
-	// Where it started. The earliest departure names the board it left, which is
-	// the only evidence of the original board once it has moved on.
-	const firstAway = moves.find((m) => m.action.endsWith('card_moved_away'));
-	if (arrivals.length === 0 || (firstAway && firstAway.createdAt < arrivals[0].createdAt)) {
-		if (firstAway) {
-			spans.push({
-				boardId: firstAway.boardId,
-				boardName: firstAway.boardName,
-				from: current.createdAt,
-				to: firstAway.createdAt,
-				current: false
-			});
-		}
+	// Where it started. The entries are read in the order they were written,
+	// and the first one decides (card 2199). A creation or an arrival begins a
+	// span of its own, below. A departure first means the card was on that board
+	// before any entry says it arrived anywhere (it was made before entries were
+	// written), so a span on that board, from the card's creation to the
+	// departure, goes first. Times cannot decide it: a move writes its departure
+	// and its arrival in the same second, which is all `created_at` keeps, so
+	// the two tie and the start was dropped. The departure is written first, so
+	// it has the lower id, and the order of the rows says what the times cannot.
+	const first = moves[0];
+	if (first && first.action.endsWith('card_moved_away')) {
+		spans.push({
+			boardId: first.boardId,
+			boardName: first.boardName,
+			from: current.createdAt,
+			to: first.createdAt,
+			current: false
+		});
 	}
 
 	for (const a of arrivals) {

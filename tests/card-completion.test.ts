@@ -1194,6 +1194,65 @@ describe('every reader of the activity log counts what the page did and what the
 		expect(await history(viaApi)).toEqual(await history(viaPage));
 	});
 
+	// Card 2199. A card with no `card_created` entry (made before entries were
+	// written) was given its first board only when its first departure was
+	// strictly earlier than its first arrival. A move writes the two in the same
+	// second, so the board it started on was dropped. Every entry of the card is
+	// put at one time after the moves, so that the tie does not hang on the clock.
+	describe('the board a card started on, with no recorded creation (card 2199)', () => {
+		const MOVED = '2026-10-15 09:00:00';
+		const tie = (card: Card) =>
+			db.update(activityLog).set({ createdAt: MOVED }).where(eq(activityLog.cardId, card.id)).run();
+		const spans = async (card: Card) =>
+			(await api('GET', `/api/v1/cards/${card.id}/board-history`, { user: owner })).body.history as {
+				boardId: number;
+				from: string;
+				to: string | null;
+				current: boolean;
+			}[];
+
+		it('begins with the board it was made on, moved by either way, from its creation to its departure', async () => {
+			const B = makeBoard({ owner, name: 'B' });
+			const viaApi = makeCard(A.cols['To Do'], { title: 'Moved by the API', createdAt: '2026-10-15 08:00:00' });
+			const viaPage = makeCard(A.cols['To Do'], { title: 'Moved by the page', createdAt: '2026-10-15 08:00:00' });
+			await byApi(viaApi, B.cols['To Do']);
+			await byPage(viaPage, B.cols['To Do']);
+
+			for (const card of [viaApi, viaPage]) {
+				tie(card);
+				const history = await spans(card);
+				expect(history.map((h) => [h.boardId, h.current])).toEqual([
+					[A.board.id, false],
+					[B.board.id, true]
+				]);
+				expect(history[0]).toMatchObject({ from: toIso('2026-10-15 08:00:00'), to: toIso(MOVED) });
+				expect(history[1]).toMatchObject({ from: toIso(MOVED), to: null });
+			}
+		});
+
+		it('begins with the board it was made on after two moves in the same second', async () => {
+			const B = makeBoard({ owner, name: 'B' });
+			const C = makeBoard({ owner, name: 'C' });
+			const card = makeCard(A.cols['To Do'], { title: 'Moved twice' });
+			await byApi(card, B.cols['To Do']);
+			await byApi(cardRow(card.id), C.cols['To Do']);
+			tie(card);
+
+			expect((await spans(card)).map((h) => h.boardId)).toEqual([A.board.id, B.board.id, C.board.id]);
+		});
+
+		it('lists a board once when the card has its creation entry and moved in the same second', async () => {
+			const B = makeBoard({ owner, name: 'B' });
+			const made: Card = (
+				await api('POST', '/api/cards', { user: owner, body: { columnId: A.cols['To Do'].id, title: 'Made and moved' } })
+			).body;
+			await byApi(made, B.cols['To Do']);
+			tie(made);
+
+			expect((await spans(made)).map((h) => h.boardId)).toEqual([A.board.id, B.board.id]);
+		});
+	});
+
 	it('the burndown: a card moved here from another board is counted, by either way', async () => {
 		const B = makeBoard({ owner, name: 'B' });
 		await byPage(makeCard(A.cols['To Do']), B.cols['To Do']);

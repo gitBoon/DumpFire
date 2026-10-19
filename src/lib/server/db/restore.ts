@@ -587,7 +587,9 @@ export function defaultOutside(
  *   reported in `errors`, and the backfills run again at the next start. One
  *   taken before `task_requests.access_token` existed has none either, and
  *   every request is given one inside the transaction, as every request is
- *   at every restore (below), so that backfill finds nothing to do.
+ *   at every restore (below), so that backfill finds nothing to do. One
+ *   taken before cards 2155 and 2179 can hold a card in a milestone of
+ *   another board: the backfills take it out, as 0057 did once (card 2179).
  * - A backup taken before card 2095 holds timestamps in two forms. They are
  *   brought to the stored one after the backfills, as at every start
  *   (`normaliseTimestamps`), and the count is in `timestamps`. A failure, or a
@@ -992,7 +994,7 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 
 	// The restore is committed. A failure from here on is something to report
 	// about a restore that succeeded, not a failed restore.
-	let backfilled: Backfill = { firstCompletedAt: 0, accessTokens: 0 };
+	let backfilled: Backfill = { firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] };
 	try {
 		backfilled = runBackfills(live);
 	} catch (e) {

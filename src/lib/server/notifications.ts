@@ -1046,9 +1046,15 @@ function planCreatedHtml(notice: PlanCreatedNotice, creatorName: string, baseUrl
 /**
  * Send an email notification to a user who was @mentioned in a comment.
  * Respects the user's email_mentions notification preference.
+ *
+ * Only to someone who can open the board (card 2198): anyone named, whoever
+ * the author chose, was mailed the card's title, the board's name and the
+ * comment. Nothing goes to anyone else, and the author is not told who was
+ * not mailed, which would say whether an account of that name exists and
+ * whether it can open the board.
  */
 export function notifyMention(
-	mentionedUser: { id: number; email: string; username: string },
+	mentionedUser: { id: number; email: string; username: string; role: string },
 	authorUsername: string,
 	cardId: number,
 	cardTitle: string,
@@ -1057,6 +1063,7 @@ export function notifyMention(
 	baseUrl: string | null
 ): void {
 	if (!isSmtpConfigured()) return;
+	if (whoCanOpen([mentionedUser], boardId).length === 0) return;
 	if (!shouldNotifyUser(mentionedUser.id, 'email_mentions')) return;
 	if (noLinkAddress(baseUrl, 'The mail about a mention')) return;
 
