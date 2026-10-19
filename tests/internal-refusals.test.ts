@@ -79,7 +79,8 @@ describe('/api/report-schedules', () => {
 
 	it('answers 401 to a caller who is not signed in, on GET and on POST', async () => {
 		await refused(() => api('GET', '/api/report-schedules'), 401, 'Unauthorized');
-		await refused(post(null, { ...weekly, scopeId: mine.board.id }), 401, 'Unauthorized');
+		// The write's quick check is requireUser, in the gate's words (card 2253).
+		await refused(post(null, { ...weekly, scopeId: mine.board.id }), 401, 'Not authenticated');
 	});
 
 	it('answers 400 for a schedule with a field missing, a scope or a frequency it does not know, or no board named', async () => {
@@ -154,8 +155,8 @@ describe('/api/report-schedules/:id', () => {
 	it('answers 401 to a caller who is not signed in', async () => {
 		const id = await makeSchedule(user, mine);
 
-		await refused(() => api('PUT', `/api/report-schedules/${id}`, { body: { enabled: false } }), 401, 'Unauthorized');
-		await refused(() => api('DELETE', `/api/report-schedules/${id}`), 401, 'Unauthorized');
+		await refused(() => api('PUT', `/api/report-schedules/${id}`, { body: { enabled: false } }), 401, 'Not authenticated');
+		await refused(() => api('DELETE', `/api/report-schedules/${id}`), 401, 'Not authenticated');
 	});
 
 	it('answers 404 for a schedule that is not there, and for one that is somebody else’s', async () => {

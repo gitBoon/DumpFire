@@ -1,8 +1,8 @@
 /**
  * Proves the helpers that the all-or-nothing tests stand on: the write that
  * can be made to fail, the snapshot of every row, the record of what was sent,
- * the callers for form actions and page loads, the builders, and the each-write-in-turn
- * pattern itself. If these are wrong, a test built on them proves nothing.
+ * the callers for form actions and page loads, the builders, the request whose body is
+ * held (`sendAround`), and the each-write-in-turn pattern itself. If these are wrong, a test built on them proves nothing.
  */
 import http from 'node:http';
 import https from 'node:https';
@@ -39,6 +39,7 @@ import {
 	makeWebhook,
 	resetDb
 } from './helpers/fixtures';
+import { sendAround } from './helpers/held-body';
 import { readBudget, ReadBudgetSpent, watchReads } from './helpers/reads';
 import { StandInRequest } from './helpers/stand-in-request';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -796,5 +797,23 @@ describe('eachWriteInTurn', () => {
 		// Either would throw if the last one were still installed.
 		failingWrite().restore();
 		effects().restore();
+	});
+});
+
+describe('sendAround(), a request whose body is held while something else happens', () => {
+	it('answers a refusal the gate makes before it reads the body, without waiting for it, as JSON', { timeout: 10_000 }, async () => {
+		makeUser();
+		const meanwhile = vi.fn();
+
+		const res = await sendAround('POST', '/api/v1/boards/1/webhooks', { key: 'df_not-a-key' }, { url: 'https://x.example.test/' }, meanwhile);
+
+		expect(res).toEqual({ status: 401, body: { message: 'Invalid or expired API key' } });
+		expect(meanwhile).not.toHaveBeenCalled();
+	});
+
+	it('answers one that is not JSON as its text', { timeout: 10_000 }, async () => {
+		const res = await sendAround('POST', '/%zz', { session: 'none' }, {}, () => {});
+
+		expect(res).toEqual({ status: 400, body: 'Malformed URI' });
 	});
 });

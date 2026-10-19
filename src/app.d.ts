@@ -21,9 +21,10 @@ declare global {
 			/**
 			 * What the gate let the request in with: the API key's row id, or the
 			 * session's token, or null for neither. A handler that writes asks, in
-			 * its transaction, that it is still open (`stillAuthenticated` in
-			 * $lib/server/auth.ts). Undefined only where no gate ran: a test that
-			 * calls a handler directly.
+			 * its transaction, that it is still open and who its account is now
+			 * (`writeAs` in $lib/server/write-as.ts, card 2253). Undefined only
+			 * where no gate ran: a test that calls a handler directly. Anywhere
+			 * else a write refuses it (`stillAuthenticated` in $lib/server/auth.ts).
 			 */
 			credential?: import('$lib/server/auth').Credential | null;
 		}

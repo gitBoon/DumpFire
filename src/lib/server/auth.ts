@@ -12,6 +12,7 @@ import { afterCommit, inTransaction } from './db/transaction';
 import { users, sessions, apiKeys, webhooks, reportSchedules, type Session, type User } from './db/schema';
 import { and, eq } from 'drizzle-orm';
 import { error, type Cookies } from '@sveltejs/kit';
+import { getRequestEvent } from '$app/server';
 import { endUnusedInvites } from './invites';
 import {
 	FIRST_LANE_CHECKS_PER_ACCOUNT,
@@ -25,6 +26,7 @@ import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
 import { stamp, toStamp } from '$lib/timestamps';
 import { registerStampFunctions } from './db/timestamps';
+import { pathToLog } from './secret-paths';
 
 const log = createLogger('AUTH');
 
@@ -227,8 +229,8 @@ type FoundSession =
  * expired, and its account still exists. If not, which of those it failed.
  *
  * Two reads, and nothing written or logged. `validateSession`,
- * `sessionStillOpen` and `openSessionUser` all ask it, so that what counts as
- * an open session is decided in one place.
+ * `sessionStillOpen`, `openSessionUser` and `stillAuthenticated` all ask it,
+ * so that what counts as an open session is decided in one place.
  */
 function findSession(token: string): FoundSession {
 	const session = db.select()
@@ -579,10 +581,11 @@ function keyHolder(apiKey: typeof apiKeys.$inferSelect): User | null {
 export type Credential = { kind: 'api key'; id: number } | { kind: 'session'; token: string };
 
 /**
- * Refuse 401, in the gate's own words, when the API key or session the gate
- * let this request in with is no longer open: deleted, expired, or its
- * account gone. Called inside the transaction that writes, so that the answer
- * holds for the write.
+ * The account the API key or session the gate let this request in with acts
+ * as, as it is now; refused 401, in the gate's own words, when that key or
+ * session is no longer open: deleted, expired, or its account gone. Called
+ * inside the transaction that writes, so that the answer holds for the
+ * write: through `writeAs` and `stillCallerNow` (write-as.ts, card 2253).
  *
  * The gate decides who is calling before the body is read, and a body can
  * take as long as the caller likes to arrive. A password reset committed
@@ -590,27 +593,74 @@ export type Credential = { kind: 'api key'; id: number } | { kind: 'session'; to
  * off the webhooks and pauses the schedules the account had; a create or a
  * change that went on to write after it would make one again, running, for
  * the account that has just been taken back (the review of card 2168, S1).
- * Asked in the transaction, with nothing awaited between this and the write,
- * no reset can come between them.
+ * And a role lowered meanwhile left the write to decide on the role the gate
+ * had read. Asked in the transaction, with nothing awaited between this and
+ * the write, neither can come between them.
  *
- * A request no gate let in, a test that calls a handler directly, has no
- * credential at all (`undefined`), and is not asked: the gate gives every
- * request it lets through one or null.
+ * The account is read through the credential, as the gate reads it, and
+ * `locals.user` is set to it, so that what the handler answers after the
+ * transaction is as consistent as what it decided. A request the gate let in
+ * with no key or session (`null`: a public route) answers null, for the
+ * handler's own rule to decide; one that came with a session that has ended
+ * is refused, never taken for anonymous.
+ *
+ * The gate records a credential, or null, on every request it hands on. One
+ * with none recorded (`undefined`) reached its handler without the gate: a
+ * test that calls a handler directly, which is answered `locals.user` as it
+ * is, or, anywhere but under vitest, a fault, refused 401 with one ERROR line
+ * naming the request (the plan's R10).
  *
  * It throws if no transaction is open.
  */
-export function stillAuthenticated(locals: App.Locals): void {
+export function stillAuthenticated(locals: App.Locals): SessionUser | null {
 	if (!sqlite.inTransaction) {
 		throw new Error('stillAuthenticated must be called inside the transaction that writes: call it in inTransaction.');
 	}
 	const credential = locals.credential;
-	if (credential === undefined) return;
-	if (credential?.kind === 'api key') {
-		const apiKey = db.select().from(apiKeys).where(eq(apiKeys.id, credential.id)).get();
-		if (!apiKey || !keyHolder(apiKey)) error(401, 'Invalid or expired API key');
-		return;
+	if (credential === undefined) {
+		if (process.env.VITEST) return locals.user;
+		// Filed under the account the handler was handed, where there is one,
+		// with where it was asked from: a few frames, enough to find the caller.
+		const stack = (new Error().stack ?? '').split('\n').slice(1, 6).map((frame) => frame.trim()).join('\n');
+		log.error(
+			`A write reached its handler with no credential recorded by the gate: ${requestNamed()}; refused 401; ` +
+				'this is a fault in DumpFire, not in the request: report this line',
+			{ stack },
+			{ userId: locals.user?.id ?? null }
+		);
+		error(401, 'Not authenticated');
 	}
-	if (credential?.kind !== 'session' || !findSession(credential.token).open) error(401, 'Not authenticated');
+	if (credential === null) {
+		locals.user = null;
+		return null;
+	}
+	let holder: User | null = null;
+	if (credential.kind === 'api key') {
+		const apiKey = db.select().from(apiKeys).where(eq(apiKeys.id, credential.id)).get();
+		holder = apiKey ? keyHolder(apiKey) : null;
+		if (!holder) error(401, 'Invalid or expired API key');
+	} else {
+		const found = findSession(credential.token);
+		holder = found.open ? found.user : null;
+		if (!holder) error(401, 'Not authenticated');
+	}
+	locals.user = sessionUserOf(holder);
+	return locals.user;
+}
+
+/**
+ * The request being answered, as the gate's log line writes it (`POST
+ * /api/cards`), for the one line `stillAuthenticated` writes; or words that
+ * say SvelteKit could not name it, for a handler called with no request
+ * around it.
+ */
+function requestNamed(): string {
+	try {
+		const event = getRequestEvent();
+		return `${event.request.method} ${pathToLog(event.url.pathname, event.route.id ?? event.url.pathname)}`;
+	} catch {
+		return 'a request SvelteKit could not name';
+	}
 }
 
 /** Record that the API key with this row id was used, now. */
