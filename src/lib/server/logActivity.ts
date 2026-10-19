@@ -142,10 +142,22 @@ export function readSource(row: { action: string; source?: string | null }): Act
 	return row.action.startsWith('api:') ? 'api' : 'ui';
 }
 
-/** Map canonical actions to webhook event types. */
+/**
+ * Map canonical actions to webhook event types.
+ *
+ * A reopening, and each half of a move to another board, is a column move and
+ * sends `card.moved` (card 2278); before, none of the three was here, and a
+ * receiver of `card.moved` missed them. Each goes to the board its entry is on,
+ * with that entry, which names no other board (card 2181): what the board's own
+ * readers read. A move into Complete sends `card.completed` instead of
+ * `card.moved`, as its entry is a completion instead of a move.
+ */
 const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_created: 'card.created',
 	card_moved: 'card.moved',
+	card_reopened: 'card.moved',
+	card_moved_away: 'card.moved',
+	card_moved_in: 'card.moved',
 	card_completed: 'card.completed',
 	card_deleted: 'card.deleted',
 	card_updated: 'card.updated',
