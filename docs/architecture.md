@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.33
+version: 1.34
 status: As-Built
 date: 2026-10-19
 tags:
@@ -442,7 +442,7 @@ be refused is not told about the fields first, and a field reader that needs the
 ```mermaid
 sequenceDiagram
     participant H as Handler
-    participant T as inTransaction
+    participant T as writeAs (inTransaction)
     participant G as Guard (route-guards.ts)
     participant R as Field readers
     H->>H: readBody(request), pathId(params.x)
@@ -810,7 +810,7 @@ The whole rule, with the lanes, the bound, the log lines and what the people usi
 
 ## Writes: One Transaction, Then the Effects
 
-A request that writes makes its writes all or none, and checks the caller where it writes. The route awaits the request body, then passes one function to `inTransaction()` in `src/lib/server/db/transaction.ts`. That function reads what the write depends on, checks the caller with its guard (`route-guards.ts`), makes every write (the activity entry among them) and returns. Only then does the route set a cookie, redirect or answer. Before the body the route asks only what reads no row: the session the gate read and the id in its path. A request with one write follows the same order, so that the row checked is the row written, and a row taken away while the body was arriving is a 404; until 2026-10-14 twenty-two handlers checked the row first and then awaited the body (card 2115).
+A request that writes makes its writes all or none, and checks the caller where it writes. The route awaits the request body, then passes one function to `writeAs(locals, (caller) => …)` in `src/lib/server/write-as.ts`, which runs it in `inTransaction()` (`src/lib/server/db/transaction.ts`) after asking, first in that transaction, whether the key or session the gate let the request in with is still open and who its account is now (card 2253; see [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253)). A route never calls `inTransaction()` itself: `tests/check-at-the-write.test.ts` refuses it in a route file. The function reads what the write depends on, checks `caller` with its guard (`route-guards.ts`), makes every write (the activity entry among them) and returns. Only then does the route set a cookie, redirect or answer. Before the body the route asks only what reads no row: the session the gate read and the id in its path. A request with one write follows the same order, so that the row checked is the row written, and a row taken away while the body was arriving is a 404; until 2026-10-14 twenty-two handlers checked the row first and then awaited the body (card 2115).
 
 Nothing leaves the process from inside a transaction. A webhook delivery, a live event, an email and a file move are each queued with `afterCommit()` and start once the outermost transaction has committed. If it rolls back they are dropped, so nobody is told of a change that was not saved.
 
@@ -818,7 +818,7 @@ Nothing leaves the process from inside a transaction. A webhook delivery, a live
 sequenceDiagram
     participant C as Caller
     participant R as Route handler
-    participant T as inTransaction()
+    participant T as writeAs(), in inTransaction()
     participant DB as SQLite
     participant Q as afterCommit queue
     participant L as Logger
@@ -828,7 +828,8 @@ sequenceDiagram
     R->>R: await the body, and a password's hash<br/>on a worker thread if there is one
     R->>T: fn (not async)
     T->>DB: BEGIN IMMEDIATE
-    T->>DB: read what the write depends on, check access
+    T->>DB: the key or session still open? the account now (stillAuthenticated)
+    T->>DB: read what the write depends on, check access with caller
     T->>DB: every write, the activity entry among them
     T->>Q: emit(), logActivity(), notify...(), trashAfterCommit()
     T->>L: log lines are printed at once, their rows held
@@ -852,6 +853,7 @@ sequenceDiagram
 | Function | What it does |
 |----------|--------------|
 | `inTransaction(fn)` | Runs `fn` in one transaction on the application's connection and returns what it returns. The outermost call is `BEGIN IMMEDIATE`, which takes the write lock at the start, so nothing `fn` reads can be changed under it before it writes. A call made inside another `inTransaction` is a savepoint: if it throws and the code around it catches the error, only that part is rolled back. A call made while a transaction the helper did not open is open on the connection throws before `fn` is run, so the request is answered 500 and writes nothing. |
+| `writeAs(locals, fn)`, `stillCallerNow(locals)` | In `src/lib/server/write-as.ts` (card 2253): `inTransaction(() => fn(stillAuthenticated(locals)))`, the one way a route writes, and the same question asked in a transaction of its own by the eight handlers whose work cannot run in one (the vacuum, the import, the two report routes, the backup run, the Test, the Google Drive Connect and the test mail). See [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253) |
 | `afterCommit(effect)` | Queues `effect` until the outermost transaction commits. Called with no transaction open, it runs the effect at once. Whether a transaction is open is read from the connection (`sqlite.inTransaction`), not counted by the helper. |
 
 How the queue behaves:
@@ -864,7 +866,7 @@ How the queue behaves:
 ### Rules for code inside a transaction
 
 - **No `await`.** A transaction is over when the function returns. The part of an async function after its first `await` runs later, outside the transaction, and is not rolled back with it. The type of `inTransaction` refuses a function that returns a promise, so `npm run check` fails on one; at run time such a function is refused with a `TypeError` and what it wrote before its first `await` is rolled back.
-- **No `redirect()`, cookie or answer.** Those come after `inTransaction` returns. Throwing `error(...)` or a typed error such as `CardMoveError` is fine: it rolls the transaction back and reaches the caller unchanged.
+- **No `redirect()`, cookie or answer.** Those come after `inTransaction` (in a route, `writeAs`) returns. Throwing `error(...)` or a typed error such as `CardMoveError` is fine: it rolls the transaction back and reaches the caller unchanged.
 - **A database error is not caught and carried on from**, unless the part that failed is its own nested `inTransaction`.
 - **No raw `sqlite.transaction` under the helper.**
 - **Slow work comes first.** Hashing a password takes about a fifth of a second, on a worker thread, and is awaited, which a transaction cannot do, so the hash is made before the transaction starts. See [Work Kept Off the Server's Thread](#work-kept-off-the-servers-thread).

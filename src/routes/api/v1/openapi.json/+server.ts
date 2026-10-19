@@ -198,6 +198,10 @@ const spec = {
 			'that waited on that subtask as its dependencies still record, to `Unblocked: a subtask on another board completed — …`, the rest of each kept and its updatedAt unchanged ' +
 			'(a subtask notice on a card that also waits on a subtask of the same title that is not the moved card\'s keeps its name, since that one may have written it), ' +
 			'where they went on naming the card to readers who may not open the board it moved to; comments naming cards moved before are unchanged. ' +
+			'(77) every write, each POST, PUT, PATCH and DELETE, asks again inside the transaction that writes whether its key is still open and who the key\'s user is now, as item 57 said of the webhook writes alone: ' +
+			'a write whose key is ended (revoked, expired, or ended by a password reset of its user) while its body is still arriving is answered 401 "Invalid or expired API key" and writes nothing; ' +
+			'one whose user\'s role or access was lowered meanwhile is refused as that user now is, 403 or 404 in the operation\'s own words (POST /api/v1/dependencies/bulk, POST /api/v1/tokens/bulk, and POST and DELETE /api/v1/milestones/{milestoneId}/cards/bulk with their 409, listing every item), and writes nothing, fires no webhook and sends no mail; ' +
+			'nothing changes for a key that still holds and a user whose role is as it was. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +

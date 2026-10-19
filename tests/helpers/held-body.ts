@@ -23,9 +23,9 @@ import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import { gate } from './gate';
 
 /**
- * A JSON body the test lets go of. `wasAsked` settles when the body is first
- * read, which is after the gate has let the request in; `release` then sends
- * the body, and ends it.
+ * A body the test lets go of: bytes as they are, anything else as JSON.
+ * `wasAsked` settles when the body is first read, which is after the gate has
+ * let the request in; `release` then sends the body, and ends it.
  */
 export function heldBody(value: unknown) {
 	let asked!: () => void;
@@ -39,7 +39,7 @@ export function heldBody(value: unknown) {
 		{ highWaterMark: 0 }
 	);
 	const release = () => {
-		controller.enqueue(new TextEncoder().encode(JSON.stringify(value)));
+		controller.enqueue(value instanceof Uint8Array ? value : new TextEncoder().encode(JSON.stringify(value)));
 		controller.close();
 	};
 	return { body, wasAsked, release };
@@ -57,18 +57,37 @@ export type HeldCredential = { key: string } | { session: string };
  * not know, an address it cannot decode) is answered with that refusal, and
  * `meanwhile` is not run: the body is never asked for, and waiting for it
  * would hang the test.
+ *
+ * The body is JSON unless it is one of two others. A `FormData` is sent as
+ * the card modal's upload sends one: written out as multipart, with its
+ * boundary in the header, and with the page's own `Origin`, without which
+ * SvelteKit refuses a form before the gate. Bytes (a `Uint8Array`) are sent
+ * as they are, for a route that takes an upload as its body (the import):
+ * say what they are with a `content-type` in `headers`. `headers` are added
+ * to the request's own, and may replace its `content-type`, never its key or
+ * session.
  */
 export async function sendAround(
 	method: string,
 	path: string,
 	credential: HeldCredential,
 	value: unknown,
-	meanwhile: () => unknown
+	meanwhile: () => unknown,
+	extra: { headers?: Record<string, string> } = {}
 ): Promise<{ status: number; body: any }> {
-	const held = heldBody(value);
+	let content = value;
+	let contentType = 'application/json';
+	const asForm: Record<string, string> = {};
+	if (value instanceof FormData) {
+		const written = new Response(value);
+		contentType = written.headers.get('content-type') ?? 'multipart/form-data';
+		content = new Uint8Array(await written.arrayBuffer());
+		asForm.origin = 'http://localhost';
+	}
+	const held = heldBody(content);
 	// Asked for as a page's script asks: SvelteKit answers a refusal to a
 	// request that asks for nothing in particular with its error page.
-	const headers: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json' };
+	const headers: Record<string, string> = { 'content-type': contentType, accept: 'application/json', ...asForm, ...extra.headers };
 	if ('key' in credential) headers.authorization = `Bearer ${credential.key}`;
 	else headers.cookie = `${SESSION_COOKIE_NAME}=${credential.session}`;
 	const sent = gate(method, path, { headers, body: held.body });

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.44
+version: 1.45
 status: As-Built
 date: 2026-10-19
 tags:
@@ -3229,6 +3229,73 @@ Checks 178 and 179 need an administrator; 180 to 184 any account a pending reque
 #### Going back to the previous image
 
 Nothing is done to the database. The older image answers a reversed range on `/api/audit` and `/api/logs` with an empty page again, and the inbox and the reply page say nothing when a request fails.
+
+### Every Write Asked Again at the Write
+
+**Card 2253.** No migration, no setting and no value changes: nothing to configure. The gate decides who is calling before a request's body is read, and a body can take up to 300 seconds to arrive. A password reset, a key deleted, a sign-out or a role lowered while a body was still arriving was met by nothing: the write went through as the caller the gate had read. Now every write route of both trees (133 handlers) asks again, inside the transaction that writes, whether its key or session is still open and who its account is now, and decides with that. See [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253).
+
+```mermaid
+flowchart LR
+    Gate["The gate lets the request in"] --> Body["The body arrives"]
+    Body --> Ask{"At the write: key or session<br/>still open? the account now?"}
+    Ask -->|"ended"| R401["401, nothing written"]
+    Ask -->|"role or access lowered"| R403["403 or 404, nothing written"]
+    Ask -->|"as it was"| Write["Written, as before"]
+```
+
+**Owner to know.**
+
+- **Nothing changes for anyone whose key or session holds** and whose role is as it was. Every change on the board, the Account page and the admin page saves as before (checks 188 and 189).
+- **A write whose key or session ended, or whose account's role or access changed, while its body was arriving is refused** `401` (`Invalid or expired API key` for a key, `Not authenticated` for a session) or `403`/`404` as the account now is, with nothing written, no webhook fired and no mail sent. Deleting a report schedule now asks too: a session a reset had ended could still delete one.
+- **A Google Drive Connect whose session ends, or whose superadmin is made an administrator, while Google answers** is refused `401` or `403` at its save, with the folder it made removed and nothing saved, where it answered `200` with `success: false`.
+- **A brief write lock where none was taken** (N7 of the plan): the report download, the report mail, the backup run, the destination Test, the Drive Connect and the test mail each take SQLite's write lock for the moment they ask, with nothing written, and so does a requester's request for a new link (`POST /api/requests/{id}/link`), which only reads. The other public request routes already took the lock when they wrote. On the one connection DumpFire has, in WAL mode, this is not noticed.
+- **One `ERROR` line to report if it is ever seen**: `[ERROR] [AUTH] A write reached its handler with no credential recorded by the gate: <METHOD> <path>; refused 401; this is a fault in DumpFire, not in the request: report this line`. The gate records a credential, or none, on every request it hands on, so the line means a fault in DumpFire.
+- **Whether production's proxy passes a body on as it arrives is measured, not assumed** (check 186, before the deploy). A proxy that holds a body until it is complete already closes the window before the request reaches DumpFire; the change holds either way.
+
+#### Before the deploy
+
+Check 186 runs on production, before the deploy. Use a throwaway account made for these checks (an ordinary user an administrator creates, kept for checks 186 to 190), never the superadmin's everyday key: sign in as it, make a scratch board (its owner can create cards on it), and make an API key for it on the Account page (Generate Key). The board's id is in its address (`/board/<id>`); its first column's id is the first `id` of `curl.exe -s -H "Authorization: Bearer <key>" https://<host>/api/v1/boards/<board id>/columns`. Save this script as `late-write.mjs` and run it with Node 18 or later, `node late-write.mjs <host> <key> <board id> <column id>`. `<host>` is the host name alone (`dumpfire.example.com`); an address with `https://` in front is accepted too. It holds the rest of the body back for 30 seconds:
+
+```js
+const [host, key, board, column] = process.argv.slice(2);
+const base = /^https?:\/\//.test(host) ? host.replace(/\/+$/, '') : 'https://' + host;
+const enc = new TextEncoder();
+let release;
+const body = new ReadableStream({
+  start(c) {
+    c.enqueue(enc.encode('{"columnId":' + column + ','));
+    release = () => { c.enqueue(enc.encode('"title":"late write check"}')); c.close(); };
+  }
+});
+console.log('Delete the key in Account now. The rest of the body goes in 30 seconds.');
+setTimeout(() => release(), 30000);
+const res = await fetch(base + '/api/v1/boards/' + board + '/cards', {
+  method: 'POST',
+  headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
+  body,
+  duplex: 'half'
+});
+console.log(res.status, await res.text());
+```
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 186 | 2253 | **Before the deploy**, signed in as the throwaway account: run the script with its key; within the 30 seconds it waits, delete that key on the Account page. If the key is still listed afterwards, delete it | `201` and one card "late write check" on the scratch board, if production's proxy passes a body on as it arrives (the window reaches DumpFire, and the old image writes); `401` if the proxy holds a body until it is complete (the window does not reach DumpFire on production). A `201` writes that one card on production; check 190 removes it with the board | Not a fault, but note it: `411 Length Required` or a `400` from the proxy, before or as the key is deleted, means the proxy refuses a body sent in chunks without a length, so this check cannot measure the window; it still exists for a body with a length on a slow link. Run 187 expecting the same refusal: the source rule and the walks in the tests are what prove the card |
+
+#### After the deploy
+
+Checks 187 to 190 run on production, all with the throwaway account of check 186 and its scratch board: 187 with a new key of that account; 188 with that account in one browser and an administrator in another (the scratch board is the throwaway account's own, so it can edit it; the administrator can edit any board); 189 with the same throwaway account signed in in two browsers. Never use the superadmin's real password for 189.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 187 | 2253 | As the throwaway account, make a new key; run the script again with it and delete that key within the 30 seconds. If the key is still listed afterwards, delete it | `401 {"message":"Invalid or expired API key"}`, and no new card "late write check" (or the same `411` or `400` from the proxy as check 186). On the old image, or if the change did not take, it writes one card, which check 190 removes | `201`, or the card |
+| 188 | 2253 | Signed in as the throwaway account in one browser and as an administrator in another, each use the scratch board (add, move, edit and delete a card, a comment, a label) and their own Account page (emoji, notifications) | Every change saves as before | Any `401` while signed in |
+| 189 | 2253 | Sign the throwaway account in in a second browser too; in the first, change its password on the Account page | Saved; still signed in in the first browser, signed out in the second at its next change | A `401` in the first browser |
+| 190 | 2253 | Delete the scratch board made for check 186, and then the throwaway account | Gone, with any card check 186 or 187 wrote | — |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image writes as the caller the gate read again: a write whose key or session ended, or whose role was lowered, while its body was arriving goes through, and a report schedule can be deleted by a session that has ended.
 
 ## Changing the Schema
 

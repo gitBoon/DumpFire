@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.25
+version: 1.26
 status: As-Built
 date: 2026-10-19
 tags:
@@ -371,8 +371,12 @@ sequenceDiagram
   again: the new token may be another Google account's, which the server cannot see, and with
   the Folder ID empty the copies go to a new folder. The meta is
   `{"destination":"G","scope":"narrow","folder":"made","replaced":false}`. The read again
-  and the write are one `inTransaction`, the line queued with `afterCommit`, so a Connect
-  refused, changed meanwhile or whose write fails writes none. The name is quoted as the
+  and the write are one `writeAs`, which first asks again whether the session is still open
+  and still the superadmin's (card 2253; see
+  [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253)):
+  refused there, the Connect answers `401` or `403` with the folder it made removed. The line is
+  queued with `afterCommit`, so a Connect refused, changed meanwhile or whose write fails
+  writes none. The name is quoted as the
   settings' lines quote it (`quotedName()`).
 
 **Who started the Connect** (card 2251). The `POST` used to exchange any code it was sent, so a
@@ -477,9 +481,10 @@ A save's line, in order (card 2267):
 sequenceDiagram
     participant P as Admin page
     participant R as PUT /api/admin/backup
-    participant T as inTransaction
+    participant T as writeAs (one transaction)
     participant L as Logger (system_logs)
     P->>R: destinations (NAS with hostKey)
+    R->>T: the session still open and the superadmin's? (card 2253)
     R->>T: read existing, readDestination, keepMaskedSecrets
     T->>T: hostKeyChanges(existing, saved)
     T->>T: afterCommit(log.warn … { userId })
