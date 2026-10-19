@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.23
+version: 1.24
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1509,7 +1509,7 @@ sequenceDiagram
     W-->>S: 200 OK
 ```
 
-A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column is one entry, so at most one delivery to each of the board's webhooks: a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no status line within 10 seconds, is logged at `ERROR`, naming the host and port and never the path. A redirect is logged, and not followed; an answer of 500 from a receiver is not logged as a failure, and is told to the board's owner in the webhook's `lastDelivery` instead, with every other outcome (card 2178, [Last Delivery](#last-delivery)). The board's webhooks are read once, and the body built once, for each event: every webhook of one event is sent the same body and timestamp, signed for each, and each webhook is handled on its own, so a row that cannot be sent stops no other (card 2145). See [Where a Webhook May Send](#where-a-webhook-may-send).
+A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column of its board is one entry, so at most one delivery to each of the board's webhooks (a move to another board is two or three entries across the two boards, made one card at a time: see the table below): a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no status line within 10 seconds, is logged at `ERROR`, naming the host and port and never the path. A redirect is logged, and not followed; an answer of 500 from a receiver is not logged as a failure, and is told to the board's owner in the webhook's `lastDelivery` instead, with every other outcome (card 2178, [Last Delivery](#last-delivery)). The board's webhooks are read once, and the body built once, for each event: every webhook of one event is sent the same body and timestamp, signed for each, and each webhook is handled on its own, so a row that cannot be sent stops no other (card 2145). See [Where a Webhook May Send](#where-a-webhook-may-send).
 
 ### Events and Payload
 
@@ -1517,8 +1517,8 @@ A webhook is dispatched by the activity entry for the action, once that entry is
 |-------|---------------------------------|
 | `card.created` | `card_created`: by every way of creating a card, accepting a task request among them (card 2108) |
 | `card.updated` | `card_updated` |
-| `card.moved` | `card_moved` |
-| `card.completed` | `card_completed`: a card moved into a Complete column, or created in one (card 2134) |
+| `card.moved` | `card_moved`; `card_reopened`, a card moved out of a Complete column (card 2278); `card_moved_away` and `card_moved_in`, a card moved to another board, each to its own board (card 2278) |
+| `card.completed` | `card_completed`: a card moved into a Complete column, **instead of** `card.moved`, or created in one (card 2134) |
 | `card.deleted` | `card_deleted`: a card deleted for good |
 | `comment.added` | `comment_added` |
 
@@ -1539,11 +1539,41 @@ The same event is sent whether the action was made in the web UI or through the 
 }
 ```
 
+`data.action` is the entry's action with no `api:`, so a receiver tells the four entries that send `card.moved` apart by it. What each move sends (card 2278, `ACTION_TO_EVENT` in `src/lib/server/logActivity.ts`), one delivery for each entry that has an event:
+
+| What happened | Sent to the webhooks of | Event and `data.action` |
+|---|---|---|
+| A card moved to another column of its board | its board | `card.moved`, `card_moved` |
+| … into a Complete column | its board | `card.completed`, `card_completed`, instead of `card.moved` |
+| … out of a Complete column (reopened) | its board | `card.moved`, `card_reopened` |
+| A card moved to another board | the board it left; the board it joined | `card.moved`, `card_moved_away`; `card.moved`, `card_moved_in` |
+| … into the other board's Complete column | as above, and the board it joined | as above, then `card.completed`, `card_completed` |
+| … out of Complete into the other board's open column | as above, and the board it joined | as above, then `card.moved`, `card_reopened` |
+| A card moved within its column (its position only) | — | nothing |
+
+A delivery for a move to another board carries that board's own entry: `"<title>" moved to another board (<from> → <to>)` on the board it left, `"<title>" moved from another board (<from> → <to>)` on the board it joined. The one on the board it left ends ` and out of milestone "<name>"` when the move took the card out of one of that board's milestones, or ` and out of a milestone of another board` for a third board's (card 2155). Neither names the other board (card 2181); the two columns are the route, one of them the other board's, as in each board's Activity. So a receiver is sent nothing a reader of its board cannot read there. Until 2026-10-19 a reopening and a move to another board sent nothing, and a receiver of `card.moved` missed them.
+
+```mermaid
+flowchart TD
+    Move["A card changes column"] --> Across{"To another board?"}
+    Across -->|"No"| Role{"Into Complete? Out of it?"}
+    Role -->|"Into"| Done["card.completed to its board"]
+    Role -->|"Out of"| Reopen["card.moved (card_reopened) to its board"]
+    Role -->|"Neither"| Moved["card.moved (card_moved) to its board"]
+    Across -->|"Yes"| Two["card.moved (card_moved_away) to the board it left<br/>card.moved (card_moved_in) to the board it joined"]
+    Two --> Then{"Into Complete? Out of it?"}
+    Then -->|"Into"| Done2["and card.completed to the board it joined"]
+    Then -->|"Out of"| Reopen2["and card.moved (card_reopened) to the board it joined"]
+    Then -->|"Neither"| Nothing["nothing more"]
+```
+
 What is not sent:
 
 - **Archiving a card sends nothing.** It writes `card_archived`, which has no event. Nor does restoring one: `card_restored` has none, and a restore through `PUT /api/v1/cards/{cardId}` with no other field sends no `card.updated` either, since it writes `api:card_restored` and no `api:card_updated` (card 2108).
 - **A card update that changes nothing sends nothing** (card 2183). `PUT /api/cards/{id}` and `PUT /api/v1/cards/{cardId}` compare what is sent with what the card holds, and write no entry, so send no `card.updated`, when every field is as stored; one that changes some fields sends one `card.updated` whose `detail` names those alone. The card window sends a card's whole state back with every save, so every Save on an unchanged card sent a `card.updated` until 2026-10-15.
 - **A move out of an On Hold column sends the move's events alone** (card 2208). The move clears the card's on-hold note itself; the board page's drag out of On Hold sent a second request to clear it, which delivered a `card.updated` beside the `card.moved`, until 2026-10-15.
+- **A move into a Complete column sends no `card.moved`.** It sends `card.completed` instead, its entry being a completion (a move into another board's Complete column also sends each board its `card.moved`); a receiver that wants every column change asks for both events. A reopening is sent as `card.moved` (card 2278).
+- **No delivery names another board.** A move to another board is sent to each board as that board's own entry, which names no board (card 2181), and with the board's own `boardId`; the other board's name, and its id, are in neither. A webhook whose board a card left is not told where it went beyond the column in the route, and the joined board's webhooks are not told where it came from beyond its column.
 - **A `card.deleted` carries the id of the card that went**, although the activity entry it comes from is stored with no card id, the card being gone.
 - **Deleting a column sends nothing**, for the column or for any card in it. Neither does purging archived cards, clearing a board's cards or deleting a board. A board's webhooks are deleted with the board. Open pages are told of each by a live update: see [Event Types](#event-types).
 

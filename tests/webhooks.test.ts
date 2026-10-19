@@ -28,6 +28,12 @@
  * status line and an error before it; in fixed words, never an address; the
  * newer dispatch's result kept; forgotten when the address changes or the
  * webhook is deleted. Who may read it is in access-control.test.ts.
+ *
+ * Card 2278: which action sends which event, the whole map, and what each
+ * kind of move sends. A reopening, and a move to another board, sent nothing:
+ * a receiver of `card.moved` missed them. Each now sends `card.moved` to its
+ * own board with that board's own entry, which names no other board (card
+ * 2181); a move into Complete sends `card.completed` instead of `card.moved`.
  */
 import dns from 'node:dns';
 import http from 'node:http';
@@ -37,12 +43,14 @@ import type { AddressInfo } from 'node:net';
 import { isHttpError } from '@sveltejs/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
+import type { SessionUser } from '$lib/server/auth';
+import { ACTIONS, logActivity } from '$lib/server/logActivity';
 import { deliver, deliveryResultFor, dispatchWebhook, forgetDeliveries, WARNINGS_REMEMBERED } from '$lib/server/webhooks';
 import { addressRefusal, insideReason, parseAllowInside, readWebhookUrl } from '$lib/server/webhook-address';
 import { reportWebhookAllowInside, reportWebhooksOverCap, reportWebhooksRefused } from '$lib/server/startup-checks';
-import { api } from './helpers/api';
+import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, makeBoard, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
+import { addBoardMember, makeBoard, makeCard, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(resetDb);
@@ -1840,5 +1848,180 @@ describe("a webhook's last delivery result (card 2178)", () => {
 			`Webhook ${hook.id} on board ${board.id}: 127.0.0.1:${server.port} answered 307, a redirect, which is not followed`
 		]);
 		expect(deliveryResultFor(hook)?.reason).toBe('The receiver answered 308, a redirect, which is not followed');
+	});
+});
+
+// ─── Card 2278 ───────────────────────────────────────────────────────────
+
+describe('which action sends which event, and what each move sends (card 2278)', () => {
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+	});
+	afterEach(() => sent.restore());
+
+	it('sends each action its event, and every other action none, by either spelling: the whole map', async () => {
+		const { board } = makeBoard({ owner: makeUser() });
+		makeWebhook(board);
+
+		const heard: Record<string, string | null> = {};
+		for (const action of Object.values(ACTIONS)) {
+			for (const spelling of [action, `api:${action}`]) {
+				sent.clear();
+				logActivity({ boardId: board.id, action: spelling, detail: spelling });
+				await sent.settle();
+				const events = sent.webhooks.map((w) => w.event);
+				expect(events.length, spelling).toBeLessThanOrEqual(1);
+				if (spelling === action) heard[action] = events[0] ?? null;
+				else expect(events[0] ?? null, spelling).toBe(heard[action]);
+			}
+		}
+
+		expect(heard).toEqual({
+			card_created: 'card.created',
+			card_updated: 'card.updated',
+			card_moved: 'card.moved',
+			// A move to another board, on each board's own entry (card 2278).
+			card_moved_away: 'card.moved',
+			card_moved_in: 'card.moved',
+			// A move into Complete is a completion, instead of a move.
+			card_completed: 'card.completed',
+			// A move out of Complete is a move (card 2278).
+			card_reopened: 'card.moved',
+			card_deleted: 'card.deleted',
+			card_archived: null,
+			card_restored: null,
+			cards_purged: null,
+			cards_cleared: null,
+			column_deleted: null,
+			subtask_created: null,
+			subtask_updated: null,
+			subtask_completed: null,
+			subtask_deleted: null,
+			comment_added: 'comment.added',
+			comment_edited: null,
+			assignee_added: null,
+			assignee_removed: null,
+			dependency_added: null,
+			dependency_removed: null,
+			board_created: null,
+			board_updated: null,
+			milestone_created: null
+		});
+	});
+
+	/**
+	 * Two boards of one owner, named so that either name can be looked for. A's
+	 * webhook `a` asks for every event, and `a-completions` for `card.completed`
+	 * alone; B's webhook `b` asks for every event.
+	 */
+	const twoBoards = () => {
+		const owner = makeUser({ username: 'owner' });
+		const A = makeBoard({ owner, name: 'ALPHA-SECRET' });
+		const B = makeBoard({ owner, name: 'BRAVO-SECRET' });
+		makeWebhook(A.board, { url: 'https://hooks.example.test/a' });
+		makeWebhook(A.board, { url: 'https://hooks.example.test/a-completions', events: ['card.completed'] });
+		makeWebhook(B.board, { url: 'https://hooks.example.test/b' });
+		return { owner, A, B };
+	};
+	type Move = (user: SessionUser, cardId: number, columnId: number) => Promise<ApiResult>;
+	const routes: [string, Move][] = [
+		['PUT /api/cards/reorder', (user, id, columnId) => api('PUT', '/api/cards/reorder', { user, body: { updates: [{ id, columnId, position: 0 }] } })],
+		['PUT /api/cards/:id', (user, id, columnId) => api('PUT', `/api/cards/${id}`, { user, body: { columnId } })],
+		['PUT /api/v1/cards/:id/move', (user, id, columnId) => api('PUT', `/api/v1/cards/${id}/move`, { user, body: { columnId } })]
+	];
+	// The drag refuses a move to another board.
+	const acrossBoards = routes.slice(1);
+
+	/**
+	 * Make the move, and answer each delivery as [webhook, event, data.action,
+	 * data.detail], checking on the way that each went to its own board's
+	 * webhook, named its own board's id, and named neither board.
+	 */
+	async function deliveries(w: ReturnType<typeof twoBoards>, move: () => Promise<ApiResult>) {
+		const res = await move();
+		await sent.settle();
+		expect(res.status).toBe(200);
+		expect(sent.duringTransaction).toEqual([]);
+		const text = JSON.stringify(sent.webhooks.map((d) => d.body));
+		expect(text).not.toContain('ALPHA-SECRET');
+		expect(text).not.toContain('BRAVO-SECRET');
+		return sent.webhooks.map((d) => {
+			const hook = d.url.split('/').pop()!;
+			expect(d.body.boardId, hook).toBe(hook === 'b' ? w.B.board.id : w.A.board.id);
+			expect(d.body.event).toBe(d.event);
+			return [hook, d.event, d.body.data.action, d.body.data.detail];
+		});
+	}
+
+	it.each(routes)('%s: a reopening sends card.moved to the board, as card_reopened', async (_route, move) => {
+		const w = twoBoards();
+		const card = makeCard(w.A.cols['Complete'], { title: 'Reopened' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.A.cols['In Progress'].id))).toEqual([
+			['a', 'card.moved', 'card_reopened', '"Reopened": Complete → In Progress']
+		]);
+	});
+
+	it.each(routes)('%s: a completion sends card.completed instead of card.moved (a guard)', async (_route, move) => {
+		const w = twoBoards();
+		const card = makeCard(w.A.cols['In Progress'], { title: 'Finished' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.A.cols['Complete'].id))).toEqual([
+			['a', 'card.completed', 'card_completed', '"Finished": In Progress → Complete'],
+			['a-completions', 'card.completed', 'card_completed', '"Finished": In Progress → Complete']
+		]);
+	});
+
+	it.each(acrossBoards)('%s: a move to another board sends card.moved to each board, with its own entry', async (_route, move) => {
+		const w = twoBoards();
+		const card = makeCard(w.A.cols['To Do'], { title: 'Moving' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.B.cols['In Progress'].id))).toEqual([
+			['a', 'card.moved', 'card_moved_away', '"Moving" moved to another board (To Do → In Progress)'],
+			['b', 'card.moved', 'card_moved_in', '"Moving" moved from another board (To Do → In Progress)']
+		]);
+	});
+
+	it.each(acrossBoards)("%s: into the other board's Complete, the joined board hears the arrival and the completion", async (_route, move) => {
+		const w = twoBoards();
+		const card = makeCard(w.A.cols['In Progress'], { title: 'Moving' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.B.cols['Complete'].id))).toEqual([
+			['a', 'card.moved', 'card_moved_away', '"Moving" moved to another board (In Progress → Complete)'],
+			['b', 'card.moved', 'card_moved_in', '"Moving" moved from another board (In Progress → Complete)'],
+			['b', 'card.completed', 'card_completed', '"Moving": In Progress → Complete']
+		]);
+	});
+
+	it('PUT /api/cards/:id: a move to another board with a new title tells the board left the old title only (a guard)', async () => {
+		const w = twoBoards();
+		const card = makeCard(w.A.cols['To Do'], { title: 'Old title' });
+
+		const heard = await deliveries(w, () =>
+			api('PUT', `/api/cards/${card.id}`, { user: w.owner, body: { columnId: w.B.cols['To Do'].id, title: 'New title' } })
+		);
+
+		expect(heard.map(([hook, event, action]) => [hook, event, action])).toEqual([
+			['a', 'card.moved', 'card_moved_away'],
+			['b', 'card.moved', 'card_moved_in'],
+			['b', 'card.updated', 'card_updated']
+		]);
+		expect(heard[0][3]).toBe('"Old title" moved to another board (To Do → To Do)');
+		expect(heard[1][3]).toBe('"Old title" moved from another board (To Do → To Do)');
+		expect(heard[2][3]).toContain('"New title"');
+		// The board the card left is never told the name it took on the other.
+		expect(JSON.stringify(sent.webhooks.filter((d) => d.body.boardId === w.A.board.id))).not.toContain('New title');
+	});
+
+	it.each(acrossBoards)("%s: out of Complete into the other board's To Do, the joined board hears the arrival and the reopening", async (_route, move) => {
+		const w = twoBoards();
+		const card = makeCard(w.A.cols['Complete'], { title: 'Moving' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.B.cols['To Do'].id))).toEqual([
+			['a', 'card.moved', 'card_moved_away', '"Moving" moved to another board (Complete → To Do)'],
+			['b', 'card.moved', 'card_moved_in', '"Moving" moved from another board (Complete → To Do)'],
+			['b', 'card.moved', 'card_reopened', '"Moving": Complete → To Do']
+		]);
 	});
 });

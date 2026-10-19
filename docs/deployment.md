@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.45
+version: 1.46
 status: As-Built
 date: 2026-10-19
 tags:
@@ -3296,6 +3296,29 @@ Checks 187 to 190 run on production, all with the throwaway account of check 186
 #### Going back to the previous image
 
 Nothing is done to the database. The older image writes as the caller the gate read again: a write whose key or session ended, or whose role was lowered, while its body was arriving goes through, and a report schedule can be deleted by a session that has ended.
+
+### A Reopening and a Move to Another Board Sent to Webhooks
+
+**Card 2278.** No migration, no setting, no new event name. A card moved out of a Complete column, and a card moved to another board, wrote their activity entries and sent no webhook, so a receiver of `card.moved` missed them. Now a reopening sends its board's webhooks `card.moved` with `data.action` `card_reopened`, and a move to another board sends `card.moved` to both boards, `card_moved_away` to the one it left and `card_moved_in` to the one it joined, each with its own board's entry, which names neither board (card 2181). A move into a Complete column still sends `card.completed` instead of `card.moved`. See [Events and Payload](notifications-email.md#events-and-payload).
+
+**Owner to know.**
+
+- **Receivers of `card.moved` are sent more**: every reopening, and two deliveries for each move between boards (one to each board's webhooks). A receiver that took every `card.moved` for a move within one board reads `data.action`. A webhook whose `events` is an empty list is sent them too.
+- **A move into another board's Complete column sends the joined board two deliveries**, `card.moved` (the arrival) and `card.completed`, where it sent `card.completed` alone.
+- **A board's webhook receiver now also hears of a move to another board**, a channel wider than the board's members among them, with the route's two column titles, one of them the other board's, as the board's Activity already shows (card 2181). No board's name goes with it.
+
+#### After the deploy
+
+Checks 191 and 192 need two scratch boards you own, A and B, and a public request catcher (such as `https://webhook.site`) registered as a webhook on each with `POST /api/v1/boards/{boardId}/webhooks` and `{"url":"<catcher>"}` (one catcher address for both is enough: each body's `boardId` says which board it was sent for). Delete both boards afterwards; their webhooks go with them.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 191 | 2278 | On A, drag a card into Complete, then back to In Progress | Two `POST`s: `X-DumpFire-Event: card.completed`, then `card.moved` with `"action":"card_reopened"` and `"detail":"\"<title>\": Complete → In Progress"`, both with A's `boardId` | No second `POST`, or a `card.moved` for the drag into Complete |
+| 192 | 2278 | From All Tasks, Move the card to B's To Do | Two `card.moved`: A's `boardId` with `"action":"card_moved_away"` and `"<title>" moved to another board (In Progress → To Do)`; B's `boardId` with `"action":"card_moved_in"` and `… moved from another board (…)`; neither body contains either board's name | No `POST`, one only, or a board's name in either |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image sends nothing for a reopening or a move to another board again, but for a move into another board's Complete column, for which it still sends the joined board `card.completed`.
 
 ## Changing the Schema
 

@@ -534,10 +534,13 @@ describe('PUT /api/v1/cards/:id/move', () => {
 			'insert into "activity_log"',
 			'insert into "card_comments"'
 		]);
-		// Board B's webhook hears of the completion, and the assignee is mailed
-		// that the card moved: a completion is mailed whichever route made it
-		// (card 2134). A plain move through the API mails nobody.
+		// Board A's webhook hears the card leave, board B's that it arrived and
+		// was completed (card 2278), and the assignee is mailed that the card
+		// moved: a completion is mailed whichever route made it (card 2134). A
+		// plain move through the API mails nobody.
 		expect(run.effects.map(name)).toEqual([
+			'webhook card.moved',
+			'webhook card.moved',
 			'webhook card.completed',
 			'email to assignee@example.test: Card moved: First → Complete',
 			'email to assignee@example.test: Unblocked: Waiting',
@@ -547,7 +550,11 @@ describe('PUT /api/v1/cards/:id/move', () => {
 			'event xp-update',
 			'event celebrate'
 		]);
-		expect(run.effects[0]).toMatchObject({ url: 'https://hooks.example.test/b' });
+		expect(run.effects.slice(0, 3).map((e) => (e.kind === 'webhook' ? [e.url === 'https://hooks.example.test/b', e.body.data.action] : e.kind))).toEqual([
+			[false, 'card_moved_away'],
+			[true, 'card_moved_in'],
+			[true, 'card_completed']
+		]);
 	});
 
 	it('refused, leaves the card where it was and announces nothing', async () => {

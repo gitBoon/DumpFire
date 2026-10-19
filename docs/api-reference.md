@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.63
+version: 1.64
 status: As-Built
 date: 2026-10-19
 tags:
@@ -984,6 +984,15 @@ new; these answers and fields are:
   ended could still delete a schedule, and is now `401`. Nothing changes for a key or session
   that still holds and an account whose role is as it was (item 77). See
   [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253).
+- **A reopening and a move to another board send `card.moved`** (card 2278), whichever
+  route made them, `PUT /cards/:cardId/move` among them: a card moved out of a Complete
+  column sends its board's webhooks `card.moved` with `data.action` `card_reopened`, and a
+  card moved to another board sends the board it left `card.moved` with `card_moved_away`
+  and the board it joined `card.moved` with `card_moved_in`, each with that board's own
+  entry as `detail`, which names neither board. Both sent nothing, so a receiver of
+  `card.moved` missed them. A move into a Complete column still sends `card.completed`
+  instead of `card.moved` (item 78). See
+  [Events and Payload](notifications-email.md#events-and-payload).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2502,7 +2511,8 @@ is needed on both). Goes through the same service as a drag in the web UI:
 - into a Complete/Done column: `completedAt` is stamped, `firstCompletedAt` is set
   if it was not already, XP is awarded the first time only, and `card_completed` is
   logged. Refused with 409 while subtasks or sub-boards are still open.
-- out of a Complete/Done column: `completedAt` is cleared and `card_reopened` is logged.
+- out of a Complete/Done column: `completedAt` is cleared and `card_reopened` is logged,
+  which sends the board's webhooks `card.moved` (card 2278).
 - out of an On Hold column: a move from a column titled On Hold, Hold, Blocked, Parked or
   Waiting to one that is not clears the card's `onHoldNote` to `''`, in the same write as
   the move, with no entry of its own. The note stays on a move into such a column, between
@@ -2518,7 +2528,8 @@ is needed on both). Goes through the same service as a drag in the web UI:
   board it left and `"<title>" moved from another board (<from> → <to>)` on the board it
   arrived on, because each is read by everyone who can open its board. `card_moved_away`
   ends ` and out of milestone "<name>"` when the move took the card out of one of that
-  board's milestones. The card's "Unblocked" comments that name work of the board it left
+  board's milestones. Each sends its own board's webhooks `card.moved`, with that entry as
+  `detail` (card 2278). The card's "Unblocked" comments that name work of the board it left
   by its title are rewritten to name it by its number, or as "a subtask on another board",
   with `updatedAt` unchanged (card 2256; see `GET /cards/:cardId/comments`), and so are
   other cards' notices naming it or one of its subtasks, on every card not on the board it
@@ -3224,6 +3235,14 @@ A webhook sends each event of its board that it asks for (`card.created`, `card.
 `card.moved`, `card.completed`, `card.deleted`, `comment.added`) to its `url` as a `POST`,
 after the change is committed, signed with its `secret`. What is sent:
 [Notifications & Email](notifications-email.md#webhooks).
+
+`card.moved` is every column change but a completion: a move within the board (`data.action`
+`card_moved`), a card moved out of a Complete column (`card_reopened`), and a move to another
+board, sent to the board it left (`card_moved_away`) and to the board it joined
+(`card_moved_in`), each with its own board's entry, which names neither board (card 2278). A
+move into a Complete column sends `card.completed` instead; one into another board's Complete
+column sends the joined board both, the arrival and the completion. Ask for both events to hear
+every column change.
 
 | Route | Does | Needs | Answers |
 |-------|------|-------|---------|

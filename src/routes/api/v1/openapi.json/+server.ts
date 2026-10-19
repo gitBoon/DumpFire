@@ -202,6 +202,9 @@ const spec = {
 			'a write whose key is ended (revoked, expired, or ended by a password reset of its user) while its body is still arriving is answered 401 "Invalid or expired API key" and writes nothing; ' +
 			'one whose user\'s role or access was lowered meanwhile is refused as that user now is, 403 or 404 in the operation\'s own words (POST /api/v1/dependencies/bulk, POST /api/v1/tokens/bulk, and POST and DELETE /api/v1/milestones/{milestoneId}/cards/bulk with their 409, listing every item), and writes nothing, fires no webhook and sends no mail; ' +
 			'nothing changes for a key that still holds and a user whose role is as it was. ' +
+			'(78) a reopening and a move to another board send card.moved, by PUT /api/v1/cards/{cardId}/move as by the web application: a card moved out of a Complete column sends its board\'s webhooks card.moved with data.action card_reopened, ' +
+			'and a card moved to another board sends the board it left card.moved with card_moved_away and the board it joined card.moved with card_moved_in, each with that board\'s own activity entry as detail, which names neither board; ' +
+			'both sent nothing, so a receiver of card.moved missed them. A move into a Complete column still sends card.completed instead of card.moved, and one into another board\'s Complete column sends the joined board both. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -609,7 +612,9 @@ const spec = {
 					'An address that is loopback, private, shared, link-local (the cloud metadata service among them), reserved, documentation or multicast, in IPv4 or IPv6, ' +
 					'and the names localhost, *.localhost, a name with no dot, *.local, *.internal and *.home.arpa, are refused when the webhook is created or its url changed; ' +
 					'a name is judged again at each delivery by every address it resolves to, and a delivery to one that resolves inside is not made. Redirects are not followed, ' +
-					'and an address with a user name or password is refused. The server\'s operator may let named receivers inside the network be sent to. A board has at most 10 webhooks.',
+					'and an address with a user name or password is refused. The server\'s operator may let named receivers inside the network be sent to. A board has at most 10 webhooks. ' +
+					'card.moved is every column change but a completion, told apart by data.action: card_moved, card_reopened (out of a Complete column), and card_moved_away and card_moved_in (to another board, each sent to its own board with its own entry, which names neither board); ' +
+					'a move into a Complete column sends card.completed instead (a move into another board\'s Complete column also sends each board its card.moved).',
 				properties: {
 					id: { type: 'integer' },
 					boardId: { type: 'integer' },
