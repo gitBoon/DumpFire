@@ -8,6 +8,10 @@
  * webhooks' own, whose lookup refuses an address inside the network at the
  * moment of connection (card 2161, webhook-address.ts). Redirects are not
  * followed.
+ *
+ * What each webhook's last delivery came to is kept in memory (card 2178),
+ * never in the database, and given to the board's owner and administrators as
+ * `lastDelivery` in the webhook's answer. A restart forgets it.
  */
 
 import http from 'node:http';
@@ -16,7 +20,7 @@ import { error } from '@sveltejs/kit';
 import { db, sqlite } from './db';
 import { webhooks } from './db/schema';
 import { eq, and } from 'drizzle-orm';
-import { createHmac } from 'crypto';
+import { createHash, createHmac } from 'crypto';
 import { createLogger } from './logger';
 import { getBoardRole, type Actor } from './board-access';
 import { onTheWire } from './v1-json';
@@ -52,6 +56,11 @@ export function canSeeWebhookSecret(user: Actor, boardId: number): boolean {
  * `setBy`, the account that last set the address or the secret (card 2168),
  * is left out for every caller: it is what a password reset reads, not
  * something a caller needs.
+ *
+ * `lastDelivery` (card 2178) goes with the address: given only with `reveal`,
+ * so the people told a webhook is failing are the people who may read and
+ * change where it sends. Null until a delivery since the server started, and
+ * after the address changes.
  */
 export function presentWebhook(hook: Webhook, reveal: boolean) {
 	const { secret, url, events, setBy: _setBy, ...rest } = hook;
@@ -59,7 +68,7 @@ export function presentWebhook(hook: Webhook, reveal: boolean) {
 		...rest,
 		events: JSON.parse(events || '[]') as string[],
 		hasSecret: secret !== '',
-		...(reveal ? { url, secret } : {})
+		...(reveal ? { url, secret, lastDelivery: deliveryResultFor(hook) } : {})
 	};
 }
 
@@ -137,7 +146,11 @@ export function boardsOverWebhookCap(): { boardId: number; webhooks: number }[] 
 		.all(MAX_WEBHOOKS_PER_BOARD) as { boardId: number; webhooks: number }[];
 }
 
-/** How long a delivery waits for the receiver's status line. */
+/**
+ * How long a delivery waits for the receiver's status line, counted from when
+ * the request is given its connection (card 2178's review): the name's lookup
+ * and the connect are counted, a wait behind the agent's 20 connections is not.
+ */
 export const DELIVERY_TIMEOUT_MS = 10_000;
 
 /**
@@ -207,6 +220,160 @@ export function forgetWebhookWarnings(): void {
 	warned.clear();
 }
 
+// ─── The last delivery (card 2178) ─────────────────────────────────────────
+
+/**
+ * What a webhook's last delivery came to, as its answer gives it. `at` is the
+ * moment the dispatch began, the body's own `timestamp`; `status` is the
+ * receiver's, or null when there was none; `reason` is one of a fixed set of
+ * sentences, never an address, a path, a secret or Node's own words.
+ */
+export type LastDelivery = {
+	at: string;
+	event: WebhookEvent;
+	outcome: 'delivered' | 'answered' | 'no-answer' | 'not-sent';
+	status: number | null;
+	reason: string;
+};
+
+type Result = Pick<LastDelivery, 'outcome' | 'status' | 'reason'>;
+
+/**
+ * One dispatch of an event: its body's timestamp, for the answer, and its
+ * place in the order dispatches were made, for deciding which result is the
+ * newer. The place is a count, not the clock: a clock set back, or two
+ * dispatches in one millisecond, would make a newer attempt look older.
+ */
+export type Dispatch = { at: string; order: number };
+
+let dispatches = 0;
+
+/**
+ * The last dispatch made before the results were last forgotten: a result of
+ * it, or of one before it, is not held. A restart takes its deliveries in
+ * flight with it; in a test, a result that lands late must not reach the next.
+ */
+let forgottenUpTo = 0;
+
+function nextDispatch(at: string): Dispatch {
+	return { at, order: ++dispatches };
+}
+
+/** At most this many results are held; past it the one recorded longest ago is forgotten. */
+const RESULTS_HELD = 10_000;
+
+/**
+ * Each webhook's last result, by id, with its dispatch's place and a SHA-256
+ * of where the result was got: the board, the creation time and the address.
+ * Never the address itself. Oldest recorded first (a result recorded again is
+ * moved to the end), so the first is the one to forget.
+ */
+const results = new Map<number, { delivery: LastDelivery; order: number; place: string }>();
+
+/**
+ * Where a webhook sends, as a hash. A result is given only while the webhook's
+ * row still hashes the same: a new address answers null until its next
+ * delivery, and a row that reuses an id after a reset or a restore is not
+ * given another webhook's result.
+ */
+function placeOf(hook: Webhook): string {
+	return createHash('sha256').update(JSON.stringify([hook.boardId, hook.createdAt, hook.url])).digest('hex');
+}
+
+/**
+ * Hold `result` as the webhook's last, unless a result of a later dispatch is
+ * already held: of two deliveries in flight, the newer attempt's result stays,
+ * whichever answers last. Writes nothing to the database: a write here would
+ * land at a moment no request controls.
+ */
+function recordDelivery(hook: Webhook, dispatch: Dispatch, event: WebhookEvent, result: Result): void {
+	const held = results.get(hook.id);
+	if (held && held.order > dispatch.order) return;
+	if (dispatch.order <= forgottenUpTo) return;
+	results.delete(hook.id);
+	while (results.size >= RESULTS_HELD) results.delete(results.keys().next().value as number);
+	results.set(hook.id, { delivery: { at: dispatch.at, event, ...result }, order: dispatch.order, place: placeOf(hook) });
+}
+
+/** The webhook's last result since the server started, or null: none yet, or got from another address. */
+export function deliveryResultFor(hook: Webhook): LastDelivery | null {
+	const held = results.get(hook.id);
+	return held && held.place === placeOf(hook) ? held.delivery : null;
+}
+
+/** Forget a webhook's result: its delete has committed. */
+export function forgetDelivery(id: number): void {
+	results.delete(id);
+}
+
+/** Forget every result, as a restart does. For tests: each starts as a server does. */
+export function forgetDeliveries(): void {
+	results.clear();
+	forgottenUpTo = dispatches;
+}
+
+/** The reason given when nothing came back that tells why: see `deliveryReason`. */
+const notReached = (timeoutMs: number) =>
+	`The receiver could not be reached, or did not answer within ${timeoutMs / 1000} seconds`;
+
+/**
+ * The reason given for an error before the receiver's status (the plan's
+ * review, R-S3). Three, and never a code: a closed port, a filtered one, a
+ * reset, a receiver that does not answer in time and something that does not
+ * speak HTTP all read alike, so that a board's owner cannot map which ports
+ * of a host are open from the answers. Only a name that is not found, and a
+ * certificate that could not be checked, are told apart, since each needs a
+ * fix of its own. A TLS error that is not about the certificate (a wrong
+ * version number, which is what a listener that does not speak TLS gives) is
+ * read as not reached: told apart, it would say something listens there. The
+ * system log keeps the error itself, for administrators.
+ *
+ * Nor does its timing tell them apart: `deliver` holds a not-reached result
+ * until the timeout has passed from the delivery's start, so a refused port is
+ * recorded no sooner than a dropped one.
+ */
+export function deliveryReason(err: { code?: unknown }, timeoutMs: number): string {
+	const code = typeof err.code === 'string' ? err.code : '';
+	if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return "The receiver's host name could not be found";
+	if (
+		code.startsWith('ERR_TLS_CERT_') ||
+		code.startsWith('CERT_') ||
+		code.startsWith('UNABLE_TO_') ||
+		code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ||
+		code === 'SELF_SIGNED_CERT_IN_CHAIN'
+	) {
+		return "The receiver's certificate could not be checked";
+	}
+	return notReached(timeoutMs);
+}
+
+/** What a webhook refused before any request is recorded as, by why it was refused. */
+const NOT_SENT: Record<Refusal['kind'] | 'events', string> = {
+	'not a URL': 'Not sent: the address is not an http or https address',
+	scheme: 'Not sent: the address is not an http or https address',
+	credentials: 'Not sent: the address carries a user name or password',
+	inside: 'Not sent: the address is inside the network',
+	events: 'Not sent: its events are not a list'
+};
+
+const notSentResult = (why: keyof typeof NOT_SENT): Result => ({ outcome: 'not-sent', status: null, reason: NOT_SENT[why] });
+
+/** Why an address is refused as written, and which kind of refusal it is. */
+type Refusal = { kind: 'not a URL' | 'scheme' | 'credentials' | 'inside'; reason: string };
+
+function refusedAsWritten(address: string): Refusal | null {
+	let url: URL;
+	try {
+		url = new URL(address);
+	} catch {
+		return { kind: 'not a URL', reason: 'its address is not a URL' };
+	}
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+		return { kind: 'scheme', reason: `its address is not an http or https address (${url.protocol})` };
+	}
+	return addressRefusal(url);
+}
+
 /**
  * Why a webhook's address is not sent to, judged as written, with no name
  * looked up: it is not a URL, not `http` or `https` (`http.request` throws for
@@ -217,16 +384,7 @@ export function forgetWebhookWarnings(): void {
  * Names the host, never the path or the query, which can carry a token.
  */
 export function refusalAsWritten(address: string): string | null {
-	let url: URL;
-	try {
-		url = new URL(address);
-	} catch {
-		return 'its address is not a URL';
-	}
-	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-		return `its address is not an http or https address (${url.protocol})`;
-	}
-	return addressRefusal(url)?.reason ?? null;
+	return refusedAsWritten(address)?.reason ?? null;
 }
 
 /**
@@ -261,20 +419,55 @@ export function activeWebhooksRefused(): { id: number; boardId: number; reason: 
  *   - a status from 300 to 399: a WARN, the redirect not followed
  *   - any other status: nothing; the answer is destroyed unread
  *   - an error or the timeout before the status: an ERROR
+ *   - the connection closed with no status and no error (a `101`): an ERROR
  *   - an error or the timeout after it: nothing, for the webhook was delivered
  *
  * Each WARN about one webhook for one kind of reason is written at most once
  * an hour (`warnHourly`); the ERRORs are written each time.
  *
- * `timeoutMs` is how long the status line is waited for; tests shorten it.
+ * Each attempt records one result (card 2178), at the first of: the refusal
+ * before any request, the guarded lookup's refusal, the status line, an error
+ * before the status, and the request closing with none of these (a `101`
+ * answer, which Node closes with no 'upgrade' listener, gives neither a
+ * response nor an error). Every one of the cases above but the last. A result
+ * that says the receiver was not reached is held back until `timeoutMs` has
+ * passed from the delivery's start, so that how soon it comes says nothing.
+ *
+ * `timeoutMs` is how long the status line is waited for, counted from when the
+ * request is given its connection (`'socket'`), so a delivery queued behind
+ * the agent's 20 connections is not timed while it waits; the lookup and the
+ * connect are counted. Tests shorten it.
+ * `dispatch` is the event's (`dispatchWebhook` passes it, so that every
+ * webhook of one event is recorded with the body's timestamp); called on its
+ * own, a delivery is a dispatch of its own, made now.
  */
-export function deliver(hook: Webhook, event: WebhookEvent, body: string, timeoutMs: number = DELIVERY_TIMEOUT_MS): void {
+export function deliver(
+	hook: Webhook,
+	event: WebhookEvent,
+	body: string,
+	timeoutMs: number = DELIVERY_TIMEOUT_MS,
+	dispatch: Dispatch = nextDispatch(new Date().toISOString())
+): void {
 	const which = `Webhook ${hook.id} on board ${hook.boardId}`;
 	const notSent = (kind: WarnKind, reason: string) => warnHourly(hook.id, kind, `${which} not sent: ${reason}`);
+	// Once for the attempt, whatever the request does after; `after` ms from
+	// now, on a timer that keeps nothing running (a newer result held meanwhile
+	// stays: `recordDelivery` keeps the later dispatch's).
+	let recorded = false;
+	const record = (result: Result, after = 0) => {
+		if (recorded) return;
+		recorded = true;
+		if (after <= 0) {
+			recordDelivery(hook, dispatch, event, result);
+			return;
+		}
+		setTimeout(() => recordDelivery(hook, dispatch, event, result), after).unref?.();
+	};
 
-	const refusal = refusalAsWritten(hook.url);
+	const refusal = refusedAsWritten(hook.url);
 	if (refusal !== null) {
-		notSent('refused as written', refusal);
+		notSent('refused as written', refusal.reason);
+		record(notSentResult(refusal.kind));
 		return;
 	}
 	const url = new URL(hook.url);
@@ -307,10 +500,23 @@ export function deliver(hook: Webhook, event: WebhookEvent, body: string, timeou
 	});
 
 	let answered = false;
-	const timer = setTimeout(() => {
-		req.destroy(Object.assign(new Error(`no answer within ${timeoutMs / 1000} s`), { code: 'ETIMEDOUT' }));
-	}, timeoutMs);
-	timer.unref?.();
+	// The delivery starts when the request is given its connection: a wait in
+	// the agent's queue is not the receiver's slowness.
+	let started: number | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	req.once('socket', () => {
+		if (req.destroyed) return;
+		started = performance.now();
+		timer = setTimeout(() => {
+			req.destroy(Object.assign(new Error(`no answer within ${timeoutMs / 1000} s`), { code: 'ETIMEDOUT' }));
+		}, timeoutMs);
+		timer.unref?.();
+	});
+	// How long until the timeout would have ended the delivery: a not-reached
+	// result is held until then, so a port that refuses at once and one that
+	// never answers are recorded alike.
+	const untilTimedOut = () => (started === undefined ? timeoutMs : started + timeoutMs - performance.now());
+	const unreached = () => record({ outcome: 'no-answer', status: null, reason: notReached(timeoutMs) }, untilTimedOut());
 
 	req.on('response', (res: http.IncomingMessage) => {
 		answered = true;
@@ -318,6 +524,9 @@ export function deliver(hook: Webhook, event: WebhookEvent, body: string, timeou
 		const status = res.statusCode ?? 0;
 		if (status >= 300 && status < 400) {
 			warnHourly(hook.id, 'redirect', `${which}: ${url.host} answered ${status}, a redirect, which is not followed`);
+			record({ outcome: 'answered', status, reason: `The receiver answered ${status}, a redirect, which is not followed` });
+		} else {
+			record({ outcome: status >= 200 && status < 300 ? 'delivered' : 'answered', status, reason: `The receiver answered ${status}` });
 		}
 		res.on('error', () => {});
 		res.destroy();
@@ -327,8 +536,23 @@ export function deliver(hook: Webhook, event: WebhookEvent, body: string, timeou
 	req.on('error', (err: NodeJS.ErrnoException) => {
 		clearTimeout(timer);
 		if (answered) return;
-		if (err.code === 'EWEBHOOKINSIDE') notSent('resolves inside', err.message);
-		else log.error(`${which}: delivery to ${url.host} failed: ${err.message}`, { code: err.code });
+		if (err.code === 'EWEBHOOKINSIDE') {
+			notSent('resolves inside', err.message);
+			record(notSentResult('inside'));
+		} else {
+			log.error(`${which}: delivery to ${url.host} failed: ${err.message}`, { code: err.code });
+			const reason = deliveryReason(err, timeoutMs);
+			if (reason === notReached(timeoutMs)) unreached();
+			else record({ outcome: 'no-answer', status: null, reason });
+		}
+	});
+	// Last of all. With nothing recorded, no status and no error came: a `101`,
+	// whose connection Node closes for want of an 'upgrade' listener.
+	req.on('close', () => {
+		clearTimeout(timer);
+		if (recorded) return;
+		log.error(`${which}: delivery to ${url.host} failed: the connection closed with no status`);
+		unreached();
 	});
 	req.end(body);
 }
@@ -352,6 +576,7 @@ export function dispatchWebhook(
 ): void {
 	let hooks: Webhook[];
 	let body: string;
+	let dispatch: Dispatch;
 	try {
 		hooks = db.select()
 			.from(webhooks)
@@ -365,12 +590,15 @@ export function dispatchWebhook(
 		// The card data's stored timestamps go out as ISO 8601 with `Z`, as the
 		// v1 API answers them and as `timestamp` is (card 2095, plan R1): the
 		// stored form names no zone.
+		const timestamp = new Date().toISOString();
 		body = JSON.stringify({
 			event,
-			timestamp: new Date().toISOString(),
+			timestamp,
 			boardId,
 			data: onTheWire(payload)
 		});
+		// Every webhook of this event records its result as of this moment (card 2178).
+		dispatch = nextDispatch(timestamp);
 	} catch (err) {
 		log.error('Webhook dispatch error', err);
 		return;
@@ -385,11 +613,13 @@ export function dispatchWebhook(
 			const events = storedEvents(hook.events);
 			if (events === undefined) {
 				warnHourly(hook.id, 'events not a list', `Webhook ${hook.id} on board ${hook.boardId} not sent: its events are not a list`);
+				recordDelivery(hook, dispatch, event, notSentResult('events'));
 				continue;
 			}
+			// An event it does not ask for is not an attempt: nothing is recorded.
 			if (events.length > 0 && !events.includes(event)) continue;
 
-			deliver(hook, event, body);
+			deliver(hook, event, body, DELIVERY_TIMEOUT_MS, dispatch);
 		} catch (err) {
 			log.error(`Webhook ${hook.id} on board ${hook.boardId} could not be sent`, err);
 		}

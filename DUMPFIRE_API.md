@@ -326,6 +326,7 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. No opera
   whose password reset switches it off, and a `POST` or `PUT` whose key such a reset ends while
   its body is still arriving is `401` `Invalid or expired API key`, with nothing written.
 - **A board has at most 10 webhooks** (card 2201), switched-off ones counted: `POST /boards/:boardId/webhooks` answers `409` `This board has 10 webhooks, and a board may have at most 10: delete 1 before adding another.` after every other check, and creates nothing, where any number could be made. A board that already has more keeps them all, and every active one is still sent; the `409` gives its own count (`This board has 14 webhooks, … delete 5 before adding another.`) (item 58).
+- **A webhook's answer says what its last delivery came to** (card 2178), as `lastDelivery`, to the board's owner and an administrator, on `GET /boards/:boardId/webhooks`, `GET /webhooks/:webhookId` and the answer to `PUT /webhooks/:webhookId`: `{ "at": "2026-10-14T10:02:11.481Z", "event": "card.moved", "outcome": "answered", "status": 500, "reason": "The receiver answered 500" }`. `at` is the moment the event was dispatched, the body's `timestamp`; `outcome` is `delivered` (a 2xx), `answered` (any other status, a redirect included, which is not followed), `no-answer` or `not-sent` (refused before any request); `status` is the receiver's or `null`; `reason` is one of a fixed set of sentences that never holds the address, its path or query, the secret or an address a name resolved to, and a closed port, a filtered one and a receiver that does not answer read alike (`The receiver could not be reached, or did not answer within 10 seconds`), in their words and in their timing: such a result is recorded no sooner than the timeout after the delivery was given its connection. The 10 seconds count from that connection, so a delivery queued behind the 20 already open to one receiver is not timed while it waits. It is the latest attempt only, not a history: a failure followed by a success is not shown, and the system log keeps each failure. It is `null` until the webhook's first delivery since the server last started, and after its `url` changes until the next delivery or until the address is changed back; it is `null` in the answer to the `POST` that made the webhook, and anyone else is given no `lastDelivery` key, as no `url`. A result is kept in the server's memory, never stored, so a restart, a deploy included, forgets it. It is read through the API only: no page shows webhooks, and nothing tells anyone that a delivery failed. Until then a delivery's result was in the system log only, which administrators read (item 59).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but reach the keys every caller uses:
 
@@ -2129,6 +2130,17 @@ signature: [Notifications & Email](docs/notifications-email.md#webhooks).
 - **The address and the secret are given only to the board's owner and an administrator**,
   and in the answer to the `POST` that made the webhook. Anyone else is given the webhook
   without `url` and `secret`, with `hasSecret` saying whether a secret is set.
+- **What the last delivery came to** (card 2178) is `lastDelivery`, given with the address: to
+  the board's owner and an administrator, `null` in the answer to the `POST`, and to nobody
+  else. `outcome` is `delivered`, `answered`, `no-answer` or `not-sent`, with the receiver's
+  `status` (or `null`) and a `reason` in fixed words, never the address. It is kept in the
+  server's memory: `null` before the first delivery since the server last started (a restart,
+  a deploy included, forgets every result), and after the `url` changes until the next
+  delivery or until the address is changed back. It is the latest attempt only, not a
+  history: an earlier failure followed by a success is not shown; the system log keeps each.
+  **Read through the API only**: no page shows webhooks and nothing tells anyone a delivery
+  failed, so poll `GET /api/v1/webhooks/{webhookId}` or the board's list. Every outcome and
+  reason, with what to do about each: [Last Delivery](docs/notifications-email.md#last-delivery).
 - **Only the board's owner or an administrator changes the address or the secret, or switches a
   webhook on.** An editor who sends `url` or `secret` at all, whatever the value, is `403`
   `Only the board's owner or an administrator can change a webhook's address or secret. Ask the board's owner.`, and one

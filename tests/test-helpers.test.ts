@@ -6,7 +6,7 @@
  */
 import http from 'node:http';
 import https from 'node:https';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -18,7 +18,7 @@ import { logUiActivity } from '$lib/server/logActivity';
 import { createLogger } from '$lib/server/logger';
 import { notifyCardMoved } from '$lib/server/notifications';
 import { getWorkDependencies } from '$lib/server/planning';
-import { dispatchWebhook } from '$lib/server/webhooks';
+import { deliveryResultFor, dispatchWebhook } from '$lib/server/webhooks';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import { action, loadKeys, pageLoad, pagePatterns } from './helpers/actions';
 import { eachWriteInTurn } from './helpers/each-write';
@@ -610,7 +610,7 @@ describe('the builders', () => {
 		expect(comment).toMatchObject({ cardId: card.id, userId: owner.id, content: 'Looks right to me' });
 	});
 
-	it('resetDb starts again what mail has done since the server started (card 2196)', async () => {
+	it('resetDb starts again what mail and webhooks have done since the server started (cards 2196 and 2178)', async () => {
 		const sent = effects({ refuseMailTo: ['refused@example.test'] });
 		try {
 			makeSmtp();
@@ -618,12 +618,19 @@ describe('the builders', () => {
 			await sendEmail('refused@example.test', 'Two', '<p>2</p>');
 			expect(mailStatus()).toMatchObject({ sent: 1, failed: 1, lastFailure: { subject: 'Two' } });
 			const since = mailStatus().since;
+			// A webhook's last delivery, answered 200 by the recorder.
+			const hook = makeWebhook(makeBoard({ owner: makeUser() }).board);
+			dispatchWebhook(hook.boardId, 'card.created', { cardId: 1 });
+			await sent.settle();
+			await vi.waitFor(() => expect(deliveryResultFor(hook)).toMatchObject({ outcome: 'delivered', status: 200 }));
 			await new Promise((resolve) => setTimeout(resolve, 5));
 
 			resetDb();
 
 			expect(mailStatus()).toEqual({ since: expect.any(String), sent: 0, failed: 0, lastSentAt: null, lastFailure: null });
 			expect(mailStatus().since > since).toBe(true);
+			// Asked of the row as it was: only the result itself is gone.
+			expect(deliveryResultFor(hook)).toBeNull();
 		} finally {
 			sent.restore();
 		}

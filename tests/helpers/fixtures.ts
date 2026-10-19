@@ -43,7 +43,7 @@ import {
 } from '$lib/server/db/schema';
 import { createSession, generateApiKey, type SessionUser } from '$lib/server/auth';
 import { resetMailStatus } from '$lib/server/email';
-import { forgetWebhookWarnings } from '$lib/server/webhooks';
+import { forgetDeliveries, forgetWebhookWarnings } from '$lib/server/webhooks';
 
 let seq = 0;
 const next = () => ++seq;
@@ -104,6 +104,8 @@ export function resetDb(): void {
 	// So is which webhook lines were written in the last hour (the review of
 	// the webhook group, O2): a test's webhook 1 is not the last test's.
 	forgetWebhookWarnings();
+	// And each webhook's last delivery result (card 2178).
+	forgetDeliveries();
 }
 
 export type Role = 'user' | 'admin' | 'superadmin';

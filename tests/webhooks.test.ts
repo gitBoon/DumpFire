@@ -22,15 +22,22 @@
  * webhooks a board, an 11th refused 409, with a start-up line for a board
  * already over (card 2201). Who may change the address is in
  * access-control.test.ts (card 2154).
+ *
+ * Card 2178: what each webhook's last delivery came to, held in memory and
+ * given to the board's owner as `lastDelivery`, at the first of a refusal, the
+ * status line and an error before it; in fixed words, never an address; the
+ * newer dispatch's result kept; forgotten when the address changes or the
+ * webhook is deleted. Who may read it is in access-control.test.ts.
  */
 import dns from 'node:dns';
 import http from 'node:http';
+import net from 'node:net';
 import { createHmac } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { isHttpError } from '@sveltejs/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
-import { deliver, dispatchWebhook, WARNINGS_REMEMBERED } from '$lib/server/webhooks';
+import { deliver, deliveryResultFor, dispatchWebhook, forgetDeliveries, WARNINGS_REMEMBERED } from '$lib/server/webhooks';
 import { addressRefusal, insideReason, parseAllowInside, readWebhookUrl } from '$lib/server/webhook-address';
 import { reportWebhookAllowInside, reportWebhooksOverCap, reportWebhooksRefused } from '$lib/server/startup-checks';
 import { api } from './helpers/api';
@@ -1359,5 +1366,479 @@ describe('the start-up line of webhooks refused as written (the review, O1)', ()
 			.map((h) => `webhook ${h.id} on board ${h.boardId} (10.0.0.1 is a private network address)`)
 			.join('; ');
 		expect(startup()).toEqual([`WARN 21 webhook(s) that are on are not sent, whatever their names resolve to: ${named}; and 1 more${END}`]);
+	});
+});
+
+// ─── Card 2178 ───────────────────────────────────────────────────────────
+
+describe("a webhook's last delivery result (card 2178)", () => {
+	const UNREACHED = (seconds: number) => `The receiver could not be reached, or did not answer within ${seconds} seconds`;
+
+	/** A board, and its owner, to read the webhook's answer as. */
+	function ownersBoard() {
+		const owner = makeUser();
+		return { owner, board: makeBoard({ owner }).board };
+	}
+
+	/** `lastDelivery` as the owner's GET of the webhook answers it. */
+	async function lastDelivery(hook: Hook, owner: ReturnType<typeof makeUser>) {
+		const res = await api('GET', `/api/v1/webhooks/${hook.id}`, { user: owner });
+		expect(res.status).toBe(200);
+		expect(res.body).toHaveProperty('lastDelivery');
+		return res.body.lastDelivery;
+	}
+
+	/** Once a result is held for the webhook. */
+	const settled = (hook: Hook) => vi.waitFor(() => expect(deliveryResultFor(hook)).not.toBeNull(), { timeout: 5000 });
+
+	it('gives the owner the status a receiver answered, with the moment the event was dispatched (W1)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		const server = await receiver((req, res) => {
+			res.statusCode = 500;
+			res.end('broken');
+		});
+		const { owner, board } = ownersBoard();
+		const hook = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/` });
+
+		dispatchWebhook(board.id, 'card.moved', { cardId: 1 });
+		await settled(hook);
+
+		expect(await lastDelivery(hook, owner)).toEqual({
+			at: JSON.parse(server.received[0].body).timestamp,
+			event: 'card.moved',
+			outcome: 'answered',
+			status: 500,
+			reason: 'The receiver answered 500'
+		});
+	});
+
+	it('is null before any delivery since the server started', async () => {
+		const { owner, board } = ownersBoard();
+		const hook = makeWebhook(board);
+		expect(await lastDelivery(hook, owner)).toBeNull();
+	});
+
+	it('calls a 2xx delivered (W2)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		const server = await receiver((req, res) => {
+			res.statusCode = 204;
+			res.end();
+		});
+		const { board } = ownersBoard();
+		const hook = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/` });
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		await settled(hook);
+		expect(deliveryResultFor(hook)).toMatchObject({ outcome: 'delivered', status: 204, reason: 'The receiver answered 204' });
+	});
+
+	it('reads a closed port as not reached, and a name that is not found as such (W3)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		answerLookups({});
+		const port = await closedPort();
+		const { board } = ownersBoard();
+		const closed = makeWebhook(board, { url: `http://127.0.0.1:${port}/` });
+		const nowhere = makeWebhook(board, { url: 'https://nowhere.example.test/x' });
+
+		// A not-reached result waits out the timeout: a short one here.
+		deliver(closed, 'card.created', '{}', 300);
+		deliver(nowhere, 'card.created', '{}', 300);
+		await settled(closed);
+		await settled(nowhere);
+
+		expect(deliveryResultFor(closed)).toMatchObject({ outcome: 'no-answer', status: null, reason: UNREACHED(0.3) });
+		expect(deliveryResultFor(nowhere)).toMatchObject({
+			outcome: 'no-answer',
+			status: null,
+			reason: "The receiver's host name could not be found"
+		});
+	});
+
+	it('reads a receiver that sends no status in time as a closed port reads, and keeps a status that came before a body held open (W4)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		const silent = await receiver(() => {});
+		const slowBody = await receiver((req, res) => {
+			res.writeHead(200, { 'Content-Type': 'text/plain' });
+			res.write('still ');
+		});
+		const { board } = ownersBoard();
+		const quiet = makeWebhook(board, { url: `http://127.0.0.1:${silent.port}/` });
+		const answered = makeWebhook(board, { url: `http://127.0.0.1:${slowBody.port}/` });
+
+		deliver(quiet, 'card.created', '{}', 200);
+		deliver(answered, 'card.created', '{}', 200);
+		await settled(quiet);
+		await settled(answered);
+		// Past the timeout of the one that answered.
+		await new Promise((resolve) => setTimeout(resolve, 400));
+
+		expect(deliveryResultFor(quiet)).toMatchObject({ outcome: 'no-answer', status: null, reason: UNREACHED(0.2) });
+		expect(deliveryResultFor(answered)).toMatchObject({ outcome: 'delivered', status: 200, reason: 'The receiver answered 200' });
+	});
+
+	it('says an address inside the network was not sent to, as written or as resolved, and never which address (W5)', async () => {
+		const server = await receiver();
+		answerLookups({ 'lan.example.test': [v4('10.0.0.5')] });
+		const { owner, board } = ownersBoard();
+		const written = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/` });
+		const resolved = makeWebhook(board, { url: `http://lan.example.test:${server.port}/` });
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		await settled(written);
+		await settled(resolved);
+
+		for (const hook of [written, resolved]) {
+			const result = await lastDelivery(hook, owner);
+			expect(result).toMatchObject({ outcome: 'not-sent', status: null, reason: 'Not sent: the address is inside the network' });
+			expect(JSON.stringify(result)).not.toMatch(/127\.0\.0\.1|10\.0\.0\.5/);
+		}
+		expect(server.connections).toBe(0);
+	});
+
+	it('says a webhook whose events are not a list was not sent (W6)', () => {
+		const { board } = ownersBoard();
+		const hook = storedAs(makeWebhook(board), 'null');
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		expect(deliveryResultFor(hook)).toMatchObject({ outcome: 'not-sent', status: null, reason: 'Not sent: its events are not a list' });
+	});
+
+	it('says an address with credentials, one that is not http or https, and one that is not an address were not sent', () => {
+		const { board } = ownersBoard();
+		const credentials = makeWebhook(board, { url: 'https://u:p@hooks.example.test/x' });
+		const ftp = makeWebhook(board, { url: 'ftp://hooks.example.test/x' });
+		const notAUrl = makeWebhook(board, { url: 'not an address' });
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		expect(deliveryResultFor(credentials)?.reason).toBe('Not sent: the address carries a user name or password');
+		expect(deliveryResultFor(ftp)?.reason).toBe('Not sent: the address is not an http or https address');
+		expect(deliveryResultFor(notAUrl)?.reason).toBe('Not sent: the address is not an http or https address');
+	});
+
+	it('records nothing for an event the webhook does not ask for, or a webhook switched off', () => {
+		const { board } = ownersBoard();
+		const other = makeWebhook(board, { url: 'http://127.0.0.1/x', events: ['card.moved'] });
+		const off = makeWebhook(board, { url: 'http://127.0.0.1/y', active: false });
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		expect(deliveryResultFor(other)).toBeNull();
+		expect(deliveryResultFor(off)).toBeNull();
+	});
+
+	it('says a redirect was answered, and not followed (W7)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		const server = await receiver((req, res) => {
+			res.writeHead(307, { Location: '/elsewhere' });
+			res.end();
+		});
+		const { board } = ownersBoard();
+		const hook = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/` });
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		await settled(hook);
+		expect(deliveryResultFor(hook)).toMatchObject({
+			outcome: 'answered',
+			status: 307,
+			reason: 'The receiver answered 307, a redirect, which is not followed'
+		});
+	});
+
+	it('records each webhook of a board, a failing one not stopping the next (W8)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		// A name not found fails at once; a closed port's result would wait out the 10 s.
+		answerLookups({});
+		const server = await receiver();
+		const { board } = ownersBoard();
+		const failing = makeWebhook(board, { url: 'http://nowhere.example.test/' });
+		const working = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/` });
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		await settled(failing);
+		await settled(working);
+		expect(deliveryResultFor(failing)).toMatchObject({ outcome: 'no-answer' });
+		expect(deliveryResultFor(working)).toMatchObject({ outcome: 'delivered', status: 200 });
+	});
+
+	it('holds no part of the address, its path or query, or the secret (W9)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		const server = await receiver((req, res) => {
+			res.statusCode = 401;
+			res.end('bad signature');
+		});
+		const { owner, board } = ownersBoard();
+		const hook = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/T000/B000/XXXX?token=abc`, secret: 's3cr3t' });
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		await settled(hook);
+		const result = await lastDelivery(hook, owner);
+		expect(result).toMatchObject({ outcome: 'answered', status: 401 });
+		const text = JSON.stringify(result);
+		for (const part of ['T000', 'XXXX', 'token', 'abc', 's3cr3t', '127.0.0.1', String(server.port)]) expect(text).not.toContain(part);
+	});
+
+	it("keeps the newer dispatch's result though the older answers last, both in one millisecond (W10)", async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2026-10-19T09:00:00.000Z'));
+		try {
+			process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+			let n = 0;
+			let older: http.ServerResponse | undefined;
+			const server = await receiver((req, res) => {
+				// The first is held, and answered 200 after the second, which is answered 500 at once.
+				if (++n === 1) older = res;
+				else {
+					res.statusCode = 500;
+					res.end();
+				}
+			});
+			const { board } = ownersBoard();
+			const hook = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/` });
+
+			dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+			dispatchWebhook(board.id, 'card.moved', { cardId: 1 });
+			await vi.waitFor(() => expect(deliveryResultFor(hook)).toMatchObject({ status: 500 }));
+			await vi.waitFor(() => expect(older).toBeDefined());
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			older!.end('ok');
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const [first, second] = server.received.map((r) => JSON.parse(r.body));
+			expect(first.timestamp).toBe(second.timestamp);
+			expect(deliveryResultFor(hook)).toMatchObject({ event: 'card.moved', outcome: 'answered', status: 500 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps the newer dispatch's result when the clock is set back between them (W16)", () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		try {
+			const { board } = ownersBoard();
+			// Refused as written: each result is held at once, in the order dispatched.
+			const hook = makeWebhook(board, { url: 'http://127.0.0.1/x' });
+
+			vi.setSystemTime(new Date('2026-10-19T09:00:00.000Z'));
+			dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+			vi.setSystemTime(new Date('2026-10-19T08:00:00.000Z'));
+			dispatchWebhook(board.id, 'card.moved', { cardId: 1 });
+
+			expect(deliveryResultFor(hook)).toMatchObject({ at: '2026-10-19T08:00:00.000Z', event: 'card.moved' });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('answers null once the owner changes the address, until the next delivery (W11)', async () => {
+		answerLookups({});
+		const { owner, board } = ownersBoard();
+		const hook = makeWebhook(board, { url: 'http://127.0.0.1/x' });
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		expect(await lastDelivery(hook, owner)).toMatchObject({ outcome: 'not-sent' });
+
+		const changed = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: owner, body: { url: 'https://gone.example.test/x' } });
+		expect(changed.status).toBe(200);
+		expect(changed.body.lastDelivery).toBeNull();
+		expect(await lastDelivery(hook, owner)).toBeNull();
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		const notFound = { outcome: 'no-answer', reason: "The receiver's host name could not be found" };
+		await vi.waitFor(async () => expect(await lastDelivery(hook, owner)).toMatchObject(notFound));
+		// A change of the secret or the events keeps it.
+		const other = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: owner, body: { secret: 'new', events: ['card.created'] } });
+		expect(other.status).toBe(200);
+		expect(other.body.lastDelivery).toMatchObject(notFound);
+	});
+
+	it('forgets a deleted webhook, and gives a row that reuses its id for another address nothing (W12)', async () => {
+		const { owner, board } = ownersBoard();
+		const hook = makeWebhook(board, { url: 'http://127.0.0.1/x' });
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		expect(deliveryResultFor(hook)).not.toBeNull();
+
+		expect((await api('DELETE', `/api/v1/webhooks/${hook.id}`, { user: owner })).status).toBe(200);
+		// Asked of the row as it was: the result itself is gone.
+		expect(deliveryResultFor(hook)).toBeNull();
+
+		// Taken out with no route, as a restore or a reset would, and the id written again for another address.
+		const again = makeWebhook(board, { url: 'http://127.0.0.1/y' });
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		expect(deliveryResultFor(again)).not.toBeNull();
+		sqlite.prepare('DELETE FROM webhooks WHERE id = ?').run(again.id);
+		sqlite
+			.prepare("INSERT INTO webhooks (id, board_id, url, events, created_at) VALUES (?, ?, 'https://elsewhere.example.test/z', '[]', ?)")
+			.run(again.id, board.id, again.createdAt);
+		expect(await lastDelivery(again, owner)).toBeNull();
+	});
+
+	it('writes nothing to the database: the result is held in memory (W13)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		let release: (() => void) | undefined;
+		const server = await receiver((req, res) => {
+			release = () => {
+				res.statusCode = 500;
+				res.end();
+			};
+		});
+		const { board } = ownersBoard();
+		const hook = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/` });
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		await vi.waitFor(() => expect(release).toBeDefined());
+		const before = snapshotDb();
+		release!();
+		await settled(hook);
+
+		expect(deliveryResultFor(hook)).toMatchObject({ status: 500 });
+		expectUnchanged(before, 'after the delivery settled');
+	});
+
+	it('reads something that does not speak HTTP as not reached, and gives no parser code (W15)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		const sockets: net.Socket[] = [];
+		const banner = net.createServer((socket) => {
+			sockets.push(socket);
+			socket.end('SSH-2.0-probe\r\n');
+		});
+		await new Promise<void>((resolve) => banner.listen(0, resolve));
+		try {
+			const { port } = banner.address() as AddressInfo;
+			const { owner, board } = ownersBoard();
+			const hook = makeWebhook(board, { url: `http://127.0.0.1:${port}/` });
+
+			deliver(hook, 'card.created', '{}', 300);
+			await settled(hook);
+
+			const result = await lastDelivery(hook, owner);
+			expect(result).toMatchObject({ outcome: 'no-answer', status: null, reason: UNREACHED(0.3) });
+			expect(JSON.stringify(result)).not.toContain('HPE_');
+			// The log keeps the error, for administrators.
+			expect(lines('ERROR')).toHaveLength(1);
+		} finally {
+			for (const socket of sockets) socket.destroy();
+			await new Promise<void>((resolve) => banner.close(() => resolve()));
+		}
+	});
+
+	it('reads https to a listener that does not speak TLS as not reached, not as a certificate', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		const server = await receiver();
+		const { board } = ownersBoard();
+		const hook = makeWebhook(board, { url: `https://127.0.0.1:${server.port}/` });
+
+		deliver(hook, 'card.created', '{}', 300);
+		await settled(hook);
+		expect(deliveryResultFor(hook)).toMatchObject({ outcome: 'no-answer', reason: UNREACHED(0.3) });
+	});
+
+	it('times a delivery from its connection, not from a wait behind the 20 others (the review, 1)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		// Each answered in 400 ms, inside the 600 ms timeout; the 21st waits about
+		// 400 ms for a connection first, which is not counted.
+		const server = await receiver((req, res) => {
+			setTimeout(() => res.end('ok'), 400);
+		});
+		// A board of its own each, as a board has at most ten.
+		const hooks = Array.from({ length: 21 }, (_, i) => makeWebhook(ownersBoard().board, { url: `http://127.0.0.1:${server.port}/${i}` }));
+
+		for (const hook of hooks) deliver(hook, 'card.created', '{}', 600);
+		await vi.waitFor(() => expect(hooks.every((hook) => deliveryResultFor(hook) !== null)).toBe(true), { timeout: 5000 });
+
+		expect(hooks.map((hook) => deliveryResultFor(hook)?.outcome)).toEqual(hooks.map(() => 'delivered'));
+		expect(server.connections).toBe(21);
+	});
+
+	it('records a port that refuses at once no sooner than the timeout, as one that never answers is (the review, 2)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		const port = await closedPort();
+		const silent = await receiver(() => {});
+		const { board } = ownersBoard();
+		const refused = makeWebhook(board, { url: `http://127.0.0.1:${port}/` });
+		const dropped = makeWebhook(board, { url: `http://127.0.0.1:${silent.port}/` });
+
+		const from = performance.now();
+		deliver(refused, 'card.created', '{}', 500);
+		deliver(dropped, 'card.created', '{}', 500);
+		// The refusal is logged at once, and its result is not yet held.
+		await vi.waitFor(() => expect(lines('ERROR')).toHaveLength(1));
+		expect(deliveryResultFor(refused)).toBeNull();
+
+		await settled(refused);
+		const refusedAfter = performance.now() - from;
+		await settled(dropped);
+		// A timer may run a millisecond or so before its time.
+		expect(refusedAfter).toBeGreaterThanOrEqual(490);
+		// The same words, the moment of each dispatch apart.
+		const { at: _refusedAt, ...refusedSaid } = deliveryResultFor(refused)!;
+		const { at: _droppedAt, ...droppedSaid } = deliveryResultFor(dropped)!;
+		expect(refusedSaid).toEqual(droppedSaid);
+		expect(refusedSaid).toMatchObject({ outcome: 'no-answer', status: null, reason: UNREACHED(0.5) });
+	});
+
+	it('does not hold a result still on its way when every result is forgotten, as a restart forgets it', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		const port = await closedPort();
+		const { board } = ownersBoard();
+		const hook = makeWebhook(board, { url: `http://127.0.0.1:${port}/` });
+
+		deliver(hook, 'card.created', '{}', 200);
+		await vi.waitFor(() => expect(lines('ERROR')).toHaveLength(1));
+		forgetDeliveries();
+		await new Promise((resolve) => setTimeout(resolve, 400));
+		expect(deliveryResultFor(hook)).toBeNull();
+	});
+
+	it('reads a 101 answer, which closes with no response and no error, as not reached (the review, 3)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		const server = await receiver((req, res) => {
+			res.socket?.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: probe\r\n\r\n');
+		});
+		const { board } = ownersBoard();
+		const hook = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/` });
+
+		deliver(hook, 'card.created', '{}', 300);
+		await settled(hook);
+		expect(deliveryResultFor(hook)).toMatchObject({ outcome: 'no-answer', status: null, reason: UNREACHED(0.3) });
+		expect(lines('ERROR')).toEqual([
+			`Webhook ${hook.id} on board ${board.id}: delivery to 127.0.0.1:${server.port} failed: the connection closed with no status`
+		]);
+	});
+
+	it('replaces a 500 with the 2xx that follows it (the review, 4)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		let n = 0;
+		const server = await receiver((req, res) => {
+			res.statusCode = ++n === 1 ? 500 : 200;
+			res.end();
+		});
+		const { owner, board } = ownersBoard();
+		const hook = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/` });
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		await vi.waitFor(() => expect(deliveryResultFor(hook)).toMatchObject({ status: 500 }));
+		dispatchWebhook(board.id, 'card.moved', { cardId: 1 });
+		await vi.waitFor(() => expect(deliveryResultFor(hook)).toMatchObject({ status: 200 }));
+
+		expect(await lastDelivery(hook, owner)).toMatchObject({ event: 'card.moved', outcome: 'delivered', status: 200 });
+	});
+
+	it('updates the result while the hourly WARN is held (the review, 4)', async () => {
+		process.env.WEBHOOK_ALLOW_INSIDE = '127.0.0.1';
+		let n = 0;
+		const server = await receiver((req, res) => {
+			res.writeHead(++n === 1 ? 307 : 308, { Location: '/elsewhere' });
+			res.end();
+		});
+		const { board } = ownersBoard();
+		const hook = makeWebhook(board, { url: `http://127.0.0.1:${server.port}/` });
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		await vi.waitFor(() => expect(deliveryResultFor(hook)).toMatchObject({ status: 307 }));
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		await vi.waitFor(() => expect(deliveryResultFor(hook)).toMatchObject({ status: 308 }));
+
+		expect(lines('WARN')).toEqual([
+			`Webhook ${hook.id} on board ${board.id}: 127.0.0.1:${server.port} answered 307, a redirect, which is not followed`
+		]);
+		expect(deliveryResultFor(hook)?.reason).toBe('The receiver answered 308, a redirect, which is not followed');
 	});
 });
