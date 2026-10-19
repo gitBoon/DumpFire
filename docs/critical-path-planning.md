@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.16
+version: 1.17
 status: As-Built
 date: 2026-10-19
 tags:
@@ -417,6 +417,21 @@ different readers:
   withheld plan node keeps its id: whoever can open the other board can find it. A waiting
   subtask's comment ends `nothing is blocking subtask "…" now.`, as before. Comments written
   before card 2152 stay as they are.
+- **A card moved to another board** takes its comments with it (card 2256), where a name
+  written for the old board's readers would reach the new board's. So `moveCard`'s
+  cross-board branch calls `withholdUnblockNotices(cardId, toBoardId)` in the move's
+  transaction, and each of the card's comments that is exactly a named notice is rewritten
+  to the withheld form with the rest of the sentence kept: `#1686 "Ship the API"` becomes
+  `#1686, a card on another board,` unless card 1686 is on the board the card arrives on,
+  and `subtask "Write tests"` becomes `a subtask on another board` (the notice has no id to
+  look the subtask up by), unless every subtask the notice names, the finished one and the
+  waiting one if it is a subtask, has the title of one of the moving card's own subtasks
+  (`SELECT title FROM subtasks WHERE card_id = ?`). Those go with the card and are read on
+  it, so such a notice gives the new board nothing it cannot see and stays named. The comment's `updated_at` is not touched, so the card
+  window shows no "(edited)", and a withheld notice is never named again, so a card moved
+  back keeps the withheld form. Any comment that is word for word a named notice is
+  rewritten, whoever is stored as its author, since the system writes the notice as the
+  person who finished the work. Notices on cards moved before card 2256 keep their names.
 - **The mail** is one person's. It goes to the waiting card's assignees who can open its
   board (card 2180), and names the finished work by its title to an assignee who can open
   the board it is on, and otherwise as "A card on a board you cannot open" (with its number)

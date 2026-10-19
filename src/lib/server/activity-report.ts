@@ -30,6 +30,7 @@
 
 import { sqlite } from './db';
 import { canViewBoard } from './board-access';
+import { milestoneIdsOpenTo } from './milestones';
 import { isCompleteColumnTitle, isHoldColumnTitle } from './card-completion';
 import { ACTIONS, readSource, storedActions } from './logActivity';
 import type { SessionUser } from './auth';
@@ -62,6 +63,7 @@ export interface ReportCard {
 	createdByName: string | null;
 	completedAt: string | null;
 	milestoneId: number | null;
+	/** Null when the card is in no milestone, or in one the reader cannot open (card 2257). */
 	milestoneName: string | null;
 	subtasks: { total: number; completed: number; items?: { id: number; title: string; completed: boolean }[] };
 	comments?: { id: number; content: string; createdAt: string; username: string }[];
@@ -342,6 +344,16 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 		return false;
 	});
 
+	// A card's milestone is named only to a reader who can open it (card
+	// 2257), by the rule the milestone's own page uses (`canViewMilestone`).
+	// Someone who can open one board of a goal across boards is refused the
+	// goal, and was given its name here on every card of it they could see.
+	// The card's `milestoneId` is its own field and stays.
+	const openMilestones = milestoneIdsOpenTo(
+		actor,
+		visible.flatMap((r) => (r.milestoneId === null ? [] : [r.milestoneId]))
+	);
+
 	const boardMap = new Map<number, ReportBoard>();
 	const totals = { ...EMPTY_TOTALS(), boards: 0, cards: 0 };
 	let closeReasonAssumedCount = 0;
@@ -376,7 +388,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 			createdByName: r.createdByName,
 			completedAt: r.completedAt,
 			milestoneId: r.milestoneId,
-			milestoneName: r.milestoneName,
+			milestoneName: r.milestoneId !== null && openMilestones.has(r.milestoneId) ? r.milestoneName : null,
 			subtasks: { total: Number(r.subtaskTotal), completed: Number(r.subtaskDone) },
 			closeReasonAssumed
 		};
@@ -439,7 +451,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 		user: userId ? lookupUser(userId) : null,
 		totals,
 		boards: boardList,
-		milestones: milestonesInWindow(cardIds, fromBound, toBound),
+		milestones: milestonesInWindow(cardIds, fromBound, toBound, openMilestones),
 		meta: {
 			generatedAt: new Date().toISOString(),
 			completionBasis: 'completedAt',
@@ -512,8 +524,11 @@ function bucketOf(r: CardRow, from: string, to: string): ActivityBucket {
  * is current membership — a card's milestone history is not recorded, so a card
  * moved into a goal mid-window counts for the whole of it. Stated here rather
  * than quietly assumed.
+ *
+ * Only the milestones in `open`, the ones the reader may open (card 2257): the
+ * list names each, with its totals across every board.
  */
-function milestonesInWindow(cardIds: number[], from: string, to: string): ReportMilestone[] {
+function milestonesInWindow(cardIds: number[], from: string, to: string, open: Set<number>): ReportMilestone[] {
 	if (cardIds.length === 0) return [];
 	const ids = cardIds.map((n) => Number(n)).join(',');
 
@@ -550,7 +565,8 @@ function milestonesInWindow(cardIds: number[], from: string, to: string): Report
 			hasTargetDate: !!r.targetDate
 		}))
 		// A milestone that did not move tells a reader nothing they need.
-		.filter((m) => m.completedAtEnd > m.completedAtStart);
+		.filter((m) => m.completedAtEnd > m.completedAtStart)
+		.filter((m) => open.has(m.id));
 }
 
 function pct(done: number, total: number): number {

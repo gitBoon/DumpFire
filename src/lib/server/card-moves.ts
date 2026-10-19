@@ -65,7 +65,7 @@ import { getCompletionBlocker } from './card-completion';
 import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
 import { notifyCardMoved, notifyRequesterProgress } from './notifications';
-import { announceUnblocked, recordUnblocked, type UnblockedWork } from './planning';
+import { announceUnblocked, recordUnblocked, withholdUnblockNotices, type UnblockedWork } from './planning';
 import { moveTooDeep, tooDeepToMove, wouldLoopAny } from './sub-boards';
 import type { SessionUser } from './auth';
 
@@ -170,7 +170,8 @@ export interface MoveRequest {
  * the card leaves a hold column for one that is not, card 2208, with no entry
  * of its own: the move's entry is the record), labels, a board-owned category
  * and a milestone of a board that cannot follow it to another board (card
- * 2155), the actor's XP, and the activity
+ * 2155), the names of finished work in its "Unblocked" notices on such a move
+ * (card 2256), the actor's XP, and the activity
  * entry — one per move, carrying the actor's id and the source. The card and
  * both columns are read inside that transaction too, so the move is decided on
  * the rows it then writes.
@@ -317,6 +318,13 @@ function moveCard(request: MoveRequest): CardMove {
 				leftMilestone = { id: goal.id, name: goal.name, ofSourceBoard: goal.boardId === fromColumn.boardId };
 			}
 		}
+
+		// Nor the names in its "Unblocked" notices (card 2256). A notice names
+		// finished work by its title only when the work is on the card's board,
+		// and the comment goes with the card, to readers who may not be able to
+		// open the board the work is on. Rewritten to the withheld form here, so
+		// a move that fails takes the rewrite back with it.
+		withholdUnblockNotices(cardId, toColumn.boardId);
 	}
 
 	const after = db.update(cards).set(update).where(eq(cards.id, cardId)).returning().get();

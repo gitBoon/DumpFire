@@ -15,6 +15,8 @@
  *     it that the caller cannot open (card 1990);
  *   - each card's open blockers, one on a board the caller cannot open
  *     withheld (card 2129);
+ *   - the names of the cards' milestones the caller may open, and of no
+ *     other (card 2257): a card still carries its milestone's id;
  *   - a request origin by the requester's name, never their address.
  */
 import { db } from '$lib/server/db';
@@ -151,9 +153,10 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 	// Blocked state and milestone names for every card read, in one pass each.
 	// These pages span every accessible board and can run to thousands of
 	// cards, so a per-card lookup is not an option: these take the ids already
-	// loaded. A blocker on a board the caller cannot open is withheld (card 2129).
+	// loaded. A blocker on a board the caller cannot open is withheld (card 2129),
+	// and a milestone the caller cannot open is not named (card 2257).
 	const blockedState = getBlockedStateForCards(cardIds, user);
-	const milestoneNames = milestoneNamesForCards(cardIds);
+	const milestoneNames = milestoneNamesForCards(user, cardIds);
 
 	return {
 		// What a page reads of each board and no more: not its parent card,
