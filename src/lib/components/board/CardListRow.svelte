@@ -19,7 +19,7 @@
 -->
 <script lang="ts">
 	import type { CardType, CategoryType } from '$lib/types';
-	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus } from '$lib/utils/date-utils';
+	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, formatDueDate } from '$lib/utils/date-utils';
 	import { subtaskProgress, getCategoryById, getPriorityLabel } from '$lib/utils/card-utils';
 	import { formatTokens } from '$lib/tokens';
 	import { formatUsd, BLEND_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
@@ -136,7 +136,7 @@
 		<span class="row-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt, tick)}</span>
 		{#if card.dueDate}
 			{@const dueStatus = getDueStatus(card.dueDate)}
-			<span class="chip chip-due" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {new Date(card.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">
+			<span class="chip chip-due" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {formatDueDate(card.dueDate)}">
 				{#if dueStatus === 'overdue'}⚠️{:else if dueStatus === 'today'}🔥{:else}📅{/if}
 				Due {getDueRelative(card.dueDate, tick)}
 			</span>

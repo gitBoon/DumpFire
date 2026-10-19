@@ -28,8 +28,7 @@
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import BoardFilterSelect from '$lib/components/BoardFilterSelect.svelte';
 	import type { CardType } from '$lib/types';
-	import { getDueRelative, getDueStatus } from '$lib/utils/date-utils';
-	import { parseStamp } from '$lib/timestamps';
+	import { getDueRelative, getDueStatus, formatDueDate } from '$lib/utils/date-utils';
 	import { subtaskProgress } from '$lib/utils/card-utils';
 	import { boardPathText, chosenBoardId, inBoardFilter } from '$lib/board-tree';
 	import { cardArchiveWarning, deleteFailure, failureMessage } from '$lib/api';
@@ -255,11 +254,6 @@
 		return ['Blocked by']
 			.concat(open.map((b) => (b.withheld ? `#${b.id} ${b.title}` : `#${b.id} ${b.title} — ${b.boardName} / ${b.columnTitle}`)))
 			.join('\n');
-	}
-
-	/** A due date in words, read through parseStamp: a bare date is that day, whatever the viewer's zone. */
-	function dueOn(dueDate: string): string {
-		return parseStamp(dueDate)?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) ?? dueDate;
 	}
 
 	// ─── Card Editing ────────────────────────────────────────────────────
@@ -632,7 +626,7 @@
 							<td class="c-due" class:is-empty={!card.dueDate}>
 								{#if card.dueDate}
 									{@const dueStatus = getDueStatus(card.dueDate)}
-									<span class="chip chip-plain due" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {dueOn(card.dueDate)}">
+									<span class="chip chip-plain due" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {formatDueDate(card.dueDate)}">
 										{#if dueStatus === 'overdue'}⚠️{:else if dueStatus === 'today'}🔥{:else}📅{/if}
 										{getDueRelative(card.dueDate, tick)}
 									</span>

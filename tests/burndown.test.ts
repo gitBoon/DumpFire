@@ -19,7 +19,9 @@
  *
  * The plan is `docs/planning/card-1968-burndown-forecast.md` (section 6).
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { SessionUser } from '$lib/server/auth';
 import {
 	addDays,
@@ -35,6 +37,9 @@ import {
 	type DeliveryEstimate
 } from '$lib/burndown';
 import { paceText, targetVerdict } from '$lib/burndown-text';
+import { BURNDOWN_PARAMS, parseBurndownQuery } from '$lib/server/burndown';
+import { load as loadBurndownPage } from '../src/routes/burndown/+page.server';
+import { pageLoad } from './helpers/actions';
 import { api } from './helpers/api';
 import { makeBoard, makeCard, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
 
@@ -349,5 +354,107 @@ describe('GET /api/v1/burndown', () => {
 			medium: [true, 'slowest-board'],
 			low: [false, 'pooled']
 		});
+	});
+});
+
+// ─── The page's address (card 2242) ─────────────────────────────────────────
+
+/**
+ * A URL tracked as SvelteKit tracks a server load's `url`
+ * (`make_trackable`, `node_modules/@sveltejs/kit/src/utils/url.js`): `get`,
+ * `getAll` and `has` on `searchParams` make the one name read a dependency;
+ * any other use of `searchParams` (iterating it, copying it, `toString`), or
+ * `href`, `search` or `toString` on the URL, makes the whole address one.
+ */
+function trackedUrl(href: string) {
+	const real = new URL(href, 'http://localhost');
+	const tracked = { names: new Set<string>(), whole: [] as string[] };
+	const url = new URL(real);
+	Object.defineProperty(url, 'searchParams', {
+		value: new Proxy(real.searchParams, {
+			get(params, key) {
+				if (key === 'get' || key === 'getAll' || key === 'has') {
+					return (name: string, ...rest: unknown[]) => {
+						tracked.names.add(name);
+						return (params[key] as (...a: unknown[]) => unknown)(name, ...rest);
+					};
+				}
+				tracked.whole.push(`searchParams.${String(key)}`);
+				const value = Reflect.get(params, key);
+				return typeof value === 'function' ? value.bind(params) : value;
+			}
+		})
+	});
+	for (const property of ['href', 'pathname', 'search', 'toString', 'toJSON'] as const) {
+		Object.defineProperty(url, property, {
+			get() {
+				tracked.whole.push(property);
+				return real[property];
+			}
+		});
+	}
+	return { url, tracked };
+}
+
+describe('the burndown page keeps its view in the address (card 2242)', () => {
+	let owner: SessionUser;
+	let A: BoardFixture;
+
+	beforeEach(() => {
+		resetDb();
+		owner = makeUser();
+		A = makeBoard({ owner, name: 'A' });
+		makeCard(A.cols['To Do'], { createdAt: '2026-02-01 09:00:00', updatedAt: '2026-02-01 09:00:00' });
+	});
+
+	it('the load reads its parameters by name, so the burndown / burn-up switch is not a dependency', async () => {
+		// Copying the whole query made the whole address a dependency, so a
+		// switch written with goto would have recomputed the chart.
+		const { url, tracked } = trackedUrl(`/burndown?view=burnup&boardIds=${A.board.id}&groupBy=label`);
+		const data = (await loadBurndownPage({ locals: { user: owner }, url } as never)) as { result: unknown };
+		expect(data.result).not.toBeNull();
+		expect(tracked.whole).toEqual([]);
+		expect(tracked.names.has('view')).toBe(false);
+		expect([...tracked.names].filter((name) => !BURNDOWN_PARAMS.includes(name))).toEqual([]);
+	});
+
+	it('BURNDOWN_PARAMS is exactly the names parseBurndownQuery reads, set or not', () => {
+		const query =
+			`boardIds=${A.board.id}&milestoneId=2&categoryIds=none&labelIds=3&assigneeIds=me&priorities=high` +
+			'&days=30&to=2026-03-31&target=none&groupBy=label&options=true&view=burnup&other=1';
+		for (const href of [`/burndown?${query}`, '/burndown']) {
+			const { url, tracked } = trackedUrl(href);
+			parseBurndownQuery(url.searchParams, owner);
+			expect(tracked.whole, href).toEqual([]);
+			expect([...tracked.names].sort(), href).toEqual([...BURNDOWN_PARAMS].sort());
+		}
+	});
+
+	it('gives the same chart with or without view in the address', async () => {
+		const query = `boardIds=${A.board.id}&groupBy=label&to=2026-03-31`;
+		// One moment for both, as the result carries the time it was made.
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2026-10-19T12:00:00Z'));
+		const [plain, burnup] = await (async () => {
+			try {
+				return [await pageLoad(`/burndown?${query}`, { user: owner }), await pageLoad(`/burndown?view=burnup&${query}`, { user: owner })];
+			} finally {
+				vi.useRealTimers();
+			}
+		})();
+		expect(plain.type).toBe('data');
+		expect((burnup as { data: { result: unknown } }).data.result).toEqual((plain as { data: { result: unknown } }).data.result);
+	});
+
+	it('the switch is written with goto and replaceState, never a shallow replaceState, and view is read from the address', () => {
+		// A shallow replaceState never changes page.url and keeps the arrival
+		// address in the history entry, so Back to the page showed burndown,
+		// and the next nav() dropped view (card 2240's fault, on this page).
+		const script = /<script lang="ts">([\s\S]*?)<\/script>/.exec(readFileSync(join(process.cwd(), 'src/routes/burndown/+page.svelte'), 'utf8'))![1];
+		expect(script).not.toMatch(/import \{[^}]*\breplaceState\b[^}]*\} from '\$app\/navigation';/);
+		expect(script).not.toMatch(/(?<![.\w])replaceState\(/);
+		expect(script).toContain('goto(url, { replaceState: true, keepFocus: true, noScroll: true })');
+		expect(script).toContain("const view = $derived($page.url.searchParams.get('view') === 'burnup' ? 'burnup' : 'burndown');");
+		expect(script).not.toMatch(/\bview = v\b/);
 	});
 });

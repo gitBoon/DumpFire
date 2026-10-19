@@ -2,7 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import { sqlite } from '$lib/server/db';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { listMilestones } from '$lib/server/milestones';
-import { getBurndown, parseBurndownQuery, BurndownError } from '$lib/server/burndown';
+import { getBurndown, parseBurndownQuery, BurndownError, BURNDOWN_PARAMS } from '$lib/server/burndown';
 import type { BurndownResult } from '$lib/burndown';
 import type { PageServerLoad } from './$types';
 
@@ -15,7 +15,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	if (!locals.user) throw redirect(303, '/login');
 	const user = locals.user;
 
-	const params = new URLSearchParams(url.searchParams);
+	// Copied by name, never the whole query: each name read is then the load's
+	// dependency and no other, so the page's own `view` changes without a
+	// recompute (card 2242).
+	const params = new URLSearchParams();
+	for (const name of BURNDOWN_PARAMS) for (const v of url.searchParams.getAll(name)) params.append(name, v);
 	// A breakdown is part of the page. Across several boards the natural one
 	// is by board; within a single board, by category.
 	if (!params.has('groupBy')) {

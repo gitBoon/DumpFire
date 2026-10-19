@@ -18,6 +18,7 @@
 	import { costOf, costInputOf, formatUsd, unpricedReason, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
 	import { templateLabelIds } from '$lib/templates';
 	import { parseStamp, stamp } from '$lib/timestamps';
+	import { daysUntilDue, formatDueDate } from '$lib/utils/date-utils';
 	import { answerBody, deleteFailure, dependencyEndBody, dependencyRow, failureMessage, uploadFailure, uploadNoAnswer, uploadNotRead } from '$lib/api';
 	import {
 		THEMES,
@@ -660,10 +661,10 @@
 
 	function formatDue(d: string | null) {
 		if (!d) return '';
-		const date = new Date(d);
-		const now = new Date();
-		const diff = Math.ceil((date.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-		const formatted = date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+		// A due date is a calendar day, counted from the viewer's own today (card 2241).
+		const diff = daysUntilDue(d);
+		const formatted = formatDueDate(d, { day: 'numeric', month: 'short' });
+		if (diff === null) return `📅 ${formatted}`;
 		if (diff < 0) return `⚠️ Overdue (${formatted})`;
 		if (diff === 0) return `📅 Due today`;
 		if (diff === 1) return `📅 Due tomorrow`;
@@ -1235,7 +1236,7 @@
 				<div class="dropdown-wrapper">
 					<button class="chip" class:is-set={dueDate} onclick={(e) => { e.stopPropagation(); toggleDrop('due'); }}>
 						<svg class="chip-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-						<span>{dueDate ? new Date(dueDate + 'T00:00').toLocaleDateString('en-GB', {day:'numeric',month:'short'}) : 'Due date'}</span>
+						<span>{dueDate ? formatDueDate(dueDate, {day:'numeric',month:'short'}) : 'Due date'}</span>
 						<svg class="chip-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
 					</button>
 					{#if showDueDateDrop}
@@ -1484,7 +1485,7 @@
 											<span class="st-desc-preview">{subtask.description.slice(0, 60)}{subtask.description.length > 60 ? '…' : ''}</span>
 										{/if}
 										{#if subtask.dueDate}
-											<span class="st-due" class:overdue={new Date(subtask.dueDate) < new Date()}>
+											<span class="st-due" class:overdue={(daysUntilDue(subtask.dueDate) ?? 0) < 0}>
 												{formatDue(subtask.dueDate)}
 											</span>
 										{/if}
