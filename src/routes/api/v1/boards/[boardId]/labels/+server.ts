@@ -3,9 +3,9 @@ import { db } from '$lib/server/db';
 import { labels } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
-import { inTransaction } from '$lib/server/db/transaction';
 import { pathId, readBody, readColour, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards/:boardId/labels — List all labels for a board. */
@@ -20,15 +20,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 /** POST /api/v1/boards/:boardId/labels — Create a new label on a board. */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
 	const body = await readBody(request);
 
 	// The board is looked for and the caller checked in the transaction that
 	// adds the label, once the body has arrived. A board that is not there is
-	// 404 to everyone: it was 403, and for an administrator a 500.
-	const label = inTransaction(() => {
-		requireBoard(user, boardId, 'edit');
+	// 404 to everyone: it was 403, and for an administrator a 500. The
+	// transaction asks first whether the key or session is still open, and who
+	// its account is now (card 2253).
+	const label = writeAs(locals, (caller) => {
+		requireBoard(caller, boardId, 'edit');
 
 		const name = readText(body, 'name', {
 			required: true,

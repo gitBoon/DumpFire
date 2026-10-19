@@ -3,9 +3,9 @@ import { db } from '$lib/server/db';
 import { categories } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
-import { inTransaction } from '$lib/server/db/transaction';
 import { pathId, readBody, readColour, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards/:boardId/categories — List all categories for a board. */
@@ -25,15 +25,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 /** POST /api/v1/boards/:boardId/categories — Create a category on a board. */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
 	const body = await readBody(request);
 
 	// The board is looked for and the caller checked in the transaction that
 	// adds the category, once the body has arrived. A board that is not there
-	// is 404 to everyone: it was 403, and for an administrator a 500.
-	const category = inTransaction(() => {
-		requireBoard(user, boardId, 'edit');
+	// is 404 to everyone: it was 403, and for an administrator a 500. The
+	// transaction asks first whether the key or session is still open, and who
+	// its account is now (card 2253).
+	const category = writeAs(locals, (caller) => {
+		requireBoard(caller, boardId, 'edit');
 
 		const name = readText(body, 'name', {
 			required: true,

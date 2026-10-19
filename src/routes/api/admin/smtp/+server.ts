@@ -12,9 +12,9 @@ import {
 	setAppUrl,
 	type SmtpConfig
 } from '$lib/server/email';
-import { inTransaction } from '$lib/server/db/transaction';
 import { readBody, readBoolean, readEmail, readNumber, readText, readUrl } from '$lib/server/request-body';
 import { requireSuperadmin } from '$lib/server/route-guards';
+import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 
@@ -91,13 +91,16 @@ export const GET: RequestHandler = async ({ locals }) => {
  * settings answer one: `{}` was answered 200 and saved nothing.
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
-	const caller = requireSuperadmin(locals.user);
+	requireSuperadmin(locals.user);
 	const body = await readBody(request);
 
 	// One transaction: the mail settings and the App URL are saved together or
 	// not at all. The password kept for a masked one, and what it is kept
-	// against, are read in the same one.
-	const wayOutChangedTo = inTransaction(() => {
+	// against, are read in the same one. It asks first whether the session is
+	// still open and whether its account is still the superadmin (card 2253).
+	const { wayOutChangedTo, setBy } = writeAs(locals, (caller) => {
+		// Named for the line below; `user` here is the mail server's.
+		const { username: setBy } = requireSuperadmin(caller);
 		const existing = getSmtpConfig();
 		const here = readMailHere();
 		const config: Partial<SmtpConfig> = {};
@@ -139,14 +142,14 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 
 		// A way out saved other than it was: missing is off.
 		const wasOn = here.smtp_allow_insecure === 'true';
-		return allowInsecure !== undefined && allowInsecure !== wasOn ? allowInsecure : null;
+		return { wayOutChangedTo: allowInsecure !== undefined && allowInsecure !== wasOn ? allowInsecure : null, setBy };
 	});
 
 	// Said once it is saved, so that a save undone is never logged (card 2189,
 	// decision 14): who lowered the protection of the mail, or raised it again.
 	if (wayOutChangedTo !== null) {
 		log.warn(
-			`Mail is now sent ${wayOutChangedTo ? 'without' : 'with'} a checked, encrypted connection (set by ${caller.username})`
+			`Mail is now sent ${wayOutChangedTo ? 'without' : 'with'} a checked, encrypted connection (set by ${setBy})`
 		);
 	}
 
@@ -160,11 +163,16 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
  * the `500` stays.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const caller = requireSuperadmin(locals.user);
+	requireSuperadmin(locals.user);
 
 	// An address, or none for the caller's own.
 	const to = readEmail(await readBody(request), 'to', { allowEmpty: true });
-	const recipient = to || caller.email;
+	// Asked again once the body is in, with nothing awaited between this and
+	// the mail, which leaves the process (card 2253): a session that has ended,
+	// or an account that is no longer the superadmin, sends nothing. The
+	// caller's own address is theirs as it is now.
+	const sender = requireSuperadmin(stillCallerNow(locals));
+	const recipient = to || sender.email;
 
 	try {
 		await sendTestEmail(recipient);

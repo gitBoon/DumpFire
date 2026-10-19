@@ -3,6 +3,8 @@ import { json } from '$lib/server/v1-json';
 import { deleteTokenEntry, getCardTokenTotal, TokenError } from '$lib/server/tokens';
 import { emit } from '$lib/server/events';
 import { pathId } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -14,12 +16,16 @@ import type { RequestHandler } from './$types';
  * posted against the wrong card, say.
  */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const entryId = pathId(params.entryId, 'entry');
 
 	try {
-		const { cardId, boardId } = deleteTokenEntry(locals.user, entryId);
+		// The entry read, the caller checked and the entry removed in one
+		// transaction that asks first whether the key or session is still open,
+		// and who its account is now (card 2253). They were separate steps with
+		// no transaction around them.
+		const { cardId, boardId } = writeAs(locals, (caller) => deleteTokenEntry(requireUser(caller), entryId));
 		emit(boardId, 'update', { type: 'card' });
 		const total = getCardTokenTotal(cardId);
 		return json({ deleted: entryId, cardId, recorded: total.entries > 0, ...total });

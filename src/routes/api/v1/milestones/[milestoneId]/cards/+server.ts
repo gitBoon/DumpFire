@@ -4,6 +4,7 @@ import { setCardMilestone, requireMilestone, takeCardOutOfMilestone, MilestoneEr
 import { emit } from '$lib/server/events';
 import { pathId, readBody, readId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -17,14 +18,23 @@ import type { RequestHandler } from './$types';
  * `cardId` is read (400), then the card is looked for.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const milestoneId = pathId(params.milestoneId, 'milestone');
 	const body = await readBody(request);
 
 	try {
-		requireMilestone(user, milestoneId, true);
-		const cardId = readId(body, 'cardId', { required: true, says: { missing: 'cardId is required' } });
-		const result = setCardMilestone(user, cardId, milestoneId);
+		// The milestone read, the caller checked and the card put in, in one
+		// transaction that asks first whether the key or session is still open,
+		// and who its account is now (card 2253); `setCardMilestone`'s own is a
+		// savepoint inside it. The check and the change were two steps with no
+		// transaction around them. The board's pages are told once it has
+		// committed.
+		const result = writeAs(locals, (caller) => {
+			const user = requireUser(caller);
+			requireMilestone(user, milestoneId, true);
+			const cardId = readId(body, 'cardId', { required: true, says: { missing: 'cardId is required' } });
+			return setCardMilestone(user, cardId, milestoneId);
+		});
 		emit(result.boardId, 'update', { type: 'card' });
 		return json(result);
 	} catch (e) {
@@ -42,14 +52,19 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
  * taken out of that one.
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const milestoneId = pathId(params.milestoneId, 'milestone');
 	const body = await readBody(request);
 
 	try {
-		requireMilestone(user, milestoneId, true);
-		const cardId = readId(body, 'cardId', { required: true, says: { missing: 'cardId is required' } });
-		const result = takeCardOutOfMilestone(user, cardId, milestoneId);
+		// As the POST: one transaction that asks first, the service's own a
+		// savepoint inside it (card 2253).
+		const result = writeAs(locals, (caller) => {
+			const user = requireUser(caller);
+			requireMilestone(user, milestoneId, true);
+			const cardId = readId(body, 'cardId', { required: true, says: { missing: 'cardId is required' } });
+			return takeCardOutOfMilestone(user, cardId, milestoneId);
+		});
 		emit(result.boardId, 'update', { type: 'card' });
 		return json(result);
 	} catch (e) {

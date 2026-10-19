@@ -36,7 +36,7 @@ import {
 	type BackupSettingsChanges,
 	type HostKeyChange
 } from '$lib/server/backup-secrets';
-import { afterCommit, inTransaction } from '$lib/server/db/transaction';
+import { afterCommit } from '$lib/server/db/transaction';
 import { createLogger } from '$lib/server/logger';
 import {
 	readBody,
@@ -49,6 +49,7 @@ import {
 	readTime
 } from '$lib/server/request-body';
 import { requireSuperadmin } from '$lib/server/route-guards';
+import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('BACKUP');
@@ -169,12 +170,15 @@ export const GET: RequestHandler = async ({ locals }) => {
  * record. A save that changes nothing, is refused or fails writes none.
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
-	const caller = requireSuperadmin(locals.user);
+	requireSuperadmin(locals.user);
 	const body = await readBody(request);
 
 	// One transaction: the settings are read and written in it, so what is
-	// kept is what is there when the change is written.
-	inTransaction(() => {
+	// kept is what is there when the change is written. It asks first whether
+	// the session is still open and whether its account is still the
+	// superadmin (card 2253), and the lines are filed under that account.
+	writeAs(locals, (caller) => {
+		const user = requireSuperadmin(caller);
 		const existing = getBackupConfig();
 		const config: BackupConfig = { ...existing };
 
@@ -222,7 +226,7 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 		const changed = settingsChanges(existing, config);
 		if (changed !== null) {
 			const write = leavesFewerCopies(existing, config, changed) ? log.warn : log.info;
-			afterCommit(() => write(settingsChangeLine(changed), changed, { userId: caller.id }));
+			afterCommit(() => write(settingsChangeLine(changed), changed, { userId: user.id }));
 		}
 		const changes = destinations === undefined ? [] : hostKeyChanges(existing.destinations, config.destinations);
 		for (const change of changes) {
@@ -230,7 +234,7 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 				log.warn(
 					hostKeyChangeLine(change),
 					{ destination: change.name, from: change.from, to: change.to, ...(change.fromAt === undefined ? {} : { fromAt: change.fromAt }) },
-					{ userId: caller.id }
+					{ userId: user.id }
 				)
 			);
 		}
@@ -250,6 +254,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// and ran a backup to every destination (card 2117, decision 19). The page
 	// sends `{}`, which backs up to every destination; `destination` names one.
 	const body = await readBody(request);
+	// Asked again once the body is in, with nothing awaited before the backup
+	// starts (card 2253): a session that has ended, or an account that is no
+	// longer the superadmin, sends the database nowhere.
+	requireSuperadmin(stillCallerNow(locals));
 	const targetDestination = readText(body, 'destination', {});
 
 	const results = await runBackup(targetDestination);

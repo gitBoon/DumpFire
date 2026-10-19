@@ -191,6 +191,12 @@ const errorLines = () =>
 		(row) => row.message
 	);
 
+/** The account each ERROR line under BACKUP is filed under (card 2253, slice 5: the Test's, under the superadmin who asked). */
+const errorLinesFiledUnder = () =>
+	(sqlite.prepare("SELECT user_id AS userId FROM system_logs WHERE context = 'BACKUP' AND level = 'ERROR' ORDER BY id").all() as { userId: number | null }[]).map(
+		(row) => row.userId
+	);
+
 beforeEach(() => {
 	resetDb();
 	server.configs.length = 0;
@@ -310,6 +316,7 @@ describe('a key that does not match (decision 5)', () => {
 			`SFTP host key mismatch for destination "NAS" at nas.example.test:22: presented ${fingerprint(OTHER_ED25519)}, ` +
 				`confirmed ${fingerprint(ED25519)}. Nothing was sent.`
 		]);
+		expect(errorLinesFiledUnder()).toEqual([chief.id]);
 	});
 
 	it('is refused by an upload, a listing and a delete, as HostKeyMismatch', async () => {
@@ -345,6 +352,7 @@ describe('a server that no longer offers a key of the confirmed type (R3)', () =
 		expect(errorLines()).toEqual([
 			`SFTP host key type not offered for destination "NAS" at nas.example.test:22: confirmed ${stored}. Nothing was sent.`
 		]);
+		expect(errorLinesFiledUnder()).toEqual([chief.id]);
 	});
 
 	it('is refused by an upload as HostKeyTypeNotOffered', async () => {
@@ -444,6 +452,7 @@ describe('a server that shows the confirmed key but cannot sign with it (the car
 		expect(errorLines()).toEqual([
 			`SFTP host key signature failed for destination "NAS" at nas.example.test:22: confirmed ${fingerprint(ED25519)}. Nothing was sent.`
 		]);
+		expect(errorLinesFiledUnder()).toEqual([chief.id]);
 	});
 
 	it('is refused by an upload as HostKeySignatureFailed, and a run says so', async () => {

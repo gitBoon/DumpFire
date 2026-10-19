@@ -1,7 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cards, columns, subtasks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
@@ -11,6 +10,7 @@ import { PRIORITIES } from '$lib/server/card-fields';
 import { SUBTASK_ORDER, nextSubtaskPosition } from '$lib/server/subtask-order';
 import { pathId, readBody, readChoice, readColour, readDate, readNumber, readText } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -51,13 +51,15 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * field is read (400).
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const cardId = pathId(params.cardId, 'card');
 	const body = await readBody(request);
 
 	// One transaction: the card is read and the caller checked in the one that
-	// creates the subtask and writes its entry.
-	const subtask = inTransaction(() => {
+	// creates the subtask and writes its entry, which asks first whether the
+	// key or session is still open, and who its account is now (card 2253).
+	const subtask = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const boardId = getCardBoardId(cardId);
 		if (!boardId) throw error(404, 'Card not found');
 

@@ -10,6 +10,8 @@ import { getCardBoardId } from '$lib/server/work-access';
 import { canViewBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { pathId, readBody } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 function handle(e: unknown): never {
@@ -54,7 +56,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * the history where it can be seen.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const cardId = pathId(params.cardId, 'card');
 
@@ -62,20 +64,27 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	// reads, and to nothing stricter (card 2117, R10).
 	const body = await readBody(request);
 	try {
-		const result = recordTokenUsage(
-			locals.user,
-			{ kind: 'card', id: cardId },
-			body.tokens,
-			body.model,
-			body.note,
-			{
-				apiCalls: body.apiCalls,
-				inputTokens: body.inputTokens,
-				outputTokens: body.outputTokens,
-				cacheReadTokens: body.cacheReadTokens,
-				cacheWrite5mTokens: body.cacheWrite5mTokens,
-				cacheWrite1hTokens: body.cacheWrite1hTokens
-			}
+		// The caller checked, the sums read and the entry written in one
+		// transaction that asks first whether the key or session is still open,
+		// and who its account is now (card 2253). They were separate steps with
+		// no transaction around them. A refusal is no TokenError, and `handle`
+		// passes it on as it is.
+		const result = writeAs(locals, (caller) =>
+			recordTokenUsage(
+				requireUser(caller),
+				{ kind: 'card', id: cardId },
+				body.tokens,
+				body.model,
+				body.note,
+				{
+					apiCalls: body.apiCalls,
+					inputTokens: body.inputTokens,
+					outputTokens: body.outputTokens,
+					cacheReadTokens: body.cacheReadTokens,
+					cacheWrite5mTokens: body.cacheWrite5mTokens,
+					cacheWrite1hTokens: body.cacheWrite1hTokens
+				}
+			)
 		);
 		emit(result.boardId, 'update', { type: 'card' });
 		return json(

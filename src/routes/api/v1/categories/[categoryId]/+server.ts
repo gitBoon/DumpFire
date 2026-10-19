@@ -5,8 +5,8 @@ import { categories } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireCategory, requireCategoryEdit, requireUser } from '$lib/server/route-guards';
 import { emit } from '$lib/server/events';
-import { inTransaction } from '$lib/server/db/transaction';
 import { pathId, readBody, readColour, readText } from '$lib/server/request-body';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -25,15 +25,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 /** PUT /api/v1/categories/:categoryId — Update a category. */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const categoryId = pathId(params.categoryId, 'category');
 	const body = await readBody(request);
 
-	const updated = inTransaction(() => {
+	const updated = writeAs(locals, (caller) => {
 		// Edit access to the owning board; a category with no board is admin-only.
 		// It used to be open to everyone, so any API key could rename a shared one.
-		// Asked in the transaction that changes it, once the body has arrived.
-		const category = requireCategoryEdit(user, categoryId);
+		// Asked in the transaction that changes it, once the body has arrived,
+		// which asks first whether the key or session is still open, and who its
+		// account is now (card 2253).
+		const category = requireCategoryEdit(caller, categoryId);
 
 		const updateData: Partial<typeof categories.$inferInsert> = {};
 		const name = readText(body, 'name', {
@@ -66,15 +68,22 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 /** DELETE /api/v1/categories/:categoryId — Delete a category. */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const categoryId = pathId(params.categoryId, 'category');
 
-	const category = requireCategoryEdit(locals.user, categoryId);
+	// The category read, the caller checked and the category deleted in one
+	// transaction that asks first whether the key or session is still open, and
+	// who its account is now (card 2253). The check and the delete were two
+	// steps with no transaction around them. The live update waits for the
+	// commit.
+	writeAs(locals, (caller) => {
+		const category = requireCategoryEdit(caller, categoryId);
 
-	db.delete(categories).where(eq(categories.id, categoryId)).run();
+		db.delete(categories).where(eq(categories.id, categoryId)).run();
 
-	if (category.boardId) emit(category.boardId, 'update', { type: 'category' });
+		if (category.boardId) emit(category.boardId, 'update', { type: 'category' });
+	});
 
 	return json({ success: true });
 };

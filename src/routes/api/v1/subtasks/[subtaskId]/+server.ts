@@ -1,7 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { subtasks, cards, columns } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canEditBoard } from '$lib/server/board-access';
@@ -22,6 +21,7 @@ import {
 	readText
 } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a subtask belongs to (via card → column → board). */
@@ -48,7 +48,7 @@ function getSubtaskBoardId(subtaskId: number): { boardId: number; cardId: number
  * activity report and the audit log did not show it.
  */
 export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const subtaskId = pathId(params.subtaskId, 'subtask');
 	const body = await readBody(request);
 	const baseUrl = linkBaseUrl(url);
@@ -56,8 +56,10 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 	// One transaction: the update and the "Unblocked" notices are saved
 	// together or not at all. The subtask is read in here and not before the
 	// body was awaited, where two requests ticking the same subtask both found
-	// it open and both wrote a notice.
-	const updated = inTransaction(() => {
+	// it open and both wrote a notice. It asks first whether the key or session
+	// is still open, and who its account is now (card 2253).
+	const updated = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const ctx = getSubtaskBoardId(subtaskId);
 		if (!ctx) throw error(404, 'Subtask not found');
 
@@ -148,13 +150,16 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
  * no entry.
  */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const subtaskId = pathId(params.subtaskId, 'subtask');
 
 	// One transaction: the subtask's dependency links, the subtask and the
 	// activity entry go together or not at all. A failure between the first
-	// two used to leave the subtask in place with its links gone.
-	inTransaction(() => {
+	// two used to leave the subtask in place with its links gone. It asks first
+	// whether the key or session is still open, and who its account is now
+	// (card 2253).
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const ctx = getSubtaskBoardId(subtaskId);
 		if (!ctx) throw error(404, 'Subtask not found');
 

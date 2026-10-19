@@ -5,7 +5,6 @@ import { cards, columns, subtasks, cardLabels, cardAssignees, users } from '$lib
 import { eq } from 'drizzle-orm';
 import { canViewBoard, canEditBoard } from '$lib/server/board-access';
 import { getCardDependencies } from '$lib/server/planning';
-import { inTransaction } from '$lib/server/db/transaction';
 import { archiveCard, deleteCard } from '$lib/server/deletes';
 import { restoreCard } from '$lib/server/card-restore';
 import { emit } from '$lib/server/events';
@@ -28,6 +27,7 @@ import {
 } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { stamp, toStamp } from '$lib/timestamps';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** Resolve the board that a card belongs to. */
@@ -136,7 +136,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * live event, and is answered 200 with the card. `{}` is still a 400.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const cardId = pathId(params.cardId, 'card');
 	const body = await readBody(request);
 
@@ -144,7 +144,10 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// writes the milestone, the other fields and the activity entry, and all of
 	// them are saved or none. The card is read in here and not before the body
 	// was awaited: another request could have moved or deleted it in between.
-	const updated = inTransaction(() => {
+	// It asks first whether the key or session is still open, and who its
+	// account is now (card 2253).
+	const updated = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const boardId = getCardBoardId(cardId);
 		if (!boardId) throw error(404, 'Card not found');
 
@@ -278,19 +281,22 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 /** DELETE /api/v1/cards/:cardId — Archive (soft-delete) a card. Use ?permanent=true for hard delete. */
 export const DELETE: RequestHandler = async ({ params, url, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const cardId = pathId(params.cardId, 'card');
 	const permanent = url.searchParams.get('permanent') === 'true';
 
 	// One transaction: the card is read and the caller checked in the same one
-	// that archives or deletes it. See $lib/server/deletes.ts for what goes
-	// with a permanent delete; an archive touches nothing but the card.
+	// that archives or deletes it, which asks first whether the key or session
+	// is still open, and who its account is now (card 2253). See
+	// $lib/server/deletes.ts for what goes with a permanent delete; an archive
+	// touches nothing but the card.
 	//
 	// The permanent delete used to give the activity log the id of the card it
 	// had just deleted, which the foreign key refuses: the card was gone and
 	// the answer was a 500. The entry is stored with no card id now, and the
 	// `card.deleted` webhook carries it.
-	inTransaction(() => {
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const boardId = getCardBoardId(cardId);
 		if (!boardId) throw error(404, 'Card not found');
 

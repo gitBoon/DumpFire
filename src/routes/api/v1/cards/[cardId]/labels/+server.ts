@@ -5,9 +5,9 @@ import { cards, columns, labels, cardLabels } from '$lib/server/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { canViewBoard } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
-import { inTransaction } from '$lib/server/db/transaction';
 import { pathId, readBody, readId } from '$lib/server/request-body';
 import { requireCard, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** Resolve a card ID to its board ID. */
@@ -42,14 +42,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 /** POST /api/v1/cards/:cardId/labels — Assign a label to a card. */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const cardId = pathId(params.cardId, 'card');
 	const body = await readBody(request);
 
 	// The card and the label are read, and the caller checked, in the
-	// transaction that puts the label on, once the body has arrived.
-	return inTransaction(() => {
-		const { boardId } = requireCard(user, cardId, 'edit');
+	// transaction that puts the label on, once the body has arrived. It asks
+	// first whether the key or session is still open, and who its account is
+	// now (card 2253), and answers whether the label was already on; the
+	// answer is made once it has committed.
+	const done = writeAs(locals, (caller) => {
+		const { boardId } = requireCard(caller, cardId, 'edit');
 
 		const labelId = readId(body, 'labelId', { required: true, says: { missing: 'labelId is required' } });
 
@@ -62,13 +65,16 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		const existing = db.select().from(cardLabels)
 			.where(and(eq(cardLabels.cardId, cardId), eq(cardLabels.labelId, labelId)))
 			.get();
-		if (existing) return json({ message: 'Label already assigned' });
+		if (existing) return { already: true, labelId };
 
 		db.insert(cardLabels).values({ cardId, labelId }).run();
 		emit(boardId, 'update', { type: 'label' });
 
-		return json({ cardId, labelId }, { status: 201 });
+		return { already: false, labelId };
 	});
+
+	if (done.already) return json({ message: 'Label already assigned' });
+	return json({ cardId, labelId: done.labelId }, { status: 201 });
 };
 
 /**
@@ -78,12 +84,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
  * been taken off.
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const cardId = pathId(params.cardId, 'card');
 	const body = await readBody(request);
 
-	inTransaction(() => {
-		const { boardId } = requireCard(user, cardId, 'edit');
+	// The card read, the caller checked and the label taken off in one
+	// transaction that asks first whether the key or session is still open,
+	// and who its account is now (card 2253).
+	writeAs(locals, (caller) => {
+		const { boardId } = requireCard(caller, cardId, 'edit');
 
 		const labelId = readId(body, 'labelId', { required: true, says: { missing: 'labelId is required' } });
 

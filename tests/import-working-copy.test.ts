@@ -128,16 +128,26 @@ const settingsIn = (database: Database.Database) =>
  * Make `database` do the work of a transaction and then fail, as it would if
  * the COMMIT could not be written: the work is rolled back and the caller gets
  * the error. `justBefore` runs with the work done and the failure still to
- * come, to see what the transaction had done.
+ * come, to see what the transaction had done. With `restoreOnly`, only a
+ * transaction begun with foreign keys off fails, which is the restore's: the
+ * import route asks who is calling in a transaction of its own first (card
+ * 2253), and that one is let through.
  */
-function failAtCommit(database: Database.Database, message: string, justBefore: () => void = () => {}): void {
+function failAtCommit(
+	database: Database.Database,
+	message: string,
+	justBefore: () => void = () => {},
+	{ restoreOnly = false }: { restoreOnly?: boolean } = {}
+): void {
 	const real = database.transaction.bind(database) as (fn: (...args: unknown[]) => unknown) => unknown;
 	vi.spyOn(database, 'transaction').mockImplementation(((fn: (...args: unknown[]) => unknown) =>
-		real((...args: unknown[]) => {
-			fn(...args);
-			justBefore();
-			throw new Error(message);
-		})) as unknown as typeof database.transaction);
+		restoreOnly && database.pragma('foreign_keys', { simple: true }) !== 0
+			? real(fn)
+			: real((...args: unknown[]) => {
+					fn(...args);
+					justBefore();
+					throw new Error(message);
+				})) as unknown as typeof database.transaction);
 }
 
 // ─── The backup ──────────────────────────────────────────────────────────────
@@ -1030,7 +1040,7 @@ describe('through the route', () => {
 
 		const { response } = await upload('?outside=off', armedBackup(), () => {
 			before = dataIn(sqlite);
-			failAtCommit(sqlite, 'disk I/O error');
+			failAtCommit(sqlite, 'disk I/O error', undefined, { restoreOnly: true });
 		});
 
 		expect(response.status).toBe(500);

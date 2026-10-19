@@ -34,6 +34,23 @@
  *     routes, for a caller with no session (null) and one whose session
  *     ended (401); and an administrator lowered to a user, and the
  *     superadmin to an administrator, met by the account guards;
+ *   - the superadmin's and administrators' routes (slice 2253-5), the same
+ *     way, and: what leaves the process (a backup, a destination tested, a
+ *     code sent to Google, a test mail) not sent; the Google Drive Connect
+ *     refused at its write after Google has answered, its folder removed; and
+ *     the import's one check, after the upload and before anything is
+ *     written, with nothing asked after the restore;
+ *   - the boards side of /api/v1 (slice 2253-6): every request with a body
+ *     held through the gate while its API key is revoked, and handed an
+ *     ended session; the deletes with an ended key or session; and an
+ *     administrator lowered meanwhile met by the board guards; no webhook
+ *     fired for a card refused;
+ *   - the cards side of /api/v1 (slice 2253-7), the same way: every request
+ *     with a body held through the gate while its API key is revoked, the
+ *     batches refused whole; the deletes with an ended key or session; and
+ *     an administrator lowered meanwhile met by the card, milestone and
+ *     token guards; no webhook fired for a move, a change or a comment
+ *     refused;
  *   - no credential at all (R10): refused outside the tests, and never
  *     handed on by the gate;
  *   - the report mail's second check, after its PDF is made (R1).
@@ -45,15 +62,20 @@
  * after the reset").
  */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isHttpError, json, type RequestEvent } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
+import { google } from 'googleapis';
+import { DRIVE_FILE_SCOPE } from '$lib/drive-scope';
 import { db, sqlite } from '$lib/server/db';
 import {
 	apiKeys,
 	boardCategories,
 	boardMembers,
 	boards,
+	cardLabels,
 	cardTemplates,
 	categories,
 	reportSchedules,
@@ -61,9 +83,12 @@ import {
 	settings,
 	taskRequests,
 	teamMembers,
+	tokenUsage,
 	users,
+	userXp,
 	webhooks
 } from '$lib/server/db/schema';
+import { SUPERADMIN_ONLY } from '$lib/server/route-guards';
 import { hashSync } from 'bcryptjs';
 import { stillAuthenticated, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -76,11 +101,13 @@ import { handle } from '../src/hooks.server';
 import { api } from './helpers/api';
 import { effects } from './helpers/effects';
 import {
+	assignCard,
 	makeApiKey,
 	makeAttachment,
 	makeBoard,
 	makeCard,
 	makeComment,
+	makeDependency,
 	makeLabel,
 	makeMilestone,
 	makeSession,
@@ -124,10 +151,35 @@ vi.mock('$lib/server/reports', async (importOriginal) => {
 	};
 });
 
+/**
+ * A backup destination that keeps what it is given and reaches nowhere: the
+ * names of the destinations made, each with its secret, and what was uploaded.
+ */
+const backupStandIn = vi.hoisted(() => ({ made: [] as string[], uploaded: [] as string[] }));
+vi.mock('$lib/server/backup-destinations', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/backup-destinations')>();
+	return {
+		...real,
+		createDestination: (config: { type: string; name: string }) => {
+			backupStandIn.made.push(config.name);
+			return {
+				type: config.type,
+				name: config.name,
+				test: async () => ({ success: true, message: 'ok' }),
+				upload: async (_data: Buffer, filename: string) => void backupStandIn.uploaded.push(`${config.name}/${filename}`),
+				list: async () => [],
+				delete: async () => {}
+			};
+		}
+	};
+});
+
 beforeEach(() => {
 	resetDb();
 	sveltekit.event = null;
 	pdf.afterMade = null;
+	backupStandIn.made.length = 0;
+	backupStandIn.uploaded.length = 0;
 });
 
 afterEach(() => {
@@ -1202,6 +1254,1008 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 
 		expectUnchanged(before);
 		expect(sent.emails).toEqual([]);
+	});
+});
+
+// ─── The superadmin's and administrators' routes (slice 2253-5) ─────────────
+
+describe("the superadmin's and administrators' routes ask at the write (slice 2253-5)", () => {
+	const BUCKET = { type: 's3', name: 'Bucket', region: 'eu-west-2', bucket: 'dumpfire-backups', accessKeyId: 'AKIA2253NOTSECRET', secretAccessKey: 'bucket-secret-2253', prefix: 'dumpfire/' };
+	const DRIVE = { type: 'gdrive', name: 'G', authMethod: 'oauth', clientId: 'g-client.apps.example.test', clientSecret: 'g-client-secret-2253', folderId: '' };
+	/** The folder Drive, stood in for, says it made. */
+	const FOLDER = 'made-folder-2253';
+	const files = { create: vi.fn(), delete: vi.fn(), get: vi.fn(), list: vi.fn() };
+	let getToken: ReturnType<typeof vi.spyOn>;
+
+	/** Google's code exchange, stood in for: a refresh token, after `meanwhile` has run. */
+	const exchange = (meanwhile: () => unknown = () => {}) =>
+		getToken.mockImplementation((async () => {
+			await meanwhile();
+			return { tokens: { refresh_token: 'rt-2253', scope: DRIVE_FILE_SCOPE }, res: null };
+		}) as never);
+
+	beforeEach(() => {
+		for (const fn of Object.values(files)) fn.mockReset();
+		files.create.mockResolvedValue({ data: { id: FOLDER } });
+		files.delete.mockResolvedValue({ data: {} });
+		vi.spyOn(google, 'drive').mockReturnValue({ files } as never);
+		getToken = vi.spyOn(google.auth.OAuth2.prototype, 'getToken');
+		exchange();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	/**
+	 * The superadmin and an administrator, each with a session; a board of the
+	 * administrator's with a card, an archived card and a category; XP; the
+	 * mail set up; and the backup settings with an S3 destination and a Google
+	 * Drive one not yet connected.
+	 */
+	const scene = () => {
+		const chief = makeUser({ username: 'chief', role: 'superadmin' });
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const { board, cols } = makeBoard({ owner: admin, name: 'Cleared' });
+		makeCard(cols['To Do'], { title: 'Kept' });
+		makeCard(cols['To Do'], { title: 'Archived', archivedAt: '2026-10-01 00:00:00' });
+		db.insert(categories).values({ boardId: board.id, name: 'Kind' }).run();
+		db.insert(userXp).values({ name: 'admin', xp: 40 }).run();
+		makeSmtp();
+		const backup = { schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 7, destinations: [BUCKET, DRIVE], notifyOnFailure: false, notifyEmail: '' };
+		db.insert(settings).values({ key: 'backup_config', value: JSON.stringify(backup) }).run();
+		return { chief, admin, board, sessions: { chief: makeSession(chief), admin: makeSession(admin) } };
+	};
+	type Scene = ReturnType<typeof scene>;
+	type Who = 'chief' | 'admin';
+	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: { kind: 'session' as const, token: s.sessions[who] } });
+
+	/** Connect's first half, as the page asks it, in this session: the state of the consent address. */
+	const begin = async (s: Scene, token = s.sessions.chief) => {
+		const res = await api('GET', '/api/admin/backup/gdrive/auth?dest=G', { user: s.chief, credential: { kind: 'session', token } });
+		expect(res.status).toBe(200);
+		return new URL(res.body.authUrl).searchParams.get('state');
+	};
+
+	/** The lines these routes write, and the Connect's. */
+	const lines = () =>
+		(sqlite.prepare("SELECT level, context, message FROM system_logs WHERE context IN ('BACKUP', 'GDRIVE', 'SMTP') ORDER BY id").all() as Record<string, string>[]);
+	const storedDrive = () => JSON.parse(db.select().from(settings).where(eq(settings.key, 'backup_config')).get()!.value).destinations[1];
+
+	/** What left the process, or would have: mail, a backup sent, a destination made with its secret, a code sent to Google. */
+	const sentOut = (mail: { emails: unknown[] }) => ({
+		mails: mail.emails.length,
+		uploads: backupStandIn.uploaded.length,
+		made: backupStandIn.made.length,
+		exchanged: getToken.mock.calls.length
+	});
+	const NOTHING_OUT = { mails: 0, uploads: 0, made: 0, exchanged: 0 };
+
+	/**
+	 * One request of each superadmin route that carries a body, what it answers
+	 * when nothing ends meanwhile, and what it then sends out. A backup run
+	 * makes its destination twice: to upload, and to keep to the retention.
+	 */
+	const HELD: { shape: string; method: 'POST' | 'PUT'; path: string; body: (s: Scene) => unknown; out: Partial<typeof NOTHING_OUT> }[] = [
+		{ shape: 'the backup settings saved, their lines after the commit (PUT /api/admin/backup)', method: 'PUT', path: '/api/admin/backup', body: () => ({ retention: 5 }), out: {} },
+		{ shape: 'a backup run, which leaves the process (POST /api/admin/backup)', method: 'POST', path: '/api/admin/backup', body: () => ({ destination: 'Bucket' }), out: { uploads: 1, made: 2 } },
+		{ shape: "a destination tested, its secret leaving with it (POST /api/admin/backup/test)", method: 'POST', path: '/api/admin/backup/test', body: () => BUCKET, out: { made: 1 } },
+		{
+			shape: 'a Google Drive Connect, its code sent to Google (POST /api/admin/backup/gdrive/auth)',
+			method: 'POST',
+			path: '/api/admin/backup/gdrive/auth',
+			body: async (s) => ({ code: 'the-code', state: await begin(s), destName: 'G' }),
+			out: { exchanged: 1 }
+		},
+		{ shape: 'the mail settings saved (PUT /api/admin/smtp)', method: 'PUT', path: '/api/admin/smtp', body: () => ({ fromName: 'Late' }), out: {} },
+		{ shape: 'a test mail, which leaves the process (POST /api/admin/smtp)', method: 'POST', path: '/api/admin/smtp', body: () => ({ to: 'late@example.test' }), out: { mails: 1 } }
+	];
+
+	for (const c of HELD) {
+		it(`refuses 401, writes nothing and sends nothing out, when the session ends while the body arrives: ${c.shape}`, { timeout: 30_000 }, async () => {
+			const s = scene();
+			const body = await c.body(s);
+			const sent = effects();
+			onTestFinished(() => sent.restore());
+			let before: DbSnapshot | undefined;
+			let linesBefore: unknown[] = [];
+
+			const res = await sendAround(c.method, c.path, { session: s.sessions.chief }, body, () => {
+				db.delete(sessions).where(eq(sessions.id, s.sessions.chief)).run();
+				before = snapshotDb();
+				linesBefore = lines();
+			});
+			await sent.settle();
+
+			expect(res).toEqual({ status: 401, body: { message: 'Not authenticated' } });
+			expect(before).toBeDefined();
+			expectUnchanged(before!);
+			expect(lines()).toEqual(linesBefore);
+			expect(sentOut(sent)).toEqual(NOTHING_OUT);
+		});
+
+		it(`lets it through, sent the same way, when nothing ended meanwhile: ${c.shape}`, { timeout: 30_000 }, async () => {
+			const s = scene();
+			const body = await c.body(s);
+			const sent = effects();
+			onTestFinished(() => sent.restore());
+
+			const res = await sendAround(c.method, c.path, { session: s.sessions.chief }, body, () => {});
+			await sent.settle();
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(sentOut(sent)).toEqual({ ...NOTHING_OUT, ...c.out });
+		});
+	}
+
+	/** The requests with no body, by whom, in an order each can run in: the reset last. */
+	const UNHELD = (s: Scene): ['POST', string, Who][] => [
+		['POST', `/api/admin/boards/${s.board.id}/clear-cards`, 'admin'],
+		['POST', `/api/admin/boards/${s.board.id}/clear-categories`, 'admin'],
+		['POST', '/api/admin/purge-archived', 'admin'],
+		['POST', '/api/admin/reset-xp', 'admin'],
+		['POST', '/api/admin/vacuum', 'admin'],
+		['POST', '/api/admin/reset', 'chief']
+	];
+
+	it('refuses 401, and changes nothing, a request with no body whose session has ended', async () => {
+		const s = scene();
+		const requests = UNHELD(s);
+		db.delete(sessions).run();
+		const before = snapshotDb();
+
+		for (const [method, path, who] of requests) {
+			const res = await api(method, path, asWho(s, who));
+			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
+		}
+
+		expectUnchanged(before);
+	});
+
+	it("still writes the reset's failure line, and answers 500 with nothing cleared, when a database fault fails its first transaction (the slices 5–7 review)", async () => {
+		const s = scene();
+		const before = snapshotDb();
+		// Every transaction does its work and then fails, as a COMMIT that cannot be written.
+		const real = sqlite.transaction.bind(sqlite) as (fn: (...args: unknown[]) => unknown) => unknown;
+		vi.spyOn(sqlite, 'transaction').mockImplementation(((fn: (...args: unknown[]) => unknown) =>
+			real((...args: unknown[]) => {
+				fn(...args);
+				throw new Error('disk I/O error');
+			})) as never);
+
+		const res = await api('POST', '/api/admin/reset', asWho(s, 'chief'));
+		vi.mocked(sqlite.transaction).mockRestore();
+
+		expect({ status: res.status, body: res.body }).toEqual({ status: 500, body: { message: 'The reset failed and nothing was cleared: disk I/O error' } });
+		expect(
+			sqlite.prepare("SELECT message, user_id AS userId FROM system_logs WHERE context = 'ADMIN' AND level = 'ERROR' ORDER BY id").all()
+		).toEqual([{ message: 'A reset by chief (ID: ' + s.chief.id + ') failed, and nothing was cleared: disk I/O error', userId: s.chief.id }]);
+		expectUnchanged(before);
+	});
+
+	it('lets each of them through when the session is still open', async () => {
+		const s = scene();
+
+		for (const [method, path, who] of UNHELD(s)) {
+			const res = await api(method, path, asWho(s, who));
+			expect({ path, status: res.status }).toEqual({ path, status: 200 });
+		}
+	});
+
+	it('decides with the account as it is now: an administrator lowered to user is refused as a user is, and the superadmin lowered to administrator as an administrator is; nothing written, nothing sent out', async () => {
+		const s = scene();
+		// Started while still the superadmin, in the session the Connect is then sent from.
+		const state = await begin(s);
+		const lowered = (who: Who, to: string) => {
+			db.update(users).set({ role: to }).where(eq(users.id, s[who].id)).run();
+			return asWho(s, who);
+		};
+		const wasAdmin = lowered('admin', 'user');
+		const wasChief = lowered('chief', 'admin');
+		const before = snapshotDb();
+		const linesBefore = lines();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		const refusals: [typeof wasAdmin, 'POST' | 'PUT', string, unknown, string][] = [
+			[wasAdmin, 'POST', `/api/admin/boards/${s.board.id}/clear-cards`, undefined, 'Forbidden'],
+			[wasAdmin, 'POST', `/api/admin/boards/${s.board.id}/clear-categories`, undefined, 'Forbidden'],
+			[wasAdmin, 'POST', '/api/admin/purge-archived', undefined, 'Forbidden'],
+			[wasAdmin, 'POST', '/api/admin/reset-xp', undefined, 'Forbidden'],
+			[wasAdmin, 'POST', '/api/admin/vacuum', undefined, 'Forbidden'],
+			[wasChief, 'PUT', '/api/admin/backup', { retention: 5 }, SUPERADMIN_ONLY],
+			[wasChief, 'POST', '/api/admin/backup', { destination: 'Bucket' }, SUPERADMIN_ONLY],
+			[wasChief, 'POST', '/api/admin/backup/test', BUCKET, SUPERADMIN_ONLY],
+			[wasChief, 'POST', '/api/admin/backup/gdrive/auth', { code: 'the-code', state, destName: 'G' }, SUPERADMIN_ONLY],
+			[wasChief, 'PUT', '/api/admin/smtp', { fromName: 'Late' }, SUPERADMIN_ONLY],
+			[wasChief, 'POST', '/api/admin/smtp', { to: 'late@example.test' }, SUPERADMIN_ONLY],
+			[wasChief, 'POST', '/api/admin/reset', undefined, SUPERADMIN_ONLY]
+		];
+		for (const [who, method, path, body, message] of refusals) {
+			const res = await api(method, path, { ...who, ...(body === undefined ? {} : { body }) });
+			expect({ who: who.user.username, method, path, status: res.status, body: res.body }).toEqual({
+				who: who.user.username,
+				method,
+				path,
+				status: 403,
+				body: { message }
+			});
+		}
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(lines()).toEqual(linesBefore);
+		expect(sentOut(sent)).toEqual(NOTHING_OUT);
+	});
+
+	describe('a Google Drive Connect refused at its write, after Google has answered and a folder was made', () => {
+		it.each([
+			['the session ends', (s: Scene) => void db.delete(sessions).where(eq(sessions.id, s.sessions.chief)).run(), 401, 'Not authenticated'],
+			['the superadmin is made an administrator', (s: Scene) => void db.update(users).set({ role: 'admin' }).where(eq(users.id, s.chief.id)).run(), 403, SUPERADMIN_ONLY]
+		])('removes the folder it made and saves nothing when %s while Google answers', async (_case, meanwhile, status, message) => {
+			const s = scene();
+			const state = await begin(s);
+			exchange(() => meanwhile(s));
+			const linesBefore = lines();
+
+			const res = await api('POST', '/api/admin/backup/gdrive/auth', { ...asWho(s, 'chief'), body: { code: 'the-code', state, destName: 'G' } });
+
+			expect({ status: res.status, body: res.body }).toEqual({ status, body: { message } });
+			expect(getToken).toHaveBeenCalledTimes(1);
+			expect(files.create).toHaveBeenCalledTimes(1);
+			expect(files.delete).toHaveBeenCalledTimes(1);
+			expect(files.delete.mock.calls[0][0]).toMatchObject({ fileId: FOLDER });
+			expect(storedDrive()).toEqual(DRIVE);
+			// No line that it connected, nor that the Connect failed: it was refused.
+			expect(lines()).toEqual(linesBefore);
+		});
+
+		it('saves the connection and keeps the folder when nothing ends meanwhile (the control)', async () => {
+			const s = scene();
+			const state = await begin(s);
+
+			const res = await api('POST', '/api/admin/backup/gdrive/auth', { ...asWho(s, 'chief'), body: { code: 'the-code', state, destName: 'G' } });
+
+			expect(res.status).toBe(200);
+			expect(res.body.success).toBe(true);
+			expect(files.delete).not.toHaveBeenCalled();
+			expect(storedDrive()).toEqual({ ...DRIVE, refreshToken: 'rt-2253', grantedScope: DRIVE_FILE_SCOPE, folderId: FOLDER });
+		});
+	});
+
+	describe('the import asks once, after the upload and before anything is written', () => {
+		/** The working directory the import writes its temporary copy and safety file in, pointed somewhere the test can look. */
+		const workingDirectory = () => {
+			const dir = mkdtempSync(join(tmpdir(), 'dumpfire-2253-'));
+			onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+			vi.spyOn(process, 'cwd').mockReturnValue(dir);
+			return dir;
+		};
+		const importing = (who: ReturnType<typeof asWho>, bytes: Uint8Array) =>
+			api('POST', '/api/admin/import', { ...who, headers: { 'content-type': 'application/octet-stream' }, body: bytes });
+
+		it.each([
+			['its session has ended', (s: Scene) => void db.delete(sessions).run(), 401, 'Not authenticated'],
+			['the superadmin has been made an administrator', (s: Scene) => void db.update(users).set({ role: 'admin' }).where(eq(users.id, s.chief.id)).run(), 403, SUPERADMIN_ONLY]
+		])('refuses an import when %s, with nothing restored, no temporary copy and no safety file', async (_case, meanwhile, status, message) => {
+			const s = scene();
+			const bytes = sqlite.serialize();
+			const dir = workingDirectory();
+			meanwhile(s);
+			const before = snapshotDb();
+
+			const res = await importing(asWho(s, 'chief'), bytes);
+
+			expect({ status: res.status, body: res.body }).toEqual({ status, body: { message } });
+			expectUnchanged(before);
+			expect(readdirSync(dir)).toEqual([]);
+		});
+
+		it('restores with the session open, asking nothing after the restore, whose database holds no session to ask (the control)', async () => {
+			const s = scene();
+			const bytes = sqlite.serialize();
+			const dir = workingDirectory();
+
+			const res = await importing(asWho(s, 'chief'), bytes);
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(res.body.success).toBe(true);
+			// Everybody signed out, the caller included: a check after the restore would refuse.
+			expect(db.select().from(sessions).all()).toEqual([]);
+			expect(readdirSync(dir)).toEqual(['.pre-restore-safety.json']);
+		});
+	});
+});
+
+// ─── The boards side of /api/v1 (slice 2253-6) ──────────────────────────────
+
+describe('the boards side of /api/v1 asks at the write (slice 2253-6)', () => {
+	/**
+	 * A board its owner owns, filed under a grouping, with a label, a category
+	 * and a webhook on it, a card category that belongs to no board, and the
+	 * owner's API key and session. The gate lets only keys into /api/v1; a
+	 * session reaches these handlers from the internal pages' helpers, and is
+	 * handed to them here through `api()`. The rate limits are reset, as every
+	 * test's key may have the same row id.
+	 */
+	const scene = () => {
+		resetAllRateLimits();
+		const owner = makeUser({ username: 'owner' });
+		const { board, cols } = makeBoard({ owner, name: 'Owned' });
+		const grouping = db.insert(boardCategories).values({ name: 'Grouped' }).returning().get();
+		db.update(boards).set({ categoryId: grouping.id }).where(eq(boards.id, board.id)).run();
+		const label = makeLabel(board);
+		const category = db.insert(categories).values({ boardId: board.id, name: 'Kind' }).returning().get();
+		const shared = db.insert(categories).values({ boardId: null, name: 'Shared' }).returning().get();
+		makeWebhook(board);
+		return { owner, board, cols, grouping, label, category, shared, key: makeApiKey(owner), session: makeSession(owner) };
+	};
+	type Scene = ReturnType<typeof scene>;
+	type Method = 'POST' | 'PUT' | 'DELETE';
+
+	/**
+	 * Every request of the slice that carries a JSON body, what it answers
+	 * when nothing ends meanwhile, and the webhook it then fires.
+	 */
+	const HELD: { shape: string; method: Method; path: (s: Scene) => string; body: (s: Scene) => unknown; allowed: number; fires?: string[] }[] = [
+		{
+			shape: 'a board made, owned by the caller (POST /api/v1/boards)',
+			method: 'POST',
+			path: () => '/api/v1/boards',
+			body: () => ({ name: 'Late' }),
+			allowed: 201
+		},
+		{
+			shape: 'a board changed, with its activity entry (PUT /api/v1/boards/:boardId)',
+			method: 'PUT',
+			path: (s) => `/api/v1/boards/${s.board.id}`,
+			body: () => ({ name: 'Renamed late' }),
+			allowed: 200
+		},
+		{
+			shape: 'a card made, its webhook fired once it has committed (POST /api/v1/boards/:boardId/cards)',
+			method: 'POST',
+			path: (s) => `/api/v1/boards/${s.board.id}/cards`,
+			body: (s) => ({ columnId: s.cols['To Do'].id, title: 'Late' }),
+			allowed: 201,
+			fires: ['card.created']
+		},
+		{
+			shape: 'a category made on the board in its path (POST /api/v1/boards/:boardId/categories)',
+			method: 'POST',
+			path: (s) => `/api/v1/boards/${s.board.id}/categories`,
+			body: () => ({ name: 'Late' }),
+			allowed: 201
+		},
+		{
+			shape: 'a column made on the board in its path (POST /api/v1/boards/:boardId/columns)',
+			method: 'POST',
+			path: (s) => `/api/v1/boards/${s.board.id}/columns`,
+			body: () => ({ title: 'Late' }),
+			allowed: 201
+		},
+		{
+			shape: 'a label made on the board in its path (POST /api/v1/boards/:boardId/labels)',
+			method: 'POST',
+			path: (s) => `/api/v1/boards/${s.board.id}/labels`,
+			body: () => ({ name: 'Late' }),
+			allowed: 201
+		},
+		{
+			shape: 'a grouping made, which had no transaction (POST /api/v1/board-categories)',
+			method: 'POST',
+			path: () => '/api/v1/board-categories',
+			body: () => ({ name: 'Late' }),
+			allowed: 201
+		},
+		{
+			shape: 'a grouping changed (PUT /api/v1/board-categories/:categoryId)',
+			method: 'PUT',
+			path: (s) => `/api/v1/board-categories/${s.grouping.id}`,
+			body: () => ({ name: 'Renamed late' }),
+			allowed: 200
+		},
+		{
+			shape: 'a category changed (PUT /api/v1/categories/:categoryId)',
+			method: 'PUT',
+			path: (s) => `/api/v1/categories/${s.category.id}`,
+			body: () => ({ name: 'Renamed late' }),
+			allowed: 200
+		},
+		{
+			shape: 'a column changed (PUT /api/v1/columns/:columnId)',
+			method: 'PUT',
+			path: (s) => `/api/v1/columns/${s.cols['On Hold'].id}`,
+			body: () => ({ title: 'Waiting' }),
+			allowed: 200
+		},
+		{
+			shape: 'a label changed (PUT /api/v1/labels/:labelId)',
+			method: 'PUT',
+			path: (s) => `/api/v1/labels/${s.label.id}`,
+			body: () => ({ name: 'Renamed late' }),
+			allowed: 200
+		}
+	];
+
+	for (const c of HELD) {
+		it(`refuses 401, writes nothing and fires nothing, when the API key is revoked while the body arrives: ${c.shape}`, async () => {
+			const s = scene();
+			const sent = effects();
+			let before: DbSnapshot | undefined;
+
+			try {
+				const res = await sendAround(c.method, c.path(s), { key: s.key }, c.body(s), () => {
+					db.delete(apiKeys).where(eq(apiKeys.id, keyRow(s.key).id)).run();
+					before = snapshotDb();
+				});
+				await sent.settle();
+
+				expect(res).toEqual({ status: 401, body: { message: 'Invalid or expired API key' } });
+				expect(before).toBeDefined();
+				expectUnchanged(before!);
+				expect(sent.webhooks).toEqual([]);
+				expect(sent.events).toEqual([]);
+			} finally {
+				sent.restore();
+			}
+		});
+
+		it(`lets it through, sent the same way, when nothing ended meanwhile: ${c.shape}`, async () => {
+			const s = scene();
+			const sent = effects();
+			try {
+				const res = await sendAround(c.method, c.path(s), { key: s.key }, c.body(s), () => {});
+				await sent.settle();
+				expect(res.status, JSON.stringify(res.body)).toBe(c.allowed);
+				expect(sent.webhooks.map((w) => w.event)).toEqual(c.fires ?? []);
+			} finally {
+				sent.restore();
+			}
+		});
+	}
+
+	it('refuses 401, and writes nothing, each request with a body handed a session that has ended', async () => {
+		const s = scene();
+		const credential = { kind: 'session' as const, token: s.session };
+		db.delete(sessions).run();
+		const before = snapshotDb();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		for (const c of HELD) {
+			const res = await api(c.method, c.path(s), { user: s.owner, credential, body: c.body(s) });
+			expect({ shape: c.shape, status: res.status, body: res.body }).toEqual({ shape: c.shape, status: 401, body: { message: 'Not authenticated' } });
+		}
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(sent.webhooks).toEqual([]);
+		expect(sent.events).toEqual([]);
+	});
+
+	/** The deletes, which have no body to hold, in an order each can run in: the board last. */
+	const UNHELD = (s: Scene): string[] => [
+		`/api/v1/labels/${s.label.id}`,
+		`/api/v1/categories/${s.category.id}`,
+		`/api/v1/columns/${s.cols['On Hold'].id}`,
+		`/api/v1/board-categories/${s.grouping.id}`,
+		`/api/v1/boards/${s.board.id}`
+	];
+
+	it('refuses 401, in the words for each, and changes nothing, a delete whose API key or session has ended', async () => {
+		const s = scene();
+		const keyCredential = { kind: 'api key' as const, id: keyRow(s.key).id };
+		const sessionCredential = { kind: 'session' as const, token: s.session };
+		db.delete(apiKeys).run();
+		db.delete(sessions).run();
+		const before = snapshotDb();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		for (const path of UNHELD(s)) {
+			const byKey = await api('DELETE', path, { user: s.owner, credential: keyCredential });
+			expect({ path, status: byKey.status, body: byKey.body }).toEqual({ path, status: 401, body: { message: 'Invalid or expired API key' } });
+			const bySession = await api('DELETE', path, { user: s.owner, credential: sessionCredential });
+			expect({ path, status: bySession.status, body: bySession.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
+		}
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(sent.events).toEqual([]);
+	});
+
+	it('lets each delete through when the key is still open', async () => {
+		const s = scene();
+		const credential = { kind: 'api key' as const, id: keyRow(s.key).id };
+
+		for (const path of UNHELD(s)) {
+			const res = await api('DELETE', path, { user: s.owner, credential });
+			expect({ path, status: res.status }).toEqual({ path, status: 200 });
+		}
+		expect(db.select().from(boards).all()).toEqual([]);
+	});
+
+	it("decides with the account as it is now: an administrator's key, the administrator lowered to user meanwhile, is refused as a user is, and nothing written", async () => {
+		const s = scene();
+		const card = makeCard(s.cols['To Do']);
+		const admin = makeUser({ username: 'was-admin', role: 'admin' });
+		const credential = { kind: 'api key' as const, id: keyRow(makeApiKey(admin)).id };
+		db.update(users).set({ role: 'user' }).where(eq(users.id, admin.id)).run();
+		const before = snapshotDb();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+		const NO_EDIT = 'No edit access to this board';
+		const NO_BOARD = 'Only an administrator can change a category that belongs to no board';
+		const GROUPED = 'This category groups boards you cannot edit';
+
+		const refusals: [Method, string, unknown, string][] = [
+			['POST', '/api/v1/boards', { name: 'Under the card', parentCardId: card.id }, "No edit access to the parent card's board"],
+			['PUT', `/api/v1/boards/${s.board.id}`, { name: 'Taken over' }, NO_EDIT],
+			['DELETE', `/api/v1/boards/${s.board.id}`, undefined, 'Only board owners and admins can delete boards'],
+			['POST', `/api/v1/boards/${s.board.id}/cards`, { columnId: s.cols['To Do'].id, title: 'By an administrator' }, NO_EDIT],
+			['POST', `/api/v1/boards/${s.board.id}/categories`, { name: 'By an administrator' }, NO_EDIT],
+			['POST', `/api/v1/boards/${s.board.id}/columns`, { title: 'By an administrator' }, NO_EDIT],
+			['POST', `/api/v1/boards/${s.board.id}/labels`, { name: 'By an administrator' }, NO_EDIT],
+			['PUT', `/api/v1/board-categories/${s.grouping.id}`, { name: 'Taken over' }, GROUPED],
+			['DELETE', `/api/v1/board-categories/${s.grouping.id}`, undefined, GROUPED],
+			['PUT', `/api/v1/categories/${s.category.id}`, { name: 'Taken over' }, NO_EDIT],
+			['PUT', `/api/v1/categories/${s.shared.id}`, { name: 'Taken over' }, NO_BOARD],
+			['DELETE', `/api/v1/categories/${s.shared.id}`, undefined, NO_BOARD],
+			['PUT', `/api/v1/columns/${s.cols['On Hold'].id}`, { title: 'Taken over' }, NO_EDIT],
+			['DELETE', `/api/v1/columns/${s.cols['On Hold'].id}`, undefined, NO_EDIT],
+			['PUT', `/api/v1/labels/${s.label.id}`, { name: 'Taken over' }, NO_EDIT],
+			['DELETE', `/api/v1/labels/${s.label.id}`, undefined, NO_EDIT]
+		];
+		for (const [method, path, body, message] of refusals) {
+			const res = await api(method, path, { user: admin, credential, ...(body === undefined ? {} : { body }) });
+			expect({ method, path, status: res.status, body: res.body }).toEqual({ method, path, status: 403, body: { message } });
+		}
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(sent.webhooks).toEqual([]);
+		expect(sent.events).toEqual([]);
+	});
+
+	it("decides with the account as it is now, through the gate: an administrator's key, lowered while the card's body arrives, is refused 403 and fires no webhook", async () => {
+		const s = scene();
+		const admin = makeUser({ username: 'was-admin', role: 'admin' });
+		const key = makeApiKey(admin);
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+		let before: DbSnapshot | undefined;
+
+		const res = await sendAround('POST', `/api/v1/boards/${s.board.id}/cards`, { key }, { columnId: s.cols['To Do'].id, title: 'Late' }, () => {
+			db.update(users).set({ role: 'user' }).where(eq(users.id, admin.id)).run();
+			before = snapshotDb();
+		});
+		await sent.settle();
+
+		expect(res).toEqual({ status: 403, body: { message: 'No edit access to this board' } });
+		expectUnchanged(before!);
+		expect(sent.webhooks).toEqual([]);
+	});
+});
+
+// ─── The cards side of /api/v1 (slice 2253-7) ───────────────────────────────
+
+describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
+	/**
+	 * A board its owner owns, with a webhook on it and four cards. Card A has
+	 * subtask S, a label on it and another on the board for it, the owner
+	 * assigned, the owner's comment, and a token entry; A waits on B, and S
+	 * waits on C. A and D are in the board's milestone. The owner's API key and
+	 * session. The gate lets only keys into /api/v1; a session reaches these
+	 * handlers from the internal pages' helpers, and is handed to them here
+	 * through `api()`. The rate limits are reset, as every test's key may have
+	 * the same row id.
+	 */
+	const scene = () => {
+		resetAllRateLimits();
+		const owner = makeUser({ username: 'owner' });
+		const { board, cols } = makeBoard({ owner, name: 'Owned' });
+		const [a, b, c, d] = ['A', 'B', 'C', 'D'].map((title) => makeCard(cols['To Do'], { title }));
+		const subtask = makeSubtask(a, { title: 'S' });
+		const onCard = makeLabel(board, 'On A');
+		const offCard = makeLabel(board, 'For A');
+		db.insert(cardLabels).values({ cardId: a.id, labelId: onCard.id }).run();
+		assignCard(a, owner);
+		const comment = makeComment(a, owner, 'First');
+		const entry = db.insert(tokenUsage).values({ cardId: a.id, tokens: 500, model: 'claude-opus-5', reportedByUserId: owner.id }).returning().get();
+		makeDependency({ blocked: a, blocker: b, createdBy: owner });
+		makeDependency({ blocked: subtask, blocker: c, createdBy: owner });
+		const milestone = makeMilestone({ board, name: 'Goal', createdBy: owner, cards: [a, d] });
+		makeWebhook(board);
+		return {
+			owner,
+			board,
+			cols,
+			a,
+			b,
+			c,
+			d,
+			subtask,
+			onCard,
+			offCard,
+			comment,
+			entry,
+			milestone,
+			key: makeApiKey(owner),
+			session: makeSession(owner)
+		};
+	};
+	type Scene = ReturnType<typeof scene>;
+	type Method = 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
+	/**
+	 * Every request of the slice that carries a JSON body, what it answers
+	 * when nothing ends meanwhile, and the webhooks it then fires. The three
+	 * batches carry two items each, so that a refusal is seen to write none.
+	 */
+	const HELD: { shape: string; method: Method; path: (s: Scene) => string; body: (s: Scene) => unknown; allowed: number; fires?: string[] }[] = [
+		{
+			shape: 'a card changed, its webhook fired once it has committed (PUT /api/v1/cards/:cardId)',
+			method: 'PUT',
+			path: (s) => `/api/v1/cards/${s.a.id}`,
+			body: () => ({ title: 'Renamed late' }),
+			allowed: 200,
+			fires: ['card.updated']
+		},
+		{
+			shape: 'an account assigned, its mail worked out in the transaction (POST /api/v1/cards/:cardId/assignees)',
+			method: 'POST',
+			path: (s) => `/api/v1/cards/${s.b.id}/assignees`,
+			body: (s) => ({ userId: s.owner.id }),
+			allowed: 200
+		},
+		{
+			shape: 'an assignee taken off (DELETE /api/v1/cards/:cardId/assignees)',
+			method: 'DELETE',
+			path: (s) => `/api/v1/cards/${s.a.id}/assignees`,
+			body: (s) => ({ userId: s.owner.id }),
+			allowed: 200
+		},
+		{
+			shape: 'a comment, answered naming the commenter as they are now (POST /api/v1/cards/:cardId/comments)',
+			method: 'POST',
+			path: (s) => `/api/v1/cards/${s.a.id}/comments`,
+			body: () => ({ content: 'Late' }),
+			allowed: 201,
+			fires: ['comment.added']
+		},
+		{
+			shape: 'a dependency recorded, the graph read in the transaction (POST /api/v1/cards/:cardId/dependencies)',
+			method: 'POST',
+			path: (s) => `/api/v1/cards/${s.b.id}/dependencies`,
+			body: (s) => ({ dependsOnCardId: s.c.id }),
+			allowed: 201
+		},
+		{
+			shape: 'a dependency removed (DELETE /api/v1/cards/:cardId/dependencies)',
+			method: 'DELETE',
+			path: (s) => `/api/v1/cards/${s.a.id}/dependencies`,
+			body: (s) => ({ dependsOnCardId: s.b.id }),
+			allowed: 200
+		},
+		{
+			shape: 'a label put on, answered once it has committed (POST /api/v1/cards/:cardId/labels)',
+			method: 'POST',
+			path: (s) => `/api/v1/cards/${s.a.id}/labels`,
+			body: (s) => ({ labelId: s.offCard.id }),
+			allowed: 201
+		},
+		{
+			shape: 'a label taken off (DELETE /api/v1/cards/:cardId/labels)',
+			method: 'DELETE',
+			path: (s) => `/api/v1/cards/${s.a.id}/labels`,
+			body: (s) => ({ labelId: s.onCard.id }),
+			allowed: 200
+		},
+		{
+			shape: 'a card moved to Complete, inside the move\'s catch, its webhooks fired once it has committed (PUT /api/v1/cards/:cardId/move)',
+			method: 'PUT',
+			path: (s) => `/api/v1/cards/${s.b.id}/move`,
+			body: (s) => ({ columnId: s.cols.Complete.id }),
+			allowed: 200,
+			fires: ['card.completed']
+		},
+		{
+			shape: 'a subtask made (POST /api/v1/cards/:cardId/subtasks)',
+			method: 'POST',
+			path: (s) => `/api/v1/cards/${s.a.id}/subtasks`,
+			body: () => ({ title: 'Late' }),
+			allowed: 201
+		},
+		{
+			shape: "a card's tokens recorded, which had no transaction (POST /api/v1/cards/:cardId/tokens)",
+			method: 'POST',
+			path: (s) => `/api/v1/cards/${s.a.id}/tokens`,
+			body: () => ({ tokens: 1000, model: 'claude-opus-5' }),
+			allowed: 201
+		},
+		{
+			shape: 'a comment changed (PUT /api/v1/comments/:commentId)',
+			method: 'PUT',
+			path: (s) => `/api/v1/comments/${s.comment.id}`,
+			body: () => ({ content: 'Changed late' }),
+			allowed: 200
+		},
+		{
+			shape: 'two dependencies in a batch, written whole or not at all (POST /api/v1/dependencies/bulk)',
+			method: 'POST',
+			path: () => '/api/v1/dependencies/bulk',
+			body: (s) => ({ links: [{ blocked: s.b.id, blocker: s.c.id }, { blocked: s.b.id, blocker: s.d.id }] }),
+			allowed: 201
+		},
+		{
+			shape: 'a milestone made on the board (POST /api/v1/milestones)',
+			method: 'POST',
+			path: () => '/api/v1/milestones',
+			body: (s) => ({ name: 'Late', boardId: s.board.id }),
+			allowed: 201
+		},
+		{
+			shape: "a milestone changed, the service's transaction a savepoint (PATCH /api/v1/milestones/:milestoneId)",
+			method: 'PATCH',
+			path: (s) => `/api/v1/milestones/${s.milestone.id}`,
+			body: () => ({ name: 'Renamed late' }),
+			allowed: 200
+		},
+		{
+			shape: 'a card put in the milestone, which had no transaction (POST /api/v1/milestones/:milestoneId/cards)',
+			method: 'POST',
+			path: (s) => `/api/v1/milestones/${s.milestone.id}/cards`,
+			body: (s) => ({ cardId: s.b.id }),
+			allowed: 200
+		},
+		{
+			shape: 'a card taken out of the milestone (DELETE /api/v1/milestones/:milestoneId/cards)',
+			method: 'DELETE',
+			path: (s) => `/api/v1/milestones/${s.milestone.id}/cards`,
+			body: (s) => ({ cardId: s.a.id }),
+			allowed: 200
+		},
+		{
+			shape: 'two cards put in the milestone in a batch (POST /api/v1/milestones/:milestoneId/cards/bulk)',
+			method: 'POST',
+			path: (s) => `/api/v1/milestones/${s.milestone.id}/cards/bulk`,
+			body: (s) => ({ cardIds: [s.b.id, s.c.id] }),
+			allowed: 200
+		},
+		{
+			shape: 'two cards taken out of the milestone in a batch (DELETE /api/v1/milestones/:milestoneId/cards/bulk)',
+			method: 'DELETE',
+			path: (s) => `/api/v1/milestones/${s.milestone.id}/cards/bulk`,
+			body: (s) => ({ cardIds: [s.a.id, s.d.id] }),
+			allowed: 200
+		},
+		{
+			shape: 'a subtask ticked, its notices and mail queued on the commit (PUT /api/v1/subtasks/:subtaskId)',
+			method: 'PUT',
+			path: (s) => `/api/v1/subtasks/${s.subtask.id}`,
+			body: () => ({ completed: true }),
+			allowed: 200
+		},
+		{
+			shape: "a subtask's dependency recorded, the service's transaction a savepoint (POST /api/v1/subtasks/:subtaskId/dependencies)",
+			method: 'POST',
+			path: (s) => `/api/v1/subtasks/${s.subtask.id}/dependencies`,
+			body: (s) => ({ dependsOnCardId: s.b.id }),
+			allowed: 201
+		},
+		{
+			shape: "a subtask's dependency removed (DELETE /api/v1/subtasks/:subtaskId/dependencies)",
+			method: 'DELETE',
+			path: (s) => `/api/v1/subtasks/${s.subtask.id}/dependencies`,
+			body: (s) => ({ dependsOnCardId: s.c.id }),
+			allowed: 200
+		},
+		{
+			shape: "a subtask's tokens recorded, which had no transaction (POST /api/v1/subtasks/:subtaskId/tokens)",
+			method: 'POST',
+			path: (s) => `/api/v1/subtasks/${s.subtask.id}/tokens`,
+			body: () => ({ tokens: 900, model: 'claude-sonnet-5' }),
+			allowed: 201
+		},
+		{
+			shape: 'two token entries in a batch (POST /api/v1/tokens/bulk)',
+			method: 'POST',
+			path: () => '/api/v1/tokens/bulk',
+			body: (s) => ({ entries: [{ cardId: s.a.id, tokens: 100 }, { subtaskId: s.subtask.id, tokens: 50 }] }),
+			allowed: 201
+		}
+	];
+
+	for (const c of HELD) {
+		it(`refuses 401, writes nothing and fires nothing, when the API key is revoked while the body arrives: ${c.shape}`, async () => {
+			const s = scene();
+			const sent = effects();
+			let before: DbSnapshot | undefined;
+
+			try {
+				const res = await sendAround(c.method, c.path(s), { key: s.key }, c.body(s), () => {
+					db.delete(apiKeys).where(eq(apiKeys.id, keyRow(s.key).id)).run();
+					before = snapshotDb();
+				});
+				await sent.settle();
+
+				expect(res).toEqual({ status: 401, body: { message: 'Invalid or expired API key' } });
+				expect(before).toBeDefined();
+				expectUnchanged(before!);
+				expect(sent.webhooks).toEqual([]);
+				expect(sent.events).toEqual([]);
+				expect(sent.emails).toEqual([]);
+			} finally {
+				sent.restore();
+			}
+		});
+
+		it(`lets it through, sent the same way, when nothing ended meanwhile: ${c.shape}`, async () => {
+			const s = scene();
+			const sent = effects();
+			try {
+				const res = await sendAround(c.method, c.path(s), { key: s.key }, c.body(s), () => {});
+				await sent.settle();
+				expect(res.status, JSON.stringify(res.body)).toBe(c.allowed);
+				expect(sent.webhooks.map((w) => w.event)).toEqual(c.fires ?? []);
+			} finally {
+				sent.restore();
+			}
+		});
+	}
+
+	it('refuses 401, and writes nothing, each request with a body handed a session that has ended', async () => {
+		const s = scene();
+		const credential = { kind: 'session' as const, token: s.session };
+		db.delete(sessions).run();
+		const before = snapshotDb();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		for (const c of HELD) {
+			const res = await api(c.method, c.path(s), { user: s.owner, credential, body: c.body(s) });
+			expect({ shape: c.shape, status: res.status, body: res.body }).toEqual({ shape: c.shape, status: 401, body: { message: 'Not authenticated' } });
+		}
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(sent.webhooks).toEqual([]);
+		expect(sent.events).toEqual([]);
+	});
+
+	/** The deletes, which have no body to hold, in an order each can run in: the archive and then the permanent delete last. */
+	const UNHELD = (s: Scene): string[] => [
+		`/api/v1/tokens/${s.entry.id}`,
+		`/api/v1/subtasks/${s.subtask.id}`,
+		`/api/v1/milestones/${s.milestone.id}`,
+		`/api/v1/cards/${s.c.id}`,
+		`/api/v1/cards/${s.d.id}?permanent=true`
+	];
+
+	it('refuses 401, in the words for each, and changes nothing, a delete whose API key or session has ended', async () => {
+		const s = scene();
+		const keyCredential = { kind: 'api key' as const, id: keyRow(s.key).id };
+		const sessionCredential = { kind: 'session' as const, token: s.session };
+		db.delete(apiKeys).run();
+		db.delete(sessions).run();
+		const before = snapshotDb();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		for (const path of UNHELD(s)) {
+			const byKey = await api('DELETE', path, { user: s.owner, credential: keyCredential });
+			expect({ path, status: byKey.status, body: byKey.body }).toEqual({ path, status: 401, body: { message: 'Invalid or expired API key' } });
+			const bySession = await api('DELETE', path, { user: s.owner, credential: sessionCredential });
+			expect({ path, status: bySession.status, body: bySession.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
+		}
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(sent.webhooks).toEqual([]);
+		expect(sent.events).toEqual([]);
+	});
+
+	it('lets each delete through when the key is still open, the permanent delete firing its webhook', async () => {
+		const s = scene();
+		const credential = { kind: 'api key' as const, id: keyRow(s.key).id };
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+
+		for (const path of UNHELD(s)) {
+			const res = await api('DELETE', path, { user: s.owner, credential });
+			expect({ path, status: res.status }).toEqual({ path, status: 200 });
+		}
+		await sent.settle();
+
+		expect(db.select().from(tokenUsage).all()).toEqual([]);
+		// An archive is `card_archived`, which fires none.
+		expect(sent.webhooks.map((w) => w.event)).toEqual(['card.deleted']);
+	});
+
+	it("decides with the account as it is now: an administrator's key, the administrator lowered to user meanwhile, is refused as a user is, and nothing written", async () => {
+		const s = scene();
+		const admin = makeUser({ username: 'was-admin', role: 'admin' });
+		const credential = { kind: 'api key' as const, id: keyRow(makeApiKey(admin)).id };
+		db.update(users).set({ role: 'user' }).where(eq(users.id, admin.id)).run();
+		const before = snapshotDb();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+		const CARD = "No edit access to this card's board";
+		const SUBTASK = "No edit access to this subtask's board";
+		const MILESTONE = 'No access to this milestone';
+
+		// Each request with a body, as HELD sends it, and the deletes, with the
+		// refusal a user who is on nothing of the owner's is given.
+		const bodies = new Map(HELD.map((c) => [`${c.method} ${c.path(s)}`, c.body(s)]));
+		const refusals: [Method, string, number, unknown][] = [
+			['PUT', `/api/v1/cards/${s.a.id}`, 403, { message: CARD }],
+			['DELETE', `/api/v1/cards/${s.c.id}`, 403, { message: CARD }],
+			['POST', `/api/v1/cards/${s.b.id}/assignees`, 403, { message: CARD }],
+			['DELETE', `/api/v1/cards/${s.a.id}/assignees`, 403, { message: 'No edit access' }],
+			['POST', `/api/v1/cards/${s.a.id}/comments`, 403, { message: 'No edit access' }],
+			['POST', `/api/v1/cards/${s.b.id}/dependencies`, 403, { message: CARD }],
+			['DELETE', `/api/v1/cards/${s.a.id}/dependencies`, 403, { message: "No access to this card's board" }],
+			['POST', `/api/v1/cards/${s.a.id}/labels`, 403, { message: 'No edit access to this board' }],
+			['DELETE', `/api/v1/cards/${s.a.id}/labels`, 403, { message: 'No edit access to this board' }],
+			['PUT', `/api/v1/cards/${s.b.id}/move`, 403, { message: 'No edit access to this board' }],
+			['POST', `/api/v1/cards/${s.a.id}/subtasks`, 403, { message: CARD }],
+			['POST', `/api/v1/cards/${s.a.id}/tokens`, 403, { message: `No edit access to the board holding card #${s.a.id}` }],
+			['PUT', `/api/v1/comments/${s.comment.id}`, 403, { message: 'No edit access to this board' }],
+			['POST', '/api/v1/milestones', 403, { message: 'No edit access to that board' }],
+			['PATCH', `/api/v1/milestones/${s.milestone.id}`, 403, { message: MILESTONE }],
+			['DELETE', `/api/v1/milestones/${s.milestone.id}`, 403, { message: MILESTONE }],
+			['POST', `/api/v1/milestones/${s.milestone.id}/cards`, 403, { message: MILESTONE }],
+			['DELETE', `/api/v1/milestones/${s.milestone.id}/cards`, 403, { message: MILESTONE }],
+			['POST', `/api/v1/milestones/${s.milestone.id}/cards/bulk`, 403, { message: MILESTONE }],
+			['DELETE', `/api/v1/milestones/${s.milestone.id}/cards/bulk`, 403, { message: MILESTONE }],
+			['PUT', `/api/v1/subtasks/${s.subtask.id}`, 403, { message: SUBTASK }],
+			['DELETE', `/api/v1/subtasks/${s.subtask.id}`, 403, { message: SUBTASK }],
+			['POST', `/api/v1/subtasks/${s.subtask.id}/dependencies`, 403, { message: SUBTASK }],
+			// The subtask in the path need only be readable for a removal, as the card route's DELETE.
+			['DELETE', `/api/v1/subtasks/${s.subtask.id}/dependencies`, 403, { message: 'No access' }],
+			['POST', `/api/v1/subtasks/${s.subtask.id}/tokens`, 403, { message: `No edit access to the board holding subtask #${s.subtask.id}` }],
+			['DELETE', `/api/v1/tokens/${s.entry.id}`, 403, { message: `No edit access to the board holding card #${s.a.id}` }]
+		];
+		for (const [method, path, status, answer] of refusals) {
+			const body = bodies.get(`${method} ${path}`);
+			const res = await api(method, path, { user: admin, credential, ...(body === undefined ? {} : { body }) });
+			expect({ method, path, status: res.status, body: res.body }).toEqual({ method, path, status, body: answer });
+		}
+
+		// The two batches that answer every problem at once are refused whole, 409.
+		const links = await api('POST', '/api/v1/dependencies/bulk', { user: admin, credential, body: bodies.get('POST /api/v1/dependencies/bulk') });
+		expect(links.status).toBe(409);
+		expect(links.body).toMatchObject({ message: 'Batch rejected — nothing was written', written: 0, wouldCreate: 0 });
+		expect(links.body.forbidden).toHaveLength(2);
+		const spent = await api('POST', '/api/v1/tokens/bulk', { user: admin, credential, body: bodies.get('POST /api/v1/tokens/bulk') });
+		expect(spent.status).toBe(409);
+		expect(spent.body).toMatchObject({ message: 'Batch rejected — nothing was written', written: 0 });
+		expect(spent.body.problems.map((p: { index: number }) => p.index)).toEqual([0, 1]);
+		await sent.settle();
+
+		expectUnchanged(before);
+		expect(sent.webhooks).toEqual([]);
+		expect(sent.events).toEqual([]);
+	});
+
+	it("decides with the account as it is now, through the gate: an administrator's key, lowered while a move's body arrives, is refused 403 and fires no webhook", async () => {
+		const s = scene();
+		const admin = makeUser({ username: 'was-admin', role: 'admin' });
+		const key = makeApiKey(admin);
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+		let before: DbSnapshot | undefined;
+
+		const res = await sendAround('PUT', `/api/v1/cards/${s.b.id}/move`, { key }, { columnId: s.cols.Complete.id }, () => {
+			db.update(users).set({ role: 'user' }).where(eq(users.id, admin.id)).run();
+			before = snapshotDb();
+		});
+		await sent.settle();
+
+		expect(res).toEqual({ status: 403, body: { message: 'No edit access to this board' } });
+		expectUnchanged(before!);
+		expect(sent.webhooks).toEqual([]);
 	});
 });
 

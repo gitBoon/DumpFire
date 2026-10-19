@@ -1,7 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { boards, columns, boardMembers } from '$lib/server/db/schema';
 import { desc, inArray, eq } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
@@ -10,6 +9,7 @@ import { logActivity } from '$lib/server/logActivity';
 import { requireParentCard, requireUser } from '$lib/server/route-guards';
 import { tooDeepToMake, tooDeepUnder } from '$lib/server/sub-boards';
 import { readBody, readId, readText } from '$lib/server/request-body';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards — List all boards accessible to the API key's user. */
@@ -51,7 +51,7 @@ export const GET: RequestHandler = async ({ locals }) => {
  * `parentCardId` an id, or null for none. The parent card is looked for after.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
 	const name = readText(body, 'name', {
@@ -67,8 +67,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// One transaction: the parent card is read and the caller checked in the
 	// one that makes the board, its columns, its owner and its activity entry.
 	// A failure after the first used to leave a board with no columns, or one
-	// that nobody owned.
-	const created = inTransaction(() => {
+	// that nobody owned. It asks first whether the key or session is still
+	// open, and who its account is now (card 2253).
+	const created = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// If linking to a parent card, verify access to that card's board. The
 		// check is the one POST /api/boards makes, so that the two cannot differ.
 		const parent = parentCardId != null ? requireParentCard(user, parentCardId) : null;

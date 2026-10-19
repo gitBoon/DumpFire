@@ -3,9 +3,9 @@ import { db } from '$lib/server/db';
 import { columns } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
-import { inTransaction } from '$lib/server/db/transaction';
 import { pathId, readBody, readColour, readNumber, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards/:boardId/columns — List all columns for a board. */
@@ -25,16 +25,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 /** POST /api/v1/boards/:boardId/columns — Create a new column. */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
 	const body = await readBody(request);
 
 	// The board is looked for and the caller checked in the transaction that
 	// adds the column, once the body has arrived. A board that is not there is
 	// 404 to everyone: it was 403, and for an administrator a 500 from the
-	// database.
-	const col = inTransaction(() => {
-		requireBoard(user, boardId, 'edit');
+	// database. The transaction asks first whether the key or session is still
+	// open, and who its account is now (card 2253).
+	const col = writeAs(locals, (caller) => {
+		requireBoard(caller, boardId, 'edit');
 
 		const title = readText(body, 'title', {
 			required: true,

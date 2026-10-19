@@ -1,7 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cards, columns, subtasks } from '$lib/server/db/schema';
 import { eq, asc, and, isNull, sql } from 'drizzle-orm';
 import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
@@ -20,6 +19,7 @@ import {
 	readText
 } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards/:boardId/cards — List all cards on a board. */
@@ -110,7 +110,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
  * answer is the card as written, with its `completedAt`.
  */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const boardId = pathId(params.boardId, 'board');
 	const body = await readBody(request);
 	const baseUrl = linkBaseUrl(url);
@@ -118,7 +118,11 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 	// One transaction: the caller is checked and the column read in the one
 	// that creates the card and writes its entries. A failure between the
 	// writes used to leave a card that nobody was recorded as having raised.
-	const card = inTransaction(() => {
+	// It asks first whether the key or session is still open, and who its
+	// account is now (card 2253): a key revoked while the body arrived is a
+	// 401, with no card, no entry and no webhook.
+	const card = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		requireBoard(user, boardId, 'edit');
 
 		const columnId = readId(body, 'columnId', { required: true, says: { missing: 'columnId is required' } });
