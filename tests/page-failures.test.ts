@@ -2028,10 +2028,30 @@ const WRITES: Record<string, Write[]> = {
 	'src/routes/admin/+page.svelte': [
 		{ name: 'saveAppUrl', reads: 'sent', done: ["showToast('App URL saved')"] },
 		{ name: 'saveBackupConfig', reads: 'sent', done: ["showToast('Backup settings saved')"] },
-		{ name: 'addDestination', via: 'saveBackupConfig', putsBack: ['backupDestinations = was'], done: ['resetDestForm()', 'showAddDestination = false'] },
-		{ name: 'updateDestination', via: 'saveBackupConfig', putsBack: ['backupDestinations = was'], done: ['editingDest = null', 'resetDestForm()'] },
-		{ name: 'removeDestination', via: 'saveBackupConfig', putsBack: ['backupDestinations = was'] },
+		// The card 2250 review's M3 and S3: once saved, the list is read again
+		// from the server, so that it holds the masked secrets and not one typed,
+		// and the destination's host key box is forgotten.
+		{
+			name: 'addDestination',
+			via: 'saveBackupConfig',
+			putsBack: ['backupDestinations = was'],
+			done: ['resetDestForm()', 'showAddDestination = false', 'forgetHostKeyCheck(added.name)']
+		},
+		{
+			name: 'updateDestination',
+			via: 'saveBackupConfig',
+			putsBack: ['backupDestinations = was'],
+			done: ['editingDest = null', 'resetDestForm()', 'forgetHostKeyCheck(editingDest)']
+		},
+		{ name: 'removeDestination', via: 'saveBackupConfig', putsBack: ['backupDestinations = was'], done: ['forgetHostKeyCheck(name)'] },
 		{ name: 'testDestination', reads: 'sent' },
+		// Card 2250: Confirm saves the host key a Test showed, and only once it is saved tests again.
+		{
+			name: 'confirmHostKey',
+			via: 'saveBackupConfig',
+			putsBack: ['backupDestinations = was'],
+			done: ['await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx])']
+		},
 		{ name: 'runManualBackup', reads: 'sent', done: ['await loadBackupConfig()'] },
 		{ name: 'exchangeGDriveCode', reads: 'sent', done: ['await loadBackupConfig()'] },
 		{ name: 'deleteBoard', reads: 'sent', done: ["showToast('Board deleted')"] },
@@ -4029,5 +4049,207 @@ describe('the Google Drive Connect’s paste box, src/routes/admin/+page.svelte 
 		expect(box).toContain(
 			"Copy the <strong>whole address</strong> from your browser's address bar, not only the code: it holds the code and the check that this connection was started here. Paste it below:"
 		);
+	});
+});
+
+describe('the SFTP host key on the admin page, src/routes/admin/+page.svelte (card 2250)', () => {
+	const file = 'src/routes/admin/+page.svelte';
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const tree = scriptOf(file);
+	// The page is CRLF in the working copy: lines are joined with \n to read the markup.
+	const markup = source.slice(source.indexOf('</script>')).replace(/\r\n/g, '\n');
+	const row = markup.slice(markup.indexOf('{#each backupDestinations as dest'), markup.indexOf('<!-- Inline edit form -->'));
+	const editForm = markup.slice(markup.indexOf('<!-- Inline edit form -->'), markup.indexOf('<!-- Add Destination Form -->'));
+	const addForm = markup.slice(markup.indexOf('<!-- Add Destination Form -->'), markup.indexOf('<!-- Backup History -->'));
+
+	/** R5's placeholder for the Host key box, in both forms. */
+	const PLACEHOLDER = 'Paste the line ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub prints, or leave it empty and press Test';
+	const NEW = 'ssh-ed25519 SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7GekmavrY';
+	const OLD = 'ssh-ed25519 SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU';
+
+	/** A form's SFTP part: from its `{#if newDestType === 'sftp'}` to its S3 part. */
+	const sftpPart = (form: string) => form.slice(form.indexOf("{#if newDestType === 'sftp'}"), form.indexOf("{:else if newDestType === 's3'}"));
+
+	it.each([
+		['the add form', () => addForm],
+		['the inline edit form', () => editForm]
+	])('has a Host key box in the SFTP part of %s, with R5’s placeholder', (_form, form) => {
+		const part = sftpPart(form());
+		expect(part.length).toBeGreaterThan(0);
+		expect(part).toContain(`<input type="text" placeholder="${PLACEHOLDER}" bind:value={destHostKey}`);
+	});
+
+	it('has the box twice and nowhere else', () => {
+		expect(markup.split('bind:value={destHostKey}')).toHaveLength(3);
+	});
+
+	it('carries the key in the form: empty when reset, the destination’s when it is edited, and sent with every SFTP destination the form builds', () => {
+		expect(tree.getText()).toContain("let destHostKey = $state('');");
+		expect(statementsOf(functionNamed(tree, 'resetDestForm'), "destHostKey = ''")).toHaveLength(1);
+
+		const populating = functionNamed(tree, 'populateDestForm').body!.statements.find(ts.isIfStatement)!;
+		expect(populating.expression.getText()).toBe("dest.type === 'sftp'");
+		expect(statementsOf(populating.thenStatement, "destHostKey = (dest.hostKey as string) || ''")).toHaveLength(1);
+
+		// A field not sent is not kept: a save without it would remove the key,
+		// and with the password masked it is refused (slice 1's readDestination).
+		const building = functionNamed(tree, 'buildDestConfig').body!.statements.find(ts.isIfStatement)!;
+		expect(building.expression.getText()).toBe("newDestType === 'sftp'");
+		const returned = (building.thenStatement as ts.Block).statements.find(ts.isReturnStatement)!.expression!;
+		expect(ts.isObjectLiteralExpression(returned)).toBe(true);
+		expect((returned as ts.ObjectLiteralExpression).properties.map((property) => property.getText())).toContain('hostKey: destHostKey');
+	});
+
+	it('reads what a Test said of the host key: the key presented, the confirmed one, both, or neither (decision 10, R3)', () => {
+		const js = ts.transpileModule(functionNamed(tree, 'hostKeyCheckOf').getText(), {
+			compilerOptions: { target: ts.ScriptTarget.ES2022 }
+		}).outputText;
+		const hostKeyCheckOf = new Function(`${js}\nreturn hostKeyCheckOf;`)() as (result: unknown) => unknown;
+
+		expect(hostKeyCheckOf({ success: false, message: 'not confirmed', hostKey: NEW })).toEqual({ message: 'not confirmed', presented: NEW, confirmed: null });
+		expect(hostKeyCheckOf({ success: false, message: 'mismatch', hostKey: NEW, confirmedHostKey: OLD })).toEqual({
+			message: 'mismatch',
+			presented: NEW,
+			confirmed: OLD
+		});
+		expect(hostKeyCheckOf({ success: false, message: 'not offered', confirmedHostKey: OLD })).toEqual({ message: 'not offered', presented: null, confirmed: OLD });
+		expect(hostKeyCheckOf({ success: true, message: 'Connected to nas.example:22' })).toBeNull();
+		expect(hostKeyCheckOf({ success: false, message: 'Connection failed', hostKey: 7 })).toBeNull();
+		expect(hostKeyCheckOf(null)).toBeNull();
+	});
+
+	it('shows a Test’s host key answer in the box under the destination and not in a toast, and forgets the box at any other answer', () => {
+		const fn = functionNamed(tree, 'testDestination');
+		const text = fn.getText().replace(/\s+/g, ' ');
+
+		expect(text).toContain("const check = dest.type === 'sftp' ? hostKeyCheckOf(result) : null;");
+		expect(text).toContain('hostKeyChecks = { ...hostKeyChecks, [dest.name]: check };');
+		expect(callsOf(fn, 'showToast')).toHaveLength(1);
+		const guard = text.indexOf('if (check !== null) return;');
+		expect(guard).toBeGreaterThan(text.indexOf('hostKeyChecks = { ...hostKeyChecks, [dest.name]: check };'));
+		expect(guard).toBeLessThan(text.indexOf('showToast('));
+	});
+
+	it('shows under an SFTP destination the Test’s words, and Confirm only for a key not confirmed yet; both keys for one that did not match; no Confirm where the confirmed type is no longer offered (decisions 3 and 5, R3)', () => {
+		const at = row.indexOf("{#if dest.type === 'sftp' && hostKeyChecks[dest.name]}");
+		expect(at).toBeGreaterThan(-1);
+		const box = row.slice(at);
+		const branches = ['{#if check.presented && !check.confirmed}', '{:else if check.presented}', '{:else}', '{/if}'].map((mark) => box.indexOf(mark));
+		expect(branches.every((mark) => mark > -1)).toBe(true);
+		expect([...branches].sort((a, b) => a - b)).toEqual(branches);
+		const [unconfirmed, mismatch, typeGone] = [0, 1, 2].map((i) => box.slice(branches[i], branches[i + 1]));
+
+		expect(box.slice(0, branches[0])).toContain('{check.message}');
+		expect(unconfirmed).toContain('<code>{check.presented}</code>');
+		expect(unconfirmed).toMatch(/<button class="btn-primary btn-xs" disabled=\{backupSaving\} onclick=\{\(\) => confirmHostKey\(dest\.name, check\.presented\)\}>/);
+		expect(mismatch).toContain('<code>{check.presented}</code>');
+		expect(mismatch).toContain('<code>{check.confirmed}</code>');
+		expect(typeGone).toContain('<code>{check.confirmed}</code>');
+		expect(typeGone).not.toContain('check.presented');
+		// One Confirm on the page, in the first branch.
+		expect(markup.match(/confirmHostKey\(/g)).toHaveLength(1);
+	});
+
+	it('saves with Confirm exactly the key shown, as the destination’s hostKey, and tests again once it is saved (decision 3)', () => {
+		const fn = functionNamed(tree, 'confirmHostKey');
+		const text = fn.getText().replace(/\s+/g, ' ');
+
+		expect(text).toContain('updated[idx] = { ...updated[idx], hostKey: key };');
+		expect(text).toContain('backupDestinations = updated;');
+		expect(callsOf(fn, 'testDestination')).toHaveLength(1);
+		// The Test is of the destination as the server now holds it, read again
+		// after the save (the review's M3): its secret masked, its key as stored.
+		const reload = text.indexOf('await loadBackupConfig(true)');
+		expect(reload).toBeGreaterThan(text.indexOf('saveBackupConfig()'));
+		expect(text.indexOf('await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx])')).toBeGreaterThan(reload);
+	});
+
+	it('has a private key box in the SFTP part of the inline edit form, as the add form has, filled as the password is (the review’s M2)', () => {
+		for (const form of [addForm, editForm]) {
+			expect(sftpPart(form)).toContain('<textarea placeholder="Paste private key (PEM format)" bind:value={destPrivateKey}');
+		}
+		expect(markup.split('bind:value={destPrivateKey}')).toHaveLength(3);
+		// The edit form is filled with what the GET shows, the mask for a stored
+		// key, and sends it back as it is, as it does the password.
+		const populating = functionNamed(tree, 'populateDestForm').body!.statements.find(ts.isIfStatement)!;
+		expect(statementsOf(populating.thenStatement, "destPassword = (dest.password as string) || ''")).toHaveLength(1);
+		expect(statementsOf(populating.thenStatement, "destPrivateKey = (dest.privateKey as string) || ''")).toHaveLength(1);
+	});
+
+	it('reads the backup settings again quietly after a destination is saved, without the loading line in place of the section (the review’s M3)', () => {
+		const fn = functionNamed(tree, 'loadBackupConfig');
+		expect(fn.parameters.map((parameter) => parameter.getText())).toEqual(['quiet = false']);
+		const loading = statementsOf(fn, 'backupLoading = true');
+		expect(loading).toHaveLength(1);
+		expect(ts.isIfStatement(loading[0].parent) && loading[0].parent.expression.getText()).toBe('!quiet');
+		for (const name of ['addDestination', 'updateDestination', 'confirmHostKey']) {
+			expect(callsOf(functionNamed(tree, name), 'loadBackupConfig'), name).toHaveLength(1);
+		}
+	});
+
+	it('says so when a destination was saved and the settings could not be read back, as the list may still hold a secret as typed (card 2250 fix pass)', async () => {
+		// loadBackupConfig is true only when it read the settings and put them on the page.
+		const js = ts.transpileModule(functionNamed(tree, 'loadBackupConfig').getText(), {
+			compilerOptions: { target: ts.ScriptTarget.ES2022 }
+		}).outputText;
+		const load = (answer: () => Promise<unknown>) =>
+			new Function(
+				'fetch',
+				'let backupLoading, backupSchedule, backupScheduleTime, backupScheduleDay, backupRetention, backupNotifyOnFailure, backupNotifyEmail, backupHistory;\n' +
+					`let backupDestinations = ['typed'];\n${js}\nreturn async () => [await loadBackupConfig(true), backupDestinations];`
+			)(answer)() as Promise<[unknown, unknown]>;
+		const read = { ok: true, json: async () => ({ destinations: ['masked'] }) };
+		expect(await load(async () => read)).toEqual([true, ['masked']]);
+		expect(await load(async () => ({ ok: false, json: async () => ({}) }))).toEqual([false, ['typed']]);
+		expect(await load(async () => { throw new TypeError('Failed to fetch'); })).toEqual([false, ['typed']]);
+
+		// Each save that reads them back says so where it could not.
+		expect(source).toContain("const SETTINGS_UNREAD = 'Saved, but the page could not read the settings back: reload the page before editing again.';");
+		for (const name of ['addDestination', 'updateDestination', 'confirmHostKey']) {
+			const fn = functionNamed(tree, name);
+			const said = statementsOf(fn, "showToast(SETTINGS_UNREAD, 'error', started)");
+			expect(said, name).toHaveLength(1);
+			const unread = said[0].parent;
+			expect(ts.isIfStatement(unread) && unread.expression.getText(), name).toBe('!(await loadBackupConfig(true))');
+		}
+		// Confirm still tests, with the key it saved where the list was not read back.
+		const confirming = functionNamed(tree, 'confirmHostKey').getText().replace(/\s+/g, ' ');
+		expect(confirming.indexOf('await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx])')).toBeGreaterThan(
+			confirming.indexOf("showToast(SETTINGS_UNREAD, 'error', started)")
+		);
+	});
+
+	it('marks an SFTP destination with no confirmed host key on its card, as Connected marks a Drive one (the review’s S1)', () => {
+		const actions = row.slice(row.indexOf('<div class="dest-actions">'), row.indexOf('<div class="dest-card-detail">'));
+		const at = actions.indexOf("{#if dest.type === 'sftp' && !dest.hostKey}");
+		expect(at).toBeGreaterThan(-1);
+		expect(actions.slice(at, actions.indexOf('{/if}', at))).toContain('Host key not confirmed — press Test');
+	});
+
+	it('forgets a destination’s host key box when it is added, changed or removed, and drops the answer of a Test overtaken by a later Test or save (the review’s S3)', () => {
+		const js = ts.transpileModule(functionNamed(tree, 'forgetHostKeyCheck').getText(), {
+			compilerOptions: { target: ts.ScriptTarget.ES2022 }
+		}).outputText;
+		const page = new Function(
+			`let hostKeyChecks = { NAS: { message: 'old' }, Other: { message: 'kept' } };\nconst hostKeyTests = { NAS: 4 };\n${js}\n` +
+				'return { forget: forgetHostKeyCheck, checks: () => hostKeyChecks, tests: hostKeyTests };'
+		)() as { forget: (name: string) => void; checks: () => unknown; tests: Record<string, number> };
+
+		page.forget('NAS');
+		page.forget('New');
+		expect(page.checks()).toEqual({ NAS: null, Other: { message: 'kept' }, New: null });
+		expect(page.tests).toEqual({ NAS: 5, New: 1 });
+
+		// A Test takes the next number, and its answer is dropped where the
+		// number has moved on by the time it comes back.
+		const fn = functionNamed(tree, 'testDestination');
+		const text = fn.getText().replace(/\s+/g, ' ');
+		const take = text.indexOf('const ticket = (hostKeyTests[dest.name] ?? 0) + 1; hostKeyTests[dest.name] = ticket;');
+		const drop = text.indexOf('if (hostKeyTests[dest.name] !== ticket) return;');
+		expect(take).toBeGreaterThan(-1);
+		expect(take).toBeLessThan(text.indexOf('sent('));
+		expect(drop).toBeGreaterThan(text.indexOf('const result = await answerBody(res);'));
+		expect(drop).toBeLessThan(text.indexOf('hostKeyChecks = { ...hostKeyChecks, [dest.name]: check };'));
+		expect(drop).toBeLessThan(text.indexOf('showToast('));
 	});
 });

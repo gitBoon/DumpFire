@@ -136,6 +136,10 @@ const USED_INVITE = 'invite-already-used-8a2e5c4f1d6b';
 const REQUEST_LINK = 'c0ffee'.repeat(10) + 'beef';
 /** The key the public request form signs its tokens with. */
 const FORM_KEY = 'form-key-of-the-running-database-5d1e7a';
+/** An SFTP host key confirmed on this server, without which a backup run does not try an SFTP destination (card 2250). */
+const HOST_KEY = 'ssh-ed25519 SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7GekmavrY';
+/** Another, as a backup made elsewhere could hold. */
+const OTHER_HOST_KEY = 'ssh-ed25519 SHA256:DNHUp/U/VMq906grWMCGTqWiExwwOEeWEdF4E+QSBns';
 
 /**
  * Failed sign-in lines as sign-in wrote them before card 2193, with the name
@@ -327,7 +331,7 @@ describe('a backup', () => {
 			scheduleTime: '02:00',
 			scheduleDay: 0,
 			retention: 7,
-			destinations: [{ type: 'sftp', name: 'Offsite', host: 'sftp.example.test', port: 22, username: 'backup', remotePath: '/backups' }],
+			destinations: [{ type: 'sftp', name: 'Offsite', host: 'sftp.example.test', port: 22, username: 'backup', remotePath: '/backups', hostKey: HOST_KEY }],
 			notifyOnFailure: false,
 			notifyEmail: ''
 		});
@@ -1088,15 +1092,83 @@ describe('the line in the system log when there are users and no superadmin', ()
 
 		// Once for each check that reads the database: the superadmin's, the
 		// boards in a loop (card 2142), the secrets still to enter (card 2169),
-		// the boards over the webhook cap (card 2201), and the webhooks refused
-		// as written (the webhook review, O1). The ORIGIN check reads none here.
+		// the boards over the webhook cap (card 2201), the webhooks refused
+		// as written (the webhook review, O1), and the SFTP destinations with no
+		// confirmed host key (card 2250). The ORIGIN check reads none here.
 		expect(said.mock.calls.map(([line]) => String(line))).toEqual([
+			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had'
 		]);
+	});
+});
+
+describe('the line at start naming each SFTP destination with no confirmed host key (card 2250, decision 7)', () => {
+	const sftpTo = (name: string, more: Record<string, unknown> = {}) => ({
+		type: 'sftp',
+		name,
+		host: 'nas.example.test',
+		port: 22,
+		username: 'backup',
+		password: 'nas-password',
+		remotePath: '/backups',
+		...more
+	});
+	const lines = () =>
+		sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'STARTUP' AND message LIKE '%host key%' ORDER BY id").all() as {
+			level: string;
+			message: string;
+		}[];
+	const configure = (destinations: unknown[]) =>
+		sqlite
+			.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+			.run('backup_config', JSON.stringify({ schedule: 'daily', retention: 7, destinations }));
+	const startWith = (destinations: unknown[] | null) => {
+		if (destinations !== null) configure(destinations);
+		sqlite.exec('DELETE FROM system_logs');
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			reportInstallation();
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+		return lines();
+	};
+	const saying = (count: number, named: string) =>
+		`${count} SFTP backup destination(s) have no confirmed host key, and nothing is sent to them until one is confirmed: ` +
+		`${named}. In Admin, Scheduled Backups, press Test on each and confirm the key it shows.`;
+
+	it('is one WARN line naming each, a destination with neither password nor key among them, and changes nothing else', () => {
+		configure([
+			sftpTo('NAS'),
+			sftpTo('Confirmed', { hostKey: HOST_KEY }),
+			sftpTo('Open NAS', { password: '' }),
+			{ type: 's3', name: 'Bucket', region: 'eu-west-2', bucket: 'b', accessKeyId: 'a', secretAccessKey: 's', prefix: '' }
+		]);
+		const before = snapshotDb();
+
+		const said = startWith(null);
+
+		expect(said).toEqual([{ level: 'WARN', message: saying(2, '"NAS", "Open NAS"') }]);
+		expectUnchanged(before);
+	});
+
+	it('is not said when every SFTP destination has its key, or there is none', () => {
+		expect(startWith([sftpTo('NAS', { hostKey: HOST_KEY })])).toEqual([]);
+		expect(startWith([])).toEqual([]);
+	});
+
+	it('names the first 20 and counts the rest', () => {
+		const said = startWith(Array.from({ length: 23 }, (_, i) => sftpTo(`NAS ${i + 1}`)));
+
+		const named = Array.from({ length: 20 }, (_, i) => `"NAS ${i + 1}"`).join(', ');
+		expect(said).toEqual([{ level: 'WARN', message: saying(23, `${named}; and 3 more`) }]);
 	});
 });
 
@@ -1243,7 +1315,8 @@ const DESTINATIONS_CLEARED = [
 
 /** What each destination is listed as needing. */
 const NEEDS = [
-	{ name: 'NAS', type: 'sftp', needs: 'SFTP: its password or private key' },
+	// A restore never takes a host key from a backup, so the Test confirms it again (card 2250, decision 9).
+	{ name: 'NAS', type: 'sftp', needs: 'SFTP: its password or private key, then Test to confirm its host key' },
 	{ name: 'Bucket', type: 's3', needs: 'S3: its secret access key' },
 	{ name: 'Drive', type: 'gdrive', needs: 'Google Drive: its client secret, then Connect' },
 	{ name: 'Robot', type: 'gdrive', needs: 'Google Drive: its service account JSON' },
@@ -1319,7 +1392,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 	/** Decision 5's second sentence for a backup of this database restored where none of it is. */
 	const everythingToEnter = () =>
 		'To enter again, because a backup does not hold them: the mail password (Admin, 📧 Email / SMTP); backup ' +
-		'destination(s) "NAS" (SFTP: its password or private key), "Bucket" (S3: its secret access key), "Drive" ' +
+		'destination(s) "NAS" (SFTP: its password or private key, then Test to confirm its host key), "Bucket" (S3: its secret access key), "Drive" ' +
 		'(Google Drive: its client secret, then Connect), "Robot" (Google Drive: its service account JSON), "OneDrive" ' +
 		'(OneDrive: its client secret) (Admin, Scheduled Backups); the signing secret(s) of webhook(s) ' +
 		`${hooks.on} (board "Hooks"), ${hooks.off} (board "Hooks"), which stay switched off until the board's owner or ` +
@@ -1425,8 +1498,8 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 
 	// ── What the copy holds ─────────────────────────────────────────────────
 
-	/** A backup holds none of the secrets, and everything else. */
-	function expectNoSecrets(bytes: Buffer): void {
+	/** A backup holds none of the secrets, and everything else: its destinations as `cleared`. */
+	function expectNoSecrets(bytes: Buffer, cleared: unknown[] = DESTINATIONS_CLEARED): void {
 		for (const [name, value] of Object.entries(SECRETS)) expect(bytes.includes(Buffer.from(value)), name).toBe(false);
 		const backup = opening(bytes);
 		expect(backup.pragma('integrity_check', { simple: true })).toBe('ok');
@@ -1434,7 +1507,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		expect(settings['smtp_pass']).toBeUndefined();
 		for (const [key, value] of Object.entries(MAIL)) expect(settings[key], key).toBe(value);
 		// Every destination, with its other fields as they were.
-		expect(JSON.parse(settings['backup_config']).destinations).toEqual(DESTINATIONS_CLEARED);
+		expect(JSON.parse(settings['backup_config']).destinations).toEqual(cleared);
 		// The two signed webhooks off with no secret, and listed; the unsigned one as it was.
 		expect(hooksIn(backup)).toEqual([
 			{ id: hooks.on, secret: '', active: 0 },
@@ -1462,13 +1535,17 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		expectNoSecrets(Buffer.from(await res.arrayBuffer()));
 		expectSecretsHere();
 
+		// The SFTP destination's host key confirmed, without which a run does not
+		// try it (card 2250). The key is no secret, and the copy keeps it.
+		sqlite.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(configWith([{ ...NAS, hostKey: HOST_KEY }, BUCKET, DRIVE, ROBOT, ONEDRIVE]));
 		const run = await api('POST', '/api/admin/backup', { user: chief, body: {} });
 		expect(run.status).toBe(200);
 		expect(uploaded.map((u) => u.destination)).toEqual(['NAS', 'Bucket', 'Drive', 'Robot', 'OneDrive']);
-		expectNoSecrets(uploaded[0].bytes);
+		const clearedWithKey = [{ ...DESTINATIONS_CLEARED[0], hostKey: HOST_KEY }, ...DESTINATIONS_CLEARED.slice(1)];
+		expectNoSecrets(uploaded[0].bytes, clearedWithKey);
 		expectSecretsHere();
 
-		expectNoSecrets(generateBackupData());
+		expectNoSecrets(generateBackupData(), clearedWithKey);
 		expectSecretsHere();
 	});
 
@@ -2415,8 +2492,11 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 			({ ...JSON.parse(configWith([])), destinations }) as Parameters<typeof saveBackupConfig>[0];
 
 		it('does not try a destination whose credentials are not entered, and says why in its result and in Backup History', async () => {
-			// An SFTP destination with neither password nor key is tried, as before (section 9).
-			saveBackupConfig(configOf([{ ...BUCKET, secretAccessKey: '' }, NAS, { ...NAS, name: 'Open NAS', password: '', privateKey: '' }]));
+			// An SFTP destination with neither password nor key is tried, as before
+			// (section 9), once its host key is confirmed (card 2250).
+			saveBackupConfig(
+				configOf([{ ...BUCKET, secretAccessKey: '' }, { ...NAS, hostKey: HOST_KEY }, { ...NAS, name: 'Open NAS', password: '', privateKey: '', hostKey: HOST_KEY }])
+			);
 
 			const results = await runNow();
 
@@ -2562,6 +2642,81 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		expect(restoredDrive({ ...DRIVE, ...own, grantedScope: WIDE })).toEqual({ ...DRIVE, ...own, grantedScope: WIDE });
 		// Recorded for none here (a connection made before card 2188): none.
 		expect(restoredDrive({ ...DRIVE, ...own })).toEqual({ ...DRIVE, ...own });
+	});
+
+	describe('an SFTP host key is never taken from a backup (card 2250, decision 9 and R4)', () => {
+		/** A backup made now, its SFTP destination replaced by `nas` and sealed again with this server's key. */
+		const backupWithNas = (nas: Record<string, unknown>) =>
+			resealed(backupNow(), (made) => {
+				const config = JSON.parse(settingsOf(made)['backup_config']);
+				config.destinations[0] = nas;
+				made.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(JSON.stringify(config));
+			});
+		const restoredNas = (live: Database.Database) => JSON.parse(settingsOf(live)['backup_config']).destinations[0];
+		const own = { password: `${HERE}-sftp`, privateKey: '' };
+
+		it('fills an SFTP destination with this server’s key, never the backup’s, and none where this server has none', () => {
+			const claiming = () => backupWithNas({ ...DESTINATIONS_CLEARED[0], hostKey: OTHER_HOST_KEY });
+
+			const keyed = serverWith({ destinations: [{ ...NAS, ...own, hostKey: HOST_KEY }] });
+			expect(restoreFromBackup(keyed, claiming()).secrets.kept.destinations).toEqual(['NAS']);
+			expect(restoredNas(keyed)).toEqual({ ...NAS, ...own, hostKey: HOST_KEY });
+
+			const keyless = serverWith({ destinations: [{ ...NAS, ...own }] });
+			expect(restoreFromBackup(keyless, claiming()).secrets.kept.destinations).toEqual(['NAS']);
+			expect(restoredNas(keyless)).toEqual({ ...NAS, ...own });
+
+			// A backup made before card 2250, with no key, still fills, and takes this server's.
+			const before2250 = serverWith({ destinations: [{ ...NAS, ...own, hostKey: HOST_KEY }] });
+			expect(restoreFromBackup(before2250, backupNow()).secrets.kept.destinations).toEqual(['NAS']);
+			expect(restoredNas(before2250)).toEqual({ ...NAS, ...own, hostKey: HOST_KEY });
+		});
+
+		it('takes the key out of an SFTP destination it does not fill, and lists it', () => {
+			const live = serverWith({});
+
+			const result = restoreFromBackup(live, backupWithNas({ ...DESTINATIONS_CLEARED[0], hostKey: OTHER_HOST_KEY }));
+
+			expect(restoredNas(live)).toEqual(DESTINATIONS_CLEARED[0]);
+			expect(result.secrets.toEnter.destinations).toContainEqual(NEEDS[0]);
+		});
+
+		it('takes the key out of every SFTP destination of a backup whose seal does not verify, though one here has a key', () => {
+			const live = serverWith({ key: null, destinations: [{ ...NAS, ...own, hostKey: HOST_KEY }] });
+
+			const result = restoreFromBackup(live, backupWithNas({ ...DESTINATIONS_CLEARED[0], hostKey: OTHER_HOST_KEY }));
+
+			expect(result.unsealed).not.toBeNull();
+			expect(restoredNas(live)).toEqual(DESTINATIONS_CLEARED[0]);
+			expect(result.secrets.toEnter.destinations).toContainEqual(NEEDS[0]);
+		});
+
+		it('takes the key out of an SFTP destination the backup holds with its password, and leaves the rest as the backup has it', () => {
+			const live = serverWith({ destinations: [{ ...NAS, ...own, hostKey: HOST_KEY }] });
+
+			const result = restoreFromBackup(live, backupWithNas({ ...DESTINATIONS_CLEARED[0], password: 'the-backups-own-password', hostKey: OTHER_HOST_KEY }));
+
+			expect(restoredNas(live)).toEqual({ ...DESTINATIONS_CLEARED[0], password: 'the-backups-own-password' });
+			// Not filled: the password is the backup's own.
+			expect(result.secrets.kept.destinations).toEqual([]);
+		});
+
+		it('gives an SFTP destination with neither password nor key, here as in the backup, this server’s key or none', () => {
+			const open = { password: '', privateKey: '' };
+
+			const keyed = serverWith({ destinations: [{ ...NAS, ...open, hostKey: HOST_KEY }] });
+			restoreFromBackup(keyed, backupWithNas({ ...DESTINATIONS_CLEARED[0], hostKey: OTHER_HOST_KEY }));
+			expect(restoredNas(keyed)).toEqual({ ...DESTINATIONS_CLEARED[0], hostKey: HOST_KEY });
+
+			// The backup with no key at all, and this server's added.
+			const added = serverWith({ destinations: [{ ...NAS, ...open, hostKey: HOST_KEY }] });
+			restoreFromBackup(added, backupNow());
+			expect(restoredNas(added)).toEqual({ ...DESTINATIONS_CLEARED[0], hostKey: HOST_KEY });
+
+			const keyless = serverWith({ destinations: [{ ...NAS, ...open }] });
+			restoreFromBackup(keyless, backupWithNas({ ...DESTINATIONS_CLEARED[0], hostKey: OTHER_HOST_KEY }));
+			expect(restoredNas(keyless)).toEqual(DESTINATIONS_CLEARED[0]);
+		});
 	});
 });
 
@@ -2848,6 +3003,59 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 		expect(res.status).toBe(400);
 		expect(res.body.message).toBe(typeAgain('NAS', 'password and private key', 'this changes its host and port'));
 		expect(handed).toEqual([]);
+	});
+
+	describe('an SFTP host key, which narrows where a saved secret may go (card 2250, decision 8)', () => {
+		/** The list the GET gave, with NAS (first) changed by `change`. */
+		const withNas = async (change: Record<string, unknown>) => (await shown()).map((d, i) => (i === 0 ? { ...d, ...change } : d));
+		const hostKeyRefusal = typeAgain('NAS', 'password and private key', 'this changes its host key');
+
+		it('keeps the masked secrets when a key is confirmed where none was, and shows the key as stored, unmasked', async () => {
+			const saved = await put(await withNas({ hostKey: HOST_KEY }));
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(storedDestinations()[0]).toEqual({ ...NAS, hostKey: HOST_KEY });
+			expect((await shown())[0]).toEqual({ ...NAS, password: MASK, privateKey: MASK, hostKey: HOST_KEY });
+		});
+
+		it('keeps them when the confirmed key is sent back as ssh-keygen prints it', async () => {
+			store([{ ...NAS, hostKey: HOST_KEY }]);
+
+			const saved = await put(await withNas({ hostKey: `256 ${HOST_KEY.split(' ')[1]} root@nas (ED25519)` }));
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(storedDestinations()).toEqual([{ ...NAS, hostKey: HOST_KEY }]);
+		});
+
+		it.each([
+			['changed', { hostKey: OTHER_HOST_KEY }],
+			['emptied', { hostKey: '' }],
+			['not sent', { hostKey: undefined }]
+		])('refuses them, naming the host key, when a confirmed key is %s, on a save and a test', async (_case, change) => {
+			store([{ ...NAS, hostKey: HOST_KEY }]);
+			const before = snapshotDb();
+			const [nas] = await withNas(change);
+
+			const saved = await put([nas]);
+			expect(saved.status).toBe(400);
+			expect(saved.body.message).toBe(hostKeyRefusal);
+
+			handed.length = 0;
+			const test = await tested(nas);
+			expect(test.status).toBe(400);
+			expect(test.body.message).toBe(hostKeyRefusal);
+			expect(handed).toEqual([]);
+			expectUnchanged(before);
+		});
+
+		it('saves a changed key with the password and private key typed again', async () => {
+			store([{ ...NAS, hostKey: HOST_KEY }]);
+
+			const saved = await put(await withNas({ hostKey: OTHER_HOST_KEY, password: 'typed-again', privateKey: '' }));
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(storedDestinations()).toEqual([{ ...NAS, hostKey: OTHER_HOST_KEY, password: 'typed-again', privateKey: '' }]);
+		});
 	});
 
 	it('keeps the recorded scope with a kept refresh token whatever is sent, and drops it with a token sent empty (test 8)', async () => {

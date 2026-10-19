@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.20
+version: 1.21
 status: As-Built
 date: 2026-10-19
 tags:
@@ -118,7 +118,9 @@ commas, semicolons or lines and stored separated by commas, or empty. Each desti
 a text `name`, a `type` of `sftp`, `s3`, `gdrive` or `onedrive`, and the fields of its
 type (`readDestination()` in `src/lib/server/backup-destinations.ts`); any other field is
 not kept, `grantedScope` included (only Connect writes it). An SFTP `port` is a whole number
-from 1 to 65535, or `null`, which connects to 22. `readDestination()` no longer puts a stored
+from 1 to 65535, or `null`, which connects to 22. An SFTP `hostKey` is a host key
+fingerprint with its type, saved as `<type> SHA256:<43>`, or `''` for none (card 2250: see
+[The SFTP Host Key](#the-sftp-host-key)). `readDestination()` no longer puts a stored
 secret in place of a mask: it did until card 2190, finding the stored destination by name or
 by its place in the list. A mask is now resolved by `keepMaskedSecrets()`, below. An SFTP
 `host` is saved trimmed of ASCII spaces and tabs only, one sent back as stored kept as it is
@@ -168,7 +170,13 @@ flowchart LR
   beginning with removing DumpFire's access in the Google account unless every stored
   destination it could be was connected with `drive.file` alone. A destination with no mask
   is used as sent. `grantedScope` is never taken from a request: it comes back only with a
-  kept refresh token.
+  kept refresh token. An SFTP `hostKey` is compared too, as a narrowing on a save (card
+  2250): a destination sent with a mask differs where the stored one has a key and the one
+  sent has another fingerprint, or none; a key sent where none is stored does not differ. On
+  the test route (`keepMaskedSecrets(…, 'test')`) it is compared exactly: the key sent must be
+  the stored one, `''` for `''`, so that a Test never sends the stored secret to a key it
+  supplies (the card 2250 review's M1); only a save adds one. It is not
+  secret: `maskDestination()` shows it, and `SECRET_FIELDS` does not name it.
 
 ### Backup Data Generation
 
@@ -378,6 +386,80 @@ person's Google account (with the Folder ID empty, every later backup went to a 
   `error=access_denied`): it says why instead (the admin guide, Configuring Backups).
 - Connections made before are untouched: a stored refresh token is not checked again.
 
+### The SFTP Host Key
+
+An SFTP destination connected with no `hostVerifier`, and ssh2 accepts any host key without
+one, so the password, or a signature made with the private key, and then the backup went to
+whatever answered for the host (card 2250). Each SFTP destination now holds the key it was
+confirmed with, `hostKey`, one more field of it in the `backup_config` setting's JSON: `<type>
+SHA256:<43>`, the key's type and its fingerprint as OpenSSH prints it (`SHA256:` and the
+unpadded standard base64 of SHA-256 over the key's blob). Every connect goes through one of two
+configurations:
+
+```mermaid
+flowchart TD
+    Start["A connect to an SFTP destination:<br/>Test, upload, list or delete"] --> Has{"A host key<br/>confirmed?"}
+    Has -->|"no, and this is a Test"| Probe["firstLook(): host, port, username, readyTimeout<br/>and a verifier that records the key and answers false;<br/>no password, private key or passphrase"]
+    Probe --> Shown["{ success: false, message, hostKey }:<br/>ssh-ed25519 SHA256:…, nothing sent"]
+    Shown --> Confirm["The superadmin checks it on the server<br/>and presses ✅ Confirm this key"]
+    Confirm --> Save["PUT /api/admin/backup with hostKey set<br/>(a masked password is kept: a key added<br/>where none was narrows where it may go),<br/>then the Test again"]
+    Has -->|"no, and this is a backup run"| Refuse1["Not tried (hostKeyMissing): Backup History,<br/>one ERROR line and the failure mail"]
+    Has -->|"no, and this is an upload, list or delete<br/>reached any other way"| Refuse0["getConnectConfig() throws HostKeyNotConfirmed:<br/>no connection is opened"]
+    Has -->|"yes"| Pin["getConnectConfig(): algorithms.serverHostKey = pinFor(type),<br/>hostVerifier comparing fingerprintOf(blob)"]
+    Pin --> Offered{"Server offers a key<br/>of the pinned type?"}
+    Offered -->|"no"| Refuse3["'no matching host key format' before the verifier:<br/>HostKeyTypeNotOffered, nothing sent;<br/>Test: { success: false, message, confirmedHostKey }"]
+    Offered -->|"yes"| Same{"Fingerprint<br/>the same?"}
+    Same -->|"yes"| Signed{"The server signs<br/>the exchange with it?"}
+    Signed -->|"yes"| Auth["Handshake completes,<br/>then the password or key is used"]
+    Signed -->|"no"| Refuse4["'signature verification failed' after the verifier:<br/>HostKeySignatureFailed, nothing sent;<br/>Test: { success: false, message, confirmedHostKey }"]
+    Same -->|"no"| Refuse2["Host denied before any credential: HostKeyMismatch;<br/>Test: { success: false, message, hostKey, confirmedHostKey }"]
+    Refuse2 --> Change["Accepting the new key means<br/>typing the password or key again"]
+    Refuse3 --> Change
+```
+
+| What | Where | How |
+|---|---|---|
+| Reading it | `readHostKey()` in `src/lib/server/ssh-host-key.ts`, from `readDestination()` | `<type> SHA256:<43>`, the type one of `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp384`, `ecdsa-sha2-nistp521`, `ssh-rsa`; or the line `ssh-keygen -l` prints, pasted whole (`256 SHA256:… root@nas (ED25519)`: ED25519, RSA of 1,024 bits or more, ECDSA of 256, 384 or 521 bits). Spaces, tabs and line breaks around are trimmed. The 43 characters must decode to 32 bytes and encode to the same text. Saved as `<type> SHA256:<43>`; empty once trimmed is `''`. Anything else is `400 destinations[0].hostKey must be an SSH host key fingerprint with its type: …` (no prefix on the test route) |
+| A key's blob | `fingerprintOf()`, `typeOf()`, `shownHostKey()` | The fingerprint is over the whole blob; the type is the blob's first string (RFC 4253, section 6.6), read without importing ssh2, which comes only with `ssh2-sftp-client` |
+| The pin | `pinFor()` | `ssh-rsa` as `rsa-sha2-512`, `rsa-sha2-256`, `ssh-rsa`; every other type as itself. ssh2 offers `ssh-ed25519` first, so without the pin a server that gains a key of a preferred type would look changed |
+| The words | every message below | Each says what happened in its first 40 characters, which is what Backup History shows of a message (the card 2250 review's S2): "SFTP host key not confirmed: " for none confirmed and a Test's first look ("SFTP host key not confirmed: the server at nas.example:22 presented the host key ssh-ed25519 SHA256:…. Check it is the server's own (on the server: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub) and confirm it. Nothing was sent to the server."), "SFTP host key refused: " for a key refused |
+| No key | `getConnectConfig()`, `hostKeyMissing()` in `backup-secrets.ts` | `HostKeyNotConfirmed`, whose message is `HOST_KEY_NOT_CONFIRMED`: "SFTP host key not confirmed: nothing was sent to this destination. In Admin, Scheduled Backups, press Test on it and confirm the key it shows." A stored key that does not read counts as none |
+| A key that does not match | `HostKeyMismatch` (`presented`, `confirmed`) | "SFTP host key refused: the server at nas.example:22 presented the host key ssh-ed25519 SHA256:NEW, not the confirmed SHA256:OLD, so nothing was sent to it. If the server's key was changed on purpose, check the new key on the server and confirm it, typing the password or private key again; otherwise something else may be answering for the server." |
+| The type no longer offered | `HostKeyTypeNotOffered` (`confirmed`) | "SFTP host key refused: the server at nas.example:22 no longer offers a host key of the confirmed type (ssh-ed25519), so nothing was sent to it. If the server's keys were changed on purpose, clear the Host key or replace it with the server's new key, typing the password or private key again, then press Test; otherwise something else may be answering for the server." |
+| The confirmed key, not signed with | `HostKeySignatureFailed` (`confirmed`), when the verifier matched and ssh2 then says "signature verification failed" (the review's S4) | "SFTP host key refused: the server at nas.example:22 showed the confirmed key but could not prove it holds it — something on the network may be answering for it. Nothing was sent." `test()` throws it, and the test route answers `{ success: false, message, confirmedHostKey }` |
+| The test route | `POST /api/admin/backup/test` | Answers `SftpTestResult`: `{ success, message }`, plus `hostKey` where none is confirmed or it did not match, and `confirmedHostKey` where a key was refused. Writes one `[ERROR] [BACKUP]` line for a refusal, from the answer's keys: `SFTP host key mismatch for destination "NAS" at nas.example:22: presented SHA256:NEW, confirmed SHA256:OLD. Nothing was sent.`, or `SFTP host key type not offered for destination "NAS" at nas.example:22: confirmed ssh-ed25519 SHA256:OLD. Nothing was sent.`, or, for `HostKeySignatureFailed`, `SFTP host key signature failed for destination "NAS" at nas.example:22: confirmed SHA256:OLD. Nothing was sent.`; none for a first look. A masked secret is kept only with the stored key exactly (M1) |
+| A backup run | `runBackup()` | An unconfirmed destination is not tried, beside `credentialsMissing()`; a refused key fails the upload with the class's message, `Backup failed: NAS → …`, with its Backup History row and failure mail, and no line of its own |
+| The start | `reportUnconfirmedHostKeys()` in `startup-checks.ts`, the thirteenth line | `[WARN] [STARTUP] 1 SFTP backup destination(s) have no confirmed host key, and nothing is sent to them until one is confirmed: "NAS". In Admin, Scheduled Backups, press Test on each and confirm the key it shows.`, the first 20 named, then `; and N more` |
+| A restore | `fillSecretGaps()`, `withSecretsOf()` | Every SFTP entry loses the backup's `hostKey` first; one filled, or with neither secret here either, takes the key of the entry here it was matched with, or none. `needs()` reads "SFTP: its password or private key, then Test to confirm its host key" |
+
+**The admin page.** Both SFTP forms have a Host key box (placeholder `Paste the line ssh-keygen
+-lf /etc/ssh/ssh_host_ed25519_key.pub prints, or leave it empty and press Test`), carried by
+`populateDestForm()` and sent by `buildDestConfig()` with every SFTP destination: a field not
+sent is not kept, so a save without it would remove the key, which with the password masked is
+refused. `testDestination()` reads the answer with `hostKeyCheckOf()`: an SFTP answer holding
+`hostKey` or `confirmedHostKey` is shown in a box under the destination, in place of a toast,
+and any other answer clears the box. `hostKey` alone shows the key and ✅ Confirm this key;
+both show the key presented and the confirmed one, with no Confirm and the way to accept a new
+key (Edit, the password typed again); `confirmedHostKey` alone shows the confirmed key and no
+Confirm, there being no key to confirm. `confirmHostKey()` sets the destination's `hostKey` to
+exactly the text shown, saves the whole list with `saveBackupConfig()`, puts the list back if
+the save is refused, and only once it is saved reads the list back and runs the Test again on
+the destination as the server now holds it. The card 2250 review added:
+
+- **The private key box in the edit form** (M2), as the add form has it under Advanced: Private
+  Key auth, filled by `populateDestForm()` with what the GET shows, the mask for a stored key,
+  so a key-based destination can be given its key again when its host key changes.
+- **The list read back after a save** (M3): `addDestination()`, `updateDestination()` and
+  `confirmHostKey()` call `loadBackupConfig(true)` once saved, `quiet` leaving the section in
+  place, so the list holds the secrets masked as the GET shows them. It held the password as
+  typed, and a later save of the destination "with the password left masked" sent it typed and
+  was saved, not refused.
+- **A mark on the card** (S1): an SFTP destination with no `hostKey` shows "⚠️ Host key not
+  confirmed — press Test" beside its buttons.
+- **No stale box** (S3): `forgetHostKeyCheck(name)` clears a destination's box and moves on its
+  number in `hostKeyTests` when it is added, saved or removed; `testDestination()` takes the
+  next number, and an answer that comes back after the number has moved on says nothing.
+
 ### Retention Cleanup
 
 After each successful upload, the system:
@@ -402,9 +484,14 @@ what Backup History shows after a restore onto another server, where it would ha
 library's error. The copy is made only when at least one destination can be tried, so a run
 with none makes no copy and does not stop the server answering for it. An SFTP destination
 with neither a password nor a key is tried as before, since a server that allows `none`
-authentication accepts it; after a restore onto another server such a destination is tried
-against the real host at every run, and its failed logins may trip a lockout there, so its
-credentials are entered or it is removed. The results are given in the destinations' order.
+authentication accepts it, once its host key is confirmed; after a restore onto another server
+such a destination, its key confirmed again, is tried against the real host at every run, and
+its failed logins may trip a lockout there, so its credentials are entered or it is removed.
+`hostKeyMissing()` is asked beside `credentialsMissing()` (card 2250): an SFTP destination with
+no confirmed host key is not tried either, with "SFTP host key not confirmed: nothing was sent
+to this destination. In Admin, Scheduled Backups, press Test on it and confirm the key it
+shows." (see [The SFTP Host Key](#the-sftp-host-key)). The results are given in the
+destinations' order.
 
 ### Failure Notifications
 
@@ -860,7 +947,8 @@ Individual card reports can be generated for completion notifications. These inc
 |------|-------|---------|
 | `src/lib/server/backup.ts` | ~570 | Backup scheduling, data generation (`withoutSecrets()`: no session, no unused invite, no key remembered browsers are signed with, no request link or form key, no secret, and sealed), upload orchestration (`runBackup()`, which does not try a destination without its credentials) |
 | `src/lib/server/backup-secrets.ts` | ~1,400 | What a backup leaves out because it is a secret (card 2169), and what the admin routes mask and keep (cards 2187 and 2190: `SECRET_MASK`, `maskDestination()`, `keepMaskedSecrets()`, `keepMailPassword()`): `clearSecrets()`, `readSecretsHere()` and `fillSecretGaps()` for a restore, `credentialsMissing()`, `secretsToEnter()` for the start-up line, and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
-| `src/lib/server/backup-destinations.ts` | ~670 | SFTP, S3, Google Drive, OneDrive destination implementations; `readDestination()`; `reachFolder()` and `makeDumpfireFolder()` for Google Drive (card 2188) |
+| `src/lib/server/backup-destinations.ts` | ~870 | SFTP, S3, Google Drive, OneDrive destination implementations; `readDestination()`; `reachFolder()` and `makeDumpfireFolder()` for Google Drive (card 2188); the SFTP host key's verifier and pin, the first look, and `HostKeyNotConfirmed`, `HostKeyMismatch`, `HostKeyTypeNotOffered` and `HostKeySignatureFailed` (card 2250) |
+| `src/lib/server/ssh-host-key.ts` | ~160 | An SFTP destination's host key, read, stored and checked (card 2250): `readHostKey()`, `confirmedHostKey()`, `fingerprintOf()`, `typeOf()`, `pinFor()`, `serverKeyFile()`, `HOST_KEY_NOT_CONFIRMED` and `HOST_KEY_REFUSAL`; it connects to nothing |
 | `src/lib/drive-scope.ts` | ~40 | `DRIVE_FILE_SCOPE`, `driveScopeIsNarrow()` and `dumpfireFolderName()`, read by the server and the admin page (card 2188) |
 | `src/lib/server/gdrive-connect.ts` | ~120 | The Google Drive Connects under way, in memory: `startConnect()` (state and PKCE challenge), `takeConnect()` (once, bound to the session, account and destination, ten minutes), `forgetConnects()` for the tests (card 2251) |
 | `src/lib/server/reports.ts` | ~1,900 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()`, `claimScheduleRun()` and the timer's `runDueReportSchedulesOnce()`; `takeReportMail()`, the day's 100 addresses (card 2182) |

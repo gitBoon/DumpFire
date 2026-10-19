@@ -8,6 +8,7 @@
  * - OneDrive (via @microsoft/microsoft-graph-client + @azure/identity)
  */
 
+import { error } from '@sveltejs/kit';
 import SftpClient from 'ssh2-sftp-client';
 import { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { google, type drive_v3 } from 'googleapis';
@@ -16,6 +17,19 @@ import { ClientSecretCredential } from '@azure/identity';
 import { Readable } from 'node:stream';
 import { readChoice, readNumber, readText, type RequestBody } from './request-body';
 import { trimHost } from './backup-secrets';
+import {
+	HOST_KEY_NOT_CONFIRMED,
+	HOST_KEY_REFUSAL,
+	confirmedHostKey,
+	fingerprintOf,
+	hostKeyText,
+	pinFor,
+	readHostKey,
+	serverKeyFile,
+	shownHostKey,
+	typeOf,
+	type HostKey
+} from './ssh-host-key';
 import { dumpfireFolderName } from '$lib/drive-scope';
 
 // ─── Common Interface ────────────────────────────────────────────────────────
@@ -51,6 +65,13 @@ export interface SftpDestinationConfig {
 	password?: string;
 	privateKey?: string;
 	remotePath: string;
+	/**
+	 * The server's host key as it was confirmed (card 2250), `<type>
+	 * SHA256:<43 characters>` (ssh-host-key.ts); empty or absent for none. No
+	 * connect sends anything to a server without one, and every connect with
+	 * one refuses any other key before a credential is sent.
+	 */
+	hostKey?: string;
 }
 
 export interface S3DestinationConfig {
@@ -110,11 +131,37 @@ export class SftpDestination implements BackupDestination {
 		return new SftpClient();
 	}
 
-	private getConnectConfig() {
+	/** Where the destination connects, as its messages name it. */
+	private get address(): string {
+		return `${this.config.host}:${this.config.port || 22}`;
+	}
+
+	/**
+	 * The configuration every connect but a Test's first look is made with
+	 * (card 2250, decision 4): the stored secret, a `hostVerifier` that answers
+	 * whether the fingerprint of the key the server presents is the confirmed
+	 * one, and the confirmed key's type pinned in `algorithms.serverHostKey`.
+	 * ssh2 asks the verifier inside the key exchange, and authenticates only
+	 * after it, so a key refused is refused before any credential is sent. The
+	 * key presented, and whether it matched, are written into `seen`, so that a
+	 * refusal can name it.
+	 *
+	 * With no key confirmed it throws `HostKeyNotConfirmed`, and no connection
+	 * is opened, however an upload, a listing or a delete is reached (R7).
+	 */
+	private getConnectConfig(seen: HostKeySeen = { presented: null, matched: false }) {
+		const key = confirmedHostKey(this.config.hostKey);
+		if (key === null) throw new HostKeyNotConfirmed();
 		const cfg: Record<string, unknown> = {
 			host: this.config.host,
 			port: this.config.port || 22,
-			username: this.config.username
+			username: this.config.username,
+			hostVerifier: (blob: Buffer) => {
+				seen.presented = shownHostKey(blob);
+				seen.matched = fingerprintOf(blob) === key.fingerprint;
+				return seen.matched;
+			},
+			algorithms: { serverHostKey: pinFor(key.type) }
 		};
 		if (this.config.privateKey) {
 			cfg.privateKey = this.config.privateKey;
@@ -124,19 +171,103 @@ export class SftpDestination implements BackupDestination {
 		return cfg;
 	}
 
-	async test(): Promise<{ success: boolean; message: string }> {
+	/**
+	 * Connect `sftp` with the confirmed key, or throw why not: a key that does
+	 * not match (`HostKeyMismatch`, decision 5), a server that no longer offers
+	 * a key of the confirmed type (`HostKeyTypeNotOffered`, R3), the confirmed
+	 * key shown by a server that could not sign with it
+	 * (`HostKeySignatureFailed`, the review's S4), or whatever else the connect
+	 * threw. ssh2's own words are read only for the second and the third: the
+	 * negotiation ends before any key is presented, and ssh2 checks the
+	 * signature over the exchange only after the verifier said yes, so nothing
+	 * else says them. Either way nothing secret has been sent.
+	 */
+	private async connect(sftp: SftpClient): Promise<void> {
+		const seen: HostKeySeen = { presented: null, matched: false };
+		const config = this.getConnectConfig(seen);
+		const key = confirmedHostKey(this.config.hostKey) as HostKey;
+		try {
+			await sftp.connect(config);
+		} catch (err) {
+			const said = String((err as Error)?.message ?? '');
+			if (seen.presented !== null && !seen.matched) throw new HostKeyMismatch(this.address, seen.presented, key);
+			if (seen.presented === null && /no matching host key format/.test(said)) {
+				throw new HostKeyTypeNotOffered(this.address, key);
+			}
+			if (seen.matched && /signature verification failed/i.test(said)) throw new HostKeySignatureFailed(this.address, key);
+			throw err;
+		}
+	}
+
+	/**
+	 * A Test of a destination with no confirmed key (decision 2, R6): a connect
+	 * with a verifier that records the key it is handed and answers false, so
+	 * that the connection ends inside the key exchange and nothing is
+	 * authenticated. Its configuration is built here, with no password,
+	 * private key or passphrase in it: ssh2 parses a private key before the
+	 * socket opens, and nothing secret belongs in a connect aimed at a host not
+	 * confirmed. No directory is made.
+	 */
+	private async firstLook(): Promise<SftpTestResult> {
+		const sftp = this.createClient();
+		const seen: { blob: Buffer | null } = { blob: null };
+		try {
+			await sftp.connect({
+				host: this.config.host,
+				port: this.config.port || 22,
+				username: this.config.username,
+				hostVerifier: (blob: Buffer) => {
+					seen.blob = Buffer.from(blob);
+					return false;
+				},
+				readyTimeout: FIRST_LOOK_TIMEOUT_MS
+			} as Record<string, unknown>);
+		} catch (err: any) {
+			if (seen.blob === null) return { success: false, message: err?.message || 'Connection failed' };
+		} finally {
+			try { await sftp.end(); } catch {}
+		}
+		const blob = seen.blob;
+		if (blob === null) return { success: false, message: `The SFTP server at ${this.address} presented no host key` };
+		const shown = shownHostKey(blob);
+		return {
+			success: false,
+			message:
+				`SFTP host key not confirmed: the server at ${this.address} presented the host key ${shown}. Check it is ` +
+				`the server's own (on the server: ssh-keygen -lf ${serverKeyFile(typeOf(blob))}) and confirm it. Nothing ` +
+				'was sent to the server.',
+			hostKey: shown
+		};
+	}
+
+	/**
+	 * Connect, make the remote folder if it is missing, and say so. With no key
+	 * confirmed it takes a first look instead, and shows the key the server
+	 * presented (decision 2). A key refused answers the key presented, if any,
+	 * and the confirmed one (decision 10, R3), which the test route writes its
+	 * one ERROR line from. A signature that failed is thrown
+	 * (`HostKeySignatureFailed`, the review's S4), for the test route to name:
+	 * its answer has the same keys as R3's.
+	 */
+	async test(): Promise<SftpTestResult> {
+		if (confirmedHostKey(this.config.hostKey) === null) return this.firstLook();
 		const sftp = this.createClient();
 		try {
-			await sftp.connect(this.getConnectConfig());
+			await this.connect(sftp);
 			// Check if remote directory exists, create if not
 			const exists = await sftp.exists(this.config.remotePath);
 			if (!exists) {
 				await sftp.mkdir(this.config.remotePath, true);
 			}
 			await sftp.end();
-			return { success: true, message: `Connected to ${this.config.host}:${this.config.port || 22}` };
+			return { success: true, message: `Connected to ${this.address}` };
 		} catch (err: any) {
 			try { await sftp.end(); } catch {}
+			if (err instanceof HostKeyMismatch) {
+				return { success: false, message: err.message, hostKey: err.presented, confirmedHostKey: err.confirmed };
+			}
+			if (err instanceof HostKeyTypeNotOffered) return { success: false, message: err.message, confirmedHostKey: err.confirmed };
+			if (err instanceof HostKeySignatureFailed) throw err;
 			return { success: false, message: err.message || 'Connection failed' };
 		}
 	}
@@ -144,7 +275,7 @@ export class SftpDestination implements BackupDestination {
 	async upload(data: Buffer, filename: string): Promise<void> {
 		const sftp = this.createClient();
 		try {
-			await sftp.connect(this.getConnectConfig());
+			await this.connect(sftp);
 			const exists = await sftp.exists(this.config.remotePath);
 			if (!exists) {
 				await sftp.mkdir(this.config.remotePath, true);
@@ -161,7 +292,7 @@ export class SftpDestination implements BackupDestination {
 	async list(): Promise<string[]> {
 		const sftp = this.createClient();
 		try {
-			await sftp.connect(this.getConnectConfig());
+			await this.connect(sftp);
 			const files = await sftp.list(this.config.remotePath);
 			await sftp.end();
 			return files
@@ -177,7 +308,7 @@ export class SftpDestination implements BackupDestination {
 	async delete(filename: string): Promise<void> {
 		const sftp = this.createClient();
 		try {
-			await sftp.connect(this.getConnectConfig());
+			await this.connect(sftp);
 			const remotePath = `${this.config.remotePath.replace(/\/+$/, '')}/${filename}`;
 			await sftp.delete(remotePath);
 			await sftp.end();
@@ -185,6 +316,86 @@ export class SftpDestination implements BackupDestination {
 			try { await sftp.end(); } catch {}
 			throw err;
 		}
+	}
+}
+
+/**
+ * What an SFTP Test answers (card 2250, decision 10): as every destination's,
+ * and `hostKey`, the key the server presented, where it was not confirmed or
+ * did not match, and `confirmedHostKey`, the stored one, where a key was
+ * refused (R3: with no `hostKey` where the server offered no key of its type).
+ */
+export type SftpTestResult = { success: boolean; message: string; hostKey?: string; confirmedHostKey?: string };
+
+/** How long a Test's first look waits for the handshake: ssh2's own default, written out. */
+const FIRST_LOOK_TIMEOUT_MS = 20_000;
+
+/** What a connect's verifier saw: the key the server presented, as a Test shows it, and whether it is the confirmed one. */
+type HostKeySeen = { presented: string | null; matched: boolean };
+
+/** An SFTP destination with no confirmed host key, at a connect other than a Test's first look (R7). Nothing is opened. */
+export class HostKeyNotConfirmed extends Error {
+	constructor() {
+		super(HOST_KEY_NOT_CONFIRMED);
+		this.name = 'HostKeyNotConfirmed';
+	}
+}
+
+/** A server that presented a key other than the confirmed one (decision 5): refused before any credential. */
+export class HostKeyMismatch extends Error {
+	/** The key presented, `<type> SHA256:…`. */
+	readonly presented: string;
+	/** The confirmed key, as stored. */
+	readonly confirmed: string;
+
+	constructor(address: string, presented: string, confirmed: HostKey) {
+		super(
+			`SFTP host key refused: the server at ${address} presented the host key ${presented}, not the confirmed ` +
+				`${confirmed.fingerprint}, ` +
+				"so nothing was sent to it. If the server's key was changed on purpose, check the new key on the server and " +
+				'confirm it, typing the password or private key again; otherwise something else may be answering for the server.'
+		);
+		this.name = 'HostKeyMismatch';
+		this.presented = presented;
+		this.confirmed = hostKeyText(confirmed);
+	}
+}
+
+/** A server that no longer offers a key of the confirmed type (R3): the handshake ends before any key is presented. */
+export class HostKeyTypeNotOffered extends Error {
+	/** The confirmed key, as stored. */
+	readonly confirmed: string;
+
+	constructor(address: string, confirmed: HostKey) {
+		super(
+			`SFTP host key refused: the server at ${address} no longer offers a host key of the confirmed type ` +
+				`(${confirmed.type}), so nothing ` +
+				"was sent to it. If the server's keys were changed on purpose, clear the Host key or replace it with the " +
+				"server's new key, typing the password or private key again, then press Test; otherwise something else may " +
+				'be answering for the server.'
+		);
+		this.name = 'HostKeyTypeNotOffered';
+		this.confirmed = hostKeyText(confirmed);
+	}
+}
+
+/**
+ * A server that presented the confirmed key and then could not sign the
+ * exchange with it (the card 2250 review's S4): a replay of the real server's
+ * public key by something that does not hold its private key. ssh2 checks the
+ * signature after the verifier, before any credential.
+ */
+export class HostKeySignatureFailed extends Error {
+	/** The confirmed key, as stored. */
+	readonly confirmed: string;
+
+	constructor(address: string, confirmed: HostKey) {
+		super(
+			`SFTP host key refused: the server at ${address} showed the confirmed key but could not prove it holds it — ` +
+				'something on the network may be answering for it. Nothing was sent.'
+		);
+		this.name = 'HostKeySignatureFailed';
+		this.confirmed = hostKeyText(confirmed);
 	}
 }
 
@@ -558,7 +769,7 @@ export const DESTINATION_TYPES = ['sftp', 's3', 'gdrive', 'onedrive'] as const;
 
 /** What each kind holds beside its `type` and `name`. Each is text, but an SFTP `port` and Google Drive's `authMethod`. */
 const DESTINATION_FIELDS: Record<DestinationConfig['type'], readonly string[]> = {
-	sftp: ['host', 'port', 'username', 'password', 'privateKey', 'remotePath'],
+	sftp: ['host', 'port', 'username', 'password', 'privateKey', 'remotePath', 'hostKey'],
 	s3: ['region', 'bucket', 'accessKeyId', 'secretAccessKey', 'prefix', 'endpoint'],
 	gdrive: ['authMethod', 'serviceAccountJson', 'clientId', 'clientSecret', 'refreshToken', 'folderId'],
 	onedrive: ['tenantId', 'clientId', 'clientSecret', 'folderPath']
@@ -582,7 +793,8 @@ const PASTED_FILES: Record<string, number> = { privateKey: 20000, serviceAccount
  * Google Drive's `authMethod` (`service_account` or `oauth`). Any
  * other field is not kept. Every field went into the settings as it was sent.
  * Text is at most 2,048 characters, but a private key and a service account's
- * JSON, at most 20,000.
+ * JSON, at most 20,000. An SFTP `hostKey` is a host key fingerprint with its
+ * type, saved as `<type> SHA256:<43>`, or empty for none (card 2250, R5).
  *
  * `at` names the destination in a refusal (`destinations[2].port must be a
  * whole number from 1 to 65535`); none for a body that is one destination.
@@ -652,11 +864,27 @@ export function readDestination(
 			// connected to (the review-fix pass's S1). One sent back as stored is
 			// kept as it is.
 			if (field === 'host' && typeof value === 'string' && value !== keep) value = trimHost(value);
+			// An SFTP host key is saved in one form, `<type> SHA256:<43>`, from
+			// either form an administrator copies, and empty for none (card
+			// 2250, R5); anything else is refused.
+			if (field === 'hostKey' && typeof value === 'string') value = readHostKeyField(value, prefix);
 		}
 		if (value === undefined) continue;
 		destination[field] = value;
 	}
 	return destination as unknown as DestinationConfig;
+}
+
+/**
+ * A host key as `readDestination` saves it (card 2250, R5): `readHostKey`'s
+ * canonical form, or '' for text that is empty once trimmed; otherwise a 400
+ * naming the field, `<prefix>hostKey`.
+ */
+function readHostKeyField(value: string, prefix: string): string {
+	if (/^[ \t\r\n]*$/.test(value)) return '';
+	const key = readHostKey(value);
+	if (key === null) throw error(400, `${prefix}hostKey ${HOST_KEY_REFUSAL}`);
+	return hostKeyText(key);
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────────

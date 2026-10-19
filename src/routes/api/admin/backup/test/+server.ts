@@ -5,12 +5,21 @@
  * whose secrets are masked connects with the stored ones only when it is the
  * stored destination they were saved with, the same in type, name and every
  * field that is not secret (card 2190, `keepMaskedSecrets`); otherwise it is
- * refused, as a save is. The admin page tests only saved destinations, so its
- * Test button is unchanged.
+ * refused, as a save is. An SFTP destination's host key must then be the
+ * stored one exactly, none where none is stored (the card 2250 review's M1):
+ * only a save may add a key (Confirm saves, then tests), and a Test that could
+ * would send the stored password to whatever key it named. The admin page tests
+ * only saved destinations, so its Test button is unchanged.
+ *
+ * An SFTP Test answers, beside `success` and `message`, the host key the
+ * server presented (`hostKey`) where none is confirmed or it did not match,
+ * and the confirmed one (`confirmedHostKey`) where a key was refused (card
+ * 2250, decision 10 and R3); a refusal is one ERROR line. With no key
+ * confirmed, nothing secret is sent: the Test only looks at the key.
  */
 
 import { error, json } from '@sveltejs/kit';
-import { createDestination, readDestination } from '$lib/server/backup-destinations';
+import { HostKeySignatureFailed, createDestination, readDestination, type SftpTestResult } from '$lib/server/backup-destinations';
 import { getBackupConfig } from '$lib/server/backup';
 import { keepMaskedSecrets } from '$lib/server/backup-secrets';
 import { readBody } from '$lib/server/request-body';
@@ -19,6 +28,9 @@ import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 
 const log = createLogger('BACKUP');
+
+/** The fingerprint of a host key as a Test answers it, `<type> SHA256:…`: the part after its last space. */
+const fingerprintPart = (key: string) => key.slice(key.lastIndexOf(' ') + 1);
 
 /** POST — Test a specific destination connection. */
 export const POST: RequestHandler = async ({ request, locals }) => {
@@ -35,15 +47,37 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		(name) => existing.destinations.find((d) => d.name === name),
 		'Missing destination type or name'
 	);
-	const kept = keepMaskedSecrets(sent, existing.destinations);
+	const kept = keepMaskedSecrets(sent, existing.destinations, 'test');
 	if ('refusal' in kept) throw error(400, kept.refusal);
 	const destConfig = kept.destination;
 
 	try {
 		const dest = createDestination(destConfig);
-		const result = await dest.test();
+		const result: SftpTestResult = await dest.test();
+		// An SFTP host key refused (card 2250): one ERROR line, naming both keys
+		// for a key that did not match, and the confirmed one for a server that
+		// no longer offers a key of its type. The answer is as the Test gave it.
+		if (destConfig.type === 'sftp' && result.confirmedHostKey !== undefined) {
+			const at = `destination "${destConfig.name}" at ${destConfig.host}:${destConfig.port || 22}`;
+			log.error(
+				result.hostKey !== undefined
+					? `SFTP host key mismatch for ${at}: presented ${fingerprintPart(result.hostKey)}, confirmed ${fingerprintPart(result.confirmedHostKey)}. Nothing was sent.`
+					: `SFTP host key type not offered for ${at}: confirmed ${result.confirmedHostKey}. Nothing was sent.`
+			);
+		}
 		return json(result);
 	} catch (err: any) {
+		// The confirmed key shown by a server that could not sign with it (the
+		// review's S4): one ERROR line naming its fingerprint, and the answer R3's
+		// keys have, the confirmed key and no Confirm.
+		if (err instanceof HostKeySignatureFailed && destConfig.type === 'sftp') {
+			log.error(
+				`SFTP host key signature failed for destination "${destConfig.name}" at ${destConfig.host}:${destConfig.port || 22}: ` +
+					`confirmed ${fingerprintPart(err.confirmed)}. Nothing was sent.`
+			);
+			const answer: SftpTestResult = { success: false, message: err.message, confirmedHostKey: err.confirmed };
+			return json(answer);
+		}
 		log.error(`Destination test failed for "${destConfig.name}" (${destConfig.type}): ${err.message}`);
 		return json({ success: false, message: err.message || 'Test failed' });
 	}
