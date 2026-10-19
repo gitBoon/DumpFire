@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.60
+version: 1.61
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1277,7 +1277,9 @@ API:
     the whole day), where a period that ended before it began was drawn as a report of
     nothing; `scopeId` an id; `detailLevel` and `statusFilter` from their values, where another was
     read as `detailed` or `all`; `assigneeUserId` an id or `null`
-    (`assigneeUserId must be a user id`), where `"all"` and `''` were taken for everyone.
+    (`assigneeUserId must be a user id`), where `"all"` and `''` were taken for everyone;
+    `timeZone`, optional, a time zone name
+    (`timeZone must be a time zone name, such as Europe/London`; card 2258, below).
     Each of the mail's `recipients` is an address,
     `recipients[<n>] must be an email address`: one that was not was dropped and the
     report sent to the rest, and with none left it was
@@ -1775,6 +1777,21 @@ API:
   `nextRunAt`, a log line's `timestamp`) are in that form now, and so is the CSVs'
   "Completed" column, which a spreadsheet opens as a date and time. The pages read every
   one as UTC.
+- **`POST /api/reports` and `POST /api/reports/email` take an optional `timeZone`**
+  (card 2258): an IANA name, read as a report schedule's `timeZone` is (`europe/london` is
+  `Europe/London`) and refused in its words, `400`
+  `timeZone must be a time zone name, such as Europe/London`. It is the zone whose day the
+  report's Overdue figure counts from: an open card due before that day. Without one the
+  day is UTC, so a call that sends none gets the report it got before. The Reports page
+  sends the browser's zone. The PDF of a report made by hand prints its period, generated
+  date and completion dates in UTC whatever is sent; a scheduled report's PDF prints them
+  in its schedule's zone, as its mail writes its period, and counts Overdue from that
+  zone's day. A Due Date is printed as the day stored. The dashboard counts its overdue,
+  due-soon and Upcoming Deadlines figures in the browser, in the viewer's own day; its page
+  data carries the cards due from yesterday (on the UTC day) onward, a count
+  (`longOverdue`) of those due earlier (overdue in every zone), and the moment it was
+  read, where it carried the three
+  figures, counted on the UTC day. No `/api/v1` operation changes.
 
 ### Changes on 2026-10-13
 

@@ -11,6 +11,7 @@
  */
 
 import { parseStamp } from '$lib/timestamps';
+import { calendarDayIn } from '$lib/report-schedule-time';
 
 /**
  * Parses a stored timestamp as UTC: `parseStamp` under the name its importers
@@ -95,15 +96,77 @@ export function dueDay(dueDate: string | null | undefined): CalendarDay | null {
  * Both days are placed at midnight UTC before they are subtracted, so a 23- or
  * 25-hour day at a clock change still counts as one.
  *
+ * With a zone, today is the date in that zone (card 2258): the server, which
+ * runs in UTC, counts a report's Overdue figure from the reader's day, and the
+ * dashboard its figures from the UTC day until the page has loaded. Without
+ * one, today is `now`'s local day, which in the browser is the viewer's.
+ *
  * @param dueDate — The stored `YYYY-MM-DD`
- * @param now — The moment whose local calendar day is today
+ * @param now — The moment whose calendar day is today
+ * @param timeZone — The zone whose day that is; the process's own when left out
  * @returns The days, or null for a value that is not a date
  */
-export function daysUntilDue(dueDate: string | null | undefined, now: Date = new Date()): number | null {
+export function daysUntilDue(dueDate: string | null | undefined, now: Date = new Date(), timeZone?: string): number | null {
+	return daysFromDay(dueDate, todayIn(now, timeZone));
+}
+
+/**
+ * The calendar day that is today at `now`: the date in `timeZone`, or `now`'s
+ * local date without one, as `daysUntilDue` reads it. Worked out once for a
+ * list and handed to `daysFromDay`: reading a zone builds an
+ * `Intl.DateTimeFormat`, which a report of many cards paid for each card
+ * (group B's review).
+ */
+export function todayIn(now: Date, timeZone?: string): CalendarDay {
+	return timeZone === undefined
+		? { year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate() }
+		: calendarDayIn(now, timeZone);
+}
+
+/**
+ * Whole calendar days from `today` to a due date, as `daysUntilDue` counts
+ * them, or null for a value that is not a date.
+ */
+export function daysFromDay(dueDate: string | null | undefined, today: CalendarDay): number | null {
 	const due = dueDay(dueDate);
 	if (!due) return null;
-	const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-	return (Date.UTC(due.year, due.month - 1, due.day) - today) / 86_400_000;
+	return (Date.UTC(due.year, due.month - 1, due.day) - Date.UTC(today.year, today.month - 1, today.day)) / 86_400_000;
+}
+
+/**
+ * The dashboard's due-date figures (card 2258), counted from one day: overdue
+ * is every card due before it; due soon, every card due on it or in the three
+ * days after it; upcoming, the first five due on it or later, in the order
+ * given (the load sends them by due date). A value that is not a day counts
+ * in none. `alreadyOverdue` is added to overdue: the cards the load counted
+ * itself, due so long ago that they are overdue in every zone, and not sent.
+ *
+ * @param cards — The reader's open cards with a due date, by due date
+ * @param now — The moment whose calendar day is today
+ * @param timeZone — The zone whose day that is; the process's own when left out
+ * @param alreadyOverdue — Cards overdue wherever the reader is, counted by the load
+ */
+export function dueFigures<T extends { dueDate: string }>(
+	cards: T[],
+	now: Date,
+	timeZone?: string,
+	alreadyOverdue = 0
+): { overdue: number; dueSoon: number; upcoming: T[] } {
+	let overdue = alreadyOverdue;
+	let dueSoon = 0;
+	const upcoming: T[] = [];
+	// Today once, for the whole list.
+	const today = todayIn(now, timeZone);
+	for (const card of cards) {
+		const days = daysFromDay(card.dueDate, today);
+		if (days === null) continue;
+		if (days < 0) overdue++;
+		else {
+			if (days <= 3) dueSoon++;
+			if (upcoming.length < 5) upcoming.push(card);
+		}
+	}
+	return { overdue, dueSoon, upcoming };
 }
 
 /**

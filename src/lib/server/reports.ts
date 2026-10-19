@@ -24,7 +24,8 @@ import { takeAllowance } from './rate-limit';
 import { readId, readQueryDate, readText, type RequestBody } from './request-body';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import { parseStamp, stamp, toStamp, type Stamp } from '$lib/timestamps';
-import { canonicalTimeZone, nextRunAfter, sameTimeDaysBefore } from '$lib/report-schedule-time';
+import { DEFAULT_SCHEDULE_TIME_ZONE, calendarDayIn, canonicalTimeZone, nextRunAfter, sameTimeDaysBefore } from '$lib/report-schedule-time';
+import { daysFromDay, formatDueDate } from '$lib/utils/date-utils';
 import { SUBTASK_ORDER } from './subtask-order';
 
 const log = createLogger('REPORTS');
@@ -353,7 +354,19 @@ function generateReportForBoards(
 	 * first name on the card.
 	 */
 	assigneeUserId: number | null = null,
-	assigneeName: string | null = null
+	assigneeName: string | null = null,
+	/**
+	 * The zone whose day the Overdue figure counts from (card 2258): the one
+	 * the Reports page sends, or the schedule's. This server runs in UTC, and
+	 * counted from the UTC day a card due today was overdue a day late east of
+	 * UTC. UTC when none is given.
+	 */
+	timeZone = 'UTC',
+	/**
+	 * The moment whose day that is: now, or the scheduler's run, so a run made
+	 * late counts from the moment its period ends (group B's review).
+	 */
+	asOf: Date = new Date()
 ): ReportData {
 	if (boardIds.length === 0) {
 		return {
@@ -462,7 +475,6 @@ function generateReportForBoards(
 		return { categoryName: 'Uncategorised', categoryColor: '#94a3b8' };
 	}
 
-	const now = new Date().toISOString().split('T')[0];
 	const completedCards = scopedCards.filter(c => doneColIds.has(c.columnId));
 	const activeCards = scopedCards.filter(c => !doneColIds.has(c.columnId));
 
@@ -478,7 +490,10 @@ function generateReportForBoards(
 	const completedInPeriod = completedCards.filter(c => inPeriod(c.completedAt || c.updatedAt));
 
 	const createdInPeriod = scopedCards.filter(c => inPeriod(c.createdAt));
-	const overdueCards = activeCards.filter(c => c.dueDate && c.dueDate < now);
+	// Due before the reader's today, a calendar day read as the badges read it.
+	// Today is worked out once: reading a zone builds a formatter.
+	const today = calendarDayIn(asOf, timeZone);
+	const overdueCards = activeCards.filter(c => (daysFromDay(c.dueDate, today) ?? 0) < 0);
 
 	// Split the open cards by where they sit on the board
 	const statusOf = (c: typeof scopedCards[number]): CardStatus => columnMap.get(c.columnId)?.status ?? 'in_progress';
@@ -648,7 +663,9 @@ function assigneeNameFor(userId: number | null): string | null {
 export function generateBoardReport(
 	boardId: number, periodStart: string, periodEnd: string, user: SessionUser,
 	statusFilter: ReportStatusFilter = 'all',
-	assigneeUserId: number | null = null
+	assigneeUserId: number | null = null,
+	timeZone?: string,
+	asOf?: Date
 ): ReportData | null {
 	if (!canViewBoard(user, boardId)) return null;
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
@@ -656,13 +673,15 @@ export function generateBoardReport(
 	// Include the sub-boards the reader can open, recursively (card 2150)
 	const canOpen = openerFor(user);
 	const allBoardIds = collectSubBoardIds([boardId], canOpen);
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, board.name, 'board', canOpen, statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, board.name, 'board', canOpen, statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId), timeZone, asOf);
 }
 
 export function generateCategoryReport(
 	categoryId: number, periodStart: string, periodEnd: string, user: SessionUser,
 	statusFilter: ReportStatusFilter = 'all',
-	assigneeUserId: number | null = null
+	assigneeUserId: number | null = null,
+	timeZone?: string,
+	asOf?: Date
 ): ReportData | null {
 	const cat = db.select().from(boardCategories).where(eq(boardCategories.id, categoryId)).get();
 	if (!cat) return null;
@@ -672,13 +691,15 @@ export function generateCategoryReport(
 	if (catBoards.length === 0) return null;
 	// Include the sub-boards the reader can open, recursively (card 2150)
 	const allBoardIds = collectSubBoardIds(catBoards.map(b => b.id), canOpen);
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, cat.name, 'category', canOpen, statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, cat.name, 'category', canOpen, statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId), timeZone, asOf);
 }
 
 export function generateAllBoardsReport(
 	periodStart: string, periodEnd: string, user: SessionUser,
 	statusFilter: ReportStatusFilter = 'all',
-	assigneeUserId: number | null = null
+	assigneeUserId: number | null = null,
+	timeZone?: string,
+	asOf?: Date
 ): ReportData | null {
 	if (user.role !== 'admin' && user.role !== 'superadmin') return null;
 	// Start from top-level boards only, then expand to include sub-boards
@@ -687,7 +708,7 @@ export function generateAllBoardsReport(
 	const canOpen = openerFor(user);
 	const topLevelBoards = db.select().from(boards).where(isNull(boards.parentCardId)).all();
 	const allBoardIds = collectSubBoardIds(topLevelBoards.map(b => b.id), canOpen);
-	return generateReportForBoards(allBoardIds, periodStart, periodEnd, 'All Boards', 'all', canOpen, statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId));
+	return generateReportForBoards(allBoardIds, periodStart, periodEnd, 'All Boards', 'all', canOpen, statusFilter, assigneeUserId, assigneeNameFor(assigneeUserId), timeZone, asOf);
 }
 
 /**
@@ -1112,7 +1133,14 @@ function drawTasksWithDetails(
 	return y;
 }
 
-export async function generateReportPdf(data: ReportData, detailLevel: 'summary' | 'detailed' = 'detailed'): Promise<Buffer> {
+/**
+ * The report as a PDF. Its period, generated date and completion dates are
+ * days in `timeZone` (card 2258): a scheduled report's in its schedule's zone,
+ * as its mail writes the period; one made by hand in UTC, as its mail's are.
+ * They were the server's zone's, so a Tokyo schedule's PDF began and ended a
+ * day before its mail. A due date is the day stored, in any zone.
+ */
+export async function generateReportPdf(data: ReportData, detailLevel: 'summary' | 'detailed' = 'detailed', timeZone = 'UTC'): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 	const doc = new PDFDocument({
 		size: 'A4',
@@ -1120,7 +1148,7 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 		info: {
 			Title: `DumpFire Report - ${data.assigneeName ? `${data.scopeName} - ${data.assigneeName}` : data.scopeName}`,
 			Author: 'DumpFire',
-			Subject: `Report for ${data.scopeName} (${formatDate(data.periodStart)} - ${formatDate(data.periodEnd)})`
+			Subject: `Report for ${data.scopeName} (${formatDate(data.periodStart, timeZone)} - ${formatDate(data.periodEnd, timeZone)})`
 		}
 	});
 
@@ -1144,9 +1172,9 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 	doc.font('Helvetica-Bold').fontSize(11).fillColor(C.accentLight)
 		.text(`${scopeLabel}  ·  ${modeLabel}${filterLabel}`, mx, 34, { width: pw });
 	doc.font('Helvetica-Bold').fontSize(10).fillColor(C.headerText)
-		.text(`${formatDate(data.periodStart)}  -  ${formatDate(data.periodEnd)}`, mx, 52, { width: pw });
+		.text(`${formatDate(data.periodStart, timeZone)}  -  ${formatDate(data.periodEnd, timeZone)}`, mx, 52, { width: pw });
 	doc.font('Helvetica').fontSize(7.5).fillColor(C.textLight)
-		.text(`Generated ${formatDate(data.generatedAt)}`, mx, 66, { width: pw });
+		.text(`Generated ${formatDate(data.generatedAt, timeZone)}`, mx, 66, { width: pw });
 
 	let y = 94;
 
@@ -1155,7 +1183,7 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 	doc.font('Helvetica-Bold').fontSize(7).fillColor(C.accent)
 		.text('REPORTING PERIOD', mx + 12, y + 5);
 	doc.font('Helvetica-Bold').fontSize(10).fillColor(C.heading)
-		.text(`${formatDate(data.periodStart)}  to  ${formatDate(data.periodEnd)}`, mx + 12, y + 14, { width: pw - 24 });
+		.text(`${formatDate(data.periodStart, timeZone)}  to  ${formatDate(data.periodEnd, timeZone)}`, mx + 12, y + 14, { width: pw - 24 });
 	y += 40;
 
 	// ─── Summary Metrics ─────────────────────────────────────────────────
@@ -1381,7 +1409,7 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 					{ header: 'Title', width: pw * 0.32, getter: t => stripTag(t.title) },
 					{ header: 'Column', width: pw * 0.15, getter: t => t.columnTitle },
 					{ header: 'Priority', width: pw * 0.13, getter: t => t.priority.charAt(0).toUpperCase() + t.priority.slice(1) },
-					{ header: 'Due Date', width: pw * 0.20, getter: t => t.dueDate ? formatDate(t.dueDate) : '—' },
+					{ header: 'Due Date', width: pw * 0.20, getter: t => t.dueDate ? formatDueDate(t.dueDate) : '—' },
 					{ header: 'Assignees', width: pw * 0.20, getter: t => t.assignees.join(', ') || '—' }
 				], mx, y, pw, detailLevel);
 
@@ -1399,7 +1427,7 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 						{ header: 'Title', width: pw * 0.32, getter: t => stripTag(t.title) },
 						{ header: 'Column', width: pw * 0.15, getter: t => t.columnTitle },
 						{ header: 'Priority', width: pw * 0.13, getter: t => t.priority.charAt(0).toUpperCase() + t.priority.slice(1) },
-						{ header: 'Due Date', width: pw * 0.20, getter: t => t.dueDate ? formatDate(t.dueDate) : '—' },
+						{ header: 'Due Date', width: pw * 0.20, getter: t => t.dueDate ? formatDueDate(t.dueDate) : '—' },
 						{ header: 'Assignees', width: pw * 0.20, getter: t => t.assignees.join(', ') || '—' }
 					], mx, y, pw, detailLevel);
 				}
@@ -1421,7 +1449,7 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 					{ header: 'Title', width: pw * 0.32, getter: t => stripTag(t.title) },
 					{ header: 'Column', width: pw * 0.15, getter: t => t.columnTitle },
 					{ header: 'Priority', width: pw * 0.13, getter: t => t.priority.charAt(0).toUpperCase() + t.priority.slice(1) },
-					{ header: 'Due Date', width: pw * 0.20, getter: t => t.dueDate ? formatDate(t.dueDate) : '—' },
+					{ header: 'Due Date', width: pw * 0.20, getter: t => t.dueDate ? formatDueDate(t.dueDate) : '—' },
 					{ header: 'Assignees', width: pw * 0.20, getter: t => t.assignees.join(', ') || '—' }
 				], mx, y, pw, detailLevel);
 			}
@@ -1443,7 +1471,7 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 			{ header: 'Title', width: pw * 0.30, getter: t => stripTag(t.title) },
 			{ header: 'Board', width: pw * 0.18, getter: t => (t as any).boardName || '—' },
 			{ header: 'Priority', width: pw * 0.13, getter: t => t.priority.charAt(0).toUpperCase() + t.priority.slice(1) },
-			{ header: 'Completed', width: pw * 0.19, getter: t => (t as any).completedAt ? formatDate((t as any).completedAt) : '—' },
+			{ header: 'Completed', width: pw * 0.19, getter: t => (t as any).completedAt ? formatDate((t as any).completedAt, timeZone) : '—' },
 			{ header: 'Assignees', width: pw * 0.20, getter: t => t.assignees.join(', ') || '—' }
 		], mx, y, pw, detailLevel);
 		y += 16;
@@ -1767,22 +1795,25 @@ export async function runDueReportSchedules(now: Date): Promise<void> {
 			const { start, end } = getPeriodForSchedule(schedule, now);
 
 			const statusFilter = parseStatusFilter(schedule.statusFilter);
+			// The days by the schedule's clock, as its time is read (card 2159):
+			// the mail's period, the PDF's dates and the day its Overdue figure
+			// counts from (card 2258), at the run's own moment, `now`, so a run
+			// made late counts from where its period ends (group B's review).
+			const zone = canonicalTimeZone(schedule.timeZone) ?? DEFAULT_SCHEDULE_TIME_ZONE;
 
 			let reportData: ReportData | null = null;
 			if (schedule.scope === 'board' && schedule.scopeId) {
-				reportData = generateBoardReport(schedule.scopeId, start, end, sessionUser, statusFilter);
+				reportData = generateBoardReport(schedule.scopeId, start, end, sessionUser, statusFilter, null, zone, now);
 			} else if (schedule.scope === 'category' && schedule.scopeId) {
-				reportData = generateCategoryReport(schedule.scopeId, start, end, sessionUser, statusFilter);
+				reportData = generateCategoryReport(schedule.scopeId, start, end, sessionUser, statusFilter, null, zone, now);
 			} else if (schedule.scope === 'all') {
-				reportData = generateAllBoardsReport(start, end, sessionUser, statusFilter);
+				reportData = generateAllBoardsReport(start, end, sessionUser, statusFilter, null, zone, now);
 			}
 
 			if (reportData) {
 				const schedDetailLevel = schedule.detailLevel === 'summary' ? 'summary' : 'detailed';
-				const pdfBuffer = await generateReportPdf(reportData, schedDetailLevel as 'summary' | 'detailed');
+				const pdfBuffer = await generateReportPdf(reportData, schedDetailLevel as 'summary' | 'detailed', zone);
 				const reportName = `${schedule.name} - ${schedule.frequency === 'weekly' ? 'Weekly' : 'Monthly'} Report`;
-				// The days by the schedule's clock, as its time is read (card 2159).
-				const zone = canonicalTimeZone(schedule.timeZone) ?? undefined;
 				const periodLabel = `${formatDate(start, zone)} - ${formatDate(end, zone)}`;
 
 				if (recipients.length > 0) {

@@ -4136,13 +4136,13 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 
 			const lost = await analytics();
 			expect(lost).toMatchObject({ totalAssigned: 1, active: 1 });
-			expect(lost.upcomingDeadlines.map((d: Json) => d.title)).toEqual([`${MARK_B} card`]);
+			expect(lost.dueCards.map((d: Json) => d.title)).toEqual([`${MARK_B} card`]);
 
 			// Given board A again, they are counted its card again.
 			addBoardMember(w.A.board, w.outsider, 'viewer');
 			const given = await analytics();
 			expect(given).toMatchObject({ totalAssigned: 2, active: 2 });
-			expect(given.upcomingDeadlines.map((d: Json) => d.title)).toEqual([`${MARK_B} card`, `${MARK} other card`]);
+			expect(given.dueCards.map((d: Json) => d.title)).toEqual([`${MARK_B} card`, `${MARK} other card`]);
 		});
 	});
 

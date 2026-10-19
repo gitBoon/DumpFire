@@ -7,8 +7,10 @@
 	 * planning view answers "in what order does this have to happen, and what can
 	 * I start today". Same cards, different question.
 	 */
+	import { onMount, onDestroy } from 'svelte';
 	import { invalidateAll, goto } from '$app/navigation';
 	import { completionPercent } from '$lib/progress';
+	import { daysUntilDue, formatDueDate } from '$lib/utils/date-utils';
 
 	let { data } = $props();
 
@@ -42,10 +44,25 @@
 		overdue: boolean;
 	};
 
-	const rows = $derived.by<Row[]>(() =>
-		(data.milestones as any[]).map((m) => {
+	// The viewer's today moves on at midnight: the rows are worked out again on
+	// the board pages' tick, or a list left open overnight kept yesterday's
+	// "today" and "1d over".
+	let tick = $state(0);
+	let tickInterval: ReturnType<typeof setInterval> | null = null;
+	onMount(() => {
+		tickInterval = setInterval(() => { tick++; }, 15000);
+	});
+	onDestroy(() => {
+		if (tickInterval) clearInterval(tickInterval);
+	});
+
+	const rows = $derived.by<Row[]>(() => {
+		void tick;
+		return (data.milestones as any[]).map((m) => {
 			const percent = completionPercent(m.doneCount, m.cardCount);
-			const days = daysUntil(m.targetDate);
+			// A target date is a calendar day, counted from the viewer's own
+			// today as a due date is (card 2259): 0 on the day, negative after it.
+			const days = daysUntilDue(m.targetDate);
 			return {
 				...m,
 				percent,
@@ -63,8 +80,8 @@
 				// added — but "Open" next to 23/23 reads as a bug, so say what it is.
 				readyToClose: m.status === 'open' && m.cardCount > 0 && m.doneCount === m.cardCount
 			};
-		})
-	);
+		});
+	});
 
 	const statusCounts = $derived({
 		all: rows.length,
@@ -157,19 +174,6 @@
 		} finally {
 			saving = false;
 		}
-	}
-
-	function formatDate(d: string | null): string {
-		if (!d) return '';
-		return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-	}
-
-	/** Days until the target date — negative once it has gone past. */
-	function daysUntil(d: string | null): number | null {
-		if (!d) return null;
-		const target = new Date(d).setHours(0, 0, 0, 0);
-		const today = new Date().setHours(0, 0, 0, 0);
-		return Math.round((target - today) / 86400000);
 	}
 </script>
 
@@ -349,7 +353,7 @@
 								<td class="col-target">
 									{#if m.targetDate}
 										<span class="target-cell" class:overdue={m.overdue}>
-											{formatDate(m.targetDate)}
+											{formatDueDate(m.targetDate)}
 											{#if m.daysLeft !== null}
 												<span class="days">
 													{#if m.overdue}{-m.daysLeft}d over{:else if m.daysLeft === 0}today{:else if m.daysLeft > 0}{m.daysLeft}d{/if}

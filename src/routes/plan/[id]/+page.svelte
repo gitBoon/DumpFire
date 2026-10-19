@@ -52,6 +52,8 @@
 	import type { BurndownResult } from '$lib/burndown';
 	import { chancePercent, deliveryNotes, deliveryText, durationText, paceText, targetVerdict } from '$lib/burndown-text';
 	import InfoTip from '$lib/components/InfoTip.svelte';
+	import { daysUntilDue, formatDueDate } from '$lib/utils/date-utils';
+	import { onDestroy, onMount } from 'svelte';
 
 	let { data } = $props();
 
@@ -206,10 +208,24 @@
 			summary.progress.done === summary.progress.total
 	);
 
+	// The viewer's today moves on at midnight: the late tag is worked out again
+	// on the board pages' tick, or a goal left open overnight kept yesterday's
+	// answer.
+	let tick = $state(0);
+	let tickInterval: ReturnType<typeof setInterval> | null = null;
+	onMount(() => {
+		tickInterval = setInterval(() => { tick++; }, 15000);
+	});
+	onDestroy(() => {
+		if (tickInterval) clearInterval(tickInterval);
+	});
+
 	const targetOverdue = $derived.by(() => {
+		void tick;
 		if (!milestone.targetDate) return false;
 		if (summary.progress.total > 0 && summary.progress.done === summary.progress.total) return false;
-		return new Date(milestone.targetDate).setHours(0, 0, 0, 0) < new Date().setHours(0, 0, 0, 0);
+		// A calendar day, late from the day after it in the viewer's own zone (card 2259).
+		return (daysUntilDue(milestone.targetDate) ?? 0) < 0;
 	});
 	let busy = $state(false);
 	let actionError = $state('');
@@ -368,11 +384,6 @@
 		const reloaded = closeCard();
 		toasts.add('Card updated');
 		await reloaded;
-	}
-
-	function formatDate(d: string | null): string {
-		if (!d) return '';
-		return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 	}
 
 	// ─── The work table ──────────────────────────────────────────────────────
@@ -743,7 +754,7 @@
 						<path d="M2 6.5h12M5.5 2v2.5M10.5 2v2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
 					</svg>
 					{#if milestone.targetDate}
-						{formatDate(milestone.targetDate)}
+						{formatDueDate(milestone.targetDate)}
 						{#if targetOverdue}<span class="overdue-tag">overdue</span>{/if}
 					{:else}
 						Set target
@@ -825,7 +836,7 @@
 			<div class="panel-head">
 				<h2>Progress</h2>
 				{#if milestone.targetDate}
-					<span class="panel-note">Target {formatDate(milestone.targetDate)}</span>
+					<span class="panel-note">Target {formatDueDate(milestone.targetDate)}</span>
 				{/if}
 			</div>
 

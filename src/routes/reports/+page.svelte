@@ -15,7 +15,7 @@
 	import { toasts } from '$lib/stores/toast';
 	import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 	import { parseStamp } from '$lib/timestamps';
-	import { canonicalTimeZone, nextRunAfter } from '$lib/report-schedule-time';
+	import { calendarPeriod, canonicalTimeZone, isCalendarPreset, nextRunAfter } from '$lib/report-schedule-time';
 	import { onMount } from 'svelte';
 
 	let { data }: { data: PageData } = $props();
@@ -114,31 +114,35 @@
 			return { start: genCustomStart || endStr, end: genCustomEnd || endStr };
 		}
 
-		const start = new Date();
-		switch (genPeriod) {
-			case '7d': start.setDate(start.getDate() - 7); break;
-			case '14d': start.setDate(start.getDate() - 14); break;
-			case '30d': start.setDate(start.getDate() - 30); break;
-			case '60d': start.setDate(start.getDate() - 60); break;
-			case '90d': start.setDate(start.getDate() - 90); break;
-			case 'month':
-				start.setDate(1);
-				start.setHours(0, 0, 0, 0);
-				break;
-			case 'quarter': {
-				const qMonth = Math.floor(start.getMonth() / 3) * 3;
-				start.setMonth(qMonth, 1);
-				start.setHours(0, 0, 0, 0);
-				break;
-			}
-			case 'ytd':
-				start.setMonth(0, 1);
-				start.setHours(0, 0, 0, 0);
-				break;
-			case 'year': start.setDate(start.getDate() - 365); break;
-			default: start.setDate(start.getDate() - 30); break;
-		}
-		return { start: start.toISOString(), end: endStr };
+		// Every other period is calendar days, sent as dates and read as a
+		// custom range is: from its first day to today, both as the clock reads
+		// them in the zone sent for the Overdue figure (UTC when the browser
+		// gives none this server knows). Each was built on the browser's clock
+		// and sent as moments, which the PDF printed in UTC: a day out away from
+		// UTC (cards 2271 and 2275). One this page does not know is the last 30
+		// days, as it was.
+		return calendarPeriod(isCalendarPreset(genPeriod) ? genPeriod : '30d', end, browserZone);
+	}
+
+	/**
+	 * What the report routes say of a zone they do not know, in `readTimeZone`'s
+	 * words. A browser newer than the server can name one (a zone renamed since
+	 * the server's own list was made).
+	 */
+	const ZONE_REFUSED = 'timeZone must be a time zone name, such as Europe/London';
+
+	/** Whether an answer is the refusal of the zone sent, and nothing else. Reads a copy. */
+	async function refusesZone(res: Response): Promise<boolean> {
+		return browserZone !== null && res.status === 400 && (await failureMessage(res.clone(), '')) === ZONE_REFUSED;
+	}
+
+	/**
+	 * Said once a report is made after its zone was refused: it was asked for
+	 * again without one, so its Overdue figure counts from the UTC day (group
+	 * B's review). The period is the browser's own dates either way.
+	 */
+	function zoneNotice() {
+		toasts.add(`This server does not know your time zone, ${browserZone}, so the Overdue figure is counted from the UTC day.`, 'warning');
 	}
 
 	async function generateReport() {
@@ -153,19 +157,31 @@
 
 		try {
 			const { start, end } = getPeriodDates();
-			const res = await fetch('/api/reports', {
+			const request = {
+				scope: genScope,
+				scopeId: genScopeId,
+				periodStart: start,
+				periodEnd: end,
+				detailLevel: genDetailLevel,
+				statusFilter: genStatusFilter,
+				assigneeUserId: genAssignee === 'all' ? null : Number(genAssignee)
+			};
+			let res = await fetch('/api/reports', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					scope: genScope,
-					scopeId: genScopeId,
-					periodStart: start,
-					periodEnd: end,
-					detailLevel: genDetailLevel,
-					statusFilter: genStatusFilter,
-					assigneeUserId: genAssignee === 'all' ? null : Number(genAssignee)
-				})
+				// The day the Overdue figure counts from is the viewer's (card 2258).
+				body: JSON.stringify({ ...request, timeZone: browserZone ?? undefined })
 			});
+			// A zone the server does not know: asked once more without it, in UTC.
+			let zoneLeftOut = false;
+			if (await refusesZone(res)) {
+				zoneLeftOut = true;
+				res = await fetch('/api/reports', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(request)
+				});
+			}
 			if (!res.ok) {
 				// The server's own message if the answer carries one. An answer
 				// that is not JSON, a proxy's error page among them, gets the
@@ -178,6 +194,7 @@
 				// answer that is HTML would be drawn as a page (card 2162's review).
 				const blob = new Blob([await res.arrayBuffer()], { type: 'application/pdf' });
 				pdfUrl = URL.createObjectURL(blob);
+				if (zoneLeftOut) zoneNotice();
 			}
 		} catch (e: any) {
 			genError = e.message || 'Failed to generate report';
@@ -232,21 +249,36 @@
 
 		try {
 			const { start, end } = getPeriodDates();
-			const res = await fetch('/api/reports/email', {
+			const request = {
+				scope: genScope,
+				scopeId: genScopeId,
+				periodStart: start,
+				periodEnd: end,
+				recipients,
+				detailLevel: genDetailLevel,
+				statusFilter: genStatusFilter,
+				assigneeUserId: genAssignee === 'all' ? null : Number(genAssignee)
+			};
+			let res = await fetch('/api/reports/email', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					scope: genScope,
-					scopeId: genScopeId,
-					periodStart: start,
-					periodEnd: end,
-					recipients,
-					detailLevel: genDetailLevel,
-					statusFilter: genStatusFilter,
-					assigneeUserId: genAssignee === 'all' ? null : Number(genAssignee)
-				})
+				// The day the Overdue figure counts from is the viewer's (card 2258).
+				body: JSON.stringify({ ...request, timeZone: browserZone ?? undefined })
 			});
+			// A zone the server does not know: asked once more without it, in UTC.
+			// The route reads every field before it sends, so the refused one
+			// reached nobody.
+			let zoneLeftOut = false;
+			if (await refusesZone(res)) {
+				zoneLeftOut = true;
+				res = await fetch('/api/reports/email', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(request)
+				});
+			}
 			if (res.ok) {
+				if (zoneLeftOut) zoneNotice();
 				const data = await res.json();
 				// A report that reached some recipients and not others is answered
 				// 200, with each one's result (card 2113). It is shown as a failure

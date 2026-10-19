@@ -8,6 +8,7 @@ import { completionPercent } from '$lib/progress';
 import { getBoardTokenTotals, getUserSpendByPeriod } from '$lib/server/tokens';
 import { completeColumnIds, holdColumnIds, isCompleteColumnTitle } from '$lib/column-role';
 import { parseStamp, stamp } from '$lib/timestamps';
+import { daysFromDay, todayIn } from '$lib/utils/date-utils';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -208,7 +209,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// (card 2130), as My Tasks counts them. Being assigned a card does not
 	// outlive access to its board: someone taken off a board went on seeing its
 	// cards here, their titles in Upcoming Deadlines. Every figure below comes
-	// from these: assigned, active, overdue, due soon, the trends and on hold.
+	// from these: assigned, active, the due cards, the trends and on hold.
 	const myAssignments = db.select({ cardId: cardAssignees.cardId })
 		.from(cardAssignees)
 		.where(eq(cardAssignees.userId, user.id))
@@ -241,9 +242,28 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const myCompletedCards = myCards.filter(c => doneColumnIds.has(c.columnId));
 	const myActiveCards = myCards.filter(c => !doneColumnIds.has(c.columnId));
 
-	// Overdue cards (past due date, not completed)
-	const now = new Date().toISOString().split('T')[0];
-	const overdueCards = myActiveCards.filter(c => c.dueDate && c.dueDate < now);
+	// The open cards with a due date, by due date then id (card 2258). The page
+	// counts overdue, due soon and Upcoming Deadlines from them itself, in the
+	// viewer's own day: this server runs in UTC and has no viewer's zone. Until
+	// the page has loaded it counts them from the UTC day at `asOf`, the moment
+	// this load ran, so the page drawn here and the page as it loads agree.
+	//
+	// Every zone's day is within one of UTC's (the furthest west is UTC-12), so
+	// a card due on or before the UTC day minus 2 is overdue wherever the
+	// viewer is: those are counted here, as `longOverdue`, and only the cards
+	// from the UTC day minus 1 on are sent, where every open dated card was
+	// sent on each live refresh (group B's review). A due date that is not a
+	// day counted nowhere, and is sent in neither.
+	const asOf = new Date();
+	const utcToday = todayIn(asOf, 'UTC');
+	let longOverdue = 0;
+	const dueCards: { title: string; dueDate: string; priority: string }[] = [];
+	for (const c of [...myActiveCards].sort((a, b) => (a.dueDate ?? '').localeCompare(b.dueDate ?? '') || a.id - b.id)) {
+		const days = daysFromDay(c.dueDate, utcToday);
+		if (days === null) continue;
+		if (days <= -2) longOverdue++;
+		else dueCards.push({ title: c.title, dueDate: c.dueDate!, priority: c.priority });
+	}
 
 	// Priority breakdown (active only)
 	const priorityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -317,14 +337,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.sort((a, b) => b.pct - a.pct)
 		.slice(0, 8);
 
-	// Due soon: cards due within next 3 days that aren't completed
-	const threeDaysFromNow = new Date();
-	threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3);
-	const threeDaysStr = threeDaysFromNow.toISOString().split('T')[0];
-	const dueSoon = myActiveCards
-		.filter(c => c.dueDate && c.dueDate >= now && c.dueDate <= threeDaysStr)
-		.length;
-
 	// ─── Category Distribution ──────────────────────────────────────────────
 	const categoryDistribution: { name: string; color: string; count: number }[] = [];
 	const catCountMap = new Map<string, { color: string; count: number }>();
@@ -393,17 +405,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.sort((a, b) => b.completed - a.completed)
 		.slice(0, 5);
 
-	// ─── Upcoming Deadlines ─────────────────────────────────────────────
-	const upcomingDeadlines = myActiveCards
-		.filter(c => c.dueDate && c.dueDate >= now)
-		.sort((a, b) => a.dueDate!.localeCompare(b.dueDate!))
-		.slice(0, 5)
-		.map(c => ({
-			title: c.title,
-			dueDate: c.dueDate!,
-			priority: c.priority
-		}));
-
 	// ─── 4-Week Trend (weekly completed counts) ─────────────────────────
 	const weeklyTrend: { label: string; count: number }[] = [];
 	for (let w = 3; w >= 0; w--) {
@@ -435,7 +436,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 		active: myActiveCards.length,
 		completed: myCompletedCards.length,
 		completionRate: completionPercent(myCompletedCards.length, myCards.length),
-		overdue: overdueCards.length,
 		completedThisWeek,
 		completedThisMonth,
 		priorityCounts,
@@ -444,12 +444,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 		weeklyActivity,
 		totalSubBoards,
 		boardHealth,
-		dueSoon,
 		totalBoards: allBoards.length,
 		categoryDistribution,
 		agingBuckets,
 		teamLeaderboard,
-		upcomingDeadlines,
+		dueCards,
+		longOverdue,
+		asOf: asOf.toISOString(),
 		weeklyTrend,
 		onHoldCount
 	};

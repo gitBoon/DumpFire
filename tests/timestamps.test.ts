@@ -25,17 +25,21 @@ import { SESSION_COOKIE_NAME, cleanExpiredSessions, createSession, findApiKey, m
 import { issueInvite } from '$lib/server/invites';
 import { createLogger, getRecentLogs } from '$lib/server/logger';
 import { buildActivityReport, getCardBoardHistory } from '$lib/server/activity-report';
-import { formatDate, generateBoardReport, readReportWindow, runDueReportSchedules } from '$lib/server/reports';
+import { formatDate, generateBoardReport, generateReportPdf, readReportWindow, runDueReportSchedules } from '$lib/server/reports';
+import { generateMilestonePdf } from '$lib/server/milestone-report';
+import { getMilestoneSummary } from '$lib/server/planning';
 import { makePasswordHash } from '$lib/server/passwords';
 import { onTheWire } from '$lib/server/v1-json';
 import { dispatchWebhook } from '$lib/server/webhooks';
 import { parseStamp, stamp, toIso, toStamp } from '$lib/timestamps';
-import { daysUntilDue, dueDay, formatDueDate, getDueRelative, getDueStatus, parseUTC } from '$lib/utils/date-utils';
+import { daysUntilDue, dueDay, dueFigures, formatDueDate, getDueRelative, getDueStatus, parseUTC } from '$lib/utils/date-utils';
+import { calendarDayIn, calendarPeriod, isCalendarPreset } from '$lib/report-schedule-time';
 import { sortCards } from '$lib/utils/card-utils';
 import type { CardType } from '$lib/types';
 import { api, routeMethods } from './helpers/api';
 import { pageLoad } from './helpers/actions';
 import { effects } from './helpers/effects';
+import { pdfText } from './helpers/pdf';
 import {
 	assignCard,
 	makeApiKey,
@@ -44,6 +48,7 @@ import {
 	makeComment,
 	makeDependency,
 	makeMilestone,
+	makeSmtp,
 	makeUser,
 	makeWebhook,
 	resetDb
@@ -1349,20 +1354,8 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 		expect(body).not.toMatch(/new Date\(\s*(?!NaN\))[^)\s]/);
 	});
 
-	// A milestone's target date is a day too, read the same wrong way. Card 2259
-	// mends its readers and is not built yet, so these are the ones known today:
-	// the sweep fails on any other, and on one of these once it is gone.
-	const TARGET_DATE_SITES_FOR_2259 = ['src/routes/plan/[id]/+page.svelte parses a target date'];
-	// And the helpers that are handed a target date as `d`, which the sweep cannot see.
-	const TARGET_DATE_HELPERS_FOR_2259: [file: string, name: string][] = [
-		['src/routes/plan/+page.svelte', 'formatDate'],
-		['src/routes/plan/+page.svelte', 'daysUntil'],
-		['src/routes/plan/[id]/+page.svelte', 'formatDate']
-	];
-
 	it('no page, component or shared utility parses a stored moment with new Date(), or patches its zone by hand', () => {
 		const faults: string[] = [];
-		const targetDateSites: string[] = [];
 		for (const file of pageSources()) {
 			const lines = sourceOf(file).split('\n');
 			lines.forEach((line, i) => {
@@ -1374,16 +1367,14 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 				if (/new Date\(\s*[\w.?!]*dueDate\b/.test(line)) faults.push(`${file}:${i + 1} new Date(<a due date>)`);
 				// `Date.parse` reads it the same way.
 				if (/Date\.parse\(\s*[\w.?!]*dueDate\b/.test(line)) faults.push(`${file}:${i + 1} Date.parse(<a due date>)`);
-				if (/(?:new Date|Date\.parse)\(\s*[\w.?!]*targetDate\b/.test(line)) targetDateSites.push(`${file} parses a target date`);
+				// A milestone's target date is a day the same way (card 2259).
+				if (/new Date\(\s*[\w.?!]*targetDate\b/.test(line)) faults.push(`${file}:${i + 1} new Date(<a target date>)`);
+				if (/Date\.parse\(\s*[\w.?!]*targetDate\b/.test(line)) faults.push(`${file}:${i + 1} Date.parse(<a target date>)`);
 				// The workarounds of table D, each a guess at the form a value is in.
 				if (/\+\s*['"]Z['"]|endsWith\(\s*['"]Z['"]\s*\)|replace\(\s*['"] ['"]\s*,\s*['"]T['"]\s*\)/.test(line)) faults.push(`${file}:${i + 1} a zone patched by hand`);
 			});
 		}
 		expect(faults).toEqual([]);
-		expect(targetDateSites).toEqual(TARGET_DATE_SITES_FOR_2259);
-		for (const [file, name] of TARGET_DATE_HELPERS_FOR_2259) {
-			expect(bodyOf(sourceOf(file), name), `${file} ${name}: card 2259 mended it, so take it off the list`).toContain('new Date(d)');
-		}
 		// The board page, the card window, the board's statistics and the dashboard read theirs inline.
 		expect(sourceOf('src/routes/board/[id]/+page.svelte')).toContain('parseStamp(card.archivedAt)');
 		expect(sourceOf('src/routes/board/[id]/+page.svelte')).toContain('parseStamp(activity.createdAt)');
@@ -1552,12 +1543,559 @@ describe('a due date is a calendar day, counted from the viewer’s own today (c
 		expect(bodyOf(dashboard, 'dueText')).toContain('daysUntilDue(');
 		expect(bodyOf(dashboard, 'deadlineDays')).toContain('daysUntilDue(');
 		expect(dashboard).toContain('formatDueDate(dl.dueDate, ');
-		// Upcoming Deadlines is chosen by the server's day, so a deadline it calls
-		// today can already be yesterday for the viewer: that reads as overdue, in
-		// dueText's words, and only the day itself reads "Today".
+		// Until the page has loaded, Upcoming Deadlines is chosen by the UTC day
+		// (card 2258), so a deadline it calls today can already be yesterday for
+		// the viewer: that reads as overdue, in dueText's words, and only the day
+		// itself reads "Today".
 		const dueLabel = bodyOf(dashboard, 'dueLabel');
 		expect(dueLabel).toContain('if (d < 0) return `${-d}d overdue`;');
 		expect(dueLabel).toContain("if (d === 0) return 'Today';");
 		expect(dueLabel).not.toContain('d <= 0');
+	});
+});
+
+// ─── A milestone's target date is a calendar day (card 2259) ─────────────────
+
+describe('a milestone’s target date is a calendar day, read as a due date is (card 2259)', () => {
+	it('both plan pages read and print the target date through the due-date helpers, and nothing of their own', () => {
+		// Each had a `formatDate` and the list a `daysUntil` that read the
+		// stored day with `new Date(d)`, midnight UTC, the evening before west
+		// of UTC: the target read a day early and turned late on the day itself.
+		const list = sourceOf('src/routes/plan/+page.svelte');
+		expect(list).not.toMatch(/function (formatDate|daysUntil)\(/);
+		expect(list).not.toContain('setHours');
+		expect(list).toContain('daysUntilDue(m.targetDate)');
+		expect(list).toContain('formatDueDate(m.targetDate)');
+		const plan = sourceOf('src/routes/plan/[id]/+page.svelte');
+		expect(plan).not.toContain('function formatDate(');
+		expect(plan).not.toContain('setHours');
+		expect(plan).toContain('(daysUntilDue(milestone.targetDate) ?? 0) < 0');
+		expect(plan).toContain('formatDueDate(milestone.targetDate)');
+		// The plan PDF too; its Generated date is a moment and keeps formatDate.
+		const pdf = sourceOf('src/lib/server/milestone-report.ts');
+		expect(pdf).toContain('Target ${formatDueDate(m.targetDate)}');
+		expect(pdf).not.toContain('formatDate(m.targetDate)');
+	});
+
+	it('the plan list’s today moves on at midnight, on the board pages’ tick', () => {
+		// `daysLeft` was worked out once: a list left open across midnight kept
+		// yesterday's "today" and "1d over" until something else changed.
+		const list = sourceOf('src/routes/plan/+page.svelte');
+		expect(list).toContain('let tick = $state(0);');
+		expect(list).toContain('tickInterval = setInterval(() => { tick++; }, 15000);');
+		expect(list).toContain('if (tickInterval) clearInterval(tickInterval);');
+		const rows = list.slice(list.indexOf('const rows = $derived.by'), list.indexOf('daysUntilDue(m.targetDate)'));
+		expect(rows).toContain('void tick;');
+	});
+
+	it('west of UTC a target of today is on track and reads as the day set; east of UTC, past its midnight, it is late', async () => {
+		// What the pages now ask: 0 is "today", below 0 is "1d over" and the
+		// "overdue" tag while work remains.
+		await onDayIn('America/New_York', '2026-10-19T15:00:00Z', () => {
+			expect(daysUntilDue('2026-10-19')).toBe(0);
+			expect(formatDueDate('2026-10-19')).toBe('19 Oct 2026');
+		});
+		// 01:00 on the 20th in Tokyo.
+		await onDayIn('Asia/Tokyo', '2026-10-19T16:00:00Z', () => {
+			expect(daysUntilDue('2026-10-19')).toBe(-1);
+			expect(formatDueDate('2026-10-19')).toBe('19 Oct 2026');
+		});
+	});
+
+	it('the plan PDF prints the target as the day set, on a server west of UTC', async () => {
+		const owner = makeUser();
+		const { board } = makeBoard({ owner });
+		const milestone = makeMilestone({ board, createdBy: owner });
+		db.update(milestones).set({ targetDate: '2026-10-19' }).where(eq(milestones.id, milestone.id)).run();
+		// What both PDF routes send: the caller's own summary, drawn.
+		const text = await onDayIn('America/New_York', '2026-10-19T15:00:00Z', async () =>
+			pdfText(await generateMilestonePdf(getMilestoneSummary(milestone.id, owner)!))
+		);
+		expect(text).toContain('Target 19 Oct 2026');
+		expect(text).not.toContain('Target 18 Oct 2026');
+	});
+});
+
+// ─── The server's today is the reader's (card 2258) ──────────────────────────
+
+/** The figure on a report PDF's summary tile labelled `label` (drawn as the figure, then its label). */
+function tile(text: string, label: string): string {
+	const lines = text.split('\n');
+	const at = lines.indexOf(label);
+	expect(at, label).toBeGreaterThan(0);
+	return lines[at - 1];
+}
+
+/** The fetch in `source` that posts to `url`, to its closing `});`. */
+function fetchTo(source: string, url: string): string {
+	const at = source.indexOf(`fetch('${url}', {`);
+	expect(at, url).toBeGreaterThan(-1);
+	return source.slice(at, source.indexOf('});', at));
+}
+
+describe('the server’s today is the reader’s (card 2258)', () => {
+	// 23:30 UTC on 19 October: 00:30 on the 20th in London, 19:30 on the 19th in New York.
+	const LATE = '2026-10-19T23:30:00Z';
+
+	it('daysUntilDue counts from the day in the zone it is given, and from the process’s own without one', async () => {
+		// The server runs in UTC, so the zone passed is what decides.
+		await onDayIn('UTC', LATE, () => {
+			const now = new Date();
+			expect(daysUntilDue('2026-10-19', now, 'Europe/London')).toBe(-1);
+			expect(daysUntilDue('2026-10-19', now, 'UTC')).toBe(0);
+			expect(daysUntilDue('2026-10-19', now, 'America/New_York')).toBe(0);
+			// A zone this server does not know is UTC, as a schedule's is.
+			expect(daysUntilDue('2026-10-19', now, 'Mars/Base')).toBe(0);
+			expect(daysUntilDue('not a day', now, 'UTC')).toBeNull();
+			// 22:30 on the 19th in New York, the 20th in UTC.
+			const later = new Date('2026-10-20T02:30:00Z');
+			expect(daysUntilDue('2026-10-19', later, 'America/New_York')).toBe(0);
+			expect(daysUntilDue('2026-10-19', later, 'UTC')).toBe(-1);
+		});
+		// No zone: the process's own, as a page in the browser asks.
+		await onDayIn('Europe/London', LATE, () => {
+			expect(daysUntilDue('2026-10-19', new Date())).toBe(-1);
+		});
+	});
+
+	it('calendarDayIn is the date a clock in the zone shows, an unknown zone read as UTC', () => {
+		const late = new Date(LATE);
+		expect(calendarDayIn(late, 'Europe/London')).toEqual({ year: 2026, month: 10, day: 20 });
+		expect(calendarDayIn(late, 'europe/london')).toEqual({ year: 2026, month: 10, day: 20 });
+		expect(calendarDayIn(late, 'America/New_York')).toEqual({ year: 2026, month: 10, day: 19 });
+		expect(calendarDayIn(late, 'Asia/Tokyo')).toEqual({ year: 2026, month: 10, day: 20 });
+		expect(calendarDayIn(late, 'Mars/Base')).toEqual({ year: 2026, month: 10, day: 19 });
+		expect(calendarDayIn(late, undefined)).toEqual({ year: 2026, month: 10, day: 19 });
+		expect(calendarDayIn(new Date('2026-10-20T02:30:00Z'), 'America/New_York')).toEqual({ year: 2026, month: 10, day: 19 });
+		// The last day of a year, a day on in Tokyo.
+		expect(calendarDayIn(new Date('2026-12-31T16:00:00Z'), 'Asia/Tokyo')).toEqual({ year: 2027, month: 1, day: 1 });
+	});
+
+	it('dueFigures counts overdue, due soon (the day and the three after it) and the first five upcoming from the reader’s day', async () => {
+		const due = ['2026-10-18', '2026-10-19', '2026-10-20', '2026-10-22', '2026-10-23', '2026-10-24', '2026-10-25'];
+		const cards = [
+			...due.map((dueDate) => ({ title: dueDate.slice(8), dueDate, priority: 'medium' })),
+			// Not a day: counted nowhere.
+			{ title: 'soon', dueDate: 'soon', priority: 'high' }
+		];
+		const titles = (figures: { upcoming: { title: string }[] }) => figures.upcoming.map((c) => c.title);
+
+		await onDayIn('UTC', LATE, () => {
+			const now = new Date();
+			// London is on the 20th.
+			const london = dueFigures(cards, now, 'Europe/London');
+			expect([london.overdue, london.dueSoon]).toEqual([2, 3]);
+			expect(titles(london)).toEqual(['20', '22', '23', '24', '25']);
+			// UTC is on the 19th; upcoming holds five, in the order given.
+			const utc = dueFigures(cards, now, 'UTC');
+			expect([utc.overdue, utc.dueSoon]).toEqual([1, 3]);
+			expect(titles(utc)).toEqual(['19', '20', '22', '23', '24']);
+		});
+		// Without a zone, the process's own: the browser's, on the page.
+		await onDayIn('Europe/London', LATE, () => {
+			const local = dueFigures(cards, new Date());
+			expect([local.overdue, local.dueSoon]).toEqual([2, 3]);
+		});
+		// Either side of New York's midnight: the 18th goes from today to overdue.
+		await onDayIn('UTC', '2026-10-19T03:30:00Z', () => {
+			const before = dueFigures(cards, new Date(), 'America/New_York');
+			expect([before.overdue, before.dueSoon]).toEqual([0, 3]);
+			expect(titles(before)[0]).toBe('18');
+		});
+		await onDayIn('UTC', '2026-10-19T04:30:00Z', () => {
+			const after = dueFigures(cards, new Date(), 'America/New_York');
+			expect([after.overdue, after.dueSoon]).toEqual([1, 3]);
+			expect(titles(after)[0]).toBe('19');
+		});
+		expect(dueFigures([], new Date(LATE), 'UTC')).toEqual({ overdue: 0, dueSoon: 0, upcoming: [] });
+	});
+
+	it('the dashboard’s load sends the due cards and the moment it ran, and no figure of its own day', async () => {
+		clockAt(LATE);
+		const owner = makeUser();
+		const { cols } = makeBoard({ owner });
+		const later = makeCard(cols['To Do'], { title: 'the 20th', dueDate: '2026-10-20', priority: 'high' });
+		const first = makeCard(cols['To Do'], { title: 'the 19th', dueDate: '2026-10-19' });
+		const second = makeCard(cols['To Do'], { title: 'the 19th, made after', dueDate: '2026-10-19', priority: 'low' });
+		const undated = makeCard(cols['To Do'], { title: 'no date' });
+		const done = makeCard(cols['Complete'], { title: 'done', dueDate: '2026-10-18' });
+		makeCard(cols['To Do'], { title: 'not mine', dueDate: '2026-10-18' });
+		for (const card of [later, first, second, undated, done]) assignCard(card, owner);
+
+		const analytics = dataOf(await pageLoad('/', { user: owner })).analytics;
+
+		expect(analytics.dueCards).toEqual([
+			{ title: 'the 19th', dueDate: '2026-10-19', priority: 'medium' },
+			{ title: 'the 19th, made after', dueDate: '2026-10-19', priority: 'low' },
+			{ title: 'the 20th', dueDate: '2026-10-20', priority: 'high' }
+		]);
+		expect(analytics.asOf).toBe('2026-10-19T23:30:00.000Z');
+		for (const key of ['overdue', 'dueSoon', 'upcomingDeadlines']) expect(analytics, key).not.toHaveProperty(key);
+	});
+
+	it('the dashboard counts the figures itself: the UTC day until it has loaded, then the viewer’s, kept current', () => {
+		const dashboard = sourceOf('src/routes/+page.svelte');
+		expect(dashboard).toContain("dueFigures(a.dueCards, new Date(a.asOf), 'UTC', a.longOverdue)");
+		expect(dashboard).toContain('dueFigures(a.dueCards, clock, undefined, a.longOverdue)');
+		expect(dashboard).toContain('let clock = $state<Date | null>(null);');
+		// Set in the browser only, after mount, and again on each live refresh.
+		expect(dashboard).toMatch(/\$effect\(\(\) => \{\s*void data\.analytics;\s*clock = new Date\(\);\s*\}\);/);
+		// And on the board pages' tick, so a dashboard left open across midnight moves on.
+		expect(dashboard).toContain('clockInterval = setInterval(() => { clock = new Date(); }, 15000);');
+		expect(dashboard).toContain('if (clockInterval) clearInterval(clockInterval);');
+		// A deadline's words move on with the list.
+		expect(bodyOf(dashboard, 'deadlineDays')).toContain('void clock;');
+		expect(dashboard).not.toMatch(/\ba\.(overdue|dueSoon|upcomingDeadlines)\b/);
+		for (const read of ['due.overdue', 'due.dueSoon', 'due.upcoming']) expect(dashboard, read).toContain(read);
+	});
+
+	it('a report’s Overdue figure counts from the day in the zone it is made for, UTC when none', async () => {
+		const owner = makeUser();
+		const { board, cols } = makeBoard({ owner });
+		makeCard(cols['To Do'], { title: 'open', dueDate: '2026-10-19' });
+		makeCard(cols['Complete'], { title: 'done', dueDate: '2026-10-18', completedAt: '2026-10-10 09:00:00' });
+		const overdue = (timeZone?: string) => generateBoardReport(board.id, '2026-10-01', '2026-10-19', owner, 'all', null, timeZone)!.summary.overdue;
+
+		await onDayIn('UTC', LATE, () => {
+			expect(overdue('Europe/London')).toBe(1);
+			expect(overdue()).toBe(0);
+			expect(overdue('UTC')).toBe(0);
+			expect(overdue('America/New_York')).toBe(0);
+		});
+	});
+
+	it('a report made by hand prints its due dates as the day set and its period in UTC, on a server west of UTC', async () => {
+		const owner = makeUser();
+		const { board, cols } = makeBoard({ owner });
+		makeCard(cols['To Do'], { title: 'due', dueDate: '2026-10-19' });
+
+		const text = await onDayIn('America/New_York', '2026-11-05T15:00:00Z', async () =>
+			pdfText(await generateReportPdf(generateBoardReport(board.id, '2026-10-01', '2026-10-14', owner)!))
+		);
+
+		// The Due Date column: midnight UTC, printed in New York, was the 18th.
+		expect(text.split('\n')).toContain('19 Oct 2026');
+		expect(text).not.toContain('18 Oct 2026');
+		// The period, as its mail's `day()` writes it: it read "30 Sept 2026  -  13 Oct 2026".
+		expect(text).toContain('1 Oct 2026  -  14 Oct 2026');
+	});
+
+	it('a scheduled report’s PDF prints its period in the schedule’s zone, as its mail does, and counts Overdue there', { timeout: 30_000 }, async () => {
+		// The report's own today is the clock's, which is put at the run.
+		clockAt('2026-10-19T23:00:00Z');
+		const owner = makeUser();
+		const { board, cols } = makeBoard({ owner });
+		makeCard(cols['To Do'], { title: 'due', dueDate: '2026-10-19' });
+		makeSmtp();
+		// Tuesday 20 October 2026, 08:00 in Tokyo, is still the 19th in UTC.
+		db.insert(reportSchedules)
+			.values({
+				userId: owner.id, name: 'Tokyo', scope: 'board', scopeId: board.id, recipients: 'a@example.test',
+				frequency: 'weekly', dayOfWeek: 2, timeOfDay: '08:00', timeZone: 'Asia/Tokyo', periodDays: 7,
+				nextRunAt: '2026-10-19 23:00:00'
+			})
+			.run();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const sent = effects();
+		try {
+			await inZone('UTC', () => runDueReportSchedules(new Date('2026-10-19T23:00:00Z')));
+
+			expect(sent.emails).toHaveLength(1);
+			expect(sent.emails[0].html).toContain('Period: 13 Oct 2026 - 20 Oct 2026');
+			const text = pdfText(sent.emails[0].files[0].content);
+			expect(text).toContain('13 Oct 2026  -  20 Oct 2026');
+			expect(text).toContain('13 Oct 2026  to  20 Oct 2026');
+			expect(text).not.toContain('12 Oct 2026');
+			expect(tile(text, 'OVERDUE')).toBe('1');
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('both report routes read the reader’s zone and hand it to each report, and the Reports page sends it', () => {
+		for (const file of ['src/routes/api/reports/+server.ts', 'src/routes/api/reports/email/+server.ts']) {
+			const route = sourceOf(file);
+			expect(route, file).toContain("const timeZone = readTimeZone(body, 'timeZone', {});");
+			const calls = route.match(/generate(Board|Category|AllBoards)Report\([^)]*\)/g) ?? [];
+			expect(calls, file).toHaveLength(3);
+			for (const call of calls) expect(call, file).toMatch(/, assigneeUserId, timeZone\)$/);
+			// The PDF of a report made by hand stays in UTC (decision 3).
+			expect(route, file).toContain('generateReportPdf(reportData, detailLevel)');
+		}
+		const page = sourceOf('src/routes/reports/+page.svelte');
+		for (const url of ['/api/reports', '/api/reports/email']) {
+			expect(fetchTo(page, url), url).toContain('timeZone: browserZone ?? undefined');
+		}
+	});
+});
+
+// ─── A report preset's days are the viewer's calendar days (card 2271) ───────
+
+describe('a report preset’s days are the viewer’s calendar days, sent as dates (card 2271)', () => {
+	const period = (start: string, end: string) => ({ start, end });
+
+	it('a month, a quarter and the year to date run from the first day of each to today', () => {
+		// 12:00 UTC on 19 October 2026: the 19th in every zone here.
+		const mid = new Date('2026-10-19T12:00:00Z');
+		for (const zone of ['Europe/London', 'Asia/Tokyo', 'America/New_York', 'UTC']) {
+			expect(calendarPeriod('month', mid, zone), zone).toEqual(period('2026-10-01', '2026-10-19'));
+			expect(calendarPeriod('quarter', mid, zone), zone).toEqual(period('2026-10-01', '2026-10-19'));
+			expect(calendarPeriod('ytd', mid, zone), zone).toEqual(period('2026-01-01', '2026-10-19'));
+		}
+	});
+
+	it('in UK summer time a month and a quarter start at London’s midnight, an hour before UTC’s', () => {
+		// 00:30 BST on 1 October, still 30 September in UTC. The page sent its
+		// local midnight, 2026-09-30T23:00:00Z, and the PDF read "30 Sept 2026".
+		const october = new Date('2026-09-30T23:30:00Z');
+		expect(calendarPeriod('month', october, 'Europe/London')).toEqual(period('2026-10-01', '2026-10-01'));
+		expect(calendarPeriod('quarter', october, 'Europe/London')).toEqual(period('2026-10-01', '2026-10-01'));
+		expect(calendarPeriod('ytd', october, 'Europe/London')).toEqual(period('2026-01-01', '2026-10-01'));
+		expect(calendarPeriod('month', october, 'UTC')).toEqual(period('2026-09-01', '2026-09-30'));
+		expect(calendarPeriod('quarter', october, 'UTC')).toEqual(period('2026-07-01', '2026-09-30'));
+		// A minute before London's midnight it is still September there.
+		expect(calendarPeriod('month', new Date('2026-09-30T22:59:00Z'), 'Europe/London')).toEqual(period('2026-09-01', '2026-09-30'));
+		// The second quarter, at 00:30 BST on 1 April (summer time from 29 March 2026).
+		const april = new Date('2026-03-31T23:30:00Z');
+		expect(calendarPeriod('quarter', april, 'Europe/London')).toEqual(period('2026-04-01', '2026-04-01'));
+		expect(calendarPeriod('quarter', april, 'UTC')).toEqual(period('2026-01-01', '2026-03-31'));
+	});
+
+	it('in Tokyo the year turns at its midnight, nine hours before UTC’s, and its last day ends the year', () => {
+		// 23:30 on 31 December in Tokyo.
+		const lastDay = new Date('2026-12-31T14:30:00Z');
+		expect(calendarPeriod('month', lastDay, 'Asia/Tokyo')).toEqual(period('2026-12-01', '2026-12-31'));
+		expect(calendarPeriod('quarter', lastDay, 'Asia/Tokyo')).toEqual(period('2026-10-01', '2026-12-31'));
+		expect(calendarPeriod('ytd', lastDay, 'Asia/Tokyo')).toEqual(period('2026-01-01', '2026-12-31'));
+		// 00:30 on 1 January 2027 in Tokyo, 15:30 on the 31st in UTC.
+		const newYear = new Date('2026-12-31T15:30:00Z');
+		for (const preset of ['month', 'quarter', 'ytd'] as const) {
+			expect(calendarPeriod(preset, newYear, 'Asia/Tokyo'), preset).toEqual(period('2027-01-01', '2027-01-01'));
+		}
+		expect(calendarPeriod('ytd', newYear, 'UTC')).toEqual(period('2026-01-01', '2026-12-31'));
+	});
+
+	it('in New York a month, a quarter and a year end at its midnight, hours after UTC’s', () => {
+		// 23:30 EDT on 30 September, 03:30 on 1 October in UTC.
+		const lastOfSeptember = new Date('2026-10-01T03:30:00Z');
+		expect(calendarPeriod('month', lastOfSeptember, 'America/New_York')).toEqual(period('2026-09-01', '2026-09-30'));
+		expect(calendarPeriod('quarter', lastOfSeptember, 'America/New_York')).toEqual(period('2026-07-01', '2026-09-30'));
+		// 00:30 EDT on 1 October.
+		const firstOfOctober = new Date('2026-10-01T04:30:00Z');
+		expect(calendarPeriod('month', firstOfOctober, 'America/New_York')).toEqual(period('2026-10-01', '2026-10-01'));
+		expect(calendarPeriod('quarter', firstOfOctober, 'America/New_York')).toEqual(period('2026-10-01', '2026-10-01'));
+		// 23:30 EST on 31 December, already 2027 in UTC: still 2026's year to date.
+		const lastDay = new Date('2027-01-01T04:30:00Z');
+		expect(calendarPeriod('ytd', lastDay, 'America/New_York')).toEqual(period('2026-01-01', '2026-12-31'));
+		expect(calendarPeriod('ytd', lastDay, 'UTC')).toEqual(period('2027-01-01', '2027-01-01'));
+		// 00:30 EST on 1 January 2027.
+		expect(calendarPeriod('ytd', new Date('2027-01-01T05:30:00Z'), 'America/New_York')).toEqual(period('2027-01-01', '2027-01-01'));
+	});
+
+	it('a zone this server does not know, and none, are UTC, as the Overdue figure then is', () => {
+		const october = new Date('2026-09-30T23:30:00Z');
+		expect(calendarPeriod('month', october, 'Mars/Base')).toEqual(period('2026-09-01', '2026-09-30'));
+		expect(calendarPeriod('month', october, null)).toEqual(period('2026-09-01', '2026-09-30'));
+	});
+
+	it('the days a preset sends are read as whole UTC days, as a custom range is, and printed as the days sent', async () => {
+		const owner = makeUser();
+		const { board, cols } = makeBoard({ owner });
+		// 00:30 BST on 1 October, the moment of the London preset below.
+		makeCard(cols['Complete'], { title: 'before', completedAt: '2026-09-30 23:30:00' });
+		makeCard(cols['Complete'], { title: 'first second', completedAt: '2026-10-01 00:00:00' });
+		const sent = calendarPeriod('month', new Date('2026-09-30T23:30:00Z'), 'Europe/London');
+		const { periodStart, periodEnd } = readReportWindow({ periodStart: sent.start, periodEnd: sent.end }, 'missing');
+		expect([periodStart, periodEnd]).toEqual(['2026-10-01 00:00:00', '2026-10-01 23:59:59']);
+
+		const text = await onDayIn('UTC', '2026-09-30T23:30:00Z', async () => {
+			const data = generateBoardReport(board.id, periodStart, periodEnd, owner, 'all', null, 'Europe/London')!;
+			// What a preset covers moved: the first half hour of London's 1 October
+			// was in the viewer's month, and is not in the UTC days the preset names.
+			expect(data.completedTasks.map((t) => t.title)).toEqual(['first second']);
+			return pdfText(await generateReportPdf(data));
+		});
+		expect(text).toContain('1 Oct 2026  -  1 Oct 2026');
+		expect(text).not.toContain('30 Sept 2026  -');
+	});
+
+	it('the Reports page sends a calendar preset as calendarPeriod gives it, in the zone it sends for Overdue', () => {
+		const body = bodyOf(sourceOf('src/routes/reports/+page.svelte'), 'getPeriodDates');
+		// Every period but a custom range, since card 2275.
+		expect(body).toContain("return calendarPeriod(isCalendarPreset(genPeriod) ? genPeriod : '30d', end, browserZone);");
+		expect(body).not.toContain('setHours');
+		expect(body).not.toMatch(/case '(month|quarter|ytd)'/);
+	});
+});
+
+describe('the goal page’s late tag and the dashboard’s Active Tasks move on at midnight', () => {
+	it('the goal page works targetOverdue out again on the board pages’ tick', () => {
+		// It was worked out once: a goal left open across midnight kept
+		// yesterday's answer until something else on the page changed.
+		const plan = sourceOf('src/routes/plan/[id]/+page.svelte');
+		expect(plan).toContain('let tick = $state(0);');
+		expect(plan).toContain('tickInterval = setInterval(() => { tick++; }, 15000);');
+		expect(plan).toContain('if (tickInterval) clearInterval(tickInterval);');
+		const at = plan.indexOf('const targetOverdue = $derived.by');
+		expect(at).toBeGreaterThan(-1);
+		expect(plan.slice(at, plan.indexOf('(daysUntilDue(milestone.targetDate) ?? 0) < 0', at))).toContain('void tick;');
+	});
+
+	it('the dashboard’s Active Tasks read their due words on its clock, under a name of their own', () => {
+		const dashboard = sourceOf('src/routes/+page.svelte');
+		expect(bodyOf(dashboard, 'dueText')).toContain('void clock;');
+		expect(dashboard).toContain('{@const dueWords = dueText(card.dueDate)}');
+		// `due` is the page's due figures; the list's words shadowed it.
+		expect(dashboard).not.toContain('{@const due =');
+	});
+});
+
+// ─── Group B's review fixes, and card 2275 ───────────────────────────────────
+
+describe('the zone’s day is worked out once, the dashboard sends only the cards a zone can disagree on, and a catch-up run counts from its own moment (group B review)', () => {
+	// 23:30 UTC on 19 October: 00:30 on the 20th in London.
+	const LATE = '2026-10-19T23:30:00Z';
+
+	it('dueFigures reads the zone once for its whole list, with the same figures', async () => {
+		// 1 to 28 October, then 1 to 12 again: forty cards.
+		const cards = Array.from({ length: 40 }, (_, i) => ({ dueDate: `2026-10-${String(1 + (i % 28)).padStart(2, '0')}` }));
+		await onDayIn('UTC', LATE, () => {
+			const built = vi.spyOn(Intl, 'DateTimeFormat');
+			const london = dueFigures(cards, new Date(), 'Europe/London');
+			// `canonicalTimeZone` builds a formatter each time it is asked: once
+			// for the list, where it was once a card.
+			expect(built.mock.calls.length).toBeLessThanOrEqual(2);
+			built.mockRestore();
+			expect([london.overdue, london.dueSoon, london.upcoming.length]).toEqual([31, 4, 5]);
+			const utc = dueFigures(cards, new Date(), 'UTC');
+			expect([utc.overdue, utc.dueSoon]).toEqual([30, 4]);
+		});
+	});
+
+	it('a report’s Overdue reads the zone once however many cards it has, with the same figure', async () => {
+		const owner = makeUser();
+		const one = makeBoard({ owner });
+		makeCard(one.cols['To Do'], { dueDate: '2026-10-19' });
+		const many = makeBoard({ owner });
+		for (let day = 1; day <= 30; day++) makeCard(many.cols['To Do'], { dueDate: `2026-10-${String(day).padStart(2, '0')}` });
+
+		await onDayIn('UTC', LATE, () => {
+			const built = vi.spyOn(Intl, 'DateTimeFormat');
+			const report = (boardId: number) => generateBoardReport(boardId, '2026-10-01', '2026-10-19', owner, 'all', null, 'Europe/London')!;
+			built.mockClear();
+			expect(report(one.board.id).summary.overdue).toBe(1);
+			const forOne = built.mock.calls.length;
+			built.mockClear();
+			// Due the 1st to the 19th: overdue on London's 20th.
+			expect(report(many.board.id).summary.overdue).toBe(19);
+			expect(built.mock.calls.length).toBe(forOne);
+		});
+	});
+
+	it('the dashboard’s load counts the cards overdue in every zone and lists only those a zone can disagree on', async () => {
+		clockAt(LATE);
+		const owner = makeUser();
+		const { cols } = makeBoard({ owner });
+		const dated = ['2026-10-16', '2026-10-17', '2026-10-18', '2026-10-19', '2026-10-20'].map((dueDate) =>
+			makeCard(cols['To Do'], { title: dueDate, dueDate })
+		);
+		const hidden = makeBoard({ owner: makeUser() });
+		const notOpened = makeCard(hidden.cols['To Do'], { title: 'not opened', dueDate: '2026-10-01' });
+		for (const card of [...dated, notOpened]) assignCard(card, owner);
+
+		const analytics = dataOf(await pageLoad('/', { user: owner })).analytics;
+
+		// The UTC day is the 19th; the furthest zone west (UTC-12) is on the
+		// 19th too, so the 17th and before are overdue wherever the reader is.
+		expect(analytics.longOverdue).toBe(2);
+		expect(analytics.dueCards.map((c: { title: string }) => c.title)).toEqual(['2026-10-18', '2026-10-19', '2026-10-20']);
+		const now = new Date(LATE);
+		// 11:30 on the 19th at UTC-12: the 18th overdue.
+		expect(dueFigures(analytics.dueCards, now, 'Etc/GMT+12', analytics.longOverdue).overdue).toBe(3);
+		// 13:30 on the 20th at UTC+14: the 18th and 19th overdue.
+		expect(dueFigures(analytics.dueCards, now, 'Pacific/Kiritimati', analytics.longOverdue).overdue).toBe(4);
+		expect(dueFigures([], now, 'UTC', 3)).toEqual({ overdue: 3, dueSoon: 0, upcoming: [] });
+	});
+
+	it('a report counts Overdue from the moment it is given, and a catch-up schedule run from its own', { timeout: 30_000 }, async () => {
+		const owner = makeUser();
+		const { board, cols } = makeBoard({ owner });
+		makeCard(cols['To Do'], { title: 'due', dueDate: '2026-10-19' });
+		// The clock is two hours on: the 20th in UTC.
+		clockAt('2026-10-20T01:00:00Z');
+		const run = new Date('2026-10-19T23:00:00Z');
+		expect(generateBoardReport(board.id, '2026-10-12', '2026-10-19', owner, 'all', null, 'UTC', run)!.summary.overdue).toBe(0);
+		expect(generateBoardReport(board.id, '2026-10-12', '2026-10-19', owner, 'all', null, 'UTC')!.summary.overdue).toBe(1);
+
+		makeSmtp();
+		// Monday 19 October 23:00 UTC, run late.
+		db.insert(reportSchedules)
+			.values({
+				userId: owner.id, name: 'Late', scope: 'board', scopeId: board.id, recipients: 'a@example.test',
+				frequency: 'weekly', dayOfWeek: 1, timeOfDay: '23:00', timeZone: 'UTC', periodDays: 7,
+				nextRunAt: '2026-10-19 23:00:00'
+			})
+			.run();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const sent = effects();
+		try {
+			await inZone('UTC', () => runDueReportSchedules(run));
+			expect(sent.emails).toHaveLength(1);
+			const text = pdfText(sent.emails[0].files[0].content);
+			expect(text).toContain('12 Oct 2026  -  19 Oct 2026');
+			expect(tile(text, 'OVERDUE')).toBe('0');
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('the scheduler hands its moment to each report', () => {
+		const reports = sourceOf('src/lib/server/reports.ts');
+		const run = reports.slice(reports.indexOf('export async function runDueReportSchedules'));
+		const calls = run.match(/generate(Board|Category|AllBoards)Report\([^)]*\)/g) ?? [];
+		expect(calls).toHaveLength(3);
+		for (const call of calls) expect(call).toMatch(/, statusFilter, null, zone, now\)$/);
+	});
+});
+
+describe('a rolling report period is calendar days too (card 2275)', () => {
+	const period = (start: string, end: string) => ({ start, end });
+
+	it('London at 00:30 BST: the days before the 20th, where UTC is still on the 19th', () => {
+		const late = new Date('2026-10-19T23:30:00Z');
+		expect(calendarPeriod('7d', late, 'Europe/London')).toEqual(period('2026-10-13', '2026-10-20'));
+		expect(calendarPeriod('7d', late, 'UTC')).toEqual(period('2026-10-12', '2026-10-19'));
+		expect(calendarPeriod('30d', late, 'Europe/London')).toEqual(period('2026-09-20', '2026-10-20'));
+		expect(calendarPeriod('year', late, 'Europe/London')).toEqual(period('2025-10-20', '2026-10-20'));
+		expect(calendarPeriod('year', late, 'UTC')).toEqual(period('2025-10-19', '2026-10-19'));
+	});
+
+	it('Tokyo at 00:30 on 1 January 2027: the days back across the year’s end', () => {
+		const newYear = new Date('2026-12-31T15:30:00Z');
+		expect(calendarPeriod('30d', newYear, 'Asia/Tokyo')).toEqual(period('2026-12-02', '2027-01-01'));
+		expect(calendarPeriod('90d', newYear, 'Asia/Tokyo')).toEqual(period('2026-10-03', '2027-01-01'));
+		expect(calendarPeriod('year', newYear, 'Asia/Tokyo')).toEqual(period('2026-01-01', '2027-01-01'));
+		expect(calendarPeriod('30d', newYear, 'UTC')).toEqual(period('2026-12-01', '2026-12-31'));
+	});
+
+	it('New York at 23:30 EST on 31 December: still 2026, where UTC is in 2027', () => {
+		const lastDay = new Date('2027-01-01T04:30:00Z');
+		expect(calendarPeriod('14d', lastDay, 'America/New_York')).toEqual(period('2026-12-17', '2026-12-31'));
+		expect(calendarPeriod('60d', lastDay, 'America/New_York')).toEqual(period('2026-11-01', '2026-12-31'));
+		expect(calendarPeriod('year', lastDay, 'America/New_York')).toEqual(period('2025-12-31', '2026-12-31'));
+		expect(calendarPeriod('14d', lastDay, 'UTC')).toEqual(period('2026-12-18', '2027-01-01'));
+	});
+
+	it('the last 12 months from 29 February start on the 28th; an unknown zone is UTC', () => {
+		expect(calendarPeriod('year', new Date('2028-02-29T12:00:00Z'), 'UTC')).toEqual(period('2027-02-28', '2028-02-29'));
+		expect(calendarPeriod('7d', new Date('2026-10-19T23:30:00Z'), 'Mars/Base')).toEqual(period('2026-10-12', '2026-10-19'));
+		expect(isCalendarPreset('7d')).toBe(true);
+		expect(isCalendarPreset('custom')).toBe(false);
+	});
+
+	it('the Reports page sends every period but a custom range through calendarPeriod', () => {
+		const body = bodyOf(sourceOf('src/routes/reports/+page.svelte'), 'getPeriodDates');
+		expect(body).toContain("return calendarPeriod(isCalendarPreset(genPeriod) ? genPeriod : '30d', end, browserZone);");
+		expect(body).not.toMatch(/setDate|setHours|setMonth|switch \(/);
 	});
 });

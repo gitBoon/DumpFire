@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.41
+version: 1.42
 status: As-Built
 date: 2026-10-19
 tags:
@@ -3108,6 +3108,49 @@ Checks 153 and 154 run on production as the superadmin, with the Audit page's Sy
 #### Going back to the previous image
 
 Nothing is done to the database. The older image writes no line for a Connect saved; the lines already written stay in the system log.
+
+### Calendar Days Read Where You Are: Goal Targets, the Dashboard and Reports
+
+**Cards 2259, 2258, 2271 and 2275.** No migration and no setting. Production runs in UTC, so every "today" the server worked out was the UTC day.
+
+- **Card 2259.** A goal's target date is a calendar day, read as a due date is (card 2241): the plan list, the goal's plan page and the plan PDF show the date it was set wherever the viewer is, it reads "today" on that day, and it turns late ("1d over", the "overdue" tag) only from the day after it, while work remains. West of UTC both pages read it a day early and turned it late on the target day itself. The plan list works its rows out again every 15 seconds, as the board pages do their badges, so a list left open across midnight moves on, and the goal page its "overdue" tag on the same tick.
+- **Card 2258.** The dashboard counts its overdue and due-soon figures and chooses Upcoming Deadlines itself, in the viewer's own day, from the due cards its load sends, and again every 15 seconds. A report's Overdue figure counts from the day where it is made: `POST /api/reports` and `POST /api/reports/email` take an optional `timeZone`, which the Reports page sends as the browser's zone (none is UTC, as before), and a scheduled report counts from its schedule's zone. A scheduled report's PDF prints its period, generated date and completion dates in its schedule's zone, as its mail writes its period; one made by hand prints them in UTC. The PDF's Due Date column prints the day set. The dashboard's Active Tasks window moves its due words on with the same 15-second tick. See [Backups & Reporting](backup-reporting.md#pdf-generation).
+- **Card 2271.** The Reports page sends "This month", "This quarter" and "Year to date" as dates, from the first day of the month, quarter or year to today, both read in the zone it sends for the Overdue figure, so each is the custom range the viewer would type and the PDF prints the days chosen. The first day was sent as the browser's midnight, a moment, which the PDF printed in UTC: east of UTC the period began the day before ("30 Sept 2026" for October from London in summer).
+- **Card 2275.** "Last 7 days" to "Last 90 days" and "Last 12 months" are calendar days too: from that many days (or a year) before today to today, sent as dates in the same zone. They were moments, printed as their UTC days: from London at 00:30 BST both ends read the day before. Where the server does not know the browser's zone, the Reports page asks once more without it and says the Overdue figure is counted from the UTC day; a scheduled run counts its Overdue figure from its own moment, so one made late counts from where its period ends.
+
+**Owner to know.**
+
+- **Near midnight, away from UTC, the dashboard now agrees with the badges.** For an instant as the dashboard first appears it shows the UTC day's figures, then changes to the viewer's.
+- **A scheduled report whose zone's day is not UTC's at its run now prints the same period as its mail**, and counts Overdue from that day: an 08:00 `Asia/Tokyo` schedule's PDF read a day before its mail. On production nothing else in a report changes, since the server's zone is UTC.
+- **A script that calls `POST /api/reports` without `timeZone` gets exactly the report it got before.** One that sends a name this server does not know is refused `400` `timeZone must be a time zone name, such as Europe/London`.
+- **A month, quarter or year-to-date report now covers whole UTC days**, as a custom range does, where it covered the viewer's own days from their midnight. East of UTC the first hours of the 1st by the viewer's clock (00:00 to 01:00 in UK summer time) fall in the month before; west of UTC work finished in the evening after UTC's midnight (after 20:00 in New York in summer) is in the report from the next day, not the same evening. The rolling periods ("Last 7 days" to "Last 12 months") cover whole UTC days in the same way (card 2275), where they covered N × 24 hours back from the moment.
+- **A dashboard left open across the deploy can fail on its next live refresh.** The page already in the browser reads figures the new load no longer sends (`upcomingDeadlines`), and can stop drawing when the refresh brings the new data. Reload it.
+
+#### After the deploy
+
+Each check uses Chrome's own zone override (DevTools, More tools, Sensors, Location, a timezone), which Chrome applies to an open page without a reload; set it back to none after the checks. Checks 156 to 158 need an account that can open a goal, and a scratch goal with work left; checks 159 to 161 and 163 a scratch card assigned to yourself. Check 162 sends a scheduled report to your own address only; delete its schedule after it. Checks 165 to 167 and 170 need any board you can report on; check 168 check 156's goal; check 169 the scratch card.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 156 | 2259 | Override to `America/New_York`; give the scratch goal today's date there as its target; open `/plan`, then the goal | The target shows today's date and "today"; no "overdue" tag | Yesterday's date, "1d over", or the "overdue" tag |
+| 157 | 2259 | Override to `Asia/Tokyo` after its midnight (from 15:00 UTC) with a target of the day before there | "1d over" on `/plan`, and the "overdue" tag on the goal | Not late |
+| 158 | 2259 | Download the goal's plan PDF | "Target" reads the date set | Another day |
+| 159 | 2258 | Between 10:00 and 24:00 UTC, give the scratch card today's UTC date as its due date. Override to `Pacific/Kiritimati` (UTC+14, already the next day) and reload the dashboard | Attention counts it overdue; Upcoming Deadlines does not list it; its board badge reads "1d overdue" | Not counted, or listed as "Today" |
+| 160 | 2258 | Override to `America/Los_Angeles` in its evening (after 17:00 there), with the scratch card due on its date, and reload | Counted due soon and listed "Today", not overdue | Counted overdue |
+| 161 | 2258 | On `/reports`, in check 159's zone, generate a report of the scratch card's board | The Overdue tile counts it; its Due Date reads the date set | Not counted, or another date |
+| 162 | 2258 | Between 15:00 and 24:00 UTC (before 09:00 in Tokyo), make a weekly schedule of a board, zone `Asia/Tokyo`, today's weekday there, a few minutes ahead by Tokyo's clock, sent to your own address; wait for its mail | The mail's Period and the PDF's period line read the same days | The PDF a day earlier |
+| 163 | 2258 | Between 10:00 UTC and 07:00 UTC the next morning (08:00 once Los Angeles is on winter time, from 1 November), when `Pacific/Kiritimati` is a day ahead of Los Angeles (outside that window the two are on one date and nothing changes): with the scratch card due today in `America/Los_Angeles` and the dashboard open under that override, switch the override to `Pacific/Kiritimati` without reloading, and wait 20 seconds | The overdue count goes up by one and the card leaves Upcoming Deadlines | Nothing changes |
+| 164 | 2259 | Between 15:00 UTC and 04:00 UTC the next morning (05:00 from the night into 2 November), when `Asia/Tokyo` is a day ahead of New York (outside that window the two are on one date and nothing changes): with `/plan` open under `America/New_York` and check 156's goal reading "today", switch the override to `Asia/Tokyo` after its midnight without reloading, and wait 20 seconds | The goal reads "1d over" | It still reads "today" |
+| 165 | 2271 | Override to `Asia/Tokyo`; on `/reports` choose "This month" and generate a report | The PDF's period line runs from the 1st of this month to today's date in Tokyo | It starts on the last day of the month before |
+| 166 | 2271 | In the same zone, choose "This quarter", then "Year to date" | The period starts on the quarter's first day (1 January, 1 April, 1 July or 1 October), then on 1 January | It starts the day before |
+| 167 | 2271 | Override to `America/Los_Angeles`, choose "This month" and use Email Report to send it to your own address | The mail's Period and the PDF's period line both run from the 1st of this month to today's date in Los Angeles | Another first or last day |
+| 168 | 2259 | Between 15:00 UTC and 04:00 UTC the next morning (05:00 from the night into 2 November), when `Asia/Tokyo` is a day ahead of New York (outside that window the two are on one date and nothing changes): with check 156's goal open under `America/New_York` and no "overdue" tag, switch the override to `Asia/Tokyo` after its midnight without reloading, and wait 20 seconds | The "overdue" tag appears | No tag |
+| 169 | 2258 | Between 10:00 UTC and 07:00 UTC the next morning (08:00 once Los Angeles is on winter time, from 1 November), when `Pacific/Kiritimati` is a day ahead of Los Angeles (outside that window the two are on one date and nothing changes): with the scratch card due today in `America/Los_Angeles` and reading "Today" in the dashboard's Active Tasks window (open it from the Active Tasks figure), switch the override to `Pacific/Kiritimati` without reloading, and wait 20 seconds | It reads "1d overdue" | It still reads "Today" |
+| 170 | 2275 | Between 15:00 and 24:00 UTC, when `Asia/Tokyo` is a day ahead of UTC, override to `Asia/Tokyo`; on `/reports` choose "Last 7 days" and generate a report | The PDF's period line runs from seven days before today's date in Tokyo to today's date there | Both ends a day earlier |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image counts the dashboard's figures and a report's Overdue from the UTC day again, prints a scheduled report's PDF in the server's zone, and ignores a `timeZone` sent to the report routes; a target date reads a day early west of UTC again; and the Reports page's periods are sent as the browser's moments again, a day out away from UTC.
 
 ## Changing the Schema
 
