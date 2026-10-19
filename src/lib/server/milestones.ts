@@ -439,14 +439,36 @@ export function milestonesForBoard(user: SessionUser, boardId: number): Mileston
 		.sort((a, b) => (a.status === b.status ? a.name.localeCompare(b.name) : a.status === 'open' ? -1 : 1));
 }
 
+/** The milestones of `ids` that `user` may open (`canViewMilestone`). */
+function milestonesOpenTo(user: Actor, ids: number[]): MilestoneRow[] {
+	if (ids.length === 0) return [];
+	return db
+		.select()
+		.from(milestones)
+		.where(inArray(milestones.id, ids))
+		.all()
+		.filter((m) => canViewMilestone(user, m));
+}
+
+/**
+ * Of these milestone ids, the ones `user` may open, for a reader that names a
+ * card's milestone from its own query (the activity report, card 2257).
+ */
+export function milestoneIdsOpenTo(user: Actor, ids: Iterable<number>): Set<number> {
+	return new Set(milestonesOpenTo(user, [...new Set(ids)]).map((m) => m.id));
+}
+
 /**
  * Milestone id → name for a set of cards, for rendering the milestone chip.
  *
- * Deliberately not access-filtered: the caller has already decided which cards
- * the user may see, and a card they can see carries its own milestone id. All
- * this adds is the human-readable name for an id the card already exposes.
+ * Only the milestones `user` may open (card 2257). A card they can see carries
+ * its milestone's id, and that stays, but the name is the goal's: someone who
+ * can open one board of a goal across boards, and is refused the goal itself,
+ * was given its name here on All Tasks and All To Do. The board page and the
+ * card window read `milestonesForBoard`, which already asked; so does this
+ * now. A page shows no chip for a milestone not named.
  */
-export function milestoneNamesForCards(cardIds: number[]): Record<number, string> {
+export function milestoneNamesForCards(user: Actor, cardIds: number[]): Record<number, string> {
 	if (cardIds.length === 0) return {};
 
 	const ids = new Set<number>();
@@ -459,10 +481,8 @@ export function milestoneNamesForCards(cardIds: number[]): Record<number, string
 			if (r.milestoneId !== null) ids.add(r.milestoneId);
 		}
 	}
-	if (ids.size === 0) return {};
-
 	const out: Record<number, string> = {};
-	for (const m of db.select().from(milestones).where(inArray(milestones.id, [...ids])).all()) {
+	for (const m of milestonesOpenTo(user, [...ids])) {
 		out[m.id] = m.name;
 	}
 	return out;

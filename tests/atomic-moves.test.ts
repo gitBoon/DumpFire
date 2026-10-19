@@ -38,6 +38,7 @@ import {
 	assignCard,
 	makeBoard,
 	makeCard,
+	makeComment,
 	makeDependency,
 	makeLabel,
 	makeMilestone,
@@ -1006,6 +1007,197 @@ describe('the "Unblocked" notice of work on another board (card 2152)', () => {
 			`Unblocked: #${Y.id} "Same board blocker" completed — nothing is blocking this card now.`
 		]);
 		expect(mailTo(editsA.username)!.html).toContain(`#${Y.id} <strong>Same board blocker</strong>`);
+	});
+});
+
+/**
+ * Card 2256. A notice names the finished work by its title only when that
+ * work is on the waiting card's board (card 2152), but the comment went with
+ * the card to another board, where it went on naming the work to people who
+ * cannot open the board it is on. A move to another board rewrites the card's
+ * named notices to the withheld form, in the move's transaction, and leaves
+ * `updatedAt` alone, so the card window shows no "(edited)".
+ */
+describe('a move to another board withholds the names in the card\'s "Unblocked" notices (card 2256)', () => {
+	/** Boards A and BRAVO, both the owner's; `readsB` is a viewer of BRAVO alone. W, on A, waits. */
+	function world() {
+		const owner = makeUser({ username: 'owner' });
+		const readsB = makeUser({ username: 'readsb' });
+		const A = makeBoard({ owner, name: 'A' });
+		const B = makeBoard({ owner, name: 'BRAVO' });
+		addBoardMember(B.board, readsB, 'viewer');
+		const W = makeCard(A.cols['To Do'], { title: 'Waiting work' });
+		return { owner, readsB, A, B, W };
+	}
+
+	const move = (card: Card, columnId: number, user: SessionUser) =>
+		api('PUT', `/api/v1/cards/${card.id}/move`, { user, body: { columnId } });
+	const contents = (cardId: number) =>
+		notices()
+			.filter((n) => n.cardId === cardId)
+			.map((n) => n.content);
+
+	/** Both comment routes, as `user`: each answers 200. The API writes the times in ISO form. */
+	async function commentsAs(user: SessionUser, card: Card) {
+		const web = await api('GET', `/api/cards/${card.id}/comments`, { user });
+		const v1 = await api('GET', `/api/v1/cards/${card.id}/comments`, { user });
+		expect(web.status).toBe(200);
+		expect(v1.status).toBe(200);
+		return [web.body, v1.body] as { content: string; createdAt: string; updatedAt: string }[][];
+	}
+
+	it('names a card of the board it left by its number alone, to a reader of the board it arrived on, without marking the comment edited', async () => {
+		const { owner, readsB, A, B, W } = world();
+		const Y = makeCard(A.cols['To Do'], { title: 'YSECRET2256' });
+		makeDependency({ blocked: W, blocker: Y });
+		expect((await move(Y, A.cols['Complete'].id, owner)).status).toBe(200);
+		expect(contents(W.id)).toEqual([`Unblocked: #${Y.id} "YSECRET2256" completed — nothing is blocking this card now.`]);
+		// Written a while ago, so a rewrite that stamped the comment could not pass by landing in the same second.
+		db.update(cardComments).set({ createdAt: '2026-10-01 09:00:00', updatedAt: '2026-10-01 09:00:00' }).run();
+
+		expect((await move(W, B.cols['To Do'].id, owner)).status).toBe(200);
+
+		expect(notices().map((n) => [n.createdAt, n.updatedAt])).toEqual([['2026-10-01 09:00:00', '2026-10-01 09:00:00']]);
+		for (const read of await commentsAs(readsB, W)) {
+			expect(read.map((c) => c.content)).toEqual([
+				`Unblocked: #${Y.id}, a card on another board, completed — nothing is blocking this card now.`
+			]);
+			expect(JSON.stringify(read)).not.toContain('YSECRET2256');
+			expect(read[0].updatedAt).toBe(read[0].createdAt);
+		}
+	});
+
+	it('names a subtask of the board it left as a subtask, keeping the rest of the sentence', async () => {
+		const { owner, A, B, W } = world();
+		const Q = makeCard(A.cols['To Do'], { title: 'Holds the step' });
+		const step = makeSubtask(Q, { title: 'STEPSECRET2256', completed: false });
+		const review = makeSubtask(W, { title: 'Review it', completed: false });
+		makeDependency({ blocked: review, blocker: step });
+		expect((await api('PUT', `/api/v1/subtasks/${step.id}`, { user: owner, body: { completed: true } })).status).toBe(200);
+		expect(contents(W.id)).toEqual(['Unblocked: subtask "STEPSECRET2256" completed — nothing is blocking subtask "Review it" now.']);
+
+		expect((await move(W, B.cols['To Do'].id, owner)).status).toBe(200);
+
+		expect(contents(W.id)).toEqual(['Unblocked: a subtask on another board completed — nothing is blocking subtask "Review it" now.']);
+	});
+
+	it("keeps a notice named when every subtask it names is one of the card's own, which travel with it", async () => {
+		const { owner, A, B, W } = world();
+		const first = makeSubtask(W, { title: 'First step', completed: false });
+		const second = makeSubtask(W, { title: 'Second step', completed: false });
+		makeDependency({ blocked: second, blocker: first });
+		const Q = makeCard(A.cols['To Do'], { title: 'Holds the step' });
+		const elsewhere = makeSubtask(Q, { title: 'ELSEWHERE2256', completed: false });
+		const third = makeSubtask(W, { title: 'Third step', completed: false });
+		makeDependency({ blocked: third, blocker: elsewhere });
+		for (const done of [first, elsewhere]) {
+			expect((await api('PUT', `/api/v1/subtasks/${done.id}`, { user: owner, body: { completed: true } })).status).toBe(200);
+		}
+		const own = 'Unblocked: subtask "First step" completed — nothing is blocking subtask "Second step" now.';
+		expect(contents(W.id)).toEqual([own, 'Unblocked: subtask "ELSEWHERE2256" completed — nothing is blocking subtask "Third step" now.']);
+		// The card form of the tail, and a tail naming a subtask that is not the card's.
+		const ownWholeCard = makeComment(W, owner, 'Unblocked: subtask "First step" completed — nothing is blocking this card now.');
+		makeComment(W, owner, 'Unblocked: subtask "First step" completed — nothing is blocking subtask "NOTHERE2256" now.');
+
+		expect((await move(W, B.cols['To Do'].id, owner)).status).toBe(200);
+
+		expect(contents(W.id)).toEqual([
+			own,
+			'Unblocked: a subtask on another board completed — nothing is blocking subtask "Third step" now.',
+			ownWholeCard.content,
+			'Unblocked: a subtask on another board completed — nothing is blocking subtask "NOTHERE2256" now.'
+		]);
+	});
+
+	it('leaves a notice already withheld as it is, and a card named on the board the card arrives on named', async () => {
+		const { owner, A, B, W } = world();
+		const X = makeCard(B.cols['To Do'], { title: 'On BRAVO' });
+		makeDependency({ blocked: W, blocker: X });
+		expect((await move(X, B.cols['Complete'].id, owner)).status).toBe(200);
+		const withheld = `Unblocked: #${X.id}, a card on another board, completed — nothing is blocking this card now.`;
+		expect(contents(W.id)).toEqual([withheld]);
+
+		// Named on A, then the work named moved to BRAVO itself (decision 2).
+		const V = makeCard(A.cols['To Do'], { title: 'Waiting too' });
+		const Z = makeCard(A.cols['To Do'], { title: 'Goes ahead' });
+		makeDependency({ blocked: V, blocker: Z });
+		expect((await move(Z, A.cols['Complete'].id, owner)).status).toBe(200);
+		expect((await move(Z, B.cols['Complete'].id, owner)).status).toBe(200);
+
+		expect((await move(W, B.cols['To Do'].id, owner)).status).toBe(200);
+		expect((await move(V, B.cols['To Do'].id, owner)).status).toBe(200);
+
+		expect(contents(W.id)).toEqual([withheld]);
+		expect(contents(V.id)).toEqual([`Unblocked: #${Z.id} "Goes ahead" completed — nothing is blocking this card now.`]);
+	});
+
+	it('does not name the work again when the card comes back to its board', async () => {
+		const { owner, A, B, W } = world();
+		const Z = makeCard(A.cols['To Do'], { title: 'ZSECRET2256' });
+		makeDependency({ blocked: W, blocker: Z });
+		expect((await move(Z, A.cols['Complete'].id, owner)).status).toBe(200);
+
+		expect((await move(W, B.cols['To Do'].id, owner)).status).toBe(200);
+		expect((await move(W, A.cols['To Do'].id, owner)).status).toBe(200);
+
+		expect(contents(W.id)).toEqual([`Unblocked: #${Z.id}, a card on another board, completed — nothing is blocking this card now.`]);
+	});
+
+	it('leaves a move within one board, and every comment that is not exactly a named notice, as they were', async () => {
+		const { owner, A, B, W } = world();
+		const Y = makeCard(A.cols['To Do'], { title: 'Same board' });
+		const named = makeComment(W, owner, `Unblocked: #${Y.id} "Same board" completed — nothing is blocking this card now.`);
+		const others = [
+			'Unblocked: the supplier rang back',
+			`Unblocked: #${Y.id} "Same board" completed`,
+			`unblocked: #${Y.id} "Same board" completed — nothing is blocking this card now.`,
+			`Note — Unblocked: #${Y.id} "Same board" completed — nothing is blocking this card now.`,
+			`Unblocked: see below. Unblocked: #${Y.id} "Same board" completed — nothing is blocking this card now.`,
+			`Unblocked: #${Y.id} "Same board" completed — nothing is blocking this card now. Thanks!`,
+			'Unblocked: subtask "Step" completed — nothing is blocking this card now. It was blocked again later.'
+		].map((content) => makeComment(W, owner, content));
+
+		expect((await move(W, A.cols['In Progress'].id, owner)).status).toBe(200);
+		expect(contents(W.id)).toEqual([named.content, ...others.map((c) => c.content)]);
+
+		expect((await move(W, B.cols['To Do'].id, owner)).status).toBe(200);
+		expect(contents(W.id)).toEqual([
+			`Unblocked: #${Y.id}, a card on another board, completed — nothing is blocking this card now.`,
+			...others.map((c) => c.content)
+		]);
+		expect(cardRow(W.id).columnId).toBe(B.cols['To Do'].id);
+	});
+
+	it('rewrites nothing for a move that is refused', async () => {
+		const blocked = world();
+		const Y = makeCard(blocked.A.cols['To Do'], { title: 'Same board' });
+		makeComment(blocked.W, blocked.owner, `Unblocked: #${Y.id} "Same board" completed — nothing is blocking this card now.`);
+		makeSubtask(blocked.W, { title: 'Still open', completed: false });
+		const before = contents(blocked.W.id);
+		expect((await move(blocked.W, blocked.B.cols['Complete'].id, blocked.owner)).status).toBe(409);
+		expect(contents(blocked.W.id)).toEqual(before);
+	});
+
+	it("is part of the move: a move failing at any one of its writes, the rewrite's own included, leaves every comment as it was", async () => {
+		const run = await eachWriteInTurn({
+			build: () => {
+				const w = world();
+				const Y = makeCard(w.A.cols['To Do'], { title: 'YSECRET2256' });
+				makeComment(w.W, w.owner, `Unblocked: #${Y.id} "YSECRET2256" completed — nothing is blocking this card now.`);
+				return w;
+			},
+			request: ({ owner, W, B }) => move(W, B.cols['To Do'].id, owner),
+			afterSuccess: (w, res) => {
+				expect(res.status).toBe(200);
+				expect(contents(w.W.id).join()).not.toContain('YSECRET2256');
+			}
+		});
+		expect(run.writes.map((sql) => sql.split(/[ (]/).slice(0, 3).join(' '))).toEqual([
+			'update "card_comments" set',
+			'update "cards" set',
+			'insert into "activity_log"',
+			'insert into "activity_log"'
+		]);
 	});
 });
 

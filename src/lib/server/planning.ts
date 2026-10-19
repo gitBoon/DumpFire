@@ -35,7 +35,7 @@ import {
 	cardComments,
 	milestones
 } from './db/schema';
-import { eq, and, isNull, inArray, asc } from 'drizzle-orm';
+import { eq, and, isNull, inArray, asc, like } from 'drizzle-orm';
 import { getAccessibleBoardIds, type Actor } from './board-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { notifyCardUnblocked } from './notifications';
@@ -1156,6 +1156,93 @@ export interface UnblockedWork {
 /** Retained name for callers that only ever dealt in cards. */
 export type UnblockedCard = UnblockedWork;
 
+// The words of an "Unblocked" notice, in one place for the writer and for the
+// rewrite of a moved card's notices (card 2256). The forms have not changed
+// since the notice began, so a notice of any age is matched by them.
+const namedCard = (id: number, title: string) => `#${id} "${title}"`;
+const withheldCard = (id: number) => `#${id}, a card on another board,`;
+const namedSubtask = (title: string) => `subtask "${title}"`;
+const WITHHELD_SUBTASK = 'a subtask on another board';
+const unblockNotice = (by: string, what: string) => `Unblocked: ${by} completed — nothing is blocking ${what} now.`;
+
+/** A notice naming a card by its title: the card's id, and what was waiting. */
+const NAMED_CARD_NOTICE = /^Unblocked: #(\d+) "(.*)" completed — nothing is blocking (.+) now\.$/s;
+/** A notice naming a subtask by its title: what was waiting. */
+const NAMED_SUBTASK_NOTICE = /^Unblocked: subtask "(.*)" completed — nothing is blocking (.+) now\.$/s;
+/** The waiting part of a notice, where what waited was a subtask: its title. */
+const WAITING_SUBTASK = /^subtask "(.*)"$/s;
+
+/**
+ * Take the names of finished work out of a card's "Unblocked" notices, as the
+ * card moves to board `toBoardId` (card 2256).
+ *
+ * A notice names the work by its title only when it is on the waiting card's
+ * board (card 2152), and the comment goes with the card. On the board it
+ * arrives on it went on naming the work to people who may not be able to open
+ * the board the work is on. So each notice in a named form is rewritten to the
+ * withheld one, the rest of the sentence kept: a card by its number alone,
+ * unless that card is on `toBoardId` now, where `writeUnblockNotices` would
+ * name it too; a subtask as "a subtask on another board", since the notice
+ * gives no id to look it up by, unless every subtask the notice names (the
+ * finished one, and the waiting one if it is a subtask) has the title of one
+ * of this card's own subtasks: those go with the card and are read on it, so
+ * the notice tells the new board nothing it cannot already see.
+ *
+ * Any comment of the card that is exactly a named notice is rewritten, whoever
+ * is stored as its author: the notice is written as the person who finished
+ * the work, and no column marks it (decision 1). `updatedAt` is left as it
+ * was, so the card window does not show the notice as "(edited)": nobody
+ * edited it.
+ *
+ * Called by `moveCard`, in the move's transaction. A withheld notice is never
+ * named again, so a card moved back keeps the withheld form. Writes nothing
+ * when there is nothing to rewrite.
+ */
+export function withholdUnblockNotices(cardId: number, toBoardId: number): void {
+	const notices = db
+		.select({ id: cardComments.id, content: cardComments.content })
+		.from(cardComments)
+		.where(and(eq(cardComments.cardId, cardId), like(cardComments.content, 'Unblocked: %')))
+		.all();
+
+	// The card's own subtasks go with it and are read on it, so a notice naming
+	// only those gives nothing away. Loaded once, and only if a notice asks.
+	let ownTitles: Set<string> | null = null;
+	const isOwn = (title: string) => {
+		ownTitles ??= new Set(
+			db.select({ title: subtasks.title }).from(subtasks).where(eq(subtasks.cardId, cardId)).all().map((s) => s.title)
+		);
+		return ownTitles.has(title);
+	};
+	const namesOnlyOwn = (completed: string, waiting: string) => {
+		if (!isOwn(completed)) return false;
+		if (waiting === 'this card') return true;
+		const step = WAITING_SUBTASK.exec(waiting);
+		return step !== null && isOwn(step[1]);
+	};
+
+	for (const notice of notices) {
+		let rewritten: string | null = null;
+		const card = NAMED_CARD_NOTICE.exec(notice.content);
+		if (card) {
+			const namedId = Number(card[1]);
+			const named = db
+				.select({ boardId: columns.boardId })
+				.from(cards)
+				.innerJoin(columns, eq(cards.columnId, columns.id))
+				.where(eq(cards.id, namedId))
+				.get();
+			if (named?.boardId !== toBoardId) rewritten = unblockNotice(withheldCard(namedId), card[3]);
+		} else {
+			const subtask = NAMED_SUBTASK_NOTICE.exec(notice.content);
+			if (subtask && !namesOnlyOwn(subtask[1], subtask[2])) rewritten = unblockNotice(WITHHELD_SUBTASK, subtask[2]);
+		}
+		if (rewritten !== null) {
+			db.update(cardComments).set({ content: rewritten }).where(eq(cardComments.id, notice.id)).run();
+		}
+	}
+}
+
 /**
  * The notices for one piece of finished work.
  *
@@ -1198,27 +1285,29 @@ function writeUnblockNotices(
 		// Comments live on cards, so a subtask's notice goes on its parent card
 		// and names the subtask.
 		const cardId = node.kind === 'card' ? node.id : (node.parentCardId ?? node.id);
-		const what = node.kind === 'card' ? 'this card' : `subtask "${node.title}"`;
+		const what = node.kind === 'card' ? 'this card' : namedSubtask(node.title);
 		// The comment is stored once and read by everyone who can open the
 		// waiting card's board, so the finished work is named by its title only
 		// when it is on that board too (card 2152, decision 6). A card on another
 		// board keeps its number, as a withheld plan node keeps its id; a subtask
-		// is said to be one. Comments written before stay as they are.
+		// is said to be one. Comments written before stay as they are. The card
+		// can later move to another board, and the names go then, but for its
+		// own subtasks' (`withholdUnblockNotices`, card 2256).
 		const sameBoard = completedNode.boardId === node.boardId;
 		const by =
 			completedNode.kind === 'card'
 				? sameBoard
-					? `#${completedNode.id} "${completedNode.title}"`
-					: `#${completedNode.id}, a card on another board,`
+					? namedCard(completedNode.id, completedNode.title)
+					: withheldCard(completedNode.id)
 				: sameBoard
-					? `subtask "${completedNode.title}"`
-					: 'a subtask on another board';
+					? namedSubtask(completedNode.title)
+					: WITHHELD_SUBTASK;
 
 		db.insert(cardComments)
 			.values({
 				cardId,
 				userId: actorUserId,
-				content: `Unblocked: ${by} completed — nothing is blocking ${what} now.`
+				content: unblockNotice(by, what)
 			})
 			.run();
 

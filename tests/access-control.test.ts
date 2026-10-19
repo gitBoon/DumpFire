@@ -33,12 +33,14 @@ import {
 } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { dispatchWebhook } from '$lib/server/webhooks';
+import { pageLoad } from './helpers/actions';
 import { api } from './helpers/api';
 import {
 	addBoardMember,
 	makeBoard,
 	makeCard,
 	makeLabel,
+	makeMilestone,
 	makeSubtask,
 	makeTeam,
 	makeUser,
@@ -197,6 +199,110 @@ describe('milestones: joining one needs access to it', () => {
 
 		expect(res.status).toBe(200);
 		expect(cardRow(card.id)?.milestoneId).toBe(mine.id);
+	});
+});
+
+/**
+ * Card 2257. A goal across boards can be opened only by someone who can open
+ * every board its cards are on (`canViewMilestone`), but All Tasks, All To Do
+ * and the activity report named it on its cards to anyone who could open one
+ * of them. Each now names a card's milestone only to a reader who can open
+ * it; the card's own `milestoneId` is still given.
+ */
+describe("milestones: a goal's name goes only to those who can open it (card 2257)", () => {
+	/**
+	 * A goal across boards, "GOALSECRET2257", holding a card on A and one on
+	 * B. `editor` can open A alone and is refused the goal; `both` can open
+	 * both boards.
+	 */
+	function world() {
+		const both = makeUser({ username: 'both' });
+		addBoardMember(A.board, both, 'editor');
+		addBoardMember(B.board, both, 'viewer');
+		const onA = makeCard(A.cols['To Do'], { title: 'On A' });
+		const onB = makeCard(B.cols['To Do'], { title: 'On B' });
+		const goal = makeMilestone({ name: 'GOALSECRET2257', createdBy: owner, cards: [onA, onB] });
+		return { both, onA, onB, goal };
+	}
+
+	async function load(path: '/all' | '/todo', user: SessionUser) {
+		const res = await pageLoad(path, { user });
+		if (res.type !== 'data') throw new Error(`${path} answered ${JSON.stringify(res)}`);
+		return res.data as any;
+	}
+	/** The cards a load lists: All To Do's flat, All Tasks' in buckets. */
+	const listed = (data: any): any[] => data.cards ?? data.buckets.flatMap((b: any) => b.cards);
+
+	const report = async (user: SessionUser) => {
+		const res = await api('GET', '/api/v1/reports/activity', { user });
+		expect(res.status).toBe(200);
+		return res.body;
+	};
+	const reported = (body: any, cardId: number) =>
+		body.boards.flatMap((b: any) => b.cards).find((c: any) => c.id === cardId);
+
+	it('All Tasks and All To Do do not name the goal to a member of one of its boards, and still give the card its milestone id', async () => {
+		const { onA, goal } = world();
+		expect((await api('GET', `/api/v1/milestones/${goal.id}`, { user: editor })).status).toBe(403);
+
+		for (const path of ['/all', '/todo'] as const) {
+			const data = await load(path, editor);
+			expect(JSON.stringify(data)).not.toContain('GOALSECRET2257');
+			expect(data.milestoneNames).toEqual({});
+			expect(listed(data).find((c: any) => c.id === onA.id)).toMatchObject({ milestoneId: goal.id });
+		}
+	});
+
+	it('names the goal to an administrator and to a member of every board it is on', async () => {
+		const { both, goal } = world();
+		for (const user of [admin, both]) {
+			for (const path of ['/all', '/todo'] as const) {
+				expect((await load(path, user)).milestoneNames).toEqual({ [goal.id]: 'GOALSECRET2257' });
+			}
+		}
+	});
+
+	it('the activity report gives the card no milestone name, and leaves the goal out of its milestones, for a reader who cannot open it', async () => {
+		const { both, onA, goal } = world();
+		// Completed in the window, so the goal moved and is listed to a reader who can open it.
+		expect((await api('PUT', `/api/v1/cards/${onA.id}/move`, { user: owner, body: { columnId: A.cols['Complete'].id } })).status).toBe(200);
+
+		const refused = await report(editor);
+		expect(reported(refused, onA.id)).toMatchObject({ milestoneId: goal.id, milestoneName: null });
+		expect(refused.milestones).toEqual([]);
+		expect(JSON.stringify(refused)).not.toContain('GOALSECRET2257');
+
+		for (const user of [both, admin]) {
+			const body = await report(user);
+			expect(reported(body, onA.id)).toMatchObject({ milestoneId: goal.id, milestoneName: 'GOALSECRET2257' });
+			expect(body.milestones.map((m: any) => [m.id, m.name])).toEqual([[goal.id, 'GOALSECRET2257']]);
+		}
+	});
+
+	it("does not name another board's milestone on a card of A to a reader who cannot open that board", async () => {
+		// Written by hand: nothing puts a card of A in a milestone of a third
+		// board now, but a backup from before card 2155 can hold one.
+		const C = makeBoard({ owner: outsider, name: 'C' });
+		const card = makeCard(A.cols['To Do'], { title: 'In a third board goal' });
+		const third = makeMilestone({ board: C.board, name: 'THIRDSECRET2257', createdBy: outsider, cards: [card] });
+		expect((await api('PUT', `/api/v1/cards/${card.id}/move`, { user: owner, body: { columnId: A.cols['Complete'].id } })).status).toBe(200);
+		// Back to To Do, so All To Do lists it; its completion stays in the window.
+		db.update(cards).set({ columnId: A.cols['To Do'].id }).where(eq(cards.id, card.id)).run();
+
+		for (const user of [owner, editor]) {
+			for (const path of ['/all', '/todo'] as const) {
+				const data = await load(path, user);
+				expect(data.milestoneNames).toEqual({});
+				expect(listed(data).find((c: any) => c.id === card.id)).toMatchObject({ milestoneId: third.id });
+			}
+			const body = await report(user);
+			expect(reported(body, card.id)).toMatchObject({ milestoneId: third.id, milestoneName: null });
+			expect(body.milestones).toEqual([]);
+			expect(JSON.stringify(body)).not.toContain('THIRDSECRET2257');
+		}
+
+		expect((await load('/todo', admin)).milestoneNames).toEqual({ [third.id]: 'THIRDSECRET2257' });
+		expect((await report(admin)).milestones.map((m: any) => m.id)).toEqual([third.id]);
 	});
 });
 

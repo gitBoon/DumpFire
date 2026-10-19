@@ -173,6 +173,12 @@ const spec = {
 			'on the same card\'s own entries or the same subtask\'s, of the same `model`, a correction with no breakdown takes back at most the tokens recorded without one, and one with a ' +
 			'breakdown no part beyond what is recorded of it; otherwise it is answered 400 (a reason in the 409 of a batch) and nothing is written, where it was taken and, sent as a bare total ' +
 			'against measured work, priced the card below zero; DELETE /api/v1/tokens/{entryId} answers 400 only when removing an entry would take what is recorded of its model on its card or subtask below zero, as removing it before the negative entries that correct it would. ' +
+			'(71) the "Unblocked" comments of a card moved to another board by PUT /api/v1/cards/{cardId}/move, read by GET /api/v1/cards/{cardId}/comments, name no work of the board it left: ' +
+			'the move rewrites `Unblocked: #12 "<title>" completed — …` to `Unblocked: #12, a card on another board, completed — …`, unless card 12 is on the board the card arrives on, ' +
+			'and `Unblocked: subtask "<title>" completed — …` to `Unblocked: a subtask on another board completed — …` unless every subtask it names is titled as one of the card\'s own, which go with it, the rest of each kept and its updatedAt unchanged, ' +
+			'where they went on naming the work to readers of the board it arrived on; comments of cards moved before are unchanged. ' +
+			'(72) GET /api/v1/reports/activity gives a card\'s milestoneName only when the key\'s user can open that milestone (as GET /api/v1/milestones/{milestoneId} would answer 200), ' +
+			'and otherwise null, milestoneId as before, and its milestones list leaves out a milestone they cannot open, where a goal across boards was named to anyone who could open one of its boards. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -1891,7 +1897,10 @@ const spec = {
 					createdByName: { type: ['string', 'null'] },
 					completedAt: { type: ['string', 'null'], format: 'date-time' },
 					milestoneId: { type: ['integer', 'null'] },
-					milestoneName: { type: ['string', 'null'] },
+					milestoneName: {
+						type: ['string', 'null'],
+						description: 'Null when the card is in no milestone, or in one you cannot open (card 2257). milestoneId is given either way.'
+					},
 					subtasks: {
 						type: 'object',
 						properties: {
@@ -2006,7 +2015,8 @@ const spec = {
 					milestones: {
 						type: 'array',
 						description:
-							'The milestones of the report\'s cards in which more cards were complete at the end of the window than at its start. ' +
+							'The milestones you can open, of the report\'s cards, in which more cards were complete at the end of the window than at its start ' +
+							'(card 2257: one you cannot open is left out). ' +
 							'Their counts are of every card in the milestone that is not archived, by its completion date.',
 						items: {
 							type: 'object',

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.43
+version: 1.44
 status: As-Built
 date: 2026-10-19
 tags:
@@ -2360,6 +2360,7 @@ flowchart LR
 | The public request form's boards | None to a holder of the form token; the boards they can open to a signed-in caller | `GET /api/requests/targets` | 2128, decision 6 |
 | Recent activity | The caller's own entries on boards they can open, the 20 or 10 newest counted after the filter. The counts beside it (completed, streak, cycle time) are not filtered: they name nothing | `GET /api/v1/me/stats`, the dashboard | 2126, decision 13 |
 | The other end of a dependency, and a plan's nodes | Still listed, so that blocked work stays blocked, but withheld when it is on a board the caller cannot open: its title reads "A card on a board you cannot open" or "A subtask on a board you cannot open", its board "A board you cannot open", its column is empty and its board, column, priority and milestone are null, with `withheld: true`. See [Critical-Path Planning](critical-path-planning.md#design-decisions-inside-that-flow) | Both trees' dependency routes and their answers, `GET /api/v1/cards/:id`, both summaries and both PDFs, the board page's Blocked chips, All Tasks, the plan page | 2129, decisions 7 and 8 |
+| A card's milestone, by name | Only for a milestone the caller may open (`canViewMilestone`): a board's milestone to whoever can open that board, a goal across boards to whoever can open every board its cards are on. Otherwise no name, so the page shows no chip, and `milestoneName: null` in the report; the card's `milestoneId` is still given, as its own field. The board page and the card window already read `milestonesForBoard`, which asks the same | All Tasks, All To Do (`milestoneNamesForCards`, through `readCrossBoardCards`), `GET /api/v1/reports/activity` (each card's `milestoneName`, and its `milestones` list) | 2257 |
 | A milestone's cards, and its burndown | A card on a board the caller cannot open is listed withheld, as a plan's node is. Since card 2155 a card moved off a milestone's board leaves the milestone, and migration 0057 took out those already moved; the withholding stays for a goal across boards and for an older backup restored. The burndown by milestone charts only the cards on boards the caller can open, and its notes say how many it leaves out | `GET /api/v1/milestones/:id`, `GET /api/burndown` and `GET /api/v1/burndown` with `milestoneId`, the burndown page | 2129's review |
 | A card's sub-boards | Those the caller can open. The dashboard's sub-board count, its All Tasks figures, their token cost and the spend by person cover only those | The board page, the card context, the dashboard | 2130, decision 9 |
 | A sub-board's breadcrumbs | A board above it that the caller cannot open, as "🔒 A board you cannot open" with no link. It stays in the chain, so the page still offers Delete Sub-board; the boards above that the caller can open keep their names and links | The board page | 2130, decision 10 |
@@ -2484,7 +2485,11 @@ everyone's.
   title: `Unblocked: #12, a card on another board, completed — …`. The DumpFire wrapper's
   reference shows the same-board form, which stays true. An assignee who cannot open the
   finished card's board is mailed "A card on a board you cannot open" in place of its title;
-  someone taken off the waiting card's board is not mailed at all.
+  someone taken off the waiting card's board is not mailed at all. A card moved to another
+  board takes its notices in that form (card 2256): one naming a card of the board it left
+  then gives the number alone, one naming a subtask reads "a subtask on another board"
+  (unless every subtask it names has the title of one of the card's own subtasks, which go
+  with it and can be read on it), and neither is marked "(edited)". Notices on cards moved before then keep their names.
 - **"Plan created".** An assignee who cannot open the plan (a former member of its board, or
   someone who cannot open every board of a goal across boards) is no longer mailed when it is
   created. Everyone else's mail is unchanged unless the chain runs through a board they
@@ -2493,6 +2498,10 @@ everyone's.
   and its accept dialog does not preselect one.
 - **Moving a card to another board** takes it out of a milestone of the board it left, as it
   already loses that board's labels and categories; a goal across boards is unaffected.
+- **A goal's name** (card 2257). Someone who cannot open every board of a goal across boards
+  no longer sees its chip on All Tasks and All To Do, and the activity report gives them
+  `milestoneName: null` on its cards and leaves the goal out of its `milestones`. The card's
+  `milestoneId` is still given.
   Through the API the move answers `milestoneId: null`, and the board's activity reads
   `"T" moved to board "B" (To Do → To Do) and out of milestone "M"` (since card 2181,
   `"T" moved to another board (To Do → To Do) and out of milestone "M"`). Whoever moves it is

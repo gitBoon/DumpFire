@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.55
+version: 1.56
 status: As-Built
 date: 2026-10-19
 tags:
@@ -848,7 +848,8 @@ new; these answers and fields are:
   as `GET /cards/:cardId/comments` reads it: `Unblocked: #12, a card on another board,
   completed — nothing is blocking this card now.`, or `Unblocked: a subtask on another board
   completed — …`, where it gave the other board's title. Work on the same board is named by
-  its title as before; comments written before are unchanged (item 62).
+  its title as before; comments written before are unchanged (item 62). A card moved to
+  another board takes its notices in this form too (card 2256, item 71).
 - **A milestone is given to a board only when every card in it is on that board** (card
   2179), on `PATCH /milestones/:milestoneId` with `boardId`, archived cards included:
   otherwise `400` `Some cards in this milestone are not on that board (archived cards count
@@ -892,6 +893,21 @@ new; these answers and fields are:
   zero. `DELETE /tokens/:entryId` refuses, `400`, to remove an entry only when that would
   take what is recorded of its model on its card or subtask below zero, as removing it before
   the negative entries that correct it would. Entries already stored are unchanged (item 70).
+- **A card moved to another board takes its "Unblocked" comments without the names of the
+  board it left** (card 2256), on `PUT /cards/:cardId/move`, as `GET /cards/:cardId/comments`
+  reads them: `Unblocked: #12 "<title>" completed — …` becomes `Unblocked: #12, a card on
+  another board, completed — …`, unless card 12 is on the board the card arrives on, and
+  `Unblocked: subtask "<title>" completed — …` becomes `Unblocked: a subtask on another
+  board completed — …` unless every subtask it names (the finished one, and the waiting
+  one) has the title of one of the card's own subtasks, which go with it and can be read on
+  it, the rest of each kept and its `updatedAt` unchanged. They went on
+  naming the work to readers of the board the card arrived on. Comments of cards moved
+  before are unchanged (item 71).
+- **`GET /reports/activity` names a milestone only to a reader who can open it** (card
+  2257): a card's `milestoneName` is `null` when the key's user cannot open its milestone
+  (`GET /milestones/:milestoneId` would be `403`), with `milestoneId` as before, and
+  `milestones` leaves such a milestone out. A goal across boards was named to anyone who
+  could open one of its boards (item 72).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -1930,6 +1946,10 @@ Cards are grouped by board and bucketed `completed`, `closed`, `progressed`,
 by audit events**, so a window predating the audit-completeness work still
 reports correctly.
 
+A card's `milestoneName` is `null` when it is in no milestone or in one the key's user
+cannot open, and `milestones` lists only the milestones they can open (card 2257); a card's
+`milestoneId` is given either way.
+
 `meta` carries the caveats that make a figure quotable —
 `closeReasonAssumedCount`, `completedOutsideWindow`, `missingSummaryCount`,
 `attribution`, `boardsExcludedForAccess`. Read it before quoting a headline
@@ -2351,7 +2371,9 @@ is needed on both). Goes through the same service as a drag in the web UI:
   board it left and `"<title>" moved from another board (<from> → <to>)` on the board it
   arrived on, because each is read by everyone who can open its board. `card_moved_away`
   ends ` and out of milestone "<name>"` when the move took the card out of one of that
-  board's milestones.
+  board's milestones. The card's "Unblocked" comments that name work of the board it left
+  by its title are rewritten to name it by its number, or as "a subtask on another board",
+  with `updatedAt` unchanged (card 2256; see `GET /cards/:cardId/comments`).
 - onto one of its own sub-boards: a card's sub-boards go with it, so a move onto one, or
   onto a board beneath one at any depth, is refused with 409 and nothing moves:
   `Card "<title>" cannot go onto "<board>", which hangs beneath it` (card 2141).
