@@ -438,6 +438,18 @@ async function heldInTurn(attempts: (() => Promise<Answer>)[], status = 400): Pr
 	return waited;
 }
 
+/**
+ * The timeout of a test that makes `checks` sign-ins at a name that is no
+ * account (card 2279). The account's waits are on the fake clock and take no
+ * real time; what does is the check each such sign-in makes against
+ * DUMMY_HASH, at cost 12, on the test's own thread: about 200 ms alone, and
+ * more than twice that under the whole suite, where eleven of them ran past
+ * vitest's 5 s. A timeout asserts nothing, so it is sized for a loaded
+ * machine: 1.5 s a check, on top of the 5 s every test has. A test whose
+ * checks are one account's, re-hashed at cost 4 below, needs none.
+ */
+const withChecks = (checks: number) => 5_000 + checks * 1_500;
+
 const WRONG = 'Invalid username/email or password';
 
 /** What a browser not remembered is told when the account's places are taken (card 2194). */
@@ -530,11 +542,13 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 		expect(none.ms).toBe(real.ms);
 		expect(none.res.status).toBe(real.res.status);
 		expect(none.res.text).toContain(WRONG);
-	});
+	}, withChecks(6));
 
 	// A name that is no account was counted lower-cased, while the lookup reads
 	// a username exactly: five at `USER1` then one at `user1` waited 1 s only
-	// when `user1` was no account (review M1, 11 ms against 1,004 ms).
+	// when `user1` was no account (review M1, 11 ms against 1,004 ms). Its
+	// waits are 0 ms; its eleven checks against DUMMY_HASH, every sign-in but
+	// the one at the account, are what take real time (card 2279).
 	it('counts a name that is no account as the lookup reads it, so another case waits alike for a real account and none', async () => {
 		const ghost = 'ghost-name';
 		expect(await heldInTurn([A, A, A, A, A].map((ip) => wrongAt(user.username.toUpperCase(), ip)))).toEqual([0, 0, 0, 0, 0]);
@@ -545,7 +559,7 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 		expect(real.ms).toBe(0);
 		expect(none.ms).toBe(real.ms);
 		expect(none.res.status).toBe(real.res.status);
-	});
+	}, withChecks(11));
 
 	// Each name that is no account is a count, so the map is held to
 	// WRONG_SIGN_IN_KEYS, the one counted longest ago forgotten first (review N7).
@@ -583,7 +597,7 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 		expect(limited.res.text).toContain('Too many login attempts');
 		// The account's five set a wait of 1 s; counted, the refusal would have made it 2 s.
 		expect(await heldInTurn([wrongAt(user.username, B)])).toEqual([1000]);
-	});
+	}, withChecks(5));
 
 	// Card 2226. A sign-in that succeeded cleared its address's whole count,
 	// so anyone with an account could send nine guesses at another account,
@@ -615,7 +629,7 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 		const [limited] = await heldFor(signIn('nobody-else', 'wrong', A));
 		expect(limited.ms).toBe(0);
 		expect(limited.res.status).toBe(429);
-	});
+	}, withChecks(10));
 
 	// What clearing the count was for: someone who mistypes and then signs in
 	// has those attempts back, so an office's mistypes do not add up.
@@ -627,7 +641,7 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 		await heldInTurn(Array.from({ length: 10 }, () => wrongAt('nobody-else', A)));
 		const [limited] = await heldFor(signIn('nobody-else', 'wrong', A));
 		expect(limited.res.status).toBe(429);
-	});
+	}, withChecks(10));
 
 	it('gives back only in the window the attempts were made in, never what was refused, and forgets with every count', () => {
 		const at = '198.51.100.40';
@@ -897,7 +911,7 @@ describe('a browser that has signed in here before', () => {
 		expect(sqlite.prepare("SELECT message, user_id AS userId FROM system_logs WHERE message LIKE '%not known here%'").all()).toEqual([
 			{ message: 'Sign-ins at a name that is no account from browsers not known here are being let in one at a time', userId: null }
 		]);
-	});
+	}, withChecks(6));
 
 	// A refusal was let past the address's count and so noted against the
 	// account; a success there would otherwise give it back (card 2226).
