@@ -85,6 +85,7 @@ import * as dndHandlers from '$lib/board/dnd-handlers';
 import { connectSSE } from '$lib/board/sse';
 import { keepStreamOpen, reconnectDelay, streamVerdict, type StreamEnvironment } from '$lib/live-stream';
 import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
+import { readTimeZone } from '$lib/server/request-body';
 import { requireManagedAccount } from '$lib/server/route-guards';
 import { endsTheSession, watchForSignOut, type Fetch } from '$lib/signed-out';
 import { MOST_FAILURES, TOAST_MS, toasts } from '$lib/stores/toast';
@@ -191,6 +192,36 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 		const generate = functionNamed(page, 'generateReport').getText();
 		expect(generate).toContain("new Blob([await res.arrayBuffer()], { type: 'application/pdf' })");
 		expect(generate).not.toContain('res.blob()');
+	});
+
+	// Group B's review: a browser can name a zone the server's ICU does not
+	// know. Refused outright, the viewer got no report at all.
+	it('asks once more without timeZone when the server refuses the zone, and says so once the report is made', () => {
+		const refuses = functionNamed(page, 'refusesZone').getText();
+		expect(refuses).toContain('res.status === 400');
+		expect(refuses).toContain("(await failureMessage(res.clone(), '')) === ZONE_REFUSED");
+		// The server's own words, as `readTimeZone` says them.
+		let said = '';
+		try {
+			readTimeZone({ timeZone: 'Mars/Base' }, 'timeZone', {});
+		} catch (e) {
+			said = (e as { body: { message: string } }).body.message;
+		}
+		expect(said).not.toBe('');
+		expect(page.getText()).toContain(`const ZONE_REFUSED = '${said}';`);
+		expect(functionNamed(page, 'zoneNotice').getText()).toContain("'warning'");
+
+		for (const [name, url] of [['generateReport', '/api/reports'], ['sendReportEmail', '/api/reports/email']]) {
+			const fn = functionNamed(page, name);
+			const sent = callsOf(fn, 'fetch');
+			expect(sent.map((call) => call.arguments[0].getText()), name).toEqual([`'${url}'`, `'${url}'`]);
+			expect(sent[0].arguments[1].getText(), name).toContain('JSON.stringify({ ...request, timeZone: browserZone ?? undefined })');
+			expect(sent[1].arguments[1].getText(), name).toContain('body: JSON.stringify(request)');
+			// The second only when the first was refused for its zone.
+			expect(ts.findAncestor(sent[1], ts.isIfStatement)!.expression.getText(), name).toBe('await refusesZone(res)');
+			// Said only for a report that was made.
+			expect(callsOf(fn, 'zoneNotice').map(sideOf), name).toEqual(['ok']);
+		}
 	});
 
 	// Card 2182: the page reads a list as the server does, and a schedule kept

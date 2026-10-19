@@ -21,6 +21,7 @@ import {
 	ensureSpace,
 	formatDate
 } from './reports';
+import { formatDueDate } from '$lib/utils/date-utils';
 import type { MilestoneSummary, MilestoneNode } from './planning';
 
 /** A4 portrait with the same margins the board reports use. */
@@ -87,7 +88,8 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 		doc.font('Helvetica').fontSize(7.5).fillColor(C.textLight)
 			.text(
 				`Generated ${formatDate(new Date().toISOString())}` +
-					(m.targetDate ? `   ·   Target ${formatDate(m.targetDate)}` : '   ·   No target date') +
+					// The target is a calendar day, printed as the day set in any zone (card 2259).
+					(m.targetDate ? `   ·   Target ${formatDueDate(m.targetDate)}` : '   ·   No target date') +
 					(m.status !== 'open' ? '   ·   CLOSED' : ''),
 				mx, 66, { width: pw }
 			);

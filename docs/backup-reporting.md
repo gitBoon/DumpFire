@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.24
+version: 1.25
 status: As-Built
 date: 2026-10-19
 tags:
@@ -716,6 +716,35 @@ a report of nothing; `scopeId` is an id;
 address, `recipients[1] must be an email address`: one that was not used to be dropped
 without a word and the report sent to the rest.
 
+Both take an optional `timeZone` (card 2258): the zone whose day the Overdue figure counts
+from, read as a schedule's `timeZone` is and refused in its words (`timeZone must be a time
+zone name, such as Europe/London`). The Reports page sends the viewer's browser zone; a call
+without one counts from the UTC day, as every report did before. The PDF of a report made by
+hand prints its period, generated date and completion dates in UTC whatever is sent, as the
+emailed one's mail writes its period.
+
+The Reports page sends "This month", "This quarter" and "Year to date" as dates (card 2271):
+from the first day of the month, the quarter or the year to today, both as the clock reads
+them in the zone it sends as `timeZone` (UTC when the browser gives none this server knows),
+so each is the custom range the viewer would type, read as whole UTC days and printed as the
+days chosen. The first day used to be sent as the browser's midnight, a moment, which the PDF
+printed in UTC: east of UTC the period began the day before ("30 Sept 2026" for October from
+London in summer). What a preset covers moved with it: east of UTC the first hours of the 1st
+by the viewer's clock (00:00 to 01:00 in UK summer time) are now in the month before, and west
+of UTC work finished in the evening after UTC's midnight (after 20:00 in New York in summer)
+is counted from the next day, as a custom range counts it.
+
+The rolling periods are calendar days too (card 2275): "Last 7 days" to "Last 90 days" run from
+that many days before today, and "Last 12 months" from the same date a year before (29
+February then the 28th), to today, sent as dates in the same zone. They were sent as moments,
+N × 24 hours back from the moment, printed as the UTC days of those moments: from London at
+00:30 BST both ends read the day before.
+
+Where the server does not know the zone the browser sends (a browser newer than the server can
+name one), the Reports page asks once more without it, so the report is made with its Overdue
+figure counted from the UTC day, and says so in a notice naming the zone. The period is the
+browser's own dates either way.
+
 The emailed report's answer says what was sent (card 2113): `503` with no mail set up,
 before the PDF is built; `200` when every recipient was sent it; `200` naming the addresses
 not reached when some were; `502` when none was; each but the `503` with every recipient's
@@ -781,7 +810,8 @@ flowchart TD
 PDFs are rendered server-side using PDFKit with a professional layout:
 
 - **Header** — DumpFire branding, report title, date range, detail level and (when set) the status filter
-- **Executive Summary** — Six stat tiles: Cards, Tasks incl. subtasks, Completed, Created, Outstanding, Overdue, with a caption spelling out what each one counts
+- **Executive Summary** — Six stat tiles: Cards, Tasks incl. subtasks, Completed, Created, Outstanding, Overdue, with a caption spelling out what each one counts. Overdue is the open cards due before the reader's today (card 2258): the day in the zone the Reports page sends, or the schedule's zone, and the UTC day when there is none. It was always the UTC day, so east of UTC after midnight a card due the day before was not yet counted
+- **Dates** — A due date (the Due Date column) is printed as the day stored, in any zone (`formatDueDate`). The period, the generated date and the completion dates are printed in the schedule's zone for a scheduled report and in UTC for one made by hand (card 2258); they were printed in the server's zone, so a Tokyo schedule's PDF read a day before its mail's period
 - **Status banner** — Only when a filter is active: "SHOWING Completed in period only — N cards" etc.
 - **Priority Breakdown** — Visual bar chart of the slice being reported (Outstanding by default, Completed in Period for the completed filter)
 - **Assignee Performance** — Table of completions per user (scope-wide)
@@ -805,7 +835,7 @@ Configured per-user via the Reports page:
 | `timeOfDay` | HH:MM, 00:00 to 23:59; empty is 09:00 | When to generate: a wall-clock time in `timeZone` |
 | `timeZone` | An IANA zone name, such as `Europe/London`, at most 64 characters; stored as the server names it (`europe/london` is `Europe/London`, `Etc/UTC` is `UTC`). None is `UTC` | The zone `timeOfDay` is read in (card 2159, migration `0058`). The Reports page sends its creator's browser zone |
 | `recipients` | Up to 10 addresses, separated by commas, semicolons or spaces (tabs and new lines too), an address written `<address>` read as the one inside; each part must be an address. Stored as the addresses it is sent to, lower-cased, each once, separated by `, ` | Where to send |
-| `periodDays` | 1-366 | Lookback period in days: from the same time by the schedule's clock that many dates before the run, in its `timeZone`, so a week across a clock change is still Monday 09:00 to Monday 09:00 (card 2159). The mail's "Period" is written in that zone too |
+| `periodDays` | 1-366 | Lookback period in days: from the same time by the schedule's clock that many dates before the run, in its `timeZone`, so a week across a clock change is still Monday 09:00 to Monday 09:00 (card 2159). The mail's "Period" is written in that zone too, and so are the PDF's period, generated date and completion dates (card 2258), and the day its Overdue figure counts from, at the run's own moment, so a run made late counts from where its period ends |
 | `detailLevel` | summary/detailed | Metrics and listings only, or full descriptions, business value and subtasks |
 | `statusFilter` | all/completed/in_progress/todo | Which slice to list (see Status Filter); stored in `report_schedules.status_filter`, migration `0041` |
 | `enabled` | boolean | Active toggle |

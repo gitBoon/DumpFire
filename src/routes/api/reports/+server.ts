@@ -3,6 +3,10 @@
  *
  * POST /api/reports — Generate a PDF report and return it as binary.
  *                     No storage — the PDF is ephemeral.
+ *
+ * An optional `timeZone` (an IANA name, as the Reports page sends the
+ * browser's) is the zone whose day the Overdue figure counts from (card
+ * 2258); without one it is UTC. The PDF's dates are printed in UTC either way.
  */
 
 import { error } from '@sveltejs/kit';
@@ -14,7 +18,7 @@ import {
 	generateReportPdf, readReportAssignee, readReportWindow,
 	REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS
 } from '$lib/server/reports';
-import { readBody, readChoice, readId } from '$lib/server/request-body';
+import { readBody, readChoice, readId, readTimeZone } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 const MISSING = 'Missing required fields: scope, periodStart, periodEnd';
@@ -36,6 +40,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const statusFilter = readChoice(body, 'statusFilter', { from: REPORT_STATUS_FILTERS }) ?? 'all';
 	// Optional: narrow the whole report to one person's assigned work.
 	const assigneeUserId = readReportAssignee(body);
+	// Optional: the reader's time zone, whose day decides the Overdue figure
+	// (card 2258), read as a schedule's is. None is UTC.
+	const timeZone = readTimeZone(body, 'timeZone', {});
 
 	if (scope === 'all' && user.role !== 'admin' && user.role !== 'superadmin') {
 		throw error(403, 'Only admins can generate all-boards reports');
@@ -46,18 +53,18 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	if (scope === 'board') {
 		if (scopeId === null) throw error(400, 'scopeId required for board scope');
-		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId);
+		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId, timeZone);
 		if (!reportData) throw error(403, 'Board not found or no access');
 		const board = db.select().from(boards).where(eq(boards.id, scopeId)).get();
 		filename = `dumpfire-report-${(board?.name || 'board').toLowerCase().replace(/\s+/g, '-')}`;
 	} else if (scope === 'category') {
 		if (scopeId === null) throw error(400, 'scopeId required for category scope');
-		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId);
+		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId, timeZone);
 		if (!reportData) throw error(403, 'Category not found or no accessible boards');
 		const cat = db.select().from(boardCategories).where(eq(boardCategories.id, scopeId)).get();
 		filename = `dumpfire-report-${(cat?.name || 'category').toLowerCase().replace(/\s+/g, '-')}`;
 	} else {
-		reportData = generateAllBoardsReport(periodStart, periodEnd, user, statusFilter, assigneeUserId);
+		reportData = generateAllBoardsReport(periodStart, periodEnd, user, statusFilter, assigneeUserId, timeZone);
 		if (!reportData) throw error(500, 'Failed to generate report');
 		filename = 'dumpfire-report-all-boards';
 	}

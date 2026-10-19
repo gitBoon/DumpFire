@@ -18,6 +18,9 @@
  * is known to be set up, before the PDF is built). The list is read by
  * `reportRecipients`, as the schedules and the page read one, and each
  * address is sent one mail, once.
+ *
+ * An optional `timeZone` is the zone whose day the Overdue figure counts from
+ * (card 2258), as POST /api/reports reads it; without one it is UTC.
  */
 
 import { error, json } from '@sveltejs/kit';
@@ -30,7 +33,7 @@ import {
 	REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS
 } from '$lib/server/reports';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
-import { readBody, readChoice, readEmailList, readId } from '$lib/server/request-body';
+import { readBody, readChoice, readEmailList, readId, readTimeZone } from '$lib/server/request-body';
 import { isSmtpConfigured, sendEmailWithAttachment } from '$lib/server/email';
 import { escapeHtml } from '$lib/escape-html';
 import { parseStamp } from '$lib/timestamps';
@@ -53,6 +56,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const statusFilter = readChoice(body, 'statusFilter', { from: REPORT_STATUS_FILTERS }) ?? 'all';
 	// Optional: narrow the whole report to one person's assigned work.
 	const assigneeUserId = readReportAssignee(body);
+	// Optional: the reader's time zone, whose day decides the Overdue figure
+	// (card 2258), read as a schedule's is. None is UTC.
+	const timeZone = readTimeZone(body, 'timeZone', {});
 
 	// A list of addresses, each one (R10). One that was not was dropped, and
 	// the report sent to the rest; and an entry that was not text was a 500.
@@ -84,16 +90,16 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	if (scope === 'board') {
 		if (scopeId === null) throw error(400, 'scopeId required');
-		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId);
+		reportData = generateBoardReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId, timeZone);
 		const board = db.select().from(boards).where(eq(boards.id, scopeId)).get();
 		scopeName = board?.name || 'Board';
 	} else if (scope === 'category') {
 		if (scopeId === null) throw error(400, 'scopeId required');
-		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId);
+		reportData = generateCategoryReport(scopeId, periodStart, periodEnd, user, statusFilter, assigneeUserId, timeZone);
 		const cat = db.select().from(boardCategories).where(eq(boardCategories.id, scopeId)).get();
 		scopeName = cat?.name || 'Category';
 	} else {
-		reportData = generateAllBoardsReport(periodStart, periodEnd, user, statusFilter, assigneeUserId);
+		reportData = generateAllBoardsReport(periodStart, periodEnd, user, statusFilter, assigneeUserId, timeZone);
 		scopeName = 'All Boards';
 	}
 

@@ -30,7 +30,7 @@
 	import SpendModal from '$lib/components/SpendModal.svelte';
 	import { drawnColour } from '$lib/colours';
 	import { parseStamp } from '$lib/timestamps';
-	import { daysUntilDue, formatDueDate } from '$lib/utils/date-utils';
+	import { daysUntilDue, dueFigures, formatDueDate } from '$lib/utils/date-utils';
 
 	let { data }: { data: PageData } = $props();
 
@@ -97,8 +97,13 @@
 		}
 	}
 
-	/** A card's due date in words, counted in calendar days from the viewer's own today (card 2241). */
+	/**
+	 * A card's due date in words, counted in calendar days from the viewer's own
+	 * today (card 2241). `clock` is read so that the Active Tasks list's words
+	 * move on at midnight, on the due figures' tick (card 2258).
+	 */
 	function dueText(dateStr: string | null): string | null {
+		void clock;
 		if (!dateStr) return null;
 		const d = daysUntilDue(dateStr);
 		if (d === null) return null;
@@ -199,6 +204,8 @@
 
 	onMount(async () => {
 		runTypewriter();
+		// The due figures' day moves on at midnight, on the board pages' tick.
+		clockInterval = setInterval(() => { clock = new Date(); }, 15000);
 		stopLiveRefresh = connectLiveRefresh(() => invalidateAll());
 		const res = await fetch('/api/requests');
 		if (res.ok) {
@@ -231,6 +238,7 @@
 		if (stopLiveRefresh) stopLiveRefresh();
 		if (typewriterTimer) clearTimeout(typewriterTimer);
 		if (inboxPollTimer) clearInterval(inboxPollTimer);
+		if (clockInterval) clearInterval(clockInterval);
 	});
 
 	async function createBoard() {
@@ -333,6 +341,24 @@
 	let favouriteBoards = $derived(data.boards.filter(b => favouriteBoardIds.has(b.id)));
 
 	const a = $derived(data.analytics);
+
+	// ─── Due figures (card 2258) ─────────────────────────────────────────────
+	// Overdue, due soon and Upcoming Deadlines are counted here, from the due
+	// cards the load sends, in the viewer's own day, as the badges are. The
+	// server runs in UTC and knows no viewer's zone, so until the page has
+	// loaded (`clock` is null, on the server and while the page hydrates) they
+	// are the UTC day's at the moment the load ran; the two renders agree, and
+	// the figures move to the viewer's day once the page is up. Set again on
+	// each live refresh, and on a tick, so a page left open across midnight
+	// moves on. The cards overdue in every zone come counted, as `longOverdue`,
+	// and are not sent.
+	let clock = $state<Date | null>(null);
+	let clockInterval: ReturnType<typeof setInterval> | null = null;
+	$effect(() => {
+		void data.analytics;
+		clock = new Date();
+	});
+	const due = $derived(clock ? dueFigures(a.dueCards, clock, undefined, a.longOverdue) : dueFigures(a.dueCards, new Date(a.asOf), 'UTC', a.longOverdue));
 
 	// Group boards by category for dashboard display
 	type BoardGroup = { name: string; color: string | null; boards: typeof data.boards; total: number; done: number };
@@ -592,14 +618,20 @@
 		{ label: '> 1m', count: a.agingBuckets.stale, color: 'var(--priority-critical)' }
 	]);
 
-	/** Calendar days to a deadline, from the viewer's own today (card 2241). */
+	/**
+	 * Calendar days to a deadline, from the viewer's own today (card 2241).
+	 * `clock` is read so that a deadline's words move on with the list, at
+	 * midnight, as a badge's do on its tick (card 2258).
+	 */
 	function deadlineDays(dateStr: string): number {
+		void clock;
 		return daysUntilDue(dateStr) ?? 0;
 	}
 
 	/**
-	 * A deadline in words. The list is chosen by the server's day, so one it
-	 * calls today can be yesterday for the viewer: that reads as overdue.
+	 * A deadline in words. The list is chosen by the viewer's own day once the
+	 * page has loaded (card 2258); until then by the UTC day, so one it calls
+	 * today can be yesterday for the viewer: that reads as overdue.
 	 */
 	function dueLabel(dateStr: string): string {
 		const d = deadlineDays(dateStr);
@@ -975,8 +1007,8 @@
 				<div class="stat-card glass-glow stat-card-clickable" onclick={openActiveTasksModal} id="active-tasks-card">
 					<div class="stat-header">
 						<span class="stat-label">Active Tasks</span>
-						{#if a.dueSoon > 0}
-							<span class="stat-badge warn" title="Due in next 3 days">{a.dueSoon} due soon</span>
+						{#if due.dueSoon > 0}
+							<span class="stat-badge warn" title="Due in next 3 days">{due.dueSoon} due soon</span>
 						{/if}
 					</div>
 					<div class="stat-value">{a.active}</div>
@@ -1022,11 +1054,11 @@
 					</div>
 				</div>
 
-				<div class="stat-card glass-glow" class:accent-rose={a.overdue > 0 || a.pendingRequests > 0}>
+				<div class="stat-card glass-glow" class:accent-rose={due.overdue > 0 || a.pendingRequests > 0}>
 					<div class="stat-header">
 						<span class="stat-label">Attention</span>
 					</div>
-					<div class="stat-value {a.overdue > 0 ? 'pulse-text' : ''}">{a.overdue} <span class="text-sm">overdue</span></div>
+					<div class="stat-value {due.overdue > 0 ? 'pulse-text' : ''}">{due.overdue} <span class="text-sm">overdue</span></div>
 					<div class="stat-sub">{a.pendingRequests} inbox pending</div>
 				</div>
 
@@ -1198,11 +1230,11 @@
 			{/if}
 
 			<!-- Upcoming Deadlines -->
-			{#if a.upcomingDeadlines.length > 0}
+			{#if due.upcoming.length > 0}
 				<div class="sidebar-panel glass">
 					<h3 class="panel-title">Upcoming Deadlines</h3>
 					<div class="deadlines-list">
-						{#each a.upcomingDeadlines as dl}
+						{#each due.upcoming as dl}
 							<div class="deadline-item" class:deadline-urgent={deadlineDays(dl.dueDate) <= 1} class:deadline-soon={deadlineDays(dl.dueDate) > 1 && deadlineDays(dl.dueDate) <= 3}>
 								<div class="deadline-priority">
 									{dl.priority === 'critical' ? '🔴' : dl.priority === 'high' ? '🟠' : dl.priority === 'medium' ? '🟡' : '🟢'}
@@ -1226,7 +1258,7 @@
 				</div>
 				<div class="qs-row">
 					<span class="qs-label">Due Soon (3d)</span>
-					<span class="qs-value" class:qs-warn={a.dueSoon > 0}>{a.dueSoon}</span>
+					<span class="qs-value" class:qs-warn={due.dueSoon > 0}>{due.dueSoon}</span>
 				</div>
 				<div class="qs-row">
 					<span class="qs-label">Monthly Rate</span>
@@ -1440,10 +1472,10 @@
 											<div class="atm-card-meta">
 												<span class="atm-card-col">{card.columnName}</span>
 												{#if card.dueDate}
-													{@const due = dueText(card.dueDate)}
-													{#if due}
-														<span class="atm-card-due" class:overdue={due.includes('overdue')} class:today={due === 'Today'} class:soon={due === 'Tomorrow'}>
-															📅 {due}
+													{@const dueWords = dueText(card.dueDate)}
+													{#if dueWords}
+														<span class="atm-card-due" class:overdue={dueWords.includes('overdue')} class:today={dueWords === 'Today'} class:soon={dueWords === 'Tomorrow'}>
+															📅 {dueWords}
 														</span>
 													{/if}
 												{/if}

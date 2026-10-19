@@ -22,6 +22,12 @@
  * - `sameTimeDaysBefore(at, days, zone)` is the moment `zone`'s clock showed
  *   the same time `days` dates before `at`: where a scheduled report's days
  *   begin.
+ * - `calendarDayIn(at, zone)` is the date `zone`'s clock showed at `at`: the
+ *   reader's today, where a due date is counted from it (card 2258).
+ * - `calendarPeriod(preset, at, zone)` is the days a Reports page period
+ *   covers ("Last 7 days", "This month" and the rest, `CALENDAR_PRESETS`), as
+ *   `zone`'s clock reads the date: what the page sends for one (cards 2271
+ *   and 2275).
  *
  * A time that does not exist on the day the clocks go forward (01:30 in the UK
  * on the last Sunday in March) is sent an hour later by the clock: 02:30 BST,
@@ -183,6 +189,70 @@ export function sameTimeDaysBefore(at: Date, days: number, timeZone: unknown): D
 	// The seconds and milliseconds are carried over: the clocks change on a minute.
 	const withinMinute = clock.second * 1000 + (((ms % 1000) + 1000) % 1000);
 	return new Date(resolve(date, clock.hour, clock.minute, zone) + withinMinute);
+}
+
+/**
+ * The date `timeZone`'s clock showed at `at` (card 2258): the day a report's
+ * Overdue figure counts from, and the dashboard's before the page has loaded.
+ * At 23:30 UTC on 19 October it is the 20th in London and the 19th in New
+ * York. A zone this server does not know is read as UTC, as
+ * `sameTimeDaysBefore` reads one.
+ */
+export function calendarDayIn(at: Date, timeZone: unknown): { year: number; month: number; day: number } {
+	const clock = wallClock(at.getTime(), canonicalTimeZone(timeZone) ?? DEFAULT_SCHEDULE_TIME_ZONE);
+	return { year: clock.year, month: clock.month, day: clock.day };
+}
+
+/**
+ * The Reports page's periods, every one but a custom range: the last 7, 14,
+ * 30, 60 and 90 days, this month, this quarter, the year to date and the last
+ * 12 months. Each is calendar days (cards 2271 and 2275).
+ */
+export const CALENDAR_PRESETS = ['7d', '14d', '30d', '60d', '90d', 'month', 'quarter', 'ytd', 'year'] as const;
+export type CalendarPreset = (typeof CALENDAR_PRESETS)[number];
+
+/** Whether `value` is one of `CALENDAR_PRESETS`. */
+export function isCalendarPreset(value: unknown): value is CalendarPreset {
+	return (CALENDAR_PRESETS as readonly unknown[]).includes(value);
+}
+
+/** How many days back each of the last-N-days presets starts. */
+const DAYS_BACK: Partial<Record<CalendarPreset, number>> = { '7d': 7, '14d': 14, '30d': 30, '60d': 60, '90d': 90 };
+
+/**
+ * The days a preset covers at `at`, to the date `timeZone`'s clock shows,
+ * each `YYYY-MM-DD`. "This month", "This quarter" (from January, April, July
+ * or October) and "Year to date" start on the first day of each (card 2271);
+ * "Last N days" N days before today, and "Last 12 months" on the same date a
+ * year before, 29 February then being the 28th (card 2275). A zone this
+ * server does not know is read as UTC, as `calendarDayIn` reads one. The
+ * routes read a date as a whole UTC day, so a preset is the custom range the
+ * viewer would type. The page built each start on the browser's clock and
+ * sent it, and the end, as moments, which the PDF printed in UTC: from London
+ * in summer "This month" in October began "30 Sept 2026", and after midnight
+ * "Last 7 days" ended on the day before.
+ */
+export function calendarPeriod(preset: CalendarPreset, at: Date, timeZone: unknown): { start: string; end: string } {
+	const today = calendarDayIn(at, timeZone);
+	const end = isoDay(today.year, today.month, today.day);
+	const back = DAYS_BACK[preset];
+	if (back !== undefined) {
+		// `Date.UTC` carries a day below 1 into the months and years before.
+		const start = new Date(Date.UTC(today.year, today.month - 1, today.day - back));
+		return { start: isoDay(start.getUTCFullYear(), start.getUTCMonth() + 1, start.getUTCDate()), end };
+	}
+	if (preset === 'year') {
+		// Day 0 of the next month is the last day of this one.
+		const lastDay = new Date(Date.UTC(today.year - 1, today.month, 0)).getUTCDate();
+		return { start: isoDay(today.year - 1, today.month, Math.min(today.day, lastDay)), end };
+	}
+	const firstMonth = preset === 'month' ? today.month : preset === 'quarter' ? today.month - ((today.month - 1) % 3) : 1;
+	return { start: isoDay(today.year, firstMonth, 1), end };
+}
+
+/** A date written `YYYY-MM-DD`. */
+function isoDay(year: number, month: number, day: number): string {
+	return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
 // ─── Reading a wall clock in a zone ──────────────────────────────────────────

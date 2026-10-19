@@ -2860,11 +2860,14 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		['POST /api/reports', 'owner', at('/api/reports'), (w) => report(w, { detailLevel: 'brief' }), 'detailLevel must be one of: summary, detailed'],
 		['POST /api/reports', 'owner', at('/api/reports'), (w) => report(w, { statusFilter: 'done' }), 'statusFilter must be one of: all, completed, in_progress, todo'],
 		['POST /api/reports', 'owner', at('/api/reports'), (w) => report(w, { assigneeUserId: 'all' }), 'assigneeUserId must be a user id'],
+		// The reader's zone, whose day decides the Overdue figure (card 2258), read as a schedule's is.
+		['POST /api/reports', 'owner', at('/api/reports'), (w) => report(w, { timeZone: 'Mars/Base' }), 'timeZone must be a time zone name, such as Europe/London'],
 		// POST /api/reports/email
 		['POST /api/reports/email', 'owner', at('/api/reports/email'), (w) => mailed(w, { recipients: 'a@example.test' }), 'At least one recipient email is required'],
 		['POST /api/reports/email', 'owner', at('/api/reports/email'), (w) => mailed(w, { recipients: ['a@example.test, b@example.test'] }), 'recipients[0] must be an email address'],
 		['POST /api/reports/email', 'owner', at('/api/reports/email'), (w) => mailed(w, { scope: 'everything' }), 'Invalid scope. Must be: board, category, or all'],
 		['POST /api/reports/email', 'owner', at('/api/reports/email'), (w) => mailed(w, { periodEnd: 'tomorrow' }), 'periodEnd is not a date'],
+		['POST /api/reports/email', 'owner', at('/api/reports/email'), (w) => mailed(w, { timeZone: 'Mars/Base' }), 'timeZone must be a time zone name, such as Europe/London'],
 		// POST /api/requests, signed in: a field that was not text was a 500, and a priority it did not know was medium.
 		['POST /api/requests', 'owner', at('/api/requests'), (w) => asked(w, { title: 5 }), 'title must be text'],
 		['POST /api/requests', 'owner', at('/api/requests'), (w) => asked(w, { targetType: 'board' }), 'Invalid target type'],
