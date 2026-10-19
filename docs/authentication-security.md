@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.47
+version: 1.48
 status: As-Built
 date: 2026-10-19
 tags:
@@ -1485,7 +1485,7 @@ superadmin...", for everybody else who is not the superadmin, an administrator i
 | `GET /api/admin/export` | Download every password hash and email and every webhook's address. It held every session id and unused invite token too, and until card 2169 the mail password, every backup destination's credentials and every webhook's signing secret. It carries a seal made with a key no backup holds, so that only this server fills its secrets back into it, unchanged |
 | `POST /api/admin/import` | Replace every account with accounts of their own |
 | `POST /api/admin/reset` | Clear every account, and be the superadmin of the installation they then set up |
-| `GET`, `PUT`, `POST /api/admin/backup` | Add a destination of their own and have the whole database sent to it. The `GET` masks every secret field of every destination (card 2187; it answered a Google Drive refresh token as stored), and a `PUT` keeps a masked secret only for the one stored destination that is the same in type, name and every setting that is not secret (card 2190; it was taken by the destination's place in the list), and, for SFTP, whose confirmed host key it keeps or adds where none was stored (card 2250; below): a key added is saved, and shown on the destination |
+| `GET`, `PUT`, `POST /api/admin/backup` | Add a destination of their own and have the whole database sent to it. The `GET` masks every secret field of every destination (card 2187; it answered a Google Drive refresh token as stored), and a `PUT` keeps a masked secret only for the one stored destination that is the same in type, name and every setting that is not secret (card 2190; it was taken by the destination's place in the list), and, for SFTP, whose confirmed host key it keeps or adds where none was stored (card 2250; below): a key added is saved, and shown on the destination. Each SFTP host key a `PUT` adds, changes, clears or removes with its destination is one `WARN` line under `BACKUP`, filed under the saving account, written only once the save is committed (card 2267); as a `WARN`, it is not written with `LOG_LEVEL` at `ERROR` (the default is `INFO`) |
 | `POST /api/admin/backup/test` | Have a stored destination's password sent to a host of their choosing, which until card 2190 a test whose secrets were masked did: it connected with the stored ones whatever host it named. Now a masked secret is used only for an unchanged destination, by the `PUT`'s rule, and any other is refused `400` before anything connects; for SFTP its host key must be the stored one exactly, none for none, since a Test that could add one would send the stored password to the key it named (the card 2250 review's M1). An SFTP Test with no host key confirmed sends no secret at all and answers the key presented (`hostKey`); one with a key refuses any other before a credential is sent, answering both keys (card 2250; below) |
 | `GET`, `POST /api/admin/backup/gdrive/auth` | Connect a Google Drive of their own as a destination. Connect asks Google for `drive.file`, DumpFire's own files, where it asked for the whole of Drive (card 2188). The `POST` takes a code only with the state the same session's `GET` put in the consent address, once and within ten minutes, and exchanges it with that Connect's PKCE verifier (card 2251; below) |
 | `GET`, `PUT`, `POST /api/admin/smtp` | Point mail at a server of their own and the App URL at a host of their own, and read an invite meant for somebody else. A `PUT` keeps a masked or missing mail password only while the host, port, user name and "Allow mail without a checked, encrypted connection" are as stored, and turning that setting on or off from the panel needs the password typed and writes a `WARN` line naming who (cards 2190 and 2189), so a session in the wrong hands cannot send the stored password elsewhere, or lower its protection, without knowing it. The host is compared trimmed of ASCII spaces and tabs, ASCII letters in any case, and stored as it was saved while the password is kept, so the host compared is the host connected to (the review-fix pass's S1). A restore also brings the setting in, with the backup's other mail settings and with neither: it keeps this server's password only where the setting is this server's, and its "To enter again" line names the box where it differs (S5) |
@@ -1615,8 +1615,14 @@ user and team routes.
   be shown their own key and press Confirm, which saves that key, a key added where none was
   keeping the masked password, and tests again at once, so the password goes to them
   there and then. The comparison on the server has to come before Confirm, not after. A save
-  writes no log or audit line, so a saved key is no lasting record: whoever then has the
-  password can save the real key back. A Test cannot send it on its own: one that
+  writes one `[WARN] [BACKUP] SFTP host key of destination "…" at host:22 added: …` line
+  (`changed from … to …`, `cleared: was …`, `removed with the destination: was …`) per key
+  it adds, changes, clears or removes, filed under the account that saved it, with the meta
+  `{ destination, from, to }` (card 2267), the old key followed by `(at oldhost:22)` and the
+  meta by `fromAt` where the same save moved the destination: so a key confirmed this way and
+  the real key put back afterwards leave both changes on record, under the account that saved
+  them, though the password has gone by then (the line is a `WARN`, so it is not written with
+  `LOG_LEVEL` at `ERROR`; the default is `INFO`). A Test cannot send it on its own: one that
   names a key with the password masked is refused unless it is the stored key (the card
   2250 review's M1). That is no worse than before
   card 2250, when the password went to whoever answered with neither step, and it closes for

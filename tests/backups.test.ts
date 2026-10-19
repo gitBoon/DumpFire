@@ -72,6 +72,7 @@ import {
 	backupSealKey,
 	clearSecrets,
 	failedCheckSentence,
+	hostKeyChanges,
 	sealCopy,
 	sealKeyHere,
 	sealOf,
@@ -3055,6 +3056,214 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 
 			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
 			expect(storedDestinations()).toEqual([{ ...NAS, hostKey: OTHER_HOST_KEY, password: 'typed-again', privateKey: '' }]);
+		});
+
+		describe('the line a save writes for each host key it adds, changes or removes (card 2267)', () => {
+			// The tests keep ERROR and above; these lines are WARN.
+			let level: string | undefined;
+			beforeEach(() => {
+				level = process.env.LOG_LEVEL;
+				process.env.LOG_LEVEL = 'WARN';
+				vi.spyOn(console, 'warn').mockImplementation(() => {});
+			});
+			afterEach(() => {
+				if (level === undefined) delete process.env.LOG_LEVEL;
+				else process.env.LOG_LEVEL = level;
+			});
+
+			/** The lines a save of a host key writes (card 2267), oldest first. */
+			const keyLines = () =>
+				(
+					sqlite
+						.prepare("SELECT level, context, message, meta, user_id FROM system_logs WHERE message LIKE 'SFTP host key of destination%' ORDER BY id")
+						.all() as { level: string; context: string; message: string; meta: string | null; user_id: number | null }[]
+				).map((row) => ({ ...row, meta: row.meta === null ? null : JSON.parse(row.meta) }));
+			const at = 'SFTP host key of destination "NAS" at nas.example.test:22';
+			const line = (message: string, from: string, to: string) => ({
+				level: 'WARN',
+				context: 'BACKUP',
+				message,
+				meta: { destination: 'NAS', from, to },
+				user_id: chief.id
+			});
+
+			it('writes one WARN line under BACKUP, filed under the account, when a key is confirmed where none was (card 2267)', async () => {
+				const saved = await put(await withNas({ hostKey: HOST_KEY }));
+
+				expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+				expect(keyLines()).toEqual([line(`${at} added: ${HOST_KEY}`, '', HOST_KEY)]);
+			});
+
+			it('writes one line naming both keys when a confirmed key is changed with the password typed again (card 2267)', async () => {
+				store([{ ...NAS, hostKey: HOST_KEY }]);
+
+				const saved = await put(await withNas({ hostKey: OTHER_HOST_KEY, password: 'typed-again', privateKey: '' }));
+
+				expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+				expect(keyLines()).toEqual([line(`${at} changed from ${HOST_KEY} to ${OTHER_HOST_KEY}`, HOST_KEY, OTHER_HOST_KEY)]);
+			});
+
+			it('writes one line naming the key cleared when a confirmed key is emptied with the password typed again (card 2267)', async () => {
+				store([{ ...NAS, hostKey: HOST_KEY }]);
+
+				const saved = await put(await withNas({ hostKey: '', password: 'typed-again', privateKey: '' }));
+
+				expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+				expect(keyLines()).toEqual([line(`${at} cleared: was ${HOST_KEY}`, HOST_KEY, '')]);
+			});
+
+			it.each([
+				['changed', OTHER_HOST_KEY, `changed from ${HOST_KEY} (at nas.example.test:22) to ${OTHER_HOST_KEY}`],
+				['cleared', '', `cleared: was ${HOST_KEY} (at nas.example.test:22)`]
+			])('names the old host and port too when a key is %s by a save that also moves the destination (the card 2267 review)', async (_case, hostKey, words) => {
+				store([{ ...NAS, hostKey: HOST_KEY }]);
+
+				const saved = await put(await withNas({ host: 'moved.example.test', port: 2222, hostKey, password: 'typed-again', privateKey: '' }));
+
+				expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+				expect(keyLines()).toEqual([
+					{
+						...line(`SFTP host key of destination "NAS" at moved.example.test:2222 ${words}`, HOST_KEY, hostKey),
+						meta: { destination: 'NAS', from: HOST_KEY, to: hostKey, fromAt: 'nas.example.test:22' }
+					}
+				]);
+			});
+
+			it('leaves the old place out where the port is left empty, which is 22, and names it where only the port changed (the card 2267 review)', async () => {
+				store([{ ...NAS, hostKey: HOST_KEY }]);
+
+				const samePlace = await put(await withNas({ port: null, hostKey: OTHER_HOST_KEY, password: 'typed-again', privateKey: '' }));
+				const newPort = await put(await withNas({ port: 2200, hostKey: HOST_KEY, password: 'typed-again', privateKey: '' }));
+
+				expect([samePlace.status, newPort.status], JSON.stringify([samePlace.body, newPort.body])).toEqual([200, 200]);
+				expect(keyLines()).toEqual([
+					line(`${at} changed from ${HOST_KEY} to ${OTHER_HOST_KEY}`, HOST_KEY, OTHER_HOST_KEY),
+					{
+						...line(`SFTP host key of destination "NAS" at nas.example.test:2200 changed from ${OTHER_HOST_KEY} (at nas.example.test:22) to ${HOST_KEY}`, OTHER_HOST_KEY, HOST_KEY),
+						meta: { destination: 'NAS', from: OTHER_HOST_KEY, to: HOST_KEY, fromAt: 'nas.example.test:22' }
+					}
+				]);
+			});
+
+			it.each([
+				['left out of the list', (list: Record<string, unknown>[]) => list.slice(1)],
+				['saved as another type under its name', (list: Record<string, unknown>[]) => [{ ...BUCKET, name: 'NAS', secretAccessKey: 'typed' }, ...list.slice(1)]]
+			])('writes one line when a destination with a key is %s (card 2267, decision 2)', async (_case, change) => {
+				store([{ ...NAS, hostKey: HOST_KEY }, ...STORED.slice(1)]);
+
+				const saved = await put(change(await shown()));
+
+				expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+				expect(keyLines()).toEqual([line(`${at} removed with the destination: was ${HOST_KEY}`, HOST_KEY, '')]);
+			});
+
+			it('writes no line for the confirmed key sent back as ssh-keygen prints it, nor for a save of the schedule alone (card 2267)', async () => {
+				store([{ ...NAS, hostKey: HOST_KEY }]);
+
+				const again = await put(await withNas({ hostKey: `256 ${HOST_KEY.split(' ')[1]} root@nas (ED25519)` }));
+				const schedule = await api('PUT', '/api/admin/backup', { user: chief, body: { schedule: 'daily' } });
+
+				expect([again.status, schedule.status]).toEqual([200, 200]);
+				expect(keyLines()).toEqual([]);
+			});
+
+			it.each([
+				['changed', { hostKey: OTHER_HOST_KEY }],
+				['emptied', { hostKey: '' }],
+				['not sent', { hostKey: undefined }]
+			])('writes no line when a confirmed key %s with the password masked is refused (card 2267)', async (_case, change) => {
+				store([{ ...NAS, hostKey: HOST_KEY }]);
+				const before = snapshotDb();
+
+				const saved = await put([(await withNas(change))[0]]);
+
+				expect(saved.status).toBe(400);
+				expect(keyLines()).toEqual([]);
+				expectUnchanged(before);
+			});
+
+			it('writes no line for a key change whose save fails after the line was due: the line waits for the commit (card 2267)', async () => {
+				sqlite.exec(
+					"CREATE TEMP TRIGGER backup_config_frozen BEFORE UPDATE ON settings WHEN NEW.key = 'backup_config' BEGIN SELECT RAISE(ABORT, 'frozen'); END;" +
+						"CREATE TEMP TRIGGER backup_config_frozen_insert BEFORE INSERT ON settings WHEN NEW.key = 'backup_config' BEGIN SELECT RAISE(ABORT, 'frozen'); END;"
+				);
+				try {
+					await expect(put(await withNas({ hostKey: HOST_KEY }))).rejects.toThrow('frozen');
+				} finally {
+					sqlite.exec('DROP TRIGGER backup_config_frozen; DROP TRIGGER backup_config_frozen_insert;');
+				}
+
+				expect(storedDestinations()[0]).toEqual(NAS);
+				expect(keyLines()).toEqual([]);
+			});
+
+			it('writes the name of a destination holding a line break on one line (card 2267)', async () => {
+				const named = { ...NAS, name: 'N\nAS', password: 'typed', privateKey: '', hostKey: HOST_KEY };
+
+				const saved = await put([named]);
+
+				expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+				const [only, ...rest] = keyLines();
+				expect(rest).toEqual([]);
+				expect(only.message).toBe(`SFTP host key of destination "N AS" at nas.example.test:22 added: ${HOST_KEY}`);
+				expect(only.message).not.toMatch(/[\r\n]/);
+			});
+		});
+	});
+
+	describe('hostKeyChanges, the SFTP host keys a save adds, changes or removes (card 2267)', () => {
+		const sftp = (name: string, hostKey: unknown, more: Record<string, unknown> = {}) => ({ ...NAS, name, hostKey, ...more });
+		const RSA_SAME = `ssh-rsa ${HOST_KEY.split(' ')[1]}`;
+
+		it('reads a stored key that does not read as none', () => {
+			expect(hostKeyChanges([sftp('NAS', 'not a key')], [sftp('NAS', HOST_KEY)])).toEqual([
+				{ name: 'NAS', host: 'nas.example.test', port: 22, from: '', to: HOST_KEY, removed: false }
+			]);
+			expect(hostKeyChanges([sftp('NAS', 'not a key')], [sftp('NAS', '')])).toEqual([]);
+		});
+
+		it('never names an S3, Google Drive or OneDrive destination', () => {
+			const others = STORED.slice(1);
+			expect(hostKeyChanges(others, [])).toEqual([]);
+			expect(hostKeyChanges([], others)).toEqual([]);
+			expect(hostKeyChanges(others, others.map((d) => ({ ...d, hostKey: HOST_KEY })))).toEqual([]);
+		});
+
+		it('counts a change of type with the same fingerprint as a change (decision 3)', () => {
+			expect(hostKeyChanges([sftp('NAS', HOST_KEY)], [sftp('NAS', RSA_SAME)])).toEqual([
+				{ name: 'NAS', host: 'nas.example.test', port: 22, from: HOST_KEY, to: RSA_SAME, removed: false }
+			]);
+		});
+
+		it('gives one entry per destination changed, with the host and port it is saved with, or was stored with when it is gone', () => {
+			const before = [sftp('NAS', HOST_KEY), sftp('Old', OTHER_HOST_KEY, { host: 'old.example.test', port: 2222 }), sftp('Same', HOST_KEY)];
+			const after = [sftp('NAS', OTHER_HOST_KEY, { host: 'moved.example.test', port: 0 }), sftp('Same', HOST_KEY), sftp('New', HOST_KEY)];
+
+			expect(hostKeyChanges(before, after)).toEqual([
+				{ name: 'NAS', host: 'moved.example.test', port: 22, from: HOST_KEY, to: OTHER_HOST_KEY, removed: false, fromAt: 'nas.example.test:22' },
+				{ name: 'New', host: 'nas.example.test', port: 22, from: '', to: HOST_KEY, removed: false },
+				{ name: 'Old', host: 'old.example.test', port: 2222, from: OTHER_HOST_KEY, to: '', removed: true }
+			]);
+		});
+
+		it('names where a changed or cleared key was only when the destination moved, and never for a key added (the card 2267 review)', () => {
+			const moved = { host: 'moved.example.test', port: 2222 };
+			const changes = hostKeyChanges(
+				[sftp('Changed', HOST_KEY), sftp('Cleared', HOST_KEY), sftp('Added', ''), sftp('Stayed', HOST_KEY, { port: 22 })],
+				[sftp('Changed', OTHER_HOST_KEY, moved), sftp('Cleared', '', moved), sftp('Added', HOST_KEY, moved), sftp('Stayed', OTHER_HOST_KEY, { port: '22' })]
+			);
+
+			expect(changes.map((change) => [change.name, change.fromAt])).toEqual([
+				['Changed', 'nas.example.test:22'],
+				['Cleared', 'nas.example.test:22'],
+				['Added', undefined],
+				['Stayed', undefined]
+			]);
+			expect(changes.filter((change) => 'fromAt' in change).map((change) => change.name)).toEqual(['Changed', 'Cleared']);
+		});
+
+		it('ignores what is not a destination, and a destination with no key either side', () => {
+			expect(hostKeyChanges([null, 'NAS', sftp('A', '')], [7, [], sftp('A', undefined), sftp('B', '')])).toEqual([]);
 		});
 	});
 

@@ -1050,6 +1050,72 @@ const keyAsStored = (destination: Entry): string => {
 	return key === null ? '' : hostKeyText(key);
 };
 
+/** One SFTP destination whose host key a save adds, changes or removes (card 2267): each key as stored, '' for none. */
+export interface HostKeyChange {
+	name: string;
+	host: string;
+	port: number;
+	from: string;
+	to: string;
+	/** The destination is gone from the save, or saved as another type: its key went with it. */
+	removed: boolean;
+	/**
+	 * Where the key it had belonged, `host:port`, when the same save moved the
+	 * destination as well as changing or clearing its key (the card 2267
+	 * review); absent where it did not move, or had no key.
+	 */
+	fromAt?: string;
+}
+
+/**
+ * The SFTP host keys a save of the destinations changes (card 2267), so that
+ * each is one line in the system log: a name in both lists whose key as
+ * stored differs, a name stored with a key that the save drops or makes
+ * another type (decision 2), and a name new in the save with a key. Keys are
+ * compared as stored, `<type> SHA256:…` (decision 3: a change of type with the
+ * same fingerprint is a change), so the same key sent back as `ssh-keygen -l`
+ * prints it, which `readDestination` stores canonical, is no change; stored
+ * text that does not read is no key. The host and port are the saved
+ * destination's, or the stored one's where it is gone, and `fromAt` the
+ * stored one's where a key that was there moves with the save. Only an SFTP
+ * destination is ever named.
+ */
+export function hostKeyChanges(before: readonly unknown[], after: readonly unknown[]): HostKeyChange[] {
+	const sftpIn = (list: readonly unknown[]) => list.filter((d): d is Entry => isEntry(d) && d.type === 'sftp' && typeof d.name === 'string');
+	const stored = sftpIn(before);
+	const saved = sftpIn(after);
+	const place = (destination: Entry) => ({
+		host: typeof destination.host === 'string' ? destination.host : '',
+		port: Number(destination.port) || 22
+	});
+	const change = (destination: Entry, from: string, to: string, removed: boolean): HostKeyChange => ({
+		name: destination.name as string,
+		...place(destination),
+		from,
+		to,
+		removed
+	});
+	const changes: HostKeyChange[] = [];
+	for (const destination of saved) {
+		const was = stored.find((d) => d.name === destination.name);
+		const from = was === undefined ? '' : keyAsStored(was);
+		const to = keyAsStored(destination);
+		if (from === to) continue;
+		const entry = change(destination, from, to, false);
+		// A key that was there, at a place the save leaves: the line names both places.
+		if (was !== undefined && from !== '') {
+			const old = place(was);
+			if (old.host !== entry.host || old.port !== entry.port) entry.fromAt = `${old.host}:${old.port}`;
+		}
+		changes.push(entry);
+	}
+	for (const destination of stored) {
+		const from = keyAsStored(destination);
+		if (from !== '' && !saved.some((d) => d.name === destination.name)) changes.push(change(destination, from, '', true));
+	}
+	return changes;
+}
+
 /**
  * `restored` with the secrets of `here` in it: a service account's JSON is
  * taken whole. A Google Drive refresh token brings the scope this server

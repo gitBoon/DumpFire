@@ -242,7 +242,12 @@
 	let backupRunning = $state(false);
 	let showAddDestination = $state(false);
 	let newDestType = $state<DestType>('sftp');
-	let testingDest = $state<string | null>(null);
+	/**
+	 * The ticket of each destination's Test still waiting for its answer, by
+	 * name (card 2268). Each Test clears only its own, so a destination's
+	 * button waits for its own Test whatever else is tested or saved meanwhile.
+	 */
+	let testsInFlight = $state<Record<string, number>>({});
 	let editingDest = $state<string | null>(null);
 
 	/**
@@ -262,7 +267,18 @@
 	 * number moved on by every Test and by every save or removal of the
 	 * destination, so that an answer that comes back after either says nothing.
 	 */
-	const hostKeyTests: Record<string, number> = {};
+	const hostKeyTests: Record<string, number> = Object.create(null);
+	/**
+	 * What a record kept by destination name holds for `name` itself, or
+	 * undefined: never what every object inherits, so that a destination named
+	 * `constructor` or `__proto__` reads as having nothing (the card 2268
+	 * review). testsInFlight, hostKeyChecks and hostKeyTests are read only
+	 * through this; hostKeyTests has no prototype either, so a number written
+	 * under `__proto__` is kept.
+	 */
+	function byName<T>(record: Record<string, T>, name: string): T | undefined {
+		return Object.hasOwn(record, name) ? record[name] : undefined;
+	}
 
 	// Destination form fields (shared for add/edit)
 	let destName = $state('');
@@ -511,7 +527,7 @@
 
 	/** Forget what the last Test of `name` said of its host key, and silence any Test of it still on its way (S3). */
 	function forgetHostKeyCheck(name: string) {
-		hostKeyTests[name] = (hostKeyTests[name] ?? 0) + 1;
+		hostKeyTests[name] = (byName(hostKeyTests, name) ?? 0) + 1;
 		hostKeyChecks = { ...hostKeyChecks, [name]: null };
 	}
 
@@ -522,12 +538,14 @@
 	}
 
 	async function testDestination(dest: DestinationUI) {
-		testingDest = dest.name;
 		const started = toasts.navigation();
 		// This Test's number: an answer that comes back after a later Test, or
 		// after the destination was saved or removed, says nothing (S3).
-		const ticket = (hostKeyTests[dest.name] ?? 0) + 1;
+		const ticket = (byName(hostKeyTests, dest.name) ?? 0) + 1;
 		hostKeyTests[dest.name] = ticket;
+		// Its button waits for this Test's own answer (card 2268). A save moves
+		// hostKeyTests on and never this, so a dropped answer still clears it.
+		testsInFlight = { ...testsInFlight, [dest.name]: ticket };
 		try {
 			const res = await sent(
 				() =>
@@ -541,7 +559,7 @@
 			if (!res) return;
 			// Answered: whether the destination could be reached is in the answer.
 			const result = await answerBody(res);
-			if (hostKeyTests[dest.name] !== ticket) return;
+			if (byName(hostKeyTests, dest.name) !== ticket) return;
 			// An SFTP Test that speaks of the host key is shown in the box under
 			// the destination, with Confirm where the key is not confirmed yet, and
 			// not in a toast as well (card 2250). Any other answer clears the box.
@@ -551,7 +569,10 @@
 			const said = typeof result?.message === 'string' && result.message ? result.message : null;
 			showToast(said || (result?.success ? 'Connection successful' : 'Connection failed'), result?.success ? 'success' : 'error', started);
 		} finally {
-			testingDest = null;
+			if (byName(testsInFlight, dest.name) === ticket) {
+				const { [dest.name]: _, ...rest } = testsInFlight;
+				testsInFlight = rest;
+			}
 		}
 	}
 
@@ -666,19 +687,78 @@
 	let gdriveConnecting = $state('');
 	let gdriveAuthCode = $state('');
 	let gdriveExchanging = $state(false);
+	/**
+	 * Google's consent address once the Connect's GET has answered, shown in
+	 * the box as a link in every state, and whether the browser blocked the
+	 * window opened on it (card 2266): Safari, a strict blocker or a slow
+	 * answer stop a window opened after the GET.
+	 */
+	let gdriveAuthUrl = $state('');
+	let gdriveBlocked = $state(false);
+	/** Each Connect's number, moved on whenever the box closes: an answer that comes back after a Cancel or a later Connect says and opens nothing (card 2266). */
+	let gdriveAttempt = 0;
+
+	/** Close the Connect box, and end the Connect it was for, with any exchange it had on its way. */
+	function closeGDriveConnect() {
+		gdriveAttempt++;
+		gdriveConnecting = '';
+		gdriveAuthCode = '';
+		gdriveAuthUrl = '';
+		gdriveBlocked = false;
+		gdriveExchanging = false;
+	}
+
+	/**
+	 * Whether the Connect's GET answered Google's own consent page over https
+	 * (the card 2266 review): only that is opened, or shown as a link. Anything
+	 * else, a `javascript:` address above all, is read as no address at all.
+	 */
+	function isGoogleConsent(authUrl: unknown): authUrl is string {
+		if (typeof authUrl !== 'string' || !authUrl) return false;
+		try {
+			const address = new URL(authUrl);
+			return address.protocol === 'https:' && address.host === 'accounts.google.com';
+		} catch {
+			return false;
+		}
+	}
 
 	async function connectGDriveOAuth(destName: string) {
+		const attempt = ++gdriveAttempt;
 		gdriveConnecting = destName;
 		gdriveAuthCode = '';
+		gdriveAuthUrl = '';
+		gdriveBlocked = false;
 		const started = toasts.navigation();
+		// Still this Connect: not cancelled, and no later one started. The
+		// server has replaced an older Connect's state with the newer one's, so
+		// an older answer's address would only be refused when pasted.
+		const current = () => attempt === gdriveAttempt && gdriveConnecting === destName;
 		try {
 			const res = await fetch(`/api/admin/backup/gdrive/auth?dest=${encodeURIComponent(destName)}`);
-			if (!res.ok) { showToast('Failed to generate auth URL', 'error', started); gdriveConnecting = ''; return; }
-			const { authUrl } = await res.json();
-			window.open(authUrl, '_blank', 'width=600,height=700');
+			if (!current()) return;
+			if (!res.ok) {
+				// The server's own reason (card 2265): no client secret saved, or the destination removed or renamed in another tab.
+				const said = await failureMessage(res, 'Failed to generate auth URL');
+				if (!current()) return;
+				showToast(said, 'error', started);
+				closeGDriveConnect();
+				return;
+			}
+			const authUrl = (await answerBody(res))?.authUrl;
+			if (!current()) return;
+			if (!isGoogleConsent(authUrl)) {
+				showToast('Failed to generate auth URL', 'error', started);
+				closeGDriveConnect();
+				return;
+			}
+			const opened = window.open(authUrl, '_blank', 'width=600,height=700');
+			gdriveAuthUrl = authUrl;
+			gdriveBlocked = opened === null;
 		} catch {
+			if (!current()) return;
 			showToast('Failed to start OAuth flow', 'error', started);
-			gdriveConnecting = '';
+			closeGDriveConnect();
 		}
 	}
 
@@ -688,6 +768,9 @@
 
 	async function exchangeGDriveCode() {
 		if (!gdriveAuthCode.trim() || !gdriveConnecting) return;
+		// The Connect this exchange is for: a Cancel, or a later Connect, moves
+		// it on, and the box is then no longer this exchange's to close.
+		const attempt = gdriveAttempt;
 		const started = toasts.navigation();
 
 		// The whole address Google's page leads to: its code, and the state that
@@ -707,8 +790,7 @@
 				'error',
 				started
 			);
-			gdriveConnecting = '';
-			gdriveAuthCode = '';
+			closeGDriveConnect();
 			return;
 		}
 		const code = address?.searchParams.get('code');
@@ -741,9 +823,10 @@
 				showToast(said || 'Failed to connect', 'error', started);
 			}
 		} finally {
-			gdriveExchanging = false;
-			gdriveConnecting = '';
-			gdriveAuthCode = '';
+			// Its toast and reload above stand either way (it did or did not
+			// connect the destination), but a box opened since is left alone,
+			// with its GET and any exchange of its own (the card 2266 review).
+			if (attempt === gdriveAttempt) closeGDriveConnect();
 		}
 	}
 
@@ -1789,8 +1872,8 @@
 								{#if dest.type === 'sftp' && !dest.hostKey}
 									<span style="font-size: 0.68rem; color: var(--accent-amber)">⚠️ Host key not confirmed — press Test</span>
 								{/if}
-								<button class="btn-ghost btn-xs" onclick={() => testDestination(dest)} disabled={testingDest === dest.name}>
-									{testingDest === dest.name ? '⏳' : '🧪'} Test
+								<button class="btn-ghost btn-xs" onclick={() => testDestination(dest)} disabled={byName(testsInFlight, dest.name) !== undefined}>
+									{byName(testsInFlight, dest.name) !== undefined ? '⏳' : '🧪'} Test
 								</button>
 								<button class="btn-ghost btn-xs" onclick={() => startEditDestination(dest)}>✏️ Edit</button>
 								<!-- Off while the destinations are being saved: a second removal sent before the first was answered was put back wrongly when the first was refused. -->
@@ -1814,8 +1897,8 @@
 							</p>
 						{/if}
 						<!-- What the last Test said of an SFTP server's host key (card 2250): the server's words, then Confirm for a key not confirmed yet, both keys for one that did not match, and no Confirm where the confirmed type is no longer offered (there is no key to confirm). -->
-						{#if dest.type === 'sftp' && hostKeyChecks[dest.name]}
-							{@const check = hostKeyChecks[dest.name]!}
+						{#if dest.type === 'sftp' && byName(hostKeyChecks, dest.name)}
+							{@const check = byName(hostKeyChecks, dest.name)!}
 							<div class="host-key-box">
 								<p>{check.message}</p>
 								{#if check.presented && !check.confirmed}
@@ -2495,7 +2578,13 @@
 		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px">
 			<h2>🔗 Connect Google Drive</h2>
 			<p style="margin-bottom: var(--space-md)">
-				A Google sign-in window has opened. After granting access, Google will redirect to a page that may not load — <strong>that's expected</strong>.
+				{#if !gdriveAuthUrl}
+					Opening Google's sign-in page…
+				{:else if gdriveBlocked}
+					Your browser blocked Google's sign-in window. <a href={gdriveAuthUrl} target="_blank" rel="noopener noreferrer">Open Google's sign-in page</a>. After granting access, Google will redirect to a page that may not load — <strong>that's expected</strong>.
+				{:else}
+					A Google sign-in window has opened. If you cannot see it, <a href={gdriveAuthUrl} target="_blank" rel="noopener noreferrer">open Google's sign-in page</a>. After granting access, Google will redirect to a page that may not load — <strong>that's expected</strong>.
+				{/if}
 			</p>
 			<p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: var(--space-md); line-height: 1.5">
 				Copy the <strong>whole address</strong> from your browser's address bar, not only the code: it holds the code and the check that this connection was started here. Paste it below:
@@ -2504,12 +2593,13 @@
 				type="text"
 				placeholder="Paste the whole address, starting http://localhost/?state=…"
 				bind:value={gdriveAuthCode}
+				disabled={!gdriveAuthUrl}
 				class="form-input"
 				style="width: 100%; font-family: monospace; font-size: 0.78rem; margin-bottom: var(--space-md)"
 			/>
 			<div class="modal-actions">
-				<button class="btn-ghost" onclick={() => { gdriveConnecting = ''; gdriveAuthCode = ''; }}>Cancel</button>
-				<button class="btn-primary" onclick={exchangeGDriveCode} disabled={!gdriveAuthCode.trim() || gdriveExchanging}>
+				<button class="btn-ghost" onclick={closeGDriveConnect}>Cancel</button>
+				<button class="btn-primary" onclick={exchangeGDriveCode} disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || gdriveExchanging}>
 					{gdriveExchanging ? '⏳ Connecting...' : '✅ Connect'}
 				</button>
 			</div>

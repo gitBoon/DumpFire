@@ -4050,6 +4050,295 @@ describe('the Google Drive Connect’s paste box, src/routes/admin/+page.svelte 
 			"Copy the <strong>whole address</strong> from your browser's address bar, not only the code: it holds the code and the check that this connection was started here. Paste it below:"
 		);
 	});
+
+	const CONSENT = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=c&state=s1';
+	const LATER = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=c&state=s2';
+
+	/**
+	 * connectGDriveOAuth compiled from the page and run (cards 2265 and 2266),
+	 * with the real failureMessage and answerBody, and stand-ins for fetch,
+	 * whose answers the test gives one at a time, window.open and the toast.
+	 * Cancel is what the box's Cancel button does. The exchange (✅ Connect)
+	 * is compiled with them, with `sent` a stand-in whose answers the test
+	 * gives in `posts`.
+	 */
+	function connecting(opened: unknown = {}) {
+		const declared = (name: string) => tree.statements.some((s) => ts.isFunctionDeclaration(s) && s.name?.text === name);
+		const names = ['isGoogleConsent', 'connectGDriveOAuth', 'closeGDriveConnect', 'exchangeGDriveCode'].filter(declared);
+		const js = ts.transpileModule(names.map((name) => functionNamed(tree, name).getText()).join('\n'), {
+			compilerOptions: { target: ts.ScriptTarget.ES2022 }
+		}).outputText;
+		const answers: Array<(res: Response) => void> = [];
+		const fetch = vi.fn(() => new Promise<Response>((resolve) => answers.push(resolve)));
+		const posts: Array<(res: Response | null) => void> = [];
+		const sent = vi.fn(() => new Promise<Response | null>((resolve) => posts.push(resolve)));
+		const loadBackupConfig = vi.fn(async () => true);
+		const window = { open: vi.fn(() => opened) };
+		const showToast = vi.fn();
+		const page = new Function(
+			'fetch',
+			'window',
+			'showToast',
+			'toasts',
+			'failureMessage',
+			'answerBody',
+			'sent',
+			'loadBackupConfig',
+			"let gdriveConnecting = '', gdriveAuthCode = 'old paste', gdriveAuthUrl = '', gdriveBlocked = false, gdriveAttempt = 0, gdriveExchanging = false;\n" +
+				"const PASTE_WHOLE_ADDRESS = 'Paste the whole address.';\n" +
+				`${js}\n` +
+				'return {\n' +
+				'\tconnect: connectGDriveOAuth,\n' +
+				"\tcancel: typeof closeGDriveConnect === 'function' ? () => closeGDriveConnect() : () => { gdriveConnecting = ''; gdriveAuthCode = ''; },\n" +
+				'\tstate: () => ({ connecting: gdriveConnecting, code: gdriveAuthCode, authUrl: gdriveAuthUrl, blocked: gdriveBlocked }),\n' +
+				'\tpaste: (text) => { gdriveAuthCode = text; },\n' +
+				'\texchange: () => exchangeGDriveCode(),\n' +
+				'\texchanging: () => gdriveExchanging\n' +
+				'};'
+		)(fetch, window, showToast, { navigation: () => 7 }, failureMessage, answerBody, sent, loadBackupConfig) as {
+			connect: (name: string) => Promise<void>;
+			cancel: () => void;
+			state: () => { connecting: string; code: string; authUrl: string; blocked: boolean };
+			paste: (text: string) => void;
+			exchange: () => Promise<void>;
+			exchanging: () => boolean;
+		};
+		return { ...page, answers, posts, fetch, loadBackupConfig, window, showToast };
+	}
+
+	it.each([
+		[400, 'Client ID and Secret required'],
+		[404, 'Google Drive destination not found'],
+		[403, 'Superadmin only']
+	])('says the server’s reason for a %i refusal of the Connect, opens no window and closes the box (card 2265)', async (status, message) => {
+		const page = connecting();
+		const done = page.connect('Drive');
+		expect(page.state().connecting).toBe('Drive');
+		page.answers[0](Response.json({ message }, { status }));
+		await done;
+
+		expect(page.showToast.mock.calls).toEqual([[message, 'error', 7]]);
+		expect(page.window.open).not.toHaveBeenCalled();
+		expect(page.state()).toEqual({ connecting: '', code: '', authUrl: '', blocked: false });
+	});
+
+	it('says "Failed to generate auth URL" for a refusal that gives no reason, a proxy’s HTML 502 (card 2265)', async () => {
+		const page = connecting();
+		const done = page.connect('Drive');
+		page.answers[0](new Response('<html><body>502 Bad Gateway</body></html>', { status: 502, headers: { 'content-type': 'text/html' } }));
+		await done;
+
+		expect(page.showToast.mock.calls).toEqual([['Failed to generate auth URL', 'error', 7]]);
+		expect(page.window.open).not.toHaveBeenCalled();
+		expect(page.state().connecting).toBe('');
+	});
+
+	it('asks failureMessage once in connectGDriveOAuth, where the answer is a refusal (card 2265)', () => {
+		expect(branches(tree, 'connectGDriveOAuth', 'failureMessage')).toEqual(['failed']);
+		const [asked] = callsOf(functionNamed(tree, 'connectGDriveOAuth'), 'failureMessage');
+		expect(asked.getText()).toBe("failureMessage(res, 'Failed to generate auth URL')");
+		expect(callsOf(functionNamed(tree, 'connectGDriveOAuth'), 'res.json')).toEqual([]);
+	});
+
+	it.each([
+		['{}', () => Response.json({})],
+		['{ "authUrl": 5 }', () => Response.json({ authUrl: 5 })],
+		['{ "authUrl": "" }', () => Response.json({ authUrl: '' })],
+		['a 200 that is a proxy’s page', () => new Response('<html>Sign in to the proxy</html>', { headers: { 'content-type': 'text/html' } })]
+	])('opens no window for an answer without a consent address, %s: it says "Failed to generate auth URL" and closes the box (card 2266)', async (_case, answer) => {
+		const page = connecting();
+		const done = page.connect('Drive');
+		page.answers[0](answer());
+		await done;
+
+		expect(page.window.open).not.toHaveBeenCalled();
+		expect(page.showToast.mock.calls).toEqual([['Failed to generate auth URL', 'error', 7]]);
+		expect(page.state()).toEqual({ connecting: '', code: '', authUrl: '', blocked: false });
+	});
+
+	it('says the window was blocked when window.open gives null, and keeps the consent address for the link (card 2266)', async () => {
+		const page = connecting(null);
+		const done = page.connect('Drive');
+		// No address before the answer: the box says it is opening Google's page.
+		expect(page.state()).toEqual({ connecting: 'Drive', code: '', authUrl: '', blocked: false });
+		page.answers[0](Response.json({ authUrl: CONSENT }));
+		await done;
+
+		expect(page.window.open.mock.calls).toEqual([[CONSENT, '_blank', 'width=600,height=700']]);
+		expect(page.state()).toEqual({ connecting: 'Drive', code: '', authUrl: CONSENT, blocked: true });
+		expect(page.showToast).not.toHaveBeenCalled();
+	});
+
+	it('says the window opened when window.open gives a window, and still keeps the address for the link (card 2266, decision 1 (c))', async () => {
+		const page = connecting({ closed: false });
+		const done = page.connect('Drive');
+		page.answers[0](Response.json({ authUrl: CONSENT }));
+		await done;
+
+		expect(page.window.open).toHaveBeenCalledTimes(1);
+		expect(page.state()).toEqual({ connecting: 'Drive', code: '', authUrl: CONSENT, blocked: false });
+	});
+
+	it('opens nothing and shows no address for a Connect cancelled before its answer came (card 2266)', async () => {
+		const page = connecting();
+		const done = page.connect('Drive');
+		page.cancel();
+		page.answers[0](Response.json({ authUrl: CONSENT }));
+		await done;
+
+		expect(page.window.open).not.toHaveBeenCalled();
+		expect(page.state()).toEqual({ connecting: '', code: '', authUrl: '', blocked: false });
+		expect(page.showToast).not.toHaveBeenCalled();
+	});
+
+	it('says nothing of a cancelled Connect’s refusal, and does not close the Connect started after it (card 2266)', async () => {
+		const page = connecting();
+		const first = page.connect('Drive');
+		page.cancel();
+		const second = page.connect('Drive');
+		page.answers[0](Response.json({ message: 'Google Drive destination not found' }, { status: 404 }));
+		await first;
+
+		expect(page.showToast).not.toHaveBeenCalled();
+		expect(page.state().connecting).toBe('Drive');
+		page.answers[1](Response.json({ authUrl: LATER }));
+		await second;
+		expect(page.state()).toEqual({ connecting: 'Drive', code: '', authUrl: LATER, blocked: false });
+	});
+
+	it('shows only the later Connect’s address, and opens one window, when an earlier Connect answers after it (card 2266)', async () => {
+		const page = connecting();
+		const first = page.connect('Drive');
+		const second = page.connect('Drive');
+		page.answers[1](Response.json({ authUrl: LATER }));
+		await second;
+		page.answers[0](Response.json({ authUrl: CONSENT }));
+		await first;
+
+		expect(page.window.open.mock.calls).toEqual([[LATER, '_blank', 'width=600,height=700']]);
+		expect(page.state().authUrl).toBe(LATER);
+	});
+
+	it.each([
+		['a javascript: address', 'javascript:alert(document.cookie)'],
+		['Google’s address over http', 'http://accounts.google.com/o/oauth2/v2/auth?client_id=c&state=s1'],
+		['another host over https', 'https://evil.example/o/oauth2/v2/auth?client_id=c&state=s1'],
+		['a host that only starts with Google’s', 'https://accounts.google.com.evil.example/o/oauth2/v2/auth?client_id=c&state=s1'],
+		['text that is no address', 'accounts.google.com/o/oauth2/v2/auth']
+	])('opens no window and shows no link for %s: it says "Failed to generate auth URL" and closes the box (the card 2266 review)', async (_case, authUrl) => {
+		const page = connecting();
+		const done = page.connect('Drive');
+		page.answers[0](Response.json({ authUrl }));
+		await done;
+
+		expect(page.window.open).not.toHaveBeenCalled();
+		expect(page.showToast.mock.calls).toEqual([['Failed to generate auth URL', 'error', 7]]);
+		expect(page.state()).toEqual({ connecting: '', code: '', authUrl: '', blocked: false });
+	});
+
+	it('opens Google’s own consent page over https, as answered (the card 2266 review)', async () => {
+		const good = 'https://accounts.google.com/o/oauth2/auth?client_id=c&redirect_uri=http%3A%2F%2Flocalhost&state=s1';
+		const page = connecting();
+		const done = page.connect('Drive');
+		page.answers[0](Response.json({ authUrl: good }));
+		await done;
+
+		expect(page.window.open.mock.calls).toEqual([[good, '_blank', 'width=600,height=700']]);
+		expect(page.state()).toEqual({ connecting: 'Drive', code: '', authUrl: good, blocked: false });
+		expect(page.showToast).not.toHaveBeenCalled();
+	});
+
+	/** A Connect answered with `authUrl`, and the whole address Google's page led to pasted. */
+	async function readyToExchange(page: ReturnType<typeof connecting>, authUrl: string, state: string) {
+		const at = page.answers.length;
+		const done = page.connect('Drive');
+		page.answers[at](Response.json({ authUrl }));
+		await done;
+		page.paste(`http://localhost/?state=${state}&code=c-${state}`);
+	}
+
+	it('ends the exchange at a Cancel, and an exchange answering after a Cancel leaves the next Connect’s box and its GET alone (the card 2266 review)', async () => {
+		const page = connecting();
+		await readyToExchange(page, CONSENT, 's1');
+		const old = page.exchange();
+		expect(page.exchanging()).toBe(true);
+
+		// Cancel mid exchange: the box closes, and the next one's ✅ Connect is not left disabled.
+		page.cancel();
+		expect(page.exchanging()).toBe(false);
+
+		// Connect again; its GET is still on its way when the old exchange answers.
+		const next = page.connect('Drive');
+		page.posts[0](Response.json({ success: true }));
+		await old;
+		expect(page.state()).toEqual({ connecting: 'Drive', code: '', authUrl: '', blocked: false });
+		// The old exchange's own toast and reload stay: it did connect the destination.
+		expect(page.showToast.mock.calls).toEqual([['Google Drive connected!']]);
+		expect(page.loadBackupConfig).toHaveBeenCalledTimes(1);
+
+		page.answers[1](Response.json({ authUrl: LATER }));
+		await next;
+		expect(page.state()).toEqual({ connecting: 'Drive', code: '', authUrl: LATER, blocked: false });
+		expect(page.window.open).toHaveBeenCalledTimes(2);
+	});
+
+	it('keeps ✅ Connect disabled through a newer exchange when an older one answers in the middle of it (the card 2266 review)', async () => {
+		const page = connecting();
+		await readyToExchange(page, CONSENT, 's1');
+		const old = page.exchange();
+		page.cancel();
+		await readyToExchange(page, LATER, 's2');
+		const newer = page.exchange();
+		expect(page.exchanging()).toBe(true);
+
+		page.posts[0](Response.json({ success: false, message: 'Invalid grant' }));
+		await old;
+		expect(page.exchanging()).toBe(true);
+		expect(page.state()).toEqual({ connecting: 'Drive', code: 'http://localhost/?state=s2&code=c-s2', authUrl: LATER, blocked: false });
+
+		page.posts[1](Response.json({ success: true }));
+		await newer;
+		expect(page.exchanging()).toBe(false);
+		expect(page.state()).toEqual({ connecting: '', code: '', authUrl: '', blocked: false });
+	});
+
+	it('says "Opening Google’s sign-in page…" until the address is known, the blocked sentence only when blocked, and offers the link in both other states (card 2266)', () => {
+		const opening = box.indexOf('{#if !gdriveAuthUrl}');
+		const blocked = box.indexOf('{:else if gdriveBlocked}');
+		const opened = box.indexOf('{:else}', blocked);
+		const end = box.indexOf('{/if}', opened);
+		expect([opening, blocked, opened, end].every((at) => at > -1)).toBe(true);
+		expect(opening).toBeLessThan(blocked);
+		const [whileOpening, whileBlocked, whileOpened] = [
+			box.slice(opening, blocked),
+			box.slice(blocked, opened),
+			box.slice(opened, end)
+		];
+		const LINK = '<a href={gdriveAuthUrl} target="_blank" rel="noopener noreferrer">';
+
+		expect(whileOpening).toContain("Opening Google's sign-in page…");
+		expect(whileOpening).not.toContain('<a ');
+		expect(whileBlocked).toContain("Your browser blocked Google's sign-in window.");
+		expect(whileBlocked).toContain(`${LINK}Open Google's sign-in page</a>`);
+		expect(whileOpened).toContain(`A Google sign-in window has opened. If you cannot see it, ${LINK}open Google's sign-in page</a>.`);
+		expect(box.split('has opened')).toHaveLength(2);
+		expect(box.split('<a ')).toHaveLength(3);
+
+		// The paste box and its Connect wait for the address.
+		expect(box).toMatch(/<input\s+type="text"\s+placeholder="Paste the whole address, starting http:\/\/localhost\/\?state=…"\s+bind:value=\{gdriveAuthCode\}\s+disabled=\{!gdriveAuthUrl\}/);
+		expect(box).toContain('disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || gdriveExchanging}');
+		expect(box).toContain('<button class="btn-ghost" onclick={closeGDriveConnect}>Cancel</button>');
+	});
+
+	it('closes the box in one place, which forgets the address and moves the Connect on (card 2266)', () => {
+		const close = functionNamed(tree, 'closeGDriveConnect');
+		const said = close.body!.statements.map((statement) => statement.getText());
+		expect(said).toEqual(['gdriveAttempt++;', "gdriveConnecting = '';", "gdriveAuthCode = '';", "gdriveAuthUrl = '';", 'gdriveBlocked = false;', 'gdriveExchanging = false;']);
+		// Nowhere else is the box closed by hand.
+		expect(statementsOf(tree, "gdriveConnecting = ''")).toHaveLength(1);
+		expect(callsOf(functionNamed(tree, 'exchangeGDriveCode'), 'closeGDriveConnect')).toHaveLength(2);
+		expect(callsOf(functionNamed(tree, 'connectGDriveOAuth'), 'closeGDriveConnect')).toHaveLength(3);
+	});
 });
 
 describe('the SFTP host key on the admin page, src/routes/admin/+page.svelte (card 2250)', () => {
@@ -4131,7 +4420,7 @@ describe('the SFTP host key on the admin page, src/routes/admin/+page.svelte (ca
 	});
 
 	it('shows under an SFTP destination the Test’s words, and Confirm only for a key not confirmed yet; both keys for one that did not match; no Confirm where the confirmed type is no longer offered (decisions 3 and 5, R3)', () => {
-		const at = row.indexOf("{#if dest.type === 'sftp' && hostKeyChecks[dest.name]}");
+		const at = row.indexOf("{#if dest.type === 'sftp' && byName(hostKeyChecks, dest.name)}");
 		expect(at).toBeGreaterThan(-1);
 		const box = row.slice(at);
 		const branches = ['{#if check.presented && !check.confirmed}', '{:else if check.presented}', '{:else}', '{/if}'].map((mark) => box.indexOf(mark));
@@ -4227,7 +4516,8 @@ describe('the SFTP host key on the admin page, src/routes/admin/+page.svelte (ca
 	});
 
 	it('forgets a destination’s host key box when it is added, changed or removed, and drops the answer of a Test overtaken by a later Test or save (the review’s S3)', () => {
-		const js = ts.transpileModule(functionNamed(tree, 'forgetHostKeyCheck').getText(), {
+		const declared = (name: string) => tree.statements.some((s) => ts.isFunctionDeclaration(s) && s.name?.text === name);
+		const js = ts.transpileModule(['byName', 'forgetHostKeyCheck'].filter(declared).map((name) => functionNamed(tree, name).getText()).join('\n'), {
 			compilerOptions: { target: ts.ScriptTarget.ES2022 }
 		}).outputText;
 		const page = new Function(
@@ -4244,12 +4534,162 @@ describe('the SFTP host key on the admin page, src/routes/admin/+page.svelte (ca
 		// number has moved on by the time it comes back.
 		const fn = functionNamed(tree, 'testDestination');
 		const text = fn.getText().replace(/\s+/g, ' ');
-		const take = text.indexOf('const ticket = (hostKeyTests[dest.name] ?? 0) + 1; hostKeyTests[dest.name] = ticket;');
-		const drop = text.indexOf('if (hostKeyTests[dest.name] !== ticket) return;');
+		const take = text.indexOf('const ticket = (byName(hostKeyTests, dest.name) ?? 0) + 1; hostKeyTests[dest.name] = ticket;');
+		const drop = text.indexOf('if (byName(hostKeyTests, dest.name) !== ticket) return;');
 		expect(take).toBeGreaterThan(-1);
 		expect(take).toBeLessThan(text.indexOf('sent('));
 		expect(drop).toBeGreaterThan(text.indexOf('const result = await answerBody(res);'));
 		expect(drop).toBeLessThan(text.indexOf('hostKeyChecks = { ...hostKeyChecks, [dest.name]: check };'));
 		expect(drop).toBeLessThan(text.indexOf('showToast('));
+	});
+
+	/** The Test button's markup, and the expression that keeps it disabled while its Test waits. */
+	const testButton = /<button class="btn-ghost btn-xs" onclick=\{\(\) => testDestination\(dest\)\} disabled=\{([^}]*)\}>\s*\{([^}]*)\} Test/.exec(row);
+	/** The condition the host key box under a destination is shown on. */
+	const hostKeyBox = /\{#if (dest\.type === 'sftp' && [^}]*hostKeyChecks[^}]*)\}/.exec(row);
+
+	/**
+	 * testDestination, forgetHostKeyCheck and hostKeyCheckOf compiled from the
+	 * page and run (card 2268), with hostKeyTests as the page declares it,
+	 * `sent` a stand-in whose answers the test gives one at a time, and
+	 * `waiting(name)` and `shown(name)` the Test button's own disabled
+	 * expression and the host key box's condition, read from the markup, so
+	 * they are asked exactly what the page asks.
+	 */
+	function testing() {
+		const declared = (name: string) => tree.statements.some((s) => ts.isFunctionDeclaration(s) && s.name?.text === name);
+		const hostKeyTests = tree.statements.find(
+			(s) => ts.isVariableStatement(s) && s.declarationList.declarations.some((d) => d.name.getText() === 'hostKeyTests')
+		)!;
+		const js = ts.transpileModule(
+			[
+				hostKeyTests.getText(),
+				...['byName', 'testDestination', 'forgetHostKeyCheck', 'hostKeyCheckOf'].filter(declared).map((name) => functionNamed(tree, name).getText())
+			].join('\n'),
+			{ compilerOptions: { target: ts.ScriptTarget.ES2022 } }
+		).outputText;
+		const answers: Array<(res: Response | null) => void> = [];
+		const sent = vi.fn(() => new Promise<Response | null>((resolve) => answers.push(resolve)));
+		const showToast = vi.fn();
+		const page = new Function(
+			'sent',
+			'answerBody',
+			'showToast',
+			'toasts',
+			'fetch',
+			'let hostKeyChecks = {};\nlet testsInFlight = {};\nlet testingDest = null;\n' +
+				`${js}\n` +
+				'return {\n' +
+				'\ttest: (name) => testDestination({ type: "sftp", name }),\n' +
+				'\tforget: forgetHostKeyCheck,\n' +
+				'\tchecks: () => hostKeyChecks,\n' +
+				`\twaiting: (name) => { const dest = { name }; return (${testButton![1]}); },\n` +
+				`\tshown: (name) => { const dest = { type: "sftp", name }; return Boolean(${hostKeyBox![1]}); }\n` +
+				'};'
+		)(sent, answerBody, showToast, { navigation: () => 3 }, vi.fn()) as {
+			test: (name: string) => Promise<void>;
+			forget: (name: string) => void;
+			checks: () => Record<string, unknown>;
+			waiting: (name: string) => boolean;
+			shown: (name: string) => boolean;
+		};
+		return { ...page, answers, showToast };
+	}
+	const connected = () => Response.json({ success: true, message: 'Connected to nas.example:22' });
+
+	it('keeps a destination’s Test button waiting until its own Test answers, whatever other Test starts or answers meanwhile (card 2268)', async () => {
+		const page = testing();
+		const a = page.test('A');
+		expect(page.waiting('A')).toBe(true);
+		const b = page.test('B');
+		expect([page.waiting('A'), page.waiting('B')]).toEqual([true, true]);
+
+		page.answers[1](connected());
+		await b;
+		expect([page.waiting('A'), page.waiting('B')]).toEqual([true, false]);
+
+		page.answers[0](connected());
+		await a;
+		expect([page.waiting('A'), page.waiting('B')]).toEqual([false, false]);
+		expect(page.showToast).toHaveBeenCalledTimes(2);
+	});
+
+	it('drops the answer of a Test overtaken by a save of its destination, and its button still comes back when that answer arrives (card 2268)', async () => {
+		const page = testing();
+		const a = page.test('A');
+		page.forget('A');
+		expect(page.waiting('A')).toBe(true);
+
+		page.answers[0](Response.json({ success: false, message: 'not confirmed', hostKey: NEW }));
+		await a;
+		expect(page.waiting('A')).toBe(false);
+		expect(page.showToast).not.toHaveBeenCalled();
+		expect(page.checks()).toEqual({ A: null });
+	});
+
+	it.each([
+		['refused (sent gives null)', () => null],
+		['answered with something that is not JSON', () => new Response('<html>502</html>', { status: 200 })]
+	])('brings the button back for a Test %s (card 2268)', async (_case, answer) => {
+		const page = testing();
+		const a = page.test('A');
+		expect(page.waiting('A')).toBe(true);
+		page.answers[0](answer());
+		await a;
+		expect(page.waiting('A')).toBe(false);
+	});
+
+	it.each(['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty'])(
+		'treats a destination named %s as any other: its Test button free before a Test, waiting during it and free after, no host key box before a Test, and its Tests numbered (the card 2268 review)',
+		async (name) => {
+			const page = testing();
+			expect(page.waiting(name)).toBe(false);
+			expect(page.shown(name)).toBe(false);
+
+			// A Test whose answer speaks of the host key: the button waits for it, and the box shows it.
+			const first = page.test(name);
+			expect(page.waiting(name)).toBe(true);
+			page.answers[0](Response.json({ success: false, message: 'not confirmed', hostKey: NEW }));
+			await first;
+			expect(page.waiting(name)).toBe(false);
+			expect(page.shown(name)).toBe(true);
+
+			// A Test overtaken by a save says nothing, and its button still comes back.
+			const second = page.test(name);
+			page.forget(name);
+			expect(page.shown(name)).toBe(false);
+			page.answers[1](connected());
+			await second;
+			expect(page.waiting(name)).toBe(false);
+			expect(page.showToast).not.toHaveBeenCalled();
+
+			// The next Test is its own, and its answer is said.
+			const third = page.test(name);
+			expect(page.waiting(name)).toBe(true);
+			page.answers[2](connected());
+			await third;
+			expect(page.waiting(name)).toBe(false);
+			expect(page.showToast.mock.calls).toEqual([['Connected to nas.example:22', 'success', 3]]);
+		}
+	);
+
+	it('disables the Test button and shows ⏳ by testsInFlight, and testingDest is gone from the page (card 2268)', () => {
+		expect(testButton).not.toBeNull();
+		expect(testButton![1]).toBe('byName(testsInFlight, dest.name) !== undefined');
+		expect(testButton![2]).toBe("byName(testsInFlight, dest.name) !== undefined ? '⏳' : '🧪'");
+		expect(source).not.toContain('testingDest');
+		expect(tree.getText()).toContain('let testsInFlight = $state<Record<string, number>>({});');
+	});
+
+	it('reads each record kept by destination name through byName, never by indexing it (the card 2268 review)', () => {
+		const script = tree.getText();
+		for (const record of ['testsInFlight', 'hostKeyChecks', 'hostKeyTests']) {
+			// Indexed only to be written, or by the spread and destructuring that copy own names alone.
+			const indexed = [...script.matchAll(new RegExp(`\\b${record}\\[[^\\]]+\\](?!\\s*=[^=])`, 'g'))].map((m) => m[0]);
+			expect(indexed, record).toEqual([]);
+			expect(markup.match(new RegExp(`\\b${record}\\[`, 'g')), record).toBeNull();
+		}
+		expect(hostKeyBox![1]).toBe("dest.type === 'sftp' && byName(hostKeyChecks, dest.name)");
+		expect(row).toContain('{@const check = byName(hostKeyChecks, dest.name)!}');
 	});
 });
