@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.52
+version: 1.53
 status: As-Built
-date: 2026-10-19
+date: 2026-10-20
 tags:
   - authentication
   - security
@@ -423,8 +423,22 @@ changed, while its body was arriving is refused `401` or `403` with nothing writ
 still delete a schedule; now `401`. For a credential that has already ended, some refusals of
 the body now come before the `401`, since each check comes after its body is read: the test
 mail's `400` for its address, and `readBody`'s `400` for a body that is not JSON or not an
-object in the backup run, the Test and the Connect. An empty reorder (`PUT /api/cards/reorder`
-with `updates: []`) is answered `200` before `writeAs`, with nothing written and nothing asked.
+object in the backup run, the Test and the Connect.
+
+Since card 2012 the other way round holds for the handlers it moved onto services: their field
+reads moved inside `writeAs`, after the caller is asked for, so a credential that ended while
+the body arrived is now `401` where the body's own refusal used to come first. An empty card
+reorder (`PUT /api/cards/reorder` with `updates: []`) is asked inside `writeAs` and answered
+`200` with nothing written only for a caller still signed in; a session that ended is `401`,
+where it was `200`, and so is one whose `updates` is missing, malformed or over the cap, names
+an entry whose id is not an id, or names a card twice, where each was `400`. The same `401`
+replaces the `400` in `POST /api/v1/tokens/bulk` (`entries` missing, or an entry not an
+object); in both trees' board creates (`POST /api/boards`, `POST /api/v1/boards`) for any field
+refused (`name`, `emoji`, `parentCardId`, and `categoryId` on the internal route); in both
+trees' dashboard grouping creates (`POST /api/board-categories`,
+`POST /api/v1/board-categories`) for any field refused (`name`, `color`); and in the column
+reorder (`PUT /api/columns/reorder`) for `updates` missing or malformed. For a caller still
+signed in every answer is as it was.
 
 **What `stillCallerNow` does not cover.** It holds up to the call it guards. What runs after an
 await that follows that call runs on the check already made: the second and later recipients
@@ -440,9 +454,13 @@ asked again. Each began under a caller who was still signed in and still allowed
   session at each heartbeat instead ([An Open Stream and Its Session](#an-open-stream-and-its-session)).
 - **The four form actions** (`login`, `logout`, `setup`, `invite/[token]`) are outside: none
   acts under a credential the caller already had, except `logout`, which ends it.
-- **A service that writes outside the callback** would not be seen by the source rule, which
-  reads route files only; every route's service calls were reviewed to be inside, and the walks
-  below meet any that is not for every handler.
+- **A helper that writes, called outside the callback by a handler that calls no service.**
+  The service rule (below) holds every call to `$lib/server/**` after the body inside the
+  callback only in a handler that calls a service. The 54 other write handlers (the
+  reports, accounts, administration, requests and the `stillCallerNow` routes among them) may
+  call `$lib/server` outside their callback, on purpose, to read fields before it or to send mail
+  after the commit, and what those helpers do is not read for writes. The walks below meet
+  any write among them for every handler.
 - **A reverse proxy that holds a body until it is complete** closes the window before DumpFire
   sees the request; one that passes a body on as it arrives does not. Either way the check
   holds; hands-on checks 186 and 187 in
@@ -469,6 +487,49 @@ account). `tests/write-as.test.ts` holds the helper and each route slice's shape
 caller's key or session ended while the body is held (401, nothing written; a request with no
 body is handed the ended credential), and an administrator's or the superadmin's role lowered
 meanwhile (refused as the lower role is, nothing written), each case with its control.
+
+**The service rule (card 2012).** The 99 handlers of both API trees that card 2012 moved call
+one service each for their work, a function in a module of `src/lib/server/` that both trees
+share ([One Service per Action, Both Trees](architecture.md#one-service-per-action-both-trees)).
+A service is a place where a write could slip outside the callback that asked who the caller
+is, so it is held twice:
+
+- **At run time.** Every write a service exports begins with `inWrite()`
+  (`src/lib/server/write-as.ts`), which throws, a `500` with nothing written, unless a
+  `writeAs` callback is running. `writeAs` counts its running callbacks and nothing else sets
+  the count, so a service called outside one, or from a job's or a scheduler's bare
+  `inTransaction`, is refused (`tests/write-as.test.ts`, the describe `inWrite`).
+- **In the source.** A describe of its own in `tests/check-at-the-write.test.ts`, "one service per
+  action, written only inside writeAs (card 2012)", decides by import, not by a list of names,
+  and fails closed:
+  1. in a write handler that calls a service, every call after the body to a function imported
+     from `$lib/server/**` is inside the `writeAs` callback, unless it is on `OUTSIDE_WRITE`
+     with its reason (`pathId`, `linkBaseUrl`, v1's `json`): what shapes the answer is made
+     inside and returned. A service write is called in the callback itself, with no function
+     between them (no `.map`, no local function), and is handed first that callback's own
+     `caller`, as it is or through `requireUser(caller)`; the name is never declared again or
+     assigned in the callback. Its options are an object written out at the call, with no
+     spread and no computed key, and a `says` in them is a text written out or a constant of
+     the route file holding one. A read is called only in a `GET` or inside a callback;
+  2. each module on `SERVICES` exports `READS`, its reads by name; every other export is a
+     write whose first statement is `inWrite();`; and it exports nothing else, in any form;
+  3. no service names `inTransaction`, under any name or through a namespace, but in a write
+     after its `inWrite()`; a read inserts, updates, deletes, runs, `exec`s or `prepare`s
+     nothing, nor does a function of its module that it calls (one level); and no service names `locals`,
+     `App.Locals`, `RequestEvent` or `getRequestEvent`, or imports `$app/server`;
+  4. `SERVICES` names every module under `src/lib/server/` that imports `inWrite` or exports a
+     function handed the caller (a first parameter `caller` typed as an account, or any first
+     parameter typed exactly `SessionUser | null`), but those on `NOT_SERVICES` with why (one:
+     `request-access.ts`, whose `requireRequest` is a guard of the public request routes), and
+     nothing else; nothing re-exports a service or imports one with `import()`;
+  5. the rule itself, against made-up source, every probe of its reviews among it.
+- **The caller is never let out.** Card 2253's rule, extended by card 2012, finds a `writeAs` callback's caller
+  assigned to anything declared outside the callback, returned or put in what it returns, or
+  kept by a function that is returned, assigned out or handed to what runs later
+  (`afterCommit`, timers, promises, listeners). A call's result and a field read off it
+  (`caller.username`) are not the caller: a callback returns what the answer or a mail after
+  the commit needs, never the account. `CALLER_LET_OUT_IN`, the handlers allowed to with their
+  reasons, is empty.
 
 ## Session Management
 
@@ -3692,7 +3753,7 @@ which is what Reset Everything in the admin panel leaves.
 | File | Purpose |
 |------|---------|
 | `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentPassword()`, the count of current-password guesses for a session, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account |
-| `src/lib/server/write-as.ts` | Who the caller is, asked again at the write (card 2253): `writeAs(locals, (caller) => …)`, the one transaction every write handler writes in, beginning with `stillAuthenticated()`; `stillCallerNow(locals)`, the same question in a transaction of its own, for the eight handlers whose work cannot run in one. See [Asked Again at the Write](#asked-again-at-the-write-card-2253) |
+| `src/lib/server/write-as.ts` | Who the caller is, asked again at the write (card 2253): `writeAs(locals, (caller) => …)`, the one transaction every write handler writes in, beginning with `stillAuthenticated()`; `stillCallerNow(locals)`, the same question in a transaction of its own, for the eight handlers whose work cannot run in one; `inWrite()`, the first statement of every service write, refused unless a `writeAs` callback is running, and `ServiceOptions`, what every service write is handed beside the caller (card 2012). See [Asked Again at the Write](#asked-again-at-the-write-card-2253) |
 | `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
 | `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME` |
 | `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS` |
