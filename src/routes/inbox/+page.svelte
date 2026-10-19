@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { parseStamp } from '$lib/timestamps';
+	import { failureMessage } from '$lib/api';
 
 	let { data } = $props();
 
@@ -30,22 +31,28 @@
 
 	let requests = $state<TaskRequest[]>([]);
 	let loading = $state(true);
+	/** Why the list was not read, said in its place (card 2272). */
+	let listError = $state('');
 	let tab = $state<'all' | 'me' | 'team'>('all');
 
+	// Each window says why its request failed on a line of its own, `error`,
+	// and `sending` is set while one is on its way (card 2272).
+
 	// Accept modal state
-	let acceptModal = $state<{ show: boolean; request: TaskRequest | null; boardId: number | null; columnId: number | null; assigneeId: number | null }>({
-		show: false, request: null, boardId: null, columnId: null, assigneeId: null
+	let acceptModal = $state<{ show: boolean; request: TaskRequest | null; boardId: number | null; columnId: number | null; assigneeId: number | null; sending: boolean; error: string }>({
+		show: false, request: null, boardId: null, columnId: null, assigneeId: null, sending: false, error: ''
 	});
 
 	// Reject modal state
-	let rejectModal = $state<{ show: boolean; request: TaskRequest | null; reason: string }>({
-		show: false, request: null, reason: ''
+	let rejectModal = $state<{ show: boolean; request: TaskRequest | null; reason: string; sending: boolean; error: string }>({
+		show: false, request: null, reason: '', sending: false, error: ''
 	});
 
-	// Conversation modal state
+	// Conversation modal state: `error` is the send's (card 2263), under the
+	// box; `readError` the thread's (card 2272), in the thread's place.
 	type ChatMessage = { id: number; requestId: number; senderType: string; senderName: string; message: string; createdAt: string };
-	let chatModal = $state<{ show: boolean; request: TaskRequest | null; messages: ChatMessage[]; newMsg: string; sending: boolean }>({
-		show: false, request: null, messages: [], newMsg: '', sending: false
+	let chatModal = $state<{ show: boolean; request: TaskRequest | null; messages: ChatMessage[]; newMsg: string; sending: boolean; error: string; readError: string }>({
+		show: false, request: null, messages: [], newMsg: '', sending: false, error: '', readError: ''
 	});
 	let chatPollInterval: ReturnType<typeof setInterval> | null = null;
 	let chatMessagesEl: HTMLDivElement | undefined = $state();
@@ -81,49 +88,108 @@
 		if (chatPollInterval) clearInterval(chatPollInterval);
 	});
 
+	/**
+	 * A list that was not read is said in the list's place, and the list
+	 * emptied, so no answer older than the failure is shown under it (card
+	 * 2272). A failed list read as "No requests", and one that got no answer
+	 * left the page on "Loading..." for good.
+	 */
 	async function loadRequests() {
 		loading = true;
-		const res = await fetch('/api/requests');
-		if (res.ok) requests = await res.json();
-		loading = false;
+		try {
+			const res = await fetch('/api/requests');
+			if (!res.ok) {
+				listError = await failureMessage(res, 'The inbox could not be read.');
+				requests = [];
+				return;
+			}
+			requests = await res.json();
+			listError = '';
+		} catch {
+			listError = 'No answer from the server. The inbox was not read.';
+			requests = [];
+		} finally {
+			loading = false;
+		}
 	}
 
+	/**
+	 * Accept and Reject say a refusal in their own window, which stays open
+	 * with what was chosen and typed in it, and say when no answer came (card
+	 * 2272). They acted on a success alone: a refusal (a column not on the
+	 * board, a request already resolved) left the window open with no word.
+	 * A request someone else resolved first is read out of the list again, so
+	 * it leaves Pending. An answer that comes once the window shows another
+	 * request, or none, says nothing in it, does not close it and leaves its
+	 * own send as it is; an accepted or rejected one is still read out of the
+	 * list (the review).
+	 */
 	async function acceptRequest() {
 		const req = acceptModal.request;
 		if (!req || !acceptModal.boardId || !acceptModal.columnId) return;
+		acceptModal.sending = true;
+		acceptModal.error = '';
 
-		const res = await fetch(`/api/requests/${req.id}`, {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				action: 'accept',
-				boardId: acceptModal.boardId,
-				columnId: acceptModal.columnId,
-				assigneeId: acceptModal.assigneeId
-			})
-		});
-		if (res.ok) {
-			acceptModal = { show: false, request: null, boardId: null, columnId: null, assigneeId: null };
-			await loadRequests();
+		try {
+			const res = await fetch(`/api/requests/${req.id}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action: 'accept',
+					boardId: acceptModal.boardId,
+					columnId: acceptModal.columnId,
+					assigneeId: acceptModal.assigneeId
+				})
+			});
+			if (!res.ok) {
+				if (acceptModal.request?.id !== req.id) return;
+				acceptModal.error = await failureMessage(res, 'The request was not accepted.');
+				if (acceptModal.error === 'Request already resolved') await loadRequests();
+				return;
+			}
+			if (acceptModal.request?.id === req.id) {
+				acceptModal = { show: false, request: null, boardId: null, columnId: null, assigneeId: null, sending: false, error: '' };
+			}
+		} catch {
+			if (acceptModal.request?.id === req.id) acceptModal.error = 'No answer from the server. The request may not have been accepted.';
+			return;
+		} finally {
+			if (acceptModal.request?.id === req.id) acceptModal.sending = false;
 		}
+		await loadRequests();
 	}
 
 	async function rejectRequest() {
 		const req = rejectModal.request;
 		if (!req) return;
+		rejectModal.sending = true;
+		rejectModal.error = '';
 
-		const res = await fetch(`/api/requests/${req.id}`, {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				action: 'reject',
-				rejectReason: rejectModal.reason.trim() || undefined
-			})
-		});
-		if (res.ok) {
-			rejectModal = { show: false, request: null, reason: '' };
-			await loadRequests();
+		try {
+			const res = await fetch(`/api/requests/${req.id}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action: 'reject',
+					rejectReason: rejectModal.reason.trim() || undefined
+				})
+			});
+			if (!res.ok) {
+				if (rejectModal.request?.id !== req.id) return;
+				rejectModal.error = await failureMessage(res, 'The request was not rejected.');
+				if (rejectModal.error === 'Request already resolved') await loadRequests();
+				return;
+			}
+			if (rejectModal.request?.id === req.id) {
+				rejectModal = { show: false, request: null, reason: '', sending: false, error: '' };
+			}
+		} catch {
+			if (rejectModal.request?.id === req.id) rejectModal.error = 'No answer from the server. The request may not have been rejected.';
+			return;
+		} finally {
+			if (rejectModal.request?.id === req.id) rejectModal.sending = false;
 		}
+		await loadRequests();
 	}
 
 	function timeAgo(dateStr: string): string {
@@ -142,12 +208,10 @@
 	};
 
 	async function openChat(req: TaskRequest) {
-		chatModal = { show: true, request: req, messages: [], newMsg: '', sending: false };
-		const res = await fetch(`/api/requests/${req.id}/messages`);
-		if (res.ok) {
-			chatModal.messages = await res.json();
-			scrollChatToBottom();
-		}
+		chatModal = { show: true, request: req, messages: [], newMsg: '', sending: false, error: '', readError: '' };
+		await readThread(req.id);
+		// Closed, or another request opened, while the thread was read: that window polls its own.
+		if (chatModal.request?.id !== req.id) return;
 		// Start polling for new messages
 		if (chatPollInterval) clearInterval(chatPollInterval);
 		chatPollInterval = setInterval(() => pollChatMessages(req.id), 5000);
@@ -155,14 +219,40 @@
 
 	function closeChat() {
 		if (chatPollInterval) { clearInterval(chatPollInterval); chatPollInterval = null; }
-		chatModal = { show: false, request: null, messages: [], newMsg: '', sending: false };
+		chatModal = { show: false, request: null, messages: [], newMsg: '', sending: false, error: '', readError: '' };
+	}
+
+	/**
+	 * Reads the thread of the request the window shows. A read that failed is
+	 * said in the thread's place (card 2272), where "No messages yet" was
+	 * shown for it. An answer for a request the window no longer shows (it was
+	 * closed, or another opened, while the read was on its way) is not used:
+	 * it put one request's messages in another's window.
+	 */
+	async function readThread(requestId: number) {
+		try {
+			const res = await fetch(`/api/requests/${requestId}/messages`);
+			if (chatModal.request?.id !== requestId) return;
+			if (!res.ok) {
+				chatModal.readError = await failureMessage(res, 'The conversation could not be read.');
+				return;
+			}
+			chatModal.messages = await res.json();
+			chatModal.readError = '';
+			scrollChatToBottom();
+		} catch {
+			if (chatModal.request?.id === requestId) chatModal.readError = 'No answer from the server. The conversation was not read.';
+		}
 	}
 
 	async function pollChatMessages(requestId: number) {
 		try {
 			const res = await fetch(`/api/requests/${requestId}/messages`);
-			if (res.ok) {
+			// Read in the background: a failure is not said, and a read that
+			// works clears what an earlier one said (card 2272).
+			if (res.ok && chatModal.request?.id === requestId) {
 				const fresh: ChatMessage[] = await res.json();
+				chatModal.readError = '';
 				if (fresh.length !== chatModal.messages.length) {
 					chatModal.messages = fresh;
 					scrollChatToBottom();
@@ -177,24 +267,45 @@
 		});
 	}
 
+	/**
+	 * A message that was not sent is said under the box in the server's words
+	 * (card 2263), a 401 among them ("Not authenticated": the page-wide watch
+	 * leaves /api/requests alone), and the text stays in the box to be sent
+	 * again. A send that got no answer threw, and left Send on "..." for good.
+	 * The request is taken before the first await: a window closed while the
+	 * message was on its way has none, and `chatModal.request.id` threw; and
+	 * nothing is said in, or cleared from, a window that shows another, nor is
+	 * its own send's flag. One send at a time: Ctrl+Enter is not stopped by the
+	 * disabled button. The box is emptied only if it still holds what was
+	 * sent, so text typed while it was on its way is kept (the review).
+	 */
 	async function sendChatMessage() {
-		if (!chatModal.request || !chatModal.newMsg.trim()) return;
+		if (chatModal.sending) return;
+		const req = chatModal.request;
+		const message = chatModal.newMsg.trim();
+		if (!req || !message) return;
 		chatModal.sending = true;
-		const res = await fetch(`/api/requests/${chatModal.request.id}/messages`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ message: chatModal.newMsg.trim() })
-		});
-		chatModal.sending = false;
-		if (res.ok) {
-			chatModal.newMsg = '';
-			// Reload messages
-			const msgRes = await fetch(`/api/requests/${chatModal.request.id}/messages`);
-			if (msgRes.ok) {
-				chatModal.messages = await msgRes.json();
-				scrollChatToBottom();
+		chatModal.error = '';
+
+		try {
+			const res = await fetch(`/api/requests/${req.id}/messages`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ message })
+			});
+			if (chatModal.request?.id !== req.id) return;
+			if (!res.ok) {
+				chatModal.error = await failureMessage(res, 'The message was not sent.');
+				return;
 			}
+			if (chatModal.newMsg.trim() === message) chatModal.newMsg = '';
+		} catch {
+			if (chatModal.request?.id === req.id) chatModal.error = 'No answer from the server. The message may not have been sent.';
+			return;
+		} finally {
+			if (chatModal.request?.id === req.id) chatModal.sending = false;
 		}
+		await readThread(req.id);
 	}
 </script>
 
@@ -230,6 +341,8 @@
 
 	{#if loading}
 		<div class="loading-state">Loading...</div>
+	{:else if listError}
+		<p class="inbox-error" role="alert">{listError}</p>
 	{:else if pendingRequests.length === 0 && resolvedRequests.length === 0}
 		<div class="empty-state">
 			<div class="empty-icon">📭</div>
@@ -274,10 +387,10 @@
 								<button class="btn-discuss" onclick={() => openChat(req)}>
 									💬 Discuss
 								</button>
-								<button class="btn-accept" onclick={() => acceptModal = { show: true, request: req, boardId: req.desiredBoardId ?? null, columnId: null, assigneeId: null }}>
+								<button class="btn-accept" onclick={() => acceptModal = { show: true, request: req, boardId: req.desiredBoardId ?? null, columnId: null, assigneeId: null, sending: false, error: '' }}>
 									✅ Accept
 								</button>
-								<button class="btn-reject" onclick={() => rejectModal = { show: true, request: req, reason: '' }}>
+								<button class="btn-reject" onclick={() => rejectModal = { show: true, request: req, reason: '', sending: false, error: '' }}>
 									❌ Reject
 								</button>
 							</div>
@@ -374,9 +487,12 @@
 				</select>
 			</div>
 
+			{#if acceptModal.error}
+				<p class="modal-error" role="alert">{acceptModal.error}</p>
+			{/if}
 			<div class="modal-actions">
-				<button class="btn-cancel" onclick={() => acceptModal = { show: false, request: null, boardId: null, columnId: null, assigneeId: null }}>Cancel</button>
-				<button class="btn-confirm" disabled={!acceptModal.boardId || !acceptModal.columnId} onclick={acceptRequest}>
+				<button class="btn-cancel" onclick={() => acceptModal = { show: false, request: null, boardId: null, columnId: null, assigneeId: null, sending: false, error: '' }}>Cancel</button>
+				<button class="btn-confirm" disabled={!acceptModal.boardId || !acceptModal.columnId || acceptModal.sending} onclick={acceptRequest}>
 					Create Card & Accept
 				</button>
 			</div>
@@ -398,9 +514,12 @@
 				<textarea bind:value={rejectModal.reason} class="modal-textarea" rows="3" maxlength="10000" placeholder="Why are you rejecting this request?"></textarea>
 			</div>
 
+			{#if rejectModal.error}
+				<p class="modal-error" role="alert">{rejectModal.error}</p>
+			{/if}
 			<div class="modal-actions">
-				<button class="btn-cancel" onclick={() => rejectModal = { show: false, request: null, reason: '' }}>Cancel</button>
-				<button class="btn-reject-confirm" onclick={rejectRequest}>Reject Request</button>
+				<button class="btn-cancel" onclick={() => rejectModal = { show: false, request: null, reason: '', sending: false, error: '' }}>Cancel</button>
+				<button class="btn-reject-confirm" disabled={rejectModal.sending} onclick={rejectRequest}>Reject Request</button>
 			</div>
 		</div>
 	</div>
@@ -424,7 +543,10 @@
 			</div>
 
 			<div class="chat-messages" bind:this={chatMessagesEl}>
-				{#if chatModal.messages.length === 0}
+				{#if chatModal.readError}
+					<p class="chat-read-error" role="alert">{chatModal.readError}</p>
+				{/if}
+				{#if chatModal.messages.length === 0 && !chatModal.readError}
 					<div class="chat-empty">No messages yet. Start the conversation!</div>
 				{:else}
 					{#each chatModal.messages as msg}
@@ -445,12 +567,16 @@
 					placeholder="Type a message..."
 					rows="2"
 					class="chat-textarea"
+					maxlength="5000"
 					onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendChatMessage(); }}
 				></textarea>
 				<button class="btn-send-chat" disabled={chatModal.sending || !chatModal.newMsg.trim()} onclick={sendChatMessage}>
 					{chatModal.sending ? '...' : '📨 Send'}
 				</button>
 			</div>
+			{#if chatModal.error}
+				<p class="chat-error" role="alert">{chatModal.error}</p>
+			{/if}
 		</div>
 	</div>
 {/if}
@@ -675,7 +801,18 @@
 		border-radius: var(--radius-md); color: white; font-weight: 600;
 		font-size: 0.82rem; cursor: pointer; font-family: var(--font-family);
 	}
-	.btn-reject-confirm:hover { background: #dc2626; }
+	.btn-reject-confirm:hover:not(:disabled) { background: #dc2626; }
+	.btn-reject-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
+
+	/* A request that failed, said where it was made (cards 2263 and 2272) */
+	.inbox-error, .modal-error, .chat-error, .chat-read-error {
+		background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2);
+		border-radius: var(--radius-md); padding: 8px 12px;
+		color: var(--accent-rose); font-size: 0.8rem; line-height: 1.4;
+	}
+	.modal-error { margin-top: var(--space-md); }
+	.chat-error { margin-top: var(--space-sm); }
+	.chat-read-error { margin: var(--space-sm) 0 0; }
 
 	/* Discuss button */
 	.btn-discuss {

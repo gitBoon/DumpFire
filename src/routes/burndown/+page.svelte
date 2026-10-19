@@ -790,7 +790,7 @@
 									</p>
 								{/if}
 								<p>On a single board the dotted line continues at the recent pace; across several boards there is none, because one board's pace does not clear another's. The dashed line, if there is a target, is the ideal path to it. Hover anywhere on the chart for that day's figures, or use the arrow keys.</p>
-								<p class="muted">Every card that has ever existed ({fmt(r.summary.scopeNow)}) is not plotted — years of finished work would flatten the chart — but it is in the hover and the table.</p>
+								<p class="muted">Finished before this period: {fmt(r.summary.doneStart)} — not plotted, since years of finished work would flatten the chart.</p>
 							{/snippet}
 						</InfoTip>
 					</h2>
@@ -825,7 +825,6 @@
 									<th class="num">Added</th>
 									<th class="num">Finished</th>
 									<th class="num">Dropped</th>
-									<th class="num">All cards ever</th>
 								</tr>
 							</thead>
 							<tbody>
@@ -839,7 +838,6 @@
 										<td class="num">{p.added || ''}</td>
 										<td class="num">{p.completed || ''}</td>
 										<td class="num">{p.removed || ''}</td>
-										<td class="num muted-cell">{fmt(p.scope)}</td>
 									</tr>
 								{/each}
 							</tbody>
@@ -1107,7 +1105,6 @@
 	.kpi:hover .info-icon, .kpi:focus-within .info-icon { color: var(--accent-indigo); }
 	.tone-good { color: #059669; }
 	.tone-bad { color: #dc2626; }
-	.muted-cell { color: var(--text-tertiary); }
 
 	.kpis {
 		display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: var(--space-sm);

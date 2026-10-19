@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/stores';
 	import { parseStamp } from '$lib/timestamps';
+	import { failureMessage } from '$lib/api';
 	import NewRequestLink from '$lib/components/NewRequestLink.svelte';
 
 	type Message = {
@@ -44,6 +45,8 @@
 	let loading = $state(true);
 	let sending = $state(false);
 	let errorMsg = $state('');
+	/** Why the thread was not read, said in its place (the review of card 2272). */
+	let threadError = $state('');
 	let threadEl: HTMLDivElement | undefined = $state();
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -75,6 +78,8 @@
 				showLinkGone();
 			} else if (msgRes.ok) {
 				const fresh: Message[] = await msgRes.json();
+				// A read that works clears what an earlier one said.
+				threadError = '';
 				if (fresh.length !== messages.length) {
 					messages = fresh;
 					scrollToBottom();
@@ -104,12 +109,7 @@
 			}
 			request = await reqRes.json();
 
-			// Load messages
-			const msgRes = await fetch(`/api/requests/${requestId}/messages?token=${encodeURIComponent(token)}`);
-			if (msgRes.ok) {
-				messages = await msgRes.json();
-				scrollToBottom();
-			}
+			await readThread();
 			// Polled for new messages every 5 seconds, once a thread has loaded,
 			// and never for a link that opens none (card 2158).
 			if (!pollInterval) pollInterval = setInterval(pollMessages, 5000);
@@ -119,30 +119,63 @@
 		loading = false;
 	}
 
+	/**
+	 * Reads the thread. One that was not read is said in the thread's place,
+	 * where "No messages yet" was shown for it; a reply sent reads it again
+	 * with this alone, where the whole page was replaced by "Loading..." while
+	 * the request was read again too (the review of card 2272).
+	 */
+	async function readThread() {
+		try {
+			const msgRes = await fetch(`/api/requests/${requestId}/messages?token=${encodeURIComponent(token)}`);
+			if (!msgRes.ok) {
+				threadError = await failureMessage(msgRes, 'The conversation could not be read.');
+				return;
+			}
+			messages = await msgRes.json();
+			threadError = '';
+			scrollToBottom();
+		} catch {
+			threadError = 'No answer from the server. The conversation was not read.';
+		}
+	}
+
+	/**
+	 * A reply that was not sent is said above the box, in the server's words,
+	 * and the text stays in it. One that got no answer threw, and left the
+	 * button on "Sending..." for good (card 2272). One send at a time, since
+	 * Ctrl+Enter is not stopped by the disabled button, and the box is emptied
+	 * only if it still holds what was sent (the review).
+	 */
 	async function sendReply() {
-		if (!newMessage.trim() || !token) return;
+		if (sending || !newMessage.trim() || !token) return;
+		const message = newMessage.trim();
 		sending = true;
 		errorMsg = '';
 
-		const res = await fetch(`/api/requests/${requestId}/messages`, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				message: newMessage.trim(),
-				senderType: 'requester',
-				token
-			})
-		});
+		try {
+			const res = await fetch(`/api/requests/${requestId}/messages`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					message,
+					senderType: 'requester',
+					token
+				})
+			});
 
-		sending = false;
-		if (res.ok) {
-			newMessage = '';
-			await loadData();
-		} else if (res.status === 404) {
-			showLinkGone();
-		} else {
-			const data = await res.json().catch(() => ({}));
-			errorMsg = data.message || 'Failed to send message';
+			if (res.ok) {
+				if (newMessage.trim() === message) newMessage = '';
+				await readThread();
+			} else if (res.status === 404) {
+				showLinkGone();
+			} else {
+				errorMsg = await failureMessage(res, 'Failed to send message');
+			}
+		} catch {
+			errorMsg = 'No answer from the server. The reply may not have been sent.';
+		} finally {
+			sending = false;
 		}
 	}
 
@@ -203,7 +236,10 @@
 
 			<!-- Messages thread -->
 			<div class="messages-thread" bind:this={threadEl}>
-				{#if messages.length === 0}
+				{#if threadError}
+					<p class="thread-error" role="alert">{threadError}</p>
+				{/if}
+				{#if messages.length === 0 && !threadError}
 					<div class="no-messages">No messages yet. Start the conversation below.</div>
 				{:else}
 					{#each messages as msg}
@@ -229,6 +265,7 @@
 						placeholder="Type your reply..."
 						rows="3"
 						class="reply-textarea"
+						maxlength="5000"
 						onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendReply(); }}
 					></textarea>
 					<div class="reply-actions">
@@ -316,6 +353,11 @@
 		padding: var(--space-sm) 0;
 	}
 	.no-messages { text-align: center; color: var(--text-tertiary); font-size: 0.85rem; padding: var(--space-lg); }
+	.thread-error {
+		background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2);
+		border-radius: var(--radius-md); padding: 8px 12px; margin: 0;
+		color: var(--accent-rose); font-size: 0.8rem;
+	}
 
 	.msg-bubble {
 		max-width: 85%; padding: var(--space-sm) var(--space-md);

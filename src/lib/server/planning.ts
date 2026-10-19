@@ -35,7 +35,7 @@ import {
 	cardComments,
 	milestones
 } from './db/schema';
-import { eq, and, isNull, inArray, asc, like } from 'drizzle-orm';
+import { eq, and, or, isNull, inArray, notInArray, asc, like, ne } from 'drizzle-orm';
 import { getAccessibleBoardIds, type Actor } from './board-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { notifyCardUnblocked } from './notifications';
@@ -1244,6 +1244,127 @@ export function withholdUnblockNotices(cardId: number, toBoardId: number): void 
 }
 
 /**
+ * Take the moving card's name, and its subtasks' names, out of other cards'
+ * "Unblocked" notices, as the card moves to board `toBoardId` (card 2261).
+ *
+ * `withholdUnblockNotices` is the other direction: the moving card's own
+ * notices. A notice on W naming this card, or one of its subtasks, by title was
+ * written because the work was on W's board (card 2152), and it went on naming
+ * the work to W's readers after the work had moved to a board some of them
+ * cannot open. So, on every card that is not on `toBoardId` (where
+ * `writeUnblockNotices` would name the work if it wrote the notice now), each
+ * such notice is rewritten to the withheld form, the rest of the sentence kept:
+ *
+ *   - naming the card: found by its text, `Unblocked: #<id> "`, since the id in
+ *     it is exact (the quote after it keeps `#12` from matching `#123`) and a
+ *     dependency row can be removed after the notice is written. A scan of the
+ *     comments, once per move to another board, which is rare;
+ *   - naming one of its subtasks: a notice names a subtask by title alone, and
+ *     titles repeat, so these are found through the dependency rows still
+ *     recorded: the cards that waited on one of the card's subtasks (the card
+ *     itself, or the waiting subtask's card), and on each the notices naming
+ *     that subtask's title. A notice whose row was removed since, or whose
+ *     subtask was renamed, is not found and keeps its name (decision 2); so
+ *     does one on a card that also waits on a subtask of the same title that
+ *     is not this card's, which may have written it (the review).
+ *
+ * The moving card's own notices are `withholdUnblockNotices`'s, and are left
+ * alone here. `content` only: `updatedAt` is left as it was, so the card
+ * window does not show the notice as "(edited)". A withheld notice is never
+ * named again. Called by `moveCard`, in the move's transaction, after
+ * `withholdUnblockNotices`. Writes nothing when there is nothing to rewrite.
+ */
+export function withholdNoticesNaming(cardId: number, toBoardId: number): void {
+	const rewrite = (id: number, content: string) =>
+		db.update(cardComments).set({ content }).where(eq(cardComments.id, id)).run();
+
+	// The card form.
+	const naming = db
+		.select({ id: cardComments.id, content: cardComments.content, boardId: columns.boardId })
+		.from(cardComments)
+		.innerJoin(cards, eq(cardComments.cardId, cards.id))
+		.innerJoin(columns, eq(cards.columnId, columns.id))
+		.where(and(ne(cardComments.cardId, cardId), like(cardComments.content, `Unblocked: #${cardId} "%`)))
+		.all();
+	for (const notice of naming) {
+		if (notice.boardId === toBoardId) continue;
+		const named = NAMED_CARD_NOTICE.exec(notice.content);
+		if (named && Number(named[1]) === cardId) rewrite(notice.id, unblockNotice(withheldCard(cardId), named[3]));
+	}
+
+	// The subtask form, through the dependency rows on the card's subtasks.
+	const own = db.select({ id: subtasks.id, title: subtasks.title }).from(subtasks).where(eq(subtasks.cardId, cardId)).all();
+	if (own.length === 0) return;
+	const titleOf = new Map(own.map((s) => [s.id, s.title]));
+	const rows = db
+		.select({ blockedType: workDependencies.blockedType, blockedId: workDependencies.blockedId, blockerId: workDependencies.blockerId })
+		.from(workDependencies)
+		.where(and(eq(workDependencies.blockerType, 'subtask'), inArray(workDependencies.blockerId, [...titleOf.keys()])))
+		.all();
+
+	// The card each waiting piece of work puts its notice on, and the titles of
+	// this card's subtasks it waited on.
+	const titlesOn = new Map<number, Set<string>>();
+	for (const row of rows) {
+		const waitingCardId =
+			row.blockedType === 'card'
+				? row.blockedId
+				: db.select({ cardId: subtasks.cardId }).from(subtasks).where(eq(subtasks.id, row.blockedId)).get()?.cardId;
+		if (waitingCardId === undefined || waitingCardId === cardId) continue;
+		let titles = titlesOn.get(waitingCardId);
+		if (!titles) titlesOn.set(waitingCardId, (titles = new Set()));
+		titles.add(titleOf.get(row.blockerId)!);
+	}
+
+	for (const [waitingCardId, titles] of titlesOn) {
+		const where = db
+			.select({ boardId: columns.boardId })
+			.from(cards)
+			.innerJoin(columns, eq(cards.columnId, columns.id))
+			.where(eq(cards.id, waitingCardId))
+			.get();
+		if (!where || where.boardId === toBoardId) continue;
+		const notices = db
+			.select({ id: cardComments.id, content: cardComments.content })
+			.from(cardComments)
+			.where(and(eq(cardComments.cardId, waitingCardId), like(cardComments.content, 'Unblocked: subtask "%')))
+			.all();
+		if (notices.length === 0) continue;
+		const ambiguous = titlesWaitedOnElsewhere(waitingCardId, [...titleOf.keys()]);
+		for (const notice of notices) {
+			const named = NAMED_SUBTASK_NOTICE.exec(notice.content);
+			// A notice names its subtask by title alone: where this card also waits
+			// on a subtask of the same title that is not the moving card's, that
+			// one may have written it, and it is left named (the review).
+			if (named && titles.has(named[1]) && !ambiguous.has(named[1])) {
+				rewrite(notice.id, unblockNotice(WITHHELD_SUBTASK, named[2]));
+			}
+		}
+	}
+}
+
+/**
+ * The titles of the subtasks a card, or one of its own subtasks, waits on by
+ * a dependency row, other than the subtasks `notThese`.
+ */
+function titlesWaitedOnElsewhere(waitingCardId: number, notThese: number[]): Set<string> {
+	const steps = db.select({ id: subtasks.id }).from(subtasks).where(eq(subtasks.cardId, waitingCardId)).all().map((s) => s.id);
+	const waits = or(
+		and(eq(workDependencies.blockedType, 'card'), eq(workDependencies.blockedId, waitingCardId)),
+		steps.length > 0 ? and(eq(workDependencies.blockedType, 'subtask'), inArray(workDependencies.blockedId, steps)) : undefined
+	);
+	return new Set(
+		db
+			.select({ title: subtasks.title })
+			.from(workDependencies)
+			.innerJoin(subtasks, eq(subtasks.id, workDependencies.blockerId))
+			.where(and(eq(workDependencies.blockerType, 'subtask'), waits, notInArray(workDependencies.blockerId, notThese)))
+			.all()
+			.map((s) => s.title)
+	);
+}
+
+/**
  * The notices for one piece of finished work.
  *
  * Finds whatever was waiting on it and now has nothing open blocking it, and
@@ -1292,7 +1413,9 @@ function writeUnblockNotices(
 		// board keeps its number, as a withheld plan node keeps its id; a subtask
 		// is said to be one. Comments written before stay as they are. The card
 		// can later move to another board, and the names go then, but for its
-		// own subtasks' (`withholdUnblockNotices`, card 2256).
+		// own subtasks' (`withholdUnblockNotices`, card 2256); and so can the
+		// work named, and its name goes then from every card not on the board
+		// it arrives on (`withholdNoticesNaming`, card 2261).
 		const sameBoard = completedNode.boardId === node.boardId;
 		const by =
 			completedNode.kind === 'card'

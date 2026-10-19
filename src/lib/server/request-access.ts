@@ -54,12 +54,26 @@ export function linkOpens(request: TaskRequest, token: string | null | undefined
 }
 
 /**
+ * True for a request made without an account that its requester has not
+ * confirmed yet (card 2260). Until it is confirmed it is not the team's: only
+ * its own link opens it.
+ */
+export function awaitsConfirmation(request: Pick<TaskRequest, 'status'>): boolean {
+	return request.status === 'unverified';
+}
+
+/**
  * True if the request is addressed to this user — directly, or through a team
  * they belong to — or they are an administrator.
  *
- * These are the people who may reply to it, accept it or reject it.
+ * These are the people who may reply to it, accept it or reject it. Nobody,
+ * an administrator included, may do any of it to a request that awaits
+ * confirmation (card 2260): the inbox never listed one, but the person or team
+ * it was addressed to, and every administrator, could read it by its id, with
+ * the requester's address, before the requester had stood behind it.
  */
 export function canHandleRequest(user: SessionUser, request: TaskRequest): boolean {
+	if (awaitsConfirmation(request)) return false;
 	if (isAdmin(user)) return true;
 	if (request.targetType === 'user') return request.targetId === user.id;
 
@@ -95,8 +109,13 @@ export function isRequestAuthor(user: SessionUser, request: TaskRequest): boolea
 	return request.requesterUserId !== null && request.requesterUserId === user.id;
 }
 
-/** True if this signed-in user may read the request and its thread. */
+/**
+ * True if this signed-in user may read the request and its thread. Never for
+ * one that awaits confirmation (card 2260), refused here as well as by
+ * `canHandleRequest`, so that the author rule can never let one in.
+ */
 export function canReadRequest(user: SessionUser, request: TaskRequest): boolean {
+	if (awaitsConfirmation(request)) return false;
 	return canHandleRequest(user, request) || isRequestAuthor(user, request);
 }
 
@@ -112,6 +131,12 @@ export function canReadRequest(user: SessionUser, request: TaskRequest): boolean
  * as every guard answers: `404` for one that is not there, `403 refusal` for
  * one that is not theirs. Its state is for the route to tell, once the caller
  * is let in.
+ *
+ * A request that awaits confirmation is `404` to every caller it does not let
+ * in, signed in or not (card 2260): to the team it is not there until its
+ * requester confirms it, and a `403` to an outsider would tell them it exists
+ * while the people it is addressed to are told it does not. Its own link still
+ * opens it.
  */
 export function requireRequest(
 	user: SessionUser | null,
@@ -121,6 +146,6 @@ export function requireRequest(
 ): TaskRequest {
 	const request = db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
 	if (request && letIn(request)) return request;
-	if (!user || !request) throw error(404, 'Request not found');
+	if (!user || !request || awaitsConfirmation(request)) throw error(404, 'Request not found');
 	throw error(403, refusal);
 }

@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { activityLog, boards } from '$lib/server/db/schema';
 import { eq, desc, and, gte, lte, like, notLike, sql } from 'drizzle-orm';
 import { actionCondition } from '$lib/server/logActivity';
-import { readLimit, readOffset, readQueryDate, readQueryId } from '$lib/server/request-body';
+import { readLimit, readOffset, readQueryDate, readQueryId, refuseReversedRange } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
@@ -14,7 +14,9 @@ import type { RequestHandler } from './$types';
  *          &userId=N &from=ISO &to=ISO &limit=N (default 100, max 500) &offset=N
  *
  * `from` and `to` are each a date or a timestamp (`400 from is not a date`),
- * read as `readQueryDate` reads them; a bare `to` includes its whole day.
+ * read as `readQueryDate` reads them; a bare `to` includes its whole day. A
+ * `from` after its `to` is a 400 (`` `from` is after `to` ``), as the v1 twin
+ * answers it (card 2262); it was a 200 with an empty page.
  *
  * The action filter finds the action however it was done (card 2127):
  * `card_completed` finds the page's `card_completed` and the API's
@@ -48,6 +50,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	// `to` lost the whole of its day, and `from=yesterday` was taken.
 	const from = readQueryDate(url.searchParams.get('from'), 'from', 'lower');
 	const to = readQueryDate(url.searchParams.get('to'), 'to', 'upper');
+	refuseReversedRange(from, to);
 	const limit = readLimit(url.searchParams.get('limit'), { max: 500, fallback: 100 });
 	const offset = readOffset(url.searchParams.get('offset'));
 

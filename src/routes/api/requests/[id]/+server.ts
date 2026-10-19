@@ -5,7 +5,7 @@ import { taskRequests, requestMessages, cards, cardAssignees, cardComments, user
 import { eq, asc } from 'drizzle-orm';
 import { canViewBoard, isAdmin } from '$lib/server/board-access';
 import { requireColumn } from '$lib/server/route-guards';
-import { canHandleRequest, canReadRequest, linkOpens, requesterAddress, requireRequest } from '$lib/server/request-access';
+import { awaitsConfirmation, canHandleRequest, canReadRequest, linkOpens, requesterAddress, requireRequest } from '$lib/server/request-access';
 import { publicRequest } from '$lib/server/request-tokens';
 import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } from '$lib/server/notifications';
 import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
@@ -78,7 +78,9 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 
 	const answer = inTransaction(() => {
 		const existing = db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
-		if (!existing) throw error(404, 'Request not found');
+		// One that awaits confirmation is not there for the team (card 2260):
+		// it was `400 Request already resolved`, which told them it was.
+		if (!existing || awaitsConfirmation(existing)) throw error(404, 'Request not found');
 
 		// Only the person or team the request is addressed to decides its fate.
 		if (!canHandleRequest(user, existing)) {

@@ -129,6 +129,7 @@ import {
 	readTimeZone,
 	readTimestamp,
 	readUrl,
+	refuseReversedRange,
 	type Refusal,
 	type RequestBody,
 	type Rule
@@ -779,6 +780,20 @@ describe('the query readers, which take the value and not the name (R7)', () => 
 		for (const value of ['yesterday', '2026-13-01', '2026-02-30', '14/10/2026', '1']) {
 			expect(outcome(() => readQueryDate(value, 'from')), value).toEqual(refused('from is not a date'));
 		}
+	});
+
+	it('refuseReversedRange refuses a `from` after its `to`, and passes equal bounds and a range with either end missing (card 2262)', () => {
+		const range = (from: string | undefined, to: string | undefined) => outcome(() => refuseReversedRange(from, to));
+		expect(range('2026-10-15 00:00:00', '2026-10-14 23:59:59')).toEqual(refused('`from` is after `to`'));
+		expect(range('2026-10-14 10:00:00', '2026-10-14 09:59:59')).toEqual(refused('`from` is after `to`'));
+		// Equal bounds name one second; a range open at either end has no order to get wrong.
+		expect(range('2026-10-14 09:00:00', '2026-10-14 09:00:00')).toEqual(handed(undefined));
+		expect(range('2026-10-14 00:00:00', '2026-10-14 23:59:59')).toEqual(handed(undefined));
+		expect([range('2026-10-15 00:00:00', undefined), range(undefined, '2026-10-14 00:00:00'), range(undefined, undefined)]).toEqual([
+			handed(undefined),
+			handed(undefined),
+			handed(undefined)
+		]);
 	});
 
 	it('readQueryDate hands back a timestamp with an offset, or with no zone, in UTC, as readTimestamp does', () => {
@@ -3500,6 +3515,13 @@ describe('the review fixes to card 2117’s slices 2 to 5 (version 1.7)', () => 
 		it('lets no one type past the new limits of a request: the requester’s name and the reason for a rejection', () => {
 			expect(source('src/routes/request/+page.svelte')).toContain('placeholder="Your name" class="form-input" maxlength="200"');
 			expect(source('src/routes/inbox/+page.svelte')).toContain('bind:value={rejectModal.reason} class="modal-textarea" rows="3" maxlength="10000"');
+		});
+
+		it('lets no one type past the limit of a message in a request’s conversation, from the inbox or the requester’s link (cards 2263 and 2272)', () => {
+			// The route's limit the two boxes hold to: 5,000 after trimming, and each page sends its text trimmed.
+			expect(source('src/routes/api/requests/[id]/messages/+server.ts')).toMatch(/readText\(body, 'message', \{[^}]*max: 5000,/);
+			expect(source('src/routes/inbox/+page.svelte')).toMatch(/<textarea\s+bind:value=\{chatModal\.newMsg\}[^>]*\smaxlength="5000"/);
+			expect(source('src/routes/request/[id]/reply/+page.svelte')).toMatch(/<textarea\s+bind:value=\{newMessage\}[^>]*\smaxlength="5000"/);
 		});
 
 		it('refuses what the pages sent before they were put right, so the fixes are needed', async () => {

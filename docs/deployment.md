@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.42
+version: 1.43
 status: As-Built
 date: 2026-10-19
 tags:
@@ -2935,7 +2935,7 @@ SELECT cc.id AS comment_id, cc.card_id, substr(cc.content, 1, 120) AS content
  ORDER BY cc.id;
 ```
 
-**What a row means.** Each row is one comment (`comment_id`, on card `card_id`) that names work by its title where some readers of its card's board may not be able to open that work. In the card form, `card_board` is the board the card is on and `named_card_board` the board of the card it names; it also lists a notice whose own card stayed where it was while the card it names moved away later, which nothing rewrites either, so a row is one case or the other. A notice naming a card since deleted is not listed. In the subtask form, a row may name one of the card's own subtasks, which moved with it and can be read on it: that one is harmless. The subtask form finds a card by the move logged when it arrived; before 14 September 2026 only a move through the API logged that, so a card moved before then by the board page is not found by it. Expect no rows, or a few. Keep both files where only an administrator can read them: they hold the text of notices from every board.
+**What a row means.** Each row is one comment (`comment_id`, on card `card_id`) that names work by its title where some readers of its card's board may not be able to open that work. In the card form, `card_board` is the board the card is on and `named_card_board` the board of the card it names; it also lists a notice whose own card stayed where it was while the card it names moved away later, which card 2261 rewrites for a move made once it is deployed but not for one made before, so a row is one case or the other. A notice naming a card since deleted is not listed. In the subtask form, a row may name one of the card's own subtasks, which moved with it and can be read on it: that one is harmless. The subtask form finds a card by the move logged when it arrived; before 14 September 2026 only a move through the API logged that, so a card moved before then by the board page is not found by it. Expect no rows, or a few. Keep both files where only an administrator can read them: they hold the text of notices from every board.
 
 **A row can be left.** The update rewrites none of these notices and changes nothing for them: each reads as it did before the deploy. A one-off rewrite of the rows found would change stored comments, and would be its own card, not part of this deploy.
 
@@ -3151,6 +3151,84 @@ Each check uses Chrome's own zone override (DevTools, More tools, Sensors, Locat
 #### Going back to the previous image
 
 Nothing is done to the database. The older image counts the dashboard's figures and a report's Overdue from the UTC day again, prints a scheduled report's PDF in the server's zone, and ignores a `timeZone` sent to the report routes; a target date reads a day early west of UTC again; and the Reports page's periods are sent as the browser's moments again, a day out away from UTC.
+
+### Unconfirmed Requests, and a Moved Card's Name in Other Cards' Notices
+
+**Cards 2260 and 2261.** No migration, no setting.
+
+- **Card 2260.** A request made on the public form without an account waits for its requester to confirm it, and until then it is not the team's. The inbox never listed one, but the person or team it was addressed to, and every administrator, could read it by its id, with the requester's address. Now `GET /api/requests/{id}`, its thread, an accept, a reject and a reply from the team answer every signed-in caller without its link `404 Request not found`, administrators included. Its own link opens it as before. See [Authentication & Security](authentication-security.md), "A thread is opened by its own token".
+- **Card 2261.** Card 2256 took the names of finished work out of a card's own "Unblocked" notices when it moves to another board. Now the same move takes the card's own name out of other cards' notices too, on every card not on the board it arrives on: a notice naming it gives its number alone, and one naming one of its subtasks reads "a subtask on another board". See [Critical Path Planning](critical-path-planning.md).
+
+**Owner to know.**
+
+- **A signed-in account holding the link of a lapsed unconfirmed request** is now answered `404` where it was `403`.
+- **An administrator cannot open an unconfirmed request either.** One can still be deleted by its id (`DELETE /api/requests/{id}`).
+- **Moving a card to another board now changes comments on other cards**, not marked "(edited)". Notices naming cards moved before the deploy keep their names; `query-2256-card.sql` above lists them.
+
+#### After the deploy
+
+Checks 171 and 172 need the public form in a private window and mail set up; reject the request from the inbox afterwards. Checks 173 and 174 need two scratch boards you own, A and B, and a second account that is a viewer of A alone; delete both boards afterwards.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 171 | 2260 | Signed out, submit a request to yourself on the public form, and do not confirm it. Signed in as yourself (an administrator), open `/api/requests/<id>`, the id being the number in the confirmation mail's link (`/request/<id>/confirm`) | `404` `Request not found` | The request, with the address |
+| 172 | 2260 | Open the confirmation link from the mail and confirm; open `/api/requests/<id>` again | `200`, the request with the address, and it is in the inbox | Still `404` |
+| 173 | 2261 | On A, make card W wait on card Y; complete Y; read W's comments | `Unblocked: #<Y> "<Y's title>" completed — nothing is blocking this card now.` | No notice |
+| 174 | 2261 | Move Y to B; as the viewer of A alone, open W | `Unblocked: #<Y>, a card on another board, completed — nothing is blocking this card now.`, with no "(edited)" | Y's title, or "(edited)" |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image lets the team and administrators read an unconfirmed request by its id again, and leaves other cards' notices alone when a card moves; notices it finds already rewritten stay rewritten.
+
+### The Burndown Without "All Cards Ever"
+
+**Card 2269.** No migration, no setting and no answer changes. The burndown's daily table had an "All cards ever" column and the chart's hover an "All cards ever" row, and both only repeated Work in play: the two differ by the same number on every day, the cards finished before the period, and were identical when there were none. The column and the row are gone; the chart's explanation ("Reading the chart") now says "Finished before this period: N" once instead. The CSV keeps `all_cards` and `GET /api/v1/burndown` keeps `series[].scope`. See [Burndown Charts](burndown-charts.md#the-chart).
+
+**Owner to know.**
+
+- **Every burndown hover loses the row**, not only the full page's: the chart is shared, so the board's stats panel and the milestone page lose it too.
+
+#### After the deploy
+
+Checks 175 to 177 need any account and a board with cards finished before the last 30 days.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 175 | 2269 | `/burndown`, **Show table** | No "All cards ever" column | The column |
+| 176 | 2269 | Hover the chart on `/burndown`, on a board's stats panel and on a milestone page | No "All cards ever" row in any of them | The row |
+| 177 | 2269 | On `/burndown`, hover the chart's heading ("Remaining work") to open its explanation, "Reading the chart" | "Finished before this period: N", N the number of cards finished before the period's first day | "Every card that has ever existed …" |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image shows the column and the hover row again.
+
+### The Audit Range, and the Inbox and the Reply Page Saying What Failed
+
+**Cards 2262, 2263 and 2272.** No migration and no setting. `GET /api/audit` and `GET /api/logs` answer a `from` after its `to` `400` `` `from` is after `to` ``, as `GET /api/v1/audit-log` does, where each answered `200` with an empty page; the Audit page's Audit Log tab says that, and any other failure, in a line under its filters, with no rows under it. In the inbox, a message that was not sent, an Accept or a Reject that was refused, and a list or a conversation that could not be read each say why, in the server's words, where it happened, and nothing typed is lost; a request that gets no answer no longer leaves a button on "..." or the page on "Loading...". The conversation's box, in the inbox and on the requester's reply page, stops at 5,000 characters, the server's limit. See [The Audit Page](admin-guide.md#the-audit-page) and [Task Requests](feature-overview.md#task-requests).
+
+**Owner to know.**
+
+- **A reversed From and To on the Audit page says "`from` is after `to`" and shows no rows**, where it showed "No audit entries match these filters.", or the rows of the search before. A script that asks `/api/audit` or `/api/logs` for a reversed range is answered `400`.
+- **A message sent from the inbox after the session has ended says "Not authenticated"** under the box, and keeps the text; the page is not sent to the login page, as it is elsewhere.
+
+#### After the deploy
+
+Checks 178 and 179 need an administrator; 180 to 184 any account a pending request is addressed to, with a second tab open on the inbox; 185 a request's reply link from its mail.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 178 | 2262 | Audit page, **Audit Log** tab: Apply once with no dates, then From tomorrow, To yesterday, **Apply** | "`from` is after `to`" under the filters, above an empty list | "No audit entries match these filters.", or the earlier rows |
+| 179 | 2262 | Put the dates right, **Apply** | The entries, and no message | The message stays |
+| 180 | 2263 | Inbox: open a pending request's **Discuss**; in the other tab, **Reject** it; type a message and **Send** | "Request is already resolved" under the box; the text still in it; Send enabled | Nothing shown, or the text gone |
+| 181 | 2263 | Open another request's **Discuss**; in the browser's developer tools, Network, set **Offline**; **Send** a message | "No answer from the server. The message may not have been sent."; Send enabled again, the text kept | "..." for ever |
+| 182 | 2263 | Online again: paste 6,000 characters into the box | The box stops at 5,000 | It takes more |
+| 183 | 2272 | Open **Accept** on a pending request and choose a board and column; in the other tab, **Reject** it; **Create Card & Accept** | "Request already resolved" above the buttons; the window open, board and column as chosen; behind it, the request has left Pending | The window open with no word, or the request still under Pending |
+| 184 | 2272 | Set **Offline**; open a request's **Discuss** | "No answer from the server. The conversation was not read." where the messages would be; online again, the messages within five seconds and the line gone | "No messages yet. Start the conversation!" |
+| 185 | 2272 | From the request's mail, open its reply link; set **Offline**; type a reply and **Send Reply**; online again, paste 6,000 characters | "No answer from the server. The reply may not have been sent." above the box, the text kept, **Send Reply** enabled; the box stops at 5,000 | "Sending..." for ever, or the box takes more |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image answers a reversed range on `/api/audit` and `/api/logs` with an empty page again, and the inbox and the reply page say nothing when a request fails.
 
 ## Changing the Schema
 

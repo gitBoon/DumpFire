@@ -193,6 +193,11 @@ const spec = {
 			'on POST /api/v1/boards/{boardId}/columns and PUT /api/v1/columns/{columnId}, `Column title too long (max 200 chars)` is `title must be at most 200 characters`; ' +
 			'and on PUT /api/v1/comments/{commentId}, `Comment too long (max 50000 chars)` is `content must be at most 50000 characters`, as POST /api/v1/cards/{cardId}/comments already answered. ' +
 			'Every limit is as it was, and the web application\'s routes answer in the same words; a caller that matched the old text no longer matches it. ' +
+			'(76) a card moved to another board by PUT /api/v1/cards/{cardId}/move is no longer named in other cards\' "Unblocked" comments, read by GET /api/v1/cards/{cardId}/comments, on any card not on the board it arrives on: ' +
+			'the move rewrites `Unblocked: #12 "<title>" completed — …` naming it to `Unblocked: #12, a card on another board, completed — …`, and `Unblocked: subtask "<title>" completed — …` naming one of its subtasks, on a card ' +
+			'that waited on that subtask as its dependencies still record, to `Unblocked: a subtask on another board completed — …`, the rest of each kept and its updatedAt unchanged ' +
+			'(a subtask notice on a card that also waits on a subtask of the same title that is not the moved card\'s keeps its name, since that one may have written it), ' +
+			'where they went on naming the card to readers who may not open the board it moved to; comments naming cards moved before are unchanged. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +

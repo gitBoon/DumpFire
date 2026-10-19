@@ -290,8 +290,6 @@
     const finished = { key: 'done', label: 'Finished since start', value: formatCount(finishedValues[i]) };
     const rows = mode === 'burnup' ? [finished, inPlay, remaining] : [remaining, inPlay, finished];
     if (ideal !== null) rows.push({ key: 'ideal', label: 'Ideal', value: ideal.toFixed(1).replace(/\.0$/, '') });
-    // Context, not a plotted line: every card that exists, finished or not.
-    rows.push({ key: '', label: 'All cards ever', value: formatCount(hovered.scope) });
     return {
       x: px,
       flip: px > W * 0.62,
@@ -512,7 +510,7 @@
           <div class="tt-title">{tooltip.title}</div>
           {#each tooltip.rows as r}
             <div class="tt-row">
-              <span class="tt-key {r.key || 'none'}"></span>
+              <span class="tt-key {r.key}"></span>
               <span class="tt-value">{r.value}</span>
               <span class="tt-label">{r.label}</span>
             </div>
@@ -622,7 +620,6 @@
   .tt-key.inplay { border-color: var(--bd-scope); }
   .tt-key.done { border-color: var(--bd-done); }
   .tt-key.ideal { border-color: var(--bd-ref); border-top-style: dashed; }
-  .tt-key.none { border-color: transparent; }
   .tt-value { font-weight: 700; min-width: 28px; font-variant-numeric: tabular-nums; }
   .tt-label { color: var(--text-secondary); }
   .tt-changes { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--glass-border); color: var(--text-tertiary); }

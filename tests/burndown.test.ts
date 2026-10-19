@@ -31,6 +31,8 @@ import {
 	estimateDeliveryByParts,
 	forecast,
 	forecastBasis,
+	summarise,
+	workInPlay,
 	type BurndownForecast,
 	type CardLifeline,
 	type Day,
@@ -456,5 +458,59 @@ describe('the burndown page keeps its view in the address (card 2242)', () => {
 		expect(script).toContain('goto(url, { replaceState: true, keepFocus: true, noScroll: true })');
 		expect(script).toContain("const view = $derived($page.url.searchParams.get('view') === 'burnup' ? 'burnup' : 'burndown');");
 		expect(script).not.toMatch(/\bview = v\b/);
+	});
+});
+
+describe('the page shows no column that repeats Work in play (card 2269)', () => {
+	// "All cards ever" is the window's scope, and Work in play starts at the
+	// scope less what was finished before the window, then moves by the same
+	// added and dropped each day. So the two differ by one constant, the
+	// finished-before count, and are the same column when it is 0. The page
+	// gives that count once, in the chart's explanation, instead.
+	const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
+
+	it('All cards ever less Work in play is the finished-before count on every day', () => {
+		// The worked example, with three cards finished before the window.
+		const { a, b } = workedExample();
+		const finishedEarlier = Array.from({ length: 3 }, (_, i) => ({ start: BEFORE, done: addDays(BEFORE, i + 1) as Day | null, removed: null }));
+		const series = buildSeries([...a, ...b, ...finishedEarlier], FIRST, AS_OF);
+		const before = summarise(series).doneStart;
+		expect(before).toBe(3);
+		const inPlay = workInPlay(series);
+		series.forEach((p, i) => expect(p.scope - inPlay[i], p.date).toBe(before));
+
+		// Nothing finished before the window: the two columns are the same.
+		const fresh: CardLifeline[] = [
+			{ start: BEFORE, done: null, removed: null },
+			{ start: addDays(FIRST, 2), done: addDays(FIRST, 5), removed: null },
+			{ start: addDays(FIRST, 3), done: null, removed: addDays(FIRST, 9) }
+		];
+		const freshSeries = buildSeries(fresh, FIRST, AS_OF);
+		expect(summarise(freshSeries).doneStart).toBe(0);
+		expect(workInPlay(freshSeries)).toEqual(freshSeries.map((p) => p.scope));
+	});
+
+	it('the table and the hover have no All cards ever, and the explanation gives the finished-before count', () => {
+		const page = read('src/routes/burndown/+page.svelte');
+		expect(page).not.toContain('All cards ever');
+		expect(page).not.toContain('fmt(p.scope)');
+		expect(page).not.toContain('muted-cell');
+		expect(page).not.toContain('in the hover and the table');
+		expect(page).toContain('Finished before this period: {fmt(r.summary.doneStart)}');
+
+		const chart = read('src/lib/components/board/BurndownChart.svelte');
+		expect(chart).not.toContain('All cards ever');
+		expect(chart).not.toContain('hovered.scope');
+		// The removed row was the only one with no key: every row has one now, and the fallback went with it (the review).
+		expect(chart).toContain('<span class="tt-key {r.key}"></span>');
+		expect(chart).not.toContain("r.key || 'none'");
+		expect(chart).not.toContain('.tt-key.none');
+	});
+
+	it('keeps the CSV columns, all_cards included', () => {
+		// The CSV is data a spreadsheet may be keyed to (decision 2).
+		expect(read('src/routes/burndown/+page.svelte')).toContain(
+			"['date', 'remaining', 'in_play', 'finished_since_start', 'added', 'completed', 'dropped', 'all_cards', 'all_done']"
+		);
 	});
 });

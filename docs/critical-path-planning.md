@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.17
+version: 1.18
 status: As-Built
 date: 2026-10-19
 tags:
@@ -432,6 +432,28 @@ different readers:
   back keeps the withheld form. Any comment that is word for word a named notice is
   rewritten, whoever is stored as its author, since the system writes the notice as the
   person who finished the work. Notices on cards moved before card 2256 keep their names.
+
+  The other direction (card 2261): a notice on another card W naming the moving card Y, or
+  one of Y's subtasks, was written because Y was on W's board, and stayed when Y moved. So
+  the same branch then calls `withholdNoticesNaming(cardId, toBoardId)`, in the same
+  transaction, which rewrites those notices on every card that is not on the board Y
+  arrives on (the rule `writeUnblockNotices` would apply if it wrote the notice now; a card
+  on that board keeps its notice as it is). The card form is found by its text: comments
+  `LIKE 'Unblocked: #<id> "%'` on other cards, joined to their card's column for its board,
+  each checked word for word against the named form with that id (the quote after the id
+  keeps `#12` from matching `#123`). One scan of `card_comments` per move to another board,
+  which is rare, chosen over the dependency rows because a row can be removed after its
+  notice is written. The subtask form cannot be found by text, since a notice names a
+  subtask by title and titles repeat, so it goes through the dependency rows still
+  recorded: Y's subtasks, the `work_dependencies` rows with `blocker_type = 'subtask'` on
+  them, and for each the card that waited (the blocked card, or the blocked subtask's
+  card), unless it is Y itself (card 2256's) or on the board Y arrives on; on that card,
+  each notice naming that subtask's title is rewritten to `a subtask on another board`,
+  unless that card, or one of its subtasks, also waits by a dependency row on a subtask of
+  the same title that is not Y's: that one may have written the notice, so it keeps its name.
+  A notice whose dependency row was removed since, or whose subtask was renamed, is not
+  found and keeps its name. `content` only, as above, and notices naming cards moved before
+  card 2261 keep their names.
 - **The mail** is one person's. It goes to the waiting card's assignees who can open its
   board (card 2180), and names the finished work by its title to an assignee who can open
   the board it is on, and otherwise as "A card on a board you cannot open" (with its number)
@@ -444,6 +466,9 @@ flowchart TD
     Done["Finished work F unblocks waiting work W"] --> Same{"F on W's board?"}
     Same -->|yes| Named["Comment names F by title"]
     Same -->|no| Other["Comment: #F, a card on another board<br/>or: a subtask on another board"]
+    Named --> Moves{"Later, F moves to another board"}
+    Moves -->|"W not on F's new board (card 2261)"| Other
+    Moves -->|"W on F's new board"| Named
     Done --> Each["Each assignee of W who can open W's board"]
     Each --> Can{"canViewBoard(assignee, F's board)"}
     Can -->|yes| MailNamed["Mail names F by title"]

@@ -65,7 +65,7 @@ import { getCompletionBlocker } from './card-completion';
 import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
 import { notifyCardMoved, notifyRequesterProgress } from './notifications';
-import { announceUnblocked, recordUnblocked, withholdUnblockNotices, type UnblockedWork } from './planning';
+import { announceUnblocked, recordUnblocked, withholdNoticesNaming, withholdUnblockNotices, type UnblockedWork } from './planning';
 import { moveTooDeep, tooDeepToMove, wouldLoopAny } from './sub-boards';
 import type { SessionUser } from './auth';
 
@@ -171,7 +171,8 @@ export interface MoveRequest {
  * of its own: the move's entry is the record), labels, a board-owned category
  * and a milestone of a board that cannot follow it to another board (card
  * 2155), the names of finished work in its "Unblocked" notices on such a move
- * (card 2256), the actor's XP, and the activity
+ * (card 2256), and its own name in other cards' notices (card 2261), the
+ * actor's XP, and the activity
  * entry — one per move, carrying the actor's id and the source. The card and
  * both columns are read inside that transaction too, so the move is decided on
  * the rows it then writes.
@@ -323,8 +324,12 @@ function moveCard(request: MoveRequest): CardMove {
 		// finished work by its title only when the work is on the card's board,
 		// and the comment goes with the card, to readers who may not be able to
 		// open the board the work is on. Rewritten to the withheld form here, so
-		// a move that fails takes the rewrite back with it.
+		// a move that fails takes the rewrite back with it. And the card's own
+		// name, and its subtasks', in other cards' notices, on every card not on
+		// the board it arrives on (card 2261): the notice was written because the
+		// card was on theirs.
 		withholdUnblockNotices(cardId, toColumn.boardId);
+		withholdNoticesNaming(cardId, toColumn.boardId);
 	}
 
 	const after = db.update(cards).set(update).where(eq(cards.id, cardId)).returning().get();

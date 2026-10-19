@@ -947,6 +947,40 @@ describe('the audit log refuses a reversed range, and keeps entries of one secon
 		}
 	});
 
+	it.each(['/api/audit', '/api/logs'])(
+		'%s answers a reversed range as the v1 audit log does, and takes equal bounds (card 2262)',
+		async (route) => {
+			// They answered 200 with an empty page, which the Audit page showed as
+			// "No audit entries match these filters."
+			for (const query of [
+				'from=2026-10-15&to=2026-10-14',
+				`from=${encodeURIComponent('2026-10-14T10:00:00Z')}&to=${encodeURIComponent('2026-10-14 09:59:59')}`
+			]) {
+				const res = await api('GET', `${route}?${query}`, { user: admin });
+				expect([res.status, res.body], query).toEqual([400, { message: '`from` is after `to`' }]);
+			}
+			const second = encodeURIComponent('2026-10-14 23:00:00');
+			for (const query of [`from=${second}&to=${second}`, 'from=2026-10-14&to=2026-10-14']) {
+				const res = await api('GET', `${route}?${query}`, { user: admin });
+				expect(res.status, `${query}: ${JSON.stringify(res.body)}`).toBe(200);
+			}
+		}
+	);
+
+	it('the four routes that read a range refuse a reversed one through refuseReversedRange, and none in words of its own (card 2262)', () => {
+		for (const file of [
+			'src/routes/api/audit/+server.ts',
+			'src/routes/api/logs/+server.ts',
+			'src/routes/api/v1/audit-log/+server.ts',
+			'src/routes/api/v1/reports/activity/+server.ts'
+		]) {
+			const source = readFileSync(join(process.cwd(), file), 'utf-8');
+			expect(source, file).toContain('refuseReversedRange(from, to);');
+			expect(source, file).not.toContain("'`from` is after `to`'");
+		}
+		expect(readFileSync(join(process.cwd(), 'src/lib/server/request-body.ts'), 'utf-8').split("'`from` is after `to`'")).toHaveLength(2);
+	});
+
 	it('equal bounds name one second, and one bare day as both bounds is the whole day', async () => {
 		const at = async (query: string) => {
 			const res = await api('GET', `/api/v1/audit-log?boardId=${boardId}&${query}`, { user: admin });
