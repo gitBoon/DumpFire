@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.40
+version: 1.41
 status: As-Built
 date: 2026-10-19
 tags:
@@ -3086,6 +3086,28 @@ Checks 148 to 152 run on production as the superadmin, with the Audit page's Sys
 #### Going back to the previous image
 
 Nothing is done to the database. The older image writes no line for a change to the backup settings; the lines already written stay in the system log.
+
+### A Line for Every Google Drive Connect
+
+**Card 2273.** No migration, no setting and no answer changes. A Google Drive Connect that is saved (Admin, Scheduled Backups, 🔗 Connect) now writes one line under `BACKUP` on the Audit page, with the chip of the account that connected: `Google Drive destination "…" connected: scope narrow (drive.file); a folder made` (or `its folder reached` for a Folder ID given). It names the scope by its kind and never the token, the code, the folder's id or name. A Connect refused or not saved writes none. With cards 2267 and 2270, every change made through the backup settings or a Connect is now on record under `BACKUP` (a restore, which also rewrites them, writes its own lines, not these). The Connect's other lines under `GDRIVE` (a folder not reached, a made folder not deleted, a failure) are now filed under the account too, with the name quoted the same way. See [Backups & Reporting](backup-reporting.md#destination-types).
+
+**Owner to know.**
+
+- **Connecting a destination again is a `WARN`**: `… connected again, replacing the connection it had: …`. It may connect another Google account, which DumpFire cannot see, so the backups may now go elsewhere. The page offers no 🔗 Connect for a destination already connected, so this line means a Connect from a page left open since before it was connected, or one made without the page. A destination's first connection is an `INFO`, not kept with `LOG_LEVEL=WARN`.
+
+#### After the deploy
+
+Checks 153 and 154 run on production as the superadmin, with the Audit page's System Logs filtered to `BACKUP` in a second tab, on a scratch Google Drive destination with OAuth that is **not yet connected**, its Folder ID empty, as for checks 124 to 129. Before check 153, open Admin, Scheduled Backups in a second tab as well, and leave it unreloaded until check 154. Check 155 removes the destination; then delete the folder check 153 made in Google Drive.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 153 | 2273 | **🔗 Connect** the scratch destination | One `[INFO] [BACKUP] Google Drive destination "…" connected: scope narrow (drive.file); a folder made` line with your account's chip, its details `{"destination":"…","scope":"narrow","folder":"made","replaced":false}` | No line, `WARN`, not filed under you, or a token, code or folder id in the line or its details |
+| 154 | 2273 | In the second tab, which still shows 🔗 Connect for it, Connect it again: approve and paste as before | One `[WARN] [BACKUP] Google Drive destination "…" connected again, replacing the connection it had: scope narrow (drive.file); its folder reached` | `INFO`, or no line |
+| 155 | 2273 | 🗑️ Remove the scratch destination | Card 2270's `[WARN]` line `destination "…" removed (gdrive)`, and no Connect line | No line |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image writes no line for a Connect saved; the lines already written stay in the system log.
 
 ## Changing the Schema
 

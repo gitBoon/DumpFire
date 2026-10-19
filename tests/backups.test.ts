@@ -3994,6 +3994,265 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 			expect((await finish(states[1], { credential: session(1) })).body.success).toBe(true);
 		});
 	});
+
+	describe('a successful Connect leaves one line under BACKUP, filed under the account (card 2273)', () => {
+		// The tests keep ERROR and above; a first Connect's line is INFO.
+		let level: string | undefined;
+		beforeEach(() => {
+			level = process.env.LOG_LEVEL;
+			process.env.LOG_LEVEL = 'INFO';
+			vi.spyOn(console, 'log').mockImplementation(() => {});
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+		});
+		afterEach(() => {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		});
+
+		/** The lines a Connect writes (card 2273), oldest first, with the account each is filed under and its meta. */
+		const connectLines = () =>
+			(
+				sqlite
+					.prepare("SELECT level, context, message, meta, user_id FROM system_logs WHERE message LIKE 'Google Drive destination %' ORDER BY id")
+					.all() as { level: string; context: string; message: string; meta: string | null; user_id: number | null }[]
+			).map((row) => ({ ...row, meta: row.meta === null ? null : JSON.parse(row.meta) }));
+		const line = (level: 'INFO' | 'WARN', words: string, meta: Record<string, unknown>) => ({
+			level,
+			context: 'BACKUP',
+			message: `Google Drive destination ${words}`,
+			meta,
+			user_id: chief.id
+		});
+
+		it('writes one INFO line for a first Connect: the destination, the narrow scope and a folder made, and nothing secret (decisions 1 and 3)', async () => {
+			store(G);
+			const exchanged = exchange({ refresh_token: 'rt-new', access_token: 'at-new', scope: DRIVE_FILE_SCOPE });
+			const { state } = await begin();
+
+			const res = await finish(state);
+
+			expect(res.body.success, JSON.stringify(res.body)).toBe(true);
+			expect(connectLines()).toEqual([
+				line('INFO', '"G" connected: scope narrow (drive.file); a folder made', { destination: 'G', scope: 'narrow', folder: 'made', replaced: false })
+			]);
+			const verifier = ((exchanged.mock.calls[0] as unknown[])[0] as { codeVerifier: string }).codeVerifier;
+			const written = JSON.stringify(connectLines());
+			for (const secret of ['rt-new', 'at-new', 'the-code', state, verifier, 'made-folder-1', 'DumpFire backups', G.clientId, G.clientSecret]) {
+				expect(written).not.toContain(secret);
+			}
+		});
+
+		it('writes an INFO line for a first Connect to a Folder ID given, with a wide scope: its folder reached (decision 3)', async () => {
+			store({ ...G, folderId: 'hand-made' });
+			files.get.mockResolvedValue(found('hand-made'));
+			exchange({ refresh_token: 'rt-new', scope: WIDE });
+
+			expect((await connect()).body.success).toBe(true);
+
+			expect(connectLines()).toEqual([
+				line('INFO', '"G" connected: scope wide; its folder reached', { destination: 'G', scope: 'wide', folder: 'reached', replaced: false })
+			]);
+			expect(JSON.stringify(connectLines())).not.toContain('hand-made');
+		});
+
+		it('writes a WARN line for a Connect that replaces the connection a destination had, and says when Google named no scope (decision 1)', async () => {
+			store({ ...G, folderId: 'hand-made', refreshToken: 'rt-old', grantedScope: WIDE });
+			files.get.mockResolvedValue(found('hand-made'));
+			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+			expect((await connect()).body.success).toBe(true);
+
+			exchange({ refresh_token: 'rt-newer' });
+			expect((await connect()).body.success).toBe(true);
+
+			const AGAIN = '"G" connected again, replacing the connection it had';
+			expect(connectLines()).toEqual([
+				line('WARN', `${AGAIN}: scope narrow (drive.file); its folder reached`, { destination: 'G', scope: 'narrow', folder: 'reached', replaced: true }),
+				line('WARN', `${AGAIN}: scope none named (read as wide); its folder reached`, { destination: 'G', scope: 'none', folder: 'reached', replaced: true })
+			]);
+			const written = JSON.stringify(connectLines());
+			for (const secret of ['rt-old', 'rt-new', 'rt-newer']) expect(written).not.toContain(secret);
+		});
+
+		it('writes a WARN line for a connection made before card 2188, its Folder ID empty, connected again: a folder made (decision 1)', async () => {
+			store({ ...G, refreshToken: 'rt-old' });
+			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+
+			expect((await connect()).body.success).toBe(true);
+
+			expect(connectLines()).toEqual([
+				line('WARN', '"G" connected again, replacing the connection it had: scope narrow (drive.file); a folder made', {
+					destination: 'G',
+					scope: 'narrow',
+					folder: 'made',
+					replaced: true
+				})
+			]);
+		});
+
+		it('quotes the destination’s name as the backup settings’ lines do, a " and a \\ escaped (decision 5)', async () => {
+			const NAME = 'Off"site\\';
+			store({ ...G, name: NAME });
+			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+			const { state } = await begin({ dest: encodeURIComponent(NAME) });
+
+			expect((await finish(state, { destName: NAME })).body.success).toBe(true);
+
+			expect(connectLines()).toEqual([
+				line('INFO', '"Off\\"site\\\\" connected: scope narrow (drive.file); a folder made', { destination: NAME, scope: 'narrow', folder: 'made', replaced: false })
+			]);
+		});
+
+		it.each([
+			['Google gives no refresh token', () => (store(G), exchange({ access_token: 'only-this' }), connect())],
+			[
+				'the folder cannot be reached',
+				() => (
+					store({ ...G, folderId: 'gone', refreshToken: 'rt-old', grantedScope: DRIVE_FILE_SCOPE }),
+					files.get.mockRejectedValue(notFound()),
+					exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE }),
+					connect()
+				)
+			],
+			[
+				'the destination is changed meanwhile',
+				() => (
+					store(G),
+					exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE }, () =>
+						api('PUT', '/api/admin/backup', { user: chief, body: { destinations: [{ ...G, folderId: 'chosen-meanwhile' }] } })
+					),
+					connect()
+				)
+			],
+			['its state is refused', async () => (store(G), exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE }), await begin(), finish('A'.repeat(43)))]
+		])('writes no line where the Connect saves nothing: %s (decision 4)', async (_case, attempt) => {
+			const res = await attempt();
+
+			expect(res.body.success).not.toBe(true);
+			expect(connectLines()).toEqual([]);
+		});
+
+		it('writes no line for a Connect whose write fails, and deletes the folder it made: the line waits for the commit (decision 4)', async () => {
+			store(G);
+			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+			const { state } = await begin();
+			vi.spyOn(console, 'error').mockImplementation(() => {});
+			sqlite.exec(
+				"CREATE TEMP TRIGGER backup_config_frozen BEFORE UPDATE ON settings WHEN NEW.key = 'backup_config' BEGIN SELECT RAISE(ABORT, 'frozen'); END;" +
+					"CREATE TEMP TRIGGER backup_config_frozen_insert BEFORE INSERT ON settings WHEN NEW.key = 'backup_config' BEGIN SELECT RAISE(ABORT, 'frozen'); END;"
+			);
+			let res;
+			try {
+				res = await finish(state);
+			} finally {
+				sqlite.exec('DROP TRIGGER backup_config_frozen; DROP TRIGGER backup_config_frozen_insert;');
+			}
+
+			expect(res.body).toEqual({ success: false, message: 'frozen' });
+			expect(storedG()).toEqual(G);
+			expect(files.delete.mock.calls[0][0]).toMatchObject({ fileId: 'made-folder-1' });
+			expect(connectLines()).toEqual([]);
+		});
+
+		it('reads whether a Connect replaced a connection from the settings as read again: one finished meanwhile counts (the card 2273 review)', async () => {
+			store({ ...G, folderId: 'hand-made' });
+			files.get.mockResolvedValue(found('hand-made'));
+			// While Google answers the first Connect, a second is started and finished in full.
+			let inner = false;
+			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE }, async () => {
+				if (inner) return;
+				inner = true;
+				expect((await connect()).body.success).toBe(true);
+			});
+
+			expect((await connect()).body.success).toBe(true);
+
+			expect(connectLines()).toEqual([
+				line('INFO', '"G" connected: scope narrow (drive.file); its folder reached', { destination: 'G', scope: 'narrow', folder: 'reached', replaced: false }),
+				line('WARN', '"G" connected again, replacing the connection it had: scope narrow (drive.file); its folder reached', {
+					destination: 'G',
+					scope: 'narrow',
+					folder: 'reached',
+					replaced: true
+				})
+			]);
+		});
+
+		describe('the Connect’s other lines: filed under the account, the name quoted (the card 2273 review)', () => {
+			const NAME = 'Off"site';
+			const QUOTED = '"Off\\"site"';
+			/** Both halves of a Connect of the destination called NAME. */
+			const connectNamed = async () => finish((await begin({ dest: encodeURIComponent(NAME) })).state, { destName: NAME });
+			/** The lines under GDRIVE, oldest first, with the account each is filed under. */
+			const gdriveLines = () =>
+				sqlite.prepare("SELECT level, message, user_id AS userId FROM system_logs WHERE context = 'GDRIVE' ORDER BY id").all() as {
+					level: string;
+					message: string;
+					userId: number | null;
+				}[];
+			beforeEach(() => {
+				vi.spyOn(console, 'error').mockImplementation(() => {});
+			});
+
+			it('files a refused state under the account, the name quoted (card 2251’s line)', async () => {
+				store({ ...G, name: NAME });
+				exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+				await begin({ dest: encodeURIComponent(NAME) });
+
+				expect((await finish('A'.repeat(43), { destName: NAME })).status).toBe(400);
+
+				expect(gdriveLines()).toEqual([
+					{
+						level: 'WARN',
+						message: `Google Drive Connect refused for destination ${QUOTED}: its state was not one this session started, or had expired or been used`,
+						userId: chief.id
+					}
+				]);
+			});
+
+			it('files a folder that cannot be reached under the account, the name quoted', async () => {
+				store({ ...G, name: NAME, folderId: 'gone' });
+				files.get.mockRejectedValue(notFound());
+				exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
+
+				expect((await connectNamed()).body.success).toBe(false);
+
+				expect(gdriveLines()).toEqual([
+					{
+						level: 'WARN',
+						message: `Connect of destination ${QUOTED} refused: Google Drive cannot reach its folder gone: File not found: gone.`,
+						userId: chief.id
+					}
+				]);
+			});
+
+			it('files a made folder it could not delete under the account, the name quoted', async () => {
+				store({ ...G, name: NAME });
+				files.delete.mockRejectedValue(new Error('nope'));
+				exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE }, () =>
+					api('PUT', '/api/admin/backup', { user: chief, body: { destinations: [{ ...G, name: NAME, folderId: 'chosen-meanwhile' }] } })
+				);
+
+				expect((await connectNamed()).body).toEqual({ success: false, message: CHANGED_MEANWHILE });
+
+				expect(gdriveLines()).toEqual([
+					{
+						level: 'WARN',
+						message: `Could not delete the folder made-folder-1 made for destination ${QUOTED} by a Connect that was not saved: nope`,
+						userId: chief.id
+					}
+				]);
+			});
+
+			it('files a failed Connect under the account, the name quoted', async () => {
+				store({ ...G, name: NAME });
+				vi.spyOn(google.auth.OAuth2.prototype, 'getToken').mockRejectedValue(new Error('invalid_grant') as never);
+
+				expect((await connectNamed()).body).toEqual({ success: false, message: 'invalid_grant' });
+
+				expect(gdriveLines()).toEqual([{ level: 'ERROR', message: `Google Drive Connect failed for destination ${QUOTED}: invalid_grant`, userId: chief.id }]);
+			});
+		});
+	});
 });
 
 describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, slice 4)', () => {

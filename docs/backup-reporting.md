@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.23
+version: 1.24
 status: As-Built
 date: 2026-10-19
 tags:
@@ -334,17 +334,19 @@ sequenceDiagram
             G-->>R: a folder not in the trash, or refused
         end
         R->>R: read the settings again, the same client id, secret and Folder ID?
-        R-->>P: saved with the token, grantedScope and folder, or refused and a made folder deleted
+        R-->>P: saved with the token, grantedScope and folder, and one BACKUP line once committed, or refused and a made folder deleted
     end
 ```
 
 - A folder that cannot be reached refuses the Connect with nothing saved, the destination
-  keeping the connection it had; Google's reason is a `WARN` line under `GDRIVE`.
+  keeping the connection it had; Google's reason is a `WARN` line under `GDRIVE`, `Connect of
+  destination "G" refused: Google Drive cannot reach its folder …: …`.
 - The settings are read again after Google's answers and written with no `await` between,
   only if the destination is still there with the client id, client secret and Folder ID it
   had; otherwise "The destination was changed or removed while it was being connected, so
   the connection was not saved. Connect it again." A folder made by a Connect that is not
-  saved, or that throws, is deleted again (best effort, a `WARN` naming its id on failure).
+  saved, or that throws, is deleted again (best effort, a `WARN` naming its id on failure,
+  `Could not delete the folder … made for destination "G" by a Connect that was not saved: …`).
 - `grantedScope` is Google's `tokens.scope` as granted, and nothing when Google names none.
   `driveScopeIsNarrow()` (in `src/lib/drive-scope.ts`, no server imports, read by the admin
   page and by `keepMaskedSecrets()`) is true only when every scope in it, split on white
@@ -354,6 +356,24 @@ sequenceDiagram
   either sign-in method, and says when it cannot reach it; with no Folder ID it answers as
   before.
 - A failed Connect is one `ERROR` line, `Google Drive Connect failed for destination "…": …`.
+- Every line of the Connect is filed under the account that pressed it (`user_id`), and writes
+  the destination's name as the backup settings' lines do (`quotedName()`, each `\` and `"`
+  escaped): the refusal of a state (card 2251), the folder not reached, the made folder not
+  deleted and the failure, under `GDRIVE`, and the Connect saved, under `BACKUP` (the card 2273
+  review). Only the state refusal was filed before.
+- A Connect saved is one line under `BACKUP`, filed under the connecting account (`user_id`)
+  (card 2273): `Google Drive destination "G" connected: scope narrow (drive.file); a folder made`.
+  The scope is named by its kind as the page reads it, `scope narrow (drive.file)`, `scope wide`
+  or `scope none named (read as wide)`, and the folder as `a folder made` or `its folder
+  reached`; never the token, code, state, verifier, folder id or the folder's name. It is an
+  `INFO` for a destination's first connection, and a `WARN`, `… connected again, replacing the
+  connection it had: …`, where the destination held a refresh token in the settings as read
+  again: the new token may be another Google account's, which the server cannot see, and with
+  the Folder ID empty the copies go to a new folder. The meta is
+  `{"destination":"G","scope":"narrow","folder":"made","replaced":false}`. The read again
+  and the write are one `inTransaction`, the line queued with `afterCommit`, so a Connect
+  refused, changed meanwhile or whose write fails writes none. The name is quoted as the
+  settings' lines quote it (`quotedName()`).
 
 **Who started the Connect** (card 2251). The `POST` used to exchange any code it was sent, so a
 code from somebody else's consent, pasted by a superadmin who was led to, connected that
@@ -520,7 +540,7 @@ queues it with `afterCommit`, so a save refused or failed leaves none.
 | | |
 |---|---|
 | The settings | `schedule`, `scheduleTime`, `scheduleDay`, `retention` and `notifyOnFailure` named with their old and new values (`schedule from daily to disabled`); `notifyEmail` named alone, never its addresses. `retention` and `scheduleDay` are compared as numbers, so `"7"` stored and `7` saved is no change |
-| A destination's name | In quotation marks, each `\` and `"` in it escaped as `\\` and `\"` (`quoted()` in the route), so a name cannot end the quotation early and make the rest of the line read as something else. Card 2267's host key lines write the name the same way. The logger then makes it printable |
+| A destination's name | In quotation marks, each `\` and `"` in it escaped as `\\` and `\"` (`quotedName()` in `backup-secrets.ts`), so a name cannot end the quotation early and make the rest of the line read as something else. Card 2267's host key lines and a Google Drive Connect's line (card 2273) write the name the same way. The logger then makes it printable |
 | A destination added | By name, new in the save: `destination "Offsite" added (sftp)` |
 | A destination removed | By name, gone from the save: `destination "Old" removed (s3)`. One saved as another type under its name is removed and added, as card 2267 has it. Stored and saved destinations are matched one to one: each stored entry is taken once it is matched, so where two were stored under one name and the save keeps one, the other is removed |
 | A destination changed | The names of its fields that changed, never a value, secrets and the rest alike: `destination "NAS" changed: host, port, password, privateKey, hostKey`. Every field either entry holds but `name` and `type` is compared (so `grantedScope` too), as it is used: `host`, `port`, `region` and `folderPath` by their defaults (`inUse`: a port left empty is 22, a host in other case is the same host), `hostKey` as stored (`keyAsStored`), every other field with missing, `null` and empty text alike. A secret sent back masked is the stored secret by then (`keepMaskedSecrets`), so it is no change. Where a field that says where the copies go changed, by the rule a masked secret is kept by (`SAME_IN` and a service account's address and key ID, the host key aside), its entry in the meta holds `"elsewhere":true`: an SFTP host, port, user name or remote path; an S3 region, bucket, prefix, endpoint or access key ID; a Google Drive sign-in method, folder ID, client ID or service account; a OneDrive tenant ID, client ID or folder path |
@@ -551,8 +571,10 @@ flowchart TD
     V -->|refused or failed| N[effects dropped: no line]
 ```
 
-The successful Google Drive Connect, the other writer of `backup_config`, writes no such line
-yet; only its refusals and failures are logged.
+The other writer of `backup_config`, a Google Drive Connect saved, writes its own line under
+`BACKUP`, filed under the account, once committed (card 2273; see
+[Destination Types](#destination-types) above): an `INFO` for a first
+connection, a `WARN` for one that replaced a connection.
 
 ### Retention Cleanup
 
