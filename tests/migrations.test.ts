@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sqlite } from '$lib/server/db';
+import { printable } from '$lib/server/logger';
 import { EXPECTED_SCHEMA } from '$lib/server/db/expected-schema';
 import {
 	CARDS_LEAVE_OTHER_BOARDS_MILESTONES,
@@ -80,10 +81,14 @@ const leftAloneLine = (table: string, reason: string, whatToDo: string) =>
 	`[ERROR] [DB] ${table} was left in the shape it has, which is not the model's: ${reason}. Nothing in it was ` +
 	`changed, and the application runs on that shape as it has until now. ${whatToDo} ${UNTIL_DEALT_WITH}`;
 
-/** The one line for the tables of a rebuild that did not complete, or for the one table of it. */
+/**
+ * The one line for the tables of a rebuild that did not complete, or for the
+ * one table of it. The reason can quote a table's definition, line breaks and
+ * all, and the logger writes each as a space (card 2214), as `printable` does.
+ */
 const notRebuiltLine = (tables: string[], reason: string, whatToDo: string) => {
 	const one = tables.length === 1;
-	return (
+	return printable(
 		`[ERROR] [DB] ${tables.join(', ')} ` +
 		`${one ? 'was left in the shape it has, which is' : 'were left in the shapes they have, which are'} ` +
 		`not the model's: ${reason}. Nothing in ${one ? 'it' : 'them'} was changed, and the application runs on ` +

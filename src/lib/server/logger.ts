@@ -265,19 +265,45 @@ function formatLine(entry: LogEntry, at: Date): string {
 	return line;
 }
 
+/**
+ * Text as a log line holds it: each control character as one space (card
+ * 2214). That is the C0 range with the tab and every line break, DEL, the C1
+ * range (U+0085 is a line break to some viewers), U+2028 and U+2029; the
+ * bidi controls (U+202A to U+202E, U+2066 to U+2069), which can make a line
+ * read in an order other than its own; and U+200B to U+200F and U+FEFF, which
+ * show as nothing.
+ *
+ * Lines carry stored names and titles, and one holding a line break began a
+ * second line on the console, which could read as anything (`[CRITICAL]
+ * [AUTH] ...`), while an ESC reached the terminal of whoever tailed the log.
+ * `emit` passes the message, the context, the serialised meta and the
+ * address through this once, so the console, the row and the live feed hold
+ * the same text. What is not text is made text first, so a caller that
+ * passes `undefined` gets a line and not a throw. startup-checks.ts uses it
+ * for what it prints itself (card 2142), and backup-secrets.ts for the names
+ * its sentences quote.
+ */
+export function printable(text: string): string {
+	return String(text).replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g, ' ');
+}
+
 function emit(level: LogLevel, context: string, message: string, meta?: unknown, fields?: LogFields): void {
 	if (LEVEL_RANK[level] < currentThreshold()) return;
 
 	const at = new Date();
+	// JSON has already escaped the C0 range in the meta, so this changes only
+	// the rest of the class there, and the JSON stays valid.
+	const serialized = serializeMeta(meta);
 	const entry: LogEntry = {
 		id: nextEntryId++,
 		timestamp: stamp(at),
 		level,
-		context,
-		message,
-		meta: serializeMeta(meta),
+		context: printable(context),
+		message: printable(message),
+		meta: serialized === null ? null : printable(serialized),
 		userId: fields?.userId ?? null,
-		ip: fields?.ip ?? null
+		// Behind a proxy (`ADDRESS_HEADER`) the address is read from a header.
+		ip: fields?.ip == null ? null : printable(fields.ip)
 	};
 
 	const line = formatLine(entry, at);

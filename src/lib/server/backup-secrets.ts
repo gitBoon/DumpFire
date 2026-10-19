@@ -82,6 +82,9 @@ import { createHmac, randomBytes, timingSafeEqual, type Hmac } from 'node:crypto
 import { resolve } from 'node:path';
 import { driveScopeIsNarrow } from '$lib/drive-scope';
 import { getDbPath, sqlite } from './db';
+// A name or a title as a sentence prints it: each control character, a line
+// break above all, as a space (the log's own cleaner, card 2214).
+import { printable } from './logger';
 
 /** The setting that lists the webhooks a backup left without their secrets. */
 export const WEBHOOK_SECRETS_LEFT_OUT_KEY = 'webhook_secrets_left_out';
@@ -228,9 +231,6 @@ function serviceAccount(json: unknown): Entry | null {
 		return null;
 	}
 }
-
-/** A name or a title as a sentence prints it: each control character, a line break above all, as a space. */
-const printable = (text: string): string => text.replace(/[\x00-\x1f\x7f]/g, ' ');
 
 const emptyKept = (): SecretsKept => ({ mailPassword: false, destinations: [], webhooks: [] });
 const emptyToEnter = (): SecretsToEnter => ({ mailPassword: false, destinations: [], webhooks: [] });

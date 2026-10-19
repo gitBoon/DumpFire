@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.42
+version: 1.43
 status: As-Built
 date: 2026-10-19
 tags:
@@ -2190,7 +2190,8 @@ Rules that are not a plain board lookup:
   and this moves 101. Nothing was moved: move them in groups of 100 or fewer.` Each card
   moved is an activity entry, a delivery to each of the board's webhooks and mail to its
   assignees, which the second cap bounds; the board page's drop sends every card of the
-  board, which the first sits above. The session routes have no rate limit, so the caps
+  two columns it touches, the one dropped into and the one the card came from (card 2213;
+  it sent every card of the board), which the first sits far above. The session routes have no rate limit, so the caps
   bound one request and not how many a script sends.
 - **Writable fields are whitelisted.** `PUT /api/cards/:id` never accepts `completedAt`
   or `archivedAt` — the server stamps them when the thing they record happens — and
@@ -3221,6 +3222,44 @@ route are answered by SvelteKit, which first calls `handleError` in `src/hooks.s
 
 Covered by `tests/gate.test.ts`.
 
+### Every Log Line Is One Line (card 2214)
+
+Many lines of the system log carry text somebody typed: a board's name, a card's title, a
+user name. The logger wrote it to the console, to `system_logs` and to the live feed as it
+was given, so a board named `a`, a line break and `[CRITICAL] [AUTH] x` wrote a second
+console line that read as a critical line of its own, in `docker logs` and in the Audit
+page's detail, and an ESC in a name reached the terminal of whoever tailed the log.
+
+`emit` in `src/lib/server/logger.ts` now passes the message, the context, the serialised
+meta and the address (`ip`, read from a header behind a proxy) through `printable()` once,
+before the entry is built, so the console, the row, the ring buffer and the live feed all
+hold the same text. `printable()` puts one space in place of each character from U+0000 to
+U+001F (the tab and every line break among them), DEL (U+007F), each of U+0080 to U+009F
+(U+0085 is a line break to some viewers), U+2028 and U+2029; each bidi control, U+202A to
+U+202E and U+2066 to U+2069, which can make a line read in an order other than its own;
+and U+200B to U+200F and U+FEFF, which show as nothing. It makes what it is given text
+first, so a message passed as `undefined` is logged as `undefined` and does not throw. In
+the meta it changes only the characters past U+001F, since JSON has already escaped the
+rest, and the JSON stays valid. `startup-checks.ts` uses the same function (it had its own,
+card 2142) for names inside quotes and for the line it prints to the console past
+`LOG_LEVEL`, and so does `backup-secrets.ts` for the names its sentences quote (it had its
+own, which cleaned only the C0 range and DEL). A message that held a line break on purpose
+is now one line: the migration runner's rebuild-not-done line quotes table definitions,
+which now read on one line; the report's `reason` itself is unchanged. Rows `emit` did not
+write are not cleaned: those stored before the change, and those a restored backup brings
+in, keep what they hold until the 30-day retention takes them.
+
+```mermaid
+flowchart LR
+    Caller["log.info, warn, error and the rest,<br/>from every module that logs"] --> Emit["emit()"]
+    Emit --> P["printable(): message, context, meta"]
+    P --> Console["console line"]
+    P --> Row["system_logs row<br/>(held until a transaction ends)"]
+    P --> Feed["ring buffer and live feed"]
+```
+
+Covered by `tests/logger.test.ts`.
+
 ## Attachments
 
 A file attached to a card is whatever the uploader chose to send, under whatever name and
@@ -3309,12 +3348,13 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/api-errors.ts` | `guardBody()`, which makes a body the caller got wrong a `400` and a body over the size limit a `413`, and `failureAsJson()`, which answers a failure that is not JSON again as JSON |
 | `src/lib/server/body-limits.ts` | How large a request's body may be, route by route and caller by caller; the gate's `413` for a body that declares more, and the count that holds a body with no length to the same limit as it is read |
 | `src/lib/server/client-address.ts` | The caller's address, asked so that it cannot throw, and the `'unknown'` count a request with no readable address is held to; `addressKey()`, what a count by address counts, an IPv6 address by its /64 (card 2195) |
+| `src/lib/server/logger.ts` | The system log: the console, `system_logs` and the live feed, from one `emit()`; `printable()`, which puts a space in place of every control character of a line, so that a name holding a line break cannot split it (card 2214) |
 | `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]`, written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
 | `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites, the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
 | `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
-| `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it; and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
+| `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, and the headers an attachment is served with |
 | `src/lib/server/db/transaction.ts` | `inTransaction()`: the check and the write it guards are one transaction |

@@ -73,12 +73,13 @@ import type { SessionUser } from './auth';
  * What one drag and drop (`PUT /api/cards/reorder`) may ask for (card 2209).
  *
  * Two numbers, not one, because entries cost two different things. An entry
- * that only changes a card's position is one write and nothing more, but the
- * board page sends every card of the board with every drop, so the cap on
- * entries must sit above the largest board. A card moved to another column
- * writes an activity entry, goes to every webhook of the board and mails its
- * assignees, which is the burst worth bounding, and only a bulk move of
- * selected cards moves more than one. Nothing but the body's size bounded
+ * that only changes a card's position is one write and nothing more. The
+ * board page sends every card of the columns a drop touches, the one dropped
+ * into and the one the card came from (card 2213; it sent every card of the
+ * board), so the cap on entries sits far above any real drop. A card moved to
+ * another column writes an activity entry, goes to every webhook of the board
+ * and mails its assignees, which is the burst worth bounding, and only a bulk
+ * move of selected cards moves more than one. Nothing but the body's size bounded
  * either: about 11,000 entries, and as many cards moved.
  */
 export const MAX_REORDER_ENTRIES = 5000;

@@ -23,11 +23,13 @@ import type { RequestHandler } from './$types';
  * PUT /api/cards/reorder — persist the result of a drag and drop.
  *
  * Body: `{ updates: [{ id, columnId, position }] }`. The board page's drop
- * sends every card of the board that is not archived, in every column, not
- * only the ones it moved; a bulk move sends the cards selected. Each entry is
- * an object, its `id` and `columnId` ids and its `position` a number, if sent
- * (card 2117): `updates[<n>].position must be a number`. Text was stored as a
- * position, and an entry that was not an object was a 500.
+ * sends every card of the column dropped into and of the column the card came
+ * from, not only the one it moved (card 2213: it sent every card of the
+ * board, twice); a bulk move sends the cards selected. Any subset of one
+ * board's cards is taken. Each entry is an object, its `id` and `columnId`
+ * ids and its `position` a number, if sent (card 2117):
+ * `updates[<n>].position must be a number`. Text was stored as a position,
+ * and an entry that was not an object was a 500.
  *
  * Two caps (card 2209, `card-moves.ts`): at most `MAX_REORDER_ENTRIES`
  * entries, checked before any row is read, and at most
@@ -73,7 +75,7 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 			// any card on any board by omitting it.
 			//
 			// Checked once per distinct column, not once per card: a drop re-sends the
-			// position of every card on the board.
+			// position of every card in the columns it touched.
 			const columnBoards = new Map<number, number>();
 			const editableBoardOf = (columnId: number): number => {
 				let found = columnBoards.get(columnId);

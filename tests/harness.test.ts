@@ -88,6 +88,7 @@ const TEST_FILES = [
 	'import-working-copy.test.ts',
 	'internal-refusals.test.ts',
 	'live-streams.test.ts',
+	'logger.test.ts',
 	'mail-escaping.test.ts',
 	'mail-failures.test.ts',
 	'mail-links.test.ts',
