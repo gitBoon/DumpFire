@@ -9,6 +9,7 @@ import { requestReplyUrl } from '$lib/server/request-tokens';
 import { linkOpens } from '$lib/server/request-access';
 import { addressToCount } from '$lib/server/client-address';
 import { pathId, readBody } from '$lib/server/request-body';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -24,7 +25,7 @@ import type { RequestHandler } from './$types';
  * before the recipient sees it; a link that confirmed on sight would let a
  * request made with somebody else's address confirm itself.
  */
-export const POST: RequestHandler = async ({ params, request, url, getClientAddress }) => {
+export const POST: RequestHandler = async ({ params, request, locals, url, getClientAddress }) => {
 	const { limited, retryAfterSecs } = checkRateLimit(
 		`request-confirm:${addressToCount({ getClientAddress })}`,
 		20,
@@ -46,35 +47,44 @@ export const POST: RequestHandler = async ({ params, request, url, getClientAddr
 	// told the ids of real requests from the rest.
 	const token = typeof body.token === 'string' ? body.token : null;
 
-	const existing = db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
-	// One answer for "no such request" and "wrong token", so the ids of real
-	// requests cannot be picked out by trying numbers. And for a request nobody
-	// confirmed within seven days (card 2243): it confirmed however old its link
-	// was, mailing the team. The row is left for the form's clean-up.
-	if (!existing || !linkOpens(existing, token)) {
-		throw error(404, 'This confirmation link is not valid.');
-	}
+	// The request read and confirmed in one transaction that asks first
+	// whether the caller's session, if they came with one, is still open (card
+	// 2253): one that ended while the body arrived is refused 401, never taken
+	// for nobody. The read and the update were two steps with no transaction.
+	const { existing, alreadyConfirmed } = writeAs(locals, (caller) => {
+		// Whoever holds the link confirms, signed in or not: who is calling
+		// decides nothing here beyond that check.
+		void caller;
+		const existing = db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
+		// One answer for "no such request" and "wrong token", so the ids of real
+		// requests cannot be picked out by trying numbers. And for a request nobody
+		// confirmed within seven days (card 2243): it confirmed however old its link
+		// was, mailing the team. The row is left for the form's clean-up.
+		if (!existing || !linkOpens(existing, token)) {
+			throw error(404, 'This confirmation link is not valid.');
+		}
+
+		// Following the link twice is not an error, and must not email the team twice.
+		if (existing.status !== 'unverified') return { existing, alreadyConfirmed: true };
+
+		// The status is in the WHERE so two confirmations racing each other cannot
+		// both believe they were first.
+		const updated = db
+			.update(taskRequests)
+			.set({ status: 'pending' })
+			.where(and(eq(taskRequests.id, id), eq(taskRequests.status, 'unverified')))
+			.returning({ id: taskRequests.id })
+			.get();
+		return { existing, alreadyConfirmed: !updated };
+	});
 
 	// The page is sent the path of the thread, and adds it to wherever it is.
 	const replyUrl = requestReplyUrl('', existing);
 	// For the link in the mail to the team: see linkBaseUrl.
 	const baseUrl = linkBaseUrl(url);
 
-	// Following the link twice is not an error, and must not email the team twice.
-	if (existing.status !== 'unverified') {
-		return json({ confirmed: true, alreadyConfirmed: true, title: existing.title, replyUrl });
-	}
-
-	// The status is in the WHERE so two confirmations racing each other cannot
-	// both believe they were first.
-	const updated = db
-		.update(taskRequests)
-		.set({ status: 'pending' })
-		.where(and(eq(taskRequests.id, id), eq(taskRequests.status, 'unverified')))
-		.returning({ id: taskRequests.id })
-		.get();
-
-	if (updated) {
+	// Once it is committed, and only by the confirmation that was first.
+	if (!alreadyConfirmed) {
 		notifyTaskRequest(
 			existing.targetType,
 			existing.targetId,
@@ -85,5 +95,5 @@ export const POST: RequestHandler = async ({ params, request, url, getClientAddr
 		);
 	}
 
-	return json({ confirmed: true, alreadyConfirmed: !updated, title: existing.title, replyUrl });
+	return json({ confirmed: true, alreadyConfirmed, title: existing.title, replyUrl });
 };

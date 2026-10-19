@@ -1,6 +1,5 @@
 import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cards } from '$lib/server/db/schema';
 import { requireColumn, requireUser } from '$lib/server/route-guards';
 import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
@@ -16,6 +15,7 @@ import {
 	readNumber,
 	readText
 } from '$lib/server/request-body';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -38,14 +38,17 @@ import type { RequestHandler } from './$types';
  * answer is the card as written, with its `completedAt`.
  */
 export const POST: RequestHandler = async ({ request, locals, url }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 	const baseUrl = linkBaseUrl(url);
 
 	// One transaction: the column is read and the caller checked in the one
 	// that creates the card and writes its entries. A failure between the
 	// writes used to leave a card that nobody was recorded as having raised.
-	const card = inTransaction(() => {
+	// It asks first whether the session is still open, and who its account is
+	// now (card 2253).
+	const card = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// The board is the one the target column is on. A `boardId` in the body is
 		// ignored: it used to be trusted ahead of the column, so naming a board you
 		// could edit let you create a card in a column on a board you could not.

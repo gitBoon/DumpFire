@@ -1,6 +1,5 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { cards } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireColumn, requireUser } from '$lib/server/route-guards';
@@ -17,6 +16,7 @@ import {
 	type CardMove
 } from '$lib/server/card-moves';
 import { readBody, readId, readNumber, readObjects } from '$lib/server/request-body';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -44,7 +44,7 @@ import type { RequestHandler } from './$types';
  * were 200 moves. The page never names a card twice.
  */
 export const PUT: RequestHandler = async ({ request, url, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
 	const updates = readObjects(body, 'updates', {
@@ -65,9 +65,12 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 
 	// One transaction from the first check to the last write. The checks read
 	// the rows the moves then change, so nothing can alter them in between, and
-	// a refusal or a failed write leaves the board as it was.
+	// a refusal or a failed write leaves the board as it was. It asks first
+	// whether the session is still open, and who its account is now (card
+	// 2253).
 	try {
-		inTransaction(() => {
+		writeAs(locals, (caller) => {
+			const user = requireUser(caller);
 			// Work out which board this reorder is on from the rows themselves: the
 			// column each card is in now, and the column each is going to. The body's
 			// `boardId` is ignored. It used to be the only thing checked, and when it

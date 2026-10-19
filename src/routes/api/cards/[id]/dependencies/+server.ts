@@ -12,11 +12,12 @@
  */
 import { json, error } from '@sveltejs/kit';
 import { canViewBoard, canEditBoard, type Actor } from '$lib/server/board-access';
-import { inTransaction } from '$lib/server/db/transaction';
 import { getWorkDependencies, type WorkKind, type WorkRef } from '$lib/server/planning';
 import { addDependencyLink, cycleAnswer, removeDependencyLink } from '$lib/server/dependency-refusals';
 import { pathId, readBody, readId, type RequestBody } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
 import { getCardBoardId } from '$lib/server/work-access';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -89,17 +90,18 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 };
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-	const user = locals.user;
+	requireUser(locals.user);
 
 	const cardId = pathId(params.id, 'card');
 	const body = await readBody(request);
 
-	// One transaction from the card to the answer's list: the card read and the
+	// One transaction from the card to the answer's list: the session asked
+	// again and who its account is now (card 2253), the card read and the
 	// caller checked, the graph the link is checked against, the link and its
 	// activity entry. Nothing another request writes can come between the
 	// check and the write, and the link is recorded with its entry or not at all.
-	const outcome = inTransaction(() => {
+	const outcome = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const boardId = getCardBoardId(cardId);
 		if (!boardId) throw error(404, 'Card not found');
 		if (!canEditBoard(user, boardId)) throw error(403, 'No edit access');
@@ -120,13 +122,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 };
 
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-	const user = locals.user;
+	requireUser(locals.user);
 
 	const cardId = pathId(params.id, 'card');
 	const body = await readBody(request);
 
-	const links = inTransaction(() => {
+	// One transaction, which asks first whether the session is still open, and
+	// who its account is now (card 2253).
+	const links = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// The card in the path is whichever end the caller is looking at, and
 		// they are answered with its links, so they must be able to read it.
 		// Whether they may remove the link is not asked of this card's board: it

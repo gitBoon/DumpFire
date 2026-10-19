@@ -1,11 +1,11 @@
 import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { columns } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { readBody, readId, readNumber, readObjects } from '$lib/server/request-body';
 import { requireColumn, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -17,7 +17,7 @@ import type { RequestHandler } from './$types';
  * entry that was not an object was a 500.
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
 	const updates = readObjects(body, 'updates', {
@@ -28,8 +28,10 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 	// One transaction from the first check to the last write: every column
 	// gets its new position or none does, and a board is told only once they
 	// all have. A write that failed half way used to leave the columns in an
-	// order nobody had asked for.
-	inTransaction(() => {
+	// order nobody had asked for. It asks first whether the session is still
+	// open, and who its account is now (card 2253).
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// Every column is looked up and checked before anything is written. The
 		// body's `boardId` is ignored: it used to be the only thing checked, and
 		// with it left out any signed-in user could reorder any board's columns.

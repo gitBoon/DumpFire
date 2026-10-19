@@ -1,12 +1,12 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { afterCommit, inTransaction } from '$lib/server/db/transaction';
+import { afterCommit } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { endAccountAccess, namingIds } from '$lib/server/auth';
+import { endAccountAccess, namingIds, type SessionUser } from '$lib/server/auth';
 import { makePasswordHash } from '$lib/server/passwords';
-import { isAdmin } from '$lib/server/board-access';
-import { requireManagedAccount } from '$lib/server/route-guards';
+import { refuseOwnAccount, requireAdmin, requireManagedAccount, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import { pathId, readBody, readText } from '$lib/server/request-body';
 import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
@@ -15,8 +15,7 @@ const log = createLogger('AUTH');
 
 /** PUT — Reset another user's password (admin only). */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-	const actor = locals.user;
+	requireUser(locals.user);
 
 	const userId = pathId(params.id, 'user');
 
@@ -24,43 +23,48 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// route asks for no current password and leaves the caller's other sessions
 	// signed in, so whoever held a session of theirs could keep the account.
 	// PUT /api/account/password asks for the one they have and ends the others.
-	if (actor.id === userId) {
-		throw error(403, 'Change your own password on the Account page, which asks for your current password');
-	}
-
-	if (!isAdmin(actor)) {
-		throw error(403, 'Forbidden');
-	}
+	const OWN = 'Change your own password on the Account page, which asks for your current password';
+	refuseOwnAccount(locals.user, userId, OWN);
+	requireAdmin(locals.user);
 
 	const body = await readBody(request);
 
 	/**
 	 * The user whose password this is, if the caller may set it: the rule is
-	 * the one for changing and deleting an account, in route-guards.ts.
+	 * the one for changing and deleting an account, in route-guards.ts. Asked
+	 * of the caller as their account is now, after their own account and their
+	 * role are asked again (card 2253); answered with the caller too.
 	 */
-	const requireTarget = () =>
-		requireManagedAccount(actor, userId, {
+	const requireTarget = (caller: SessionUser | null) => {
+		const actor = requireUser(caller);
+		refuseOwnAccount(actor, userId, OWN);
+		const target = requireManagedAccount(actor, userId, {
 			superadmin: 'Only superadmin can reset superadmin password',
 			admin: 'Only superadmin can reset an admin\'s password'
 		});
+		return { actor, target };
+	};
 
 	// Hashing takes about a quarter of a second, on a worker thread, and is
 	// awaited, which a transaction cannot do, so the hash is made out here,
 	// before it, in the first lane: the caller holds a session. The
-	// user is looked at first so that a request that will be refused is not
-	// hashed for, and is read again in the transaction. The password is read
-	// once the user is found and the caller may set it (card 2117, R1): text,
-	// where a number reached bcrypt, which threw, a 500.
-	requireTarget();
+	// user is looked at first, by the caller as their account is now, so that
+	// a request that will be refused is not hashed for, and is read again in
+	// the transaction. The password is read once the user is found and the
+	// caller may set it (card 2117, R1): text, where a number reached bcrypt,
+	// which threw, a 500.
+	requireTarget(writeAs(locals, (caller) => requireUser(caller)));
 	const SHORT = 'Password must be at least 8 characters';
 	const password = readText(body, 'password', { required: true, min: 8, says: { missing: SHORT, empty: SHORT, invalid: SHORT } });
 	const passwordHash = await makePasswordHash(password, 'known');
 
 	// One transaction: the user is read and checked in the one that changes the
 	// password and ends their sessions. A failure between the two used to leave
-	// a reset password with every old session still signed in.
-	const ended = inTransaction(() => {
-		const target = requireTarget();
+	// a reset password with every old session still signed in. The hash was
+	// awaited, so the session is asked again, and the caller decided again by
+	// the account as it is now (card 2253).
+	const ended = writeAs(locals, (caller) => {
+		const { actor, target } = requireTarget(caller);
 
 		db.update(users).set({ passwordHash }).where(eq(users.id, userId)).run();
 

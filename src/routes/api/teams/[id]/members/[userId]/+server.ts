@@ -2,9 +2,9 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { teamMembers, users } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
-import { inTransaction } from '$lib/server/db/transaction';
 import { pathId, readBody, readChoice, readId } from '$lib/server/request-body';
 import { requireTeamManager, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** The roles a member of a team may have. */
@@ -18,14 +18,16 @@ const TEAM_ROLES = ['member', 'owner'] as const;
  * different, it is refused.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-	const caller = requireUser(locals.user);
+	requireUser(locals.user);
 	const teamId = pathId(params.id, 'team');
 	const userId = pathId(params.userId, 'user');
 	const body = await readBody(request);
 
 	// The team and the caller's ownership of it are read in the transaction
-	// that adds the member, after the body has arrived.
-	return inTransaction(() => {
+	// that adds the member, after the body has arrived, which asks first
+	// whether the session is still open, and who its account is now (card
+	// 2253). The answer is made once it has committed.
+	const action = writeAs(locals, (caller) => {
 		requireTeamManager(caller, teamId);
 
 		const named = readId(body, 'userId', {});
@@ -39,32 +41,42 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		// A role stored before roles were checked is kept when it is sent back.
 		const role = readChoice(body, 'role', { from: TEAM_ROLES, keep: existing?.role }) ?? 'member';
 
-		const user = db.select({ id: users.id }).from(users).where(eq(users.id, userId)).get();
-		if (!user) throw error(404, 'User not found');
+		const member = db.select({ id: users.id }).from(users).where(eq(users.id, userId)).get();
+		if (!member) throw error(404, 'User not found');
 
 		if (existing) {
 			db.update(teamMembers)
 				.set({ role })
 				.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
 				.run();
-			return json({ success: true, action: 'updated' });
+			return 'updated' as const;
 		}
 
 		db.insert(teamMembers).values({ teamId, userId, role }).run();
-		return json({ success: true, action: 'added' }, { status: 201 });
+		return 'added' as const;
 	});
+	return action === 'updated'
+		? json({ success: true, action: 'updated' })
+		: json({ success: true, action: 'added' }, { status: 201 });
 };
 
 /** DELETE — Remove a member from a team (admin or team owner). */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 	const teamId = pathId(params.id, 'team');
 	const userId = pathId(params.userId, 'user');
-	requireTeamManager(locals.user, teamId);
 
-	db.delete(teamMembers)
-		.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
-		.run();
+	// The team read, the caller checked and the member taken off in one
+	// transaction that asks first whether the session is still open, and who
+	// its account is now (card 2253). The check and the delete were two steps
+	// with no transaction around them.
+	writeAs(locals, (caller) => {
+		requireTeamManager(caller, teamId);
+
+		db.delete(teamMembers)
+			.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
+			.run();
+	});
 
 	return json({ success: true });
 };

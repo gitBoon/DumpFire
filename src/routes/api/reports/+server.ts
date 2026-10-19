@@ -19,19 +19,26 @@ import {
 	REPORT_DETAIL_LEVELS, REPORT_SCOPES, REPORT_STATUS_FILTERS
 } from '$lib/server/reports';
 import { readBody, readChoice, readId, readTimeZone } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
+import { stillCallerNow } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 const MISSING = 'Missing required fields: scope, periodStart, periodEnd';
 const SCOPE = 'Invalid scope. Must be: board, category, or all';
 
 export const POST: RequestHandler = async ({ locals, request }) => {
-	const user = locals.user;
-	if (!user) throw error(401, 'Unauthorized');
+	requireUser(locals.user);
 
 	// Each field by its rule (card 2117). A detail level, a status filter or a
 	// scope it did not know was read as another, and a period that was not
 	// text, or a scopeId that was not an id, was a 500.
 	const body = await readBody(request);
+	// Who is asking, as their account is now, once the body has come: a
+	// session that ended while it arrived is refused, and a role lowered
+	// meanwhile is met below (card 2253). It only reads, and builds its PDF
+	// with an await, which no transaction can hold, so it asks once, here.
+	const caller = stillCallerNow(locals);
+	const user = requireUser(caller);
 	const scope = readChoice(body, 'scope', { required: true, from: REPORT_SCOPES, says: { missing: MISSING, type: SCOPE, invalid: SCOPE } });
 	// Each end a date or a timestamp, and the start not after the end.
 	const { periodStart, periodEnd } = readReportWindow(body, MISSING);

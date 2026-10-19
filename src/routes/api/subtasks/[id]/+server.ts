@@ -1,6 +1,5 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { subtasks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
@@ -20,6 +19,7 @@ import {
 	readNumber,
 	readText
 } from '$lib/server/request-body';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -39,7 +39,7 @@ import type { RequestHandler } from './$types';
  * notices left out.
  */
 export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const id = pathId(params.id, 'subtask');
 
 	const body = await readBody(request);
@@ -48,8 +48,10 @@ export const PUT: RequestHandler = async ({ params, request, locals, url }) => {
 	// One transaction: the update, the activity entry and the "Unblocked"
 	// notices are saved together or not at all. The subtask is read in here and
 	// not before the body was awaited, where two requests ticking the same
-	// subtask both found it open and both wrote a notice.
-	const updated = inTransaction(() => {
+	// subtask both found it open and both wrote a notice. So is the caller: the
+	// session is asked again, and who its account is now (card 2253).
+	const updated = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// The board is the parent card's. A `boardId` in the body is ignored.
 		const { subtask: existing, card: parentCard, boardId } = requireSubtask(user, id, 'edit');
 
@@ -122,10 +124,11 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 
 	// One transaction: the subtask's dependency links, the subtask and the
 	// activity entry go together or not at all. A failure after the first used
-	// to leave the subtask in place with its links gone.
-	inTransaction(() => {
-		const { subtask: doomed, boardId } = requireSubtask(locals.user, id, 'edit');
-		const user = locals.user!;
+	// to leave the subtask in place with its links gone. It asks first whether
+	// the session is still open, and who its account is now (card 2253).
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
+		const { subtask: doomed, boardId } = requireSubtask(user, id, 'edit');
 
 		// Polymorphic ids do not cascade — clear this node's edges explicitly.
 		removeWorkNodeEdges('subtask', id);

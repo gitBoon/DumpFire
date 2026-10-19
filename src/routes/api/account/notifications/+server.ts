@@ -5,6 +5,8 @@ import { eq } from 'drizzle-orm';
 import { getUserNotifPrefs } from '$lib/server/notifications';
 import { defaultPrefs } from '$lib/notification-prefs';
 import { readBody, readBoolean } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -26,27 +28,34 @@ export const GET: RequestHandler = async ({ locals }) => {
 
 /** PUT — Update notification preferences (partial merge). */
 export const PUT: RequestHandler = async ({ request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const body = await readBody(request);
 
-	// Read existing. Unreadable ones are the defaults, so this save replaces
-	// them with something that can be read.
-	const existing = getUserNotifPrefs(locals.user.id);
+	// Read, merged and written in one transaction that asks first whether the
+	// session is still open, and who its account is now (card 2253).
+	const saved = writeAs(locals, (caller) => {
+		const userId = requireUser(caller).id;
 
-	// Merge: only known keys, each `true` or `false`. A known key sent as
-	// anything else (`"false"`, 0, null) was left out without a word, and is a
-	// 400 that names it now (card 2117). An unknown key is left alone.
-	const merged = { ...existing };
-	for (const key of Object.keys(DEFAULTS)) {
-		const on = readBoolean(body, key, {});
-		if (on !== undefined) merged[key] = on;
-	}
+		// Read existing. Unreadable ones are the defaults, so this save replaces
+		// them with something that can be read.
+		const existing = getUserNotifPrefs(userId);
 
-	db.update(users)
-		.set({ notificationPrefs: JSON.stringify(merged) })
-		.where(eq(users.id, locals.user.id))
-		.run();
+		// Merge: only known keys, each `true` or `false`. A known key sent as
+		// anything else (`"false"`, 0, null) was left out without a word, and is a
+		// 400 that names it now (card 2117). An unknown key is left alone.
+		const merged = { ...existing };
+		for (const key of Object.keys(DEFAULTS)) {
+			const on = readBoolean(body, key, {});
+			if (on !== undefined) merged[key] = on;
+		}
 
-	return json({ ...DEFAULTS, ...merged });
+		db.update(users)
+			.set({ notificationPrefs: JSON.stringify(merged) })
+			.where(eq(users.id, userId))
+			.run();
+		return merged;
+	});
+
+	return json({ ...DEFAULTS, ...saved });
 };

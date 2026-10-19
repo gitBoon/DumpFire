@@ -1,9 +1,10 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
 import { teams, teamMembers } from '$lib/server/db/schema';
 import { listTeamsFor } from '$lib/server/list-access';
 import { readBody, readText } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -19,8 +20,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 
 /** POST — Create a new team (any authenticated user). */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
-	const userId = locals.user.id;
+	requireUser(locals.user);
 
 	// Read as PUT /api/teams/[id] reads them (card 2117): a name that was not
 	// text was a 500, and neither had a length.
@@ -36,8 +36,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	// One transaction: the team and its owner are made together. A failure
 	// between the two used to leave a team that only an administrator could
-	// manage.
-	const team = inTransaction(() => {
+	// manage. It asks first whether the session is still open, and who its
+	// account is now (card 2253): the owner is that account.
+	const team = writeAs(locals, (caller) => {
+		const userId = requireUser(caller).id;
 		const team = db.insert(teams)
 			.values({ name, emoji })
 			.returning()

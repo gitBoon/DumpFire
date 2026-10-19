@@ -9,6 +9,9 @@ import { requestReplyUrl } from '$lib/server/request-tokens';
 import { checkRateLimit, resetRateLimit } from '$lib/server/rate-limit';
 import { createLogger } from '$lib/server/logger';
 import { pathId, readBody, readChoice, readText } from '$lib/server/request-body';
+import type { SessionUser } from '$lib/server/auth';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('REQUESTS');
@@ -78,74 +81,83 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 	// caller in; a value that is neither is 400 for every id alike.
 	const senderType = readChoice(body, 'senderType', { from: ['requester', 'admin'] }) ?? 'admin';
 
-	let taskReq: TaskRequest;
-	if (senderType === 'requester') {
-		// Their email address used to be enough, so anyone who knew it could
-		// post as them. A token that is not text is no token: it was a 500. The
-		// link of a lapsed request opens nothing (card 2243).
-		const token = typeof body.token === 'string' ? body.token : null;
-		taskReq = requireRequest(locals.user, requestId, (row) => linkOpens(row, token), 'Invalid or missing link token');
-	} else {
-		// Admin/user reply — must be signed in, and the request must be theirs
-		// to answer.
-		const user = locals.user;
-		if (!user) throw error(401, 'Not authenticated');
-		taskReq = requireRequest(user, requestId, (row) => canHandleRequest(user, row), 'This request is not addressed to you');
-	}
-	if (taskReq.status !== 'pending') throw error(400, 'Request is already resolved');
+	// The request looked for, the sender checked and the message saved in one
+	// transaction that asks first who is calling, as their account is now
+	// (card 2253): null for a requester with no session, and a 401 for a
+	// caller whose session ended while the body arrived, who is never taken
+	// for anonymous. The check and the save had no transaction around them.
+	const { taskReq, sType, sName, message, newMsg } = writeAs(locals, (caller) => {
+		let taskReq: TaskRequest;
+		let sender: SessionUser | null = null;
+		if (senderType === 'requester') {
+			// Their email address used to be enough, so anyone who knew it could
+			// post as them. A token that is not text is no token: it was a 500. The
+			// link of a lapsed request opens nothing (card 2243).
+			const token = typeof body.token === 'string' ? body.token : null;
+			taskReq = requireRequest(caller, requestId, (row) => linkOpens(row, token), 'Invalid or missing link token');
+		} else {
+			// Admin/user reply — must be signed in, and the request must be theirs
+			// to answer.
+			const user = requireUser(caller);
+			sender = user;
+			taskReq = requireRequest(user, requestId, (row) => canHandleRequest(user, row), 'This request is not addressed to you');
+		}
+		if (taskReq.status !== 'pending') throw error(400, 'Request is already resolved');
 
-	const readMessage = () =>
-		readText(body, 'message', {
-			required: true,
-			trim: true,
-			min: 1,
-			max: 5000,
-			says: { missing: 'Message is required', empty: 'Message is required' }
-		});
+		const readMessage = () =>
+			readText(body, 'message', {
+				required: true,
+				trim: true,
+				min: 1,
+				max: 5000,
+				says: { missing: 'Message is required', empty: 'Message is required' }
+			});
 
-	let sType: string;
-	let sName: string;
-	let message: string;
+		let sType: string;
+		let sName: string;
+		let message: string;
 
-	if (senderType === 'requester') {
-		// Public requester reply, let in by the token from their link above.
-		message = readMessage();
-		// Counted here, after the link and the state are checked and just
-		// before the save: a wrong link, a resolved request or an empty or
-		// overlong message uses nothing of the twenty. The 21st is refused
-		// with nothing saved and nothing mailed.
-		const { limited, retryAfterSecs, attempts } = checkRateLimit(replyCount(requestId), REPLIES_PER_HOUR, HOUR);
-		if (limited) {
-			// Said once a window, at the first refusal: an administrator then
-			// sees an abused link on the Audit page. The message is not logged.
-			if (attempts === REPLIES_PER_HOUR + 1) {
-				log.warn(
-					`Request ${requestId} reached its limit of ${REPLIES_PER_HOUR} replies from the requester in an hour: ` +
-						'further replies are refused until the hour is up or the team replies',
-					{ requestId, retryAfterSecs }
+		if (sender === null) {
+			// Public requester reply, let in by the token from their link above.
+			message = readMessage();
+			// Counted here, after the link and the state are checked and just
+			// before the save: a wrong link, a resolved request or an empty or
+			// overlong message uses nothing of the twenty. The 21st is refused
+			// with nothing saved and nothing mailed.
+			const { limited, retryAfterSecs, attempts } = checkRateLimit(replyCount(requestId), REPLIES_PER_HOUR, HOUR);
+			if (limited) {
+				// Said once a window, at the first refusal: an administrator then
+				// sees an abused link on the Audit page. The message is not logged.
+				if (attempts === REPLIES_PER_HOUR + 1) {
+					log.warn(
+						`Request ${requestId} reached its limit of ${REPLIES_PER_HOUR} replies from the requester in an hour: ` +
+							'further replies are refused until the hour is up or the team replies',
+						{ requestId, retryAfterSecs }
+					);
+				}
+				throw error(
+					429,
+					`Too many replies to this request in the last hour. Try again in ${Math.ceil(retryAfterSecs / 60)} minute(s).`
 				);
 			}
-			throw error(
-				429,
-				`Too many replies to this request in the last hour. Try again in ${Math.ceil(retryAfterSecs / 60)} minute(s).`
-			);
+			sType = 'requester';
+			sName = taskReq.requesterName;
+		} else {
+			// Admin/user reply, let in above. The reply is emailed to the requester
+			// under their name.
+			message = readMessage();
+			sType = 'admin';
+			sName = sender.username;
 		}
-		sType = 'requester';
-		sName = taskReq.requesterName;
-	} else {
-		// Admin/user reply, let in above. The reply is emailed to the requester
-		// under their name.
-		message = readMessage();
-		sType = 'admin';
-		sName = locals.user!.username;
-	}
 
-	const newMsg = db.insert(requestMessages).values({
-		requestId,
-		senderType: sType,
-		senderName: sName,
-		message
-	}).returning().get();
+		const newMsg = db.insert(requestMessages).values({
+			requestId,
+			senderType: sType,
+			senderName: sName,
+			message
+		}).returning().get();
+		return { taskReq, sType, sName, message, newMsg };
+	});
 
 	// The team has answered: the requester's count starts again, so a
 	// conversation is never held to twenty messages an hour.

@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
+import { writeAs } from '$lib/server/write-as';
 import { taskRequests, users, teams, teamMembers, cards, columns, boards } from '$lib/server/db/schema';
 import { eq, and, inArray, or, desc, ne, lt } from 'drizzle-orm';
 import { notifyTaskRequest, notifyRequesterConfirm } from '$lib/server/notifications';
@@ -110,6 +110,23 @@ const MINUTE = 60 * 1000;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
+ * Before the body, for a caller the gate let in with no session: the form's
+ * token, and the counts per address and in total. A caller signed in is asked
+ * nothing here. It binds no name: who is asking is decided again, as their
+ * account is now, in the transaction that saves the request (card 2253).
+ */
+function screenAnonymous(user: App.Locals['user'], formToken: string | null, getClientAddress: () => string): void {
+	if (user) return;
+	if (!verifyFormToken(formToken)) {
+		throw error(403, 'This form has expired. Reload the page and try again.');
+	}
+	// Guarded: an address that cannot be read is counted as 'unknown'.
+	limit(`request:${addressToCount({ getClientAddress })}`, 5, 15 * MINUTE);
+	// However many addresses they come from, the team's inbox is one place.
+	limit('request:anonymous-total', 30, 60 * MINUTE);
+}
+
+/**
  * POST — Create a new task request. Works signed in or not.
  *
  * Signed in, the request goes straight to the team: we know who is asking.
@@ -128,17 +145,7 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * limits are then the only brake.
  */
 export const POST: RequestHandler = async ({ request, locals, url, getClientAddress }) => {
-	const anonymous = !locals.user;
-
-	if (anonymous) {
-		if (!verifyFormToken(request.headers.get('x-form-token'))) {
-			throw error(403, 'This form has expired. Reload the page and try again.');
-		}
-		// Guarded: an address that cannot be read is counted as 'unknown'.
-		limit(`request:${addressToCount({ getClientAddress })}`, 5, 15 * MINUTE);
-		// However many addresses they come from, the team's inbox is one place.
-		limit('request:anonymous-total', 30, 60 * MINUTE);
-	}
+	screenAnonymous(locals.user, request.headers.get('x-form-token'), getClientAddress);
 
 	// Each field by its rule (card 2117), in the words the form shows. A field
 	// that was not text was a 500, and a priority it did not know was medium.
@@ -154,20 +161,26 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 		readChoice(body, 'targetType', { nullable: true, from: ['user', 'team'], says: { type: 'Invalid target type', invalid: 'Invalid target type' } }) ??
 		error(400, 'Target is required');
 	const targetId = readId(body, 'targetId', { nullable: true }) ?? error(400, 'Target is required');
-	// The board the card is wanted on, which nothing needs: whoever accepts the
-	// request picks the board (card 2128, decision 6). From a caller with no
-	// session it is not read at all, so that the form cannot be used to find
-	// which boards there are; signed in, it is optional, and one they can open.
-	const desiredBoardId = locals.user ? (readId(body, 'desiredBoardId', { nullable: true }) ?? null) : null;
-	const description = readText(body, 'description', { max: 10000 }) ?? '';
-	const businessValue = readText(body, 'businessValue', { max: 5000 }) ?? '';
-	const safePriority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true }) ?? 'medium';
-	const requesterName = readText(body, 'requesterName', { trim: true, max: 200 });
 
 	// One transaction: who the request is for, the board and the mail settings
 	// are read in the one that clears the old unconfirmed requests and creates
 	// this one. The mail is worked out in here and sent once it is committed.
-	const answer = inTransaction(() => {
+	// It asks first who is asking, as their account is now (card 2253): null
+	// for a caller with no session, and a 401 for one whose session ended while
+	// the body arrived, who is never taken for anonymous.
+	const answer = writeAs(locals, (caller) => {
+		const anonymous = caller === null;
+
+		// The board the card is wanted on, which nothing needs: whoever accepts the
+		// request picks the board (card 2128, decision 6). From a caller with no
+		// session it is not read at all, so that the form cannot be used to find
+		// which boards there are; signed in, it is optional, and one they can open.
+		const desiredBoardId = caller ? (readId(body, 'desiredBoardId', { nullable: true }) ?? null) : null;
+		const description = readText(body, 'description', { max: 10000 }) ?? '';
+		const businessValue = readText(body, 'businessValue', { max: 5000 }) ?? '';
+		const safePriority = readChoice(body, 'priority', { from: PRIORITIES, anyCase: true }) ?? 'medium';
+		const requesterName = readText(body, 'requesterName', { trim: true, max: 200 });
+
 		// Validate target exists
 		if (targetType === 'team') {
 			const team = db.select({ id: teams.id }).from(teams).where(eq(teams.id, targetId)).get();
@@ -179,9 +192,9 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 
 		// A board the caller names is one they can open: 404 for none, 403 for one
 		// they cannot. Any board was taken, and named to whoever the request is for.
-		if (desiredBoardId !== null) requireBoard(locals.user, desiredBoardId, 'view');
+		if (desiredBoardId !== null) requireBoard(caller, desiredBoardId, 'view');
 
-		const name = locals.user ? locals.user.username : (requesterName || 'Anonymous');
+		const name = caller ? caller.username : (requesterName || 'Anonymous');
 
 		// Without an account the address is how we reach the requester, and how they
 		// prove the request is theirs.
@@ -199,7 +212,7 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 
 		// Read once who it is for and where it goes have been looked up. A
 		// signed-in caller's own address is the one used, and theirs is not read.
-		let email: string | null = locals.user ? locals.user.email : null;
+		let email: string | null = caller ? caller.email : null;
 		if (anonymous) {
 			// An address by the readers' rule (none of `, ; < > " ( )`, which
 			// the mailer reads as more than one), with a dot after the @.
@@ -227,7 +240,7 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 			businessValue,
 			requesterName: name,
 			requesterEmail: email,
-			requesterUserId: locals.user?.id || null,
+			requesterUserId: caller?.id || null,
 			status: mustVerify ? 'unverified' : 'pending',
 			accessToken: newRequestToken()
 		}).returning().get();

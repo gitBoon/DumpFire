@@ -2,7 +2,6 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { boards } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { inTransaction } from '$lib/server/db/transaction';
 import { deleteBoard } from '$lib/server/deletes';
 import { emit } from '$lib/server/events';
 import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
@@ -10,18 +9,21 @@ import { pathId, readBody, readBoolean, readId, readText } from '$lib/server/req
 import { requireBoard, requireBoardCategory, requireBoardOwner, requireSubBoardLink, requireUser } from '$lib/server/route-guards';
 import { getCardBoardId } from '$lib/server/work-access';
 import { stamp } from '$lib/timestamps';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const id = pathId(params.id, 'board');
 	const body = await readBody(request);
 
 	// One transaction, entered once the body has arrived: the board is read,
 	// the caller checked, and who may make it public asked, in the one that
 	// changes it. A board that is not there is 404 to everyone; it was 403 to
-	// all but an administrator.
-	const updated = inTransaction(() => {
+	// all but an administrator. It asks first whether the session is still
+	// open, and who its account is now (card 2253).
+	const updated = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const board = requireBoard(user, id, 'edit');
 
 		// An editor changes what is on a board, and not who can see it. Sent by
@@ -94,15 +96,16 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 };
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const id = pathId(params.id, 'board');
-	const user = locals.user;
 
 	// One transaction: the caller is checked in the same one that deletes the
 	// board. Every sub-board at every depth goes with it, and what else goes
-	// is in $lib/server/deletes.ts.
-	inTransaction(() => {
+	// is in $lib/server/deletes.ts. It asks first whether the session is still
+	// open, and who its account is now (card 2253).
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// Only owners and admins can delete boards. A board that is not there
 		// is 404 to everyone, before who is asking is looked at, as
 		// `DELETE /api/v1/boards/{id}` answers it (card 2211): an administrator

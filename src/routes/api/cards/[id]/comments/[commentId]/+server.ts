@@ -3,12 +3,12 @@ import { db } from '$lib/server/db';
 import { cardComments, type Card, type CardComment } from '$lib/server/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { isAdmin } from '$lib/server/board-access';
-import { inTransaction } from '$lib/server/db/transaction';
 import { emit } from '$lib/server/events';
 import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { pathId, readBody, readText } from '$lib/server/request-body';
 import { requireCard, requireUser } from '$lib/server/route-guards';
 import type { SessionUser } from '$lib/server/auth';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -42,17 +42,19 @@ function requireOwnComment(
 
 /** PUT — Edit own comment. */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const cardId = pathId(params.id, 'card');
 	const commentId = pathId(params.commentId, 'comment');
 	const body = await readBody(request);
 
 	// The comment, its card's board and its author are read in the transaction
 	// that changes it, once the body has arrived: someone taken off the board
-	// while the body was arriving is refused. The `comment_edited` entry and
-	// the board's live update are the ones `PUT /api/v1/comments/{id}` writes
-	// and sends (card 2143): an edit made on screen had neither.
-	const updated = inTransaction(() => {
+	// while the body was arriving is refused, and so is a session ended then
+	// (card 2253). The `comment_edited` entry and the board's live update are
+	// the ones `PUT /api/v1/comments/{id}` writes and sends (card 2143): an
+	// edit made on screen had neither.
+	const updated = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const { comment, card, boardId } = requireOwnComment(user, cardId, commentId, 'edit');
 
 		const content = readText(body, 'content', {
@@ -91,8 +93,14 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	const cardId = pathId(params.id, 'card');
 	const commentId = pathId(params.commentId, 'comment');
-	requireOwnComment(locals.user, cardId, commentId, 'delete');
 
-	db.delete(cardComments).where(eq(cardComments.id, commentId)).run();
+	// The comment read, the caller checked and the comment deleted in one
+	// transaction that asks first whether the session is still open, and who
+	// its account is now (card 2253). The check and the delete were two steps
+	// with no transaction around them.
+	writeAs(locals, (caller) => {
+		requireOwnComment(caller, cardId, commentId, 'delete');
+		db.delete(cardComments).where(eq(cardComments.id, commentId)).run();
+	});
 	return json({ success: true });
 };

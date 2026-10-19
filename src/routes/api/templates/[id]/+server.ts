@@ -3,20 +3,22 @@ import { db } from '$lib/server/db';
 import { cardTemplates } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { canEditBoard } from '$lib/server/board-access';
-import { inTransaction } from '$lib/server/db/transaction';
 import { pathId } from '$lib/server/request-body';
+import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /** DELETE — remove a template (only creator or admin) */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const id = pathId(params.id, 'template');
-	const user = locals.user;
 
 	// One transaction: the template is read and the caller checked in the one
-	// that deletes it.
-	inTransaction(() => {
+	// that deletes it, which asks first whether the session is still open, and
+	// who its account is now (card 2253).
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const existing = db.select().from(cardTemplates).where(eq(cardTemplates.id, id)).get();
 		if (!existing) throw error(404, 'Template not found');
 

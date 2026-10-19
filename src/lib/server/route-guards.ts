@@ -69,6 +69,33 @@ export function requireUser(user: SessionUser | null | undefined): SessionUser {
 }
 
 /**
+ * The caller, if they are an administrator or the superadmin; otherwise 403,
+ * in the route's own words (`Forbidden` unless it says other), a caller who
+ * is not signed in included, as the routes that ask it have always answered.
+ *
+ * It reads no row, so a route may ask it before its body as a quick refusal
+ * that binds no name (`requireAdmin(locals.user);`), and asks it again of the
+ * caller its `writeAs` hands it, which decides (card 2253).
+ */
+export function requireAdmin(user: SessionUser | null | undefined, says = 'Forbidden'): SessionUser {
+	if (!user || !isAdmin(user)) error(403, says);
+	return user;
+}
+
+/**
+ * A 403, in the route's words, when the account the path names is the
+ * caller's own; nothing when it is not, or when nobody is signed in. For the
+ * routes that refuse a caller their own account before anything else, and so
+ * before their body. Like `requireAdmin`, it reads no row.
+ *
+ * Not a guard on its own: it lets a null caller through. Ask `requireUser`
+ * (or `requireAdmin`) first.
+ */
+export function refuseOwnAccount(user: SessionUser | null | undefined, userId: number, says: string): void {
+	if (user && user.id === userId) error(403, says);
+}
+
+/**
  * The board, if it exists and the caller may view or edit it.
  *
  * Existence is checked first and separately: an administrator passes every

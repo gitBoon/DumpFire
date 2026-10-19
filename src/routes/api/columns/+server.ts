@@ -2,9 +2,9 @@ import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { columns } from '$lib/server/db/schema';
 import { emit } from '$lib/server/events';
-import { inTransaction } from '$lib/server/db/transaction';
 import { readBody, readColour, readId, readNumber, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -18,10 +18,13 @@ import type { RequestHandler } from './$types';
  * and any colour was stored.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const column = inTransaction(() => {
+	// The session is asked again, and who its account is now, in the
+	// transaction that adds the column (card 2253).
+	const column = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// The body's board id is the board the column is being added to, so it is
 		// the right one to check — and it has to exist.
 		const boardId = requireBoard(user, readId(body, 'boardId', { required: true, says: 'Invalid board ID' }), 'edit').id;

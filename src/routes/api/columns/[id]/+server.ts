@@ -5,10 +5,10 @@ import { eq } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
 import { canEditBoard } from '$lib/server/board-access';
 import { completionRoleRefusal } from '$lib/server/card-completion';
-import { inTransaction } from '$lib/server/db/transaction';
 import { deleteColumn } from '$lib/server/deletes';
 import { pathId, readBody, readBoolean, readColour, readNumber, readText } from '$lib/server/request-body';
 import { requireColumn, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 /**
@@ -50,14 +50,16 @@ function wipLimitOf(value: unknown): number {
  * nothing is written (card 2134): see `completionRoleRefusal`.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const id = pathId(params.id, 'column');
 	const body = await readBody(request);
 
 	// The column is read and the caller checked in the transaction that changes
-	// it, once the body has arrived. The board is the column's own: a `boardId`
+	// it, once the body has arrived, and the session asked again, and who its
+	// account is now (card 2253). The board is the column's own: a `boardId`
 	// in the body is ignored.
-	const updated = inTransaction(() => {
+	const updated = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const { column, boardId } = requireColumn(user, id, 'edit');
 
 		const updates: Partial<typeof columns.$inferInsert> = {};
@@ -92,15 +94,16 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 };
 
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) throw error(401, 'Not authenticated');
+	requireUser(locals.user);
 
 	const id = pathId(params.id, 'column');
-	const user = locals.user;
 
 	// One transaction: the column is read and the caller checked in the same
-	// one that deletes it. Its cards go with it, and what goes with them is in
-	// $lib/server/deletes.ts.
-	inTransaction(() => {
+	// one that deletes it, which asks first whether the session is still open,
+	// and who its account is now (card 2253). Its cards go with it, and what
+	// goes with them is in $lib/server/deletes.ts.
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// Always resolve the board from the database — never trust the client
 		const column = db.select().from(columns).where(eq(columns.id, id)).get();
 		if (!column) throw error(404, 'Column not found');

@@ -3,9 +3,9 @@ import { db } from '$lib/server/db';
 import { labels, cardLabels, type Label } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { emit } from '$lib/server/events';
-import { inTransaction } from '$lib/server/db/transaction';
 import { readBody, readColour, readId, readQueryId, readText, type RequestBody } from '$lib/server/request-body';
 import { requireBoard, requireCard, requireLabel, requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 // Get all labels for a board. A `boardId` that is no id is a 400, where `2.5`
@@ -60,12 +60,16 @@ function readLabelFields(body: RequestBody, label?: Label): { name?: string; col
  * Create a new label. `boardId` names the row guarded, so it is read first;
  * then `name` and `color` (`readLabelFields`). A label with no name was a 500,
  * and any colour was stored.
+ *
+ * Each write of this file asks first, in its transaction, whether the session
+ * is still open, and who its account is now (card 2253).
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const label = inTransaction(() => {
+	const label = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		// Here the body's board id is the thing being acted on — the board the
 		// label is created on — so it is the right one to check.
 		const boardId = requireBoard(user, readId(body, 'boardId', { required: true, says: 'Invalid board ID' }), 'edit').id;
@@ -96,10 +100,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
  * activity entry is written, as no label route writes one.
  */
 export const PATCH: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const updated = inTransaction(() => {
+	const updated = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const id = readId(body, 'id', { required: true, says: 'Invalid label ID' });
 
 		// The board is the label's own. A `boardId` in the body is ignored.
@@ -120,10 +125,11 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
  * that was not was read with `Number()`, and looked for as a card or a label.
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const toggled = inTransaction(() => {
+	const toggled = writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const cardId = readId(body, 'cardId', { required: true, says: 'Invalid card ID' });
 
 		// The board is the card's. A `boardId` in the body is ignored.
@@ -156,10 +162,11 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 
 /** Delete a label. Body: `{ id }`, an id (card 2117). */
 export const DELETE: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 
-	inTransaction(() => {
+	writeAs(locals, (caller) => {
+		const user = requireUser(caller);
 		const id = readId(body, 'id', { required: true, says: 'Invalid label ID' });
 
 		// The board is the label's own. A `boardId` in the body is ignored.

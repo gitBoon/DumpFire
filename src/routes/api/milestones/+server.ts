@@ -4,7 +4,6 @@
  * $lib/server/milestones — only the auth differs.
  */
 import { json, error } from '@sveltejs/kit';
-import { inTransaction } from '$lib/server/db/transaction';
 import {
 	listMilestones,
 	createMilestone,
@@ -15,6 +14,7 @@ import {
 import { ACTIONS, actorOf, logUiActivity } from '$lib/server/logActivity';
 import { pathId, readBody, readDate, readId, readQueryId, readText } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ url, locals }) => {
@@ -50,10 +50,13 @@ export const GET: RequestHandler = async ({ url, locals }) => {
  * text of at most 50,000; `targetDate` a date written `YYYY-MM-DD`, or null.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	const user = requireUser(locals.user);
+	requireUser(locals.user);
 	const body = await readBody(request);
 	try {
-		const created = inTransaction(() => {
+		// Asked first: whether the session is still open, and who its account
+		// is now (card 2253).
+		const created = writeAs(locals, (caller) => {
+			const user = requireUser(caller);
 			const boardId = readId(body, 'boardId', { nullable: true }) ?? null;
 			if (boardId !== null) requireMilestoneBoard(user, boardId);
 

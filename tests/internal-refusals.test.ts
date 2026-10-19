@@ -257,7 +257,8 @@ describe('POST /api/reports', () => {
 	const period = { periodStart: '2026-10-01', periodEnd: '2026-10-08' };
 
 	it('answers 401 to a caller who is not signed in', async () => {
-		await refused(post(null, { scope: 'board', scopeId: mine.board.id, ...period }), 401, 'Unauthorized');
+		// The quick check is requireUser, in the gate's words (card 2253).
+		await refused(post(null, { scope: 'board', scopeId: mine.board.id, ...period }), 401, 'Not authenticated');
 	});
 
 	it('answers 400 for a report with a field missing, a scope it does not know, or no board or category named', async () => {
@@ -294,10 +295,11 @@ describe('POST /api/reports/email', () => {
 	beforeEach(makeSmtp);
 
 	it('answers 401 to a caller who is not signed in', async () => {
+		// The quick check is requireUser, in the gate's words (card 2253).
 		await refused(
 			post(null, { scope: 'board', scopeId: mine.board.id, recipients: ['a@example.test'], ...period }),
 			401,
-			'Unauthorized'
+			'Not authenticated'
 		);
 	});
 
