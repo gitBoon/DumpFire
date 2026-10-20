@@ -245,8 +245,12 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 	});
 });
 
-describe('the card’s dependency list, src/lib/components/CardModal.svelte', () => {
+// Card 2280, slice B4: the list, its writes and its markup moved into the
+// window's section of their own, CardDependencies.svelte; the window still
+// reads the links when it opens, and hands the section `loadDependencies`.
+describe('the card’s dependency list, src/lib/components/card/CardDependencies.svelte (from CardModal.svelte)', () => {
 	const modal = scriptOf('src/lib/components/CardModal.svelte');
+	const section = scriptOf('src/lib/components/card/CardDependencies.svelte');
 
 	it('is read when the card is opened by loadDependencies', () => {
 		const opened = modal.statements
@@ -259,9 +263,12 @@ describe('the card’s dependency list, src/lib/components/CardModal.svelte', ()
 	it('is read again by loadDependencies after a removal that was refused', () => {
 		// In the branch for a failure, and nowhere else: a removal that worked
 		// is answered with the two lists as they now are.
-		expect(branches(modal, 'removeDependency', 'loadDependencies')).toEqual(['failed']);
+		expect(branches(section, 'removeDependency', 'loadDependencies')).toEqual(['failed']);
+		// The window's own reader, handed to the section.
+		const window = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
+		expect(window.slice(window.indexOf('<CardDependencies'), window.indexOf('/>', window.indexOf('<CardDependencies')))).toContain('{loadDependencies}');
 		// The message is still set there, before the lists are read again.
-		const refused = functionNamed(modal, 'removeDependency').getText();
+		const refused = functionNamed(section, 'removeDependency').getText();
 		const said = "depError = await failureMessage(res, 'Could not remove that dependency')";
 		expect(refused.indexOf(said)).toBeGreaterThan(-1);
 		expect(refused.indexOf(said)).toBeLessThan(refused.indexOf('loadDependencies()'));
@@ -296,15 +303,17 @@ describe('the card’s dependency list, src/lib/components/CardModal.svelte', ()
 
 	it('builds the bodies it sends with dependencyEndBody, and writes no field name of its own', () => {
 		for (const name of ['addDependency', 'removeDependency']) {
-			const fn = functionNamed(modal, name);
+			const fn = functionNamed(section, name);
 			expect(callsOf(fn, 'dependencyEndBody'), name).toHaveLength(1);
 			expect(fn.getText(), name).not.toMatch(/\b(dependsOn|blocks)(Card|Subtask)Id\b/);
 		}
 	});
 
 	it('passes the row from both remove buttons, and numbers and links each row through dependencyRow', () => {
-		const source = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
-		const markup = source.slice(source.indexOf('</script>'));
+		const source = readFileSync(join(ROOT, 'src/lib/components/card/CardDependencies.svelte'), 'utf8');
+		const markup = source.slice(source.indexOf('</script>', source.indexOf('<script lang="ts">')));
+		// Nor does the window's own markup, which draws the section.
+		expect(readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8')).not.toMatch(/removeDependency|dependencyRow/);
 
 		expect(markup.match(/removeDependency\([^)]*\)/g)).toEqual(["removeDependency(d, 'blocked-by')", "removeDependency(d, 'blocks')"]);
 		expect(markup.match(/\{@const row = dependencyRow\(d\)\}/g)).toHaveLength(2);
@@ -389,9 +398,10 @@ function finallyBlocks(within: ts.Node): string[] {
 	return found;
 }
 
-describe('a card’s attachments, src/lib/components/CardModal.svelte', () => {
-	const source = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
-	const modal = scriptOf('src/lib/components/CardModal.svelte');
+// Card 2280, slice B4: moved with the Files tab into CardAttachments.svelte.
+describe('a card’s attachments, src/lib/components/card/CardAttachments.svelte (from CardModal.svelte)', () => {
+	const source = readFileSync(join(ROOT, 'src/lib/components/card/CardAttachments.svelte'), 'utf8');
+	const modal = scriptOf('src/lib/components/card/CardAttachments.svelte');
 
 	it('says which of the four things went wrong, once each, and reads no answer as JSON unguarded', () => {
 		const one = functionNamed(modal, 'uploadFile');
@@ -418,6 +428,12 @@ describe('a card’s attachments, src/lib/components/CardModal.svelte', () => {
 	it('shows what it was told, for each file that was not attached', () => {
 		expect(functionNamed(modal, 'uploadFiles').getText()).toContain('uploadErrors = [...uploadErrors, failure]');
 		expect(source).toMatch(/\{#if uploadErrors\.length > 0\}[\s\S]*?role="alert"[\s\S]*?\{#each uploadErrors as failure\}/);
+		// The window draws the tab whatever tab is shown, so an upload under way, and what it was told, outlast a switch of tab.
+		const window = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
+		expect(window).toContain('<CardAttachments {card} {activeTab} bind:attachments {loadingAttachments} {loadAttachments} bind:windowError />');
+		expect(blocksAround(window, window.indexOf('<CardAttachments'))).toEqual([]);
+		expect(source).toContain("{#if card && activeTab === 'attachments'}");
+		expect(source).not.toMatch(/\bonMount\b|\$effect/);
 	});
 });
 
@@ -507,7 +523,10 @@ describe('the card window’s save and its template’s labels, src/lib/componen
 	});
 
 	it('says that a template holds the labels too', () => {
-		expect(markup).toContain('<p class="template-desc">Saves this card\'s title, description, priority, subtasks and labels as a reusable template.</p>');
+		// In the Save as Template dialog, which moved into CardTemplates.svelte (card 2280, slice B4); the window draws it.
+		const dialogs = readFileSync(join(ROOT, 'src/lib/components/card/CardTemplates.svelte'), 'utf8');
+		expect(dialogs).toContain('<p class="template-desc">Saves this card\'s title, description, priority, subtasks and labels as a reusable template.</p>');
+		expect(markup).toContain('<CardTemplates');
 	});
 });
 
@@ -2309,22 +2328,38 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'useMyTimeZone', reads: 'failureMessage', done: ['await invalidateAll()'] },
 		{ name: 'deleteSchedule', reads: 'deleteFailure', done: ['await invalidateAll()'] }
 	],
+	// The card window's fifteen writes, each in the section that holds it
+	// since card 2280's slice B4 (from CardModal.svelte, as they were).
 	'src/lib/components/CardModal.svelte': [
 		// A label is put on and taken off by the label picker, below (card 2010).
+		{ name: 'createCategoryInline', reads: 'failureMessage', done: ['showNewCategory = false'] }
+	],
+	'src/lib/components/card/CardCoverPicker.svelte': [
 		{ name: 'setCover', reads: 'failureMessage', putsBack: ['coverUrl = was'] },
-		{ name: 'clearCover', via: 'setCover' },
-		{ name: 'createCategoryInline', reads: 'failureMessage', done: ['showNewCategory = false'] },
+		{ name: 'clearCover', via: 'setCover' }
+	],
+	'src/lib/components/card/CardMetaChips.svelte': [
 		{ name: 'assignUser', reads: 'failureMessage' },
-		{ name: 'unassignUser', reads: 'deleteFailure' },
+		{ name: 'unassignUser', reads: 'deleteFailure' }
+	],
+	'src/lib/components/card/CardTemplates.svelte': [
 		{ name: 'saveAsTemplate', reads: 'failureMessage', done: ['showSaveTemplate = false', "templateName = ''"] },
-		{ name: 'deleteTemplate', reads: 'deleteFailure', done: ['templates = templates.filter(t => t.id !== id)'] },
-		{ name: 'toggleSubtask', reads: 'failureMessage', done: ['subtask.completed = !subtask.completed'] },
+		{ name: 'deleteTemplate', reads: 'deleteFailure', done: ['templates = templates.filter(t => t.id !== id)'] }
+	],
+	'src/lib/components/card/CardSubtasks.svelte': [
+		{ name: 'toggleSubtask', reads: 'failureMessage', done: ['subtask.completed = !subtask.completed'] }
+	],
+	'src/lib/components/card/CardDependencies.svelte': [
 		{ name: 'addDependency', reads: 'failureMessage', done: ['pickerMode = null'] },
 		{ name: 'removeDependency', reads: 'failureMessage', putsBack: ['await loadDependencies()'], done: ['blocks = data.blocks'] },
-		{ name: 'saveMilestone', reads: 'failureMessage', putsBack: ['putBack()'], done: ['milestoneId = next'] },
+		{ name: 'saveMilestone', reads: 'failureMessage', putsBack: ['putBack()'], done: ['milestoneId = next'] }
+	],
+	'src/lib/components/card/CardComments.svelte': [
 		{ name: 'postComment', reads: 'failureMessage', done: ["newComment = ''"] },
 		{ name: 'deleteComment', reads: 'deleteFailure', done: ['comments = comments.filter(c => c.id !== commentId)'] },
-		{ name: 'saveEditComment', reads: 'failureMessage', done: ['editingCommentId = null'] },
+		{ name: 'saveEditComment', reads: 'failureMessage', done: ['editingCommentId = null'] }
+	],
+	'src/lib/components/card/CardAttachments.svelte': [
 		{ name: 'deleteAttachment', reads: 'deleteFailure', putsBack: ['await loadAttachments()'], done: ['attachments = attachments.filter(a => a.id !== id)'] }
 	],
 	// Card 2010: the card window's Labels section. The chip changes only once
@@ -2389,7 +2424,7 @@ const WRITES: Record<string, Write[]> = {
 /** Writes in the files above that have tests of their own above, by file. */
 const TESTED_ABOVE: Record<string, string[]> = {
 	'src/routes/admin/+page.svelte': ['handleFileSelected'],
-	'src/lib/components/CardModal.svelte': ['uploadFile']
+	'src/lib/components/card/CardAttachments.svelte': ['uploadFile']
 };
 
 describe('every write of the seven pages of card 2109, of the label picker, and of the four screens of card 2148, says when it was refused', () => {
@@ -2416,6 +2451,25 @@ describe('every write of the seven pages of card 2109, of the label picker, and 
 			expect(sending.filter((name) => !named.includes(name))).toEqual([]);
 		}
 	);
+
+	// Card 2280, slice B4: the card window's writes are in its sections, each
+	// a file of the table above. One that sent a write and was not would be
+	// held to nothing.
+	it('has every section of the card window that sends a write, src/lib/components/card/', () => {
+		const sends = (file: string) =>
+			scriptOf(file).statements.some((statement) => {
+				let found = false;
+				const visit = (node: ts.Node) => {
+					if (ts.isCallExpression(node) && writeOf(node, writes)) found = true;
+					ts.forEachChild(node, visit);
+				};
+				visit(statement);
+				return found;
+			});
+		const sending = filesUnder('src/lib/components/card', '.svelte').filter(sends);
+		expect(sending.length).toBeGreaterThan(0);
+		expect(sending.filter((file) => !(file in WRITES))).toEqual([]);
+	});
 
 	const cases = Object.entries(WRITES).flatMap(([file, list]) => list.map((write) => [`${file} ${write.name}`, file, write] as const));
 
@@ -2688,6 +2742,8 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 		// account page say a refusal on a line of their own, not in a toast.
 		const ownLine = [
 			'src/lib/components/CardModal.svelte',
+			// Its sections (card 2280, slice B4), which say a refusal in its message box.
+			...filesUnder('src/lib/components/card', '.svelte'),
 			'src/lib/components/LabelPicker.svelte',
 			'src/lib/components/ShareModal.svelte',
 			'src/lib/components/SubtaskModal.svelte',
@@ -2704,6 +2760,8 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 		for (const dialog of [
 			'src/app.css',
 			'src/lib/components/CardModal.svelte',
+			// Its sections' dropdowns and template dialogs (card 2280, slice B4).
+			...filesUnder('src/lib/components/card', '.svelte'),
 			'src/lib/components/ConfirmModal.svelte',
 			...Object.keys(WRITES).filter((file) => file.startsWith('src/routes/'))
 		]) {

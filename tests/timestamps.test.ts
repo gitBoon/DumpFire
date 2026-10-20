@@ -1377,7 +1377,8 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 		['src/routes/inbox/+page.svelte', 'timeAgo'],
 		['src/routes/reports/+page.svelte', 'formatDateTime'],
 		['src/routes/request/[id]/reply/+page.svelte', 'timeAgo'],
-		['src/lib/components/CardModal.svelte', 'commentTimeAgo'],
+		// The card window's Comments tab (card 2280, slice B4: moved from CardModal.svelte).
+		['src/lib/components/card/CardComments.svelte', 'commentTimeAgo'],
 		['src/lib/utils/date-utils.ts', 'parseUTC']
 	];
 
@@ -1418,9 +1419,11 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 	});
 
 	it('the card window writes an edited comment’s time in the stored form, as the server does', () => {
-		const modal = sourceOf('src/lib/components/CardModal.svelte');
+		// In its Comments tab (card 2280, slice B4: CardComments.svelte).
+		const modal = sourceOf('src/lib/components/card/CardComments.svelte');
 		expect(modal).toContain('updatedAt: stamp()');
 		expect(modal).not.toContain('toISOString()');
+		expect(sourceOf('src/lib/components/CardModal.svelte')).not.toContain('toISOString()');
 	});
 
 	it('parseUTC, which the board, the all-tasks page and the list row use, is parseStamp: either form, one moment, in any zone', async () => {
@@ -1563,8 +1566,9 @@ describe('a due date is a calendar day, counted from the viewer’s own today (c
 		for (const file of ['src/routes/all/+page.svelte', 'src/lib/components/board/KanbanCardBody.svelte', 'src/lib/components/board/CardListRow.svelte', 'src/routes/todo/+page.svelte']) {
 			expect(sourceOf(file), file).toContain('title="Due {formatDueDate(card.dueDate)}"');
 		}
-		// The card window: a subtask is overdue from the day after its due day.
-		const modal = sourceOf('src/lib/components/CardModal.svelte');
+		// The card window: a subtask is overdue from the day after its due day (its Subtasks section, card 2280's slice B4).
+		const modal = sourceOf('src/lib/components/card/CardSubtasks.svelte');
+		expect(sourceOf('src/lib/components/CardModal.svelte')).not.toMatch(/new Date\(subtask\.dueDate\)|function formatDue\b/);
 		expect(modal).not.toContain('new Date(subtask.dueDate)');
 		expect(modal).toContain('class:overdue={(daysUntilDue(subtask.dueDate) ?? 0) < 0}');
 		const formatDue = bodyOf(modal, 'formatDue');

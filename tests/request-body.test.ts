@@ -2447,12 +2447,16 @@ describe('the web application’s work routes that card 2117’s third slice mov
 	});
 
 	it('offers in the card window only the board’s categories and the shared ones (R3)', () => {
-		const modal = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
+		// The category chip, moved from the window into CardMetaChips.svelte (card 2280, slice B4), handed the window's list and the card's board.
+		const modal = readFileSync(join(ROOT, 'src/lib/components/card/CardMetaChips.svelte'), 'utf8');
+		const window = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
+		expect(window).toMatch(/<CardMetaChips\s+\{card\}\s+\{boardId\}\s+\{boardUsers\}\s+\{localCategories\}/);
 
 		// The picker's list, filtered against the card's board, and not every category the page passes.
 		expect(modal).toMatch(/const pickableCategories = \$derived\(localCategories\.filter\(\(c\) => c\.boardId === boardId \|\| c\.boardId === null\)\)/);
 		expect(modal).toContain('{#each pickableCategories as cat}');
 		expect(modal).not.toContain('{#each localCategories as cat}');
+		expect(window).not.toContain('{#each localCategories as cat}');
 	});
 
 	it('keeps what the row holds when it is sent back unchanged, whatever the rules say of it, and refuses anything else on that row (decision 8, R8)', async () => {
@@ -3496,13 +3500,18 @@ describe('the review fixes to card 2117’s slices 2 to 5 (version 1.7)', () => 
 
 		it('holds what the card window and the board’s menu make from a card’s title to the limits of what they make', () => {
 			const modal = source('src/lib/components/CardModal.svelte');
+			// Its Sub-board section and template dialogs, moved into components of their own (card 2280, slice B4).
+			const subBoards = source('src/lib/components/card/CardSubBoards.svelte');
+			const templates = source('src/lib/components/card/CardTemplates.svelte');
 			// A board's name and a template's are at most 200; a title is up to 500.
 			expect(modal).toContain("let newSubBoardName = $state((card?.title || '').slice(0, 200));");
+			expect(modal).toContain('bind:newSubBoardName');
 			expect(modal).toContain('templateName = title.slice(0, 200);');
 			expect(modal).not.toContain('templateName = title;');
-			expect(modal.match(/placeholder="Link to a sub-board\.\.\." maxlength="200"/g)).toHaveLength(2);
+			expect(subBoards.match(/placeholder="Link to a sub-board\.\.\." maxlength="200"/g)).toHaveLength(2);
+			expect(modal).not.toContain('placeholder="Link to a sub-board..."');
 			// A subtask's description stored as null is no text, which a template's subtask must hold.
-			expect(modal).toContain("description: s.description ?? '', priority: priorityToCopy(s.priority)");
+			expect(templates).toContain("description: s.description ?? '', priority: priorityToCopy(s.priority)");
 
 			const actions = source('src/lib/board/card-actions.ts');
 			expect(actions).toContain("title: `${card.title.slice(0, 500 - ' (Copy)'.length)} (Copy)`,");
@@ -3738,7 +3747,8 @@ describe('the second fix pass to card 2117’s slices 2 to 5 (version 1.8)', () 
 	it('saves a template from a card whose subtask holds a priority no rule allows, which is left out and is medium', async () => {
 		const w = world();
 		// The card window leaves the priority out, as `priorityToCopy` hands it back.
-		expect(source('src/lib/components/CardModal.svelte')).toContain("priority: priorityToCopy(s.priority) })) : [],");
+		// In the window's Save as Template dialog (card 2280, slice B4: CardTemplates.svelte).
+		expect(source('src/lib/components/card/CardTemplates.svelte')).toContain("priority: priorityToCopy(s.priority) })) : [],");
 		const res = await api('POST', '/api/templates', {
 			user: w.owner,
 			body: { boardId: w.boardId, name: 'T', title: 'T', subtasks: [{ title: 'A step', description: '', priority: priorityToCopy('urgent') }] }
@@ -3921,7 +3931,9 @@ describe('one wording for a length limit (card 2218)', () => {
 
 		const modal = source('src/lib/components/CardModal.svelte');
 		expect(modal).toContain('placeholder="What needs to be done?" maxlength="500" bind:value={title}');
-		expect(modal).toContain('placeholder="Add a description…" maxlength="50000" bind:value={description}');
+		// The description's box, in its own component since card 2280's slice B4, bound to the window's field.
+		expect(source('src/lib/components/card/CardDescription.svelte')).toContain('placeholder="Add a description…" maxlength="50000" bind:value={description}');
+		expect(modal).toContain('<CardDescription bind:description bind:descPreview />');
 		expect(modal).toContain('placeholder="Why is this important? What value does it deliver?" maxlength="10000" bind:value={businessValue}');
 		const request = source('src/routes/request/+page.svelte');
 		expect(request).toContain('placeholder="Brief summary of your request..." class="form-input" maxlength="500"');
