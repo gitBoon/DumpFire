@@ -45,6 +45,9 @@
 	import { FLIP_DURATION_MS } from '$lib/utils/constants';
 	import { isStale } from '$lib/utils/date-utils';
 	import { isCompleteColumn, isOnHoldColumn, matchesSearch } from '$lib/utils/card-utils';
+	// The add-card columns: "To Do" or "Todo", trimmed, any capitals (card 2280, slice B5a).
+	// The still-blocked warning keeps its own test of the title (warnIfStillBlocked).
+	import { isTodoColumnTitle } from '$lib/column-role';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	// Board-specific modules
@@ -528,7 +531,7 @@
 	}
 
 	async function toggleShowAddCard(column: ColumnType) {
-		const showAddCard = !(column.showAddCard || column.title.toLowerCase() === 'to do');
+		const showAddCard = !(column.showAddCard || isTodoColumnTitle(column.title));
 		closeDropdowns();
 		const started = toasts.navigation();
 		const written = await boardState.writeColumn(column.id, { showAddCard }, () => boardActions.updateColumn(column.id, { showAddCard }, data.board.id), COLUMN_WORDS);
@@ -1580,13 +1583,13 @@
 						}}
 						onconsider={(e) => handleCardDndConsider(column.id, e)}
 						onfinalize={(e) => handleCardDndFinalize(column.id, e)}
-						ondblclick={(e: MouseEvent) => { if ((column.title.toLowerCase() === 'to do' || column.showAddCard) && !(e.target as HTMLElement).closest('.kanban-card')) openNewCardModal(column.id); }}
+						ondblclick={(e: MouseEvent) => { if ((isTodoColumnTitle(column.title) || column.showAddCard) && !(e.target as HTMLElement).closest('.kanban-card')) openNewCardModal(column.id); }}
 					>
 						{#if column.cards.length === 0}
 							<div class="empty-column-prompt">
 								<span class="empty-icon">✨</span>
 								<span class="empty-text">No cards yet</span>
-								{#if column.title.toLowerCase() === 'to do' || column.showAddCard}
+								{#if isTodoColumnTitle(column.title) || column.showAddCard}
 									<span class="empty-hint">Double-click to add one</span>
 								{/if}
 							</div>

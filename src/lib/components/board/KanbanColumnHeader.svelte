@@ -20,6 +20,8 @@
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { getSortLabel } from '$lib/utils/card-utils';
 	import { drawnColour } from '$lib/colours';
+	// "To Do" or "Todo", trimmed, any capitals: All Tasks' rule (card 2280, slice B5a).
+	import { isTodoColumnTitle } from '$lib/column-role';
 
 	let {
 		column,
@@ -100,7 +102,7 @@
 				{getSortLabel(sort)} ✕
 			</button>
 		{/if}
-		{#if column.title.toLowerCase() === 'to do' || column.showAddCard}
+		{#if isTodoColumnTitle(column.title) || column.showAddCard}
 			<button class="add-card-badge" onclick={() => onAddCard(column.id)} title="Add task">
 				<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
 				Add Task
@@ -167,7 +169,7 @@
 					{#if canManage}
 					<div class="menu-divider"></div>
 					<button class="column-menu-item" onclick={() => onToggleAddCard(column)}>
-						{column.showAddCard || column.title.toLowerCase() === 'to do' ? '✓' : '○'} Show Add Task
+						{column.showAddCard || isTodoColumnTitle(column.title) ? '✓' : '○'} Show Add Task
 					</button>
 					{#if editingWip}
 						<!-- svelte-ignore a11y_click_events_have_key_events -->

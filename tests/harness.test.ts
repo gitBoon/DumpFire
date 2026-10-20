@@ -89,6 +89,7 @@ const TEST_FILES = [
 	'harness.test.ts',
 	'import-working-copy.test.ts',
 	'internal-refusals.test.ts',
+	'kanban-column-header.svelte.test.ts',
 	'live-streams.test.ts',
 	'logger.test.ts',
 	'mail-escaping.test.ts',
