@@ -20,7 +20,7 @@
  *
  * The plan is `docs/planning/card-plan-page-subtasks.md` (section 6).
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -60,6 +60,21 @@ import {
 import { watchReads } from './helpers/reads';
 
 const PAGE = 'src/routes/plan/[id]/+page.svelte';
+/**
+ * The page's blocks, components of their own since card 2281's slice C3a-3:
+ * the work table, the progress block and the burndown, which hold what the
+ * pins below read, and the rest, where none of it may be instead.
+ */
+const PLAN = 'src/lib/components/plan';
+const WORK_TABLE = `${PLAN}/WorkTable.svelte`;
+const PROGRESS = `${PLAN}/PlanProgress.svelte`;
+const BURNDOWN = `${PLAN}/PlanBurndown.svelte`;
+const PLAN_FILES = [
+	PAGE,
+	...readdirSync(join(process.cwd(), PLAN)).filter((name) => name.endsWith('.svelte')).map((name) => `${PLAN}/${name}`),
+	// The graph's geometry, a module of its own.
+	'src/lib/plan-graph.ts'
+];
 /** In every title of the moved card and its subtasks: what the viewer must never be given. */
 const MARK_B = 'ZQX-ON-BOARD-B';
 
@@ -425,8 +440,15 @@ describe('the page load', () => {
 });
 
 describe('the page, as source', () => {
-	const source = readFileSync(join(process.cwd(), PAGE), 'utf8');
-	const script = ts.createSourceFile(PAGE, /<script lang="ts">([\s\S]*?)<\/script>/.exec(source)![1], ts.ScriptTarget.Latest, true);
+	/** A file of the page's, its source and its script (a module's whole text is its script). */
+	const read = (file: string) => {
+		const source = readFileSync(join(process.cwd(), file), 'utf8');
+		const code = file.endsWith('.ts') ? source : /<script lang="ts">([\s\S]*?)<\/script>/.exec(source)![1];
+		const script = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
+		return { file, source, script };
+	};
+	const page = read(PAGE);
+	const everyFile = PLAN_FILES.map(read);
 
 	function all(node: ts.Node, test: (n: ts.Node) => boolean, out: ts.Node[] = []): ts.Node[] {
 		if (test(node)) out.push(node);
@@ -435,18 +457,25 @@ describe('the page, as source', () => {
 	}
 
 	it('draws the table from $lib/plan-table, with the subtasks the load gives', () => {
+		// In the work table, and nowhere else on the page (card 2281, slice C3a-3).
+		const { script } = read(WORK_TABLE);
 		const imported = all(script, (n) => ts.isImportDeclaration(n) && (n.moduleSpecifier as ts.StringLiteral).text === '$lib/plan-table');
 		expect(imported).toHaveLength(1);
 		const names = all(imported[0], ts.isImportSpecifier).map((n) => ((n as ts.ImportSpecifier).propertyName ?? (n as ts.ImportSpecifier).name).text);
 		expect(names).toEqual(expect.arrayContaining(['cardGroups', 'tableRows']));
 
-		const calls = (name: string) =>
-			all(script, (n) => ts.isCallExpression(n) && n.expression.getText() === name) as ts.CallExpression[];
+		const callsIn = (tree: ts.Node, name: string) =>
+			all(tree, (n) => ts.isCallExpression(n) && n.expression.getText() === name) as ts.CallExpression[];
+		const calls = (name: string) => callsIn(script, name);
 		expect(calls('cardGroups').map((c) => c.arguments.map((a) => a.getText()))).toEqual([['nodes', 'summary.blocked', 'data.subtasks']]);
 		expect(calls('tableRows')).toHaveLength(1);
+		for (const other of everyFile.filter((f) => f.file !== WORK_TABLE)) {
+			for (const name of ['cardGroups', 'tableRows']) expect(callsIn(other.script, name), `${other.file} ${name}`).toEqual([]);
+		}
 	});
 
 	it('says whether each expander is open', () => {
+		const { source } = read(WORK_TABLE);
 		const button = (cls: string) => {
 			const at = source.indexOf(`class="${cls}"`);
 			expect(at, cls).toBeGreaterThan(-1);
@@ -461,13 +490,14 @@ describe('the page, as source', () => {
 	});
 
 	it('reads open subtasks against all of them, as it reads cards complete (card 2225)', () => {
-		expect(source).toMatch(
+		expect(read(PROGRESS).source).toMatch(
 			/<span class="stat-value">\{summary\.progress\.openSubtasks\}\/\{summary\.progress\.totalSubtasks\}<\/span>\s*<span class="stat-label">open subtasks \/ all<\/span>/
 		);
 	});
 
 	it('touches localStorage only inside a try', () => {
-		const uses = all(script, (n) => ts.isIdentifier(n) && n.text === 'localStorage');
+		// Anywhere on the page: the work table remembers what is open (card 2281, slice C3a-3).
+		const uses = everyFile.flatMap(({ script }) => all(script, (n) => ts.isIdentifier(n) && n.text === 'localStorage'));
 		expect(uses.length).toBeGreaterThanOrEqual(2);
 		for (const use of uses) {
 			let inTry = false;
@@ -479,21 +509,28 @@ describe('the page, as source', () => {
 	});
 
 	it('fetches the burndown on what it charts, not on every new summary', () => {
-		const effects = all(
-			script,
-			(n) => ts.isCallExpression(n) && n.expression.getText() === '$effect' && n.getText().includes('loadBurndown')
-		);
+		const effectsIn = (script: ts.SourceFile) =>
+			all(script, (n) => ts.isCallExpression(n) && n.expression.getText() === '$effect' && n.getText().includes('loadBurndown'));
+		// In the burndown block alone (card 2281, slice C3a-3), which is handed the goal's id as a number by the page.
+		const { source, script } = read(BURNDOWN);
+		const effects = effectsIn(script);
 		expect(effects).toHaveLength(1);
+		expect(everyFile.filter((f) => f.file !== BURNDOWN).flatMap((f) => effectsIn(f.script))).toEqual([]);
 		const reads = all(effects[0], ts.isIdentifier).map((n) => (n as ts.Identifier).text);
 		expect(reads).toContain('burndownSource');
 		expect(reads).not.toContain('summary');
 		expect(reads).not.toContain('milestone');
 		expect(source).toMatch(/const burndownSource = \$derived\(burndownKey\(milestone, nodes\)\)/);
+		expect(page.source).toContain('const milestoneId = $derived(milestone.id);');
+		expect(page.source).toContain('<PlanBurndown {milestone} {milestoneId} {nodes} />');
 	});
 
 	it('writes what is open to storage only when what is remembered changed', () => {
+		// In the work table alone (card 2281, slice C3a-3).
+		const { source, script } = read(WORK_TABLE);
 		const writes = all(script, (n) => ts.isPropertyAccessExpression(n) && n.getText() === 'localStorage.setItem');
 		expect(writes).toHaveLength(1);
+		expect(everyFile.flatMap((f) => all(f.script, (n) => ts.isPropertyAccessExpression(n) && n.getText() === 'localStorage.setItem'))).toHaveLength(1);
 		let fn: ts.Node = writes[0];
 		while (!ts.isFunctionDeclaration(fn)) fn = fn.parent;
 		expect((fn as ts.FunctionDeclaration).name!.text).toBe('applyOpen');
@@ -513,10 +550,11 @@ describe('the page, as source', () => {
 	});
 
 	it('re-reads the plan when the card window closes, saved or not', () => {
-		const closeCard = all(script, (n) => ts.isFunctionDeclaration(n) && n.name?.text === 'closeCard');
+		// The card window is the page's own.
+		const closeCard = all(page.script, (n) => ts.isFunctionDeclaration(n) && n.name?.text === 'closeCard');
 		expect(closeCard).toHaveLength(1);
 		expect(all(closeCard[0], (n) => ts.isCallExpression(n) && n.expression.getText() === 'invalidateAll')).toHaveLength(1);
 		// And the window's onClose is closeCard.
-		expect(source).toMatch(/onClose=\{closeCard\}/);
+		expect(page.source).toMatch(/onClose=\{closeCard\}/);
 	});
 });

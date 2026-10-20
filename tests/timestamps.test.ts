@@ -1367,6 +1367,19 @@ function dashboardEverywhere(): string {
 	return files.map(sourceOf).join('\n');
 }
 
+/** The plan page's header (card 2281, slice C3a-3), which holds the goal's late tag and its tick. */
+const PLAN_HEADER = 'src/lib/components/plan/PlanHeader.svelte';
+
+/** The plan page, each of its components and its graph module, as one text: everywhere a thing said to be gone could be. */
+function planEverywhere(): string {
+	const components = (readdirSync(join(process.cwd(), 'src/lib/components/plan')) as string[])
+		.filter((name) => name.endsWith('.svelte'))
+		.map((name) => `src/lib/components/plan/${name}`);
+	const files = ['src/routes/plan/[id]/+page.svelte', ...components, 'src/lib/plan-graph.ts'];
+	expect(files.length).toBeGreaterThan(8);
+	return files.map(sourceOf).join('\n');
+}
+
 /** Every page and component, and the utilities they share (the admin page's and the dashboard's among them, card 2281). */
 function pageSources(): string[] {
 	const root = join(process.cwd(), 'src');
@@ -1623,11 +1636,13 @@ describe('a milestone’s target date is a calendar day, read as a due date is (
 		expect(list).not.toContain('setHours');
 		expect(list).toContain('daysUntilDue(m.targetDate)');
 		expect(list).toContain('formatDueDate(m.targetDate)');
-		const plan = sourceOf('src/routes/plan/[id]/+page.svelte');
+		// The goal page and its blocks (card 2281, slice C3a-3): the header shows the target and its late tag, Progress the target again.
+		const plan = planEverywhere();
 		expect(plan).not.toContain('function formatDate(');
 		expect(plan).not.toContain('setHours');
-		expect(plan).toContain('(daysUntilDue(milestone.targetDate) ?? 0) < 0');
-		expect(plan).toContain('formatDueDate(milestone.targetDate)');
+		expect(sourceOf(PLAN_HEADER)).toContain('(daysUntilDue(milestone.targetDate) ?? 0) < 0');
+		expect(sourceOf(PLAN_HEADER)).toContain('formatDueDate(milestone.targetDate)');
+		expect(sourceOf('src/lib/components/plan/PlanProgress.svelte')).toContain('formatDueDate(milestone.targetDate)');
 		// The plan PDF too; its Generated date is a moment and keeps formatDate.
 		const pdf = sourceOf('src/lib/server/milestone-report.ts');
 		expect(pdf).toContain('Target ${formatDueDate(m.targetDate)}');
@@ -2000,7 +2015,8 @@ describe('the goal page’s late tag and the dashboard’s Active Tasks move on 
 	it('the goal page works targetOverdue out again on the board pages’ tick', () => {
 		// It was worked out once: a goal left open across midnight kept
 		// yesterday's answer until something else on the page changed.
-		const plan = sourceOf('src/routes/plan/[id]/+page.svelte');
+		// In the page's header, where the tag is drawn (card 2281, slice C3a-3).
+		const plan = sourceOf(PLAN_HEADER);
 		expect(plan).toContain('let tick = $state(0);');
 		expect(plan).toContain('tickInterval = setInterval(() => { tick++; }, 15000);');
 		expect(plan).toContain('if (tickInterval) clearInterval(tickInterval);');
