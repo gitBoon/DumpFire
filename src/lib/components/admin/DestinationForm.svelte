@@ -9,7 +9,8 @@
   each type's set-up steps; the edit form says what a connected Drive
   destination has and when a saved secret is kept). The fields are the
   Scheduled Backups panel's, bound here: the add form and every edit form
-  share one set, as they did on the page. Save and Cancel are the panel's.
+  share one set, as they did on the page, and the panel opens one form at a
+  time (card 2305). Save and Cancel are the panel's.
 -->
 <script lang="ts">
 	import type { DestType } from '$lib/admin/format';
@@ -135,7 +136,8 @@
 					<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
 						DumpFire asks Google only for the files it makes. Leave the Folder ID empty: when you connect, DumpFire makes a folder of its own, "{dumpfireFolderName()}". A folder you made yourself may not be reachable. To keep using a folder DumpFire made, give its Folder ID again (shown on the destination as Folder:); Connect checks it can reach it.
 					</p>
-					<p style="font-size: 0.68rem; color: var(--text-tertiary)">Save first, then use "Connect Google Account" on the destination card.</p>
+					<!-- The row's button by its label (card 2306). -->
+					<p style="font-size: 0.68rem; color: var(--text-tertiary)">Save first, then use "🔗 Connect" on the destination.</p>
 				{/if}
 			{:else}
 				<div class="form-row">

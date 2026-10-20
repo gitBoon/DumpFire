@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.52
+version: 1.53
 status: As-Built
 date: 2026-10-20
 tags:
@@ -233,10 +233,33 @@ You cannot delete your own account or the superadmin. Only the superadmin can de
 
 ### Creating Teams
 
-1. Go to the **Teams** page from the dashboard
+1. Go to the **Teams** page from the dashboard, or to **Admin → Team Management** (**+ Add Team**)
 2. Click **Create Team**
-3. Name the team and choose an emoji
-4. Add members — each with **Owner** or **Member** role
+3. Name the team and choose an emoji. You are made its owner
+4. Add members. The Teams page adds each as a **Member**. On **Admin → Team Management**, choose the person under **Add member…**, then their role, **Member** or **Owner**, beside **Add** (card 2309; until 2026-10-20 it added every member as Member)
+
+### Team Owners and Members
+
+A team's role says who may run the team; it gives no access to boards. The access a team gives is its share's role on each board (editor or viewer), the same for owners and members.
+
+| | Owner | Member |
+|---|:---:|:---:|
+| Delete the team | ✅ | ❌ |
+| Rename the team (through the API alone, `PUT /api/teams/{id}`: no page offers it) | ✅ | ❌ |
+| Add and remove members | ✅ | ❌ |
+| Open the boards shared with the team | ✅ | ✅ |
+
+**What an owner's adding gives.** An owner can add any account to the team, and each person added at once has the team's role, editor or viewer, on every board shared with the team, and the team's requests in their inbox. A board's owner has no say: the board was shared with the team, and whoever the team's owners add has it. Make someone a team's owner only if you would share every one of its boards with whoever they choose.
+
+An administrator may do all of it on every team without being in it. Whoever creates a team is its owner, so a team made on the admin page is owned by the administrator who made it; to let someone else run it, add them as **Owner**. No page changes the role of someone already in the team: remove them (✕) and add them again with the other role.
+
+```mermaid
+flowchart LR
+    Admin["Administrator"] -->|"any team"| Manage["Delete, rename (API),<br/>add and remove members"]
+    Owner["Team owner"] -->|"their team"| Manage
+    Member["Team member"] --> Boards["The boards shared<br/>with the team"]
+    Owner --> Boards
+```
 
 ### Sharing Boards with Teams
 

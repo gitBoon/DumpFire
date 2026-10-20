@@ -63,6 +63,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
+import { compile } from 'svelte/compiler';
 import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -2508,7 +2509,8 @@ const WRITES: Record<string, Write[]> = {
 			name: 'updateDestination',
 			via: 'saveBackupConfig',
 			putsBack: ['backupDestinations = was'],
-			done: ['editingDest = null', 'resetDestForm()', 'forgetHostKeyCheck(editingDest)']
+			// By the name the form edited when the save went (the card 2305 review).
+			done: ['editingDest = null', 'resetDestForm()', 'forgetHostKeyCheck(editing)']
 		},
 		{ name: 'removeDestination', via: 'saveBackupConfig', putsBack: ['backupDestinations = was'], done: ['forgetHostKeyCheck(name)'] },
 		{ name: 'testDestination', reads: 'sent' },
@@ -7421,5 +7423,149 @@ describe('the board page’s card window goes through its controller (card 2280,
 			"if (failure) { // The card is still on the board, so its window stays open. toasts.add(failure, 'error', started); return; }",
 			"toasts.add('Card archived. Restore it from Archived Cards.', 'info');"
 		]);
+	});
+});
+
+// Cards 2308, 2313 and 2316: what the split of the admin page, the dashboard
+// and All Tasks (card 2281) carried over unused. A theme subscription on each
+// page nobody read, functions nobody called, rules matching nothing (the
+// unused-selector warning is switched off in svelte.config.js, so the build
+// never said), stale comments and whitespace.
+describe('nothing left unused on the admin page, the dashboard and All Tasks (cards 2308, 2313 and 2316)', () => {
+	const PAGES: [page: string, parts: string][] = [
+		['src/routes/admin/+page.svelte', 'src/lib/components/admin'],
+		['src/routes/+page.svelte', 'src/lib/components/dashboard'],
+		['src/routes/all/+page.svelte', 'src/lib/components/tasks']
+	];
+	const files = PAGES.flatMap(([page, parts]) => [
+		page,
+		...readdirSync(join(ROOT, parts))
+			.filter((name) => name.endsWith('.svelte'))
+			.map((name) => `${parts}/${name}`)
+	]);
+	const read = (file: string) => readFileSync(join(ROOT, file), 'utf8').replace(/\r\n/g, '\n');
+	const all = (node: ts.Node, test: (n: ts.Node) => boolean): ts.Node[] => {
+		const found: ts.Node[] = [];
+		const visit = (n: ts.Node) => {
+			if (test(n)) found.push(n);
+			ts.forEachChild(n, visit);
+		};
+		visit(node);
+		return found;
+	};
+
+	/**
+	 * The component's own script, parsed, whatever its attributes (a module
+	 * script, `context="module"` or `module`, apart); an empty one for a file
+	 * with none. The file's `scriptOf` above wants `<script lang="ts">` and
+	 * throws without it, which its other checks rely on.
+	 */
+	const instanceScript = (file: string, source: string): ts.SourceFile => {
+		const script = /<script(?![^>]*\b(?:context="module"|module)\b)[^>]*>([\s\S]*?)<\/script>/.exec(source);
+		return ts.createSourceFile(file, script ? script[1] : '', ts.ScriptTarget.Latest, true);
+	};
+
+	/**
+	 * Every name the markup reads: each identifier in a `{…}` expression (strings
+	 * left out, and a property after a `.` not a name), each component's tag, and
+	 * each directive's name (`bind:inviteLink`, `use:action`, `transition:fade`).
+	 */
+	const markupReads = (markup: string): Set<string> => {
+		const names = new Set<string>();
+		const expressions: string[] = [];
+		for (let at = markup.indexOf('{'); at !== -1; at = markup.indexOf('{', at)) {
+			let depth = 0;
+			let end = at;
+			for (; end < markup.length; end++) {
+				if (markup[end] === '{') depth++;
+				else if (markup[end] === '}' && --depth === 0) break;
+			}
+			expressions.push(markup.slice(at + 1, end));
+			at = end + 1;
+		}
+		for (const expression of expressions) {
+			const bare = expression.replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g, "''");
+			for (const found of bare.matchAll(/(?<![\w$.])[A-Za-z_$][\w$]*/g)) names.add(found[0].replace(/^\$(?=\w)/, ''));
+		}
+		for (const found of markup.matchAll(/<([A-Z][\w]*)/g)) names.add(found[1]);
+		for (const found of markup.matchAll(/\b(?:bind|use|transition|in|out|animate|class):([\w$]+)/g)) names.add(found[1]);
+		return names;
+	};
+
+	it('leaves no name at the top of a script that nothing reads', () => {
+		const unread: string[] = [];
+		for (const file of files) {
+			const source = read(file);
+			const script = instanceScript(file, source);
+			// What the markup reads: the file less its scripts, its styles and its comments.
+			const reads = markupReads(
+				source
+					.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '')
+					.replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, '')
+					.replace(/<!--[\s\S]*?-->/g, '')
+			);
+			// Each import, function, const and let at the top; an exported function is the component's own API, read through bind:this.
+			const declared = script.statements.flatMap((statement): ts.Identifier[] => {
+				if (ts.isImportDeclaration(statement)) {
+					const clause = statement.importClause;
+					const named = clause?.namedBindings && ts.isNamedImports(clause.namedBindings) ? clause.namedBindings.elements.map((e) => e.name) : [];
+					return [...(clause?.name ? [clause.name] : []), ...named];
+				}
+				const exported = ts.canHaveModifiers(statement) && ts.getModifiers(statement)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+				if (ts.isFunctionDeclaration(statement) && statement.name && !exported) return [statement.name];
+				if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.map((d) => d.name).filter(ts.isIdentifier);
+				return [];
+			});
+			// A plain assignment's left side writes the name and does not read it: a `let` only ever set is unread. `$name` reads a store.
+			const written = (n: ts.Node) =>
+				ts.isBinaryExpression(n.parent) && n.parent.left === n && n.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+			for (const name of declared) {
+				const inScript = all(script, (n) => ts.isIdentifier(n) && n !== name && (n.text === name.text || n.text === `$${name.text}`) && !written(n));
+				if (inScript.length === 0 && !reads.has(name.text)) unread.push(`${file} ${name.text}`);
+			}
+		}
+		expect(unread).toEqual([]);
+	});
+
+	it('has no rule that matches nothing, as the compiler judges it, nor the two of card 2316 and card 2313 it cannot judge', () => {
+		const unused = files.flatMap((file) =>
+			compile(read(file), { filename: file, generate: false })
+				.warnings.filter((warning) => warning.code === 'css_unused_selector')
+				.map((warning) => `${file}: ${warning.message.split('\n')[0]}`)
+		);
+		expect(unused).toEqual([]);
+		// A class written with a value in it (`class="priority-{card.priority}"`, `class={…}`) stops the
+		// compiler flagging any class rule of that file: it cannot know what the value will be. Six of
+		// these files have one, and their class rules are judged by nothing here but these lines:
+		// BackupHistory.svelte, ScheduledBackupsPanel.svelte and UsersPanel.svelte (admin),
+		// AnalyticsSidebar.svelte and RequestToasts.svelte (dashboard), and AllTaskCard.svelte (All Tasks).
+		expect(files.filter((file) => /class=\{|class="[^"]*\{/.test(read(file))).map((file) => file.split('/').at(-1))).toEqual([
+			'BackupHistory.svelte',
+			'ScheduledBackupsPanel.svelte',
+			'UsersPanel.svelte',
+			'AnalyticsSidebar.svelte',
+			'RequestToasts.svelte',
+			'AllTaskCard.svelte'
+		]);
+		const source = files.map(read).join('\n');
+		expect(source).not.toMatch(/\.column-tag\b/);
+		// A class: directive whose class no rule of its file styles (All Tasks' subtask badge has one; the boards table's sub-board count had none).
+		expect(read('src/lib/components/dashboard/BoardsTable.svelte')).not.toMatch(/class:all-done|\.all-done\b/);
+	});
+
+	it('has no theme subscription, and no comment about the page before the split, left in the mail panel', () => {
+		for (const file of files) expect(read(file), file).not.toMatch(/currentTheme|theme\.subscribe/);
+		const smtp = read('src/lib/components/admin/SmtpPanel.svelte');
+		expect(smtp).not.toContain('appUrl is now in Application Settings');
+		expect(smtp).not.toContain('appUrl loaded separately');
+	});
+
+	it('has no line that ends in a space or a tab', () => {
+		const trailing = files.flatMap((file) =>
+			read(file)
+				.split('\n')
+				.flatMap((line, i) => (/[ \t]$/.test(line) ? [`${file}:${i + 1}`] : []))
+		);
+		expect(trailing).toEqual([]);
 	});
 });

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.65
+version: 1.66
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3736,6 +3736,36 @@ On production, as your own account, with a browser's developer tools' network pa
 #### Going back to the previous image
 
 Nothing is done to the database. The older image says nothing again for a change or an opened card that gets no answer, and "Could not open that card" for any refusal; its picker can stay on "Searching…" and show an older search's answer; its unordered cards are bare text; its burndown can stay on "Loading…"; and its ✕ takes a card out of a goal on the first click.
+
+### The Admin Page, the Dashboard and All Tasks: Fixes Left by the Split
+
+**Cards 2305, 2306, 2308, 2309, 2313, 2316, 2317 and 2336.** No migration, no setting, no route; the three pages' code only. On the admin page's Scheduled Backups, **+ Add Destination** and **✏️ Edit** each close the other's form: the two share one set of fields, and with both open a name typed in the add form let the edit form's Save replace the destination being edited with the new one. Both buttons are off while a destination is being saved, and the save's answer closes and empties only the form that sent it. The edit form's hint for a Google Drive destination not yet connected names the button as it is labelled, "🔗 Connect" (it said "Connect Google Account"). The mail panel's green line after Save or Send Test is no longer cleared early by an earlier one's timer, and its timer ends with the page. All Tasks' Archived Cards and Activity Log say when their read failed, "No answer from the server. The archived cards could not be loaded." (or the server's own words, or that its answer could not be read), where each said there were none. The dashboard's "New Request" toast knows each request by its id: a request handled and a new one arriving between two of its 30-second reads raised no toast, and a request confirmed by its requester after it was made could be announced under another's title. Code and styles the split left unused on the three pages are gone. The plan is `docs/planning/cards-2305-2306-2308-2309-2313-2316-2317-2336-page-fixes.md`.
+
+**Owner to know (2309).** **Admin → Team Management** now has a role picker, **Member** or **Owner**, beside **Add** once a person is chosen; it starts at Member. A team's owner can delete the team, rename it (through the API alone: no page offers it) and add and remove its members without being an administrator (the server always allowed it; no page could make anyone but the team's creator an owner). An owner can add any account, and each person added at once has the team's editor or viewer role on every board shared with the team, and the team's requests in their inbox; the board's owner has no say. Make someone an owner only where that is meant. The Teams page still adds members as Member. See [Admin Operations Guide](admin-guide.md#team-owners-and-members).
+
+#### After the deploy
+
+On production, as the superadmin, with the browser's developer tools. Nothing here completes a card, changes a backup destination or a real team, or mails anyone but a second account of your own.
+
+**Scratch things.** A team "TEST team - delete me" made with **+ Add Team** on the admin page; a second account of your own (a scratch user made for this and deleted after, if you have none), not in the team.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 312 | 2305 | Admin, Scheduled Backups (with a destination listed): **✏️ Edit** on it, then **+ Add Destination**; **Cancel** | Only "Add Backup Destination" open, its boxes empty; the destination's row as before | Two forms open |
+| 313 | 2305 | **+ Add Destination**, then **✏️ Edit** on a destination; **Cancel** | Only the edit form under the destination, with its settings | Two forms open |
+| 314 | 2306 | Only if there is a Google Drive destination with OAuth not yet connected (its row shows **🔗 Connect**): **✏️ Edit** on it; **Cancel** | The hint reads `Save first, then use "🔗 Connect" on the destination.` | "Connect Google Account" |
+| 315 | 2308 | Email / SMTP: **🧪 Send Test** to your own address; within five seconds of its green line, **Send Test** again | The second green line stays about 8 seconds | It goes within a few seconds |
+| 316 | 2309 | Team Management, the scratch team: **Add member…**, choose the second account | A picker reading **Member** beside **Add** | No picker |
+| 317 | 2309 | Choose **Owner**, **Add** | "Member added"; the second account listed as `OWNER`. Then ✕ it | Listed as `MEMBER` |
+| 318 | 2336 | Dashboard open. Signed in as the second account in a private window, send yourself (the superadmin) a request "TEST 2336 A - delete me" from the request form; wait for its toast. Then, within a few seconds of each other and straight after a toast or a change of the header's count (so that both fall between two of the dashboard's 30-second reads): **❌ Reject** A in the Inbox (another tab), and send "TEST 2336 B - delete me". This confirms the new image toasts B; it cannot tell the two images apart, since the older one also toasts B whenever the two steps land in different reads | A "New Request" toast for B within 30 seconds; the header's count as before | No toast for B |
+| 319 | 2317 | All Tasks, network panel **Offline**, **More → 🗄️ Archived Cards**; then **No throttling** and its Refresh | "No answer from the server. The archived cards could not be loaded."; Refresh lists the archived cards and the line goes | "No archived cards" |
+| 320 | 2317 | With the Activity Log open, **Offline**, press its Refresh; then **No throttling** and Refresh again | "No answer from the server. The activity could not be loaded." above the list; it goes on the second Refresh | Nothing said |
+
+**Afterwards.** Delete the scratch team (🗑️ in Team Management) and reject B in the Inbox. Delete the second account if it was made for these checks.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image can open the add and the edit form of a backup destination together again, sharing their fields; names "Connect Google Account" in the Drive hint; can clear the mail panel's green line early; adds every team member as Member from the admin page (owners added since stay owners); says "No archived cards" or "No activity yet" for a read that failed; and toasts new requests by the count again.
 
 ## Changing the Schema
 

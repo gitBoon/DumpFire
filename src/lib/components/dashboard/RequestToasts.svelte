@@ -1,8 +1,8 @@
 <!--
   RequestToasts.svelte — The dashboard's notices of new requests: the inbox
   read as the page opens and every 30 seconds after, and a toast for each
-  request that arrived since the last read (card 2281, slice C2: moved from
-  src/routes/+page.svelte).
+  request waiting that no earlier read saw, known by its id (card 2336)
+  (card 2281, slice C2: moved from src/routes/+page.svelte).
 
   The count of waiting requests is the page's (`inboxCount`, bound here),
   which the header shows. Drawn by the page where its toasts were, after
@@ -28,6 +28,22 @@
 	 * poll after a failed first read takes the count and raises no toast (card 2312).
 	 */
 	let inboxRead = false;
+	/**
+	 * The id of every request seen waiting, by every read that answered (card
+	 * 2336). A poll toasts each waiting request not seen before: the count
+	 * missed a request handled and another arrived between two reads, and the
+	 * first in the list was not always the new one (a request confirmed by its
+	 * requester after it was made is listed by when it was made).
+	 */
+	const seenRequestIds = new Set<number>();
+
+	/** The requests waiting in an answer, each seen from now on; those not seen before. */
+	function newlyWaiting(requests: any[]): any[] {
+		const pending = requests.filter((r: any) => r.status === 'pending');
+		const unseen = pending.filter((r: any) => !seenRequestIds.has(r.id));
+		for (const r of pending) seenRequestIds.add(r.id);
+		return unseen;
+	}
 
 	function addToast(title: string, requesterName: string, priority: string) {
 		// Once the page has gone, no toast: nothing would clear its timer.
@@ -51,6 +67,8 @@
 			if (res.ok) {
 				const requests = await res.json();
 				inboxCount = requests.filter((r: any) => r.status === 'pending').length;
+				// What waits now is not new.
+				newlyWaiting(requests);
 				inboxRead = true;
 			}
 		} catch { /* the poll reads it again */ }
@@ -66,16 +84,12 @@
 				if (res.ok) {
 					const requests = await res.json();
 					if (destroyed) return;
-					const newCount = requests.filter((r: any) => r.status === 'pending').length;
-					if (inboxRead && newCount > inboxCount) {
-						// New requests arrived — find them and show toasts
-						const pending = requests.filter((r: any) => r.status === 'pending');
-						const newOnes = pending.slice(0, newCount - inboxCount);
-						for (const req of newOnes) {
-							addToast(req.title, req.requesterName, req.priority);
-						}
+					const unseen = newlyWaiting(requests);
+					// Until a read has answered, what waits is taken as known (card 2312).
+					if (inboxRead) {
+						for (const req of unseen) addToast(req.title, req.requesterName, req.priority);
 					}
-					inboxCount = newCount;
+					inboxCount = requests.filter((r: any) => r.status === 'pending').length;
 					inboxRead = true;
 				}
 			} catch { /* silent */ }

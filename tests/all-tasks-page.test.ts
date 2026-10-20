@@ -71,6 +71,9 @@ let archived: { id: number; title: string; boardName: string }[] = [];
 /** The activity, as `/api/activity` answers it. */
 let activity: { id: number; action: string; userName: string; userEmoji: string; detail: string | null; boardName: string; createdAt: string }[] = [];
 
+/** An answer of the test's own for a request, ahead of the ones below (thrown, if it likes, for no answer); undefined for those. */
+let answer: ((what: string) => Response | undefined) | null = null;
+
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
 /** A card, as All Tasks' load gives it. */
@@ -110,6 +113,7 @@ beforeEach(() => {
 	stream.listen = null;
 	stream.reopened = null;
 	navigation.invalidateAll.mockClear();
+	answer = null;
 	archived = [{ id: 9, title: 'Old idea', boardName: 'Website' }];
 	activity = [{ id: 1, action: 'card_created', userName: 'bob', userEmoji: '🐻', detail: 'Plan', boardName: 'Website', createdAt: '2026-10-20 09:00:00' }];
 	window.localStorage.clear();
@@ -118,6 +122,8 @@ beforeEach(() => {
 		vi.fn(async (url: string, init?: RequestInit) => {
 			const method = init?.method ?? 'GET';
 			sent.push({ what: `${method} ${url}`, body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined });
+			const own = answer?.(`${method} ${url}`);
+			if (own) return own;
 			if (url === '/api/activity') return json(activity);
 			if (url === '/api/cards/archived') return json(archived);
 			if (url === '/api/cards/9/restore' && method === 'POST') return json({ success: true });
@@ -350,6 +356,79 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		expect(document.querySelector('.confirm-modal')).toBeNull();
 		expect(target.querySelector('.archive-card-item')).toBeNull();
 		expect(toastsSaid()).toContain('Card permanently deleted');
+	});
+
+	// Card 2317: each panel said there was nothing when its read failed: no
+	// answer (in Archived Cards an unhandled rejection too), and a refusal dropped.
+	describe('Archived Cards and the Activity Log, when their read fails (card 2317)', () => {
+		const PANELS = [
+			{ panel: '🗄️ Archived Cards', url: '/api/cards/archived', noun: 'The archived cards', none: 'No archived cards' },
+			{ panel: '📋 Activity Log', url: '/api/activity', noun: 'The activity', none: 'No activity yet' }
+		];
+		const FAILURES: [how: string, give: () => Response, words: (noun: string) => string][] = [
+			[
+				'gets no answer',
+				() => {
+					throw new TypeError('Failed to fetch');
+				},
+				(noun) => `No answer from the server. ${noun} could not be loaded.`
+			],
+			['is refused', () => json({ message: 'Database is locked' }, 503), () => 'Database is locked'],
+			['is answered with what is not JSON', () => new Response('<html>Bad gateway</html>', { status: 200 }), (noun) => `The server's answer could not be read. ${noun} could not be loaded.`]
+		];
+
+		it.each(PANELS.flatMap((p) => FAILURES.map(([how, give, words]) => [p.panel, how, p, give, words] as const)))(
+			'%s says so when its read %s, in place of saying there is nothing',
+			async (_panel, _how, p, give, words) => {
+				answer = (what) => (what === `GET ${p.url}` ? give() : undefined);
+				const target = draw();
+				fromMoreMenu(target, p.panel);
+				await settle();
+
+				const panel = target.querySelector('.activity-panel')!;
+				expect(panel.querySelector('[role="alert"]')!.textContent!.trim()).toBe(words(p.noun));
+				expect(panel.textContent).not.toContain(p.none);
+			}
+		);
+
+		it.each(PANELS)('$panel takes back what it said once a read is answered', async (p) => {
+			let failing = true;
+			answer = (what) => {
+				if (what === `GET ${p.url}` && failing) throw new TypeError('Failed to fetch');
+				return undefined;
+			};
+			const target = draw();
+			fromMoreMenu(target, p.panel);
+			await settle();
+			expect(target.querySelector('.activity-panel [role="alert"]')).not.toBeNull();
+
+			failing = false;
+			target.querySelector<HTMLButtonElement>('.activity-panel button[title="Refresh"]')!.click();
+			await settle();
+
+			expect(target.querySelector('.activity-panel [role="alert"]')).toBeNull();
+			expect(target.querySelectorAll('.activity-panel .archive-card-item, .activity-panel .activity-item')).toHaveLength(1);
+		});
+
+		it.each(PANELS)('$panel keeps the list it read under what it says of a Refresh that fails (the card 2317 review)', async (p) => {
+			let failing = false;
+			answer = (what) => {
+				if (what === `GET ${p.url}` && failing) throw new TypeError('Failed to fetch');
+				return undefined;
+			};
+			const target = draw();
+			fromMoreMenu(target, p.panel);
+			await settle();
+			const rows = () => target.querySelectorAll('.activity-panel .archive-card-item, .activity-panel .activity-item');
+			expect(rows()).toHaveLength(1);
+
+			failing = true;
+			target.querySelector<HTMLButtonElement>('.activity-panel button[title="Refresh"]')!.click();
+			await settle();
+
+			expect(target.querySelector('.activity-panel [role="alert"]')!.textContent!.trim()).toBe(`No answer from the server. ${p.noun} could not be loaded.`);
+			expect(rows()).toHaveLength(1);
+		});
 	});
 
 	it('closes the header’s More menu on a click anywhere on the page', () => {

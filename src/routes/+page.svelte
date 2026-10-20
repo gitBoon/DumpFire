@@ -9,7 +9,6 @@
 	import { invalidateAll } from '$app/navigation';
 	import { onMount, onDestroy } from 'svelte';
 	import { connectLiveRefresh } from '$lib/live-refresh';
-	import { theme } from '$lib/stores/theme';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	// The shared toast, for a write that failed (card 2148: each in the server's
 	// words). Renamed here: this page has `toasts` of its own, which are the
@@ -33,8 +32,6 @@
 
 	let showCreate = $state(false);
 	let deleting = $state<number | null>(null);
-	let currentTheme = $state('light');
-	theme.subscribe((v) => (currentTheme = v));
 
 	let confirmState = $state<{ show: boolean; boardId: number; boardName: string }>({ show: false, boardId: 0, boardName: '' });
 

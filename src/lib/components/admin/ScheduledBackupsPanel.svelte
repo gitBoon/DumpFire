@@ -6,8 +6,9 @@
 
   The superadmin's alone: the page draws it inside its isSuperadmin block,
   and it reads the backup settings itself as it opens. The add form and every
-  edit form share one set of fields, kept here, as they were on the page.
-  Remove asks first through the page's own confirm dialog.
+  edit form share one set of fields, kept here, as they were on the page, so
+  only one of them is open at a time: opening one closes the other (card
+  2305). Remove asks first through the page's own confirm dialog.
 -->
 <script lang="ts">
 	import { answerBody } from '$lib/api';
@@ -256,15 +257,23 @@
 		}
 		// A box left by a destination of this name removed before is not this one's.
 		forgetHostKeyCheck(added.name);
-		resetDestForm();
-		showAddDestination = false;
+		// Emptied and closed only if the add form is still the one open: the
+		// fields are every form's, and another form opened while the save was
+		// on its way would be emptied (the card 2305 review).
+		if (showAddDestination && editingDest === null) {
+			resetDestForm();
+			showAddDestination = false;
+		}
 		// The list as the server holds it, the secret typed masked again (M3).
 		if (!(await loadBackupConfig(true))) showToast(SETTINGS_UNREAD, 'error', started);
 	}
 
 	async function updateDestination() {
 		if (!editingDest || !destName.trim()) return;
-		const idx = backupDestinations.findIndex(d => d.name === editingDest);
+		// The destination this form edits, as it was before the save went: the
+		// form open when the answer comes may be another (the card 2305 review).
+		const editing = editingDest;
+		const idx = backupDestinations.findIndex(d => d.name === editing);
 		if (idx === -1) return;
 		const started = toasts.navigation();
 		const was = backupDestinations;
@@ -277,10 +286,13 @@
 		}
 		// What its last Test said of its host key may no longer hold, under its
 		// old name or its new one.
-		forgetHostKeyCheck(editingDest);
-		if (updated[idx].name !== editingDest) forgetHostKeyCheck(updated[idx].name);
-		editingDest = null;
-		resetDestForm();
+		forgetHostKeyCheck(editing);
+		if (updated[idx].name !== editing) forgetHostKeyCheck(updated[idx].name);
+		// Closed and emptied only if this destination's form is still the one open.
+		if (editingDest === editing && !showAddDestination) {
+			editingDest = null;
+			resetDestForm();
+		}
 		// The list as the server holds it, the secret typed masked again (M3).
 		if (!(await loadBackupConfig(true))) showToast(SETTINGS_UNREAD, 'error', started);
 	}
@@ -302,6 +314,8 @@
 	}
 
 	function startEditDestination(dest: DestinationUI) {
+		// One form open at a time: the add form, which shares these fields, is closed (card 2305).
+		showAddDestination = false;
 		editingDest = dest.name;
 		newDestType = dest.type;
 		populateDestForm(dest);
@@ -429,7 +443,8 @@
 					{backupRunning ? '⏳ Running...' : '▶ Run Now'}
 				</button>
 			{/if}
-			<button class="btn-primary btn-sm" onclick={() => { resetDestForm(); newDestType = 'sftp'; showAddDestination = true; }}>+ Add Destination</button>
+			<!-- Closes an edit form left open: the two share one set of fields (card 2305). Off while a save is on its way, which empties the form that sent it once answered (its review). -->
+			<button class="btn-primary btn-sm" disabled={backupSaving} onclick={() => { editingDest = null; resetDestForm(); newDestType = 'sftp'; showAddDestination = true; }}>+ Add Destination</button>
 		</div>
 	</div>
 
@@ -512,7 +527,8 @@
 						<button class="btn-ghost btn-xs" onclick={() => testDestination(dest)} disabled={byName(testsInFlight, dest.name) !== undefined}>
 							{byName(testsInFlight, dest.name) !== undefined ? '⏳' : '🧪'} Test
 						</button>
-						<button class="btn-ghost btn-xs" onclick={() => startEditDestination(dest)}>✏️ Edit</button>
+						<!-- Off while a save is on its way, as + Add Destination is (the card 2305 review). -->
+						<button class="btn-ghost btn-xs" disabled={backupSaving} onclick={() => startEditDestination(dest)}>✏️ Edit</button>
 						<!-- Off while the destinations are being saved: a second removal sent before the first was answered was put back wrongly when the first was refused. -->
 						<button class="btn-ghost btn-xs danger" disabled={backupSaving} onclick={() => confirm('Remove Destination', `Remove "${dest.name}" from backup destinations?`, async () => removeDestination(dest.name))}>🗑️</button>
 					</div>

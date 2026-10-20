@@ -409,7 +409,7 @@ describe('the All Tasks page, src/routes/all/+page.svelte, read from its source'
 	};
 
 	it('filters each card through inBoardFilter, and by no board or category test of its own', () => {
-		const filters = between('src/routes/all/+page.svelte', 'function matchesFilters(', 'function getFilteredCount(');
+		const filters = between('src/routes/all/+page.svelte', 'function matchesFilters(', '// ─── Column Sorting');
 		expect(filters).toContain('inBoardFilter(card.boardId, boardFilter, boardPlaces)');
 		expect(filters).not.toMatch(/categoryId|Number\(boardFilter\)/);
 	});
