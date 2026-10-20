@@ -203,6 +203,10 @@ export type UpdateCardOptions = {
  * one the card holds is dropped. Other fields sent with it are recorded as
  * ever, the entry naming them alone.
  *
+ * A changed `milestoneId` (v1 alone takes one) is recorded as the goal's own
+ * entry, `milestone_card_added` or `milestone_card_removed`, and not named in
+ * `card_updated` (card 2289): a milestone alone sends no `card.updated`.
+ *
  * The answer is the card, and the milestone of the board it left that a
  * move to another board took it out of (card 2155), null otherwise.
  */
@@ -303,11 +307,18 @@ export function updateCard(
 	// Leaving one needs edit access to it, as joining does: R5's rule, the same
 	// on every route that takes a card out, and on a move from one milestone to
 	// another. The milestone the card is already in, sent back, changes nothing.
+	//
+	// It writes the goal's own entry, `milestone_card_added` or
+	// `milestone_card_removed`, as every route that puts a card in a goal or
+	// takes it out does, naming the card by its title after this request; it
+	// is not named in `card_updated`, so `card.updated` is not sent when it is
+	// the only change (card 2289, decision 9).
 	const settingMilestone = milestoneId !== undefined && milestoneId !== card.milestoneId;
 	if (settingMilestone) {
+		const record = { source: opts.source, title: patch.title ?? card.title };
 		try {
-			if (milestoneId === null) takeCardOutOfMilestone(user, cardId);
-			else setCardMilestone(user, cardId, milestoneId);
+			if (milestoneId === null) takeCardOutOfMilestone(user, cardId, record);
+			else setCardMilestone(user, cardId, milestoneId, record);
 		} catch (e) {
 			if (e instanceof MilestoneError) throw error(e.status, e.message);
 			throw e;
@@ -318,8 +329,8 @@ export function updateCard(
 	// moved row, which may have lost its category or its note).
 	let row = move?.card ?? card;
 	const fields = changedFields(row, patch);
-	const named = [...Object.keys(fields), ...(settingMilestone ? ['milestoneId'] : [])];
-	const touched = Object.keys(fields).length > 0 || settingMilestone || restored;
+	const named = Object.keys(fields);
+	const touched = named.length > 0 || restored;
 	if (touched) {
 		const written = db
 			.update(cards)
@@ -329,12 +340,15 @@ export function updateCard(
 			.get();
 		if (!written) throw error(404, 'Card not found');
 		row = written;
+	} else if (settingMilestone) {
+		// The milestone alone was written, with its own `updatedAt`: the card as it left it.
+		row = db.select().from(cards).where(eq(cards.id, cardId)).get() ?? row;
 	}
 
 	// Nothing here is sent before the commit, or at all if this rolls back.
 	const tell = () => {
 		if (move) announceMoves([move], user, opts);
-		else if (touched) emit(boardId, 'update', { type: 'card' });
+		else if (touched || settingMilestone) emit(boardId, 'update', { type: 'card' });
 	};
 	if (opts.tellBeforeEntry) tell();
 	if (named.length > 0) {

@@ -63,7 +63,17 @@ export const ACTIONS = {
 	dependencyRemoved: 'dependency_removed',
 	boardCreated: 'board_created',
 	boardUpdated: 'board_updated',
-	milestoneCreated: 'milestone_created'
+	milestoneCreated: 'milestone_created',
+	// A goal changed, closed, reopened or deleted, and a card put in one or
+	// taken out (card 2289). None sends a webhook: a goal has no event, and a
+	// new one would reach every webhook that asks for all (card 2343 is the
+	// `milestone.*` event).
+	milestoneUpdated: 'milestone_updated',
+	milestoneClosed: 'milestone_closed',
+	milestoneReopened: 'milestone_reopened',
+	milestoneDeleted: 'milestone_deleted',
+	milestoneCardAdded: 'milestone_card_added',
+	milestoneCardRemoved: 'milestone_card_removed'
 } as const;
 
 export interface ActivityEntry {
@@ -152,6 +162,10 @@ export function readSource(row: { action: string; source?: string | null }): Act
  * with that entry, which names no other board (card 2181): what the board's own
  * readers read. A move into Complete sends `card.completed` instead of
  * `card.moved`, as its entry is a completion instead of a move.
+ *
+ * No goal entry is here (card 2289, decision 9), and a card put in a goal or
+ * taken out through `PUT /api/v1/cards/{cardId}` writes the goal's entry, not
+ * `card_updated`: goal membership sends no `card.updated` on any route.
  */
 const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_created: 'card.created',

@@ -524,7 +524,7 @@ describe('a link the other way round, written as the graph is read, cannot close
 
 // ─── What the entries are not ───────────────────────────────────────────────
 
-describe('the activity report does not count a dependency added or removed as work on the card', () => {
+describe('the activity report does not count a dependency, or a milestone, added or removed as work on the card', () => {
 	/**
 	 * `buildActivityReport` puts a card in the window for any activity entry
 	 * on it, and puts it down to whoever wrote the entry. Since card 2114 the
@@ -568,6 +568,23 @@ describe('the activity report does not count a dependency added or removed as wo
 		expect(reported(s, s.owner.id)).toEqual([]);
 		logActivity({ boardId: s.A.board.id, cardId: s.first.id, userId: s.owner.id, action: 'card_updated', detail: 'Renamed again' });
 		expect(reported(s, s.owner.id)).toEqual([s.first.id]);
+	});
+
+	// Card 2289, decision 12: a card put in a milestone, or taken out, is
+	// planning, as a link is, and not work on the card. The entries are written
+	// straight to the log, by the owner, who neither made the card nor is
+	// assigned to it: only the entries could bring it in, or put it down to
+	// them. (A route's write also moves the card's `updatedAt`, which puts it
+	// in the window whoever did it: found nearby N3, left.)
+	it('a card put in a milestone or taken out is not work on the card, in the window or for the person, in either spelling', async () => {
+		const s = scene();
+		db.update(cards).set({ createdAt: '2020-01-01 00:00:00', updatedAt: '2020-01-01 00:00:00' }).run();
+		for (const action of ['milestone_card_added', 'api:milestone_card_added', 'milestone_card_removed', 'api:milestone_card_removed']) {
+			logActivity({ boardId: s.A.board.id, cardId: s.first.id, userId: s.owner.id, action, detail: 'Added "First" to milestone "Launch"' });
+		}
+
+		expect(reported(s)).toEqual([]);
+		expect(reported(s, s.owner.id)).toEqual([]);
 	});
 
 	// Card 2299: a subtask edit is now recorded, as `subtask_updated`, and it

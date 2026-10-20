@@ -1908,7 +1908,14 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			dependency_removed: null,
 			board_created: null,
 			board_updated: null,
-			milestone_created: null
+			milestone_created: null,
+			// No goal event (card 2289, decision 9): a new event would reach every webhook that asks for all. A `milestone.*` event is card 2343.
+			milestone_updated: null,
+			milestone_closed: null,
+			milestone_reopened: null,
+			milestone_deleted: null,
+			milestone_card_added: null,
+			milestone_card_removed: null
 		});
 	});
 

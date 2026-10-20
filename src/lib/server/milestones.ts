@@ -5,6 +5,12 @@
  * session-cookie API under /api/milestones so there is exactly one
  * implementation of "who may see this goal" and "what happens when it is
  * deleted". Route files are left as thin auth-and-shape wrappers.
+ *
+ * A goal's changes are recorded (card 2289): a card put in or taken out here,
+ * on every route, and a change to the goal itself by `milestone-service.ts`,
+ * with `goalBoards` and `goalAsNamedOn` from here. A change that changes
+ * nothing writes nothing, and is found only after every refusal, so a request
+ * that would be refused still is (decision 8).
  */
 
 import { db } from './db';
@@ -13,6 +19,8 @@ import { milestones, cards, columns, boards } from './db/schema';
 import { eq, and, isNull, inArray, ne } from 'drizzle-orm';
 import { canViewBoard, canEditBoard, getAccessibleBoardIds, type Actor } from './board-access';
 import { isCompleteColumnTitle } from './card-completion';
+import { changedFields } from './card-changes';
+import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
 import { boardsOpenTo, getMilestoneBoardIds } from './planning';
 import type { SessionUser } from './auth';
 import { stamp } from '$lib/timestamps';
@@ -75,6 +83,59 @@ export function canEditMilestone(user: SessionUser, milestone: MilestoneRow): bo
 	if (isAdmin(user)) return true;
 	if (milestone.boardId !== null) return canEditBoard(user, milestone.boardId);
 	return milestone.createdBy === user.id;
+}
+
+/**
+ * The boards a goal's entries go on (card 2289, decision 6): its own board,
+ * or for a goal across boards each board that holds one of its cards,
+ * archived ones included. A goal across boards with no cards has none, as
+ * `milestone_created` writes nothing for a goal of no board.
+ */
+export function goalBoards(goal: Pick<MilestoneRow, 'id' | 'boardId'>): number[] {
+	return goal.boardId !== null ? [goal.boardId] : getMilestoneBoardIds(goal.id);
+}
+
+/**
+ * A goal as an entry on `boardId`'s log names it (card 2289, decision 7): by
+ * its name when it belongs to that board, and otherwise `milestone #<id>`. A
+ * board's log is read by every viewer of the board, and a goal across boards
+ * is opened only by someone who can open every board its cards are on, so its
+ * name is given to none of them (card 2257). `goal` is the goal as that
+ * board's readers knew it: before the change on a board it stays on or
+ * leaves, after it on a board it joins.
+ */
+export function goalAsNamedOn(goal: Pick<MilestoneRow, 'id' | 'name' | 'boardId'>, boardId: number): string {
+	return goal.boardId === boardId ? `milestone "${goal.name}"` : `milestone #${goal.id}`;
+}
+
+/** Who records a card put in a goal or taken out, and the title to name it by when not the one stored. */
+export type CardInOrOutRecord = { source: ActivitySource; title?: string };
+
+/**
+ * The entry for a card put in a goal (`attach`) or taken out (card 2289,
+ * decision 6): on the card's board, with its id, `Added "<card>" to milestone
+ * "<goal>"` or `Removed "<card>" from …`. A card put in that left another goal
+ * says which, `(from milestone …)`, named by the same rule, and no entry is
+ * written for the goal it left. The bulk routes write theirs here too.
+ */
+export function logCardInOrOut(
+	user: SessionUser,
+	source: ActivitySource,
+	card: { boardId: number; cardId: number; title: string },
+	goal: MilestoneRow,
+	attach: boolean,
+	left: MilestoneRow | null = null
+): void {
+	const named = goalAsNamedOn(goal, card.boardId);
+	const from = left ? ` (from ${goalAsNamedOn(left, card.boardId)})` : '';
+	logActivity({
+		boardId: card.boardId,
+		cardId: card.cardId,
+		action: attach ? ACTIONS.milestoneCardAdded : ACTIONS.milestoneCardRemoved,
+		detail: attach ? `Added "${card.title}" to ${named}${from}` : `Removed "${card.title}" from ${named}`,
+		source,
+		...actorOf(user)
+	});
 }
 
 /** Load a milestone, or throw the right HTTP status. */
@@ -266,15 +327,31 @@ const CARDS_ON_ANOTHER_BOARD =
  *
  * One transaction: the milestone and its cards are read in the one that
  * writes, so what was checked is what is written.
+ *
+ * Only what differs from the milestone is written (card 2183's rule, card
+ * 2289 decision 8), and that is asked after every check above: a patch whose
+ * every field is as stored writes nothing and answers the milestone as it is,
+ * and one that would be refused is still refused. The answer says what it was
+ * before and which fields changed, in the order read, for the entries.
  */
-export function updateMilestone(user: SessionUser, milestoneId: number, patch: UpdateMilestoneInput): MilestoneRow {
+export function updateMilestone(user: SessionUser, milestoneId: number, patch: UpdateMilestoneInput): MilestoneChange {
 	return inTransaction(() => {
-		const milestone = requireMilestone(user, milestoneId, true);
-		const updateData = fieldsToUpdate(user, milestone, patch);
-		updateData.updatedAt = stamp();
-		return db.update(milestones).set(updateData).where(eq(milestones.id, milestoneId)).returning().get();
+		const was = requireMilestone(user, milestoneId, true);
+		const changed = changedFields(was, fieldsToUpdate(user, was, patch));
+		const names = Object.keys(changed);
+		if (names.length === 0) return { milestone: was, was, changed: [] };
+		const milestone = db
+			.update(milestones)
+			.set({ ...changed, updatedAt: stamp() })
+			.where(eq(milestones.id, milestoneId))
+			.returning()
+			.get();
+		return { milestone, was, changed: names };
 	});
 }
+
+/** A milestone changed: as it is now, as it was, and the fields that changed (none when nothing did). */
+export type MilestoneChange = { milestone: MilestoneRow; was: MilestoneRow; changed: string[] };
 
 /** `updateMilestone`'s checks, in order: each field, then the board. What to write. */
 function fieldsToUpdate(user: SessionUser, milestone: MilestoneRow, patch: UpdateMilestoneInput): Record<string, unknown> {
@@ -322,10 +399,27 @@ function fieldsToUpdate(user: SessionUser, milestone: MilestoneRow, patch: Updat
  * One transaction: the milestone is checked, its cards are released and it is
  * deleted together. A failure between the two writes used to leave the
  * milestone in place with every card taken out of it.
+ *
+ * The answer also holds, for the entries (card 2289), the milestone as it
+ * was, its boards (`goalBoards`, read before its cards are released), and
+ * how many cards of each board were released, archived ones included.
  */
-export function deleteMilestone(user: SessionUser, milestoneId: number): { released: number } {
+export function deleteMilestone(
+	user: SessionUser,
+	milestoneId: number
+): { released: number; milestone: MilestoneRow; boards: number[]; releasedOn: Map<number, number> } {
 	return inTransaction(() => {
-		requireMilestone(user, milestoneId, true);
+		const milestone = requireMilestone(user, milestoneId, true);
+		const boards = goalBoards(milestone);
+		const releasedOn = new Map<number, number>();
+		for (const { boardId } of db
+			.select({ boardId: columns.boardId })
+			.from(cards)
+			.innerJoin(columns, eq(cards.columnId, columns.id))
+			.where(eq(cards.milestoneId, milestoneId))
+			.all()) {
+			releasedOn.set(boardId, (releasedOn.get(boardId) ?? 0) + 1);
+		}
 
 		const released = db
 			.update(cards)
@@ -335,7 +429,7 @@ export function deleteMilestone(user: SessionUser, milestoneId: number): { relea
 			.all().length;
 
 		db.delete(milestones).where(eq(milestones.id, milestoneId)).run();
-		return { released };
+		return { released, milestone, boards, releasedOn };
 	});
 }
 
@@ -348,7 +442,7 @@ export const ARCHIVED_CARD = 'Card does not exist or is archived';
 /** The card, and the board it is on, if the caller may edit that board. */
 function editableCard(user: SessionUser, cardId: number) {
 	const card = db
-		.select({ id: cards.id, columnId: cards.columnId, milestoneId: cards.milestoneId, archivedAt: cards.archivedAt })
+		.select({ id: cards.id, title: cards.title, columnId: cards.columnId, milestoneId: cards.milestoneId, archivedAt: cards.archivedAt })
 		.from(cards)
 		.where(eq(cards.id, cardId))
 		.get();
@@ -375,12 +469,22 @@ function editableCard(user: SessionUser, cardId: number) {
  *
  * One transaction: the card and the milestone are read in the one that
  * writes, so what was checked is what is written.
+ *
+ * The card put in is recorded, `milestone_card_added` from `record.source`
+ * (card 2289, `logCardInOrOut`). A card already in this milestone is answered
+ * as it is, with nothing written or recorded, and `written` false: asked after
+ * every refusal above, so an archived card already in it is still refused.
  */
-export function setCardMilestone(user: SessionUser, cardId: number, milestoneId: number): { cardId: number; milestoneId: number; boardId: number } {
+export function setCardMilestone(
+	user: SessionUser,
+	cardId: number,
+	milestoneId: number,
+	record: CardInOrOutRecord
+): { cardId: number; milestoneId: number; boardId: number; written: boolean } {
 	return inTransaction(() => {
 		const { card, boardId } = editableCard(user, cardId);
 
-		if (card.milestoneId !== null && card.milestoneId !== milestoneId) requireMilestone(user, card.milestoneId, true);
+		const left = card.milestoneId !== null && card.milestoneId !== milestoneId ? requireMilestone(user, card.milestoneId, true) : null;
 		const m = requireMilestone(user, milestoneId, true);
 		if (card.archivedAt !== null) throw new MilestoneError(400, ARCHIVED_CARD);
 		if (m.boardId !== null && m.boardId !== boardId) {
@@ -389,9 +493,11 @@ export function setCardMilestone(user: SessionUser, cardId: number, milestoneId:
 				'That milestone belongs to a single board. Make it cross-board first, or move the card.'
 			);
 		}
+		if (card.milestoneId === milestoneId) return { cardId, milestoneId, boardId, written: false };
 
 		db.update(cards).set({ milestoneId, updatedAt: stamp() }).where(eq(cards.id, cardId)).run();
-		return { cardId, milestoneId, boardId };
+		logCardInOrOut(user, record.source, { boardId, cardId, title: record.title ?? card.title }, m, true, left);
+		return { cardId, milestoneId, boardId, written: true };
 	});
 }
 
@@ -412,17 +518,28 @@ export function setCardMilestone(user: SessionUser, cardId: number, milestoneId:
  * milestone's id took it out of its own.
  *
  * One transaction: the card's milestone is read in the one that clears it.
+ *
+ * The card taken out is recorded, `milestone_card_removed` from
+ * `record.source` (card 2289). A card in no milestone, with none named, is
+ * answered as it is with nothing written, and `written` false.
  */
-export function takeCardOutOfMilestone(user: SessionUser, cardId: number, named?: number): { cardId: number; milestoneId: null; boardId: number } {
+export function takeCardOutOfMilestone(
+	user: SessionUser,
+	cardId: number,
+	record: CardInOrOutRecord,
+	named?: number
+): { cardId: number; milestoneId: null; boardId: number; written: boolean } {
 	return inTransaction(() => {
 		if (named !== undefined) requireMilestone(user, named, true);
 		const { card, boardId } = editableCard(user, cardId);
 
 		if (named !== undefined && card.milestoneId !== named) throw new MilestoneError(404, 'Card is not in this milestone');
-		if (card.milestoneId !== null) requireMilestone(user, card.milestoneId, true);
+		const left = card.milestoneId !== null ? requireMilestone(user, card.milestoneId, true) : null;
+		if (left === null) return { cardId, milestoneId: null, boardId, written: false };
 
 		db.update(cards).set({ milestoneId: null, updatedAt: stamp() }).where(eq(cards.id, cardId)).run();
-		return { cardId, milestoneId: null, boardId };
+		logCardInOrOut(user, record.source, { boardId, cardId, title: record.title ?? card.title }, left, false);
+		return { cardId, milestoneId: null, boardId, written: true };
 	});
 }
 

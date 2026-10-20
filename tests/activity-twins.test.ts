@@ -611,36 +611,25 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id } }),
 		v1: (s) => api('PUT', `/api/v1/cards/${s.first.id}`, { user: s.owner, body: { milestoneId: launch() } }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: [], v1: ['api:card_updated api', 'card.updated api'] },
+		sources: { internal: ['milestone_card_added ui'], v1: ['api:milestone_card_added api'] },
 		// The same card put in the same milestone (the rows are compared whole).
-		// v1 records it and fires `card.updated`, telling the board first; the
-		// internal route records nothing (found nearby F8, its own card).
-		entries: {
-			internal: [],
-			v1: [
-				{
-					boardId: 1,
-					cardId: 1,
-					userId: 1,
-					action: 'card_updated',
-					detail: 'Updated fields: milestoneId on "First"',
-					userName: 'owner',
-					userEmoji: '👤',
-					source: undefined
-				}
-			]
-		},
-		told: {
-			internal: [CARD_UPDATE],
-			v1: [
-				CARD_UPDATE,
-				{
-					webhook: 'card.updated',
-					boardId: 1,
-					data: { cardId: 1, action: 'card_updated', detail: 'Updated fields: milestoneId on "First"', source: undefined, user: 'owner' }
-				}
-			]
-		}
+		// v1 named `milestoneId` in `card_updated` and fired `card.updated`; the
+		// internal route recorded nothing (found nearby F8). Card 2289, decision
+		// 9: one action for one act on every route, and no webhook from either.
+		entries: (() => {
+			const entry = {
+				boardId: 1,
+				cardId: 1,
+				userId: 1,
+				action: 'milestone_card_added',
+				detail: 'Added "First" to milestone "Launch"',
+				userName: 'owner',
+				userEmoji: '👤',
+				source: undefined
+			};
+			return { internal: [entry], v1: [entry] };
+		})(),
+		told: { internal: [CARD_UPDATE], v1: [CARD_UPDATE] }
 	},
 	{
 		row: 5,
@@ -893,9 +882,8 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		// The event's type per tree (R2).
 		told: { internal: [{ event: 'update', boardId: 1, data: { type: 'subtask' } }], v1: [CARD_UPDATE] }
 	},
-	// Slice A3: dependencies and milestones. Neither tree records an entry for
-	// a milestone changed, deleted, or given or relieved of a card (found
-	// nearby F8), and none tells anyone of a milestone made, changed or deleted.
+	// Slice A3: dependencies and milestones. Neither tree tells anyone of a
+	// milestone made (row 21); row 22's milestone writes are card 2289's.
 	{
 		row: 17,
 		what: 'making a card wait on another',
@@ -942,6 +930,12 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		sources: { internal: ['milestone_created ui'], v1: ['api:milestone_created api'] },
 		told: { internal: [], v1: [] }
 	},
+	// Card 2289: a milestone changed, deleted, or given or relieved of a card
+	// recorded nothing in either tree (found nearby F8). Each now writes its
+	// own action, on the goal's board (a card's on the card's board, with its
+	// id), the goal named as the board's readers knew it before the change; a
+	// goal changed or deleted tells its board `{ type: 'milestone' }`. No
+	// webhook: the board has one that takes every event.
 	{
 		row: 22,
 		what: 'renaming and closing a milestone',
@@ -949,9 +943,25 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { name: 'Launched', status: 'closed' } }),
 		v1: (s) => api('PATCH', `/api/v1/milestones/${launch()}`, { user: s.owner, body: { name: 'Launched', status: 'closed' } }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: [], v1: [] },
-		entries: { internal: [], v1: [] },
-		told: { internal: [], v1: [] }
+		sources: { internal: ['milestone_updated ui', 'milestone_closed ui'], v1: ['api:milestone_updated api', 'api:milestone_closed api'] },
+		entries: (() => {
+			const entry = (action: string, detail: string) => ({
+				boardId: 1,
+				cardId: null,
+				userId: 1,
+				action,
+				detail,
+				userName: 'owner',
+				userEmoji: '👤',
+				source: undefined
+			});
+			const both = [entry('milestone_updated', 'Updated milestone "Launch": name'), entry('milestone_closed', 'Closed milestone "Launch"')];
+			return { internal: both, v1: both };
+		})(),
+		told: (() => {
+			const told = [{ event: 'update', boardId: 1, data: { type: 'milestone' } }];
+			return { internal: told, v1: told };
+		})()
 	},
 	{
 		row: 22,
@@ -960,9 +970,24 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('DELETE', `/api/milestones/${launch()}`, { user: s.owner }),
 		v1: (s) => api('DELETE', `/api/v1/milestones/${launch()}`, { user: s.owner }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: [], v1: [] },
-		entries: { internal: [], v1: [] },
-		told: { internal: [], v1: [] }
+		sources: { internal: ['milestone_deleted ui'], v1: ['api:milestone_deleted api'] },
+		entries: (() => {
+			const entry = {
+				boardId: 1,
+				cardId: null,
+				userId: 1,
+				action: 'milestone_deleted',
+				detail: 'Deleted milestone "Launch"; 1 card on this board released',
+				userName: 'owner',
+				userEmoji: '👤',
+				source: undefined
+			};
+			return { internal: [entry], v1: [entry] };
+		})(),
+		told: (() => {
+			const told = [{ event: 'update', boardId: 1, data: { type: 'milestone' } }];
+			return { internal: told, v1: told };
+		})()
 	},
 	{
 		row: 22,
@@ -971,8 +996,20 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id } }),
 		v1: (s) => api('POST', `/api/v1/milestones/${launch()}/cards`, { user: s.owner, body: { cardId: s.first.id } }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: [], v1: [] },
-		entries: { internal: [], v1: [] }
+		sources: { internal: ['milestone_card_added ui'], v1: ['api:milestone_card_added api'] },
+		entries: (() => {
+			const entry = {
+				boardId: 1,
+				cardId: 1,
+				userId: 1,
+				action: 'milestone_card_added',
+				detail: 'Added "First" to milestone "Launch"',
+				userName: 'owner',
+				userEmoji: '👤',
+				source: undefined
+			};
+			return { internal: [entry], v1: [entry] };
+		})()
 	},
 	{
 		row: 22,
@@ -981,8 +1018,20 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id, attach: false } }),
 		v1: (s) => api('DELETE', `/api/v1/milestones/${launch()}/cards`, { user: s.owner, body: { cardId: s.first.id } }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: [], v1: [] },
-		entries: { internal: [], v1: [] }
+		sources: { internal: ['milestone_card_removed ui'], v1: ['api:milestone_card_removed api'] },
+		entries: (() => {
+			const entry = {
+				boardId: 1,
+				cardId: 1,
+				userId: 1,
+				action: 'milestone_card_removed',
+				detail: 'Removed "First" from milestone "Launch"',
+				userName: 'owner',
+				userEmoji: '👤',
+				source: undefined
+			};
+			return { internal: [entry], v1: [entry] };
+		})()
 	},
 	// Slice A4: boards, dashboard groupings, columns, card categories and
 	// labels. No grouping, column change, category or label write records an
@@ -2963,6 +3012,78 @@ describe('nothing changed, nothing recorded', () => {
 			sent.restore();
 		}
 	});
+
+	/** As `goalScene(true)`, with the card and the milestone last changed on 1 October. */
+	function oldGoal(): Scene {
+		const s = goalScene(true);
+		db.update(cards).set({ updatedAt: '2026-10-01 09:00:00' }).run();
+		db.update(milestones).set({ updatedAt: '2026-10-01 09:00:00' }).run();
+		return s;
+	}
+
+	// Card 2289, decision 8 (found nearby N1): a milestone saved with the
+	// values it holds was written again with a new `updatedAt`. Now nothing is
+	// written, recorded or told, and the milestone is answered as it is. One
+	// service path, asked through both trees.
+	it.each([
+		['the internal route', '/api/milestones'],
+		['the v1 route', '/api/v1/milestones']
+	])('a milestone sent the name it has, through %s, writes and tells nothing, and answers the milestone', async (_tree, base) => {
+		const s = oldGoal();
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const res = await api('PATCH', `${base}/${launch()}`, { user: s.owner, body: { name: 'Launch' } });
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(res.body).toMatchObject({ id: launch(), name: 'Launch', boardId: s.A.board.id });
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	// Card 2289, decision 8: a card put in the milestone it is already in was
+	// written again with a new `updatedAt` and its board told.
+	it('a card put in the milestone it is already in, through the internal route, writes and tells nothing', async () => {
+		const s = oldGoal();
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const res = await api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id } });
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({ cardId: s.first.id, milestoneId: launch(), boardId: s.A.board.id });
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	// A contract, which held before card 2289: the check for no change comes
+	// after every refusal, so an archived card already in the milestone is
+	// still refused, as it was, and not answered 200 as a change of nothing.
+	it('an archived card already in the milestone, put in it again through the v1 route, is still refused 400', async () => {
+		const s = oldGoal();
+		db.update(cards).set({ archivedAt: '2026-10-01 09:00:00' }).where(eq(cards.id, s.first.id)).run();
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const res = await api('POST', `/api/v1/milestones/${launch()}/cards`, { user: s.owner, body: { cardId: s.first.id } });
+			await sent.settle();
+
+			expect(res.status).toBe(400);
+			expect(res.body).toEqual({ message: 'Card does not exist or is archived' });
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
 });
 
 describe('the details', () => {
@@ -3126,6 +3247,124 @@ describe('the details', () => {
 		expect(entries().map((e) => `${e.action}: ${e.detail}`)).toEqual([
 			'subtask_completed: Drafted (on First)',
 			'subtask_updated: Updated Drafted (on First): title'
+		]);
+	});
+
+	// Card 2289: what a milestone's entries say, and which boards they go on
+	// (decisions 5 to 7, and 10). Each entry is read as `board: action: detail`.
+	const goalEntries = () => entries().map((e) => `${e.boardId}: ${e.action}: ${e.detail}`);
+
+	it('a closed milestone opened again through the v1 route writes api:milestone_reopened', async () => {
+		const s = goalScene(false);
+		db.update(milestones).set({ status: 'closed' }).run();
+
+		const { res, told } = await recorded(() => api('PATCH', `/api/v1/milestones/${launch()}`, { user: s.owner, body: { status: 'open' } }));
+
+		expect(res.status).toBe(200);
+		expect(goalEntries()).toEqual([`${s.A.board.id}: api:milestone_reopened: Reopened milestone "Launch"`]);
+		expect(told).toEqual([`event update {"type":"milestone"} on board ${s.A.board.id}`]);
+	});
+
+	/** As `cardScene`, with a card on board S, a third board T of the owner's, and the owner's milestone across boards holding the first card and S's. */
+	function acrossScene() {
+		const s = cardScene();
+		const onS = makeCard(s.S.cols['To Do'], { title: 'On S' });
+		const T = makeBoard({ owner: s.owner, name: 'T' });
+		const across = makeMilestone({ name: 'Across', createdBy: s.owner, cards: [s.first, onS] });
+		return { ...s, onS, T, across };
+	}
+
+	it('a milestone across boards, renamed, writes one entry on each board holding its cards, naming it by its number, and none on another', async () => {
+		const s = acrossScene();
+
+		const { res, told } = await recorded(() => api('PATCH', `/api/v1/milestones/${s.across.id}`, { user: s.owner, body: { name: 'Across, renamed' } }));
+
+		expect(res.status).toBe(200);
+		// A viewer of one of its boards may not be able to open it, so is not given its name (card 2257).
+		expect(goalEntries()).toEqual([
+			`${s.A.board.id}: api:milestone_updated: Updated milestone #${s.across.id}: name`,
+			`${s.S.board.id}: api:milestone_updated: Updated milestone #${s.across.id}: name`
+		]);
+		expect(entries().every((e) => e.cardId === null && e.boardId !== s.T.board.id)).toBe(true);
+		expect(told).toEqual([
+			`event update {"type":"milestone"} on board ${s.A.board.id}`,
+			`event update {"type":"milestone"} on board ${s.S.board.id}`
+		]);
+	});
+
+	it('a milestone given to another board and renamed in one request is named by its old name on the board it leaves, and its new one on the board it joins', async () => {
+		// Its cards would have to be on S first, and a move to S takes a card
+		// out of A's milestone (card 2155): so it holds none.
+		const s = goalScene(false);
+
+		const { res, told } = await recorded(() =>
+			api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { boardId: s.S.board.id, name: 'Go' } })
+		);
+
+		expect(res.status).toBe(200);
+		expect(goalEntries()).toEqual([
+			`${s.A.board.id}: milestone_updated: Updated milestone "Launch": name, boardId`,
+			`${s.S.board.id}: milestone_updated: Updated milestone "Go": name, boardId`
+		]);
+		// A's readers are never given the name it has on S.
+		expect(entries().filter((e) => e.boardId === s.A.board.id && e.detail?.includes('Go'))).toEqual([]);
+		expect(told).toEqual([
+			`event update {"type":"milestone"} on board ${s.A.board.id}`,
+			`event update {"type":"milestone"} on board ${s.S.board.id}`
+		]);
+	});
+
+	it('a milestone across boards given to the board holding its card, and renamed, is named there by its new name: the board it joins', async () => {
+		const s = goalScene(false);
+		const across = makeMilestone({ name: 'Pilot', createdBy: s.owner, cards: [s.first] });
+
+		const { res, told } = await recorded(() =>
+			api('PATCH', `/api/v1/milestones/${across.id}`, { user: s.owner, body: { boardId: s.A.board.id, name: 'Pilot, on A' } })
+		);
+
+		expect(res.status).toBe(200);
+		expect(goalEntries()).toEqual([`${s.A.board.id}: api:milestone_updated: Updated milestone "Pilot, on A": name, boardId`]);
+		expect(told).toEqual([`event update {"type":"milestone"} on board ${s.A.board.id}`]);
+	});
+
+	it("a board's milestone made across boards, holding a card of that board, writes one entry there, by the name it had", async () => {
+		const s = goalScene(true);
+
+		const { res, told } = await recorded(() => api('PATCH', `/api/v1/milestones/${launch()}`, { user: s.owner, body: { boardId: null } }));
+
+		expect(res.status).toBe(200);
+		expect(goalEntries()).toEqual([`${s.A.board.id}: api:milestone_updated: Updated milestone "Launch": boardId`]);
+		expect(told).toEqual([`event update {"type":"milestone"} on board ${s.A.board.id}`]);
+	});
+
+	it('a card moved from a milestone across boards to a board\'s milestone names the one it left by its number', async () => {
+		const s = goalScene(false);
+		const pilot = makeMilestone({ name: 'Pilot', createdBy: s.owner, cards: [s.first] });
+
+		const { res, told } = await recorded(() => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id } }));
+
+		expect(res.status).toBe(200);
+		// One entry, for the milestone it joined; none for the one it left.
+		expect(entries()).toMatchObject([
+			{ boardId: s.A.board.id, cardId: s.first.id, action: 'milestone_card_added', detail: `Added "First" to milestone "Launch" (from milestone #${pilot.id})` }
+		]);
+		expect(told).toEqual([`event update {"type":"card"} on board ${s.A.board.id}`]);
+	});
+
+	it('a milestone across boards deleted writes an entry on each board holding its cards, with that board\'s count, and tells each', async () => {
+		const s = acrossScene();
+
+		const { res, told } = await recorded(() => api('DELETE', `/api/v1/milestones/${s.across.id}`, { user: s.owner }));
+
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ success: true, cardsReleased: 2 });
+		expect(goalEntries()).toEqual([
+			`${s.A.board.id}: api:milestone_deleted: Deleted milestone #${s.across.id}; 1 card on this board released`,
+			`${s.S.board.id}: api:milestone_deleted: Deleted milestone #${s.across.id}; 1 card on this board released`
+		]);
+		expect(told).toEqual([
+			`event update {"type":"milestone"} on board ${s.A.board.id}`,
+			`event update {"type":"milestone"} on board ${s.S.board.id}`
 		]);
 	});
 });

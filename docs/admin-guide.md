@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.51
+version: 1.52
 status: As-Built
 date: 2026-10-20
 tags:
@@ -805,13 +805,14 @@ The attachment files are in the folder `uploads` beside the database. An image b
 
 Every board change is recorded in the activity log (visible per-board in the stats panel). This includes:
 - Card created, updated, moved, completed, archived, restored, deleted. A card created in a Complete or Done column has `card_created` and then `card_completed`, and so does one made by accepting a task request into such a column
-- Subtask completed or deleted, on the page or through the API
+- Subtask completed or deleted, on the page or through the API; and since card 2299 a subtask unticked or edited (`subtask_updated`), a save that changes nothing writing nothing
 - Column deleted, with how many cards went with it
 - Archived cards purged, or a board's cards cleared, with the count
 - Comment added or edited
 - User assigned or unassigned, in a card's window, through the API, or by accepting a task request with an assignee (`assignee_added`, by whoever accepted it, after `card_created`)
 - Board created, and a board updated, naming its fields: the name, emoji, dashboard grouping (`categoryId`) and whether it is public (`isPublic`) whenever they are sent, changed or not; the card it hangs under (`parentCardId`, which only a page can set) only when it changes
 - Milestone created on a board. One that belongs to no board has no board's log to go in, and writes no entry
+- Milestone changed, closed, reopened or deleted, and a card put in a milestone or taken out, on a page or through the API, the bulk routes included (card 2289; none of it was recorded). A save that changes nothing writes nothing
 - API actions (prefixed with `api:`)
 
 A card update (`card_updated`, `api:card_updated`) names only the fields that changed, as "Updated fields: theme on "…"", and a save that changes nothing is not recorded at all: no entry, no `card.updated` webhook, and the card's `updatedAt` stays, so the activity report does not count the card as worked on. A field sent with the value the card holds is not a change, and an empty value and none are the same when comparing (a description, on-hold note or business value is still cleared with empty text, not with none). Until 2026-10-15 every field a save sent was named, changed or not, so pressing Save on an unchanged card in the card window wrote "Updated fields: title, description, priority, …" (card 2183). A move out of an On Hold column clears the card's on-hold note and is recorded by the move's own entry alone; a drag out of On Hold on the board page also wrote "Updated fields: onHoldNote" until then (card 2208). A card update never names `position`: a change of a card's position within its column is not recorded on any route, as a drag's is not, and moves no `updatedAt`; the web application's card update recorded one as "Updated fields: position", with a `card.updated` webhook, until card 2288.
@@ -830,6 +831,8 @@ The board's activity panel and the All Tasks activity panel name each action in 
 | `assignee_added`, `assignee_removed` | Assigned user, Unassigned user |
 | `dependency_added`, `dependency_removed`, `dependencies_bulk_added` | Added dependency, Removed dependency, Added dependencies. A batch through `POST /api/v1/dependencies/bulk` writes one `dependency_added` per link it creates, on the board of the card that waits, naming that card (card 2291); `dependencies_bulk_added`, one entry with no card for the whole batch, was written by older versions only, and keeps its label for those rows |
 | `board_created`, `board_updated`, `milestone_created` | Created board, Updated board, Created milestone |
+| `milestone_updated`, `milestone_closed`, `milestone_reopened`, `milestone_deleted` | Updated milestone, Closed milestone, Reopened milestone, Deleted milestone (card 2289). No card; on the milestone's board, or for one across boards on each board holding its cards, and on a change of board on the boards before and after. `Updated milestone "Launch": name, targetDate` names the fields changed (name, description, targetDate, boardId), not their values; a rename reads by the old name. `Deleted milestone "Launch"; 2 cards on this board released`. A milestone across boards is named `milestone #<id>`, since a reader of one of its boards may not be able to open it; on a board a milestone joins, it is named as it is after the change |
+| `milestone_card_added`, `milestone_card_removed` | Added card to milestone, Removed card from milestone (card 2289). On the card's board, with its id: `Added "First" to milestone "Launch"`. A card moved from one milestone to another writes one `milestone_card_added` ending `(from milestone "Pilot")`, and **no `milestone_card_removed` for the milestone it left**. Written by every route: the card window's picker, the plan page, the API's single and bulk routes and `milestoneId` on the API's card update (which named `milestoneId` in `card_updated` until card 2289). Not counted as work on the card by the activity report. A card deleted for good, a board deleted, a card moved to another board (whose move entry says so) and an import write no milestone entry |
 
 All Tasks marks an action done through the API with its **API** badge; the board's panel does not, and the Audit page's **Source** filter tells them apart. A name with no label, which only an entry older than these names can have, reads as the name in words with a capital first letter, never with `api:`: `time_logged` reads "Time logged". Until 2026-10-15 the board's panel showed the stored name with each word capitalised ("Card Moved In"), and All Tasks had a table of its own that knew 25 names and showed the rest with spaces for underscores and any `api:` left on, so a completion through the API read "api:card completed".
 

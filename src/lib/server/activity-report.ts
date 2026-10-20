@@ -220,10 +220,18 @@ interface CardRow {
  * many more of them than before. Counted, linking a blocker would put a card
  * no one worked on into the window, and put it down to whoever linked it. The
  * bulk entry names no card and so never matched, and is listed so that it
- * never does. Each in both spellings (`storedActions`). Fixed text, made here,
- * so it is written into the query and not bound.
+ * never does. A card put in a goal or taken out is planning too, as a link is
+ * (card 2289, decision 12); a goal's own entries name no card and never match.
+ * Each in both spellings (`storedActions`). Fixed text, made here, so it is
+ * written into the query and not bound.
  */
-const NOT_WORK_ON_THE_CARD = storedActions(ACTIONS.dependencyAdded, ACTIONS.dependencyRemoved, 'dependencies_bulk_added')
+const NOT_WORK_ON_THE_CARD = storedActions(
+	ACTIONS.dependencyAdded,
+	ACTIONS.dependencyRemoved,
+	'dependencies_bulk_added',
+	ACTIONS.milestoneCardAdded,
+	ACTIONS.milestoneCardRemoved
+)
 	.map((action) => `'${action}'`)
 	.join(', ');
 
@@ -292,7 +300,8 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 	// raised, it was edited, someone logged an action against it, or someone
 	// commented. The union matters — relying on the audit log alone is what made
 	// the hand-built report miss 30% of completions. A dependency added or
-	// removed is not work on the card, and does not count (`NOT_WORK_ON_THE_CARD`).
+	// removed, and a card put in a goal or taken out, is not work on the card,
+	// and does not count (`NOT_WORK_ON_THE_CARD`).
 	const touched = `(
 		   (c.completed_at IS NOT NULL AND c.completed_at BETWEEN @from AND @to)
 		OR (c.created_at BETWEEN @from AND @to)

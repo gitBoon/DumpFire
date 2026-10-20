@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.38
+version: 1.39
 status: As-Built
 date: 2026-10-20
 tags:
@@ -104,8 +104,8 @@ A card's window lists what the card is **Blocked by** and what it **Blocks**. Ei
 
 - **A row's link opens that card**, on this board or another, in place of the card whose window was open. Until 14 October 2026 a link to a card on the board already open, or to a card on another board, changed the address and opened no card. **Back** afterwards closes the card that link opened; and going to another board, by any link or by Back, closes a card window that was open, so one board's card is never left open over another board.
 - **A subtask reads as one.** A row for a subtask reads "subtask #45 of #12", and its link opens card 12, the card the subtask belongs to. Removing it removes that link and no other.
-- **Every change is recorded.** Adding or removing one dependency, in the card window or through the API, shows in the board's activity panel and on the Audit page; both activity panels, the board's and All Tasks', name it "Added dependency" or "Removed dependency" whichever way it was done. A batch through the bulk endpoint records each link it creates in the same way, one "Added dependency" on the card that waits, on that card's board (card 2291: it wrote one "Added dependencies" entry for the whole batch, on the first board it touched only), and the links that go when a card is deleted write none of their own.
-- **Not counted as work.** The activity report does not take a dependency added or removed to be work on the card, or the work of whoever added or removed it.
+- **Every change is recorded.** Adding or removing one dependency, in the card window or through the API, shows in the board's activity panel and on the Audit page; both activity panels, the board's and All Tasks', name it "Added dependency" or "Removed dependency" whichever way it was done. A batch through the bulk endpoint records each link it creates in the same way, one "Added dependency" on the card that waits, on that card's board (card 2291: it wrote one "Added dependencies" entry for the whole batch, on the first board it touched only), and the links that go when a card is deleted write none of their own. A goal's changes are recorded too (card 2289; none was): putting a card in a goal or taking it out, from the card window's picker, the plan page or the API, shows as "Added card to milestone" or "Removed card from milestone" on the card's board, and renaming a goal, changing its description, target date or board, closing, reopening or deleting it shows as "Updated milestone", "Closed milestone", "Reopened milestone" or "Deleted milestone" on the goal's board (for a goal across boards, on each board holding its cards, which reads it as "milestone #id", since not every reader there can open it). A save on the plan page that changed nothing records nothing. A deleted goal's 🎯 chip leaves every open board at once.
+- **Not counted as work.** The activity report does not take a dependency added or removed, or a card put in a goal or taken out, to be work on the card, or the work of whoever did it.
 - **Work on a board you cannot open is not named.** A card that waits on a card of a board you were not given still shows as blocked, and the other end is listed as "A card on a board you cannot open", with no link and no board or column: on the Blocked chip, in the card window, on All Tasks and on the plan. You can still remove the link.
 
 ### Drag and Drop

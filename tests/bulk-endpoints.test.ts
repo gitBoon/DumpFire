@@ -200,18 +200,54 @@ describe('POST /api/v1/milestones/:milestoneId/cards/bulk', () => {
 					boardsTouched: [s.A.board.id]
 				});
 				expect(s.a.map(milestoneOf)).toEqual([s.goal.id, s.goal.id, s.goal.id, null]);
+				// One entry for each card put in, on its board with its id; the
+				// one moved names the goal it left (card 2289, decision 13).
+				expect(entries()).toEqual([
+					{ boardId: s.A.board.id, cardId: s.a[0].id, action: 'api:milestone_card_added', source: 'api', detail: 'Added "A1" to milestone "Goal"' },
+					{ boardId: s.A.board.id, cardId: s.a[1].id, action: 'api:milestone_card_added', source: 'api', detail: 'Added "A2" to milestone "Goal"' },
+					{
+						boardId: s.A.board.id,
+						cardId: s.a[2].id,
+						action: 'api:milestone_card_added',
+						source: 'api',
+						detail: 'Added "A3" to milestone "Goal" (from milestone "Other goal")'
+					}
+				]);
 			}
 		});
 
-		// One write for each card. The contract says a batch that is rejected
-		// wrote nothing; a batch that failed part of the way had written some.
-		expect(shape(run.writes)).toEqual(Array(3).fill('update cards set'));
+		// One write for each card, and its entry. The contract says a batch that
+		// is rejected wrote nothing; a batch that failed part of the way had
+		// written some.
+		expect(shape(run.writes)).toEqual(Array(3).fill(['update cards set', 'insert into activity_log']).flat());
 		// The goal was empty, so this is when the plan came to be. The mail is
 		// worked out and sent once the cards are committed.
 		expect(run.effects.map(name)).toEqual([
 			'event update (card) on board 1',
 			'email to admin@example.test: Plan created: Goal'
 		]);
+	});
+
+	it('writes no entry for a card already in the goal, and mails nobody: the goal was not empty', async () => {
+		const s = withGoals();
+		db.update(cards).set({ milestoneId: s.goal.id }).where(eq(cards.id, s.a[0].id)).run();
+		const sent = effects();
+		try {
+			const res = await api('POST', `/api/v1/milestones/${s.goal.id}/cards/bulk`, {
+				user: s.owner,
+				body: { cardIds: [s.a[0].id, s.a[1].id] }
+			});
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(res.body).toMatchObject({ attached: 1, skippedAlreadyIn: 1 });
+			expect(entries().map((e) => [e.cardId, e.action, e.detail])).toEqual([
+				[s.a[1].id, 'api:milestone_card_added', 'Added "A2" to milestone "Goal"']
+			]);
+			expect(sent.all.map(name)).toEqual(['event update (card) on board 1']);
+		} finally {
+			sent.restore();
+		}
 	});
 
 	it('rejects the whole batch for one card that cannot be attached, and says which', async () => {
@@ -361,10 +397,20 @@ describe('DELETE /api/v1/milestones/:milestoneId/cards/bulk', () => {
 				expect(s.a.map(milestoneOf)).toEqual([null, null, null, null]);
 				// The cards themselves are untouched.
 				expect(db.select().from(cards).all()).toHaveLength(5);
+				// One entry for each card taken out; none for the fourth, which was not in it (card 2289).
+				expect(entries()).toEqual(
+					s.a.slice(0, 3).map((card) => ({
+						boardId: s.A.board.id,
+						cardId: card.id,
+						action: 'api:milestone_card_removed',
+						source: 'api',
+						detail: `Removed "${card.title}" from milestone "Goal"`
+					}))
+				);
 			}
 		});
 
-		expect(shape(run.writes)).toEqual(Array(3).fill('update cards set'));
+		expect(shape(run.writes)).toEqual(Array(3).fill(['update cards set', 'insert into activity_log']).flat());
 		expect(run.effects.map(name)).toEqual(['event update (card) on board 1']);
 	});
 

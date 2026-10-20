@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.76
+version: 1.77
 status: As-Built
 date: 2026-10-20
 tags:
@@ -418,7 +418,10 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   `dependency_added`, `dependency_removed` or `dependencies_bulk_added` entry, in either
   spelling, and a report on one user does not take a card to be theirs for one. The API's
   own entries for a dependency counted until this date, and the web application now writes
-  them too. `dependencies_bulk_added` is written by older versions only (card 2291).
+  them too. `dependencies_bulk_added` is written by older versions only (card 2291). Nor
+  does a card put in a milestone or taken out, `milestone_card_added` or
+  `milestone_card_removed` (card 2289); the card's `updatedAt` still moves, so it can still
+  be in the window.
 - **A board member stored with a role other than `owner`, `editor` or `viewer` has a
   viewer's access.** The web application's sharing stored any text as a role until this
   date; a member stored as `admin` had an administrator's access to that board, by either
@@ -656,7 +659,11 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   it. So `GET /audit-log`, `GET /reports/activity` and `recentActivity` on `GET /me/stats`
   hold them, and the activity report counts a card as touched by, and attributes it to,
   whoever assigned someone to it or edited a comment on it on a page, as it did for the
-  same actions through the API. They wrote nothing. None of them starts a webhook.
+  same actions through the API. They wrote nothing. None of them starts a webhook. Since
+  card 2289 a milestone changed, closed, reopened or deleted, and a card put in one or taken
+  out, are recorded alike by both trees too (`milestone_updated`, `milestone_closed`,
+  `milestone_reopened`, `milestone_deleted`, `milestone_card_added`,
+  `milestone_card_removed`).
 - **`POST /boards` with a `parentCardId` tells the board that card is on** (card 2143):
   the pages open on it are sent a live update, `{ "type": "board", "action": "created" }`,
   so the sub-board shows on its card without a reload, as the web application's own create
@@ -1107,6 +1114,24 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   That route takes no key and no page sends it a position, so only a request made by hand
   from a signed-in browser saw the delivery. Nothing `PUT /cards/:cardId` accepts or answers
   changes (item 89).
+- **Goal changes are recorded, and goal membership sends no `card.updated`** (card 2289).
+  `PATCH /milestones/:milestoneId` logs `api:milestone_updated` (naming the fields changed
+  among `name`, `description`, `targetDate` and `boardId`) and, for a change of `status`,
+  `api:milestone_closed` or `api:milestone_reopened`; `DELETE` logs `api:milestone_deleted`
+  with each board's count of cards released. Each has no card and goes on the milestone's
+  board, or for one across boards on each board holding its cards (a change of board: the
+  boards before and after), naming it as that board's readers knew it before the change, or
+  as `milestone #<id>` where it is across boards. Every operation that puts a card in or
+  takes it out logs `api:milestone_card_added` or `api:milestone_card_removed` on the card's
+  board with its id, the bulk pair one per card, and **`milestoneId` on `PUT /cards/:cardId`
+  logs these in place of naming `milestoneId` in `api:card_updated`, so `card.updated` is no
+  longer sent when `milestoneId` is the only change**. A card moved between milestones logs
+  one `api:milestone_card_added` naming the one it left, and no `api:milestone_card_removed`.
+  A change that changes nothing writes, logs and tells nothing, after every refusal. No
+  webhook is sent for any goal entry (a `milestone.*` event is card 2343), and the two card
+  entries are not work in `GET /reports/activity`. The plan-created mail is still the bulk
+  attach's alone (item 90). See
+  [`PATCH /api/v1/milestones/:milestoneId`](#patch-apiv1milestonesmilestoneid).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2570,7 +2595,10 @@ was written and named, changed or not.
   needs edit access to that milestone as putting it in did (`403`
   `No edit access to this milestone`), and so does putting the card in another milestone,
   which takes it out of this one. `archivedAt: null` sent with a `milestoneId` restores the
-  card first.
+  card first. A change logs `api:milestone_card_added` or `api:milestone_card_removed`, as
+  the milestone routes do, and is not named in `api:card_updated`, so a milestone alone
+  sends no `card.updated` webhook; until 2026-10-14 it was "Updated fields: milestoneId"
+  with `card.updated` (card 2289).
 - **`coverUrl`** is the card's cover, drawn as a strip across the top of the card on the
   board: a colour written `#rrggbb`, or one of these eight gradients, written exactly so,
   or `null` (`''` is read as `null`). Anything else, an address or a style among them, is
@@ -2802,6 +2830,29 @@ flowchart TD
     C -->|no| W
 ```
 
+**What a goal change records** (card 2289). A change logs `api:milestone_updated` naming
+the fields changed (`Updated milestone "Launch": name, targetDate`), and a change of status
+`api:milestone_closed` or `api:milestone_reopened`; `DELETE /api/v1/milestones/:milestoneId`
+logs `api:milestone_deleted`, `Deleted milestone "Launch"; 2 cards on this board released`.
+A request whose every field is as stored writes, logs and tells nothing and is answered
+`200` with the milestone as it is, after every refusal above. A card put in or taken out
+(`POST`/`DELETE /milestones/:milestoneId/cards`, the bulk pair, `milestoneId` on
+`PUT /cards/:cardId`) logs `api:milestone_card_added` or `api:milestone_card_removed` on the
+card's board with its id; a card put into the milestone it is in changes nothing. No goal
+entry sends a webhook, and goal membership sends no `card.updated` on any route: read
+`GET /milestones/:milestoneId` or the audit log.
+
+```mermaid
+flowchart TD
+    G{"what changed?"} -->|"nothing"| N["200 as it is:<br/>nothing written, logged or told"]
+    G -->|"the goal"| B{"the goal's boards,<br/>before and after"}
+    B --> E1["on a board it stays on or leaves:<br/>named as it was"]
+    B --> E2["on a board it joins:<br/>named as it is"]
+    E1 & E2 --> X["milestone #id where it is<br/>across boards in that state"]
+    G -->|"a card in or out"| C["milestone_card_added / _removed<br/>on the card's board, with its id"]
+    X & C --> L["live update; no webhook"]
+```
+
 ### Milestones: Many Cards at Once
 
 #### `POST /api/v1/milestones/:milestoneId/cards/bulk`
@@ -2830,6 +2881,11 @@ Both are all or nothing:
   `milestoneId: null` on `PUT /cards/:cardId`). An attach moves a card that is in another
   milestone, which takes it out of that one: a card in a milestone the caller may not change
   is a problem in the `409`, `No edit access to milestone #<id>, which holds card #<n>`.
+- Each card attached or detached logs `api:milestone_card_added` or
+  `api:milestone_card_removed` on its board, with its id, in the same transaction; a card
+  skipped logs nothing (card 2289). No webhook is sent.
+- The attach alone sends the plan-created mail, when the milestone held no card before and at
+  least one was attached. A card put in one at a time, by any route or page, sends none.
 
 The full contract, with the response fields, is in `DUMPFIRE_API.md` under *Bulk Planning*.
 The fields of the `409` are under [Error Format](#error-format).
