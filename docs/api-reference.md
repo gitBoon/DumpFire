@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.75
+version: 1.76
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1097,6 +1097,16 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   finds older entries only, and `action=dependency_added` now finds the links of a batch
   too. Neither sends a webhook (item 88). See
   [`POST /api/v1/dependencies/bulk`](#post-apiv1dependenciesbulk).
+- **The web application's card update no longer sends `card.updated` for a change of
+  position within the card's column** (card 2288). `PUT /api/cards/{id}` with a `position`
+  and no change of column wrote the card with a new `updatedAt`, logged `card_updated`
+  "Updated fields: position" and so sent `card.updated` to the board's webhooks; a drag and
+  `PUT /cards/:cardId/move` to the same column never did. It now goes through the drag's
+  path: the position alone is written, nothing is logged and no webhook is sent. Sent with
+  other fields, it still sends one `card.updated`, whose `detail` names those fields alone.
+  That route takes no key and no page sends it a position, so only a request made by hand
+  from a signed-in browser saw the delivery. Nothing `PUT /cards/:cardId` accepts or answers
+  changes (item 89).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:

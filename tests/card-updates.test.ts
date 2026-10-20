@@ -316,6 +316,38 @@ describe('PUT /api/cards/:id: the card window and a move (card 2183)', () => {
 		expect(cardRow(other.id).categoryId).toBe(ofB.id);
 		expect(entries().at(-1)).toMatchObject({ action: 'card_updated', detail: 'Updated fields: categoryId on "Other"' });
 	});
+
+	// Card 2288: a change of position within the column is not an edit to the
+	// card, as a drag and the v1 move already hold. It was written with a new
+	// `updatedAt`, recorded as "Updated fields: position" and sent
+	// `card.updated` to the board's webhook (made in `beforeEach`). Now it goes
+	// through the drag's path: the position alone, and the drag's live update.
+	it('writes a change of position within the column alone, as a drag does: no entry, no card.updated', async () => {
+		const card = fullCard();
+
+		const res = await put(`/api/cards/${card.id}`, { position: 9 });
+
+		expect(res.status).toBe(200);
+		expect(res.body).toMatchObject({ id: card.id, position: 9, updatedAt: STAMP });
+		expect(cardRow(card.id)).toEqual({ ...card, position: 9 });
+		expect(entries()).toEqual([]);
+		expect(sent.webhooks).toEqual([]);
+		expect(sent.events.map((e) => ({ event: e.event, data: e.data }))).toEqual([
+			{ event: 'update', data: { type: 'card', action: 'reorder', userName: 'owner', userEmoji: '👤' } }
+		]);
+	});
+
+	it('writes a change of position with another field, and names and announces the other field alone', async () => {
+		const card = fullCard();
+
+		const res = await put(`/api/cards/${card.id}`, { position: 9, title: 'Renamed' });
+
+		expect(res.status).toBe(200);
+		expect(cardRow(card.id)).toMatchObject({ position: 9, title: 'Renamed' });
+		const detail = 'Updated fields: title on "Renamed"';
+		expect(entries().map((e) => [e.action, e.detail])).toEqual([['card_updated', detail]]);
+		expect(sent.webhooks.map((w) => [w.event, w.body.data.detail])).toEqual([['card.updated', detail]]);
+	});
 });
 
 describe('PUT /api/v1/cards/:cardId: the milestone and an empty body (card 2183)', () => {

@@ -2924,6 +2924,27 @@ describe('nothing changed, nothing recorded', () => {
 		}
 	});
 
+	// A contract, which held before card 2288: the web application's card
+	// update sent the card's own position writes nothing and tells nobody. It
+	// guards card 2183's rule against the position being handed to the drag's
+	// path, which sends its `reorder` update even when nothing moved.
+	it('a card sent its own position, through the internal route, writes and tells nothing, and answers the card', async () => {
+		const s = openScene();
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const res = await api('PUT', `/api/cards/${s.first.id}`, { user: s.owner, body: { position: s.first.position } });
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(res.body).toMatchObject({ id: s.first.id, position: s.first.position, updatedAt: s.first.updatedAt });
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+
 	// A contract, which passed before card 2299: a change of position alone is
 	// written and told, and is not recorded, as a card's position within its
 	// column is not (card 2288).

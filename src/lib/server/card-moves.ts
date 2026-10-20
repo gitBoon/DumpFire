@@ -216,7 +216,9 @@ function moveCard(request: MoveRequest): CardMove {
 	}
 
 	// A change of position within a column is not an edit to the card — nothing
-	// about it changed, only its neighbours — so nothing else is touched.
+	// about it changed, only its neighbours — so nothing else is touched. The
+	// web application's card update sends a changed position here too (card
+	// 2288), so a drag, the v1 move and that update record it alike.
 	if (!changedColumn) {
 		if (position !== before.position) {
 			db.update(cards).set({ position }).where(eq(cards.id, cardId)).run();
