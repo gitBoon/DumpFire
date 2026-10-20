@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.55
+version: 1.56
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1447,10 +1447,20 @@ the account's sessions, its waiting invites and its keys, and switch off the web
 They do not reach:
 
 - **A webhook nobody is recorded as having set**: one registered before migration 0056, or
-  one whose setter's account was deleted. A webhook made that way with the account's keys
-  keeps receiving its board's events.
+  one whose setter's account was deleted. A reset leaves it on. **Since card 2325 it is held
+  from the deploy on all the same**: nothing is sent to it at any event until the board's owner
+  or an administrator takes it over, so a webhook made that way with the account's keys no
+  longer receives its board's events.
 - **A webhook somebody else set since**: an owner or administrator who changed its address
   or secret, or switched it on, became its setter.
+
+Losing the board is not a reset, and needs none (card 2325): a webhook whose setter can no
+longer open its board is held at every event, not switched off. It keeps `active`, says why in
+`pausedBecause` to the board's owner and administrators, and sends again by itself if that
+account is given the board back. To keep it without that, the owner or an administrator takes
+it over: delete it unless you recognise the address; to keep it, switch it off, then on, which
+makes you its setter, set a new secret, and update the receiver with it. See
+[When Nobody Who Can Open the Board Set It Up](notifications-email.md#when-nobody-who-can-open-the-board-set-it-up).
 
 **A request still arriving when the reset is committed.** The gate decides who is calling
 before a request's body is read, and a body can take as long as the caller likes to arrive. A
@@ -2779,6 +2789,7 @@ flowchart LR
 | "Link existing board" | The top-level boards the caller owns (card 2139), which they can always open | The board page | 2130, decision 11 |
 | The dashboard's personal figures | Only cards on boards the caller can open: assigned, active, overdue, due soon, Upcoming Deadlines, the trends and on hold | The dashboard | 2130, decision 12 |
 | A webhook's address | Left out, with its secret, but to the board's owner, an administrator and the request that made the webhook | Both webhook reads, the answer to an update | 2133, decision 14 |
+| A board's events, by webhook | Sent only while the account that set the webhook up can open the board, asked at each event with its role as it is then; none for a webhook with no recorded setter, from the deploy on. A held webhook is not sent to, keeps `active`, and says why in `pausedBecause`, given where its address is given. Before, a former editor, or an administrator made an ordinary user, went on receiving every event of the board | Every delivery (`deliver`); `pausedBecause` in both webhook reads, the answer to an update and the create | 2325 |
 | The activity report | Only the boards the caller can open are read, before the query. A board named in `boardIds` they cannot open is refused, `403` "No access to board N", and one that does not exist `404` "Board N not found", administrators included, as the burndown answers. `meta.boardsExcludedForAccess` is always `0`: it counted the boards with activity the caller could not open, and with a window down to the second it told them when such a board was worked on. A milestone's counts in the report are of its cards on boards the caller can open, as its burndown's are: a card moved onto a board they cannot open told them, by moving `from`, the second it was completed | `GET /api/v1/reports/activity` | 2326 |
 
 An administrator opens every board and is given every row of each, as before.
@@ -2867,7 +2878,10 @@ was an empty list.
   production cannot be told from ones made shared on purpose: the plan's query 7 lists them
   for the owner to review.
 - **Someone taken off a board** stops seeing its cards in their dashboard figures and
-  Upcoming Deadlines, and their past actions there in Recent Activity.
+  Upcoming Deadlines, and their past actions there in Recent Activity. Since card 2325 a
+  webhook they set up on it stops sending too, held until they can open the board again or the
+  board's owner or an administrator takes it over; one nobody is recorded as having set up is
+  held from the deploy on.
 - **Webhook addresses.** An API key of a board's viewer or editor no longer gets webhook
   addresses, as it already got no secrets. No screen shows webhooks. Since card 2154 an
   editor's key cannot change an address or a secret, or switch a webhook on, either: see

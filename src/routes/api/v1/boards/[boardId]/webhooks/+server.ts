@@ -53,7 +53,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	// once the body has arrived: a reset that ended the key while the body
 	// was arriving is a 401 here, and an account that lost its access
 	// meanwhile is refused as it now is (card 2253).
-	const hook = writeAs(locals, (caller) => {
+	const answer = writeAs(locals, (caller) => {
 		const user = requireUser(caller);
 		requireBoard(user, boardId, 'edit');
 
@@ -64,11 +64,14 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		const events = readChoices(body, 'events', { from: WEBHOOK_EVENTS, trim: true });
 
 		refuseWebhookOverCap(boardId);
-		return db.insert(webhooks)
+		const hook = db.insert(webhooks)
 			.values({ boardId, url, secret: secret ?? '', events: JSON.stringify(events ?? []), setBy: user.id })
 			.returning()
 			.get();
+		// Made here, in the transaction that saved it: `pausedBecause` (card
+		// 2325) reads whether its setter, the caller, can open the board.
+		return presentWebhook(hook, true);
 	});
 
-	return json(presentWebhook(hook, true), { status: 201 });
+	return json(answer, { status: 201 });
 };

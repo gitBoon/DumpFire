@@ -50,7 +50,7 @@ import { addressRefusal, insideReason, parseAllowInside, readWebhookUrl } from '
 import { reportWebhookAllowInside, reportWebhooksOverCap, reportWebhooksRefused } from '$lib/server/startup-checks';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, makeBoard, makeCard, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
+import { addBoardMember, makeBoard, makeCard, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(resetDb);
@@ -2023,5 +2023,389 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			['b', 'card.moved', 'card_moved_in', '"Moving" moved from another board (Complete → To Do)'],
 			['b', 'card.moved', 'card_reopened', '"Moving": Complete → To Do']
 		]);
+	});
+});
+
+// ─── Card 2325 ───────────────────────────────────────────────────────────
+
+describe('a webhook whose setter can no longer open the board (card 2325)', () => {
+	/** `pausedBecause` for a webhook whose setter lost the board, word for word (decision 4). */
+	const LOST =
+		'The account that set this up can no longer open this board, so nothing is sent. The address was chosen by that account: ' +
+		'delete the webhook unless you recognise it; to keep it, switch it off and on, which makes you its setter, and set a new ' +
+		'secret and update the receiver.';
+	/** `pausedBecause` for a webhook nobody is recorded as having set up (decision 8). */
+	const NOBODY =
+		'Nobody is recorded as having set this up. Delete it unless you recognise the address; to keep it, switch it off and on, ' +
+		'which makes you its setter, and set a new secret.';
+	const LOST_REASON = 'Not sent: the account that set it up can no longer open this board';
+	const NOBODY_REASON = 'Not sent: nobody is recorded as having set it up';
+
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+	});
+	afterEach(() => sent.restore());
+
+	/**
+	 * Owner O's board, editor E a direct member unless `viaTeam` (then E edits
+	 * it through a team shared as editor, and is no member), and a superadmin
+	 * and an administrator who are on nothing.
+	 */
+	function scene(opts: { isPublic?: boolean; viaTeam?: boolean } = {}) {
+		const owner = makeUser({ username: 'owner' });
+		const editor = makeUser({ username: 'editor' });
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const chief = makeUser({ username: 'chief', role: 'superadmin' });
+		const fixture = makeBoard({ owner, isPublic: opts.isPublic });
+		const team = opts.viaTeam ? makeTeam([editor]) : undefined;
+		if (team) shareBoardWithTeam(fixture.board, team, 'editor');
+		else addBoardMember(fixture.board, editor, 'editor');
+		return { owner, editor, admin, chief, team, ...fixture };
+	}
+	type Scene = ReturnType<typeof scene>;
+
+	/** A webhook made by `user`'s own POST, so that they are its setter. */
+	async function hookOf(s: Scene, user: SessionUser, name: string) {
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user, body: { url: `https://hooks.example.test/${name}` } });
+		expect(made.status).toBe(201);
+		return made.body as { id: number; url: string };
+	}
+
+	let raised = 0;
+	/** O raises a card through the API: the addresses it was delivered to, in order. */
+	async function event(s: Scene): Promise<string[]> {
+		sent.clear();
+		const res = await api('POST', `/api/v1/boards/${s.board.id}/cards`, {
+			user: s.owner,
+			body: { title: `2325 card ${++raised}`, columnId: s.cols['To Do'].id }
+		});
+		expect(res.status).toBe(201);
+		await sent.settle();
+		expect(sent.webhooks.every((w) => w.event === 'card.created')).toBe(true);
+		return sent.webhooks.map((w) => w.url);
+	}
+
+	/** O takes E off the board, as Share Board does. */
+	async function takeOff(s: Scene, user: SessionUser = s.editor) {
+		const res = await api('DELETE', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { type: 'user', targetId: user.id } });
+		expect(res.status).toBe(200);
+	}
+
+	/** The webhook as `user`'s list and one GET answer it: [from the list, the one]. */
+	async function answersTo(s: Scene, user: SessionUser, id: number) {
+		const list = await api('GET', `/api/v1/boards/${s.board.id}/webhooks`, { user });
+		const one = await api('GET', `/api/v1/webhooks/${id}`, { user });
+		expect([list.status, one.status]).toEqual([200, 200]);
+		return [list.body.find((h: { id: number }) => h.id === id), one.body];
+	}
+
+	const put = (user: SessionUser, id: number, body: Record<string, unknown>) => api('PUT', `/api/v1/webhooks/${id}`, { user, body });
+
+	/** A delivery's signature as a receiver checks it: the body as sent, signed with `secret`. */
+	const signedWith = (secret: string, delivery: Effects['webhooks'][number]) =>
+		delivery.headers['x-dumpfire-signature'] === sign(secret, JSON.stringify(delivery.body));
+
+	it("1. an editor taken off the board: the next event goes to the owner's webhook and not to theirs", async () => {
+		const s = scene();
+		const theirs = await hookOf(s, s.editor, 'e');
+		const owners = await hookOf(s, s.owner, 'o');
+		expect(await event(s)).toEqual([theirs.url, owners.url]);
+
+		await takeOff(s);
+
+		expect(await event(s)).toEqual([owners.url]);
+	});
+
+	it("2. an editor through a team, the team's share taken away: not sent to theirs", async () => {
+		const s = scene({ viaTeam: true });
+		const theirs = await hookOf(s, s.editor, 'e');
+		const owners = await hookOf(s, s.owner, 'o');
+
+		const res = await api('DELETE', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { type: 'team', targetId: s.team!.id } });
+		expect(res.status).toBe(200);
+
+		expect(await event(s)).toEqual([owners.url]);
+		expect(await event(s)).not.toContain(theirs.url);
+	});
+
+	it('3. an editor through a team, taken out of the team: not sent to theirs', async () => {
+		const s = scene({ viaTeam: true });
+		await hookOf(s, s.editor, 'e');
+		const owners = await hookOf(s, s.owner, 'o');
+
+		const res = await api('DELETE', `/api/teams/${s.team!.id}/members/${s.editor.id}`, { user: s.admin });
+		expect(res.status).toBe(200);
+
+		expect(await event(s)).toEqual([owners.url]);
+	});
+
+	it("4. a public board's editor taken off its members can still open it, so their webhook is sent (a guard)", async () => {
+		const s = scene({ isPublic: true });
+		const theirs = await hookOf(s, s.editor, 'e');
+		const owners = await hookOf(s, s.owner, 'o');
+
+		await takeOff(s);
+
+		expect(await event(s)).toEqual([theirs.url, owners.url]);
+	});
+
+	it('5. then the board made private: not sent to theirs', async () => {
+		const s = scene({ isPublic: true });
+		await hookOf(s, s.editor, 'e');
+		const owners = await hookOf(s, s.owner, 'o');
+		await takeOff(s);
+
+		const res = await api('PATCH', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { isPublic: false } });
+		expect(res.status).toBe(200);
+
+		expect(await event(s)).toEqual([owners.url]);
+	});
+
+	it("6. an administrator on no member list made an ordinary user: not sent to theirs; another administrator's is", async () => {
+		const s = scene();
+		const other = makeUser({ username: 'other-admin', role: 'admin' });
+		const theirs = await hookOf(s, s.admin, 'a');
+		const others = await hookOf(s, other, 'a2');
+		// While an administrator, sent: the role is read at each event, not when the webhook was made.
+		expect(await event(s)).toEqual([theirs.url, others.url]);
+
+		const res = await api('PUT', `/api/users/${s.admin.id}`, { user: s.chief, body: { role: 'user' } });
+		expect(res.status).toBe(200);
+
+		expect(await event(s)).toEqual([others.url]);
+	});
+
+	it('7. an editor taken off and given the board back as a viewer: sent to theirs again, with nothing else changed (a guard)', async () => {
+		const s = scene();
+		const theirs = await hookOf(s, s.editor, 'e');
+		const owners = await hookOf(s, s.owner, 'o');
+		await takeOff(s);
+		// Held here (case 1); not asked again, so that this case holds on the code before card 2325 too.
+		await event(s);
+
+		const res = await api('POST', `/api/boards/${s.board.id}/share`, {
+			user: s.owner,
+			body: { type: 'user', targetId: s.editor.id, role: 'viewer' }
+		});
+		expect(res.status).toBe(200);
+
+		expect(await event(s)).toEqual([theirs.url, owners.url]);
+	});
+
+	it('8. a webhook with no setter is held and says why, until the owner takes it over with a new secret', async () => {
+		const s = scene();
+		const nobodys = makeWebhook(s.board, { url: 'https://hooks.example.test/nobody', secret: 'old', setBy: null });
+		const owners = await hookOf(s, s.owner, 'o');
+
+		expect(await event(s)).toEqual([owners.url]);
+		expect(lines('WARN')).toEqual([`Webhook ${nobodys.id} on board ${s.board.id} not sent: nobody is recorded as having set it up`]);
+		expect(lines('WARN')[0]).not.toContain('hooks.example.test');
+		const [listed, one] = await answersTo(s, s.owner, nobodys.id);
+		for (const answer of [listed, one]) {
+			expect(answer).toMatchObject({ active: true, pausedBecause: NOBODY });
+			expect(answer.lastDelivery).toMatchObject({ outcome: 'not-sent', status: null, reason: NOBODY_REASON });
+		}
+
+		expect((await put(s.owner, nobodys.id, { active: false })).status).toBe(200);
+		const taken = await put(s.owner, nobodys.id, { active: true, secret: 'new' });
+		expect(taken.status).toBe(200);
+		expect(taken.body).toMatchObject({ active: true, pausedBecause: null });
+
+		expect(await event(s)).toEqual([nobodys.url, owners.url]);
+		expect(signedWith('new', sent.webhooks[0])).toBe(true);
+	});
+
+	it('9. tells the owner and an administrator why it is held, after a restart too, when the last delivery is forgotten', async () => {
+		const s = scene();
+		const theirs = await hookOf(s, s.editor, 'e');
+		const owners = await hookOf(s, s.owner, 'o');
+		await takeOff(s);
+		await event(s);
+
+		for (const user of [s.owner, s.admin]) {
+			for (const answer of await answersTo(s, user, theirs.id)) {
+				expect(answer).toMatchObject({ active: true, pausedBecause: LOST });
+				expect(answer.lastDelivery).toEqual({ at: expect.any(String), event: 'card.created', outcome: 'not-sent', status: null, reason: LOST_REASON });
+			}
+			for (const answer of await answersTo(s, user, owners.id)) expect(answer).toHaveProperty('pausedBecause', null);
+		}
+
+		// As a restart: the last delivery is forgotten, and why it is held is not.
+		forgetDeliveries();
+		for (const answer of await answersTo(s, s.owner, theirs.id)) {
+			expect(answer).toMatchObject({ pausedBecause: LOST, lastDelivery: null });
+		}
+	});
+
+	it("10. gives pausedBecause where it gives the address: the owner, an administrator and a create's answer, and no viewer or editor", async () => {
+		const s = scene();
+		const viewer = makeUser({ username: 'viewer' });
+		const remaining = makeUser({ username: 'remaining' });
+		addBoardMember(s.board, viewer, 'viewer');
+		addBoardMember(s.board, remaining, 'editor');
+		const theirs = await hookOf(s, s.editor, 'e');
+		await takeOff(s);
+		await event(s);
+
+		for (const user of [viewer, remaining]) {
+			for (const answer of await answersTo(s, user, theirs.id)) {
+				for (const key of ['pausedBecause', 'url', 'secret', 'lastDelivery']) expect(answer, key).not.toHaveProperty(key);
+			}
+		}
+		const edited = await put(remaining, theirs.id, { events: ['card.created'] });
+		expect(edited.status).toBe(200);
+		for (const key of ['pausedBecause', 'url', 'secret', 'lastDelivery']) expect(edited.body, key).not.toHaveProperty(key);
+
+		for (const user of [s.owner, s.admin]) {
+			for (const answer of await answersTo(s, user, theirs.id)) expect(answer).toHaveProperty('pausedBecause', LOST);
+		}
+
+		// The create's answer, to an editor too: its caller is its setter, and can open the board.
+		for (const user of [remaining, s.owner]) {
+			const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user, body: { url: `https://hooks.example.test/new-${user.id}` } });
+			expect(made.status).toBe(201);
+			expect(made.body).toHaveProperty('pausedBecause', null);
+		}
+	});
+
+	it('11. the owner takes a held webhook over: off, then on with a new secret; an unchanged on leaves another held', async () => {
+		const s = scene();
+		const second = makeUser({ username: 'second' });
+		addBoardMember(s.board, second, 'editor');
+		const theirs = await hookOf(s, s.editor, 'e');
+		const seconds = await hookOf(s, second, 'f');
+		await takeOff(s);
+		await takeOff(s, second);
+
+		expect((await put(s.owner, theirs.id, { active: false })).status).toBe(200);
+		const taken = await put(s.owner, theirs.id, { active: true, secret: 'new' });
+		expect(taken.status).toBe(200);
+		expect(taken.body).toMatchObject({ active: true, pausedBecause: null });
+
+		expect(await event(s)).toEqual([theirs.url]);
+		expect(signedWith('new', sent.webhooks[0])).toBe(true);
+
+		// On for one already on is no change (card 2117): the setter stays the one who lost the board.
+		const unchanged = await put(s.owner, seconds.id, { active: true });
+		expect(unchanged.status).toBe(200);
+		expect(unchanged.body).toMatchObject({ active: true, pausedBecause: LOST });
+		expect(await event(s)).not.toContain(seconds.url);
+	});
+
+	it('12. writes one WARN for two held events, naming the webhook, the board and the setter, and not the address', async () => {
+		const s = scene();
+		const theirs = await hookOf(s, s.editor, 'e-secret-path');
+		await takeOff(s);
+
+		await event(s);
+		await event(s);
+
+		const line = `Webhook ${theirs.id} on board ${s.board.id} not sent: the account that set it up (user ${s.editor.id}) can no longer open the board`;
+		expect(lines('WARN')).toEqual([line]);
+		expect(lines('WARN')[0]).not.toContain('e-secret-path');
+		expect(lines('WARN')[0]).not.toContain('hooks.example.test');
+	});
+
+	it('13. writes nothing for a held delivery but the log line', async () => {
+		const s = scene();
+		const theirs = await hookOf(s, s.editor, 'e');
+		const owners = await hookOf(s, s.owner, 'o');
+		await takeOff(s);
+		const card = makeCard(s.cols['To Do']);
+		const logRows = () => (sqlite.prepare('SELECT COUNT(*) AS n FROM system_logs').get() as { n: number }).n;
+		sent.clear();
+
+		const before = snapshotDb();
+		const logged = logRows();
+		dispatchWebhook(s.board.id, 'card.created', { cardId: card.id });
+		await sent.settle();
+
+		// The snapshot leaves out system_logs: every other table is as it was.
+		expectUnchanged(before, 'after a held delivery');
+		expect(logRows()).toBe(logged + 1);
+		expect(lines('WARN')).toEqual([
+			`Webhook ${theirs.id} on board ${s.board.id} not sent: the account that set it up (user ${s.editor.id}) can no longer open the board`
+		]);
+		expect(sent.webhooks.map((w) => w.url)).toEqual([owners.url]);
+	});
+
+	it('14. an editor made a viewer can still open the board, so their webhook is sent (a guard)', async () => {
+		const s = scene();
+		const theirs = await hookOf(s, s.editor, 'e');
+		const owners = await hookOf(s, s.owner, 'o');
+
+		const res = await api('POST', `/api/boards/${s.board.id}/share`, {
+			user: s.owner,
+			body: { type: 'user', targetId: s.editor.id, role: 'viewer' }
+		});
+		expect(res.status).toBe(200);
+
+		expect(await event(s)).toEqual([theirs.url, owners.url]);
+	});
+
+	it('15. gives pausedBecause null for a webhook that is off, whoever set it', async () => {
+		const s = scene();
+		const theirs = await hookOf(s, s.editor, 'e');
+		const nobodysOff = makeWebhook(s.board, { setBy: null, active: false });
+		await takeOff(s);
+
+		const off = await put(s.owner, theirs.id, { active: false });
+		expect(off.status).toBe(200);
+		expect(off.body).toMatchObject({ active: false, pausedBecause: null });
+		for (const answer of await answersTo(s, s.owner, theirs.id)) expect(answer).toMatchObject({ active: false, pausedBecause: null });
+		for (const answer of await answersTo(s, s.owner, nobodysOff.id)) expect(answer).toMatchObject({ active: false, pausedBecause: null });
+	});
+
+	// ─── The review's (2026-10-20) ───
+
+	it('16. holds a webhook sent through deliver on its own, with no dispatch and no cache (decision 10)', async () => {
+		const s = scene();
+		const outsider = makeUser({ username: 'outsider' });
+		const hook = makeWebhook(s.board, { url: 'https://hooks.example.test/direct', setBy: outsider });
+
+		deliver(hook, 'card.created', '{}');
+		await sent.settle();
+
+		expect(sent.webhooks).toEqual([]);
+		expect(deliveryResultFor(hook)).toMatchObject({ outcome: 'not-sent', status: null, reason: LOST_REASON });
+		expect(lines('WARN')).toEqual([
+			`Webhook ${hook.id} on board ${s.board.id} not sent: the account that set it up (user ${outsider.id}) can no longer open the board`
+		]);
+	});
+
+	it("17. never carries one board's answer to another through a shared cache", async () => {
+		const s = scene();
+		const outsider = makeUser({ username: 'outsider' });
+		const own = makeBoard({ owner: outsider }).board;
+		const onTheirs = makeWebhook(own, { url: 'https://hooks.example.test/theirs' });
+		const onOwners = makeWebhook(s.board, { url: 'https://hooks.example.test/owners', setBy: outsider });
+		const shared = new Map<string, boolean>();
+
+		deliver(onTheirs, 'card.created', '{}', undefined, undefined, shared);
+		deliver(onOwners, 'card.created', '{}', undefined, undefined, shared);
+		await sent.settle();
+
+		expect(sent.webhooks.map((w) => w.url)).toEqual([onTheirs.url]);
+		expect(deliveryResultFor(onOwners)).toMatchObject({ outcome: 'not-sent', reason: LOST_REASON });
+	});
+
+	it('18. holds a webhook whose setter names no account, as after a restore, with the lost-setter sentence', async () => {
+		const s = scene();
+		const owners = await hookOf(s, s.owner, 'o');
+		const dangling = makeWebhook(s.board, { url: 'https://hooks.example.test/dangling' });
+		// A restored row can name an account this database never had: the key is not asked here.
+		sqlite.pragma('foreign_keys = OFF');
+		try {
+			sqlite.prepare('UPDATE webhooks SET set_by = 999999 WHERE id = ?').run(dangling.id);
+		} finally {
+			sqlite.pragma('foreign_keys = ON');
+		}
+
+		expect(await event(s)).toEqual([owners.url]);
+		for (const answer of await answersTo(s, s.owner, dangling.id)) {
+			expect(answer).toMatchObject({ active: true, pausedBecause: LOST });
+			expect(answer.lastDelivery).toMatchObject({ outcome: 'not-sent', reason: LOST_REASON });
+		}
 	});
 });

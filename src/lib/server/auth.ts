@@ -403,7 +403,9 @@ export const namingIds = (ids: number[]): string =>
  *
  * It ends nothing else. A webhook nobody is recorded as having set, one made
  * before migration 0056 or whose setter's account was deleted, is left on, and
- * so is one somebody else set since.
+ * so is one somebody else set since. Since card 2325 one with no setter is
+ * held at delivery all the same (webhooks.ts, `holdOf`), as is one whose
+ * setter can no longer open its board.
  *
  * It throws if no transaction is open.
  */

@@ -405,11 +405,14 @@ export function assignCard(card: Card, user: SessionUser): void {
 /**
  * A webhook on a board. With no `events` it receives every event. Use it with
  * `effects()`, which records the delivery and sends nothing. With no `setBy`
- * it has no recorded setter, as a webhook made before migration 0056.
+ * its setter is the board's owner, so it is sent (card 2325: a webhook whose
+ * setter cannot open the board is held). `setBy: null` gives it no recorded
+ * setter, as a webhook made before migration 0056, which is held too; so is
+ * one on a board made with no owner, unless a `setBy` is given.
  */
 export function makeWebhook(
 	board: Board,
-	opts: { url?: string; events?: string[]; secret?: string; active?: boolean; setBy?: SessionUser } = {}
+	opts: { url?: string; events?: string[]; secret?: string; active?: boolean; setBy?: SessionUser | null } = {}
 ): typeof webhooks.$inferSelect {
 	return db
 		.insert(webhooks)
@@ -419,7 +422,7 @@ export function makeWebhook(
 			events: JSON.stringify(opts.events ?? []),
 			secret: opts.secret ?? '',
 			active: opts.active ?? true,
-			setBy: opts.setBy?.id
+			setBy: opts.setBy === undefined ? board.createdBy : opts.setBy === null ? null : opts.setBy.id
 		})
 		.returning()
 		.get();

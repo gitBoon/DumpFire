@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.67
+version: 1.68
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1018,6 +1018,22 @@ new; these answers and fields are:
   counted, so moving `from` across its completion told them the second it was completed.
   Every other figure is as it was for the boards the key's user can open (item 80).
   See [Reporting](#reporting).
+- **A webhook is sent only while the account that set it up can open its board** (card 2325),
+  asked at each event with that account's role as it is then, as mail is sent only to
+  assignees who can open the board. One set up by an editor went on sending every event of the
+  board to its address after they were taken off the board, out of the team it is shared with,
+  or the board was made private, and one an administrator set up went on after they were made
+  an ordinary user. **A webhook whose setter cannot open the board, and one nobody is recorded
+  as having set up (made before setters were recorded on 2026-10-18/19), is held from the
+  deploy on**: nothing is sent, `active` is left as it is, and `lastDelivery` says `Not sent:
+  the account that set it up can no longer open this board` or `Not sent: nobody is recorded
+  as having set it up`. A webhook answered to the board's owner or an administrator, and the
+  answer to the create, carry a new field, `pausedBecause`: `null` unless the webhook is on
+  and held, then one of two sentences saying why and what to do. A held webhook is sent again
+  when its setter can open the board again. The board's owner or an administrator takes one
+  over by switching it off, then on (which makes them its setter), with a new secret, and
+  updates the receiver; `{"active": true}` for one already on takes nothing over (item 81).
+  See [Webhooks](#webhooks).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -3318,6 +3334,26 @@ flowchart TD
   **Read through the API only**: no page shows webhooks and nothing tells anyone a delivery
   failed, so poll `GET /api/v1/webhooks/{webhookId}` or the board's list. Every outcome and
   reason, with what to do about each: [Last Delivery](notifications-email.md#last-delivery).
+- **A webhook is sent only while the account that set it up can open the board** (card
+  2325): the account that created it, or last set its `url` or `secret`, or switched it on,
+  asked at each event with its role as it is then. One whose setter was taken off the board,
+  out of the team it is shared with, or lost it when it was made private, or was an
+  administrator made an ordinary user, is held: nothing is sent and `active` is left as it is.
+  **A webhook nobody is recorded as having set up (made before setters were recorded on
+  2026-10-18/19, or brought back by restoring an older backup) is held from the deploy on.**
+  `pausedBecause`, given with the address (and `null` in the answer to the `POST`), is `null`
+  unless the webhook is on and held, then one of two sentences, word for word: "The account
+  that set this up can no longer open this board, so nothing is sent. The address was chosen
+  by that account: delete the webhook unless you recognise it; to keep it, switch it off and
+  on, which makes you its setter, and set a new secret and update the receiver." or "Nobody is
+  recorded as having set this up. Delete it unless you recognise the address; to keep it,
+  switch it off and on, which makes you its setter, and set a new secret." It is worked out
+  each time, so it is there after a restart when `lastDelivery` is `null`. A held webhook is
+  sent again when its setter can open the board again. **Taking one over**: the board's owner
+  or an administrator sends `{"active": false}`, then `{"active": true, "secret": "<new>"}`,
+  and updates the receiver with the new secret; `{"active": true}` for one already on takes
+  nothing over. See
+  [When Nobody Who Can Open the Board Set It Up](notifications-email.md#when-nobody-who-can-open-the-board-set-it-up).
 - **Only the board's owner or an administrator changes the address or the secret, or
   switches a webhook on.** An editor who sends `url` or `secret` at all, whatever the value,
   is `403` `Only the board's owner or an administrator can change a webhook's address or

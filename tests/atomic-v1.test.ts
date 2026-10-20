@@ -25,7 +25,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import {
 	activityLog,
 	boardMembers,
@@ -1344,6 +1344,13 @@ describe('each of these reads what it checks inside the transaction that writes'
 			route: 'POST /api/v1/boards/:boardId/cards',
 			table: 'boards',
 			status: 201,
+			// Without the scene's webhook: whether its setter can open the board
+			// (card 2325) is read once the card is committed, immediately before
+			// the delivery, as the delivery reads its webhooks. Not a check of
+			// this route's write. That this route's event still reaches the
+			// check, and is held or sent by it, is case 1 of card 2325's
+			// describe in webhooks.test.ts, through this same route.
+			prepare: () => void sqlite.prepare('DELETE FROM webhooks').run(),
 			request: (s) =>
 				api('POST', `/api/v1/boards/${s.A.board.id}/cards`, {
 					user: s.owner,

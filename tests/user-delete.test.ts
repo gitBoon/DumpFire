@@ -246,7 +246,7 @@ function full(): Full {
 	const hooks = {
 		leavers: makeWebhook(s.A.board, { setBy: s.leaver }).id,
 		owners: makeWebhook(s.A.board, { setBy: s.owner }).id,
-		nobodys: makeWebhook(s.A.board).id
+		nobodys: makeWebhook(s.A.board, { setBy: null }).id
 	};
 
 	// Two requests the leaver made signed in, stored with the address the

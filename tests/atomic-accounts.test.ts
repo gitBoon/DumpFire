@@ -1184,7 +1184,7 @@ describe('what taking an account back switches off (card 2168)', () => {
 		const hooks = {
 			theirs: makeWebhook(board, { url: 'https://hooks.example.test/theirs', setBy: target }).id,
 			editors: makeWebhook(board, { url: 'https://hooks.example.test/editors', setBy: editor }).id,
-			nobodys: makeWebhook(board, { url: 'https://hooks.example.test/nobodys' }).id,
+			nobodys: makeWebhook(board, { url: 'https://hooks.example.test/nobodys', setBy: null }).id,
 			alreadyOff: makeWebhook(board, { url: 'https://hooks.example.test/off', setBy: target, active: false }).id
 		};
 		const schedules = {
@@ -1286,10 +1286,10 @@ describe('what taking an account back switches off (card 2168)', () => {
 
 				dispatchWebhook(s.board.id, 'card.moved', { cardId: 1 });
 				await sent.settle();
-				expect(sent.webhooks.map((hook) => hook.url)).toEqual([
-					'https://hooks.example.test/editors',
-					'https://hooks.example.test/nobodys'
-				]);
+				// The one nobody is recorded as having set is left on by the
+				// reset, and held at delivery since card 2325.
+				expect(hookRow(s.hooks.nobodys)).toEqual({ active: 1, setBy: null });
+				expect(sent.webhooks.map((hook) => hook.url)).toEqual(['https://hooks.example.test/editors']);
 			} finally {
 				sent.restore();
 			}
@@ -2245,7 +2245,7 @@ describe('the admin page', () => {
 		makeWebhook(board, { setBy: accounts.holder });
 		makeWebhook(board, { setBy: accounts.holder, active: false });
 		makeWebhook(board, { setBy: accounts.other });
-		makeWebhook(board);
+		makeWebhook(board, { setBy: null });
 		const schedule = (user: SessionUser, enabled: boolean) =>
 			db.insert(reportSchedules).values({ userId: user.id, name: 'Weekly', scope: 'all', enabled }).run();
 		schedule(accounts.holder, true);

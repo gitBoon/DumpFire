@@ -764,10 +764,11 @@ describe('comments and assigned work do not outlive board access', () => {
  */
 describe('webhook secrets and addresses', () => {
 	const ADDRESS = 'https://deliver:p4ss@hooks.internal.example.test/hook';
+	// Set by the board's owner: a webhook nobody is recorded as having set is held (card 2325).
 	const makeHook = () =>
 		db
 			.insert(webhooks)
-			.values({ boardId: A.board.id, url: ADDRESS, secret: 's3cret' })
+			.values({ boardId: A.board.id, url: ADDRESS, secret: 's3cret', setBy: owner.id })
 			.returning()
 			.get();
 
@@ -943,26 +944,36 @@ describe('webhook secrets and addresses', () => {
 			reason: 'Not sent: the address carries a user name or password'
 		};
 
+		// Why a webhook is held goes with the last delivery (card 2325): to nobody else either.
 		for (const user of [viewer, editor]) {
 			const list = await api('GET', `/api/v1/boards/${A.board.id}/webhooks`, { user });
 			const one = await api('GET', `/api/v1/webhooks/${hook.id}`, { user });
-			for (const answer of [list.body[0], one.body]) expect(answer).not.toHaveProperty('lastDelivery');
+			for (const answer of [list.body[0], one.body]) {
+				expect(answer).not.toHaveProperty('lastDelivery');
+				expect(answer).not.toHaveProperty('pausedBecause');
+			}
 		}
 		const edited = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: editor, body: { events: ['card.moved'] } });
 		expect(edited.status).toBe(200);
 		expect(edited.body).not.toHaveProperty('lastDelivery');
+		expect(edited.body).not.toHaveProperty('pausedBecause');
 
 		for (const user of [owner, admin]) {
 			const list = await api('GET', `/api/v1/boards/${A.board.id}/webhooks`, { user });
 			const one = await api('GET', `/api/v1/webhooks/${hook.id}`, { user });
 			const changed = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user, body: { active: true } });
-			for (const answer of [list.body[0], one.body, changed.body]) expect(answer.lastDelivery).toEqual(result);
+			for (const answer of [list.body[0], one.body, changed.body]) {
+				expect(answer.lastDelivery).toEqual(result);
+				// Its setter, the owner, can open the board: not held.
+				expect(answer).toHaveProperty('pausedBecause', null);
+			}
 		}
 
-		// The create's answer, to an editor too: nothing has been delivered.
+		// The create's answer, to an editor too: nothing has been delivered, and its setter can open the board.
 		const made = await api('POST', `/api/v1/boards/${A.board.id}/webhooks`, { user: editor, body: { url: 'https://example.test/new' } });
 		expect(made.status).toBe(201);
 		expect(made.body).toHaveProperty('lastDelivery', null);
+		expect(made.body).toHaveProperty('pausedBecause', null);
 	});
 
 	it('refuses someone who cannot open the board at all', async () => {

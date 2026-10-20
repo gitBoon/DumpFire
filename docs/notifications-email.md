@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.24
+version: 1.25
 status: As-Built
-date: 2026-10-19
+date: 2026-10-20
 tags:
   - notifications
   - email
@@ -1064,7 +1064,11 @@ Board-level webhooks fire HTTP POST requests to configured URLs when events occu
 Each webhook also records `set_by` (card 2168, migration 0056): the account that last set its
 address or its secret, the caller of the `POST` that made it, or of a `PUT` that changed
 either. No answer gives it. It is what taking an account back reads: see
-[Who May Change a Webhook](#who-may-change-a-webhook). Every webhook is sent through the
+[Who May Change a Webhook](#who-may-change-a-webhook). It is also what every delivery checks
+(card 2325): a webhook is sent only while that account can open the board, and one with no
+`set_by` is held: see
+[When Nobody Who Can Open the Board Set It Up](#when-nobody-who-can-open-the-board-set-it-up).
+Every webhook is sent through the
 rules of [Where a Webhook May Send](#where-a-webhook-may-send), and a board holds at most 10
 ([How Many Webhooks a Board May Have](#how-many-webhooks-a-board-may-have)).
 
@@ -1106,15 +1110,19 @@ flowchart TD
     Read["GET or PUT a webhook"] --> View{"Can view the board?<br/>(edit, for a PUT)"}
     View -->|"No"| R403["403"]
     View -->|"Yes"| Role{"Board owner or admin?"}
-    Role -->|"Yes"| WithSecret["Webhook + url + secret + hasSecret<br/>+ lastDelivery"]
-    Role -->|"No"| NoSecret["Webhook + hasSecret only:<br/>no url, no secret"]
-    Create["POST a new webhook\n(editor or above)"] --> Once["Webhook + the url and secret just supplied,<br/>lastDelivery null"]
+    Role -->|"Yes"| WithSecret["Webhook + url + secret + hasSecret<br/>+ lastDelivery + pausedBecause"]
+    Role -->|"No"| NoSecret["Webhook + hasSecret only:<br/>no url, no secret,<br/>no lastDelivery, no pausedBecause"]
+    Create["POST a new webhook\n(editor or above)"] --> Once["Webhook + the url and secret just supplied,<br/>lastDelivery null, pausedBecause null"]
 ```
 
 All webhook responses are built by `presentWebhook(hook, reveal)` in
-`src/lib/server/webhooks.ts`, which leaves out `url`, `secret` and `lastDelivery` (card 2178,
-[Last Delivery](#last-delivery)) together unless `reveal` is true, so no route can return the
-raw row. It leaves out `setBy` for every caller.
+`src/lib/server/webhooks.ts`, which leaves out `url`, `secret`, `lastDelivery` (card 2178,
+[Last Delivery](#last-delivery)) and `pausedBecause` (card 2325,
+[When Nobody Who Can Open the Board Set It Up](#when-nobody-who-can-open-the-board-set-it-up))
+together unless `reveal` is true, so no route can return the raw row. It leaves out `setBy`
+for every caller. The create's answer is made inside the transaction that saved the webhook,
+since `pausedBecause` reads whether its setter can open the board; it is always `null` there,
+because the caller can edit the board and is the setter.
 
 ### Who May Change a Webhook
 
@@ -1165,10 +1173,24 @@ key is still there: a key a reset ended while the request's body was arriving is
 or expired API key`, with nothing written. Taking an account back switches off every webhook it set that is on: an
 administrator's password reset, an invite used, the holder's own change with "End my API keys
 too" (or "Switch off the N webhooks I set up") ticked, and deleting the account. A webhook with
-no setter (made before migration 0056, or whose setter's account was deleted) is left on. A
+no setter (made before migration 0056, or whose setter's account was deleted) is left on by
+these, and held at every delivery since card 2325. A
 webhook switched off this way keeps naming its setter, and is switched on again by the board's
 owner or an administrator with `PUT /api/v1/webhooks/{id}` and `{"active": true}`; no page
 shows webhooks. See [What Setting a Password Ends](authentication-security.md#what-setting-a-password-ends).
+
+**Taking over a held webhook** (card 2325). A webhook whose setter can no longer open the
+board, or that has none, is held, not switched off. The board's owner or an administrator
+takes it over in two requests: `PUT /api/v1/webhooks/{id}` `{"active": false}`, then
+`{"active": true, "secret": "<new>"}`. Switching it on makes them its setter, so it is sent
+again; a new secret, because the former setter knows the old one and could forge deliveries
+to the receiver, which may be the company's own system; and then the receiver is updated with
+the new secret. `{"active": true}` for a webhook already on is no change and takes nothing
+over. The address was chosen by the former setter: delete the webhook unless you recognise
+it. Whoever takes it over answers for it: a reset of their account, or deleting it, switches
+it off. Prefer the board's owner where they have a key. A single `PUT {"secret": "<new>"}`
+also takes it over, with no gap while it is off. Off then on, with no secret change, takes
+over a receiver that does not check signatures.
 
 ### Where a Webhook May Send
 
@@ -1434,6 +1456,8 @@ slow receiver queues, and each delivery still has its whole 10 seconds once it i
 | `not-sent` | `null` | `Not sent: the address carries a user name or password` | Credentials before the host | Take them out of the address: put a token in the path, or rely on the signature |
 | `not-sent` | `null` | `Not sent: the address is not an http or https address` | Another scheme, or a stored row that is not a URL | Register an `http://` or `https://` address |
 | `not-sent` | `null` | `Not sent: its events are not a list` | Its stored `events` is not a JSON list (card 2145) | `PUT` the webhook's `events` as a list (`[]` for every event) |
+| `not-sent` | `null` | `Not sent: the account that set it up can no longer open this board` | Held: its setter cannot open the board (card 2325) | Delete it unless you recognise the address; to keep it, take it over ([Who May Change a Webhook](#who-may-change-a-webhook)) |
+| `not-sent` | `null` | `Not sent: nobody is recorded as having set it up` | Held: it has no setter (card 2325) | The same |
 
 **A reason is fixed words.** One of the sentences above and nothing else: never the address,
 its path or query, a user name, a password, the secret, an address a name resolved to, or
@@ -1477,7 +1501,9 @@ flowchart TD
     Each --> Asks{"events a list?"}
     Asks -->|"no"| R1["not-sent<br/>its events are not a list"]
     Asks -->|"yes, and not this event"| Skip["nothing recorded"]
-    Asks -->|"yes, or empty"| Written{"refused as written?<br/>credentials, inside, scheme"}
+    Asks -->|"yes, or empty"| Held{"held? (card 2325)<br/>no setter, or the setter<br/>cannot open the board"}
+    Held -->|"yes"| R0["not-sent, the hold's reason"]
+    Held -->|"no"| Written{"refused as written?<br/>credentials, inside, scheme"}
     Written -->|"yes"| R2["not-sent, its fixed reason"]
     Written -->|"no"| Deliver["deliver: http(s).request"]
     Deliver --> First{"first of"}
@@ -1485,6 +1511,7 @@ flowchart TD
     First -->|"status line"| R4["delivered (2xx)<br/>or answered (any other), with the status"]
     First -->|"error before the status,<br/>or closed with neither"| R5["no-answer, one of three reasons<br/>not reached: held until the timeout"]
     R1 --> Keep{"a later dispatch's<br/>result held?"}
+    R0 --> Keep
     R2 --> Keep
     R3 --> Keep
     R4 --> Keep
@@ -1504,12 +1531,89 @@ sequenceDiagram
     S->>S: Card event occurs and its activity entry is written
     S->>S: The transaction commits
     S->>S: Check board webhooks
-    S->>W: POST with JSON payload
-    Note over W: Verify signature
-    W-->>S: 200 OK
+    S->>S: deliver: can the setter open the board? (once per setter per event)
+    alt the setter can open it
+        S->>W: POST with JSON payload
+        Note over W: Verify signature
+        W-->>S: 200 OK
+    else no setter, or the setter cannot open it
+        S->>S: not sent: lastDelivery not-sent, one WARN an hour
+    end
 ```
 
-A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column of its board is one entry, so at most one delivery to each of the board's webhooks (a move to another board is two or three entries across the two boards, made one card at a time: see the table below): a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no status line within 10 seconds, is logged at `ERROR`, naming the host and port and never the path. A redirect is logged, and not followed; an answer of 500 from a receiver is not logged as a failure, and is told to the board's owner in the webhook's `lastDelivery` instead, with every other outcome (card 2178, [Last Delivery](#last-delivery)). The board's webhooks are read once, and the body built once, for each event: every webhook of one event is sent the same body and timestamp, signed for each, and each webhook is handled on its own, so a row that cannot be sent stops no other (card 2145). See [Where a Webhook May Send](#where-a-webhook-may-send).
+A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column of its board is one entry, so at most one delivery to each of the board's webhooks (a move to another board is two or three entries across the two boards, made one card at a time: see the table below): a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no status line within 10 seconds, is logged at `ERROR`, naming the host and port and never the path. A redirect is logged, and not followed; an answer of 500 from a receiver is not logged as a failure, and is told to the board's owner in the webhook's `lastDelivery` instead, with every other outcome (card 2178, [Last Delivery](#last-delivery)). The board's webhooks are read once, and the body built once, for each event: every webhook of one event is sent the same body and timestamp, signed for each, and each webhook is handled on its own, so a row that cannot be sent stops no other (card 2145). See [Where a Webhook May Send](#where-a-webhook-may-send). Before anything else, `deliver` asks whether the webhook is held (card 2325): see the next section.
+
+### When Nobody Who Can Open the Board Set It Up
+
+Anyone who can edit a board can set up a webhook, which sends every event of the board it asks
+for (card titles, the fields changed, comment text, who did what) to an address they choose.
+Until card 2325 it went on doing so after they lost the board: taken off it, taken out of the
+team it is shared with, the team deleted, the board made private (for one who could open it
+only because it was public), an administrator made an ordinary user, or a working copy or
+backup put in place. Only a password reset, an invite used or deleting the account switched it
+off.
+
+**The rule.** A webhook is sent only while the account that set it up (`set_by`) can open the
+board, as `canViewBoard` has it: the board's owner, a member of any role, a member of a team it
+is shared with, anyone for a public board, an administrator. That is the rule mail uses for
+assignees (card 2180, `whoCanOpen`). A viewer can read everything a webhook sends, so an editor
+made a viewer is still sent to. A webhook nobody is recorded as having set up (made before
+migration 0056 on 2026-10-18/19, or brought back by restoring an older backup) is held too:
+nobody answers for where it sends. It stays held until it is taken over; it has no setter whose
+access could come back.
+
+**Where it is asked: in `deliver`, at each event.** Not where access is lost: there are at least
+seven ways to lose it, and a check at each would miss the next one added. `holdOf(hook, cache)`
+in `src/lib/server/webhooks.ts` reads the setter's row, with the role as it is now, and asks
+`canViewBoard`. `dispatchWebhook` makes one cache for the event and passes it to each
+webhook's `deliver`, so one event asks once per setter (all of an event's webhooks are on one
+board). The check sits in `deliver` itself, before the address is judged, so anything that
+sends goes through it; a `deliver` called on its own asks afresh. A check that throws throws
+before any request: in a dispatch the webhook's own `try` logs an `ERROR` and it is not sent.
+
+**What a hold does.** Nothing is sent. `active` is left as it is: it keeps its meaning, switched
+on or off by a person. Nothing is written but one `WARN` an hour in the system log, under
+`Webhooks`: `Webhook <id> on board <board> not sent: the account that set it up (user <id>) can
+no longer open the board`, or `Webhook <id> on board <board> not sent: nobody is recorded as
+having set it up`, never the address. `lastDelivery` records the not-sent result
+([Last Delivery](#last-delivery)). A webhook whose setter is given the board back is sent again
+at the next event, with nothing else changed. An event already on its way when access was
+removed may still arrive, up to 10 seconds later: there are no retries and no queue.
+
+**`pausedBecause`.** Given where the address is given (the board's owner and administrators, and
+the answer to the create, where it is `null`), worked out when the answer is made and never
+stored, so it is there after a restart when `lastDelivery` is `null`. It is `null` unless the
+webhook is on and held, so a webhook switched off is `null` whoever set it. While held it reads,
+word for word:
+
+- a setter who can no longer open the board: "The account that set this up can no longer open
+  this board, so nothing is sent. The address was chosen by that account: delete the webhook
+  unless you recognise it; to keep it, switch it off and on, which makes you its setter, and set
+  a new secret and update the receiver."
+- no recorded setter: "Nobody is recorded as having set this up. Delete it unless you recognise
+  the address; to keep it, switch it off and on, which makes you its setter, and set a new
+  secret."
+
+Editors and viewers see neither field, as they see no `lastDelivery`: they see `active: true`.
+No page shows webhooks, so a board's owner learns of a held webhook through the API alone.
+Taking one over is in [Who May Change a Webhook](#who-may-change-a-webhook). A held webhook
+still counts toward the board's 10, and still counts on the Account and admin pages among the
+webhooks an account set up that are on, since a reset of that account still switches it off.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Sending: created (the caller is the setter)
+    Sending --> Held: the setter loses the board<br/>(or the row has no setter)
+    Held --> Sending: the setter can open the board again
+    Held --> Sending: owner or admin switches it off, then on<br/>(they become the setter; new secret)
+    Sending --> Off: switched off, or the setter's reset
+    Held --> Off: switched off
+    Held --> Off: the setter's own reset, account delete<br/>or invite used (endAccountAccess, deleteUser)
+    Off --> Sending: owner or admin switches it on, and can open the board
+    Off --> [*]: deleted
+    Held --> [*]: deleted
+    Sending --> [*]: deleted
+```
 
 ### Events and Payload
 
