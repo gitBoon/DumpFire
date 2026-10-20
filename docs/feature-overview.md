@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.33
+version: 1.34
 status: As-Built
-date: 2026-10-19
+date: 2026-10-20
 tags:
   - features
   - overview
@@ -59,7 +59,8 @@ Cards are your tasks. Each card sits in a column and can be enriched with detail
 | **Colour tags** | Set through the API (`colorTag`, a colour written `#rrggbb`); shown as a bar across the top of the card on the All Tasks page. The card window has no control for one, and a save there keeps it: until 15 October 2026 a save on a board or the plan page cleared it |
 | **Card ID** | Every card displays a unique `#N` identifier for easy reference. A number is never given to a second card, even after the first is deleted |
 | **Attachments** | Attach files of up to 25 MB to a card. PNG, JPEG, GIF and WebP images show as thumbnails on the card and open in the browser; every other attachment, PDFs included, is saved to disk |
-| **Card covers** | A strip of colour across the top of the card, on the board and in the card window, to make a card stand out. Pick one of eight gradients or eight colours, or any colour of your own, under More options on a saved card |
+| **Card covers** | A strip of colour across the top of the card, on the board and in the card window, to make a card stand out. Pick one of eight gradients or eight colours, or any colour of your own, under More options on a saved card. The custom colour opens on the cover's own colour, or a gradient's first colour (from 20 October 2026: for a gradient it opened on black) |
+| **The card window** | Opened from a card on the board, All Tasks, All To Do or a plan page. **On a board's page, Save sends only what you changed in it**, so a change someone else made to the same card while your window was open is kept; a field you both changed is the last save's. All Tasks, All To Do and a plan page still send every field. On a board, a save with nothing changed closes the window and saves nothing. A save that does change something shows on the board at once. There, too, a field you have not changed shows the card as it is now, someone else's changes arriving as the board reads them, except the box you are typing in, which takes them once you leave it; a field you changed stays as you typed it and is what Save sends, even when you set it back to what it was and someone else changed it meanwhile. On a board, as in All Tasks, a save the server refuses keeps the window open with what you typed and says why, and on a board only what that save changed goes back. On a board, a card someone else archives or deletes while its window is open says "This card is no longer on this board." and saving it sends nothing. **Ctrl+Enter** (Cmd+Enter on a Mac) saves the window, as its footer says; in the comment box it posts the comment, in a comment being edited it saves the edit, and in a label, sub-board or new category name box it makes that, as Enter does there, without saving the window. A second Ctrl+Enter, or a second click on Create, while a save is on its way does nothing. **Escape** closes the open dialog, dropdown, picker or form in the window (the dependency search among them), and the window itself only when nothing is open in it, and not while a save is on its way; Cancel and ✕ always close (all from 20 October 2026) |
 | **Business value** | Document why this task matters |
 | **Duplicate** | Right-click a card and choose Duplicate: a copy, its subtasks open, is added at the end of the same column. The copy of a finished card is new work, so it goes to the end of To Do (the board's first column that is not Complete or Done) instead, and the message says where: `Duplicated "Fix bug (Copy)" into To Do` |
 | **Templates** | **Save as Template**, on a saved card, keeps its title, description, priority, subtasks and labels under a name. **From template**, in the New Task window, fills the window from one; its labels are put on the card once it is created |
@@ -110,6 +111,8 @@ A card's window lists what the card is **Blocked by** and what it **Blocks**. Ei
 
 Move cards between columns by dragging them. Everything updates in real-time for all users viewing the board.
 
+A drop the server refuses, a blocked drop into Complete and Cancel in the On Hold window put the card back at once, without waiting for the board to be read again, and a refused drop says why; nothing on the board moves while the blocked window is open. When a card is taken through several columns with the keyboard, a hop that is refused, blocked or cancelled puts the card back in the column it was in before that hop. A card dragged into On Hold is moved first, and its note written only once it has moved, so a refused move writes no note; a note refused after the move is said, and the note window stays open with the note, to try again. A column dragged to a new place that the server refuses goes back to where it was (all from 20 October 2026).
+
 ```mermaid
 flowchart LR
     subgraph Before
@@ -129,6 +132,8 @@ Select multiple cards with checkboxes and apply actions in bulk:
 - **Bulk move** — move selected cards to any column
 - **Bulk archive** — archive selected cards. They can be restored from Archived Cards
 - **Bulk priority** — change priority of all selected cards
+
+A bulk priority or archive changes every selected card on screen at once. The cards the server refuses go back, stay selected, and how many and the first reason are said; the rest stay changed (from 20 October 2026: bulk priority cleared the selection and said nothing).
 
 ### Search & Filtering
 
@@ -221,6 +226,16 @@ Discuss tasks directly on cards:
 ### Real-Time Updates
 
 All changes appear instantly for everyone viewing the same board. No need to refresh — when someone moves a card, you see it move live. Assigning or unassigning someone, editing a comment, renaming a board or filing it under a group, and making a sub-board under a card reach the other open pages too, whether done on a page or through the API.
+
+**A change on a board shows at once and stays** (from 20 October 2026). Before, the board reloaded itself twice after every change, and a change could flicker back. Now other people's changes arrive within about a second, a burst of them, such as a bulk change of 20 cards, as one, and never in the middle of a drag. A change that is refused says why, in the server's words, and only that change goes back: renaming a card on the board itself, pinning, a priority changed from its dot, a card's menu or the bulk bar, the card menu's Move to, the completion prompt (which stays open with what was typed), adding and deleting categories, which show once the server has taken them (a refused one keeps its name in the box), dragging cards and columns, the board's name and emoji, and a column's colour, WIP limit and Add Task switch. Before, these looked saved until the page was reloaded. "Moved to …", "Pinned", "Priority → …", "WIP limit set" and "Title updated" are said only once the change is made. Two quick changes to the same thing keep the later one, and Escape in a card's title edit on the board no longer saves it. A board you lose access to, or that is deleted, while you have it open shows the refusal page at its next refresh.
+
+```mermaid
+flowchart LR
+    Change["You change a card"] --> Shown["Shown at once"]
+    Shown --> Server{"The server"}
+    Server -->|"saved"| Stays["It stays; the others' boards<br/>show it within about a second"]
+    Server -->|"refused, or no answer"| Back["That change goes back,<br/>and the reason is said"]
+```
 
 A board page listens to the board it shows. Following a sub-board, a breadcrumb or a link in a card's window to another board, or going Back or Forward to one, opens that board's page afresh, listening to that board: no selection, open panel, search or filter is carried over from the board left. Until 14 October 2026 the page went on listening to the first board, so the second showed nothing done by others until it was reloaded.
 
@@ -356,7 +371,7 @@ Audio feedback for card actions:
 
 - **WIP limits** — set maximum cards per column with visual warnings
 - **Colour coding** — customise column header colours. A colour stored before 15 October 2026 that is not a plain colour is shown grey until a new one is picked; every other colour looks as it did. A column's, a label's, a category's or a board group's is fixed by picking a colour in its own colour picker. A card's or a subtask's colour tag has no control on the page, so it is fixed through the API: with the tracking wrapper, `update-card` or `update-subtask` with `-ColorTag '#rrggbb'`, quoted, or `-ColorTag none` to clear it. Renaming any of them sends the old colour back unchanged and keeps it, grey or not
-- **Add Card button** — toggle quick-add on specific columns; the choice is saved with the column
+- **Add Card button** — toggle quick-add on specific columns; the choice is saved with the column. A column called "To Do" or "Todo", in any capitals and with any space around the name, always has it, with the double-click to add a card, as All Tasks already treats such columns (from 20 October 2026: "Todo" did not; "To-Do" is not one)
 - **Reorderable** — drag columns to rearrange
 - **Renaming keeps what the cards mean** — a column called Complete or Done is where finished work lives. While it holds any card, archived ones included, it can be renamed only to Complete or Done, and a column that holds cards cannot be renamed Complete or Done: the cards would turn back into open work, or be finished without anyone finishing them. The board says why and keeps the old name. An empty column can be renamed to anything
 

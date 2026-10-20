@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.64
+version: 1.65
 status: As-Built
-date: 2026-10-19
+date: 2026-10-20
 tags:
   - api
   - rest
@@ -1845,6 +1845,18 @@ API:
   (`longOverdue`) of those due earlier (overdue in every zone), and the moment it was
   read, where it carried the three
   figures, counted on the UTC day. No `/api/v1` operation changes.
+- **`GET /api/boards/{id}/contents` is new** (card 2280): everything the board page draws,
+  for the page to refresh itself with instead of re-running its whole load. It is the page
+  load's own reader, so it answers what the load answers, for the caller as they may see it:
+  the board row, the breadcrumbs, the caller's `canEdit`, `canManage` and `userBoardRole`,
+  the linkable boards, the columns with their cards, the categories, labels, members,
+  blocked state, token totals and goals. It refuses as the load does: `401`
+  `Not authenticated`, `400` for an id that is not one, `404` `Board not found` for a board
+  that is not there (administrators included), then `403`
+  `You do not have access to this board`. A `200` carries
+  `cache-control: private, no-store`. It is the pages' route, not under `/api/v1/` and not
+  in the OpenAPI document; a script reads a board with `GET /api/v1/boards/:boardId` and
+  `GET /api/v1/boards/:boardId/cards`.
 
 ### Changes on 2026-10-13
 

@@ -2,9 +2,10 @@
 /**
  * The board header's XP bars (card 2304), mounted with Svelte's client runtime.
  *
- * The suite runs in vitest's `node` environment and has no other component
- * test; this file alone takes jsdom, by the comment above, so that `mount` is
- * the browser's and not the server's. It is named `.svelte.test.ts` so that it
+ * The suite runs in vitest's `node` environment. This file, its first
+ * component test, takes jsdom by the comment above, as the ones after it do
+ * (card 2280's column header and card window), so that `mount` is the
+ * browser's and not the server's. It is named `.svelte.test.ts` so that it
  * can make the list with `$state`, as the board page does: a plain array
  * would not show the fault, since only a write to state while drawing is
  * refused.

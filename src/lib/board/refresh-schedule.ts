@@ -20,8 +20,10 @@
  *     the same way, and is dropped as below. Holds are a count, each let go
  *     once, and the last let go sends the read that waited. A hold left open (a missed `finally`) is let go by a
  *     watchdog after about 30 s, so the board cannot stop following for good;
- *     all but one taken without it (`hold({ watchdog: false })`), whose end a
- *     window open on screen decides: the On Hold note's (B2a review).
+ *     all but the holds of a window open on screen, whose end that window
+ *     decides (`hold({ watchdog: false })`: the On Hold note's, B2a review,
+ *     and the blocked window's, B2b), and the bulk changes', given a longer
+ *     watchdog (`hold({ watchdogMs })`, B2b review).
  *   - **An access event is never held.** The board's stream says when the
  *     caller may no longer open it; that read is sent at once, whatever else
  *     is going on, so the page shows its refusal.
