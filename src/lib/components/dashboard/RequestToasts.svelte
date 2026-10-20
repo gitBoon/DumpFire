@@ -19,11 +19,26 @@
 	let toasts = $state<Toast[]>([]);
 	let toastIdCounter = 0;
 	let inboxPollTimer: ReturnType<typeof setInterval> | null = null;
+	/** Each toast's timer, so the page going clears them (card 2312). */
+	const toastTimers = new Set<ReturnType<typeof setTimeout>>();
+	/** Set as the page goes: the first read may answer after that, and must not start the poll then (card 2312). */
+	let destroyed = false;
+	/**
+	 * Whether a read has answered yet. Until one has, nothing waiting is new: a
+	 * poll after a failed first read takes the count and raises no toast (card 2312).
+	 */
+	let inboxRead = false;
 
 	function addToast(title: string, requesterName: string, priority: string) {
+		// Once the page has gone, no toast: nothing would clear its timer.
+		if (destroyed) return;
 		const id = ++toastIdCounter;
 		toasts = [...toasts, { id, title, requesterName, priority, timestamp: Date.now() }];
-		setTimeout(() => dismissToast(id), 6000);
+		const timer = setTimeout(() => {
+			toastTimers.delete(timer);
+			dismissToast(id);
+		}, 6000);
+		toastTimers.add(timer);
 	}
 
 	function dismissToast(id: number) {
@@ -31,20 +46,28 @@
 	}
 
 	onMount(async () => {
-		const res = await fetch('/api/requests');
-		if (res.ok) {
-			const requests = await res.json();
-			inboxCount = requests.filter((r: any) => r.status === 'pending').length;
-		}
+		try {
+			const res = await fetch('/api/requests');
+			if (res.ok) {
+				const requests = await res.json();
+				inboxCount = requests.filter((r: any) => r.status === 'pending').length;
+				inboxRead = true;
+			}
+		} catch { /* the poll reads it again */ }
+		// Left before the first read answered: onDestroy has run, and would never clear a poll started now.
+		if (destroyed) return;
 
 		// Poll inbox every 30 seconds for live updates
 		inboxPollTimer = setInterval(async () => {
 			try {
 				const res = await fetch('/api/requests');
+				// A read that answers after the page went, or whose body is read after it, raises no toast.
+				if (destroyed) return;
 				if (res.ok) {
 					const requests = await res.json();
+					if (destroyed) return;
 					const newCount = requests.filter((r: any) => r.status === 'pending').length;
-					if (newCount > inboxCount) {
+					if (inboxRead && newCount > inboxCount) {
 						// New requests arrived — find them and show toasts
 						const pending = requests.filter((r: any) => r.status === 'pending');
 						const newOnes = pending.slice(0, newCount - inboxCount);
@@ -53,13 +76,17 @@
 						}
 					}
 					inboxCount = newCount;
+					inboxRead = true;
 				}
 			} catch { /* silent */ }
 		}, 30_000);
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		if (inboxPollTimer) clearInterval(inboxPollTimer);
+		for (const timer of toastTimers) clearTimeout(timer);
+		toastTimers.clear();
 	});
 </script>
 

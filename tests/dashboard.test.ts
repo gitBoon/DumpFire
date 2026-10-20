@@ -7,7 +7,9 @@
  * menu's actions reaching their requests, the page's confirm dialog and the
  * boards table's expanded rows (bound through the page); New Board in the
  * header opening the create window (bound through the page); the request
- * toasts' inbox count reaching the header; and the sidebar's tiles opening
+ * toasts' inbox count reaching the header, their poll and toast timers ending
+ * with the page and a failed first read still starting the poll (card 2312);
+ * and the sidebar's tiles opening
  * Active Tasks (through `bind:this`), Velocity and Spend, and the boards
  * table's Manage Categories. `fetch`, the page's live stream and
  * `invalidateAll` are stand-ins; what each request sent is kept.
@@ -18,7 +20,7 @@
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type * as Svelte from 'svelte';
 
 import DashboardPage from '../src/routes/+page.svelte';
@@ -119,8 +121,8 @@ const data = {
 	spendByUser: { today: [], week: [], month: [], year: [], all: [] }
 };
 
-/** An answer of the test's own for a request, ahead of the ones below; undefined for those. */
-let answer: ((what: string) => Response | undefined) | null = null;
+/** An answer of the test's own for a request, ahead of the ones below (held, or thrown, if it likes); undefined for those. */
+let answer: ((what: string) => Response | Promise<Response> | undefined) | null = null;
 
 beforeEach(() => {
 	sent = [];
@@ -173,6 +175,13 @@ function draw(given: typeof data = data) {
 	drawn = { component: mount(DashboardPage as never, { target, props: { data: given } as never }), target };
 	flushSync();
 	return target;
+}
+
+/** Leaves the dashboard: unmounts it as `afterEach` does, within the case. */
+function leave() {
+	unmount(drawn!.component);
+	drawn!.target.remove();
+	drawn = null;
 }
 
 /** Lets every answer on its way come in, and the page draw what it changed. */
@@ -302,6 +311,95 @@ describe('the dashboard, mounted with its parts', () => {
 
 		expect(badge()).toBe('3');
 		expect(target.querySelector('.toast-container .toast-title')!.textContent).toBe('Newest');
+	});
+
+	// Card 2312: the request toasts' poll and timers end with the page, and a failed first read still starts the poll.
+	it('starts no poll when the dashboard is left before the inbox’s first answer', async () => {
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+		let release!: () => void;
+		answer = (what) =>
+			what === 'GET /api/requests' ? new Promise<Response>((resolve) => (release = () => resolve(Response.json(requests)))) : undefined;
+		draw();
+		await settle();
+		expect(asked('GET /api/requests')).toHaveLength(1);
+
+		leave();
+		release();
+		await settle();
+		vi.advanceTimersByTime(60_000);
+		await settle();
+
+		expect(asked('GET /api/requests')).toHaveLength(1);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it('starts the poll when the inbox’s first read fails, and raises no toast for a request already waiting', async () => {
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+		requests = [{ title: 'Waiting', requesterName: 'Bo', priority: 'low', status: 'pending' }];
+		let failed = false;
+		answer = (what) => {
+			if (what !== 'GET /api/requests' || failed) return undefined;
+			failed = true;
+			throw new TypeError('Failed to fetch');
+		};
+		const target = draw();
+		await settle();
+		expect(asked('GET /api/requests')).toHaveLength(1);
+
+		vi.advanceTimersByTime(30_000);
+		await settle();
+
+		expect(asked('GET /api/requests')).toHaveLength(2);
+		expect(target.querySelector('.header-nav .inbox-count-badge')?.textContent).toBe('1');
+		expect(target.querySelector('.toast-container')).toBeNull();
+	});
+
+	it('clears a toast’s timer when the dashboard is left', async () => {
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+		const timeouts = vi.spyOn(globalThis, 'setTimeout');
+		const cleared = vi.spyOn(globalThis, 'clearTimeout');
+		onTestFinished(() => {
+			timeouts.mockRestore();
+			cleared.mockRestore();
+		});
+		const target = draw();
+		await settle();
+		requests = [{ title: 'Newest', requesterName: 'Ed', priority: 'high', status: 'pending' }];
+		vi.advanceTimersByTime(30_000);
+		await settle();
+		expect(target.querySelector('.toast-container .toast-title')!.textContent).toBe('Newest');
+		const toastTimer = timeouts.mock.results[timeouts.mock.calls.findIndex(([, ms]) => ms === 6000)].value;
+
+		leave();
+
+		expect(cleared).toHaveBeenCalledWith(toastTimer);
+	});
+
+	it('raises no toast from a poll whose answer is still being read when the dashboard is left', async () => {
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+		let reads = 0;
+		let readBody!: () => void;
+		const newest = { title: 'Newest', requesterName: 'Ed', priority: 'high', status: 'pending' };
+		answer = (what) => {
+			if (what !== 'GET /api/requests') return undefined;
+			reads += 1;
+			if (reads === 1) return Response.json([]);
+			// The poll's answer has come, and its body is still being read.
+			return { ok: true, json: () => new Promise((resolve) => (readBody = () => resolve([newest]))) } as Response;
+		};
+		draw();
+		await settle();
+		vi.advanceTimersByTime(30_000);
+		await settle();
+		expect(reads).toBe(2);
+
+		const timeouts = vi.spyOn(globalThis, 'setTimeout');
+		onTestFinished(() => timeouts.mockRestore());
+		leave();
+		readBody();
+		await settle();
+
+		expect(timeouts.mock.calls.filter(([, ms]) => ms === 6000)).toEqual([]);
 	});
 
 	it('opens Active Tasks from the sidebar’s tile, which reads its list and words its due dates on the page’s clock', async () => {
