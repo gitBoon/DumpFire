@@ -5,6 +5,7 @@ import { activityLog, cards, columns } from '$lib/server/db/schema';
 import { eq, and, count, sql, gte, inArray } from 'drizzle-orm';
 import { ACTIONS, storedActions } from '$lib/server/logActivity';
 import { recentActivityFor } from '$lib/server/list-access';
+import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
@@ -13,8 +14,9 @@ import type { RequestHandler } from './$types';
  *
  * Returns:
  * - cardsCompleted (total + last 7/30 days)
- * - avgCycleTime (days, based on created→completed)
+ * - avgCycleTime (days, based on created→completed, on boards the caller can open)
  * - streak (consecutive days with at least one completion)
+ * - activeCards (assigned and open, on boards the caller can open)
  * - recentActivity (last 20 actions, on boards the caller can open)
  */
 /**
@@ -59,13 +61,29 @@ export const GET: RequestHandler = async ({ locals }) => {
 			gte(activityLog.createdAt, d30)
 		)).get();
 
+	// The two figures read from the caller's assignments, the cycle time and the
+	// open count, count only cards on boards the caller can open now (card
+	// 2292), as the dashboard and My Tasks have since card 2130. Both counted
+	// every board, so someone taken off a board saw them move as work went on
+	// there. `null` is an administrator, who opens every board. A caller who
+	// opens none is answered 0 and null without the two queries: SQLite would
+	// take the empty `IN ()` this builds, so the early return only saves the
+	// queries and keeps the empty list out of them.
+	const boardIds = getAccessibleBoardIds(locals.user);
+	const opensNone = boardIds !== null && boardIds.length === 0;
+	const onBoardsTheyOpen = boardIds === null
+		? sql``
+		: sql`AND col.board_id IN (${sql.join(boardIds.map((id) => sql`${id}`), sql`, `)})`;
+
 	// Average cycle time from completed cards assigned to user
-	const cycleResult = db.all(sql`
+	const cycleResult = opensNone ? [] : db.all(sql`
 		SELECT AVG(julianday(c.completed_at) - julianday(c.created_at)) as avg_days
 		FROM cards c
 		INNER JOIN card_assignees ca ON ca.card_id = c.id
+		INNER JOIN columns col ON col.id = c.column_id
 		WHERE ca.user_id = ${userId}
 			AND c.completed_at IS NOT NULL
+			${onBoardsTheyOpen}
 	`) as { avg_days: number | null }[];
 	// Null when no card has been completed; an average of 0, cards completed
 	// the moment they were raised, is 0. It was answered as null.
@@ -114,14 +132,16 @@ export const GET: RequestHandler = async ({ locals }) => {
 		createdAt
 	}));
 
-	// Cards currently assigned
-	const assignedCards = db.all(sql`
+	// Cards currently assigned, on boards the caller can open (card 2292, above)
+	const assignedCards = opensNone ? [] : db.all(sql`
 		SELECT COUNT(*) as cnt
 		FROM card_assignees ca
 		INNER JOIN cards c ON c.id = ca.card_id
+		INNER JOIN columns col ON col.id = c.column_id
 		WHERE ca.user_id = ${userId}
 			AND c.completed_at IS NULL
 			AND c.archived_at IS NULL
+			${onBoardsTheyOpen}
 	`) as { cnt: number }[];
 
 	return json({

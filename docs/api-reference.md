@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.65
+version: 1.66
 status: As-Built
 date: 2026-10-20
 tags:
@@ -541,8 +541,9 @@ new; these answers and fields are:
   57, below) an editor can no longer set a new address either.
 - **`recentActivity` on `GET /me/stats` lists only entries on boards the key's user can
   open** (card 2126), the 20 counted after that, where an entry on a board they had been
-  taken off was listed, with the card title in its `detail`. The counts beside it are as
-  they were.
+  taken off was listed, with the card title in its `detail`. The completed count and streak
+  beside it are as they were; `activeCards` and `avgCycleTimeDays` count only boards the
+  key's user can open since card 2292, below.
 - **A board category is given only to a key whose user may be told of it** (card 2128).
   `GET /board-categories` lists the board categories that hold a board the key's user can
   open, and those that hold no board yet, where every one was listed; an administrator's
@@ -993,6 +994,16 @@ new; these answers and fields are:
   `card.moved` missed them. A move into a Complete column still sends `card.completed`
   instead of `card.moved` (item 78). See
   [Events and Payload](notifications-email.md#events-and-payload).
+- **`GET /me/stats` counts `activeCards` and averages `avgCycleTimeDays` only on boards the
+  key's user can open** (card 2292), the same boards the web application's dashboard and My
+  Tasks count (an open card is still one with no `completedAt` here, where those two go by
+  its column). Both counted the cards the user is assigned to on every board, so someone taken off
+  a board saw the two figures move as cards there were completed, archived or unassigned. A
+  user who can open no board is answered `activeCards` `0` and `avgCycleTimeDays` `null`.
+  The shape is unchanged, and `cardsCompleted` and `streak`, which count the user's own
+  completions, are as they were. In the web application the dashboard's Velocity window
+  (`GET /api/velocity`) counts the same way (item 79). See
+  [What a List Gives](authentication-security.md#what-a-list-gives).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2251,9 +2262,9 @@ How the key's user is doing. Takes no parameters.
 | Field | Meaning |
 |-------|---------|
 | `cardsCompleted` | Completions the activity log records as this user's, made in the web UI or through the API: in all, in the last 7 days and in the last 30 |
-| `avgCycleTimeDays` | Mean days from a card's creation to its completion, to one decimal place, over the completed cards the user is assigned to. `null` when there is none, and `0` when they were completed as they were made |
+| `avgCycleTimeDays` | Mean days from a card's creation to its completion, to one decimal place, over the completed cards the user is assigned to on boards they can open. `null` when there is none, and `0` when they were completed as they were made |
 | `streak` | Consecutive UTC days with at least one completion, counted back from today, or from yesterday if there is none today |
-| `activeCards` | Cards the user is assigned to that are neither completed nor archived |
+| `activeCards` | Cards the user is assigned to that are neither completed nor archived, on boards they can open |
 | `recentActivity` | The user's last 20 activity entries on boards they can open, newest first: an entry on a board they have been taken off is left out. `action` is as stored: one made through the API has the prefix `api:` |
 
 ---
