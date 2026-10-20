@@ -125,8 +125,15 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  *
  * The work is `updateCard` in `$lib/server/cards`, which the internal update
  * shares (card 2012). This route takes `milestoneId` and `archivedAt`, takes
- * no move (`columnId` and `position` are not read), refuses a body that
- * names nothing, and keeps its own words for a caller who may not edit.
+ * no move, refuses a body that names nothing, and keeps its own words for a
+ * caller who may not edit.
+ *
+ * No move (card 2287): `columnId` is taken only as the column the card is in,
+ * so a card read with GET can be sent back whole, and any other is a 400 that
+ * names `PUT /cards/{cardId}/move`, where the other fields were saved and it
+ * was ignored. `position` is ignored here, whatever is sent: a drag renumbers
+ * the columns it touches, so a card read a minute ago is often sent back with
+ * an old one. Reorder with the move route.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -147,6 +154,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 				source: 'api',
 				allowMilestone: true,
 				allowRestore: true,
+				refuseMove: true,
 				refuseEmpty: true,
 				tellBeforeEntry: true,
 				says: NO_EDIT

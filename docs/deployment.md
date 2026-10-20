@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.61
+version: 1.62
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3667,6 +3667,31 @@ On production, with your own API key. **The scratch board:** one of your own, no
 #### Going back to the previous image
 
 Nothing is done to the database. The older image stamps a card archived again when it is archived a second time, losing the first archive time, records a second "Archived card" and tells the board's open pages. It records no untick and no subtask edit, and writes and announces a subtask save that changes nothing. `subtask_updated` entries already written stay, and the older image's pages read them as "Updated subtask", the label it already has. It writes one `api:dependencies_bulk_added` per bulk batch again, with no card; the per-link "Added dependency" entries already written stay and read as before. It records a position-only change on the web application's card update as "Updated card" and sends `card.updated` for it again. It records no goal change and no card put in a goal or taken out, writes a goal saved unchanged and a card put in the goal it is already in again, tells no board of a goal changed or deleted, and records a `milestoneId` on the API's card update as "Updated card" naming `milestoneId`, sending `card.updated` for it again (and counting it as work in the activity report). The goal entries already written stay; the older image has no label for them and reads them in words from their names, "Milestone updated", "Milestone card added" and so on.
+
+### The Public API: Fields It Ignored, the Bulk Detach and the Board-Cards Listing
+
+**Card 2287.** No migration, no setting, no new route or field. Three requests to the API ignored a field without a word, and answered as if they had done what was asked. `PUT /api/v1/cards/{id}` with a `columnId` saved the other fields sent and left the card in its column; `POST /api/v1/boards` with a `categoryId` made the board unfiled; and `PUT /api/v1/boards/{id}` with a `parentCardId` saved the other fields and left the board where it hung. Now a `columnId` other than the card's own is refused with `400` `columnId 14 is not this card's column (12): the card has moved since it was read, or a move was meant. Move a card with PUT /cards/{cardId}/move`, and nothing in the request is saved; the card's own column, sent back, is accepted, so a card read from the API can still be sent back whole. A move has its own route, with its own answer and effects (completion, XP, mail, leaving a goal), and taking the field here would let a client holding a stale copy undo somebody's move. `position` on the same request is still ignored, whatever is sent, and is now documented so: a drag renumbers every card in the columns it touches, so a card read a minute ago is often sent back with an old position. `POST /api/v1/boards` now files the new board under its `categoryId`, as the dashboard's own create does, with the same checks: a category that does not exist is `404`, one that holds only boards the key's user cannot open `403`, and a value that is not an id `400`, where each made the board unfiled with `201`. A board update's `parentCardId` other than the board's own, `null` on a sub-board included, is refused with `400` `parentCardId 12 is not this board's parent card (none): …`, and nothing is saved: a board is put under a card, or taken out from under one, on the board page (card 2114 kept that off the API). The tracking wrapper's `create-board` now sends `-CategoryId`. The OpenAPI document stays `1.2.0`, with item 91 in its 2026-10-14 note.
+
+**Owner to know (2287).** A request to `PUT /api/v1/cards/{id}` that sends a `columnId` other than the card's own, or to `PUT /api/v1/boards/{id}` that sends a `parentCardId` other than the board's own, is now refused with a `400` that names the value, the stored one and the right route, where the other fields in it were saved and these ignored. `position` on the card update is still ignored, now said so: reorder with `PUT /cards/{cardId}/move`. `POST /api/v1/boards` files the new board under `categoryId`, and a category that does not exist, that the key's user may not use, or that is not an id is now `404`, `403` or `400` where the board was made unfiled. The tracking workflow sends none of these today. No page uses these routes.
+
+**Owner to know (after the deploy).** The local `.agent` tracking wrapper (`create-board -CategoryId`) and its reference are newer than the copies in Workflow_Central by a large backlog. Export them there once this release is live, comparing each file first: the wrapper's `-CategoryId` help line says it files the board from this release on, and an older server ignores it.
+
+#### After the deploy
+
+On production, with your own API key. **The scratch board:** the one from checks 278 to 294 if it is still there, otherwise one of your own with no other members, **no webhooks**, and three scratch cards T1, T2 and T3 made by hand in To Do, with no assignee. Nothing here completes a card or sends mail. Keep the board and its cards for the later checks of this group and delete them at the end of the release's checks.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 295 | 2287 | `PUT /api/v1/cards/<T1>` `{"title": "T1 probe", "columnId": <In Progress id>}`; then `GET /api/v1/cards/<T1>` | `400` `columnId <In Progress> is not this card's column (<To Do>): the card has moved since it was read, or a move was meant. Move a card with PUT /cards/{cardId}/move`; T1 still "T1", in To Do; no new Activity Log entry | `200`, or the title saved (if `200`, rename T1 back to "T1") |
+| 296 | 2287 | `GET /api/v1/cards/<T1>` and keep the answer. On the scratch board page, drag T2 above T1 (this renumbers To Do, so T1's stored position changes). Change `title` to "T1 again" in the kept answer and `PUT` the whole object back | `200`; one "Updated card" naming `title` alone; T1 in To Do at the position the drag gave it. Then rename it back to "T1" | `400`, or other fields named, or T1's position put back |
+| 297 | 2287 | `PUT /api/v1/cards/<T1>` `{"position": 99}` | `400` `No valid fields to update`; T1's position unchanged (`position` is ignored here) | `200` with the position changed |
+| 298 | 2287 | `POST /api/v1/board-categories` `{"name": "TEST 2287 - delete me"}` (note id G); `POST /api/v1/boards` `{"name": "TEST 2287 board - delete me", "categoryId": G}` (note its id); look at the dashboard once. **Straight away:** `DELETE /api/v1/boards/<that board>`, then `DELETE /api/v1/board-categories/G`. An empty grouping is listed to everyone, so the test grouping shows briefly on every user's dashboard until it is deleted | `201` with `categoryId` G; the test board shown under the test grouping; both deletes `200`, and neither is on the dashboard after | `categoryId` null, or either left behind |
+| 299 | 2287 | `PUT /api/v1/boards/<scratch>` `{"name": "<its name>", "parentCardId": <T1>}`; `GET /api/v1/boards/<scratch>` | `400` `parentCardId <T1> is not this board's parent card (none): …`; `parentCardId` still null | `200` |
+| 303 | all | `GET /api/v1/openapi.json` | `info.version` `1.2.0`; the description holds item 91; `PUT /api/v1/cards/{cardId}`'s request schema lists `columnId` (only as held) and `position` (ignored), `POST /api/v1/boards`'s lists `categoryId`, and `PUT /api/v1/boards/{boardId}`'s lists `parentCardId` | A version change, or an item or a field missing |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image ignores a `columnId` on `PUT /api/v1/cards/{id}` and a `parentCardId` on `PUT /api/v1/boards/{id}` again, saving the other fields sent with them and answering `200`, and makes a board sent to `POST /api/v1/boards` with a `categoryId` unfiled. A board already filed through the API stays filed. The wrapper's `create-board -CategoryId` is then ignored by the server.
 
 ## Changing the Schema
 

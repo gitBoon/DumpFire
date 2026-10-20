@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.77
+version: 1.78
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1132,6 +1132,22 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   entries are not work in `GET /reports/activity`. The plan-created mail is still the bulk
   attach's alone (item 90). See
   [`PATCH /api/v1/milestones/:milestoneId`](#patch-apiv1milestonesmilestoneid).
+- **`PUT /cards/:cardId` refuses another column, `POST /boards` files a new board under its
+  category, and `PUT /boards/:boardId` refuses another parent card** (card 2287). Each was
+  ignored without a word. `PUT /cards/:cardId` answers `400` `columnId 12 is not this card's
+  column (14): the card has moved since it was read, or a move was meant. Move a card with
+  PUT /cards/{cardId}/move` for a `columnId` other than the card's own, and `400` `columnId
+  must be an id` for `null` or one that is not an id, where it saved the other fields and
+  left the card where it was; the card's own column, sent back, is accepted, so a card read
+  with `GET` can still be sent back whole. `position` is still ignored there, whatever is
+  sent, now said so: reorder with `PUT /cards/:cardId/move`. `POST /boards` takes
+  `categoryId`, as the web application's create does: `404` `Board category not found`,
+  `403` `No access to this board category` and `400` `categoryId must be an id`, where each
+  made the board unfiled with `201`. `PUT /boards/:boardId` answers `400` `parentCardId 12 is
+  not this board's parent card (none): …` for a `parentCardId` other than the board's own,
+  `null` on a sub-board included, and `400` `parentCardId must be an id`, where it saved the
+  other fields and ignored it (item 91). See
+  [`PUT /api/v1/cards/:cardId`](#put-apiv1cardscardid).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2426,9 +2442,11 @@ Create a new board. Default columns (To Do, On Hold, In Progress, Complete) are 
 | `name` | string | ✅ | Board name, trimmed, 1 to 200 characters |
 | `emoji` | string | | Board icon, 1 to 32 characters (default: 📋) |
 | `parentCardId` | number or null | | Link as sub-board to a card, by its id. Needs edit access to the board that card is on: `404` if there is no such card, `403` if the caller cannot edit its board. `409` `Sub-boards can be nested at most 20 levels deep, and a board under this card would be deeper.` if that board is already 20 levels below a board that is not a sub-board, or is in or below a loop, and nothing is created (card 2172) |
+| `categoryId` | number or null | | The dashboard grouping to file the new board under, or `null` for none, as the web application's create takes it (card 2287). `404` `Board category not found` for one that does not exist, `403` `No access to this board category` for one that holds boards, none of which the caller can open, and `400` `categoryId must be an id` for a value that is not an id; nothing is created. Until 2026-10-14 it was ignored and the board made unfiled |
 
-A new board has nothing to look for, so its fields are read first, and the parent card is
-looked for after.
+A new board has nothing to look for, so its fields are read first, and the parent card and
+the grouping are looked for after. A new board is private: `isPublic` is not read here, and
+its owner sets it with `PUT /api/v1/boards/:boardId`.
 
 A sub-board sends a live update, `{ "type": "board", "action": "created" }`, to the pages
 open on the board its card is on, so it shows on the card without a reload (card 2143). A
@@ -2458,7 +2476,15 @@ nothing is saved.
 
 This operation takes no `parentCardId`. A board is put under a card, or taken out from
 under one, on the board page, by the board's owner or an administrator: see
-[Changes on 2026-10-14](#changes-on-2026-10-14).
+[Changes on 2026-10-14](#changes-on-2026-10-14). The card the board hangs under, or `null`
+for a board on the dashboard, is accepted as it is, written as a number or as text, so a
+board read with `GET` can be sent back whole (an editor leaves `isPublic` out); it does not
+count as a field to update. Any
+other is `400` (card 2287), and nothing in the request is saved:
+`parentCardId 12 is not this board's parent card (none): the board has been moved since it was read, or a link was meant. A board is put under a card, or taken out from under one, on the board page`,
+naming the value sent (`null` on a sub-board) and the board's own (`none` for a board on the
+dashboard), and `parentCardId must be an id` for one that is not an id. The card named is not
+looked for. Until 2026-10-14 another parent card was ignored and the other fields saved.
 
 #### `DELETE /api/v1/boards/:boardId`
 
@@ -2599,6 +2625,19 @@ was written and named, changed or not.
   the milestone routes do, and is not named in `api:card_updated`, so a milestone alone
   sends no `card.updated` webhook; until 2026-10-14 it was "Updated fields: milestoneId"
   with `card.updated` (card 2289).
+- **`columnId`** is not changed here: this operation does not move a card (card 2287). It
+  is accepted only as the column the card is in, as a number or as text (`"14"`), so a card
+  read with `GET /cards/:cardId` can be sent back whole. Any other is `400`
+  `columnId 12 is not this card's column (14): the card has moved since it was read, or a move was meant. Move a card with PUT /cards/{cardId}/move`,
+  naming the value sent and the card's column, and nothing in the request is saved; `null`
+  or a value that is not an id is `400` `columnId must be an id`. The column named is not
+  looked for, and the refusal comes after every other field is read and before the check
+  for a body with no field. Until 2026-10-14 another column was ignored and the other fields
+  saved.
+- **`position`** is ignored here, whatever is sent, as it always was; reorder with
+  [`PUT /api/v1/cards/:cardId/move`](#put-apiv1cardscardidmove). A drag renumbers every card
+  in the columns it touches, so a card read a minute ago is often sent back with an old
+  position. Neither `columnId` nor `position` counts as a field to update.
 - **`coverUrl`** is the card's cover, drawn as a strip across the top of the card on the
   board: a colour written `#rrggbb`, or one of these eight gradients, written exactly so,
   or `null` (`''` is read as `null`). Anything else, an address or a style among them, is

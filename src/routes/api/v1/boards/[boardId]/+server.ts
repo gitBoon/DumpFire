@@ -35,9 +35,16 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * owner's to send, or an administrator's. A body that sets none of them is
  * `400 No valid fields to update`.
  *
+ * `parentCardId` is taken only as the card the board hangs under, null for
+ * none, so a board read with GET can be sent back whole (an editor leaves
+ * `isPublic` out). Any other, null on
+ * a sub-board included, is a 400 (card 2287), where the other fields were
+ * saved and it was ignored: a board is linked under a card, or taken out from
+ * under one, on the board page (card 2114's D8).
+ *
  * The work is `updateBoard` in `$lib/server/boards`, which `PUT
- * /api/boards/:id` shares (card 2012); this route passes `refuseEmpty`, and
- * `tellBeforeEntry` for the order it tells in.
+ * /api/boards/:id` shares (card 2012); this route passes `refuseEmpty`,
+ * `refuseParent`, and `tellBeforeEntry` for the order it tells in.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -50,7 +57,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// It asks first whether the key or session is still open, and who its
 	// account is now (card 2253).
 	const updated = writeAs(locals, (caller) =>
-		updateBoard(caller, { boardId }, body, { source: 'api', refuseEmpty: true, tellBeforeEntry: true })
+		updateBoard(caller, { boardId }, body, { source: 'api', refuseEmpty: true, refuseParent: true, tellBeforeEntry: true })
 	);
 
 	return json(updated);

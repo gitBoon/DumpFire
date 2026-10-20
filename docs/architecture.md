@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.38
+version: 1.39
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1614,6 +1614,7 @@ a v1 handler through the service with the options it passes, does not count it f
 | Option | Service | Passed by | What it keeps |
 |---|---|---|---|
 | `allowMove` | `updateCard` | internal | `columnId` and `position` in a card update move it (with the move's `409`s) |
+| `refuseMove` | `updateCard` | v1 | `columnId` taken only as the card's own, any other `400` naming the move route; `position` not read (card 2287; never combined with `allowMove`) |
 | `allowMilestone`, `allowRestore` | `updateCard` | v1 | `milestoneId`; `archivedAt: null` restores |
 | `refuseEmpty` | `updateCard`, `updateBoard` | v1 | `400 No valid fields to update` for a body that changes nothing; the internal tree answers it `200` |
 | `tellBeforeEntry` | `updateCard`, `createSubtask`, `updateBoard` (v1); `updateSubtask` (internal) | as listed | the live event before the entry (and so before its webhook); on `updateSubtask` before the completion's notices too |
@@ -1625,16 +1626,21 @@ a v1 handler through the service with the options it passes, does not count it f
 | `withLinkDetails` | `readWorkDependencies` | v1 card route | each link's id, maker and time |
 | `allowCard` | `changeMilestone` | internal | `cardId` (and `attach`) in a milestone `PATCH` puts a card in or takes it out |
 | `withCards` | `readMilestone` | v1 | the milestone's cards, withheld where the caller cannot open their board |
-| `allowCategory` | `createBoard` | internal | `categoryId`, the dashboard grouping |
+| `allowCategory` | `createBoard` | both (v1 since card 2287) | `categoryId`, the dashboard grouping |
 | `allowParent` | `updateBoard` | internal | `parentCardId`: a board moved under a card or back (not combined with `refuseEmpty`) |
+| `refuseParent` | `updateBoard` | v1 | `parentCardId` taken only as the board's own, any other `400`, `null` on a sub-board included (card 2287; never combined with `allowParent`) |
 | `placeAfterLast`, `colorBeforePosition` | `createColumn` | v1 | a column with no position after the last (internally at 0); `color` read before `position` |
 | `sendNameOrColor` | `updateLabel` | internal | `400 Send name or color to change` against `No valid fields to update` |
 
 Where a body id stands for a path id the difference is in `at`, not an option: the internal
 comment edit passes `at.cardId` so the comment must be on the path's card, and a create from
-the page passes `{}` and its body names the parent. What one tree accepts that the other does
-not (v1 ignores a new board's `categoryId` and a board update's `parentCardId`) is unchanged;
-each was raised as a card of its own.
+the page passes `{}` and its body names the parent. What v1 ignored without a word is now taken
+or refused (card 2287): a new board's `categoryId` is taken, as the page takes it
+(`allowCategory`); a card update's `columnId` other than the card's own, and a board update's
+`parentCardId` other than the board's own, are refused with a `400` (`refuseMove`,
+`refuseParent`), because a move and a link are acts with routes of their own. A card update's
+`position` is still not read on v1, and is documented as ignored: a drag renumbers the columns
+it touches, so a stale one is common.
 
 ### The modules
 

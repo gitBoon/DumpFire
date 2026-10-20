@@ -4061,7 +4061,9 @@ describe('what the lists give (card 2128)', () => {
 			const refusals = [
 				await api('PUT', `/api/boards/${w.B.board.id}`, { user: w.outsider, body: { categoryId: w.groupingOfA.id } }),
 				await api('PUT', `/api/v1/boards/${w.B.board.id}`, { user: w.outsider, body: { categoryId: w.groupingOfA.id } }),
-				await api('POST', '/api/boards', { user: w.outsider, body: { name: 'A new board', categoryId: w.groupingOfA.id } })
+				await api('POST', '/api/boards', { user: w.outsider, body: { name: 'A new board', categoryId: w.groupingOfA.id } }),
+				// v1 files a new board under its grouping since card 2287, so it is held to the same rule.
+				await api('POST', '/api/v1/boards', { user: w.outsider, body: { name: 'A new board', categoryId: w.groupingOfA.id } })
 			];
 			for (const res of refusals) expect([res.status, res.body]).toEqual([403, { message: 'No access to this board category' }]);
 			expectUnchanged(before);
@@ -4079,6 +4081,8 @@ describe('what the lists give (card 2128)', () => {
 			expect(filedUnder()).toBe(empty.id);
 			const made = await api('POST', '/api/boards', { user: w.outsider, body: { name: 'A new board', categoryId: w.grouping.id } });
 			expect([made.status, made.body.categoryId]).toEqual([201, w.grouping.id]);
+			const madeByKey = await api('POST', '/api/v1/boards', { user: w.outsider, body: { name: 'Another new board', categoryId: w.grouping.id } });
+			expect([madeByKey.status, madeByKey.body.categoryId]).toEqual([201, w.grouping.id]);
 
 			expect((await api('PUT', `/api/v1/boards/${theirs.id}`, { user: w.admin, body: { categoryId: w.groupingOfA.id } })).status).toBe(200);
 			expect(filedUnder()).toBe(w.groupingOfA.id);

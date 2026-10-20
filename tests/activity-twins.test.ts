@@ -1057,6 +1057,18 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		sources: { internal: ['board_created ui'], v1: ['api:board_created api'] },
 		told: { internal: [], v1: [] }
 	},
+	// Card 2287, decision 4: v1 files a new board under the grouping sent, as
+	// the page does. It made the board unfiled.
+	{
+		row: 24,
+		what: 'making a board filed under a dashboard grouping',
+		build: boardScene,
+		internal: (s) => api('POST', '/api/boards', { user: s.owner, body: { name: 'Roadmap', categoryId: 1 } }),
+		v1: (s) => api('POST', '/api/v1/boards', { user: s.owner, body: { name: 'Roadmap', categoryId: 1 } }),
+		status: { internal: 201, v1: 201 },
+		sources: { internal: ['board_created ui'], v1: ['api:board_created api'] },
+		told: { internal: [], v1: [] }
+	},
 	{
 		row: 25,
 		what: 'renaming a board, with its emoji and its grouping',
@@ -2040,6 +2052,7 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		await ask('internal board, no parent card', api('POST', '/api/boards', { ...as, body: { name: 'No', parentCardId: 999 } }));
 		await ask('v1 board, no parent card', api('POST', '/api/v1/boards', { ...as, body: { name: 'No', parentCardId: 999 } }));
 		await ask('internal board, no grouping', api('POST', '/api/boards', { ...as, body: { name: 'No', categoryId: 999 } }));
+		await ask('v1 board, no grouping', api('POST', '/api/v1/boards', { ...as, body: { name: 'No', categoryId: 999 } }));
 		await ask('internal board change, no board', api('PUT', '/api/boards/999', { ...as, body: { name: 'No' } }));
 		await ask('v1 board change, no board', api('PUT', '/api/v1/boards/999', { ...as, body: { name: 'No' } }));
 		await ask('internal board change, nothing sent', api('PUT', `/api/boards/${A}`, { ...as, body: {} }));
@@ -2049,6 +2062,10 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		await ask('internal board change, no grouping', api('PUT', `/api/boards/${A}`, { ...as, body: { categoryId: 999 } }));
 		await ask('v1 board change, no grouping', api('PUT', `/api/v1/boards/${A}`, { ...as, body: { categoryId: 999 } }));
 		await ask('internal board change, under no card', api('PUT', `/api/boards/${A}`, { ...as, body: { parentCardId: 999 } }));
+		// Card 2287: v1 takes no parentCardId on a board change (card 2114's D8),
+		// and refuses one other than the board's own where it ignored it.
+		await ask('v1 board change, under a card', api('PUT', `/api/v1/boards/${A}`, { ...as, body: { name: 'No', parentCardId: s.first.id } }));
+		await ask('v1 board change, a parent card that is no id', api('PUT', `/api/v1/boards/${A}`, { ...as, body: { name: 'No', parentCardId: 'abc' } }));
 		await ask('internal board delete, no board', api('DELETE', '/api/boards/999', as));
 		await ask('v1 board delete, no board', api('DELETE', '/api/v1/boards/999', as));
 		await ask('internal grouping, no name', api('POST', '/api/board-categories', { ...as, body: { color: '#123456' } }));
@@ -2122,6 +2139,7 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'internal board, no parent card': '404 Parent card not found',
 			'v1 board, no parent card': '404 Parent card not found',
 			'internal board, no grouping': '404 Board category not found',
+			'v1 board, no grouping': '404 Board category not found',
 			'internal board change, no board': '404 Board not found',
 			'v1 board change, no board': '404 Board not found',
 			// R2: the internal route answers an empty change as it did, v1 refuses it.
@@ -2132,6 +2150,10 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'internal board change, no grouping': '404 Board category not found',
 			'v1 board change, no grouping': '404 Board category not found',
 			'internal board change, under no card': '404 Parent card not found',
+			'v1 board change, under a card':
+				`400 parentCardId ${s.first.id} is not this board's parent card (none): the board has been moved since it was read, or a link was meant. ` +
+				'A board is put under a card, or taken out from under one, on the board page',
+			'v1 board change, a parent card that is no id': '400 parentCardId must be an id',
 			'internal board delete, no board': '404 Board not found',
 			'v1 board delete, no board': '404 Board not found',
 			'internal grouping, no name': '400 name is required',
@@ -2194,6 +2216,33 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'internal label delete, none': '404 Label not found',
 			'v1 label delete, none': '404 Label not found'
 		});
+		// No board was made under the grouping that is not there, and no name sent with a parent card was saved (card 2287).
+		expect(db.select({ name: boards.name }).from(boards).all().map((b) => b.name).sort()).toEqual(['A', 'S']);
+	});
+
+	// Card 2287, decision 5: v1's board change compares the parent card the
+	// reader returns with the board's own. Its own, sent back, is taken, written
+	// as text or null for a top-level board; anything else is refused, null on a
+	// sub-board included (taking it out from under its card), with nothing saved.
+	it('refuses a v1 board change that takes a sub-board out from under its card, and takes the parent card each board holds (card 2287)', async () => {
+		const s = boardScene();
+		const sub = makeBoard({ owner: s.owner, name: 'Sub', parentCardId: s.first.id }).board;
+		const named = (id: number) => db.select({ name: boards.name }).from(boards).where(eq(boards.id, id)).get()!.name;
+
+		const out = await api('PUT', `/api/v1/boards/${sub.id}`, { user: s.owner, body: { name: 'Out', parentCardId: null } });
+		expect([out.status, out.body.message]).toEqual([
+			400,
+			`parentCardId null is not this board's parent card (${s.first.id}): the board has been moved since it was read, or a link was meant. ` +
+				'A board is put under a card, or taken out from under one, on the board page'
+		]);
+		expect(named(sub.id)).toBe('Sub');
+
+		// Pins: each board's own parent card, sent back, changes nothing about where it hangs.
+		const top = await api('PUT', `/api/v1/boards/${s.S.board.id}`, { user: s.owner, body: { name: 'Top', parentCardId: null } });
+		const still = await api('PUT', `/api/v1/boards/${sub.id}`, { user: s.owner, body: { name: 'Still under', parentCardId: String(s.first.id) } });
+		expect([top.status, still.status]).toEqual([200, 200]);
+		expect([named(s.S.board.id), named(sub.id)]).toEqual(['Top', 'Still under']);
+		expect(db.select({ parentCardId: boards.parentCardId }).from(boards).where(eq(boards.id, sub.id)).get()!.parentCardId).toBe(s.first.id);
 	});
 
 	it("lists boards and a board's labels alike through either tree, and refuses in each tree's words, rows 24 and 30", async () => {
@@ -2300,7 +2349,7 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 				code('caller'),
 				{ cardId: code('cardId') },
 				code('body'),
-				{ source: 'api', allowMilestone: true, allowRestore: true, refuseEmpty: true, tellBeforeEntry: true, says: code('NO_EDIT') }
+				{ source: 'api', allowMilestone: true, allowRestore: true, refuseMove: true, refuseEmpty: true, tellBeforeEntry: true, says: code('NO_EDIT') }
 			]
 		}
 	],
@@ -2501,9 +2550,10 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'readMilestoneSummary', args: [code('locals.user'), { milestoneId: code('id') }, {}] }
 	],
 	// Slice A4: boards, dashboard groupings, columns, card categories and
-	// labels. What each does differently today: the page files a new board
-	// under a grouping (`allowCategory`) and moves a board under a card
-	// (`allowParent`); v1 refuses a board change that names no field
+	// labels. What each does differently today: both trees file a new board
+	// under a grouping (`allowCategory`, v1 since card 2287); the page moves a
+	// board under a card (`allowParent`), and v1 refuses a parent card other
+	// than the board's own (`refuseParent`, card 2287); v1 refuses a board change that names no field
 	// (`refuseEmpty`) and tells the board first (`tellBeforeEntry`); v1 puts a
 	// new column sent with no position after the last (`placeAfterLast`) and
 	// reads its colour first (`colorBeforePosition`); the page's words for a
@@ -2511,12 +2561,15 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/boards/+server.ts GET': [{ service: 'listBoardsFor', args: [code('locals.user'), {}, {}] }],
 	'src/routes/api/v1/boards/+server.ts GET': [{ service: 'listBoardsFor', args: [code('locals.user'), {}, {}] }],
 	'src/routes/api/boards/+server.ts POST': [{ service: 'createBoard', args: [code('caller'), {}, code('body'), { source: 'ui', allowCategory: true }] }],
-	'src/routes/api/v1/boards/+server.ts POST': [{ service: 'createBoard', args: [code('caller'), {}, code('body'), { source: 'api' }] }],
+	'src/routes/api/v1/boards/+server.ts POST': [{ service: 'createBoard', args: [code('caller'), {}, code('body'), { source: 'api', allowCategory: true }] }],
 	'src/routes/api/boards/[id]/+server.ts PUT': [
 		{ service: 'updateBoard', args: [code('caller'), { boardId: code('id') }, code('body'), { source: 'ui', allowParent: true }] }
 	],
 	'src/routes/api/v1/boards/[boardId]/+server.ts PUT': [
-		{ service: 'updateBoard', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api', refuseEmpty: true, tellBeforeEntry: true }] }
+		{
+			service: 'updateBoard',
+			args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api', refuseEmpty: true, refuseParent: true, tellBeforeEntry: true }]
+		}
 	],
 	'src/routes/api/boards/[id]/+server.ts DELETE': [{ service: 'deleteBoardFor', args: [code('caller'), { boardId: code('id') }, null, { source: 'ui' }] }],
 	'src/routes/api/v1/boards/[boardId]/+server.ts DELETE': [

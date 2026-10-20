@@ -466,3 +466,129 @@ describe('PUT /api/cards/:id clears a business value and an on-hold note sent as
 		expectUnchanged(before);
 	});
 });
+
+// Card 2287: the v1 update read neither `columnId` nor `position`, so a
+// caller who sent another column was answered 200 with the other fields saved
+// and the card where it was. A changed `columnId` is refused now, naming the
+// move route; the card's own, sent back, is taken as it was. `position` is
+// still never taken here, whatever is sent: a drag renumbers the columns it
+// touches, so a card read a minute ago is often sent back with an old one.
+// The plan is `docs/planning/cards-2287-2290-2295-api.md` (decisions 1 to 3).
+describe('PUT /api/v1/cards/:cardId does not move a card (card 2287)', () => {
+	const moveRefused = (sent: number | string, held: number) =>
+		`columnId ${sent} is not this card's column (${held}): the card has moved since it was read, or a move was meant. Move a card with PUT /cards/{cardId}/move`;
+
+	it('refuses another column with a title, naming the move, and writes, records and sends nothing', async () => {
+		const card = fullCard();
+		const before = snapshotDb();
+
+		const res = await put(`/api/v1/cards/${card.id}`, { title: 'Moved?', columnId: A.cols['In Progress'].id });
+
+		expect([res.status, res.body.message]).toEqual([400, moveRefused(A.cols['In Progress'].id, A.cols['To Do'].id)]);
+		expectUnchanged(before);
+		expect(sent.all).toEqual([]);
+	});
+
+	it('refuses another column sent alone with the same words, not as a body that names nothing', async () => {
+		const card = fullCard();
+		const before = snapshotDb();
+
+		const res = await put(`/api/v1/cards/${card.id}`, { columnId: A.cols['In Progress'].id });
+
+		expect([res.status, res.body.message]).toEqual([400, moveRefused(A.cols['In Progress'].id, A.cols['To Do'].id)]);
+		expectUnchanged(before);
+	});
+
+	it('refuses a columnId that is no id, or null, as the field it is, with nothing written', async () => {
+		const card = fullCard();
+		const before = snapshotDb();
+
+		for (const columnId of ['abc', null]) {
+			const res = await put(`/api/v1/cards/${card.id}`, { title: 'Moved?', columnId });
+			expect([res.status, res.body.message], String(columnId)).toEqual([400, 'columnId must be an id']);
+		}
+		expectUnchanged(before);
+		expect(sent.all).toEqual([]);
+	});
+
+	// The column is asked after every other field, so a body wrong in two ways
+	// names the first, as it did (decision 3).
+	it('answers an empty title sent with another column as the title, with nothing written', async () => {
+		const card = fullCard();
+		const before = snapshotDb();
+
+		const res = await put(`/api/v1/cards/${card.id}`, { title: '', columnId: A.cols['In Progress'].id });
+
+		expect([res.status, res.body.message]).toEqual([400, 'title cannot be empty']);
+		expectUnchanged(before);
+	});
+
+	// Pin: a position alone, or with the card's own column, names nothing this
+	// operation changes, as it did.
+	it('answers a position alone, and with the card’s own column, as a body that names nothing (pin)', async () => {
+		const card = fullCard();
+		const before = snapshotDb();
+
+		for (const body of [{ position: 9 }, { columnId: card.columnId, position: 9 }]) {
+			const res = await put(`/api/v1/cards/${card.id}`, body);
+			expect([res.status, res.body.message], JSON.stringify(body)).toEqual([400, 'No valid fields to update']);
+		}
+		expect(cardRow(card.id).position).toBe(card.position);
+		expectUnchanged(before);
+	});
+
+	it('drops a position sent with a title, and saves and names the title alone (pin)', async () => {
+		const card = fullCard();
+
+		const res = await put(`/api/v1/cards/${card.id}`, { title: 'Renamed', position: 9 });
+
+		expect(res.status).toBe(200);
+		expect(cardRow(card.id)).toMatchObject({ title: 'Renamed', position: card.position, columnId: card.columnId });
+		expect(entries().map((e) => [e.action, e.detail])).toEqual([['api:card_updated', 'Updated fields: title on "Renamed"']]);
+	});
+
+	// Pin: the round trip of a card read with GET, after a neighbour was dragged
+	// above it, which renumbered its column. Its column is its own and its old
+	// position is dropped, so the drag is not undone.
+	it('takes a card read with GET and sent back whole after a drag renumbered its column, saving the new title alone (pin)', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Read', position: 0 });
+		const neighbour = makeCard(A.cols['To Do'], { title: 'Neighbour', position: 1 });
+		const read = await api('GET', `/api/v1/cards/${card.id}`, { user: owner });
+		expect(read.status).toBe(200);
+
+		const toDo = A.cols['To Do'].id;
+		const dragged = await api('PUT', '/api/cards/reorder', {
+			user: owner,
+			body: { updates: [{ id: neighbour.id, columnId: toDo, position: 0 }, { id: card.id, columnId: toDo, position: 1 }] }
+		});
+		expect(dragged.status).toBe(200);
+		expect(cardRow(card.id).position).toBe(1);
+		const earlier = entries().length;
+
+		const res = await put(`/api/v1/cards/${card.id}`, { ...read.body, title: 'Read again' });
+
+		expect(res.status).toBe(200);
+		expect(cardRow(card.id)).toMatchObject({ title: 'Read again', columnId: toDo, position: 1 });
+		expect(entries().slice(earlier).map((e) => [e.action, e.detail])).toEqual([['api:card_updated', 'Updated fields: title on "Read again"']]);
+	});
+
+	// Pin: the value the reader returns is compared, not the raw body.
+	it('takes the card’s own column written as text (pin)', async () => {
+		const card = fullCard();
+
+		const res = await put(`/api/v1/cards/${card.id}`, { title: 'Renamed', columnId: String(card.columnId) });
+
+		expect(res.status).toBe(200);
+		expect(cardRow(card.id)).toMatchObject({ title: 'Renamed', columnId: card.columnId });
+	});
+
+	it('refuses a viewer who sends another column with the guard’s 403 first (pin)', async () => {
+		const card = fullCard();
+		const before = snapshotDb();
+
+		const res = await put(`/api/v1/cards/${card.id}`, { columnId: A.cols['In Progress'].id }, viewer);
+
+		expect([res.status, res.body.message]).toEqual([403, "No edit access to this card's board"]);
+		expectUnchanged(before);
+	});
+});

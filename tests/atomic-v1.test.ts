@@ -163,11 +163,13 @@ describe('PUT /api/v1/cards/:cardId', () => {
 	it('changes the milestone, the other fields and the activity entry together, or none of them', async () => {
 		const run = await eachWriteInTurn({
 			build: withGoals,
-			// A column is sent as well. This route has never moved a card, and
-			// does not now: `PUT /api/v1/cards/:cardId/move` is the move.
+			// The card's own column is sent as well, as a card read with GET and
+			// sent back carries it. This route has never moved a card: another
+			// column is refused since card 2287 (`card-updates.test.ts`), where it
+			// was ignored, and `PUT /api/v1/cards/:cardId/move` is the move.
 			request: ({ owner, A, first, goal }) =>
 				put(owner, first.id, {
-					columnId: A.cols['In Progress'].id,
+					columnId: A.cols['To Do'].id,
 					title: 'Renamed',
 					priority: 'high',
 					milestoneId: goal.id
