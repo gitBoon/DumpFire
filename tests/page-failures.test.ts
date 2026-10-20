@@ -1915,6 +1915,29 @@ describe('where the watch and the streams are used, read from the source', () =>
 		// All Tasks' one stream is the page's: none of its components opens another (card 2281, slice C3a-2).
 		for (const file of tasksComponents()) expect(readFileSync(join(ROOT, file), 'utf8'), file).not.toContain('keepStreamOpen(');
 	});
+
+	// Card 2281, slice C3b (card 2012's section 6.3, case 1): All Tasks re-read
+	// itself 250 ms after every live event, so a bulk archive of 20 cards was 20
+	// re-reads. Each event is now handed to the board page's refresh schedule.
+	it('All Tasks’ stream listener hands each event to the refresh schedule and calls no invalidateAll in a per-event timer', () => {
+		const source = readFileSync(join(ROOT, 'src/routes/all/+page.svelte'), 'utf8');
+		const listener = source.slice(source.indexOf('function listenToGlobalSSE('), source.indexOf('function onVisibilityChange('));
+		const update = listener.slice(listener.indexOf("addEventListener('update'"), listener.indexOf("addEventListener('celebrate'"));
+		expect(update).toContain('liveRefresh.schedule();');
+		expect(listener).not.toContain('setTimeout(');
+		expect(listener).not.toContain('invalidateAll');
+		expect(listener).not.toContain('fetchActivity');
+
+		// The schedule's read is what the event's timer did: the page, and the Activity Log when it is open.
+		expect(source).toContain("import { refreshSchedule } from '$lib/board/refresh-schedule';");
+		expect(source.match(/refreshSchedule\(/g)).toHaveLength(1);
+		const run = source.slice(source.indexOf('const liveRefresh = refreshSchedule('), source.indexOf('});', source.indexOf('const liveRefresh = refreshSchedule(')));
+		expect(run).toContain('invalidateAll()');
+		expect(run).toContain('activityOpen ? activityPanel?.fetchActivity() : undefined');
+		// And it stops with the page.
+		const destroy = source.slice(source.indexOf('onDestroy(() => {'), source.indexOf('});', source.indexOf('onDestroy(() => {')));
+		expect(destroy).toContain('liveRefresh.dispose();');
+	});
 });
 
 // Card 2184. SvelteKit keeps a page's component when only its params change,

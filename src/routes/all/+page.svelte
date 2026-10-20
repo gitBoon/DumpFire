@@ -23,6 +23,7 @@
 	import { boardPlaces as placesOf, chosenBoardId, inBoardFilter } from '$lib/board-tree';
 	import { cardArchiveWarning } from '$lib/api';
 	import { keepStreamOpen } from '$lib/live-stream';
+	import { refreshSchedule } from '$lib/board/refresh-schedule';
 	import { playCreateSound, playNotifySound } from '$lib/utils/sounds';
 	import { drawnColour } from '$lib/colours';
 	// All Tasks' parts (card 2281, slice C3a-2), each drawn where its markup was.
@@ -50,6 +51,20 @@
 	/** The live notices and the fireworks, which the stream's events are handed to. */
 	let liveToasts = $state<ReturnType<typeof LiveToasts>>();
 
+	/**
+	 * When a live event re-reads the page (card 2281, slice C3b): the board
+	 * page's schedule, so a burst of events (a bulk archive is one per card)
+	 * is one re-read, sent 250 ms after the last event and no later than about
+	 * a second after the first, and never two at once. Its 250 ms is also what
+	 * lets a `celebrate` event start the fireworks before the page is drawn
+	 * again. No holds and no generations: the page's own writes re-read the
+	 * page themselves, and `invalidateAll` draws its own answer, so there is no
+	 * answer here to drop.
+	 */
+	const liveRefresh = refreshSchedule(async () => {
+		await Promise.all([invalidateAll(), activityOpen ? activityPanel?.fetchActivity() : undefined]);
+	});
+
 	/** The page's listeners, put on each stream as it is opened. */
 	function listenToGlobalSSE(eventSource: EventSource) {
 		eventSource.addEventListener('update', (e) => {
@@ -66,11 +81,8 @@
 					playNotifySound();
 				}
 			} catch { /* fallback — still refresh */ }
-			// Defer data refresh so celebrate event can trigger fireworks first
-			setTimeout(() => {
-				invalidateAll();
-				if (activityOpen) activityPanel?.fetchActivity();
-			}, 250);
+			// Each event's notice is its own; the re-read is the burst's.
+			liveRefresh.schedule();
 		});
 
 		eventSource.addEventListener('celebrate', (e) => {
@@ -116,6 +128,7 @@
 		if (tickInterval) clearInterval(tickInterval);
 		closeStream?.();
 		closeStream = null;
+		liveRefresh.dispose();
 	});
 
 	let searchQuery = $state('');
