@@ -3023,7 +3023,9 @@ describe("a move to another board that takes the card out of its milestone (card
 		// the card menu and the bulk move, each through PUT /api/cards/reorder),
 		// its card window sends no column, and All To Do has no Move window
 		// (card 2240). A page that gains one says the sentence above too.
-		for (const file of ['src/routes/board/[id]/+page.svelte', 'src/routes/todo/+page.svelte']) {
+		// The board page's markup is in its components too (card 2280, slice B3).
+		const boardParts = ['BoardHeader', 'BoardMoreMenu', 'KanbanColumnHeader', 'KanbanCardBody', 'ActivityPanel', 'ArchivePanel', 'SidePanel', 'XpLeaderboard'].map((name) => `src/lib/components/board/${name}.svelte`);
+		for (const file of ['src/routes/board/[id]/+page.svelte', ...boardParts, 'src/routes/todo/+page.svelte']) {
 			const source = readFileSync(join(ROOT, file), 'utf8');
 			expect(source, file).not.toContain('id="move-board"');
 			expect(source, file).not.toMatch(/columnId: move/);
@@ -6696,6 +6698,11 @@ describe('the board page’s card window goes through its controller (card 2280,
 		expect(source().match(/new CardWindow\(/g)).toHaveLength(1);
 		// The page's copies, which a sub-board link and delete had to put right by hand, are gone.
 		expect(source()).not.toMatch(/\b(editingCard|showCardModal|cardModalColumnId)\b/);
+		// Nor in what the page draws through its components (card 2280, slice B3).
+		for (const name of ['BoardHeader', 'BoardMoreMenu', 'KanbanColumnHeader', 'KanbanCardBody', 'ActivityPanel', 'ArchivePanel', 'SidePanel', 'XpLeaderboard']) {
+			const file = `src/lib/components/board/${name}.svelte`;
+			expect(readFileSync(join(ROOT, file), 'utf8'), file).not.toMatch(/\b(editingCard|showCardModal|cardModalColumnId)\b/);
+		}
 		expect(flat(functionNamed(tree, 'openCardModal').body!)).toBe('{ cardWindow.openCard(card); }');
 		expect(flat(functionNamed(tree, 'openNewCardModal').body!)).toBe('{ cardWindow.openNew(columnId); }');
 

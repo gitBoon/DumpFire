@@ -368,6 +368,8 @@ describe('PATCH /api/labels', () => {
 
 const ROOT = process.cwd();
 const BOARD_PAGE = 'src/routes/board/[id]/+page.svelte';
+/** What each card on the board shows: moved from the board page by card 2280's slice B3. */
+const BOARD_CARD = 'src/lib/components/board/KanbanCardBody.svelte';
 const CARD_WINDOW = 'src/lib/components/CardModal.svelte';
 
 /** Every Svelte file under `src`, as a path from the repository. */
@@ -419,16 +421,18 @@ describe('a cover, as the pages draw it', () => {
 			}
 		}
 		// The board's strip, and in the card window its header strip and the custom swatch.
-		expect(drawn.sort()).toEqual([BOARD_PAGE, CARD_WINDOW, CARD_WINDOW].sort());
-		// Each of the two is read whole as blocks that open and close: none is left open at its end.
-		for (const file of [BOARD_PAGE, CARD_WINDOW]) {
+		expect(drawn.sort()).toEqual([BOARD_CARD, CARD_WINDOW, CARD_WINDOW].sort());
+		// Each is read whole as blocks that open and close: none is left open at its end.
+		for (const file of [BOARD_PAGE, BOARD_CARD, CARD_WINDOW]) {
 			const markup = markupOf(file);
 			expect(blocksAround(markup, markup.length), file).toEqual([]);
 		}
 	});
 
 	it('is drawn on the board as a strip across the top of each card, placed as the category strip is', () => {
-		const source = readFileSync(join(ROOT, BOARD_PAGE), 'utf8');
+		const source = readFileSync(join(ROOT, BOARD_CARD), 'utf8');
+		// Each card of the board's columns is drawn through it.
+		expect(readFileSync(join(ROOT, BOARD_PAGE), 'utf8')).toMatch(/<KanbanCardBody\s+\{card\}/);
 		expect(source).toContain(
 			'{#if isCoverValue(card.coverUrl)}<div class="card-cover-strip" style="background: {card.coverUrl}" aria-hidden="true"></div>{/if}'
 		);
