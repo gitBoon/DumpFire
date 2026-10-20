@@ -714,23 +714,24 @@ export function validateDependencyBatch(links: DependencyLink[]): DependencyBatc
  * re-check, because the caller has to do the access checks between validation
  * and writing anyway, and re-deriving the graph here would just be a second
  * chance to disagree with the answer already reported.
+ *
+ * Returns the links it wrote, each judged by its own insert (card 2291), so
+ * a caller records and announces exactly those: a link already stored is
+ * ignored by the insert and is not among them.
  */
-export function createDependencyBatch(links: DependencyLink[], userId: number): number {
-	if (links.length === 0) return 0;
+export function createDependencyBatch(links: DependencyLink[], userId: number): DependencyLink[] {
+	if (links.length === 0) return [];
 
 	const insert = sqlite.prepare(
 		`INSERT OR IGNORE INTO work_dependencies
 		 (blocked_type, blocked_id, blocker_type, blocker_id, created_by_user_id)
 		 VALUES (?, ?, ?, ?, ?)`
 	);
-	return inTransaction(() => {
-		let n = 0;
-		for (const l of links) {
-			n += insert.run(l.blockedType ?? 'card', l.blocked, l.blockerType ?? 'card', l.blocker, userId)
-				.changes;
-		}
-		return n;
-	});
+	return inTransaction(() =>
+		links.filter(
+			(l) => insert.run(l.blockedType ?? 'card', l.blocked, l.blockerType ?? 'card', l.blocker, userId).changes > 0
+		)
+	);
 }
 
 /** Turn an ordered list of work into the links of a linear chain. */

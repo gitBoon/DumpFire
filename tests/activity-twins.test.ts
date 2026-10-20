@@ -3239,8 +3239,10 @@ describe('one set of activity labels, for the board page and All Tasks (card 221
 		expect(written.length).toBeGreaterThan(20);
 		const names = new Set([...Object.values(ACTIONS), ...written.flatMap((call) => call.names ?? [])].map(canonicalAction));
 		expect([...names].filter((name) => !Object.hasOwn(ACTIVITY_LABELS, name))).toEqual([]);
-		// Among them the one written through the API alone, which `ACTIONS` does not hold.
-		expect(names).toContain('dependencies_bulk_added');
+		// `dependencies_bulk_added`, which `ACTIONS` does not hold, is no longer
+		// written (card 2291: a batch writes one `dependency_added` per link),
+		// and keeps its label for the rows already in the log.
+		expect(ACTIVITY_LABELS.dependencies_bulk_added).toBe('Added dependencies');
 	});
 
 	it('reads both spellings of an action alike, in words', () => {

@@ -1852,7 +1852,8 @@ describe('the batch writers that already had a transaction', () => {
 					owner.id
 				),
 			afterSuccess: (_, written) => {
-				expect(written).toBe(3);
+				// The links it wrote, since card 2291; it answered their number.
+				expect(written).toHaveLength(3);
 				expect(db.select().from(workDependencies).all()).toHaveLength(3);
 			}
 		});

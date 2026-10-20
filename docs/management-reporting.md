@@ -1,7 +1,7 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.7
+version: 1.8
 status: As-Built
 date: 2026-10-20
 tags:
@@ -137,7 +137,10 @@ not counted: `dependency_added`, `dependency_removed` and `dependencies_bulk_add
 in either spelling, neither put a card in the window nor make it the work of
 whoever wrote them. Since 14 October 2026 the card window records every link it
 adds or removes, and counted, linking a blocker would have read as work on the
-card.
+card. Since card 2291 a batch of links through the API writes one
+`dependency_added` per link, on the card that waits, and no longer
+`dependencies_bulk_added`, which stays listed for the rows already written; no
+count changes.
 
 A subtask edited is work on its card, as a subtask ticked is. Since card 2299 an
 untick and a change of a subtask's title, description, priority, colour or due

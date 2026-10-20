@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.49
+version: 1.50
 status: As-Built
 date: 2026-10-20
 tags:
@@ -828,7 +828,7 @@ The board's activity panel and the All Tasks activity panel name each action in 
 | `subtask_created`, `subtask_updated`, `subtask_completed`, `subtask_deleted`, and `subtask_toggled`, written by older versions | Created subtask, Updated subtask, Completed subtask, Deleted subtask, Updated subtask. `subtask_updated` is written for an untick, `Reopened <subtask> (on <card>)`, and for a change of title, description, priority, colour or due date, `Updated <subtask> (on <card>): title, dueDate`, naming only the fields changed; one request that ticks or unticks and edits writes two entries. A change of position alone, and a save that changes nothing, write none (card 2299: neither an untick nor an edit was recorded) |
 | `comment_added`, `comment_edited`, `comment_deleted` | Added comment, Edited comment, Deleted comment (card 2283: a delete was not recorded) |
 | `assignee_added`, `assignee_removed` | Assigned user, Unassigned user |
-| `dependency_added`, `dependency_removed`, `dependencies_bulk_added` | Added dependency, Removed dependency, Added dependencies |
+| `dependency_added`, `dependency_removed`, `dependencies_bulk_added` | Added dependency, Removed dependency, Added dependencies. A batch through `POST /api/v1/dependencies/bulk` writes one `dependency_added` per link it creates, on the board of the card that waits, naming that card (card 2291); `dependencies_bulk_added`, one entry with no card for the whole batch, was written by older versions only, and keeps its label for those rows |
 | `board_created`, `board_updated`, `milestone_created` | Created board, Updated board, Created milestone |
 
 All Tasks marks an action done through the API with its **API** badge; the board's panel does not, and the Audit page's **Source** filter tells them apart. A name with no label, which only an entry older than these names can have, reads as the name in words with a capital first letter, never with `api:`: `time_logged` reads "Time logged". Until 2026-10-15 the board's panel showed the stored name with each word capitalised ("Card Moved In"), and All Tasks had a table of its own that knew 25 names and showed the rest with spaces for underscores and any `api:` left on, so a completion through the API read "api:card completed".

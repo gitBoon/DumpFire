@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.74
+version: 1.75
 status: As-Built
 date: 2026-10-20
 tags:
@@ -418,7 +418,7 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   `dependency_added`, `dependency_removed` or `dependencies_bulk_added` entry, in either
   spelling, and a report on one user does not take a card to be theirs for one. The API's
   own entries for a dependency counted until this date, and the web application now writes
-  them too.
+  them too. `dependencies_bulk_added` is written by older versions only (card 2291).
 - **A board member stored with a role other than `owner`, `editor` or `viewer` has a
   viewer's access.** The web application's sharing stored any text as a role until this
   date; a member stored as `admin` had an administrator's access to that board, by either
@@ -1087,6 +1087,16 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   `api:subtask_updated` is work on the card in `GET /reports/activity`, as
   `api:subtask_completed` is (item 87). See
   [`PUT /api/v1/subtasks/:subtaskId`](#put-apiv1subtaskssubtaskid).
+- **`POST /dependencies/bulk` records each link it creates** (card 2291), as
+  `POST /cards/:cardId/dependencies` records one: an `api:dependency_added` entry on the
+  board of the card that waits (a subtask's card), with that card's id,
+  `#1559 now waits on #1686`. It wrote one `api:dependencies_bulk_added` entry for the whole
+  batch, with no card, on the first board it touched alone. A link skipped as already
+  recorded writes none, and a batch that writes nothing tells no board, as before.
+  **`dependencies_bulk_added` is no longer written**: `GET /audit-log?action=dependencies_bulk_added`
+  finds older entries only, and `action=dependency_added` now finds the links of a batch
+  too. Neither sends a webhook (item 88). See
+  [`POST /api/v1/dependencies/bulk`](#post-apiv1dependenciesbulk).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -3060,6 +3070,13 @@ It answers `201`:
 `links` holds the links that were written. A link that was already recorded is skipped and
 counted in `skippedAsDuplicate`, so the same batch can be sent twice: when every link was
 already there the answer is still `201`, with `created` 0.
+
+Each link written is recorded as a single add records one: an `api:dependency_added` entry
+on the board of the card that waits (a subtask's card), with that card's id,
+`subtask #3471 now waits on #1559`. A link skipped as already recorded writes none, and a
+batch that wrote nothing tells no board. Until card 2291 a batch wrote one
+`api:dependencies_bulk_added` entry with no card, on the first board it touched alone; that
+name is no longer written (item 88).
 
 The batch is all or nothing. Every link is checked before any is written, loops between the
 links of the batch included, and if one is refused the answer is `409` and nothing is

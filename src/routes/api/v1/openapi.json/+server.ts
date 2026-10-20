@@ -231,6 +231,8 @@ const spec = {
 			'archivedAt keeps its first value and updatedAt is not moved, where both were stamped again with the time of the second request, and no second api:card_archived is logged. ' +
 			'(87) PUT /api/v1/subtasks/{subtaskId} logs api:subtask_updated for an untick ("Reopened <subtask> (on <card>)") and for a change of title, description, priority, colorTag or dueDate ("Updated <subtask> (on <card>): title, dueDate"), ' +
 			'not for a change of position alone; a request that changes nothing writes nothing, logs nothing and sends no live update, and answers 200 with the subtask. Neither was recorded, and an unchanged request was written and told. ' +
+			'(88) POST /api/v1/dependencies/bulk logs one api:dependency_added per link it creates, on the board of the card that waits, with that card\'s id and the words a single add uses, ' +
+			'where it logged one api:dependencies_bulk_added with no card on one board. dependencies_bulk_added is no longer written; an audit-log filter on it finds older entries only, and one on dependency_added now finds the links of a batch too. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -4503,7 +4505,9 @@ const spec = {
 					'**All or nothing.** The whole batch is checked before anything is written, loops between the links of the batch included. ' +
 					'If one link is refused nothing is written, the links that were acceptable included, and the answer is a 409 that lists every link at fault, so that a long list is put right in one go. ' +
 					'A link to an end that does not exist, and a link the key\'s user may not make, are reasons in that 409: this operation answers no 404 and no 403.\n\n' +
-					'A link that is already recorded is not a fault. It is skipped and counted, so the same batch can be sent twice.',
+					'A link that is already recorded is not a fault. It is skipped and counted, so the same batch can be sent twice.\n\n' +
+					'Each link written logs one api:dependency_added activity entry, as POST /cards/{cardId}/dependencies does: on the board of the card that waits (a subtask\'s card), with that card\'s id, ' +
+					'in the words "#12 now waits on subtask #45". A link skipped as already recorded logs none. Until 2026-10-14 a batch logged one api:dependencies_bulk_added entry with no card, on one board, which is no longer written (item 88).',
 				operationId: 'addDependencies',
 				requestBody: {
 					required: true,
