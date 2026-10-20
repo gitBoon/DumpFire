@@ -339,6 +339,8 @@ export function updateCard(
  * Archive a card, or with `permanent` delete it (`DELETE /api/cards/:id`,
  * `DELETE /api/v1/cards/:cardId`). There is no body. See `deletes.ts` for
  * what goes with a permanent delete; an archive touches nothing but the card.
+ * A card already archived is answered the same, with nothing written and its
+ * board not told (card 2285), so a retried archive does not fail.
  */
 export function removeCard(
 	caller: SessionUser | null,
@@ -351,7 +353,7 @@ export function removeCard(
 	const { boardId } = requireCard(user, at.cardId, 'edit', opts.says);
 
 	if (opts.permanent) deleteCard(at.cardId, user, opts.source);
-	else archiveCard(at.cardId, user, opts.source);
+	else if (!archiveCard(at.cardId, user, opts.source)?.archived) return;
 
 	emit(boardId, 'update', { type: 'card' });
 }

@@ -227,6 +227,8 @@ const spec = {
 			'(85) DELETE /api/v1/comments/{commentId} is new, where the route answered 405: the comment\'s author while they can edit its board, or an administrator, as in the web application; no body; 200 {"success": true}; ' +
 			'400 Invalid comment ID, 404 Comment not found, 403 No edit access to this board and 403 You can only delete your own comments. It logs api:comment_deleted (a delete made in the web application now logs comment_deleted; neither was recorded) and sends a live board update. ' +
 			'No webhook is sent for it: re-reading the comment list is the only way to learn that a comment has gone. ' +
+			'(86) DELETE /api/v1/cards/{cardId} on a card already archived answers 200 {"success": true} as before, but writes nothing and sends no live update: ' +
+			'archivedAt keeps its first value and updatedAt is not moved, where both were stamped again with the time of the second request, and no second api:card_archived is logged. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -3069,7 +3071,9 @@ const spec = {
 				description:
 					'Archives the card by default (soft-delete). Add `?permanent=true` to permanently delete. Both answer 200.\n\n' +
 					'**Archive** sets `archivedAt` and writes a `card_archived` activity entry. Nothing else is touched: the card keeps its subtasks, ' +
-					'comments, attachments, dependency links and sub-boards, and has them all when it is restored. No webhook is sent.\n\n' +
+					'comments, attachments, dependency links and sub-boards, and has them all when it is restored. No webhook is sent. ' +
+					'A card already archived is answered 200 as it is: nothing is written, `archivedAt` keeps its first value, and no entry is logged. ' +
+					'Until 2026-10-14 it was stamped again and a second entry logged (item 86).\n\n' +
 					'**Permanent delete** removes the card with its subtasks, comments, assignees and attachments, every sub-board under it at every depth ' +
 					'with everything on it, and every dependency link that has a deleted card or subtask at either end. Attachment files are kept on the server for 30 days. ' +
 					'One `card_deleted` activity entry is written, with a null card id because the card is gone, and one `card.deleted` webhook is sent ' +

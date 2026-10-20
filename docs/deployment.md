@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.56
+version: 1.57
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3621,6 +3621,24 @@ Check 274 proves that the window follows a comment posted while its tab was hidd
 #### Going back to the previous image
 
 Nothing is done to the database. The older image lists comments of one second in no set order (in practice the earliest first), copies a request's discussion in no set order within one second, answers `userEmoji` `null` in the list for an author with no emoji, writes, records and announces a comment saved unchanged, which the window shows as "(edited)", sends no live update for a new comment and `{type: 'card'}` for an edit, and leaves an open card window showing the comments it read as it opened. It records nothing for a deleted comment and tells no open page, and answers `405` to `DELETE /api/v1/comments/{commentId}`: an agent or script that deletes comments through the API stops working, and should be told before going back. `comment_deleted` entries already written stay, and the older image's Activity Log and Audit page read them as "Comment deleted" (the words made from the name, as for any action it has no label for).
+
+### The Activity Log: Re-Archiving, Position Changes, Goal Changes, Bulk Dependencies and Subtask Edits
+
+**Card 2285.** No migration, no setting, no new route or field. Archiving a card that was already archived (a `DELETE` sent again through the API after a timeout, a script run twice, or a stale tab in the web application) stamped it again: `archivedAt` and `updatedAt` were set to the time of the second request, so the time the card was really archived was lost and the Archived page sorted it by the later one; a second "Archived card" entry was written in the board's Activity Log, the Audit page and `GET /api/v1/audit-log`; the activity report counted the card as touched again; and every open page of the board was told. Now an archive of a card already archived is answered as before, `200` `{"success": true}`, so a retry does not fail, but writes nothing, records nothing and tells no open page, in both trees. It is the other half of the rule the restore already has for a card that is not archived. No webhook was or is sent for an archive. The OpenAPI document stays `1.2.0`, with item 86 in its 2026-10-14 note.
+
+**Owner to know.** Nothing a person sees changes but the second "Archived card" entry, which is no longer written, and a card's archive time, which now stays the first one.
+
+#### After the deploy
+
+On production, with your own API key. **The scratch board:** one of your own, no other members, **no webhooks**, with three scratch cards T1, T2 and T3 made by hand in To Do (not from a request, and with no assignee: an assignment and a requester mean mail). Every write is to the scratch board; keep the board and its cards for the later checks of this group and delete them at the end of the release's checks. For the audit log, an administrator's API key, or read the board's Activity Log instead.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 278 | 2285 | `DELETE /api/v1/cards/<T3>`; `GET /api/v1/cards/<T3>` and note `archivedAt`; `DELETE` again; `GET` again. Open the board's **Activity Log**. Then restore T3 from the **Archived** page | Both `DELETE`s `200` `{"success": true}`; `archivedAt` the same both times; one "Archived card" entry for T3; T3 back in To Do | A second entry, or a later `archivedAt` |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image stamps a card archived again when it is archived a second time, losing the first archive time, records a second "Archived card" and tells the board's open pages.
 
 ## Changing the Schema
 
