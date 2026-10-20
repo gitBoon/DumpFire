@@ -31,7 +31,8 @@
 		boardUsers,
 		comments = $bindable(),
 		loadingComments,
-		windowError = $bindable()
+		windowError = $bindable(),
+		onWritten
 	}: {
 		card: CardType | null;
 		activeTab: 'details' | 'comments' | 'attachments';
@@ -39,6 +40,12 @@
 		comments: CommentItem[];
 		loadingComments: boolean;
 		windowError: string;
+		/**
+		 * Called as a post, an edit or a delete made here is shown: the window
+		 * then takes no answer of a re-read sent before it, which holds the
+		 * comments as they were (card 2282, the slice 3 review).
+		 */
+		onWritten?: () => void;
 	} = $props();
 
 	/** What a change that got no answer says: it may or may not have been made. */
@@ -49,6 +56,34 @@
 	let editingCommentText = $state('');
 
 	let currentUser = $derived($page.data.user);
+
+	/** What a Save of a comment someone else has deleted says (card 2282). */
+	const GONE = 'This comment no longer exists.';
+
+	/**
+	 * The comment being edited, as it was when Edit was pressed. A live
+	 * re-read can bring a list without it, someone else having deleted it
+	 * (card 2282, ruling 5): it is then kept in the thread, where it was,
+	 * marked deleted, with its box and what is typed in it, until Save (which
+	 * sends nothing and says so) or Cancel (which drops it).
+	 */
+	let editingKept = $state<CommentItem | null>(null);
+	let goneId = $derived(
+		editingKept && editingCommentId === editingKept.id && !comments.some(c => c.id === editingKept!.id) ? editingKept.id : null
+	);
+	/** The thread as drawn: the comments, with the one being edited put back if it has gone. */
+	let shown = $derived.by(() => {
+		if (goneId === null || !editingKept) return comments;
+		const kept = editingKept;
+		const at = comments.findIndex(c => c.createdAt < kept.createdAt || (c.createdAt === kept.createdAt && c.id < kept.id));
+		return at === -1 ? [...comments, kept] : [...comments.slice(0, at), kept, ...comments.slice(at)];
+	});
+
+	function startEdit(comment: CommentItem) {
+		editingKept = comment;
+		editingCommentId = comment.id;
+		editingCommentText = comment.content;
+	}
 
 	async function postComment() {
 		if (!card || !newComment.trim()) return;
@@ -70,7 +105,9 @@
 			return;
 		}
 		const created = await res.json();
-		comments = [created, ...comments];
+		// A live re-read may have brought it first (card 2282): shown once.
+		comments = [created, ...comments.filter(c => c.id !== created.id)];
+		onWritten?.();
 		newComment = '';
 	}
 
@@ -84,6 +121,7 @@
 			return;
 		}
 		comments = comments.filter(c => c.id !== commentId);
+		onWritten?.();
 	}
 
 	/**
@@ -105,6 +143,11 @@
 	 */
 	async function saveEditComment(commentId: number) {
 		if (!card || !editingCommentText.trim()) return;
+		if (commentId === goneId) {
+			// Nothing to save it to: what was typed stays in the box.
+			windowError = GONE;
+			return;
+		}
 		windowError = '';
 		const editing = comments.find(c => c.id === commentId);
 		if (editing && editingCommentText.trim() === editing.content.trim()) {
@@ -129,6 +172,7 @@
 		}
 		const saved: { content: string; updatedAt: string } = await res.json();
 		comments = comments.map(c => c.id === commentId ? { ...c, content: saved.content, updatedAt: saved.updatedAt } : c);
+		onWritten?.();
 		editingCommentId = null;
 		editingCommentText = '';
 	}
@@ -173,14 +217,14 @@
 
 	{#if loadingComments}
 		<div class="comments-loading">Loading comments...</div>
-	{:else if comments.length === 0}
+	{:else if shown.length === 0}
 		<div class="comments-empty">
 			<span class="comments-empty-icon">💬</span>
 			<p>No comments yet. Be the first to comment!</p>
 		</div>
 	{:else}
 		<div class="comment-thread">
-			{#each comments as comment (comment.id)}
+			{#each shown as comment (comment.id)}
 				<div class="comment-item">
 					<div class="comment-avatar">{comment.userEmoji || '👤'}</div>
 					<div class="comment-body">
@@ -188,6 +232,7 @@
 							<span class="comment-author">{comment.username}</span>
 							<span class="comment-time">{commentTimeAgo(comment.createdAt)}</span>
 							{#if comment.createdAt !== comment.updatedAt}<span class="comment-edited">(edited)</span>{/if}
+							{#if comment.id === goneId}<span class="comment-gone">(deleted)</span>{/if}
 						</div>
 						{#if editingCommentId === comment.id}
 							<textarea class="comment-edit-input" bind:value={editingCommentText} rows="3" onkeydown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); editingCommentId = null; } else sendKey(e, () => saveEditComment(comment.id)); }}></textarea>
@@ -200,7 +245,7 @@
 							{#if currentUser && (currentUser.id === comment.userId || currentUser.role === 'admin' || currentUser.role === 'superadmin')}
 								<div class="comment-actions">
 									{#if currentUser.id === comment.userId}
-										<button class="comment-action-btn" onclick={() => { editingCommentId = comment.id; editingCommentText = comment.content; }}>Edit</button>
+										<button class="comment-action-btn" onclick={() => startEdit(comment)}>Edit</button>
 									{/if}
 									<button class="comment-action-btn danger" onclick={() => deleteComment(comment.id)}>Delete</button>
 								</div>
@@ -256,6 +301,7 @@
 	.comment-author { font-size: 0.8rem; font-weight: 700; color: var(--text-primary); }
 	.comment-time { font-size: 0.7rem; color: var(--text-tertiary); }
 	.comment-edited { font-size: 0.65rem; color: var(--text-tertiary); font-style: italic; }
+	.comment-gone { font-size: 0.65rem; color: var(--accent-rose); font-style: italic; }
 	.comment-content { font-size: 0.85rem; line-height: 1.5; color: var(--text-secondary); overflow-wrap: anywhere; word-break: break-word; overflow: hidden; }
 	.comment-content :global(p) { margin: 0 0 var(--space-xs); overflow-wrap: anywhere; word-break: break-word; }
 	.comment-content :global(p:last-child) { margin: 0; }

@@ -37,6 +37,19 @@ export function boardEvent(data: unknown): BoardEvent | null {
 	}
 }
 
+/**
+ * Whether a card window open on `cardId` should read its comments again
+ * (card 2282): for a comment added, edited or deleted on that card
+ * (`{"type":"comment","cardId":…}`), and for `null`, a reconnect or a return
+ * to the tab, after which one may have been missed (or no event at all,
+ * which is read the same way rather than thrown on). Any other update, or a
+ * comment on another card, is not about the window's comments.
+ */
+export function commentsChanged(event: BoardEvent | null | undefined, cardId: number | null | undefined): boolean {
+	if (event == null) return true;
+	return event.type === 'comment' && cardId != null && event.cardId === cardId;
+}
+
 export interface SSECallbacks {
 	/**
 	 * Called when the board may have changed: with what an 'update' event

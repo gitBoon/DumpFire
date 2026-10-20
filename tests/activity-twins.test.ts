@@ -456,6 +456,9 @@ type ServiceTwin = {
 /** The live update most changes to a card send. */
 const CARD_UPDATE = { event: 'update', boardId: 1, data: { type: 'card' } };
 
+/** The live update a comment added, edited or deleted sends: the card's, so its open window re-reads (card 2282). */
+const COMMENT_UPDATE = { event: 'update', boardId: 1, data: { type: 'comment', cardId: 1 } };
+
 const SERVICE_TWINS: ServiceTwin[] = [
 	{
 		row: 1,
@@ -700,7 +703,11 @@ const SERVICE_TWINS: ServiceTwin[] = [
 				{ email: 'helper@example.test', subject: 'New comment on: First' },
 				{ email: 'viewer@example.test', subject: 'New comment on: First' }
 			];
-			return { internal: [webhook('on "First"'), ...mail], v1: [...mail, webhook('Commented on "First"')] };
+			// Then the open pages, last in both trees (card 2282, decision 3).
+			return {
+				internal: [webhook('on "First"'), ...mail, COMMENT_UPDATE],
+				v1: [...mail, webhook('Commented on "First"'), COMMENT_UPDATE]
+			};
 		})()
 	},
 	{
@@ -711,7 +718,10 @@ const SERVICE_TWINS: ServiceTwin[] = [
 			api('PUT', `/api/cards/${s.first.id}/comments/${s.comment.id}`, { user: s.owner, body: { content: 'As it is now' } }),
 		v1: (s) => api('PUT', `/api/v1/comments/${s.comment.id}`, { user: s.owner, body: { content: 'As it is now' } }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: ['comment_edited ui'], v1: ['api:comment_edited api'] }
+		sources: { internal: ['comment_edited ui'], v1: ['api:comment_edited api'] },
+		// The comment event, naming the card, where it was `{ type: 'card' }`
+		// (card 2282, decision 1): the open card window re-reads its comments.
+		told: { internal: [COMMENT_UPDATE], v1: [COMMENT_UPDATE] }
 	},
 	{
 		row: 12,
@@ -775,6 +785,8 @@ const SERVICE_TWINS: ServiceTwin[] = [
 			const notices = [
 				{ email: 'helper@example.test', subject: 'Unblocked: Waiting' },
 				CARD_UPDATE,
+				// The notice is a comment on Waiting, card 2 (card 2282).
+				{ event: 'update', boardId: 1, data: { type: 'comment', cardId: 2 } },
 				{ email: 'rita@example.test', subject: 'Subtask completed on your request: First' }
 			];
 			return {
@@ -2579,7 +2591,7 @@ describe('each internal route writes and tells all or nothing', () => {
 		});
 
 		expect(shape(run.writes)).toEqual(['update card_comments set', 'insert into activity_log']);
-		expect(run.effects.map(name)).toEqual(['event update {"type":"card"} on board 1']);
+		expect(run.effects.map(name)).toEqual(['event update {"type":"comment","cardId":1} on board 1']);
 	});
 
 	it('making a board under a card: the board, its columns, its owner and the entry, then the parent board is told', async () => {

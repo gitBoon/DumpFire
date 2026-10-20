@@ -383,7 +383,9 @@ describe('POST /api/cards/:id/comments', () => {
 			'email to member@example.test: New comment on: First',
 			'email to mentioned@example.test: New comment on: First',
 			'email to mentioned@example.test: owner mentioned you: First',
-			'email to rita@example.test: New comment on your request: Please build this'
+			'email to rita@example.test: New comment on your request: Please build this',
+			// Then the open pages, so a card window open on the card re-reads its comments (card 2282).
+			'event update (comment) on board 1'
 		]);
 	});
 
