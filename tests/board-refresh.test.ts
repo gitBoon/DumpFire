@@ -153,6 +153,32 @@ describe('refresh-schedule: when a re-read is sent', () => {
 		expect(seen.runs).toBe(1);
 	});
 
+	it('says when a hold is spent, by its release or the watchdog, and keeps one taken without the watchdog until it is let go (B2a review)', async () => {
+		const { seen, run } = counted();
+		const s = schedule(run);
+
+		const watched = s.hold();
+		const unwatched = s.hold({ watchdog: false });
+		expect([watched.released, unwatched.released]).toEqual([false, false]);
+		s.schedule();
+		await vi.advanceTimersByTimeAsync(31_000);
+		// The watched one is let go by the watchdog; the other still holds.
+		expect(watched.released).toBe(true);
+		expect(unwatched.released).toBe(false);
+		expect(s.holds).toBe(1);
+		expect(seen.runs).toBe(0);
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(s.holds).toBe(1);
+		unwatched();
+		expect(unwatched.released).toBe(true);
+		expect(s.holds).toBe(0);
+		expect(seen.runs).toBe(1);
+
+		// A hold taken once the schedule is stopped is spent from the start.
+		s.dispose();
+		expect(s.hold().released).toBe(true);
+	});
+
 	it('never holds an access event', async () => {
 		const { seen, run } = counted();
 		const s = schedule(run);

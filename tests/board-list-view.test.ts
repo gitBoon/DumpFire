@@ -340,8 +340,9 @@ describe('the page and the components, as source', () => {
 			const effects = all(tree(), (n) => ts.isCallExpression(n) && n.expression.getText() === '$effect' && n.getText().includes('resolveListColumn'));
 			expect(effects).toHaveLength(1);
 			const text = flat(effects[0]);
-			expect(text).toContain('const columnId = resolveListColumn(boardColumns, boardView.columnId);');
-			expect(text).toContain("if (boardViewRead && boardView.view === 'list' && columnId !== boardView.columnId) untrack(() => setBoardView(boardView));");
+			expect(text).toContain('const columnId = resolveListColumn(boardState.columns, boardView.columnId);');
+			// Not while the board is refused, whose columns are emptied, not deleted (card 2280, slice B2a).
+			expect(text).toContain("if (boardViewRead && !boardState.refused && boardView.view === 'list' && columnId !== boardView.columnId) untrack(() => setBoardView(boardView));");
 		});
 	});
 

@@ -3732,7 +3732,7 @@ describe('the second fix pass to card 2117’s slices 2 to 5 (version 1.8)', () 
 		}
 
 		// The board page hands it the board's categories.
-		expect(source('src/routes/board/[id]/+page.svelte')).toContain('cardActions.duplicateCard(card, boardColumns, data.board.id, boardCategories)');
+		expect(source('src/routes/board/[id]/+page.svelte')).toContain('cardActions.duplicateCard(card, boardState.columns, data.board.id, boardState.categories)');
 	});
 
 	it('saves a template from a card whose subtask holds a priority no rule allows, which is left out and is medium', async () => {

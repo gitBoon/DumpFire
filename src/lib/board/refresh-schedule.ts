@@ -19,7 +19,9 @@
  *     hand. A read already out when a hold is taken is answered too late in
  *     the same way, and is dropped as below. Holds are a count, each let go
  *     once, and the last let go sends the read that waited. A hold left open (a missed `finally`) is let go by a
- *     watchdog after about 30 s, so the board cannot stop following for good.
+ *     watchdog after about 30 s, so the board cannot stop following for good;
+ *     all but one taken without it (`hold({ watchdog: false })`), whose end a
+ *     window open on screen decides: the On Hold note's (B2a review).
  *   - **An access event is never held.** The board's stream says when the
  *     caller may no longer open it; that read is sent at once, whatever else
  *     is going on, so the page shows its refusal.
@@ -45,6 +47,20 @@ export const HOLD_WATCHDOG_MS = 30_000;
 export type ApplyAnswer = () => void;
 
 /**
+ * Lets a hold go; counts once however often it is called. `released` says
+ * whether it is spent, by its own call or by the watchdog, so a page that
+ * keeps one (a drag's) takes a fresh one rather than lean on a spent one.
+ */
+export type Release = (() => void) & { readonly released: boolean };
+
+/**
+ * `watchdog: false` keeps the hold out of the watchdog's reach, for a hold
+ * whose end the person decides and a window shows, the On Hold note window's
+ * (B2a review): it is let go only by its release, or when the schedule stops.
+ */
+export type HoldOptions = { watchdog?: boolean };
+
+/**
  * Sends one read. Resolves to how to apply its answer, or to nothing when
  * there is nothing to apply (no answer, or one that keeps the screen as it
  * is). It should not throw; a throw is taken as nothing to apply.
@@ -64,7 +80,7 @@ export type RefreshSchedule = {
 	/** An access event: read at once, held or not. */
 	access(): void;
 	/** Hold the reads. Returns the release, which counts once however often it is called. */
-	hold(): () => void;
+	hold(options?: HoldOptions): Release;
 	/** A write of the page's own has settled: a read already out is answered too late to apply. */
 	settled(): void;
 	/** Holds open now. */
@@ -192,9 +208,14 @@ export function refreshSchedule(run: RefreshRun, timing: RefreshTiming = {}): Re
 			forced = true;
 			arm();
 		},
-		hold() {
+		hold(options: HoldOptions = {}) {
+			let released = false;
+			const spent = () => released;
 			// Stopped: nothing to hold, and no watchdog left behind.
-			if (disposed) return () => {};
+			if (disposed) {
+				released = true;
+				return Object.defineProperty(() => {}, 'released', { get: spent }) as Release;
+			}
 			holds += 1;
 			// A read already out was sent before what this holds for began (a drag,
 			// a write shown at once): its answer would draw the board as it was,
@@ -202,19 +223,23 @@ export function refreshSchedule(run: RefreshRun, timing: RefreshTiming = {}): Re
 			// once the last hold is let go (B1 review).
 			generation += 1;
 			clearTimer();
-			let released = false;
+			let watchdog: ReturnType<typeof setTimeout> | null = null;
 			const release = () => {
 				if (released) return;
 				released = true;
-				clearTimeout(watchdog);
-				watchdogs.delete(watchdog);
+				if (watchdog !== null) {
+					clearTimeout(watchdog);
+					watchdogs.delete(watchdog);
+				}
 				holds -= 1;
 				// The last let go sends the read that waited, at once.
 				if (holds === 0 && pending && !inFlight && !disposed) void send();
 			};
-			const watchdog = setTimeout(release, watchdogMs);
-			watchdogs.add(watchdog);
-			return release;
+			if (options.watchdog !== false) {
+				watchdog = setTimeout(release, watchdogMs);
+				watchdogs.add(watchdog);
+			}
+			return Object.defineProperty(release, 'released', { get: spent }) as Release;
 		},
 		settled() {
 			generation += 1;

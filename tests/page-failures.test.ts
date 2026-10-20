@@ -60,7 +60,7 @@
  * with accounts made by `makeUser`. `tests/setup.ts` runs, as it does for
  * every file, and gives this one a database of its own.
  */
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { get } from 'svelte/store';
@@ -82,7 +82,9 @@ import { mayManageAccount } from '$lib/account-rule';
 import * as bulkActions from '$lib/board/bulk-actions';
 import * as cardActions from '$lib/board/card-actions';
 import * as dndHandlers from '$lib/board/dnd-handlers';
+import { refreshSchedule } from '$lib/board/refresh-schedule';
 import { connectSSE } from '$lib/board/sse';
+import { TRIGGERS } from 'svelte-dnd-action';
 import { keepStreamOpen, reconnectDelay, streamVerdict, type StreamEnvironment } from '$lib/live-stream';
 import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import { readTimeZone } from '$lib/server/request-body';
@@ -575,9 +577,11 @@ describe('the card an address names, src/routes/board/[id]/+page.svelte (card 21
 		for (const statement of mounted) expect(statement.getText()).not.toContain("'card'");
 	});
 
-	it('looks the card up in the board the navigation brought, data.columns, and not the page’s own copy', () => {
-		expect(opening().getText()).toContain('(data.columns as unknown as ColumnType[]).flatMap((c) => c.cards).find((c) => c.id === cardId)');
-		expect(opening().getText()).not.toContain('boardColumns');
+	// Card 2280, slice B2a: the board state is the page's one copy, made from
+	// the load before `afterNavigate` runs, and made afresh for another board.
+	it('looks the card up in the board state, which is the board the navigation brought, and not in the load', () => {
+		expect(opening().getText()).toContain('boardState.columns.flatMap((c) => c.cards).find((c) => c.id === cardId)');
+		expect(opening().getText()).not.toContain('data.');
 	});
 
 	it('closes a window already open, and opens the card and puts the address right only after the next tick', () => {
@@ -617,13 +621,15 @@ describe('the card an address names, src/routes/board/[id]/+page.svelte (card 21
 
 	it('says a create that made no card, keeps the window open, and says nothing was created (the review)', () => {
 		const saving = functionNamed(board, 'saveCard');
-		const steps = saving.body!.statements.map((statement) => statement.getText());
+		// Inside the `try` that holds the board's reads while the save is out (card 2280, slice B2a).
+		const body = saving.body!.statements.find(ts.isTryStatement)?.tryBlock ?? saving.body!;
+		const steps = body.statements.map((statement) => statement.getText());
 		const failed = steps.findIndex((step) => step.startsWith('if (result.failure) {'));
 		expect(failed).toBeGreaterThan(steps.findIndex((step) => step.includes('await cardActions.saveCard(')));
 		// Before the window is closed and anything is said to be created.
 		expect(failed).toBeLessThan(steps.indexOf('showCardModal = false;'));
 		expect(failed).toBeLessThan(steps.findIndex((step) => step.includes('Created "')));
-		const branch = (saving.body!.statements[failed] as ts.IfStatement).thenStatement as ts.Block;
+		const branch = (body.statements[failed] as ts.IfStatement).thenStatement as ts.Block;
 		expect(branch.statements.map((statement) => statement.getText())).toEqual(["toasts.add(result.failure, 'error', started);", 'return;']);
 	});
 });
@@ -2028,7 +2034,7 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'restoreCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)', "toasts.add('Card restored')"] },
 		{ name: 'confirmDeleteCard', reads: 'deleteFailure', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'showCardModal = false'] },
 		// Card 2139: it said "Board linked as sub-board" whatever the answer, and nothing was saved.
-		{ name: 'linkSubBoard', reads: 'failureMessage', done: ['await invalidateAll()', "toasts.add('Board linked as sub-board')"] },
+		{ name: 'linkSubBoard', reads: 'failureMessage', done: ['await boardState.refreshNow()', "toasts.add('Board linked as sub-board')"] },
 		// Card 2134: a rename that would change whether the column is a Complete
 		// column is refused while it holds cards, and the page showed the new title.
 		{ name: 'finishEditColumn', reads: 'failureMessage', done: ['col.title = title'] }
@@ -2735,7 +2741,7 @@ describe('duplicating a card, src/lib/board/card-actions.ts and the board page',
 	it('is said by the board page in the server’s words, and "Duplicated" only when nothing failed', () => {
 		const said = functionNamed(scriptOf('src/routes/board/[id]/+page.svelte'), 'duplicateCard').getText().replace(/\s+/g, ' ');
 
-		expect(said).toContain('const { title, failure, into } = await cardActions.duplicateCard(card, boardColumns, data.board.id, boardCategories);');
+		expect(said).toContain('const { title, failure, into } = await cardActions.duplicateCard(card, boardState.columns, data.board.id, boardState.categories);');
 		// The copy of a finished card is made in another column, which it names (card 2134, O7).
 		expect(said).toContain(
 			"if (failure) { toasts.add(failure, 'error', started); } else if (title) { toasts.add(into ? `Duplicated \"${title} (Copy)\" into ${into}` : `Duplicated \"${title}\"`); }"
@@ -2917,7 +2923,7 @@ describe('the bulk move, src/lib/board/bulk-actions.ts and the board page (card 
 		const said = handle.getText().replace(/\s+/g, ' ');
 
 		expect(said).toContain('const failure = await bulkOps.bulkMove(');
-		expect(said).toContain("if (failure) { toasts.add(failure, 'error', started); } else { clearSelection(); } await invalidateAll();");
+		expect(said).toContain("if (failure) { toasts.add(failure, 'error', started); } else { clearSelection(); } boardState.refresh();");
 		// The only clearSelection is the one for a move that was made.
 		const cleared = callsOf(handle, 'clearSelection');
 		expect(cleared).toHaveLength(1);
@@ -3020,7 +3026,7 @@ describe('a drop onto Complete, src/lib/board/dnd-handlers.ts and the board page
 		const said = refused!.getText().replace(/\s+/g, ' ');
 
 		expect(said).toContain("toasts.add(result.message, 'error', started);");
-		expect(said).toContain('await invalidateAll();');
+		expect(said).toContain('boardState.refresh();');
 		expect(said).not.toMatch(/Sound|queueCompletionPrompt/);
 		// `started` is read before the move is sent, so a toast for a page since left is not shown.
 		const text = finalize.getText();
@@ -3192,7 +3198,8 @@ describe('a drop sends the columns it touched, once, src/lib/board/dnd-handlers.
 		expect(leaving).toBeGreaterThan(-1);
 		expect(leaving).toBeLessThan(text.indexOf('dndHandlers.handleCardDndFinalize('));
 		const branch = text.slice(leaving, text.indexOf('}', text.indexOf('return;', leaving)) + 1);
-		expect(branch).toContain('handleCardDndConsider(columnId, e);');
+		// Its items only: `handleCardDndConsider` would hold the reads for a drag already over (card 2280, slice B2a).
+		expect(branch).toContain('takeCardItems(columnId, e);');
 		expect(branch).toContain('return;');
 		expect(branch).not.toMatch(/api\.|dndHandlers\.|toasts\.|invalidateAll/);
 
@@ -5334,5 +5341,387 @@ describe('the requester’s reply page says when a reply was not sent, src/route
 			expect(reply.markup).toMatch(/<div class="messages-thread" bind:this=\{threadEl\}>\s*\{#if threadError\}\s*<p class="thread-error" role="alert">\{threadError\}<\/p>\s*\{\/if\}/);
 			expect(reply.around('No messages yet. Start the conversation below.').at(-1)).toEqual({ condition: 'messages.length === 0 && !threadError', inElse: false });
 		});
+	});
+});
+
+// Card 2280, slice B2a of card 2012's part B. The board page read its whole
+// load again (`invalidateAll`) after its own writes and on every event of its
+// stream, and an `$effect` copied each load over what it drew, so anyone's
+// change put a drag in hand back under the user's hand. It draws from one
+// board state now (`$lib/board/board-state.svelte.ts`, slice B1), which reads
+// the board's contents alone, a burst as one read, and not while a drag or a
+// write of the page's own is out. How each write applies is unchanged (B2b).
+describe('the board page draws from its board state and reads the board alone (card 2280, slice B2a)', () => {
+	const PAGE = 'src/routes/board/[id]/+page.svelte';
+	const board = () => scriptOf(PAGE);
+	const source = () => readFileSync(join(ROOT, PAGE), 'utf8');
+	const flat = (node: ts.Node) => node.getText().replace(/\s+/g, ' ');
+	/** The function given to each call of `name` made as the script runs. */
+	const handedTo = (tree: ts.SourceFile, name: string) =>
+		tree.statements
+			.filter((statement): statement is ts.ExpressionStatement => ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression) && statement.expression.expression.getText() === name)
+			.map((statement) => (statement.expression as ts.CallExpression).arguments[0]);
+
+	it('calls no invalidateAll: the page hands it to the board state, whose refused read is the one call left', () => {
+		const tree = board();
+		const uses: ts.Identifier[] = [];
+		const visit = (node: ts.Node) => {
+			if (ts.isIdentifier(node) && node.text === 'invalidateAll') uses.push(node);
+			ts.forEachChild(node, visit);
+		};
+		visit(tree);
+		// Imported, and handed to the board state as its `invalidate`; never called.
+		expect(uses.map((use) => ts.SyntaxKind[use.parent.kind])).toEqual(['ImportSpecifier', 'PropertyAssignment']);
+		const handed = uses[1].parent as ts.PropertyAssignment;
+		expect(handed.name.getText()).toBe('invalidate');
+		expect(ts.findAncestor(handed, ts.isNewExpression)?.expression.getText()).toBe('BoardState');
+		expect(source().slice(source().indexOf('</script>'))).not.toContain('invalidateAll');
+
+		// Nor the modules and components the board page draws and writes with.
+		const dirs = ['src/lib/board', 'src/lib/components/board', 'src/lib/components/card'].filter((dir) => existsSync(join(ROOT, dir)));
+		const files = dirs.flatMap((dir) => [...filesUnder(dir, '.ts'), ...filesUnder(dir, '.svelte')]);
+		expect(files).toContain('src/lib/board/board-state.svelte.ts');
+		for (const file of files) {
+			const text = readFileSync(join(ROOT, file), 'utf8');
+			expect(text, file).not.toMatch(/\binvalidateAll\s*\(/);
+			expect(text, file).not.toMatch(/import[^;]*\binvalidateAll\b[^;]*from '\$app\/navigation'/);
+		}
+		// The board state's own: once, where the read is refused (R6).
+		const state = ts.createSourceFile('board-state.ts', readFileSync(join(ROOT, 'src/lib/board/board-state.svelte.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+		const asked = callsOf(state, 'this.#invalidate');
+		expect(asked).toHaveLength(1);
+		expect(ts.findAncestor(asked[0], ts.isMethodDeclaration)?.name.getText()).toBe('#refuse');
+	});
+
+	it('hands the stream’s access event to the board state at once, and every other update, reconnect and return to the tab to its refresh', () => {
+		// The stream says what each update was ($lib/board/sse.ts).
+		const listeners = new Map<string, (e: { data: string }) => void>();
+		const opened: { onopen: (() => void) | null }[] = [];
+		let onVisible: (() => void) | null = null;
+		vi.stubGlobal(
+			'EventSource',
+			class {
+				onopen: (() => void) | null = null;
+				onerror: (() => void) | null = null;
+				constructor() {
+					opened.push(this);
+				}
+				addEventListener(type: string, listener: (e: { data: string }) => void) {
+					listeners.set(type, listener);
+				}
+				close() {}
+			}
+		);
+		vi.stubGlobal('document', {
+			visibilityState: 'visible',
+			addEventListener: (type: string, listener: () => void) => {
+				if (type === 'visibilitychange') onVisible = listener;
+			},
+			removeEventListener: () => {}
+		});
+		const told: unknown[] = [];
+		try {
+			const close = connectSSE(7, { onUpdate: (event) => told.push(event), onCelebrate: () => {}, onXpUpdate: () => {} });
+			listeners.get('update')!({ data: JSON.stringify({ type: 'access' }) });
+			listeners.get('update')!({ data: JSON.stringify({ type: 'card', id: 5 }) });
+			listeners.get('update')!({ data: 'not JSON' });
+			listeners.get('update')!({ data: '5' });
+			onVisible!();
+			opened[0].onopen!(); // the first open: the page's load is current
+			opened[0].onopen!(); // an open after a gap
+			close();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+		expect(told).toEqual([{ type: 'access' }, { type: 'card', id: 5 }, null, null, null, null]);
+
+		// And the page sends the access event to `accessChanged`, which is never
+		// held, and everything else to `refresh`, a burst as one read.
+		const sse = callsOf(board(), 'connectSSE');
+		expect(sse).toHaveLength(1);
+		const callbacks = sse[0].arguments[1] as ts.ObjectLiteralExpression;
+		const onUpdate = callbacks.properties.find((property) => property.name?.getText() === 'onUpdate') as ts.PropertyAssignment;
+		const called: string[] = [];
+		const state = { refresh: () => called.push('refresh'), accessChanged: () => called.push('accessChanged') };
+		const route = new Function('boardState', `return ${ts.transpile(onUpdate.initializer.getText(), { target: ts.ScriptTarget.ES2022 })}`)(state);
+		route({ type: 'access' });
+		route({ type: 'card', id: 5 });
+		route(null);
+		route(undefined);
+		expect(called).toEqual(['accessChanged', 'refresh', 'refresh', 'refresh']);
+	});
+
+	it('holds the reads from a drag’s first move, before the columns change, until the move’s answer, let go in a finally', () => {
+		const tree = board();
+		// One hold per drag, taken at its first move, before the columns change;
+		// one the watchdog has let go is not used again (the review).
+		expect(flat(functionNamed(tree, 'holdDrag').body!)).toBe('{ if (!dragHold || dragHold.released) dragHold = boardState.hold(); }');
+		for (const name of ['handleCardDndConsider', 'handleColumnDndConsider']) {
+			const steps = functionNamed(tree, name).body!.statements.map(flat);
+			// A keyboard drag ends with a consider and no drop: its hold is let go there, not taken.
+			expect(steps[0], name).toMatch(/^if \(e\.detail\.info\?\.trigger === TRIGGERS\.DRAG_STOPPED\) \{ .* stopDrag\(\); return; \}$/);
+			expect(steps[1], name).toBe('holdDrag();');
+		}
+		expect(flat(functionNamed(tree, 'stopDrag').body!)).toBe('{ dragHold?.(); dragHold = null; }');
+		// Taken over by the drop that sends the move (a drop with no first move holds then).
+		expect(flat(functionNamed(tree, 'takeDragHold').body!)).toBe('{ const release = dragHold && !dragHold.released ? dragHold : boardState.hold(); dragHold = null; return release; }');
+
+		for (const [name, sends] of [
+			['handleCardDndFinalize', 'dndHandlers.handleCardDndFinalize'],
+			['handleColumnDndFinalize', 'dndHandlers.handleColumnDndFinalize']
+		]) {
+			const fn = functionNamed(tree, name);
+			const sent = callsOf(fn, sends);
+			expect(sent, name).toHaveLength(1);
+			const taken = fn.body!.statements.filter((statement) => flat(statement) === 'const release = takeDragHold();');
+			expect(taken, name).toHaveLength(1);
+			const tried = ts.findAncestor(sent[0], ts.isTryStatement)!;
+			expect(tried.getStart(), name).toBeGreaterThan(taken[0].getStart());
+			expect(flat(tried.finallyBlock!), name).toMatch(/\brelease\(\);/);
+		}
+
+		// The zone a card left takes its items, holds nothing and lets nothing go.
+		const finalize = flat(functionNamed(tree, 'handleCardDndFinalize'));
+		const leaving = finalize.slice(finalize.indexOf('if (e.detail.info?.trigger === TRIGGERS.DROPPED_INTO_ANOTHER) {'));
+		const branch = leaving.slice(0, leaving.indexOf('return;') + 'return;'.length);
+		expect(branch).toContain('takeCardItems(columnId, e);');
+		expect(branch).not.toMatch(/hold|release/i);
+		expect(finalize.indexOf('TRIGGERS.DROPPED_INTO_ANOTHER')).toBeLessThan(finalize.indexOf('const release = takeDragHold();'));
+
+		// A move into On Hold is sent once the note is confirmed: the note window
+		// holds, out of the watchdog's reach, until Confirm is answered or Cancel
+		// (the review); the drag's own hold is let go as the window opens.
+		const clauses: ts.CaseClause[] = [];
+		const visitClauses = (node: ts.Node) => {
+			if (ts.isCaseClause(node)) clauses.push(node);
+			ts.forEachChild(node, visitClauses);
+		};
+		visitClauses(functionNamed(tree, 'handleCardDndFinalize'));
+		expect(clauses.filter((clause) => flat(clause).includes('onHoldRelease = boardState.hold({ watchdog: false });')).map((clause) => clause.expression.getText())).toEqual(["'on-hold'"]);
+		const confirm = functionNamed(tree, 'confirmOnHold');
+		const confirmTry = ts.findAncestor(callsOf(confirm, 'dndHandlers.confirmOnHold')[0], ts.isTryStatement)!;
+		// Closed and let go together, answered or not: a second Confirm cannot be
+		// sent unheld; and the board read as the hold is let go (the re-check).
+		expect(flat(confirmTry.finallyBlock!)).toBe("{ onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 }; boardState.refresh(); releaseOnHold(); }");
+		expect(flat(confirmTry.catchClause!)).toBe("catch { toasts.add('No answer from the server. The card may not have been put on hold.', 'error', started); }");
+		expect(callsOf(functionNamed(tree, 'cancelOnHold'), 'releaseOnHold')).toHaveLength(1);
+		expect(flat(functionNamed(tree, 'releaseOnHold').body!)).toBe('{ onHoldRelease?.(); onHoldRelease = null; }');
+	});
+
+	describe('the drag’s and the note window’s holds, run against a real refresh schedule (the review)', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		/**
+		 * The page's drag and On Hold functions as written, with a stand-in
+		 * board state whose `hold` and `refresh` are a real `refreshSchedule`'s,
+		 * and `dndHandlers` answering as `next` says.
+		 */
+		function dragPage() {
+			let reads = 0;
+			const schedule = refreshSchedule(async () => {
+				reads++;
+			});
+			const state = {
+				columns: [
+					{ id: 1, title: 'In Progress', cards: [] },
+					{ id: 2, title: 'On Hold', cards: [] }
+				],
+				columnSorts: {},
+				setSort: () => {},
+				refresh: () => schedule.schedule(),
+				hold: (options?: { watchdog?: boolean }) => schedule.hold(options)
+			};
+			const next: { finalize: unknown; confirm: () => Promise<void> } = {
+				finalize: { action: 'committed', updatedColumns: state.columns, movedCards: [] },
+				confirm: async () => {}
+			};
+			const dnd = {
+				handleCardDndFinalize: async () => next.finalize,
+				handleColumnDndFinalize: async () => {},
+				confirmOnHold: () => next.confirm()
+			};
+			const said: unknown[][] = [];
+			const names = ['holdDrag', 'takeDragHold', 'stopDrag', 'takeCardItems', 'handleCardDndConsider', 'handleColumnDndConsider', 'handleCardDndFinalize', 'handleColumnDndFinalize', 'releaseOnHold', 'confirmOnHold', 'cancelOnHold'];
+			const page = new Function(
+				'boardState', 'dndHandlers', 'TRIGGERS', 'toasts', 'data', 'currentUser', 'playCompleteSound', 'playMoveSound', 'queueCompletionPrompt', 'warnIfStillBlocked',
+				'let dragHold = null; let onHoldRelease = null; let blockedState = null; let onHoldState = { show: false };\n' +
+					`${runnable(board(), names)}\n` +
+					`return { ${names.join(', ')}, get onHoldState() { return onHoldState; } };`
+			)(state, dnd, TRIGGERS, { navigation: () => 'started', add: (...args: unknown[]) => said.push(args) }, { board: { id: 9 } }, { username: 'editor', emoji: '🦊' }, () => {}, () => {}, () => {}, () => {});
+			const event = (trigger: string) => ({ detail: { items: [], info: { trigger, id: 5 } } });
+			return { page, schedule, state, next, event, said, reads: () => reads };
+		}
+
+		it('lets a keyboard drag’s hold go at its stop, which comes as a consider with no drop, and a read asked meanwhile goes out at once', async () => {
+			// Picked up and put down where it was: no drop at all.
+			const { page, schedule, state, event, reads } = dragPage();
+			page.handleCardDndConsider(1, event(TRIGGERS.DRAG_STARTED));
+			expect(schedule.holds).toBe(1);
+			state.refresh();
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(reads()).toBe(0);
+			page.handleCardDndConsider(1, event(TRIGGERS.DRAG_STOPPED));
+			expect(schedule.holds).toBe(0);
+			expect(reads()).toBe(1);
+
+			// Moved with the arrow keys, each move a drop of its own, then stopped.
+			const second = dragPage();
+			second.page.handleCardDndConsider(1, second.event(TRIGGERS.DRAG_STARTED));
+			await second.page.handleCardDndFinalize(1, second.event(TRIGGERS.DROPPED_INTO_ZONE));
+			await second.page.handleCardDndFinalize(1, second.event(TRIGGERS.DROPPED_INTO_ZONE));
+			second.page.handleCardDndConsider(1, second.event(TRIGGERS.DRAG_STOPPED));
+			expect(second.schedule.holds).toBe(0);
+
+			// The columns' own drag, the same.
+			const third = dragPage();
+			third.page.handleColumnDndConsider(third.event(TRIGGERS.DRAG_STARTED));
+			await third.page.handleColumnDndFinalize(third.event(TRIGGERS.DROPPED_INTO_ZONE));
+			third.page.handleColumnDndConsider(third.event(TRIGGERS.DRAG_STOPPED));
+			expect(third.schedule.holds).toBe(0);
+		});
+
+		it('does not use again a drag’s hold the watchdog has let go: the next drag holds afresh', async () => {
+			const { page, schedule, event } = dragPage();
+			page.handleCardDndConsider(1, event(TRIGGERS.DRAG_STARTED));
+			await vi.advanceTimersByTimeAsync(31_000);
+			expect(schedule.holds).toBe(0);
+			page.handleCardDndConsider(1, event(TRIGGERS.DRAGGED_OVER_INDEX));
+			expect(schedule.holds).toBe(1);
+			await page.handleCardDndFinalize(1, event(TRIGGERS.DROPPED_INTO_ZONE));
+			expect(schedule.holds).toBe(0);
+		});
+
+		it('holds while the On Hold note window is open, however long, until Cancel, or until Confirm is answered or not', async () => {
+			const { page, schedule, state, next, event, said, reads } = dragPage();
+			next.finalize = { action: 'on-hold', onHoldState: { show: true, cardId: 5, cardTitle: 'Ship it', note: '', pendingUpdates: [], pendingColumnId: 2 }, updatedColumns: state.columns };
+			page.handleCardDndConsider(2, event(TRIGGERS.DRAG_STARTED));
+			await page.handleCardDndFinalize(2, event(TRIGGERS.DROPPED_INTO_ZONE));
+			expect(page.onHoldState.show).toBe(true);
+			await vi.advanceTimersByTimeAsync(5 * 60_000);
+			expect(schedule.holds).toBe(1);
+			page.cancelOnHold();
+			expect(schedule.holds).toBe(0);
+
+			// Confirm with no answer: said, not thrown; the window closes as the hold
+			// is let go, so a second Confirm cannot be sent unheld; and the board is
+			// read once as it is let go, to show where the card is (the re-check).
+			page.handleCardDndConsider(2, event(TRIGGERS.DRAG_STARTED));
+			await page.handleCardDndFinalize(2, event(TRIGGERS.DROPPED_INTO_ZONE));
+			next.confirm = async () => {
+				throw new TypeError('Failed to fetch');
+			};
+			const readsBefore = reads();
+			said.length = 0;
+			await expect(page.confirmOnHold()).resolves.toBeUndefined();
+			expect(said).toEqual([['No answer from the server. The card may not have been put on hold.', 'error', 'started']]);
+			expect(page.onHoldState.show).toBe(false);
+			expect(schedule.holds).toBe(0);
+			expect(reads() - readsBefore).toBe(1);
+		});
+	});
+
+	it('holds the reads while each write of its own is out, let go in a finally, and takes no hold for an inline edit', () => {
+		const tree = board();
+		const writes = apiWrites();
+		const HELPER = /^(cardActions|boardActions|bulkOps|dndHandlers)\.(\w+)$/;
+		const SENDS_NOTHING = ['navigationClosesWindow', 'findSubBoardName'];
+		const sending: string[] = [];
+		for (const { tree: code, where } of codeOf(PAGE, source())) {
+			const visit = (node: ts.Node) => {
+				if (ts.isCallExpression(node)) {
+					const helper = HELPER.exec(node.expression.getText());
+					const what = writeOf(node, writes) ?? (helper && !SENDS_NOTHING.includes(helper[2]) ? helper[0] : null);
+					if (what) {
+						const at = `${where ?? enclosingName(node)} › ${what}`;
+						sending.push(at);
+						let held = false;
+						for (let child: ts.Node = node; child.parent; child = child.parent) {
+							const parent = child.parent;
+							if (ts.isTryStatement(parent) && parent.tryBlock === child && parent.finallyBlock && /\brelease(OnHold)?\(\)/.test(parent.finallyBlock.getText())) held = true;
+						}
+						expect(held, at).toBe(true);
+					}
+				}
+				ts.forEachChild(node, visit);
+			};
+			visit(code);
+		}
+		expect(sending.length).toBeGreaterThan(20);
+
+		// Each hold is the board state's, or the drag's (`takeDragHold`, which takes one for a drop that had no first move).
+		const releases: string[] = [];
+		const collect = (node: ts.Node) => {
+			if (ts.isVariableDeclaration(node) && node.name.getText() === 'release') releases.push(node.initializer!.getText());
+			ts.forEachChild(node, collect);
+		};
+		for (const { tree: code } of codeOf(PAGE, source())) collect(code);
+		expect(releases.length).toBeGreaterThan(20);
+		expect([...new Set(releases)].sort()).toEqual(['boardState.hold()', 'dragHold && !dragHold.released ? dragHold : boardState.hold()', 'takeDragHold()']);
+
+		// An inline edit is its own state, which a read cannot overwrite (R6): starting one holds nothing.
+		for (const name of ['startInlineEdit', 'handleInlineKeydown', 'cancelInlineEdit', 'startEditColumn', 'startEditWipLimit']) {
+			expect(callsOf(functionNamed(tree, name), 'boardState.hold'), name).toEqual([]);
+		}
+		const saving = functionNamed(tree, 'saveInlineEdit').body!.statements.map(flat);
+		expect(saving.indexOf('const release = boardState.hold();')).toBeGreaterThan(saving.findIndex((step) => step.startsWith('if (!trimmed)')));
+
+		// A sub-board's progress is the server's: read at once, after the write's own hold is let go.
+		for (const name of ['linkSubBoard', 'deleteSubBoard']) {
+			const now = callsOf(functionNamed(tree, name), 'boardState.refreshNow');
+			expect(now, name).toHaveLength(1);
+			expect(flat(now[0].parent), name).toBe('await boardState.refreshNow()');
+			expect(ts.findAncestor(now[0], ts.isTryStatement), name).toBeUndefined();
+		}
+	});
+
+	it('makes its board state once from the load, draws from it, and copies no load over it: the $effect that did is gone', () => {
+		const tree = board();
+		expect(source().match(/new BoardState\(/g)).toHaveLength(1);
+		expect(tree.statements.map(flat)).toContain('const boardState = new BoardState(data as unknown as BoardContentsData, { invalidate: invalidateAll });');
+		const destroyed = handedTo(tree, 'onDestroy');
+		expect(destroyed).toHaveLength(1);
+		expect(callsOf(destroyed[0], 'boardState.dispose')).toHaveLength(1);
+
+		// The load is read for the board's id alone, which this page never
+		// changes (the layout makes it afresh per board); all it draws is the state's.
+		const read = new Set<string>();
+		const visit = (node: ts.Node) => {
+			if (ts.isPropertyAccessExpression(node) && node.expression.getText() === 'data') {
+				read.add(ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node ? node.parent.getText() : node.getText());
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(tree);
+		expect([...read]).toEqual(['data.board.id']);
+		const markup = source().slice(source().indexOf('</script>'), source().indexOf('<style>'));
+		expect([...new Set(markup.match(/(?<![\w$.])data\.\w+(?:\.\w+)?/g))]).toEqual(['data.board.id']);
+
+		// One $effect reads the load: a load that finds the board open after a
+		// refused read (access given back) is handed over then, and only then.
+		const effects = handedTo(tree, '$effect');
+		const readingData = effects.filter((fn) => {
+			let reads = false;
+			const find = (node: ts.Node) => {
+				if (ts.isIdentifier(node) && node.text === 'data') reads = true;
+				ts.forEachChild(node, find);
+			};
+			find(fn);
+			return reads;
+		});
+		expect(readingData.map(flat)).toEqual([
+			'() => { const next = data; untrack(() => { if (boardState.refused) boardState.take(next as unknown as BoardContentsData); }); }'
+		]);
+		for (const fn of effects) expect(flat(fn)).not.toMatch(/boardState\.\w+ = |boardColumns/);
+
+		// The viewer's column sorts are the state's, put back on every read.
+		expect(flat(functionNamed(tree, 'setColumnSort').body!)).toBe('{ boardState.setSort(columnId, sort); openDropdown = null; }');
+		expect(callsOf(tree, 'sortCards')).toEqual([]);
+		expect(tree.getText()).not.toMatch(/\blet columnSorts\b/);
+		expect(flat(functionNamed(tree, 'handleCardDndFinalize'))).toContain("if (boardState.columnSorts[columnId]) boardState.setSort(columnId, 'none');");
 	});
 });
