@@ -395,6 +395,58 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		expect(document.querySelector('.firework-card-title')!.textContent).toBe('"Plan"');
 	});
 
+	// Card 2281, slice C3b: the re-read a live event sets off is the burst's,
+	// not the event's (`src/lib/board/refresh-schedule.ts`); its notice is still
+	// the event's own.
+	describe('the re-read after live events (card 2281, slice C3b)', () => {
+		/** What was read again since the Activity Log's first read: the page, and the Activity Log. */
+		const reReads = () => ({ page: navigation.invalidateAll.mock.calls.length, activity: asked('GET /api/activity').length - 1 });
+		const newestToast = () => document.querySelector('.live-toast .live-toast-body')!.textContent!.replace(/\s+/g, ' ').trim();
+
+		async function withTheActivityLogOpen() {
+			const target = draw();
+			fromMoreMenu(target, '📋 Activity Log');
+			await settle();
+			expect(reReads()).toEqual({ page: 0, activity: 0 });
+			// The schedule's waits run on the page's timers and its clock.
+			vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+		}
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('shows each of 20 events within a second, and reads the page and the Activity Log again at most twice', async () => {
+			await withTheActivityLogOpen();
+
+			for (let n = 1; n <= 20; n++) {
+				streamSends('update', { action: 'created', cardTitle: `Card ${n}`, userName: 'bob', userEmoji: '🐻' });
+				expect(newestToast()).toBe(`bob created "Card ${n}"`);
+				await vi.advanceTimersByTimeAsync(45);
+			}
+			await vi.advanceTimersByTimeAsync(2000);
+
+			const { page, activity } = reReads();
+			expect(page).toBeGreaterThanOrEqual(1);
+			expect(page).toBeLessThanOrEqual(2);
+			expect(activity).toBe(page);
+		});
+
+		it('reads the page and the Activity Log again about 250 ms after a lone event', async () => {
+			await withTheActivityLogOpen();
+
+			streamSends('update', { action: 'moved', cardTitle: 'Plan', userName: 'bob', userEmoji: '🐻', fromColumn: 'To Do', toColumn: 'Doing' });
+			expect(newestToast()).toContain('Plan');
+			await vi.advanceTimersByTimeAsync(200);
+			expect(reReads()).toEqual({ page: 0, activity: 0 });
+
+			await vi.advanceTimersByTimeAsync(60);
+			expect(reReads()).toEqual({ page: 1, activity: 1 });
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(reReads()).toEqual({ page: 1, activity: 1 });
+		});
+	});
+
 	it('plays two completions that arrive together one after the other, in order, the second once the first has played', () => {
 		draw();
 		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] });
