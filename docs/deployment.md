@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.58
+version: 1.59
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3628,7 +3628,9 @@ Nothing is done to the database. The older image lists comments of one second in
 
 **Card 2299.** No migration, no setting, no new route or field. Unticking a subtask, and changing its title, description, priority, colour or due date, recorded nothing, on a page or through the API: only a tick was in the board's Activity Log, the Audit page and `GET /api/v1/audit-log`. And every save wrote the subtask and told the board's open pages, even one that changed nothing, which the subtask window sends on every Save. Now an untick writes "Updated subtask", `Reopened <subtask> (on <card>)`, and mails nobody; any other change but the subtask's place in the list writes "Updated subtask", `Updated <subtask> (on <card>): title, dueDate`, naming only the fields changed; a request that ticks or unticks and edits writes one entry for each. A save that changes nothing writes nothing, records nothing and tells no open page. A change of position alone is written and told, and not recorded, as before. No webhook was or is sent for any subtask entry. The OpenAPI document stays `1.2.0`, with item 87 in its 2026-10-14 note.
 
-**Owner to know.** Nothing a person sees changes but the second "Archived card" entry, which is no longer written, and a card's archive time, which now stays the first one (2285). **Subtask edits now show in the Activity Log and the Audit page as "Updated subtask"**, and **they count as work on the card in the activity report**, as a tick already did: a card whose only activity in the report's window is an edit to one of its subtasks is now in the window, put down to whoever made the edit, so the count of cards worked on can rise from the deploy on (2299).
+**Card 2291.** No migration, no setting, no new route or field. `POST /api/v1/dependencies/bulk`, which the tracking workflow's `add-dependencies` and `add-chain` use, wrote one "Added dependencies" entry for a whole batch, `Recorded N dependencies across M board(s)`, with no card, on the first board it touched alone: a card's history in All Tasks never showed the links a batch made, and the other boards' Activity Logs said nothing. Now each link it creates writes one "Added dependency" entry, as adding one link in the card window or through `POST /api/v1/cards/{id}/dependencies` does: on the board of the card that waits (a subtask's card), naming that card, `#12 now waits on subtask #45`. A link skipped as already recorded writes none, and a batch that writes nothing tells no open page, as before. No webhook was or is sent for either. The OpenAPI document stays `1.2.0`, with item 88 in its 2026-10-14 note.
+
+**Owner to know.** Nothing a person sees changes but the second "Archived card" entry, which is no longer written, and a card's archive time, which now stays the first one (2285). **Subtask edits now show in the Activity Log and the Audit page as "Updated subtask"**, and **they count as work on the card in the activity report**, as a tick already did: a card whose only activity in the report's window is an edit to one of its subtasks is now in the window, put down to whoever made the edit, so the count of cards worked on can rise from the deploy on (2299). **"Added dependencies" is no longer written**: an Audit page or `GET /api/v1/audit-log` filter on `dependencies_bulk_added` finds older entries only from the deploy on, and one on `dependency_added` now finds the links of a batch too. A plan laid down in bulk now writes one entry per link, and a board's Activity Log shows its last 50 entries only, so a large batch can push older entries off it; the Audit page keeps them all (2291).
 
 #### After the deploy
 
@@ -3641,10 +3643,12 @@ On production, with your own API key. **The scratch board:** one of your own, no
 | 280 | 2299 | Open "Probe step", change the title to "Probe step 2" and set a due date, **Save** | "Updated subtask" `Updated Probe step 2 (on T1): title, dueDate` | No entry, or other fields named (`completed` or `position` among them) |
 | 281 | 2299 | Open "Probe step 2" and **Save** without changing anything | No new entry | A new "Updated subtask" |
 | 282 | 2299 | Note the subtask's `id` (`GET /api/v1/cards/<T1>/subtasks`); `PUT /api/v1/subtasks/<id>` `{"position": 5}` | `200`; no new entry | An entry |
+| 283 | 2291 | `POST /api/v1/dependencies/bulk` `{"chain": [<T1>, <T2>, <T3>]}`. Open the board's **Activity Log** | `201` `created: 2`; two "Added dependency" entries, `#<T2> now waits on #<T1>` on T2 and `#<T3> now waits on #<T2>` on T3; no "Added dependencies" | One entry with no card, or "Added dependencies" |
+| 284 | 2291 | Send the same request again | `201` `created: 0`, `skippedAsDuplicate: 2`; no new entry. Then remove both links in the card windows of T2 and T3 | A new entry |
 
 #### Going back to the previous image
 
-Nothing is done to the database. The older image stamps a card archived again when it is archived a second time, losing the first archive time, records a second "Archived card" and tells the board's open pages. It records no untick and no subtask edit, and writes and announces a subtask save that changes nothing. `subtask_updated` entries already written stay, and the older image's pages read them as "Updated subtask", the label it already has.
+Nothing is done to the database. The older image stamps a card archived again when it is archived a second time, losing the first archive time, records a second "Archived card" and tells the board's open pages. It records no untick and no subtask edit, and writes and announces a subtask save that changes nothing. `subtask_updated` entries already written stay, and the older image's pages read them as "Updated subtask", the label it already has. It writes one `api:dependencies_bulk_added` per bulk batch again, with no card; the per-link "Added dependency" entries already written stay and read as before.
 
 ## Changing the Schema
 

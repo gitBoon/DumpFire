@@ -12,7 +12,8 @@ import {
 	type WorkRef,
 	type WorkKind
 } from '$lib/server/planning';
-import { logActivity } from '$lib/server/logActivity';
+import { ACTIONS, actorOf, logActivity } from '$lib/server/logActivity';
+import { describeWork } from '$lib/server/work-access';
 import { emit } from '$lib/server/events';
 import { asObject, readBody, readChoice, readId, readList, readObjects } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
@@ -44,6 +45,11 @@ const WORK_KINDS = ['card', 'subtask'] as const;
  *     so running the same list twice is safe.
  *   - Cycle detection considers the batch as a whole — two links that are each
  *     fine against the stored graph can still close a loop between themselves.
+ *   - Each link written is recorded as the single add records one: one
+ *     `api:dependency_added` on the board of the card that waits, naming it,
+ *     "#12 now waits on subtask #45" (card 2291). A link skipped as already
+ *     stored is not. `dependencies_bulk_added`, one entry with no card on the
+ *     first board alone, is no longer written; its label stays for old rows.
  *
  * `links` is a list of objects, and an entry that is not one is
  * `400 links[<n>] must be an object` (decision 18), where it was a 500.
@@ -129,10 +135,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 	if (links.length > 500) throw error(400, 'Batch too large (max 500 links)');
 
-	// One transaction from the validation to the activity entry. The graph the
+	// One transaction from the validation to the activity entries. The graph the
 	// batch is checked against is read in it, so a link written by another
 	// request cannot close a loop between the check and the write, and the
-	// links are recorded with the entry that says so or not at all. It asks
+	// links are recorded with the entries that say so or not at all. It asks
 	// first whether the key or session is still open, and who its account is
 	// now (card 2253): once for the whole batch, so a refusal writes none of it.
 	const outcome = writeAs(locals, (caller) => {
@@ -142,6 +148,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// ── Access: resolve every referenced node's board once, not once per link.
 		//    A subtask has no board of its own — it inherits its parent card's.
 		const boardByNode = new Map<string, number>();
+		// The card each node is, or belongs to: the card a link's entry is on.
+		const cardByNode = new Map<string, number>();
 		{
 			const cardIds = validation.referencedNodes.filter((r) => r.kind === 'card').map((r) => r.id);
 			const subtaskIds = validation.referencedNodes.filter((r) => r.kind === 'subtask').map((r) => r.id);
@@ -170,10 +178,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			for (const id of cardIds) {
 				const b = cardBoards.get(id);
 				if (b !== undefined) boardByNode.set(`card:${id}`, b);
+				cardByNode.set(`card:${id}`, id);
 			}
 			for (const sp of subtaskParents) {
 				const b = cardBoards.get(sp.cardId);
 				if (b !== undefined) boardByNode.set(`subtask:${sp.subtaskId}`, b);
+				cardByNode.set(`subtask:${sp.subtaskId}`, sp.cardId);
 			}
 		}
 
@@ -203,36 +213,40 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			return { rejected: true as const, validation, forbidden };
 		}
 
+		// The links written, each by its own insert: the entries and the live
+		// updates below are made from this one list, so a link already stored
+		// has neither (card 2291).
 		const created = createDependencyBatch(validation.valid, user.id);
 
-		// Refresh every board the batch touched so blocked chips update.
+		// One `dependency_added` per link, as the single add writes it: on the
+		// board of the card that waits (a subtask's card), naming that card, in
+		// its words. That is the board whose work is held back, and the one a
+		// removal writes on. Every board a link touches is told once, after.
 		const touchedBoards = new Set<number>();
-		for (const link of validation.valid) {
-			for (const k of [
-				`${link.blockedType ?? 'card'}:${link.blocked}`,
-				`${link.blockerType ?? 'card'}:${link.blocker}`
-			]) {
-				const b = boardByNode.get(k);
+		for (const link of created) {
+			const blocked: WorkRef = { kind: link.blockedType ?? 'card', id: link.blocked };
+			const blocker: WorkRef = { kind: link.blockerType ?? 'card', id: link.blocker };
+			const waitingKey = `${blocked.kind}:${blocked.id}`;
+			const boardId = boardByNode.get(waitingKey);
+			const cardId = cardByNode.get(waitingKey);
+			if (boardId !== undefined && cardId !== undefined) {
+				logActivity({
+					boardId,
+					cardId,
+					...actorOf(user),
+					action: ACTIONS.dependencyAdded,
+					detail: `${describeWork(blocked)} now waits on ${describeWork(blocker)}`,
+					source: 'api'
+				});
+			}
+			for (const key of [waitingKey, `${blocker.kind}:${blocker.id}`]) {
+				const b = boardByNode.get(key);
 				if (b !== undefined) touchedBoards.add(b);
 			}
 		}
 		for (const boardId of touchedBoards) emit(boardId, 'update', { type: 'card' });
 
-		if (created > 0) {
-			const firstBoard = [...touchedBoards][0];
-			if (firstBoard !== undefined) {
-				logActivity({
-					boardId: firstBoard,
-					userId: user.id,
-					action: 'api:dependencies_bulk_added',
-					detail: `Recorded ${created} dependenc${created === 1 ? 'y' : 'ies'} across ${touchedBoards.size} board(s)`,
-					userName: user.username,
-					userEmoji: user.emoji || '👤'
-				});
-			}
-		}
-
-		return { rejected: false as const, validation, created, touchedBoards };
+		return { rejected: false as const, validation, created: created.length, touchedBoards };
 	});
 
 	if (outcome.rejected) {

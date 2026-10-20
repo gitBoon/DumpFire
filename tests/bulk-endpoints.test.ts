@@ -58,6 +58,19 @@ function name(effect: RecordedEffect): string {
 const shape = (writes: string[]) =>
 	writes.map((sql) => sql.split(/[ (]/).slice(0, 3).join(' ').replace(/"/g, '').toLowerCase());
 
+/** Every activity entry, in the order written. */
+const entries = () =>
+	db
+		.select({
+			boardId: activityLog.boardId,
+			cardId: activityLog.cardId,
+			action: activityLog.action,
+			source: activityLog.source,
+			detail: activityLog.detail
+		})
+		.from(activityLog)
+		.all();
+
 const milestoneOf = (card: Card) =>
 	db.select({ milestoneId: cards.milestoneId }).from(cards).where(eq(cards.id, card.id)).get()!.milestoneId;
 
@@ -416,34 +429,83 @@ describe('POST /api/v1/dependencies/bulk', () => {
 					{ blocked: s.a[2].id, blocker: s.a[1].id, by: s.owner.id },
 					{ blocked: s.onB.id, blocker: s.a[2].id, by: s.owner.id }
 				]);
-				expect(
-					db
-						.select({ boardId: activityLog.boardId, action: activityLog.action, detail: activityLog.detail })
-						.from(activityLog)
-						.all()
-				).toEqual([
-					{
-						boardId: s.A.board.id,
-						action: 'api:dependencies_bulk_added',
-						detail: 'Recorded 3 dependencies across 2 board(s)'
-					}
+				// One entry per link, on the board of the card that waits, with that
+				// card's id and the single add's words (card 2291). It was one
+				// `api:dependencies_bulk_added` with no card, on the first board alone.
+				expect(entries()).toEqual([
+					{ boardId: s.A.board.id, cardId: s.a[1].id, action: 'api:dependency_added', source: 'api', detail: `#${s.a[1].id} now waits on #${s.a[0].id}` },
+					{ boardId: s.A.board.id, cardId: s.a[2].id, action: 'api:dependency_added', source: 'api', detail: `#${s.a[2].id} now waits on #${s.a[1].id}` },
+					{ boardId: s.B.board.id, cardId: s.onB.id, action: 'api:dependency_added', source: 'api', detail: `#${s.onB.id} now waits on #${s.a[2].id}` }
 				]);
 			}
 		});
 
-		// The links, and the entry that says they were recorded: the entry used
+		// The links, and the entries that say they were recorded: the entry used
 		// to be written after the links were committed, so a failure there left
 		// links nobody was recorded as having made.
 		expect(shape(run.writes)).toEqual([
 			'insert or ignore',
 			'insert or ignore',
 			'insert or ignore',
+			'insert into activity_log',
+			'insert into activity_log',
 			'insert into activity_log'
 		]);
 		expect(run.effects.map(name)).toEqual([
 			'event update (card) on board 1',
 			`event update (card) on board 3`
 		]);
+	});
+
+	// Card 2291: the entries and the live updates are made from one list, the
+	// links the batch created, so a link already stored has neither.
+	it('records only the link it created, and tells only that link\'s boards, once each', async () => {
+		const s = twoBoards();
+		makeDependency({ blocked: s.a[1], blocker: s.a[0] });
+		const sent = effects();
+		try {
+			const res = await api('POST', '/api/v1/dependencies/bulk', {
+				user: s.owner,
+				body: { chain: [s.a[0].id, s.a[1].id, s.onB.id] }
+			});
+			await sent.settle();
+
+			expect(res.status).toBe(201);
+			expect(res.body).toMatchObject({ created: 1, skippedAsDuplicate: 1, boardsTouched: [s.B.board.id, s.A.board.id] });
+			expect(entries()).toEqual([
+				{ boardId: s.B.board.id, cardId: s.onB.id, action: 'api:dependency_added', source: 'api', detail: `#${s.onB.id} now waits on #${s.a[1].id}` }
+			]);
+			expect(sent.all.map(name)).toEqual([
+				`event update (card) on board ${s.B.board.id}`,
+				`event update (card) on board ${s.A.board.id}`
+			]);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	// A contract, which held before card 2291 (its third part is not
+	// reproduced): a batch of links already stored writes and tells nothing.
+	it('writes no entry and tells nobody for a batch of links already stored', async () => {
+		const s = twoBoards();
+		makeDependency({ blocked: s.a[1], blocker: s.a[0] });
+		makeDependency({ blocked: s.onB, blocker: s.a[1] });
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const res = await api('POST', '/api/v1/dependencies/bulk', {
+				user: s.owner,
+				body: { chain: [s.a[0].id, s.a[1].id, s.onB.id] }
+			});
+			await sent.settle();
+
+			expect(res.status).toBe(201);
+			expect(res.body).toMatchObject({ created: 0, skippedAsDuplicate: 2, boardsTouched: [] });
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
 	});
 
 	it('rejects the whole batch for one link that would close a loop, having written nothing', async () => {
