@@ -233,6 +233,8 @@ const spec = {
 			'not for a change of position alone; a request that changes nothing writes nothing, logs nothing and sends no live update, and answers 200 with the subtask. Neither was recorded, and an unchanged request was written and told. ' +
 			'(88) POST /api/v1/dependencies/bulk logs one api:dependency_added per link it creates, on the board of the card that waits, with that card\'s id and the words a single add uses, ' +
 			'where it logged one api:dependencies_bulk_added with no card on one board. dependencies_bulk_added is no longer written; an audit-log filter on it finds older entries only, and one on dependency_added now finds the links of a batch too. ' +
+			'(89) the web application\'s card update (PUT /api/cards/{id}) no longer sends the card.updated webhook for a change of a card\'s position within its column, which a drag and PUT /api/v1/cards/{cardId}/move never sent: ' +
+			'it logged card_updated "Updated fields: position" and moved updatedAt. With other fields it still sends card.updated, its detail no longer naming position. Nothing PUT /api/v1/cards/{cardId} accepts or answers changes. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +

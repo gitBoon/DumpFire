@@ -197,6 +197,12 @@ export type UpdateCardOptions = {
  * records no entry, sends no `card.updated` and no live event, and is
  * answered with the card.
  *
+ * A `position` (the page's route alone takes one) with no change of column
+ * is not an edit to the card either (card 2288): a changed one goes through
+ * the drag's path, which writes the position alone and records nothing, and
+ * one the card holds is dropped. Other fields sent with it are recorded as
+ * ever, the entry naming them alone.
+ *
  * The answer is the card, and the milestone of the board it left that a
  * move to another board took it out of (card 2155), null otherwise.
  */
@@ -264,6 +270,17 @@ export function updateCard(
 	let move: CardMove | null = null;
 	if (opts.allowMove && target) {
 		move = moved({ cardId, toColumnId: target.column.id, position: patch.position, actor: user, source: opts.source });
+		delete patch.position;
+	} else if (opts.allowMove && patch.position !== undefined) {
+		// A change of position within the card's column is not an edit to the
+		// card (card 2288): it goes through the drag's path, which writes the
+		// position alone, stamps no `updatedAt`, records nothing and sends the
+		// drag's `reorder` update. The position the card holds, sent back, is
+		// dropped before anything is called: that path sends its update even
+		// when nothing moved, which would break card 2183's rule.
+		if (patch.position !== card.position) {
+			move = moved({ cardId, toColumnId: card.columnId, position: patch.position, actor: user, source: opts.source });
+		}
 		delete patch.position;
 	}
 
