@@ -244,6 +244,13 @@ const spec = {
 			'A change that changes nothing (every field as stored, or a card put into the milestone it is in) writes nothing, logs nothing and sends no live update, and answers 200 as before; a request that would be refused is still refused first. ' +
 			'No webhook is sent for any goal entry, and goal membership sends no card.updated on any route: read GET /api/v1/milestones/{milestoneId} or the audit log (a milestone.* webhook event is card 2343). ' +
 			'The plan-created mail is still sent by POST /api/v1/milestones/{milestoneId}/cards/bulk alone. ' +
+			'(91) PUT /api/v1/cards/{cardId} answers 400 for a columnId other than the card\'s own (`columnId 12 is not this card\'s column (14): the card has moved since it was read, ' +
+			'or a move was meant. Move a card with PUT /cards/{cardId}/move`), and `columnId must be an id` for one that is not an id or is null, where it saved the other fields sent and ignored it. ' +
+			'The card\'s own column, sent back, is accepted as before, so a card read with GET can still be sent back whole. position is ignored here, whatever is sent, as it always was: ' +
+			'reorder with PUT /cards/{cardId}/move. POST /api/v1/boards takes categoryId, the board category to file the new board under, where it ignored it: a category that does not exist is ' +
+			'404 Board category not found, one of boards the key\'s user cannot open 403 No access to this board category, and one that is not an id 400 categoryId must be an id, ' +
+			'where each made the board unfiled with 201. PUT /api/v1/boards/{boardId} answers 400 for a parentCardId other than the board\'s own, null on a sub-board included ' +
+			'(`parentCardId 12 is not this board\'s parent card (none): …`), and `parentCardId must be an id` for one that is not an id, where it saved the other fields and ignored it. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2388,7 +2395,10 @@ const spec = {
 			post: {
 				tags: ['Boards'],
 				summary: 'Create a board',
-				description: 'Creates a new board with default columns (To Do, On Hold, In Progress, Complete). The API key\'s user is automatically added as board owner. To create a sub-board linked to a card, pass parentCardId.',
+				description:
+					'Creates a new board with default columns (To Do, On Hold, In Progress, Complete). The API key\'s user is automatically added as board owner. To create a sub-board linked to a card, pass parentCardId. ' +
+					'To file it under a board category on the dashboard, pass categoryId: until 2026-10-14 it was ignored and the board made unfiled (item 91). ' +
+					'A new board is private; its owner sets isPublic with PUT /boards/{boardId}.',
 				operationId: 'createBoard',
 				requestBody: {
 					required: true,
@@ -2400,7 +2410,14 @@ const spec = {
 								properties: {
 									name: { type: 'string', minLength: 1, maxLength: 200, description: 'Board name: text, trimmed, of 1 to 200 characters' },
 									emoji: { type: 'string', minLength: 1, maxLength: 32, description: 'Board emoji icon, 1 to 32 characters (default: 📋)' },
-									parentCardId: { type: ['integer', 'null'], minimum: 1, description: 'ID of a card to link this board to as a sub-board. null, or left out, for none.' }
+									parentCardId: { type: ['integer', 'null'], minimum: 1, description: 'ID of a card to link this board to as a sub-board. null, or left out, for none.' },
+									categoryId: {
+										type: ['integer', 'null'],
+										minimum: 1,
+										description:
+											'The board category to file the new board under on the dashboard. null, or left out, for none. One that does not exist is 404, and one that holds boards, none of which the key\'s user can open, is 403. ' +
+											'Until 2026-10-14 it was ignored and the board made unfiled.'
+									}
 								}
 							},
 							examples: {
@@ -2426,16 +2443,20 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'No name, a name that is empty or over 200 characters, an emoji that is empty or over 32, a field of the wrong type (`name must be text`; `parentCardId must be an id`), or a body that is missing, is not valid JSON or is not an object. The fields are read before the parent card is looked for. Nothing was created.',
+						description: 'No name, a name that is empty or over 200 characters, an emoji that is empty or over 32, a field of the wrong type (`name must be text`; `parentCardId must be an id`; `categoryId must be an id`), or a body that is missing, is not valid JSON or is not an object. The fields are read before the parent card and the board category are looked for. Nothing was created.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'name is required' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'Sub-board only: no edit access to the board the parent card is on',
+						description:
+							'For a sub-board, no edit access to the board the parent card is on, which is the example. ' +
+							'Or categoryId names a board category that holds boards, none of which the key\'s user can open: `No access to this board category`. Nothing was created.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the parent card\'s board' } } }
 					},
 					'404': {
-						description: 'Sub-board only: there is no card with the id given as parentCardId',
+						description:
+							'For a sub-board, there is no card with the id given as parentCardId, which is the example. ' +
+							'Or the board category sent as categoryId does not exist: `Board category not found`. Nothing was created.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Parent card not found' } } }
 					},
 					'409': {
@@ -2493,7 +2514,9 @@ const spec = {
 				description:
 					'Updates the fields sent. Updatable fields: name, emoji, categoryId, isPublic. At least one of them must be sent.\n\n' +
 					'Edit access to the board is enough for name, emoji and categoryId. `isPublic` decides who can see the board, and is accepted only from the board\'s owner or an administrator: ' +
-					'sent by anyone else, the whole request is answered 403 and none of its fields is saved. An editor leaves it out.',
+					'sent by anyone else, the whole request is answered 403 and none of its fields is saved. An editor leaves it out.\n\n' +
+					'`parentCardId` is not changed here: a board is put under a card, or taken out from under one, on the board page. It is accepted only as the card the board hangs under ' +
+					'(null for a board on the dashboard), so a board read with GET can be sent back whole (an editor leaves isPublic out); any other value is 400 and nothing is saved. Until 2026-10-14 it was ignored and the other fields saved (item 91).',
 				operationId: 'updateBoard',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
 				requestBody: {
@@ -2506,7 +2529,15 @@ const spec = {
 									name: { type: 'string', minLength: 1, maxLength: 200, description: 'Trimmed' },
 									emoji: { type: 'string', minLength: 1, maxLength: 32 },
 									categoryId: { type: ['integer', 'null'], minimum: 1, description: 'The board category to file the board under on the dashboard. null files it under none. One that does not exist is 404, and one that holds boards, none of which the key\'s user can open, is 403: until 2026-10-14 the board was filed under it.' },
-									isPublic: { type: 'boolean', description: 'Whether everyone who is signed in can view the board. Only its owner or an administrator may send it.' }
+									isPublic: { type: 'boolean', description: 'Whether everyone who is signed in can view the board. Only its owner or an administrator may send it.' },
+									parentCardId: {
+										type: ['integer', 'null'],
+										minimum: 1,
+										description:
+											'Accepted only as the card the board hangs under, or null for a board on the dashboard, so a board read with GET can be sent back whole (an editor leaves isPublic out). ' +
+											'Any other value, null on a sub-board included, is 400 (`parentCardId 12 is not this board\'s parent card (none): …`), and nothing is saved. ' +
+											'A board is put under a card, or taken out from under one, on the board page. It does not count as a field to update.'
+									}
 								}
 							},
 							example: { name: 'Sprint 44', emoji: '🚀' }
@@ -2523,7 +2554,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'None of the four fields was sent, the name is empty or over 200 characters, the emoji empty or over 32, a field of the wrong type (`name must be text`, `categoryId must be an id`), `isPublic` is not `true` or `false` (`isPublic must be true or false`, answered to the board\'s owner or an administrator: anyone else who sends it is answered 403 whatever its value), boardId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'None of the four fields was sent, the name is empty or over 200 characters, the emoji empty or over 32, a field of the wrong type (`name must be text`, `categoryId must be an id`), `isPublic` is not `true` or `false` (`isPublic must be true or false`, answered to the board\'s owner or an administrator: anyone else who sends it is answered 403 whatever its value), a parentCardId other than the board\'s own (`parentCardId 12 is not this board\'s parent card (none): the board has been moved since it was read, or a link was meant. A board is put under a card, or taken out from under one, on the board page`, null on a sub-board included) or one that is not an id (`parentCardId must be an id`), boardId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -2981,7 +3012,9 @@ const spec = {
 					'Updates the fields sent. The body is validated before anything is written, and the update is one transaction: ' +
 					'a request that is refused leaves every field as it was, the milestone included. The card is looked for and access checked first, then every field is read. ' +
 					'A value the card already holds, sent back unchanged, is accepted as it is, even one these rules would refuse. ' +
-					'A field sent with the value the card already holds is not a change: a request that changes nothing writes nothing, records no activity entry, sends no `card.updated` and answers 200 with the card as it is.',
+					'A field sent with the value the card already holds is not a change: a request that changes nothing writes nothing, records no activity entry, sends no `card.updated` and answers 200 with the card as it is.\n\n' +
+					'This operation does not move a card. `columnId` is accepted only as the column the card is in, so a card read with GET can be sent back whole; any other is 400 and nothing is saved. ' +
+					'`position` is ignored here, whatever is sent. Move or reorder a card with PUT /cards/{cardId}/move. Until 2026-10-14 another columnId was ignored and the other fields saved (item 91).',
 				operationId: 'updateCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -3045,7 +3078,19 @@ const spec = {
 										type: ['string', 'null'],
 										description: 'Reporting field. One of: delivered, not needed, superseded, parked. null clears it.'
 									},
-									releaseState: { type: ['string', 'null'], description: 'Reporting field. One of: built, on UAT, live. null clears it.' }
+									releaseState: { type: ['string', 'null'], description: 'Reporting field. One of: built, on UAT, live. null clears it.' },
+									columnId: {
+										type: 'integer',
+										minimum: 1,
+										description:
+											'Accepted only as the column the card is in, so a card read with GET can be sent back whole. Any other value is 400 ' +
+											'(`columnId 12 is not this card\'s column (14): the card has moved since it was read, or a move was meant. Move a card with PUT /cards/{cardId}/move`), ' +
+											'and null or a value that is not an id is `columnId must be an id`; nothing is saved. Move a card with PUT /cards/{cardId}/move. It does not count as a field to update.'
+									},
+									position: {
+										type: 'number',
+										description: 'Ignored here, whatever is sent: reorder with PUT /cards/{cardId}/move. It does not count as a field to update.'
+									}
 								}
 							},
 							example: { priority: 'critical', dueDate: '2026-04-12' }
@@ -3064,6 +3109,8 @@ const spec = {
 							'No valid fields, a field of the wrong type (`pinned must be true or false`, `milestoneId must be an id`), a title that is empty or over 500 characters, a description or an onHoldNote over 50000 characters, ' +
 							'a businessValue over 10000, a coverUrl that is not a colour written #rrggbb, one of the preset gradients or null (`coverUrl must be a colour written #rrggbb, one of the preset gradients, or null`), a priority that is not one of the four, a colorTag not written #rrggbb, a dueDate that is not a day written YYYY-MM-DD, ' +
 							'an archivedAt other than null (`archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}`), ' +
+							'a columnId other than the card\'s own (`columnId 12 is not this card\'s column (14): the card has moved since it was read, or a move was meant. Move a card with PUT /cards/{cardId}/move`), ' +
+							'or one that is null or not an id (`columnId must be an id`), ' +
 							'an invalid reporting field, a milestone that belongs to another board, an archived card put into a milestone (`Card does not exist or is archived`), ' +
 							'cardId is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }

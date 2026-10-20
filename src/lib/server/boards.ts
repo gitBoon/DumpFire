@@ -58,7 +58,7 @@ export function listBoardsFor(user: SessionUser | null | undefined, at: Record<s
 
 /** What each tree's new board does differently today (R2). */
 export type CreateBoardOptions = {
-	/** `categoryId`, the dashboard grouping, is read and filed under (the page). v1 does not read it. */
+	/** `categoryId`, the dashboard grouping, is read and filed under (the page, and v1 since card 2287, which ignored it). */
 	allowCategory?: boolean;
 };
 
@@ -67,8 +67,9 @@ export type CreateBoardOptions = {
  * `POST /api/v1/boards`).
  *
  * The fields (card 2117, R1): `name` text, trimmed, of 1 to 200 characters;
- * `emoji` text of 1 to 32; `parentCardId` an id, or null for none; and from
- * the page `categoryId`, the dashboard grouping, an id or null. `{}` made
+ * `emoji` text of 1 to 32; `parentCardId` an id, or null for none; and
+ * `categoryId`, the dashboard grouping, an id or null (both trees pass
+ * `allowCategory`: v1 since card 2287, where it made the board unfiled). `{}` made
  * "Untitled Board", and a grouping that was not there was stored as sent:
  * `boards.category_id` has no foreign key.
  *
@@ -155,9 +156,16 @@ export function createBoard(caller: SessionUser | null, at: Record<string, never
 export type UpdateBoardOptions = {
 	/** A body that sets no field is `400 No valid fields to update` (v1). The page's route answers it as it did: nothing recorded or told. */
 	refuseEmpty?: boolean;
-	/** `parentCardId` is read, and the board moved under that card or back onto the dashboard (the page). v1 does not read it. */
+	/** `parentCardId` is read, and the board moved under that card or back onto the dashboard (the page). */
 	allowParent?: boolean;
 	// `refuseEmpty` and `allowParent` are not meant to be combined: the empty check runs before `parentCardId` is read, so a body sending only it would be refused.
+	/**
+	 * `parentCardId` is taken only as the card the board hangs under, null for
+	 * none, so a board read with GET can be sent back whole (an editor leaves
+	 * isPublic out); any other, null on a sub-board included, is a 400 (v1, card 2287; card 2114's D8 keeps the
+	 * link off v1). Never combined with `allowParent`.
+	 */
+	refuseParent?: boolean;
 	/** Tell the board before writing the entry (v1); the page's route writes the entry first. */
 	tellBeforeEntry?: boolean;
 };
@@ -171,7 +179,8 @@ export type UpdateBoardOptions = {
  * the transaction that changes it. A board that is not there is 404 to
  * everyone; it was 403 to all but an administrator. The fields are read in
  * the order the entry names them (card 2143). A value the board already holds,
- * sent back unchanged, is accepted as it is. What was sent is recorded, with
+ * sent back unchanged, is accepted as it is. v1 takes no parent card: one
+ * other than the board's own is refused (`refuseParent`, card 2287). What was sent is recorded, with
  * the fields named, and the board's own pages are told. The answer is the row.
  */
 export function updateBoard(caller: SessionUser | null, at: { boardId: number }, body: RequestBody, opts: ServiceOptions & UpdateBoardOptions): Board {
@@ -202,6 +211,22 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
 	if (categoryId !== undefined) updates.categoryId = categoryId;
 	const isPublic = readBoolean(body, 'isPublic', { keep: board.isPublic });
 	if (isPublic !== undefined) updates.isPublic = isPublic;
+
+	// v1 links no board under a card and takes none out (card 2287): another
+	// parent card is refused, where the other fields were saved and it was
+	// ignored. The board's own, sent back, is taken: the value the reader
+	// returns is compared, so "7" is the card 7 it hangs under. Asked before
+	// the empty check, so a parent card sent alone is told why. The card named
+	// is not looked for.
+	if (opts.refuseParent) {
+		const sentParent = readId(body, 'parentCardId', { nullable: true, keep: board.parentCardId });
+		if (sentParent !== undefined && sentParent !== board.parentCardId) {
+			throw error(
+				400,
+				`parentCardId ${sentParent} is not this board's parent card (${board.parentCardId ?? 'none'}): the board has been moved since it was read, or a link was meant. A board is put under a card, or taken out from under one, on the board page`
+			);
+		}
+	}
 
 	if (opts.refuseEmpty && Object.keys(updates).length === 0) throw error(400, 'No valid fields to update');
 

@@ -168,6 +168,12 @@ export function createCard(caller: SessionUser | null, at: { boardId?: number },
 export type UpdateCardOptions = {
 	/** `columnId` and `position`: a change of column is a move (the internal route). */
 	allowMove?: boolean;
+	/**
+	 * `columnId` is taken only as the column the card is in, so a card read with
+	 * GET can be sent back whole; any other is a 400 naming the move route (v1,
+	 * card 2287). `position` is still not read. Never combined with `allowMove`.
+	 */
+	refuseMove?: boolean;
 	/** `milestoneId` (v1). */
 	allowMilestone?: boolean;
 	/** `archivedAt: null` restores the card; any other value is a 400 (v1). */
@@ -202,6 +208,10 @@ export type UpdateCardOptions = {
  * the drag's path, which writes the position alone and records nothing, and
  * one the card holds is dropped. Other fields sent with it are recorded as
  * ever, the entry naming them alone.
+ *
+ * v1 takes no move (card 2287): a `columnId` other than the card's own is
+ * refused with a 400 that names the move route, and nothing is written; a
+ * `position` is not read at all, whatever is sent.
  *
  * A changed `milestoneId` (v1 alone takes one) is recorded as the goal's own
  * entry, `milestone_card_added` or `milestone_card_removed`, and not named in
@@ -242,6 +252,24 @@ export function updateCard(
 	}
 
 	const milestoneId = opts.allowMilestone ? readId(body, 'milestoneId', { nullable: true, keep: card.milestoneId }) : undefined;
+
+	// A move is its own act, on its own route, with its own answer and effects
+	// (card 2287): v1 refuses another column here, where it saved the other
+	// fields and left the card where it was. The column the card is in, sent
+	// back, is taken: the value the reader returns is compared, so "14" is the
+	// card's column 14. Asked after every other field, so a body wrong in two
+	// ways names the first as before, and before the empty check, so another
+	// column sent alone is told about the move. The column named is not looked for.
+	if (opts.refuseMove) {
+		const sentColumn = readId(body, 'columnId', { keep: card.columnId });
+		if (sentColumn !== undefined && sentColumn !== card.columnId) {
+			throw error(
+				400,
+				`columnId ${sentColumn} is not this card's column (${card.columnId}): the card has moved since it was read, or a move was meant. Move a card with PUT /cards/{cardId}/move`
+			);
+		}
+	}
+
 	if (opts.refuseEmpty && Object.keys(patch).length === 0 && milestoneId === undefined && !('archivedAt' in body)) {
 		throw error(400, 'No valid fields to update');
 	}
