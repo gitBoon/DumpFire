@@ -1215,6 +1215,13 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			await ask('v1 comment edit', api('PUT', `/api/v1/comments/${s.comment.id}`, { ...viewer, body: { content: 'No' } }));
 			await ask('internal comment edit, not the author', api('PUT', `${card}/comments/${s.comment.id}`, { ...helper, body: { content: 'No' } }));
 			await ask('v1 comment edit, not the author', api('PUT', `/api/v1/comments/${s.comment.id}`, { ...helper, body: { content: 'No' } }));
+			// The comment's own text is refused the same: the guard is asked before
+			// an unchanged edit is answered with the comment (card 2284).
+			const asItWas = { content: 'As it was' };
+			await ask('internal comment edit, unchanged', api('PUT', `${card}/comments/${s.comment.id}`, { ...viewer, body: asItWas }));
+			await ask('v1 comment edit, unchanged', api('PUT', `/api/v1/comments/${s.comment.id}`, { ...viewer, body: asItWas }));
+			await ask('internal comment edit, unchanged, not the author', api('PUT', `${card}/comments/${s.comment.id}`, { ...helper, body: asItWas }));
+			await ask('v1 comment edit, unchanged, not the author', api('PUT', `/api/v1/comments/${s.comment.id}`, { ...helper, body: asItWas }));
 			await ask('internal comment delete', api('DELETE', `${card}/comments/${helpers.id}`, viewer));
 			await ask('internal comment delete, not the author', api('DELETE', `${card}/comments/${s.comment.id}`, helper));
 			await ask('internal label', api('PUT', '/api/labels', { ...viewer, body: { cardId: s.first.id, labelId: 1 } }));
@@ -1243,6 +1250,10 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'v1 comment edit': '403 No edit access to this board',
 			'internal comment edit, not the author': '403 You can only edit your own comments',
 			'v1 comment edit, not the author': '403 You can only edit your own comments',
+			'internal comment edit, unchanged': '403 No edit access to this board',
+			'v1 comment edit, unchanged': '403 No edit access to this board',
+			'internal comment edit, unchanged, not the author': '403 You can only edit your own comments',
+			'v1 comment edit, unchanged, not the author': '403 You can only edit your own comments',
 			'internal comment delete': '403 No edit access to this board',
 			'internal comment delete, not the author': '403 You can only delete your own comments',
 			'internal label': '403 No edit access to this board',
@@ -2661,6 +2672,83 @@ describe('nothing changed, nothing recorded', () => {
 
 			expect(res.status).toBe(404);
 			expect(res.body).toEqual({ message: 'User is not assigned to this card' });
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	/** As `scene`, with the comment written, and last changed, on 1 October. */
+	function oldComment(content?: string): Scene {
+		const s = scene();
+		db.update(cardComments)
+			.set({ createdAt: '2026-10-01 09:00:00', updatedAt: '2026-10-01 09:00:00', ...(content === undefined ? {} : { content }) })
+			.where(eq(cardComments.id, s.comment.id))
+			.run();
+		return s;
+	}
+
+	// Card 2183's rule for cards, applied to a comment (card 2284): Save
+	// pressed on a comment nobody changed wrote it again with a new
+	// `updatedAt`, which the window shows as "(edited)", recorded "Edited a
+	// comment" and told the board.
+	it.each([
+		['the internal route', (s: Scene) => `/api/cards/${s.first.id}/comments/${s.comment.id}`],
+		['the v1 route', (s: Scene) => `/api/v1/comments/${s.comment.id}`]
+	])('saving a comment unchanged, through %s, writes and tells nothing, and answers the comment as it is', async (tree, path) => {
+		const s = oldComment();
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const res = await api('PUT', path(s), { user: s.owner, body: { content: 'As it was' } });
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+			// The page's route answers the row as stored; v1 adds the author, and
+			// writes its times in ISO.
+			expect(res.body).toEqual(
+				tree === 'the v1 route'
+					? {
+							id: s.comment.id,
+							cardId: s.first.id,
+							userId: s.owner.id,
+							content: 'As it was',
+							createdAt: '2026-10-01T09:00:00.000Z',
+							updatedAt: '2026-10-01T09:00:00.000Z',
+							username: 'owner',
+							userEmoji: '👤'
+						}
+					: {
+							id: s.comment.id,
+							cardId: s.first.id,
+							userId: s.owner.id,
+							content: 'As it was',
+							createdAt: '2026-10-01 09:00:00',
+							updatedAt: '2026-10-01 09:00:00'
+						}
+			);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	// The rule is the shared service's, so the page's route alone. A comment
+	// stored with outer spaces (from before edits were trimmed, or copied from
+	// a request's discussion) is unchanged by its text sent trimmed: the
+	// window cannot show the spaces, and the stored text keeps them.
+	it('saving a comment whose stored text has outer spaces, sent trimmed, is unchanged too', async () => {
+		const s = oldComment('  As it was\n');
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const res = await api('PUT', `/api/cards/${s.first.id}/comments/${s.comment.id}`, { user: s.owner, body: { content: 'As it was' } });
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(res.body).toMatchObject({ id: s.comment.id, content: '  As it was\n', updatedAt: '2026-10-01 09:00:00' });
 			expectUnchanged(before);
 			expect(sent.all).toEqual([]);
 		} finally {

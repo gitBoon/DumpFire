@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.53
+version: 1.54
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3584,24 +3584,28 @@ On production, as any account that can change a goal, on a goal with at least on
 
 Nothing is done to the database. The older image hides the work table's ✕ again (still clickable), sends a picker search started just before the page is left, and on the dashboard can leave a poll running for the life of the tab, never starts it after a failed first read, and after a refused one (an error answer) toasts every waiting request on the first poll.
 
-### Comments: Same-Second Order and One Emoji Shape
+### Comments: Same-Second Order, One Emoji Shape and Unchanged Edits
 
 **Cards 2301 and 2302.** No migration, no setting, no new route or field. A comment's `created_at` is kept to the second, and a card's comment list (the card window, `GET /api/cards/:id/comments` and `GET /api/v1/cards/:cardId/comments`) was ordered by it alone, so comments made in the same second came back in no set order, in practice the earliest first inside a list that is newest first. Accepting a task request copies its whole discussion onto the new card in one loop, so those copies always read upside down. Now a tie is broken by id, the later first, as the activity report already breaks it, and the discussion is copied in the order it was sent (by id within one second). The same list answered `userEmoji` `null` for an author with no emoji, where every other comment answer, and the `Comment` schema, have `"👤"`; it now answers `"👤"` too. Only an account restored from an old backup, or changed directly in the database, has no emoji; no stored data changes.
 
-**Owner to know.** Nothing a person sees changes but the order of comments made in the same second, chiefly a request's discussion on the card it was accepted into, which now reads newest first like the rest. The card window already drew `"👤"` for an author with no emoji.
+**Card 2284.** No migration, no setting, no new route or field. Save pressed on a comment whose text was not changed (in the card window, or `PUT` through either API with the text it holds) wrote the comment again with a new `updatedAt`, so the window showed "(edited)" on it, recorded "Edited comment" in the board's Activity Log and the audit log, and marked the card as worked on by whoever pressed Save in the activity report. Now text that is the comment's own once both are trimmed writes nothing, records nothing and tells no open page, and is answered with the comment as it is; the card window sends nothing for it and closes the box, and after a real edit takes the comment's time from the server's answer rather than its own clock. A caller who may not edit the comment is refused as before, whatever text it sends.
+
+**Owner to know.** Nothing a person sees changes but the order of comments made in the same second, chiefly a request's discussion on the card it was accepted into, which now reads newest first like the rest, and an unchanged Save no longer marks a comment "(edited)" or adds an "Edited comment" entry. The card window already drew `"👤"` for an author with no emoji.
 
 #### After the deploy
 
-On production, with your own API key, on a **scratch board** of your own with no other members and **no webhooks**, and a scratch card made on it by hand, not from a request: a comment mails the board's members and the card's requester and fires `comment.added`. Every comment is posted to the scratch card. The board and card are kept for the later checks of this group; delete them at the end of the release's checks.
+On production, with your own API key, on a **scratch board** of your own with no other members and **no webhooks**, and a scratch card made on it by hand, not from a request: a comment mails the board's members and the card's requester and fires `comment.added`. Every comment is posted to the scratch card. The board and card are kept for the later checks of this group; delete them at the end of the release's checks. For check 268, an administrator's API key (`GET /api/v1/audit-log` is administrators' only), or read the board's Activity Log instead.
 
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
 | 265 | 2301 | With your key, `POST /api/v1/cards/<card>/comments` five times in one PowerShell loop (`{"content": "c1"}` to `"c5"`), then `GET /api/v1/cards/<card>/comments`. If no two share a `createdAt`, run the loop again | At least two share a `createdAt`; among those, the higher `id` is listed first, and the whole list is newest first | Two with one `createdAt` listed lower `id` first |
 | 266 | 2302 | `GET /api/v1/cards/<card>/comments` | Every `userEmoji` is text | Any `null` |
+| 267 | 2284 | Open the scratch card in the board page, its **Comments** tab. **Edit** one of your comments that shows no "(edited)", and press **Save** without changing it. Then open the board's **Activity Log** | The box closes; no "(edited)" on the comment; no new "Edited comment" entry | "(edited)" appears, or a new entry |
+| 268 | 2284 | With your key, `GET /api/v1/comments/<id>` for one of your comments on the card and note `updatedAt`; then `PUT /api/v1/comments/<id>` with `{"content": "<its exact text>"}`. Then, with an administrator's key, `GET /api/v1/audit-log?cardId=<card>&action=comment_edited` (or open the board's Activity Log) | `200`, the same `content` and the same `updatedAt` as before; no new entry | A new `updatedAt`, or a new entry |
 
 #### Going back to the previous image
 
-Nothing is done to the database. The older image lists comments of one second in no set order (in practice the earliest first), copies a request's discussion in no set order within one second, and answers `userEmoji` `null` in the list for an author with no emoji.
+Nothing is done to the database. The older image lists comments of one second in no set order (in practice the earliest first), copies a request's discussion in no set order within one second, answers `userEmoji` `null` in the list for an author with no emoji, and writes, records and announces a comment saved unchanged, which the window shows as "(edited)".
 
 ## Changing the Schema
 

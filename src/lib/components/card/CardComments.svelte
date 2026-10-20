@@ -20,7 +20,7 @@
 
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
-	import { parseStamp, stamp } from '$lib/timestamps';
+	import { parseStamp } from '$lib/timestamps';
 	import { deleteFailure, failureMessage } from '$lib/api';
 	import { page } from '$app/stores';
 	import type { CardType } from '$lib/types';
@@ -86,9 +86,31 @@
 		comments = comments.filter(c => c.id !== commentId);
 	}
 
+	/**
+	 * Closes the edit box on a save that had nothing to send. Kept apart from
+	 * `saveEditComment`, whose own closing lines run only for a save the
+	 * server took (`tests/page-failures.test.ts` holds that).
+	 */
+	function closeUnchangedEdit() {
+		editingCommentId = null;
+		editingCommentText = '';
+	}
+
+	/**
+	 * Saves the comment being edited. Text that is the comment's own once
+	 * trimmed sends nothing and closes the box, as the server would write
+	 * nothing for it (card 2284). Otherwise the comment's text and `updatedAt`
+	 * are the answer's: the server's time, in the form it stores, and none at
+	 * all when it wrote nothing, so "(edited)" shows only for a real change.
+	 */
 	async function saveEditComment(commentId: number) {
 		if (!card || !editingCommentText.trim()) return;
 		windowError = '';
+		const editing = comments.find(c => c.id === commentId);
+		if (editing && editingCommentText.trim() === editing.content.trim()) {
+			closeUnchangedEdit();
+			return;
+		}
 		let res: Response;
 		try {
 			res = await fetch(`/api/cards/${card.id}/comments/${commentId}`, {
@@ -105,7 +127,8 @@
 			windowError = await failureMessage(res, 'The comment was not saved.');
 			return;
 		}
-		comments = comments.map(c => c.id === commentId ? { ...c, content: editingCommentText.trim(), updatedAt: stamp() } : c);
+		const saved: { content: string; updatedAt: string } = await res.json();
+		comments = comments.map(c => c.id === commentId ? { ...c, content: saved.content, updatedAt: saved.updatedAt } : c);
 		editingCommentId = null;
 		editingCommentText = '';
 	}
