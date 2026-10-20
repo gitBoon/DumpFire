@@ -28,7 +28,7 @@
 		SUMMARY_MAX,
 		FIELD_HINTS
 	} from '$lib/reporting';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { page } from '$app/stores';
 	import type { CardType, CategoryType, LabelType, SubtaskType, DependencyRefType, MilestoneType } from '$lib/types';
 
@@ -45,7 +45,8 @@
 		onDeleteSubBoard,
 		onLinkSubBoard,
 		availableBoards = [],
-		milestones = []
+		milestones = [],
+		notice = '',
 	}: {
 		card: CardType | null;
 		categories: CategoryType[];
@@ -60,6 +61,8 @@
 		onLinkSubBoard?: (boardId: number) => void;
 		availableBoards?: { id: number; name: string; emoji: string }[];
 		milestones?: MilestoneType[];
+		/** Said at the top of the window while it holds: the board page's "This card is no longer on this board." (card 2280, the B2c review). */
+		notice?: string;
 	} = $props();
 
 	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
@@ -221,7 +224,8 @@
 	async function clearCover() {
 		await setCover('');
 	}
-	let cardSubtasks = $state<SubtaskType[]>(card?.subtasks || []);
+	// Copies: a tick in the window changes its own list, not the board's card (the B2c review).
+	let cardSubtasks = $state<SubtaskType[]>((card?.subtasks || []).map((s) => ({ ...s })));
 
 	// Inline category creation state
 	let showNewCategory = $state(false);
@@ -581,8 +585,18 @@
 		cardSubtasks = [...cardSubtasks];
 	}
 
+	// The card's id alone: the window's subtasks and its cost are read again
+	// for another card, and not for every read of the board, which hands the
+	// window its card afresh as each read draws it (card 2280, slice B2c).
+	// Once open, the subtasks shown are the window's own, as its typed fields
+	// are: a read sent before a tick was answered would untick it.
+	const windowCardId = $derived(card?.id);
+
 	$effect(() => {
-		if (card) cardSubtasks = card.subtasks || [];
+		if (!windowCardId) return;
+		untrack(() => {
+			if (card) cardSubtasks = (card.subtasks || []).map((s) => ({ ...s }));
+		});
 	});
 
 	const completedCount = $derived(cardSubtasks.filter((st) => st.completed).length);
@@ -644,7 +658,7 @@
 	});
 
 	$effect(() => {
-		const id = card?.id;
+		const id = windowCardId;
 		if (!id) { tokenLedger = null; return; }
 		let cancelled = false;
 		fetch(`/api/cards/${id}/tokens`)
@@ -1139,6 +1153,9 @@
 				<button class="window-error-close" onclick={() => (windowError = '')} aria-label="Close this message" type="button">✕</button>
 			</div>
 		{/if}
+		{#if notice}
+			<div class="dep-error window-error" role="status">{notice}</div>
+		{/if}
 		<div class="title-field" class:title-error={titleError}>
 			<input id="card-title" class="modal-title-input" type="text" placeholder="What needs to be done?" maxlength="500" bind:value={title} oninput={() => (titleError = false)} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()} autofocus />
 			{#if titleError}<span class="title-error-msg">A title is required</span>{/if}
@@ -1364,8 +1381,10 @@
 			{/if}
 		</div>
 
-		<!-- On Hold Note -->
-		{#if card?.onHoldNote}
+		<!-- On Hold Note: shown from the window's own note, which a read never
+		     changes, so a note someone else wrote meanwhile neither shows a blank
+		     box nor takes it away mid-edit (card 2280, the B2c review). -->
+		{#if onHoldNote || editingOnHold}
 			<div class="on-hold-note-display">
 				<div class="on-hold-label">
 					⏸️ On Hold

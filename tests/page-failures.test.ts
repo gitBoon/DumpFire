@@ -83,6 +83,7 @@ import * as bulkActions from '$lib/board/bulk-actions';
 import * as cardActions from '$lib/board/card-actions';
 import * as dndHandlers from '$lib/board/dnd-handlers';
 import { BoardState } from '$lib/board/board-state.svelte';
+import { CardWindow } from '$lib/board/card-window.svelte';
 import { copyColumns, moveCards, patchCard, removeCard, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
 import * as apiModule from '$lib/api';
 import * as boardActions from '$lib/board/board-actions';
@@ -635,9 +636,11 @@ describe('the card an address names, src/routes/board/[id]/+page.svelte (card 21
 		const callback = navigated[0].arguments[0] as ts.ArrowFunction;
 		expect(callback.parameters.map((parameter) => parameter.getText())).toEqual(['{ from, to }']);
 		const steps = (callback.body as ts.Block).statements.map((statement) => statement.getText().replace(/\s+/g, ' '));
-		// The window is closed first where the navigation calls for it (Q-F's review), then the card named opened.
+		// The window is closed first where the navigation calls for it (Q-F's
+		// review), then the card named opened; the window is its controller's
+		// (card 2280, slice B2c).
 		expect(steps).toEqual([
-			'if (cardActions.navigationClosesWindow(from, to, editingCard !== null)) { showCardModal = false; editingCard = null; }',
+			'if (cardActions.navigationClosesWindow(from, to, cardWindow.cardId !== null)) cardWindow.close();',
 			'openCardFromAddress(to?.url);'
 		]);
 		expect(opening().getText()).toContain("searchParams.get('card')");
@@ -664,44 +667,48 @@ describe('the card an address names, src/routes/board/[id]/+page.svelte (card 21
 		const steps = opening().body!.statements.map((statement) => statement.getText());
 		const waited = steps.indexOf('await nextTick();');
 		expect(waited).toBeGreaterThan(-1);
-		expect(steps.indexOf('showCardModal = false;')).toBeLessThan(waited);
-		expect(steps.indexOf('editingCard = null;')).toBeLessThan(waited);
+		const closed = steps.indexOf('cardWindow.close();');
+		expect(closed).toBeGreaterThan(-1);
+		expect(closed).toBeLessThan(waited);
 		expect(steps.findIndex((step) => step.startsWith('replaceState('))).toBeGreaterThan(waited);
 		expect(steps.indexOf('if (card) openCardModal(card);')).toBeGreaterThan(waited);
 	});
 
-	it('says each label of a new card’s template that was not put on it, as an error in the shared toast', () => {
+	// Card 2280, slice B2c: the card window's save is its controller's
+	// (`src/lib/board/card-window.svelte.ts`), which names each part of a new
+	// card that was not put on it and gives back what to say, in order; its
+	// cases run in `tests/card-window.test.ts`. The page says it.
+	const controller = () =>
+		ts.createSourceFile('card-window.ts', readFileSync(join(ROOT, 'src/lib/board/card-window.svelte.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+
+	it('says each label, subtask, assignee and sub-board of a new card that was not put on it, as an error in the shared toast', () => {
 		const saving = functionNamed(board, 'saveCard');
-		const said = saving.getText().replace(/\s+/g, ' ');
-		expect(said).toContain('for (const { labelId, message } of result.labelFailures ?? []) {');
-		// And each subtask and assignee of a new card that was not put on it (card 2280, slice B2b): each an error, in the shared toast.
-		const told = callsOf(saving, 'toasts.add').filter((call) => call.getText().includes('message'));
-		expect(told).toHaveLength(3);
-		expect(told.map((call) => [call.arguments[1]?.getText(), call.arguments[2]?.getText()])).toEqual(told.map(() => ["'error'", 'started']));
+		const told = callsOf(saving, 'toasts.add').filter((call) => call.arguments[0].getText() === 'message');
+		expect(told.map((call) => call.arguments.map((argument) => argument.getText()))).toEqual([['message', "'error'", 'started'], ['message']]);
+		expect(told.map((call) => (ts.findAncestor(call, ts.isIfStatement)?.expression.getText()))).toEqual(['failed', 'failed']);
+		expect(saving.getText()).toContain('for (const { message, failed } of written.told) {');
 		// The type of what the window hands it, as the window's.
-		expect(saving.parameters[0].type!.getText()).not.toContain('colorTag');
-		expect(saving.parameters[0].type!.getText()).toContain('pendingLabelIds?: number[]');
+		expect(saving.parameters[0].type!.getText()).toBe('CardWindowSave');
+		const type = controller().statements.find((statement): statement is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(statement) && statement.name.text === 'CardWindowSave')!;
+		expect(type.type.getText()).not.toContain('colorTag');
+		expect(type.type.getText()).toContain('pendingLabelIds?: number[]');
 	});
 
 	it('names a label deleted while the window was open as one that no longer exists, not by its number (the review)', () => {
-		const said = functionNamed(board, 'saveCard').getText();
+		const said = controller().getText();
 		expect(said).toContain("const named = label ? `The template's label \"${label.name}\"` : 'A label of the template that no longer exists';");
-		expect(said).toContain('toasts.add(`${named} was not put on "${cardData.title}". ${message}`, \'error\', started);');
+		expect(said).toContain('told.push({ message: `${named} was not put on "${title}". ${message}`, failed: true });');
 		expect(said).not.toContain('#${labelId}');
 	});
 
 	it('says a create that made no card, keeps the window open, and says nothing was created (the review)', () => {
-		const saving = functionNamed(board, 'saveCard');
-		// Inside the `try` that holds the board's reads while the save is out (card 2280, slice B2a).
-		const body = saving.body!.statements.find(ts.isTryStatement)?.tryBlock ?? saving.body!;
-		const steps = body.statements.map((statement) => statement.getText());
-		const failed = steps.findIndex((step) => step.startsWith('if (result.failure) {'));
-		expect(failed).toBeGreaterThan(steps.findIndex((step) => step.includes('await cardActions.saveCard(')));
-		// Before the window is closed and anything is said to be created.
-		expect(failed).toBeLessThan(steps.indexOf('showCardModal = false;'));
-		expect(failed).toBeLessThan(steps.findIndex((step) => step.includes('Created "')));
-		const branch = (body.statements[failed] as ts.IfStatement).thenStatement as ts.Block;
-		expect(branch.statements.map((statement) => statement.getText())).toEqual(["toasts.add(result.failure, 'error', started);", 'return;']);
+		const steps = functionNamed(board, 'saveCard').body!.statements.map((statement) => statement.getText());
+		const failed = steps.findIndex((step) => step.startsWith('if (!written.ok) {'));
+		expect(failed).toBeGreaterThan(steps.findIndex((step) => step.includes('await cardWindow.save(cardData)')));
+		// Before anything it was told is said.
+		expect(failed).toBeLessThan(steps.findIndex((step) => step.startsWith('for (const { message, failed } of written.told)')));
+		const branch = (functionNamed(board, 'saveCard').body!.statements[failed] as ts.IfStatement).thenStatement as ts.Block;
+		expect(branch.statements.map((statement) => statement.getText())).toEqual(["toasts.add(written.failure, 'error', started);", 'return;']);
 	});
 });
 
@@ -2179,11 +2186,10 @@ type Write = {
 const WRITES: Record<string, Write[]> = {
 	'src/routes/board/[id]/+page.svelte': [
 		{ name: 'restoreCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)', "toasts.add('Card restored')"] },
-		{
-			name: 'confirmDeleteCard',
-			reads: 'deleteFailure',
-			done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'showCardModal = false', 'boardState.columns = removeCard(boardState.columns, cardId).columns']
-		},
+		// Sent, read, and the card taken off the board as answered, by the card
+		// window's controller (card 2280, slice B2c; its cases are in
+		// `tests/card-window.test.ts`), which gives back what to say.
+		{ name: 'confirmDeleteCard', via: 'cardWindow.archive', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')"] },
 		// Card 2139: it said "Board linked as sub-board" whatever the answer, and nothing was saved.
 		{ name: 'linkSubBoard', reads: 'failureMessage', done: ['await boardState.refreshNow()', "toasts.add('Board linked as sub-board')"] },
 		// Card 2134: a rename that would change whether the column is a Complete
@@ -2192,10 +2198,11 @@ const WRITES: Record<string, Write[]> = {
 		// Card 2280, slice B2b: the 21 writes whose answer was thrown away (the
 		// 20 left for card 2012, less the two with no caller, and the column's
 		// colour, WIP limit and Show Add Task, sent through the page's own
-		// `updateColumn`), in 18 functions: `saveCard` sends three of them (a
-		// card's update, a new card's subtasks and assignees) and `confirmOnHold`
-		// two (the move and the note). Each is shown at once where it changes
-		// the board, put back for a refusal or no answer, and said.
+		// `updateColumn`), in 18 functions: `saveCard` sent three of them (a
+		// card's update, a new card's subtasks and assignees), which the card
+		// window's controller sends now (slice B2c), and `confirmOnHold` two (the
+		// move and the note). Each is shown at once where it changes the board,
+		// put back for a refusal or no answer, and said.
 		{ name: 'saveInlineEdit', reads: 'write', done: ["toasts.add('Title updated')"] },
 		{ name: 'cyclePriority', reads: 'write' },
 		{ name: 'setPriorityFromMenu', reads: 'write', done: ['toasts.add(`Priority → ${priority}`)'] },
@@ -2217,8 +2224,9 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'handleBulkPriority', via: 'bulkOps.bulkPriority', putsBack: ['selectedCards = new Set(failed.map((f) => f.cardId))'], done: ['clearSelection()'] },
 		// The move first, the note only once it is taken (R7).
 		{ name: 'confirmOnHold', via: 'dndHandlers.confirmOnHold', putsBack: ['putBackOnHold()'], done: ['boardState.columns = moveCards(boardState.columns, onHoldState.pendingUpdates).columns'] },
-		// A refused update keeps the window open with what was typed; each subtask, assignee, label or sub-board of a new card refused is named.
-		{ name: 'saveCard', reads: 'failureMessage', done: ['showCardModal = false', "toasts.add('Card updated')"] }
+		// A refused update keeps the window open with what was typed; each subtask, assignee, label or sub-board of a new card refused is named
+		// (the card window's controller, slice B2c: it sends only the fields changed since the window opened, and gives back what to say).
+		{ name: 'saveCard', via: 'cardWindow.save', done: ['toasts.add(message)'] }
 	],
 	'src/routes/archived/+page.svelte': [
 		{ name: 'restoreCard', reads: 'deleteFailure', done: ["toasts.add('Card restored')", 'await invalidateAll()'] },
@@ -3059,18 +3067,27 @@ describe('making a sub-board from the board page, src/lib/board/card-actions.ts 
 		expect(said).toContain("const made = await cardActions.createSubBoard(card.id, name || card.title); if ('message' in made) { toasts.add(made.message, 'error', started); return; } window.location.href = `/board/${made.id}`;");
 	});
 
+	// Card 2280, slice B2c: made by the card window's controller, which gives
+	// back what to say for each; the page says each failure as an error (the
+	// card 2164 describe above). Run in `tests/card-window.test.ts`.
 	it('is said by the new-card window for each sub-board refused, in the server’s words, and the card is kept', () => {
-		const save = functionNamed(board, 'saveCard');
-		const asked = callsOf(save, 'api.failureMessage');
+		const tree = ts.createSourceFile('card-window.ts', readFileSync(join(ROOT, 'src/lib/board/card-window.svelte.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+		let create: ts.MethodDeclaration | undefined;
+		const find = (node: ts.Node) => {
+			if (ts.isMethodDeclaration(node) && node.name.getText() === '#create') create = node;
+			ts.forEachChild(node, find);
+		};
+		find(tree);
+		const asked = callsOf(create!, 'api.failureMessage');
 
 		expect(asked).toHaveLength(1);
 		expect(sideOf(asked[0])).toBe('failed');
-		const said = save.getText().replace(/\s+/g, ' ');
+		const said = create!.getText().replace(/\s+/g, ' ');
 		expect(said).toContain(
-			"if (res.ok) { toasts.add(`Sub-board \"${sbName}\" created`); } else { toasts.add(`Sub-board \"${sbName}\" was not made. ${await api.failureMessage(res, 'The server refused it.')}`, 'error', started); }"
+			"if (res.ok) told.push({ message: `Sub-board \"${name}\" created`, failed: false }); else told.push({ message: `Sub-board \"${name}\" was not made. ${await api.failureMessage(res, 'The server refused it.')}`, failed: true });"
 		);
 		// A request with no answer is said too, and the next name is still sent.
-		expect(said).toContain("} catch { toasts.add(`No answer from the server. Sub-board \"${sbName}\" may not have been made.`, 'error', started); continue; }");
+		expect(said).toContain("} catch { told.push({ message: `No answer from the server. Sub-board \"${name}\" may not have been made.`, failed: true }); continue; }");
 	});
 });
 
@@ -6189,7 +6206,7 @@ describe('the board page draws from its board state and reads the board alone (c
 		const keyed = (trigger: string, items: unknown[], source: string = SOURCES.POINTER) => ({ detail: { items, info: { trigger, id: 5, source } } });
 		const LETS = [
 			'dragHold', 'dragFrom', 'onHoldRelease', 'onHoldFrom', 'blockedRelease', 'blockedState', 'onHoldState', 'inlineEditCardId', 'inlineEditValue', 'boardNameDraft', 'editingBoardName',
-			'selectionMode', 'selectedCards', 'contextMenu', 'showCardModal', 'editingCard', 'confirmState'
+			'selectionMode', 'selectedCards', 'contextMenu', 'confirmState'
 		];
 		const NAMES = [
 			'holdDrag', 'takeDragHold', 'takeDragFrom', 'stopDrag', 'takeCardItems', 'handleCardDndConsider', 'handleCardDndFinalize', 'releaseOnHold', 'putBackOnHold', 'cancelOnHold',
@@ -6245,7 +6262,7 @@ describe('the board page draws from its board state and reads the board alone (c
 			const page = new Function(
 				'boardState', 'dndHandlers', 'TRIGGERS', 'SOURCES', 'toasts', 'data', 'currentUser', 'playCompleteSound', 'playMoveSound', 'queueCompletionPrompt', 'warnIfStillBlocked',
 				'copyColumns', 'undoDrag', 'moveCards', 'patchCard', 'reorderColumns', 'withCurrentCards', 'api', 'bulkOps', 'boardActions', 'PRIORITY_CYCLE', 'PRIORITY_WORDS',
-				'cardActions', 'removeCard', 'showConfirm', 'BULK_HOLD_MS',
+				'cardActions', 'removeCard', 'showConfirm', 'BULK_HOLD_MS', 'cardWindow',
 				`let ${LETS.map((name) => `${name} = null`).join(', ')};\n` +
 					"blockedState = { show: false }; onHoldState = { show: false }; selectedCards = new Set(); contextMenu = { show: false }; selectionMode = true; confirmState = { show: false };\n" +
 					`${runnable(board(), NAMES)}\n` +
@@ -6254,7 +6271,9 @@ describe('the board page draws from its board state and reads the board alone (c
 				state, dnd, TRIGGERS, SOURCES, { navigation: () => 'started', add: (...args: unknown[]) => said.push(args) }, { board: { id: 9 } }, { username: 'editor', emoji: '🦊' }, () => {}, () => {}, () => {}, () => {},
 				copyColumns, undoDrag, moveCards, patchCard, reorderColumns, withCurrentCards, apiModule, bulkActions, boardActions,
 				['low', 'medium', 'high', 'critical'], { refused: 'The priority was not changed.', noAnswer: 'No answer from the server. The priority may not have been changed.' },
-				cardActions, removeCard, (_title: string, _message: string, _text: string, onConfirm: () => Promise<void>) => confirms.push(onConfirm), BULK_HOLD_MS
+				cardActions, removeCard, (_title: string, _message: string, _text: string, onConfirm: () => Promise<void>) => confirms.push(onConfirm), BULK_HOLD_MS,
+				// The card window's controller on the same board state (slice B2c), which archives.
+				new CardWindow(state, 9)
 			);
 			return { page, state, asked, next, said, reads, confirms, columns: () => state.columns as unknown as Column[] };
 		}
@@ -6556,16 +6575,19 @@ describe('the board page draws from its board state and reads the board alone (c
 		const writes = apiWrites();
 		const HELPER = /^(cardActions|boardActions|bulkOps|dndHandlers)\.(\w+)$/;
 		const SENDS_NOTHING = ['navigationClosesWindow', 'findSubBoardName'];
+		// The card window's controller holds while each of its sends is out (slice B2c; shown in tests/card-window.test.ts).
+		const WINDOW = /^cardWindow\.(save|archive)$/;
 		const sending: string[] = [];
 		for (const { tree: code, where } of codeOf(PAGE, source())) {
 			const visit = (node: ts.Node) => {
 				if (ts.isCallExpression(node)) {
 					const helper = HELPER.exec(node.expression.getText());
-					const what = writeOf(node, writes) ?? (helper && !SENDS_NOTHING.includes(helper[2]) ? helper[0] : null);
+					const byWindow = WINDOW.test(node.expression.getText());
+					const what = writeOf(node, writes) ?? (helper && !SENDS_NOTHING.includes(helper[2]) ? helper[0] : null) ?? (byWindow ? node.expression.getText() : null);
 					if (what) {
 						const at = `${where ?? enclosingName(node)} › ${what}`;
 						sending.push(at);
-						let held = false;
+						let held = byWindow;
 						for (let child: ts.Node = node; child.parent; child = child.parent) {
 							const parent = child.parent;
 							if (ts.isTryStatement(parent) && parent.tryBlock === child && parent.finallyBlock && /\brelease(OnHold)?\(\)/.test(parent.finallyBlock.getText())) held = true;
@@ -6653,5 +6675,93 @@ describe('the board page draws from its board state and reads the board alone (c
 		expect(callsOf(tree, 'sortCards')).toEqual([]);
 		expect(tree.getText()).not.toMatch(/\blet columnSorts\b/);
 		expect(flat(functionNamed(tree, 'handleCardDndFinalize'))).toContain("if (boardState.columnSorts[columnId]) boardState.setSort(columnId, 'none');");
+	});
+});
+
+// Card 2280, slice B2c: the board page's card window is opened, kept in step
+// with the board, saved and archived by its controller,
+// `src/lib/board/card-window.svelte.ts`, whose cases (the lost update among
+// them) run in `tests/card-window.test.ts`. CardModal's props are unchanged:
+// All Tasks, All To Do and the plan page keep their own handlers until card
+// 2281's slice C3a.
+describe('the board page’s card window goes through its controller (card 2280, slice B2c)', () => {
+	const PAGE = 'src/routes/board/[id]/+page.svelte';
+	const board = () => scriptOf(PAGE);
+	const source = () => readFileSync(join(ROOT, PAGE), 'utf8');
+	const flat = (node: ts.Node) => node.getText().replace(/\s+/g, ' ');
+
+	it('makes one controller on its board state, keeps no card, column or open flag of the window’s own, and hands the window the board’s card', () => {
+		const tree = board();
+		expect(tree.statements.map(flat)).toContain('const cardWindow = new CardWindow(boardState, data.board.id);');
+		expect(source().match(/new CardWindow\(/g)).toHaveLength(1);
+		// The page's copies, which a sub-board link and delete had to put right by hand, are gone.
+		expect(source()).not.toMatch(/\b(editingCard|showCardModal|cardModalColumnId)\b/);
+		expect(flat(functionNamed(tree, 'openCardModal').body!)).toBe('{ cardWindow.openCard(card); }');
+		expect(flat(functionNamed(tree, 'openNewCardModal').body!)).toBe('{ cardWindow.openNew(columnId); }');
+
+		const markup = source().slice(source().indexOf('</script>'));
+		const opened = markup.slice(markup.indexOf('{#if cardWindow.open}'));
+		const modal = opened.slice(0, opened.indexOf('{/if}')).replace(/\s+/g, ' ');
+		expect(modal).toContain('<CardModal card={cardWindow.card}');
+		expect(modal).toContain('onSave={saveCard}');
+		expect(modal).toContain('onClose={() => cardWindow.close()}');
+		expect(modal).toContain('onDelete={cardWindow.card ? () => confirmDeleteCard(cardWindow.cardId!) : undefined}');
+		// A card the board has lost is said in the window (the B2c review), which shows the notice it is given.
+		expect(modal).toContain("notice={cardWindow.gone ? CARD_GONE : ''}");
+		const window = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8').replace(/\s+/g, ' ');
+		expect(window).toContain("notice = '',");
+		expect(window).toContain('{#if notice} <div class="dep-error window-error" role="status">{notice}</div> {/if}');
+		// No other window on the page is a CardModal.
+		expect(markup.match(/<CardModal\b/g)).toHaveLength(1);
+		// The window shows the sub-boards as the read after a link or delete draws them, with nothing put on it by hand.
+		for (const name of ['linkSubBoard', 'deleteSubBoard']) expect(flat(functionNamed(tree, name)), name).not.toMatch(/cardWindow|\.find\(c => c\.id === cardId\)/);
+	});
+
+	it('saves through the controller and says what it gives back: a refusal in its words, with the window left open; what was done and what was not, in order', async () => {
+		const saving = functionNamed(board(), 'saveCard');
+		expect(callsOf(saving, 'cardWindow.save')).toHaveLength(1);
+		// Nothing sent, held or read by the page itself: the controller does each.
+		for (const callee of ['boardState.refresh', 'boardState.hold', 'cardActions.saveCard', 'cardActions.assignPending', 'fetch']) expect(callsOf(saving, callee), callee).toEqual([]);
+
+		const run = async (result: unknown) => {
+			const said: unknown[][] = [];
+			const page = new Function('cardWindow', 'toasts', `${runnable(board(), ['saveCard'])}\nreturn { saveCard };`)(
+				{ save: async () => result },
+				{ navigation: () => 'started', add: (...args: unknown[]) => said.push(args) }
+			);
+			await page.saveCard({ title: 'New' });
+			return said;
+		};
+		expect(await run({ ok: false, failure: 'Viewers cannot change cards' })).toEqual([['Viewers cannot change cards', 'error', 'started']]);
+		expect(
+			await run({
+				ok: true,
+				told: [
+					{ message: 'Created "New"', failed: false },
+					{ message: 'Subtask "Two" was not added to "New". It was refused.', failed: true },
+					{ message: 'Sub-board "Plans" created', failed: false }
+				]
+			})
+		).toEqual([['Created "New"'], ['Subtask "Two" was not added to "New". It was refused.', 'error', 'started'], ['Sub-board "Plans" created']]);
+		// A save that changed nothing sent nothing, and says nothing.
+		expect(await run({ ok: true, told: [] })).toEqual([]);
+	});
+
+	it('archives through the controller, only once the confirm is pressed, and says what came of it', () => {
+		const archiving = functionNamed(board(), 'confirmDeleteCard');
+		const asked = callsOf(archiving, 'showConfirm');
+		expect(asked).toHaveLength(1);
+		const confirmed = asked[0].arguments[3];
+		expect(ts.isArrowFunction(confirmed)).toBe(true);
+		const sent = callsOf(archiving, 'cardWindow.archive');
+		expect(sent).toHaveLength(1);
+		expect(isWithin(sent[0], confirmed)).toBe(true);
+		expect(((confirmed as ts.ArrowFunction).body as ts.Block).statements.map((statement) => flat(statement))).toEqual([
+			'const started = toasts.navigation();',
+			'const failure = await cardWindow.archive(cardId);',
+			'confirmState.show = false;',
+			"if (failure) { // The card is still on the board, so its window stays open. toasts.add(failure, 'error', started); return; }",
+			"toasts.add('Card archived. Restore it from Archived Cards.', 'info');"
+		]);
 	});
 });
