@@ -9,7 +9,7 @@
   in the window's message box (`windowError`, bound).
 -->
 <script lang="ts">
-	import { COVER_PRESETS, isCoverValue } from '$lib/colours';
+	import { COVER_PRESETS, coverPickerColour, isCoverValue } from '$lib/colours';
 	import { failureMessage } from '$lib/api';
 	import type { CardType } from '$lib/types';
 
@@ -66,7 +66,7 @@
 			<button class="cover-swatch" class:active={coverUrl === preset} style="background: {preset}" onclick={() => setCover(preset)} title="Set cover" type="button"></button>
 		{/each}
 		<label class="color-custom-wrapper">
-			<input type="color" value={coverUrl || '#6366f1'} onchange={(e) => setCover((e.target as HTMLInputElement).value)} class="color-native-input" />
+			<input type="color" value={coverPickerColour(coverUrl)} onchange={(e) => setCover((e.target as HTMLInputElement).value)} class="color-native-input" />
 			{#if isCoverValue(coverUrl)}
 				<span class="cover-swatch custom" style="background: {coverUrl}">✎</span>
 			{:else}

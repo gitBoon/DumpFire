@@ -104,3 +104,20 @@ export const COVER_PRESETS: readonly string[] = [
 export function isCoverValue(value: unknown): value is string {
 	return isHexColour(value) || (typeof value === 'string' && (COVER_GRADIENTS as readonly string[]).includes(value));
 }
+
+/** Where the card window's custom cover colour opens when the card has no cover of a colour: the first colour preset. */
+export const COVER_PICKER_DEFAULT = '#6366f1';
+
+/**
+ * The colour the card window's custom cover box opens on: the cover's own
+ * colour, the first colour of one of the gradients, or the default.
+ *
+ * A colour box takes only `#rrggbb`, and shows black for anything else. It
+ * was handed the cover as it is, so a gradient cover opened it on black
+ * (card 2280, slice B5b; card 2010's found nearby).
+ */
+export function coverPickerColour(cover: string | null | undefined): string {
+	if (isHexColour(cover)) return cover;
+	if (isCoverValue(cover)) return /#[0-9a-fA-F]{6}/.exec(cover)?.[0] ?? COVER_PICKER_DEFAULT;
+	return COVER_PICKER_DEFAULT;
+}

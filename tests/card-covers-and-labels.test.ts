@@ -40,7 +40,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { cards, labels, type Card, type Label } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
-import { COVER_PRESETS, isCoverValue, isHexColour } from '$lib/colours';
+import { COVER_PICKER_DEFAULT, COVER_PRESETS, coverPickerColour, isCoverValue, isHexColour } from '$lib/colours';
 import { readCover } from '$lib/server/request-body';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
@@ -471,7 +471,7 @@ describe('the card window’s labels and cover', () => {
 			expect(file).not.toMatch(/\bfunction toggleLabel\b/);
 			expect(file).not.toContain('coverPresets');
 		}
-		expect(cover).toContain("import { COVER_PRESETS, isCoverValue } from '$lib/colours';");
+		expect(cover).toContain("import { COVER_PRESETS, coverPickerColour, isCoverValue } from '$lib/colours';");
 		expect(source).toContain("import { isCoverValue } from '$lib/colours';");
 		expect(source).toContain("import LabelPicker from './LabelPicker.svelte';");
 	});
@@ -513,5 +513,36 @@ describe('the label picker', () => {
 		const toggle = /async function toggleLabel\([\s\S]*?\r?\n\t\}\r?\n/.exec(script)?.[0] ?? '';
 		expect(toggle).toMatch(/const \{ toggled \}[^=]*= await res\.json\(\);/);
 		expect(toggle).not.toContain('selected.includes(');
+	});
+});
+
+// ─── The cover picker's own colour (card 2280, slice B5b) ───────────────────
+
+describe('the cover picker’s custom colour (card 2280, slice B5b)', () => {
+	// A colour box takes only `#rrggbb`. The picker handed it the cover as it
+	// is, so for a gradient cover the browser threw the value away and showed
+	// black (#000000; seen under jsdom, which follows the HTML rule).
+	it('opens on the cover’s own colour: a colour as it is, a gradient’s first colour, and the default for none', () => {
+		expect(coverPickerColour('#ef4444')).toBe('#ef4444');
+		expect(coverPickerColour('#EF4444')).toBe('#EF4444');
+		expect(coverPickerColour('linear-gradient(135deg, #667eea 0%, #764ba2 100%)')).toBe('#667eea');
+		expect(coverPickerColour('linear-gradient(135deg, #fa709a 0%, #fee140 100%)')).toBe('#fa709a');
+		for (const none of ['', null, undefined]) expect(coverPickerColour(none), String(none)).toBe(COVER_PICKER_DEFAULT);
+		expect(COVER_PICKER_DEFAULT).toBe('#6366f1');
+	});
+
+	it('opens on a colour the box keeps for every preset, and on the default for a value stored before the rule', () => {
+		for (const preset of COVER_PRESETS) expect(isHexColour(coverPickerColour(preset)), preset).toBe(true);
+		// Not covers (`isCoverValue`), so not drawn, and not a colour the box takes.
+		for (const old of ['#fff', 'red', 'url(https://x.io/a.png)', 'linear-gradient(90deg, red, blue)']) {
+			expect(coverPickerColour(old), old).toBe(COVER_PICKER_DEFAULT);
+		}
+	});
+
+	it('is what the picker’s colour box is given', () => {
+		const markup = markupOf(COVER_PICKER);
+		const box = /<input type="color"[^>]*>/.exec(markup)?.[0] ?? '';
+		expect(box).toContain('value={coverPickerColour(coverUrl)}');
+		expect(markup).not.toContain("coverUrl || '#6366f1'");
 	});
 });
