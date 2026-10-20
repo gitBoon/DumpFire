@@ -10,8 +10,10 @@
  *   - On the board page (given the controller's `edits`), each typed field
  *     the user has not touched shows the card's value as the card changes;
  *     one typed in stays as typed.
- *   - On All Tasks, All To Do and the plan page (no `edits`) the fields are
- *     filled once, as before, whatever the card is handed afterwards.
+ *   - Given no `edits` the fields are filled once, whatever the card is
+ *     handed afterwards. (All Tasks, All To Do and the plan page pass the
+ *     controller's `edits` too since card 2281's C3a-1 review:
+ *     `tests/card-window-pages.test.ts`.)
  *
  * What a save of each sends is in `tests/card-window.test.ts`.
  */

@@ -155,7 +155,13 @@ const windowBody = (card: Card) => ({
 	boardId: A.board.id
 });
 
-/** The body All Tasks' `saveCard` sends, with the five reporting fields of card 2186. */
+/**
+ * The body All Tasks' own `saveCard` sent, with the five reporting fields of
+ * card 2186: every field, changed or not. Since card 2281's slice C3a-1 the
+ * page sends only the fields changed in the window, through the card
+ * window's controller; the route is still held to a body of every field
+ * here, which other callers of the API may send.
+ */
 const allTasksBody = (card: Card, over: Record<string, unknown> = {}) => ({
 	title: card.title,
 	description: card.description,

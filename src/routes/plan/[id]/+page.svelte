@@ -46,7 +46,8 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import * as cardActions from '$lib/board/card-actions';
+	import { PageCardWindow } from '$lib/board/page-card-window.svelte';
+	import type { CardWindowSave } from '$lib/board/card-window.svelte';
 	import type { CardType } from '$lib/types';
 	import BurndownChart from '$lib/components/board/BurndownChart.svelte';
 	import type { BurndownResult } from '$lib/burndown';
@@ -316,6 +317,7 @@
 
 	// ─── Card modal, opened in place ─────────────────────────────────────────
 
+	/** The card the window is open on, as its context gave it, with a save shown on it at once and taken back if refused. */
 	let modalCard = $state<CardType | null>(null);
 	let modalContext = $state<{
 		boardId: number;
@@ -325,6 +327,17 @@
 		milestones: any[];
 	} | null>(null);
 	let modalLoading = $state(false);
+
+	/**
+	 * The card window (card 2281, slice C3a-1): saved through the board page's
+	 * controller, over the card above. A save sends only the fields changed in
+	 * the window, so a change someone else made to the card meanwhile is not
+	 * sent back.
+	 */
+	const cardWindow = new PageCardWindow(
+		{ get: () => (modalCard ? [{ cards: [modalCard] }] : []), set: (next) => (modalCard = next[0]?.cards[0] ?? null) },
+		() => invalidateAll()
+	);
 
 	/**
 	 * Open a card without leaving the plan.
@@ -356,6 +369,7 @@
 				boardUsers: ctx.boardUsers,
 				milestones: ctx.milestones
 			};
+			cardWindow.openCard(ctx.card, ctx.boardId);
 		} finally {
 			modalLoading = false;
 		}
@@ -367,22 +381,38 @@
 	 * shows every subtask (card 2221).
 	 */
 	async function closeCard() {
+		cardWindow.close();
 		modalCard = null;
 		modalContext = null;
 		await invalidateAll();
 	}
 
 	/**
-	 * Saving goes through the same shared card-actions path the board uses, so
-	 * the two screens cannot drift on what a save does.
+	 * Saving goes through the card window's controller the board uses, so the
+	 * two screens cannot drift on what a save does: only the fields changed in
+	 * the window are sent. A refusal, or no answer, is said and keeps the
+	 * window open with what was typed; it used to say "Card updated" whatever
+	 * came back. A save with nothing changed sends nothing and says nothing.
 	 */
-	async function saveCardFromPlan(cardData: Parameters<typeof cardActions.saveCard>[4]) {
-		if (!modalCard || !modalContext) return;
-		await cardActions.saveCard(modalCard, null, modalContext.boardId, [], cardData);
+	async function saveCardFromPlan(cardData: CardWindowSave) {
+		const started = toasts.navigation();
+		const saving = cardWindow.edits;
+		const written = await cardWindow.save(cardData);
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return;
+		}
 		// A column change alters what is blocked and what is startable, so the
 		// plan has to be recomputed rather than patched locally: closing does it.
-		const reloaded = closeCard();
-		toasts.add('Card updated');
+		// A save answered after its window was closed, and another window
+		// opened (on another card, or on the same card again: each open has
+		// its own `edits`), leaves that window open: the plan alone is read again.
+		const stillOpen = cardWindow.cardId === null || cardWindow.edits === saving;
+		const reloaded = stillOpen ? closeCard() : invalidateAll();
+		for (const { message, failed } of written.told) {
+			if (failed) toasts.add(message, 'error', started);
+			else toasts.add(message);
+		}
 		await reloaded;
 	}
 
@@ -1340,9 +1370,10 @@
 
 <Toast />
 
-{#if modalCard && modalContext}
+{#if cardWindow.open && cardWindow.card && modalContext}
+	{#key cardWindow.edits}
 	<CardModal
-		card={modalCard}
+		card={cardWindow.card}
 		categories={modalContext.categories}
 		labels={modalContext.labels}
 		boardId={modalContext.boardId}
@@ -1350,7 +1381,9 @@
 		milestones={modalContext.milestones}
 		onSave={saveCardFromPlan}
 		onClose={closeCard}
+		edits={cardWindow.edits}
 	/>
+	{/key}
 {/if}
 
 <style>

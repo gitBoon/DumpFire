@@ -1157,17 +1157,20 @@ describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2
 			expect(edits.touched).toEqual(new Set(['title']));
 		});
 
-		it('is given on the board page alone: the board page hands its window the controller’s edits, and All Tasks, All To Do and the plan page hand theirs none', () => {
+		it('is given on every page that draws the window: the board page hands it the controller’s edits, and All Tasks, All To Do and the plan page the same (card 2281, the C3a-1 review)', () => {
 			const page = readFileSync(join(process.cwd(), 'src/routes/board/[id]/+page.svelte'), 'utf8').replace(/\s+/g, ' ');
 			expect(page).toContain('edits={cardWindow.edits}');
 			// A new edits is a new window (the B5d review): what one window typed is
 			// never taken by another's edits as what it started from.
 			expect(page).toContain('{#if cardWindow.open} {#key cardWindow.edits} <CardModal card={cardWindow.card}');
 			expect(page).toMatch(/milestones=\{boardState\.milestones\} \/> \{\/key\} \{\/if\}/);
+			// Through their adapter's controller, each open a window made afresh.
 			for (const file of ['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte', 'src/routes/plan/[id]/+page.svelte']) {
-				const text = readFileSync(join(process.cwd(), file), 'utf8');
+				const text = readFileSync(join(process.cwd(), file), 'utf8').replace(/\s+/g, ' ');
+				expect(text, file).toMatch(/\{#if cardWindow\.open && cardWindow\.card( && modalContext)?\} \{#key cardWindow\.edits\} <CardModal card=\{cardWindow\.card\}/);
 				const opened = text.slice(text.indexOf('<CardModal'));
-				expect(opened.slice(0, opened.indexOf('/>')), file).not.toMatch(/\bedits\b/);
+				expect(opened.slice(0, opened.indexOf('/>')), file).toContain('edits={cardWindow.edits}');
+				expect(opened.slice(opened.indexOf('/>')), file).toMatch(/^\/> \{\/key\} \{\/if\}/);
 			}
 			// A new window is a new edits: what one window started from is not another's.
 			const { cardWindow } = standIn({});

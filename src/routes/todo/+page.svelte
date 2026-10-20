@@ -22,6 +22,8 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import CardModal from '$lib/components/CardModal.svelte';
+	import { PageCardWindow } from '$lib/board/page-card-window.svelte';
+	import type { CardWindowSave } from '$lib/board/card-window.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
@@ -31,7 +33,7 @@
 	import { getDueRelative, getDueStatus, formatDueDate } from '$lib/utils/date-utils';
 	import { subtaskProgress } from '$lib/utils/card-utils';
 	import { boardPathText, chosenBoardId, inBoardFilter } from '$lib/board-tree';
-	import { cardArchiveWarning, deleteFailure, failureMessage } from '$lib/api';
+	import { cardArchiveWarning } from '$lib/api';
 	import { connectLiveRefresh } from '$lib/live-refresh';
 	import { drawnColour } from '$lib/colours';
 	import {
@@ -56,6 +58,14 @@
 	let { data }: { data: PageData } = $props();
 
 	type Row = PageData['cards'][number];
+
+	/**
+	 * The cards drawn: the load's, with a save from the card window shown on
+	 * its row at once and taken back if refused. Each re-read replaces them.
+	 * The filters' choices, and the check of the filters after a re-read, go
+	 * by the load's alone.
+	 */
+	let cards = $derived(data.cards);
 
 	/** Who is viewing: what the Assignee filter's "Me" means. */
 	const viewerId = $derived(data.user?.id ?? 0);
@@ -121,7 +131,7 @@
 	};
 
 	const choices = $derived(filterChoices(data.cards, filters.board, ctx));
-	const rows = $derived(sortTodoRows(data.cards.filter((card) => passesTodoFilters(card, filters, ctx)), filters.sort, filters.dir, ctx));
+	const rows = $derived(sortTodoRows(cards.filter((card) => passesTodoFilters(card, filters, ctx)), filters.sort, filters.dir, ctx));
 	const filtering = $derived(isFiltering(filters));
 	/** How many of the folded filters are on: the search box stays in view, so it is not counted. */
 	const foldedOn = $derived(
@@ -131,7 +141,7 @@
 	const todoBoards = $derived(data.boards.filter((b) => b.hasTodo));
 	const noTodoBoards = $derived(data.boards.filter((b) => !b.hasTodo));
 	const scopeBoards = $derived(data.boards.filter((b) => inBoardFilter(b.id, filters.board, ctx.places)));
-	const scopeCards = $derived(data.cards.filter((card) => inBoardFilter(card.boardId, filters.board, ctx.places)));
+	const scopeCards = $derived(cards.filter((card) => inBoardFilter(card.boardId, filters.board, ctx.places)));
 	const chosenBoard = $derived(chosenBoardId(filters.board));
 
 	/** The board filter's choice in words, for the empty state of a board with no To Do column. */
@@ -257,30 +267,15 @@
 	}
 
 	// ─── Card Editing ────────────────────────────────────────────────────
-	// The card window, as All Tasks opens and saves it (cards 2186 and 2109);
-	// card 2012 merges the two. No Move window: a card leaves To Do from its board.
-	let showCardModal = $state(false);
-	let editingCard = $state<CardType | null>(null);
-	let editingBoardId = $state(0);
+	// The card window, as All Tasks opens and saves it (cards 2186 and 2109):
+	// through the board page's controller, over the rows above (card 2281,
+	// slice C3a-1). A save sends only the fields changed in the window, so a
+	// change someone else made to the card meanwhile is not sent back. No Move
+	// window: a card leaves To Do from its board.
+	const cardWindow = new PageCardWindow({ get: () => [{ cards }], set: (next) => (cards = next[0]?.cards ?? []) }, () => invalidateAll());
 
 	function openCard(card: any) {
-		// The row as the page loaded it, as the board page hands the window its
-		// own, so the window has every field it reads, the five reporting
-		// fields and requestOrigin among them (card 2186). Only the fall-backs
-		// are its own.
-		editingCard = {
-			...card,
-			position: card.position ?? 0,
-			updatedAt: card.updatedAt || card.createdAt,
-			subtasks: card.subtasks || [], labelIds: card.labelIds || [],
-			pinned: card.pinned || false, onHoldNote: card.onHoldNote || '',
-			businessValue: card.businessValue || '',
-			subBoards: card.subBoards || [], assignees: card.assignees || [],
-			archivedAt: card.archivedAt || null, coverUrl: card.coverUrl || null,
-			milestoneId: card.milestoneId ?? null
-		};
-		editingBoardId = card.boardId;
-		showCardModal = true;
+		cardWindow.openCard(card, card.boardId);
 		loadBoardUsers(card.id);
 	}
 
@@ -296,49 +291,36 @@
 		try {
 			const res = await fetch(`/api/cards/${cardId}/context`);
 			if (!res.ok) {
-				if (editingCard?.id === cardId) toasts.add("The people of this card's board could not be read.", 'error', started);
+				if (cardWindow.cardId === cardId) toasts.add("The people of this card's board could not be read.", 'error', started);
 				return;
 			}
 			const body = await res.json();
 			// An answer for a card no longer open is not used.
-			if (editingCard?.id === cardId) editingBoardUsers = body.boardUsers;
+			if (cardWindow.cardId === cardId) editingBoardUsers = body.boardUsers;
 		} catch {
-			if (editingCard?.id === cardId) toasts.add("No answer from the server: the people of this card's board are not shown.", 'error', started);
+			if (cardWindow.cardId === cardId) toasts.add("No answer from the server: the people of this card's board are not shown.", 'error', started);
 		}
 	}
 
-	async function saveCard(cardData: any) {
-		if (!editingCard) return;
-		// The window closes only when the server says the card is saved.
+	/**
+	 * Saves the card window through its controller, as All Tasks does: only
+	 * the fields changed in it, shown on the row at once. A refusal, or no
+	 * answer, is said and keeps the window open with what was typed, and the
+	 * row put back; nothing changed sends nothing and says nothing. Once
+	 * saved, the page is read again, as before.
+	 */
+	async function saveFromWindow(cardData: CardWindowSave) {
 		const started = toasts.navigation();
-		let res: Response;
-		try {
-			res = await fetch(`/api/cards/${editingCard.id}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					title: cardData.title, description: cardData.description,
-					priority: cardData.priority, categoryId: cardData.categoryId,
-					dueDate: cardData.dueDate, onHoldNote: cardData.onHoldNote || '',
-					businessValue: cardData.businessValue || '', boardId: editingBoardId,
-					// The Reporting section, as the window gives it: text, or null
-					// for a cleared field, which clears it (card 2186).
-					summary: cardData.summary, theme: cardData.theme,
-					customerImpact: cardData.customerImpact, closeReason: cardData.closeReason,
-					releaseState: cardData.releaseState
-				})
-			});
-		} catch {
-			toasts.add('No answer from the server. The card may not have been saved.', 'error', started);
+		const written = await cardWindow.save(cardData);
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
 			return;
 		}
-		if (!res.ok) {
-			toasts.add(await failureMessage(res, 'The card was not saved.'), 'error', started);
-			return;
+		if (written.told.length === 0) return;
+		for (const { message, failed } of written.told) {
+			if (failed) toasts.add(message, 'error', started);
+			else toasts.add(message);
 		}
-		toasts.add('Card updated');
-		showCardModal = false;
-		editingCard = null;
 		await invalidateAll();
 	}
 
@@ -354,24 +336,15 @@
 	/**
 	 * Archive the open card, once it is confirmed, as the board page and All
 	 * Tasks do: a DELETE with no `permanent` archives, and it can be restored.
+	 * Sent by the card window's controller, which takes the card off the page
+	 * and closes its window only once the server says it is archived.
 	 */
-	function deleteCard() {
-		if (!editingCard) return;
-		const cardId = editingCard.id;
-		const boardId = editingBoardId;
-		showConfirm('Archive Card', cardArchiveWarning(editingCard.title), 'Archive Card', async () => {
-			// The card is closed only when the server says it is archived.
+	function archiveFromWindow() {
+		const cardId = cardWindow.cardId;
+		if (cardId === null) return;
+		showConfirm('Archive Card', cardArchiveWarning(cardWindow.card?.title), 'Archive Card', async () => {
 			const started = toasts.navigation();
-			const failure = await deleteFailure(
-				() =>
-					fetch(`/api/cards/${cardId}`, {
-						method: 'DELETE',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ boardId })
-					}),
-				'card',
-				'archived'
-			);
+			const failure = await cardWindow.archive(cardId);
 			confirmState.show = false;
 			if (failure) {
 				// The card is still where it was, so its window stays open.
@@ -379,8 +352,6 @@
 				return;
 			}
 			toasts.add('Card archived. Restore it from Archived Cards.', 'info');
-			showCardModal = false;
-			editingCard = null;
 			await invalidateAll();
 		});
 	}
@@ -401,9 +372,9 @@
 				<h1 class="todo-title">All To Do</h1>
 				<p class="todo-subtitle">
 					{#if filtering}
-						{rows.length} of {plural(data.cards.length, 'card')} in To Do
+						{rows.length} of {plural(cards.length, 'card')} in To Do
 					{:else}
-						{plural(data.cards.length, 'card')} in To Do across {plural(todoBoards.length, 'board')}
+						{plural(cards.length, 'card')} in To Do across {plural(todoBoards.length, 'board')}
 					{/if}
 				</p>
 			</div>
@@ -662,17 +633,20 @@
 </div>
 
 <!-- Card Edit Modal -->
-{#if showCardModal && editingCard}
+{#if cardWindow.open && cardWindow.card}
+	{#key cardWindow.edits}
 	<CardModal
-		card={editingCard}
-		categories={data.categories.filter((c: any) => c.boardId === editingBoardId || c.boardId === null) as any}
-		labels={data.labels.filter((l: any) => l.boardId === editingBoardId) as any}
-		boardId={editingBoardId}
+		card={cardWindow.card}
+		categories={data.categories.filter((c: any) => c.boardId === cardWindow.boardId || c.boardId === null) as any}
+		labels={data.labels.filter((l: any) => l.boardId === cardWindow.boardId) as any}
+		boardId={cardWindow.boardId}
 		boardUsers={editingBoardUsers}
-		onSave={saveCard}
-		onDelete={deleteCard}
-		onClose={() => { showCardModal = false; editingCard = null; }}
+		onSave={saveFromWindow}
+		onDelete={archiveFromWindow}
+		onClose={() => cardWindow.close()}
+		edits={cardWindow.edits}
 	/>
+	{/key}
 {/if}
 
 <!-- Confirm Modal: archiving the open card -->
