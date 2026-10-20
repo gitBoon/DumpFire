@@ -7,7 +7,6 @@
 	 * Live-updates via global SSE and shows celebrations on task completion.
 	 */
 	import type { PageData } from './$types';
-	import { theme } from '$lib/stores/theme';
 	import { onMount, onDestroy } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { browser } from '$app/environment';
@@ -36,9 +35,6 @@
 	import LiveToasts from '$lib/components/tasks/LiveToasts.svelte';
 
 	let { data }: { data: PageData } = $props();
-
-	let currentTheme = $state('light');
-	theme.subscribe((v) => (currentTheme = v));
 
 	let tick = $state(0);
 	let tickInterval: ReturnType<typeof setInterval> | null = null;
@@ -182,8 +178,8 @@
 	const bucketColors: Record<string, string> = { 'To Do': '#6366f1', 'On Hold': '#ef4444', 'In Progress': '#f59e0b', 'Complete': '#10b981' };
 
 	function matchesFilters(card: any): boolean {
-		// Folded in here rather than at the render site so getFilteredCount picks
-		// it up for free and a filtered bucket cannot misreport its count.
+		// Folded in here rather than at the render site so a column's count, which
+		// reads the cards this lets through, cannot misreport a filtered bucket.
 		if (hideBlocked && blockersFor(card.id).length > 0) return false;
 		if (!inBoardFilter(card.boardId, boardFilter, boardPlaces)) return false;
 		if (!searchQuery.trim()) return true;
@@ -197,10 +193,6 @@
 
 		const idStr = String(card.id);
 		return idStr.includes(q) || card.title.toLowerCase().includes(q) || card.description?.toLowerCase().includes(q);
-	}
-
-	function getFilteredCount(bucket: any): number {
-		return bucket.cards.filter(matchesFilters).length;
 	}
 
 	// ─── Column Sorting ─────────────────────────────────────────────────
@@ -762,23 +754,16 @@
 		color: var(--text-secondary);
 		font-size: 0.8rem;
 	}
-
-	/* All Tasks Stats Panel */
-	.all-stats-grid {
-		display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-sm);
-		margin-bottom: var(--space-lg);
+	/* A panel's read that failed (card 2317), in place of "nothing" */
+	.all-panels-area :global(.activity-error) {
+		margin: 12px 16px;
+		padding: 10px 12px;
+		border-radius: var(--radius-sm);
+		background: rgba(244, 63, 94, 0.1);
+		border: 1px solid rgba(244, 63, 94, 0.3);
+		color: var(--text-primary);
+		font-size: 0.78rem;
+		line-height: 1.4;
+		overflow-wrap: anywhere;
 	}
-	.all-stat-card {
-		display: flex; flex-direction: column; align-items: center;
-		padding: var(--space-md); border-radius: var(--radius-md);
-		background: var(--glass-bg); border: 1px solid var(--glass-border);
-	}
-	.all-stat-value { font-size: 1.5rem; font-weight: 800; color: var(--accent-indigo); }
-	.all-stat-label { font-size: 0.68rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-	.all-stats-section-title { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); margin-bottom: var(--space-sm); }
-	.all-stats-board-row { display: flex; align-items: center; gap: var(--space-sm); margin-bottom: var(--space-xs); }
-	.all-stats-board-name { font-size: 0.72rem; font-weight: 600; width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
-	.all-stats-bar-track { flex: 1; height: 8px; background: var(--glass-bg); border-radius: 4px; overflow: hidden; }
-	.all-stats-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease-out; min-width: 2px; }
-	.all-stats-board-count { font-size: 0.68rem; font-weight: 700; color: var(--text-secondary); width: 40px; text-align: right; }
 </style>

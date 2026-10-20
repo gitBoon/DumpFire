@@ -7,8 +7,6 @@
 	 * database operations (reset, vacuum), and import/export.
 	 */
 	import type { PageData } from './$types';
-	import { goto } from '$app/navigation';
-	import { theme } from '$lib/stores/theme';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	// The superadmin's panels (card 2281, slice C1a; the mail panel slice C1b), each drawn in the markup's isSuperadmin blocks alone.
@@ -25,9 +23,6 @@
 	import DangerZonePanel from '$lib/components/admin/DangerZonePanel.svelte';
 
 	let { data }: { data: PageData } = $props();
-
-	let currentTheme = $state('light');
-	theme.subscribe((v) => (currentTheme = v));
 
 	let isSuperadmin = $derived(data.currentUser?.role === 'superadmin');
 
@@ -289,19 +284,6 @@
 		flex: 1; min-width: 120px;
 	}
 	.admin-page :global(.form-input:focus) { border-color: var(--accent-indigo); outline: none; }
-
-	.emoji-row { display: flex; gap: 4px; flex-wrap: wrap; }
-	.emoji-pick {
-		width: 30px; height: 30px; font-size: 1rem;
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-base); cursor: pointer; transition: all 0.15s;
-		display: flex; align-items: center; justify-content: center;
-	}
-	.emoji-pick:hover { border-color: var(--accent-purple); transform: scale(1.1); }
-	.emoji-pick.active {
-		border-color: var(--accent-purple); background: var(--accent-purple-glow);
-		box-shadow: var(--shadow-glow-purple); transform: scale(1.1);
-	}
 
 	/* The invite link's dialog, which is after .admin-page, has a copy of its own (card 2281, slice C1b) */
 	.admin-page :global(.btn-sm) { font-size: 0.78rem !important; padding: var(--space-xs) var(--space-md) !important; }

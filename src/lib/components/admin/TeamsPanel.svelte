@@ -54,7 +54,14 @@
 
 	let addMemberTeamId = $state<number | null>(null);
 	let addMemberUserId = $state<number | null>(null);
-	let addMemberRole = $state('member');
+	/**
+	 * The role the person is added with, chosen beside the member picker (card
+	 * 2309): a team's owner may rename and delete it and add and remove its
+	 * members without being an administrator; a member may not. Member each
+	 * time a person is chosen, and after each add (the card 2309 review: a
+	 * role chosen for one person was kept for the next).
+	 */
+	let addMemberRole = $state<'member' | 'owner'>('member');
 
 	async function addTeamMember() {
 		if (!addMemberTeamId || !addMemberUserId) return;
@@ -73,6 +80,7 @@
 		if (!res) return;
 		addMemberTeamId = null;
 		addMemberUserId = null;
+		addMemberRole = 'member';
 		await invalidateAll();
 		showToast('Member added');
 	}
@@ -127,13 +135,17 @@
 						{/each}
 					</div>
 					<div class="add-member-row">
-						<select class="form-input" onchange={(e) => { addMemberTeamId = team.id; addMemberUserId = Number((e.target as HTMLSelectElement).value); }}>
+						<select class="form-input" onchange={(e) => { addMemberRole = 'member'; addMemberTeamId = team.id; addMemberUserId = Number((e.target as HTMLSelectElement).value); }}>
 							<option value="">Add member...</option>
 							{#each data.users.filter(u => !team.members.some(m => m.userId === u.id)) as u}
 								<option value={u.id}>{u.emoji} {u.username}</option>
 							{/each}
 						</select>
 						{#if addMemberTeamId === team.id && addMemberUserId}
+							<select class="form-input role-pick" bind:value={addMemberRole} title="Their role in this team">
+								<option value="member">Member</option>
+								<option value="owner">Owner</option>
+							</select>
 							<button class="btn-primary btn-xs" onclick={addTeamMember}>Add</button>
 						{/if}
 					</div>
@@ -178,4 +190,6 @@
 		border-top: 1px solid var(--glass-border);
 	}
 	.add-member-row select { flex: 1; }
+	/* The role beside the person (card 2309): as wide as its words. */
+	.add-member-row select.role-pick { flex: none; min-width: 0; width: auto; }
 </style>

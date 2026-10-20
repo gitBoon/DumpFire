@@ -348,7 +348,7 @@
 									<div class="board-row-actions">
 						{#if board.subBoards && board.subBoards.length > 0}
 							{@const activeSubs = board.subBoards.filter((s: any) => showCompletedSubs || !(s.total > 0 && s.done === s.total))}
-							<span class="sub-count-badge" class:all-done={activeSubs.length === 0}>{activeSubs.length}/{board.subBoards.length} sub</span>
+							<span class="sub-count-badge">{activeSubs.length}/{board.subBoards.length} sub</span>
 						{/if}
 						<button class="row-fav-btn" class:favourited={favouriteBoardIds.has(board.id)} title={favouriteBoardIds.has(board.id) ? 'Remove from favourites' : 'Add to favourites'} onclick={(e) => toggleFavourite(board.id, e)}>
 							{favouriteBoardIds.has(board.id) ? '⭐' : '☆'}
@@ -441,14 +441,6 @@
 	.section-count { font-size: 0.7rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
 
 	.header-actions { display: flex; align-items: center; gap: 8px; }
-	
-	.icon-action-btn {
-		width: 32px; height: 32px; border-radius: var(--radius-md);
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		color: var(--text-secondary); display: flex; align-items: center; justify-content: center;
-		cursor: pointer; transition: all var(--duration-fast);
-	}
-	.icon-action-btn:hover { background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.3); color: var(--accent-indigo); transform: translateY(-1px); }
 
 	.toggle-completed-btn {
 		padding: 6px 12px; height: 32px;
@@ -592,7 +584,6 @@
 		font-size: 0.7rem; color: var(--text-tertiary); font-weight: 400;
 		width: 14px; flex-shrink: 0; text-align: center;
 	}
-	.board-row-action { width: 80px; flex-shrink: 0; }
 	.board-row-actions { width: 80px; flex-shrink: 0; display: flex; align-items: center; gap: 4px; justify-content: flex-end; margin-left: var(--space-sm); }
 
 	/* ─── Misc ────────────────────────────────────────────────────── */

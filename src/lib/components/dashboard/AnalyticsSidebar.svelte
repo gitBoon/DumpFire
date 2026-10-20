@@ -50,10 +50,6 @@
 	// and are not sent.
 	const due = $derived(clock ? dueFigures(a.dueCards, clock, undefined, a.longOverdue) : dueFigures(a.dueCards, new Date(a.asOf), 'UTC', a.longOverdue));
 
-	function getCircumference(radius: number) {
-		return 2 * Math.PI * radius;
-	}
-
 	// Computed analytics helpers
 	let maxTrend = $derived(Math.max(1, ...a.weeklyTrend.map((w: any) => w.count)));
 	let totalCatCards = $derived(a.categoryDistribution.reduce((s: number, c: any) => s + c.count, 0));
@@ -133,7 +129,7 @@
 		</div>
 		<div class="stat-value">{a.completedThisWeek}</div>
 		<div class="stat-sub">done this week • {a.completedThisMonth} this month</div>
-		
+
 		<!-- CSS Sparkline -->
 		<div class="sparkline">
 			{#each a.weeklyActivity as dayObj}
@@ -396,11 +392,11 @@
 		opacity: 0; transition: opacity var(--duration-fast) var(--ease-out);
 	}
 	.stat-card-clickable:hover .stat-card-hint { opacity: 1; color: var(--accent-indigo); }
-	
+
 	.stat-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: auto; }
 	.stat-label { font-size: 0.68rem; font-weight: 700; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; }
 	.stat-badge.warn { background: rgba(245, 158, 11, 0.15); color: #d97706; padding: 2px 6px; border-radius: var(--radius-sm); font-size: 0.6rem; font-weight: 700; white-space: nowrap; }
-	
+
 	.stat-value {
 		font-size: 1.8rem; font-weight: 800; color: var(--text-primary);
 		line-height: 1.1; margin-top: 8px; letter-spacing: -0.03em;
@@ -479,7 +475,6 @@
 
 	/* ─── Activity ────────────────────────────────────────────────── */
 	.activity-section { margin-bottom: var(--space-2xl); }
-	.activity-section h2 { font-size: 1.1rem; font-weight: 700; color: var(--text-primary); margin-bottom: var(--space-md); }
 	.activity-list {
 		display: flex; flex-direction: column;
 		background: var(--bg-card); border: 1px solid var(--glass-border);

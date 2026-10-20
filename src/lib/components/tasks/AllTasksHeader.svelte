@@ -297,8 +297,6 @@
 	}
 	.hdr-cost-money { font-weight: 800; font-size: 1.1rem; color: var(--accent-purple, #8b5cf6); }
 
-	.theme-toggle { font-size: 0; }
-
 	/* More Menu Dropdown */
 	.more-menu-container { position: relative; }
 	.more-dropdown {

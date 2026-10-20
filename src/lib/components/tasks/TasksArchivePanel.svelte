@@ -12,7 +12,7 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { toasts } from '$lib/stores/toast';
-	import { cardDeleteWarning, deleteFailure } from '$lib/api';
+	import { cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
 
 	let {
 		showConfirm,
@@ -25,19 +25,43 @@
 	} = $props();
 
 	let archivedCards = $state<any[]>([]);
-	let loadingArchive = $state(false);
+	let loadingArchive = $state(false);	/** Why the latest read failed, shown in the panel until a read is answered (card 2317); '' when it did not. */
+	let archiveError = $state('');
 
 	export async function toggleArchivePanel() {
 		showArchivePanel = !showArchivePanel;
 		if (showArchivePanel && archivedCards.length === 0) await loadAllArchived();
 	}
 
+	/**
+	 * Read the archived cards. A refusal is said in the server's words, no
+	 * answer as no answer, and an answer that is not the list (a proxy's page)
+	 * as one that could not be read, in the panel in place of "No archived
+	 * cards"; a list read before stays under it (card 2317: no answer was an
+	 * unhandled rejection, and either said there were none).
+	 */
 	async function loadAllArchived() {
 		loadingArchive = true;
 		try {
-			const res = await fetch('/api/cards/archived');
-			if (res.ok) archivedCards = await res.json();
-		} finally { loadingArchive = false; }
+			let res: Response;
+			try {
+				res = await fetch('/api/cards/archived');
+			} catch {
+				archiveError = 'No answer from the server. The archived cards could not be loaded.';				return;
+			}
+			if (!res.ok) {
+				archiveError = await failureMessage(res, 'The archived cards could not be loaded.');
+				return;
+			}
+			try {
+				archivedCards = await res.json();
+				archiveError = '';
+			} catch {
+				archiveError = "The server's answer could not be read. The archived cards could not be loaded.";
+			}
+		} finally {
+			loadingArchive = false;
+		}
 	}
 
 	async function restoreArchivedCard(cardId: number) {
@@ -92,12 +116,16 @@
 	<div class="activity-list" style="padding: var(--space-md);">
 		{#if loadingArchive}
 			<div class="activity-loading">Loading...</div>
-		{:else if archivedCards.length === 0}
-			<div class="activity-empty">
-				<span style="font-size:2rem;">📦</span>
-				<p>No archived cards</p>
-			</div>
 		{:else}
+			{#if archiveError}
+				<div class="activity-error" role="alert">{archiveError}</div>
+			{/if}
+			{#if archivedCards.length === 0 && !archiveError}
+				<div class="activity-empty">
+					<span style="font-size:2rem;">📦</span>
+					<p>No archived cards</p>
+				</div>
+			{/if}
 			{#each archivedCards as card (card.id)}
 				<div class="archive-card-item">
 					<div class="archive-card-info">

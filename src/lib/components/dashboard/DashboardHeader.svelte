@@ -288,7 +288,6 @@
 	}
 	.nav-more-item svg { flex-shrink: 0; opacity: 0.65; }
 	.nav-more-item:hover svg { opacity: 1; }
-	.theme-pill { padding: 7px 10px; }
 	.create-btn { border-radius: var(--radius-full); padding: 6px 16px; font-size: 0.78rem; }
 	.inbox-count-badge {
 		display: inline-flex; align-items: center; justify-content: center;

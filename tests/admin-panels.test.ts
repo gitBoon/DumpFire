@@ -26,7 +26,7 @@
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type * as Svelte from 'svelte';
 import AppUrlPanel from '$lib/components/admin/AppUrlPanel.svelte';
 import ScheduledBackupsPanel from '$lib/components/admin/ScheduledBackupsPanel.svelte';
@@ -78,8 +78,15 @@ const history = Array.from({ length: 7 }, (_, i) => ({
 }));
 const settings = { schedule: 'daily', scheduleTime: '02:00', scheduleDay: 0, retention: 7, notifyOnFailure: false, notifyEmail: '', destinations: [NAS, DRIVE], history };
 
-/** An answer of the test's own for a request, ahead of the ones below; undefined for those. */
-let answer: ((what: string) => Response | undefined) | null = null;
+/** An answer of the test's own for a request, ahead of the ones below (held, if it likes); undefined for those. */
+let answer: ((what: string) => Response | Promise<Response> | undefined) | null = null;
+
+/** An answer held until the case lets it go, for a save still on its way. */
+function held(response: () => Response) {
+	let release!: () => void;
+	const answered = new Promise<Response>((resolve) => (release = () => resolve(response())));
+	return { answered, release };
+}
 
 beforeEach(() => {
 	sent = [];
@@ -181,6 +188,115 @@ describe('the Scheduled Backups panel, mounted', () => {
 		expect(lastPut().destinations.map((destination) => destination.name)).toEqual(['NAS', 'Drive', 'Office']);
 		expect(lastPut().destinations[2]).toMatchObject({ type: 'sftp', name: 'Office', host: 'office.example', port: 22, remotePath: '/backups' });
 		expect(target.querySelector('.dest-add-form')).toBeNull();
+	});
+
+	// Card 2305: the two forms share one set of fields, so only one is open at a
+	// time. With both open, a name typed in the add form let the edit form's
+	// Save replace the destination being edited with the new one.
+	it('closes the edit form when + Add Destination opens the add form, and leaves the destination edited as it was saved', async () => {
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		await settle();
+
+		buttonNamed(target.querySelector('.dest-card')!, '✏️ Edit').click();
+		flushSync();
+		buttonNamed(target, '+ Add Destination').click();
+		flushSync();
+
+		expect(target.querySelectorAll('.dest-edit-form')).toHaveLength(0);
+		expect(target.querySelectorAll('.dest-add-form')).toHaveLength(1);
+		const name = target.querySelector<HTMLInputElement>('input[placeholder="Destination name (e.g. Production NAS)"]')!;
+		expect(name.value).toBe('');
+		expect(target.querySelector('.dest-card-detail')!.textContent!.trim()).toBe('nas.example:22 → /backups');
+
+		type(name, 'Office');
+		type(target.querySelector<HTMLInputElement>('.dest-add-form input[placeholder="Host"]')!, 'office.example');
+		buttonNamed(target, 'Add Destination').click();
+		await settle();
+
+		expect(asked('PUT /api/admin/backup')).toHaveLength(1);
+		expect(lastPut().destinations.map((destination) => destination.name)).toEqual(['NAS', 'Drive', 'Office']);
+		expect(lastPut().destinations[0]).toEqual(NAS);
+	});
+
+	// The card 2305 review: what follows a save's answer acted on whichever form
+	// was open by then, so a form opened while it was on its way was emptied
+	// (and a Save of it then replaced the destination with blanks). ✏️ Edit and
+	// + Add Destination are off while a save is on its way; each is also forced
+	// on here, to show the answer leaves alone a form that is not the one that
+	// sent it.
+	it('keeps ✏️ Edit off while an added destination is being saved, and the answer leaves an edit form opened meanwhile as it is', async () => {
+		const put = held(() => Response.json({ ok: true }));
+		answer = (what) => (what === 'PUT /api/admin/backup' ? put.answered : undefined);
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		await settle();
+
+		buttonNamed(target, '+ Add Destination').click();
+		flushSync();
+		type(target.querySelector<HTMLInputElement>('input[placeholder="Destination name (e.g. Production NAS)"]')!, 'Office');
+		type(target.querySelector<HTMLInputElement>('.dest-add-form input[placeholder="Host"]')!, 'office.example');
+		buttonNamed(target, 'Add Destination').click();
+		await settle();
+
+		const edit = buttonNamed(target.querySelector('.dest-card')!, '✏️ Edit');
+		expect(edit.disabled).toBe(true);
+		expect(buttonNamed(target, '+ Add Destination').disabled).toBe(true);
+		edit.disabled = false;
+		edit.click();
+		flushSync();
+		expect(target.querySelector<HTMLInputElement>('.dest-edit-form input[placeholder="Host"]')!.value).toBe('nas.example');
+
+		put.release();
+		await settle();
+
+		expect(lastPut().destinations.map((destination) => destination.name)).toEqual(['NAS', 'Drive', 'Office']);
+		const form = target.querySelector('.dest-edit-form')!;
+		expect(form.querySelector<HTMLInputElement>('input[placeholder="Destination name"]')!.value).toBe('NAS');
+		expect(form.querySelector<HTMLInputElement>('input[placeholder="Host"]')!.value).toBe('nas.example');
+	});
+
+	it('keeps + Add Destination off while an edited destination is being saved, and the answer leaves an add form opened meanwhile as typed', async () => {
+		const put = held(() => Response.json({ ok: true }));
+		answer = (what) => (what === 'PUT /api/admin/backup' ? put.answered : undefined);
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		await settle();
+
+		buttonNamed(target.querySelector('.dest-card')!, '✏️ Edit').click();
+		flushSync();
+		type(target.querySelector<HTMLInputElement>('.dest-edit-form input[placeholder="Host"]')!, 'nas2.example');
+		buttonNamed(target.querySelector('.dest-edit-form')!, 'Save').click();
+		await settle();
+
+		const add = buttonNamed(target, '+ Add Destination');
+		expect(add.disabled).toBe(true);
+		expect(buttonNamed(target.querySelectorAll('.dest-card')[1], '✏️ Edit').disabled).toBe(true);
+		add.disabled = false;
+		add.click();
+		flushSync();
+		type(target.querySelector<HTMLInputElement>('input[placeholder="Destination name (e.g. Production NAS)"]')!, 'Office');
+
+		put.release();
+		await settle();
+
+		expect(lastPut().destinations[0]).toMatchObject({ name: 'NAS', host: 'nas2.example' });
+		expect(target.querySelector('.dest-edit-form')).toBeNull();
+		expect(target.querySelector<HTMLInputElement>('input[placeholder="Destination name (e.g. Production NAS)"]')!.value).toBe('Office');
+	});
+
+	it('closes the add form when ✏️ Edit opens a destination’s edit form, which shows that destination', async () => {
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		await settle();
+
+		buttonNamed(target, '+ Add Destination').click();
+		flushSync();
+		type(target.querySelector<HTMLInputElement>('input[placeholder="Destination name (e.g. Production NAS)"]')!, 'Office');
+		buttonNamed(target.querySelector('.dest-card')!, '✏️ Edit').click();
+		flushSync();
+
+		expect(target.querySelectorAll('.dest-add-form')).toHaveLength(0);
+		const form = target.querySelectorAll('.dest-edit-form');
+		expect(form).toHaveLength(1);
+		expect(form[0].querySelector<HTMLInputElement>('input[placeholder="Destination name"]')!.value).toBe('NAS');
+		expect(form[0].querySelector<HTMLInputElement>('input[placeholder="Host"]')!.value).toBe('nas.example');
 	});
 
 	it('keeps "Show all" of the history open through the read after Run Now, which draws the history afresh', async () => {
@@ -351,6 +467,53 @@ describe('the teams panel, mounted', () => {
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 		expect(target.querySelector('input[placeholder="Team name"]')).toBeNull();
 	});
+
+	// Card 2309: a team's owner may rename and delete it and manage its members
+	// without being an administrator, and the route takes the role; the panel
+	// always sent "member".
+	it('sends the role chosen beside the member picker, Member until another is chosen', async () => {
+		answer = (what) => (what === 'POST /api/teams/7/members/2' ? Response.json({ success: true, action: 'added' }, { status: 201 }) : undefined);
+		const target = draw(TeamsPanel, { data: pageData, confirm: vi.fn() });
+		const rolePicker = () => target.querySelector<HTMLSelectElement>('select[title="Their role in this team"]');
+		expect(rolePicker()).toBeNull();
+
+		const people = target.querySelector<HTMLSelectElement>('.add-member-row select')!;
+		people.value = '2';
+		people.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+		const role = rolePicker()!;
+		expect([...role.options].map((option) => [option.value, option.textContent])).toEqual([
+			['member', 'Member'],
+			['owner', 'Owner']
+		]);
+		expect(role.value).toBe('member');
+		role.value = 'owner';
+		role.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+		buttonNamed(target, 'Add').click();
+		await settle();
+
+		expect(asked('POST /api/teams/7/members/2').map((request) => request.body)).toEqual([{ userId: 2, role: 'owner' }]);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	it('puts the role back to Member when another person is chosen (the card 2309 review)', () => {
+		const target = draw(TeamsPanel, { data: pageData, confirm: vi.fn() });
+		const people = target.querySelector<HTMLSelectElement>('.add-member-row select')!;
+		const choose = (box: HTMLSelectElement, value: string) => {
+			box.value = value;
+			box.dispatchEvent(new Event('change', { bubbles: true }));
+			flushSync();
+		};
+		const role = () => target.querySelector<HTMLSelectElement>('select[title="Their role in this team"]')!;
+
+		choose(people, '2');
+		choose(role(), 'owner');
+		expect(role().value).toBe('owner');
+		choose(people, '1');
+
+		expect(role().value).toBe('member');
+	});
 });
 
 describe('the mail panel, mounted', () => {
@@ -374,6 +537,86 @@ describe('the mail panel, mounted', () => {
 		// And the page reaches the same read through the panel, for the users panel.
 		await (drawn!.component as unknown as { loadMailStatus: () => Promise<void> }).loadMailStatus();
 		expect(asked('GET /api/admin/smtp')).toHaveLength(3);
+	});
+
+	// Card 2308: the timer that clears a success line is kept, so the panel
+	// going clears it, and so does the next Save or Send Test, whose own line
+	// an earlier timer cleared early.
+	/** The timer each `setTimeout` of `ms` gave, in the order they were set. */
+	const timersOf = (timeouts: { mock: { calls: unknown[][]; results: { value: unknown }[] } }, ms: number) =>
+		timeouts.mock.calls.flatMap((call, i) => (call[1] === ms ? [timeouts.mock.results[i].value] : []));
+	const answered = (what: string) =>
+		what === 'GET /api/admin/smtp' ? Response.json(mail) : what === 'PUT /api/admin/smtp' || what === 'POST /api/admin/smtp' ? Response.json({ message: 'Test email sent!' }) : undefined;
+
+	it.each([
+		['Save SMTP', 5000],
+		['🧪 Send Test', 8000]
+	])('clears the timer of %s’s success line when the panel goes', async (button, ms) => {
+		answer = answered;
+		const timeouts = vi.spyOn(globalThis, 'setTimeout');
+		const cleared = vi.spyOn(globalThis, 'clearTimeout');
+		onTestFinished(() => {
+			timeouts.mockRestore();
+			cleared.mockRestore();
+		});
+		const target = draw(SmtpPanel, { currentUser: chief });
+		await settle();
+
+		buttonNamed(target, button).click();
+		await settle();
+		expect(target.querySelector('.smtp-success')).not.toBeNull();
+		const timers = timersOf(timeouts, ms);
+		expect(timers).toHaveLength(1);
+
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		drawn = null;
+
+		expect(cleared).toHaveBeenCalledWith(timers[0]);
+	});
+
+	it('starts no timer for a Send Test answered after the panel has gone (the card 2308 review)', async () => {
+		const post = held(() => Response.json({ message: 'Test email sent!' }));
+		answer = (what) => (what === 'POST /api/admin/smtp' ? post.answered : answered(what));
+		const timeouts = vi.spyOn(globalThis, 'setTimeout');
+		onTestFinished(() => timeouts.mockRestore());
+		const target = draw(SmtpPanel, { currentUser: chief });
+		await settle();
+
+		buttonNamed(target, '🧪 Send Test').click();
+		await settle();
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		drawn = null;
+		post.release();
+		await settle();
+
+		expect(asked('POST /api/admin/smtp')).toHaveLength(1);
+		expect(timersOf(timeouts, 8000)).toEqual([]);
+	});
+
+	it('clears an earlier success line’s timer when Send Test starts, so it cannot clear the new line early', async () => {
+		answer = answered;
+		const timeouts = vi.spyOn(globalThis, 'setTimeout');
+		const cleared = vi.spyOn(globalThis, 'clearTimeout');
+		onTestFinished(() => {
+			timeouts.mockRestore();
+			cleared.mockRestore();
+		});
+		const target = draw(SmtpPanel, { currentUser: chief });
+		await settle();
+
+		buttonNamed(target, 'Save SMTP').click();
+		await settle();
+		const saved = timersOf(timeouts, 5000);
+		expect(saved).toHaveLength(1);
+		expect(cleared).not.toHaveBeenCalledWith(saved[0]);
+
+		buttonNamed(target, '🧪 Send Test').click();
+		await settle();
+
+		expect(cleared).toHaveBeenCalledWith(saved[0]);
+		expect(timersOf(timeouts, 8000)).toHaveLength(1);
 	});
 });
 

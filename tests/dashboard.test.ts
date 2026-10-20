@@ -56,7 +56,7 @@ const { flushSync, mount, unmount }: typeof Svelte = await import(/* @vite-ignor
 let sent: { what: string; body: unknown }[] = [];
 let drawn: { component: ReturnType<typeof mount>; target: HTMLElement } | null = null;
 /** The requests waiting in the inbox, as `/api/requests` answers them. */
-let requests: { title: string; requesterName: string; priority: string; status: string }[] = [];
+let requests: { id: number; title: string; requesterName: string; priority: string; status: string }[] = [];
 
 /** The viewer's today, as a stored due date: what Active Tasks calls "Today". */
 const now = new Date();
@@ -295,9 +295,9 @@ describe('the dashboard, mounted with its parts', () => {
 	it('shows the request toasts’ inbox count in the header, and a toast and the new count when the poll finds more', async () => {
 		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
 		requests = [
-			{ title: 'First', requesterName: 'Bo', priority: 'low', status: 'pending' },
-			{ title: 'Second', requesterName: 'Cy', priority: 'low', status: 'pending' },
-			{ title: 'Old', requesterName: 'Di', priority: 'low', status: 'done' }
+			{ id: 11, title: 'First', requesterName: 'Bo', priority: 'low', status: 'pending' },
+			{ id: 12, title: 'Second', requesterName: 'Cy', priority: 'low', status: 'pending' },
+			{ id: 10, title: 'Old', requesterName: 'Di', priority: 'low', status: 'done' }
 		];
 		const target = draw();
 		await settle();
@@ -305,12 +305,51 @@ describe('the dashboard, mounted with its parts', () => {
 		expect(badge()).toBe('2');
 		expect(target.querySelector('.toast-container')).toBeNull();
 
-		requests = [{ title: 'Newest', requesterName: 'Ed', priority: 'high', status: 'pending' }, ...requests];
+		requests = [{ id: 13, title: 'Newest', requesterName: 'Ed', priority: 'high', status: 'pending' }, ...requests];
 		vi.advanceTimersByTime(30_000);
 		await settle();
 
 		expect(badge()).toBe('3');
 		expect(target.querySelector('.toast-container .toast-title')!.textContent).toBe('Newest');
+	});
+
+	// Card 2336: the poll compared counts, so a request handled and a new one
+	// arriving between two reads raised no toast. Each pending request is now
+	// known by its id.
+	it('raises a toast for a new request when another was handled since the last read, the count unchanged', async () => {
+		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+		requests = [
+			{ id: 11, title: 'First', requesterName: 'Bo', priority: 'low', status: 'pending' },
+			{ id: 12, title: 'Second', requesterName: 'Cy', priority: 'low', status: 'pending' }
+		];
+		const target = draw();
+		await settle();
+		const badge = () => target.querySelector('.header-nav .inbox-count-badge')?.textContent;
+		const toastTitles = () => [...target.querySelectorAll('.toast-container .toast-title')].map((title) => title.textContent);
+		expect(badge()).toBe('2');
+
+		// First handled, Newest arrived: still two waiting.
+		requests = [
+			{ id: 13, title: 'Newest', requesterName: 'Ed', priority: 'high', status: 'pending' },
+			{ id: 12, title: 'Second', requesterName: 'Cy', priority: 'low', status: 'pending' },
+			{ id: 11, title: 'First', requesterName: 'Bo', priority: 'low', status: 'done' }
+		];
+		vi.advanceTimersByTime(30_000);
+		await settle();
+		expect(badge()).toBe('2');
+		expect(toastTitles()).toEqual(['Newest']);
+
+		// A request made earlier and listed after the others, waiting now (its requester confirmed it): toasted by its id, not by its place.
+		requests = [...requests, { id: 9, title: 'Confirmed', requesterName: 'Fi', priority: 'low', status: 'pending' }];
+		vi.advanceTimersByTime(30_000);
+		await settle();
+		expect(badge()).toBe('3');
+		expect(toastTitles()).toEqual(['Newest', 'Confirmed']);
+
+		// Read again with nothing new: no toast.
+		vi.advanceTimersByTime(30_000);
+		await settle();
+		expect(toastTitles()).toEqual(['Newest', 'Confirmed']);
 	});
 
 	// Card 2312: the request toasts' poll and timers end with the page, and a failed first read still starts the poll.
@@ -335,7 +374,7 @@ describe('the dashboard, mounted with its parts', () => {
 
 	it('starts the poll when the inbox’s first read fails, and raises no toast for a request already waiting', async () => {
 		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-		requests = [{ title: 'Waiting', requesterName: 'Bo', priority: 'low', status: 'pending' }];
+		requests = [{ id: 11, title: 'Waiting', requesterName: 'Bo', priority: 'low', status: 'pending' }];
 		let failed = false;
 		answer = (what) => {
 			if (what !== 'GET /api/requests' || failed) return undefined;
@@ -364,7 +403,7 @@ describe('the dashboard, mounted with its parts', () => {
 		});
 		const target = draw();
 		await settle();
-		requests = [{ title: 'Newest', requesterName: 'Ed', priority: 'high', status: 'pending' }];
+		requests = [{ id: 13, title: 'Newest', requesterName: 'Ed', priority: 'high', status: 'pending' }];
 		vi.advanceTimersByTime(30_000);
 		await settle();
 		expect(target.querySelector('.toast-container .toast-title')!.textContent).toBe('Newest');
@@ -379,7 +418,7 @@ describe('the dashboard, mounted with its parts', () => {
 		vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
 		let reads = 0;
 		let readBody!: () => void;
-		const newest = { title: 'Newest', requesterName: 'Ed', priority: 'high', status: 'pending' };
+		const newest = { id: 13, title: 'Newest', requesterName: 'Ed', priority: 'high', status: 'pending' };
 		answer = (what) => {
 			if (what !== 'GET /api/requests') return undefined;
 			reads += 1;

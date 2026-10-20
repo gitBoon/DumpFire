@@ -4365,6 +4365,17 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 		expect(editForm.slice(notYet, end)).toContain(OAUTH_HINT);
 	});
 
+	it('names the destination’s Connect button in the forms as the row labels it (card 2306)', () => {
+		// The row's button, word for word, and the one button there is to name.
+		const label = '🔗 Connect';
+		expect(row).toContain(`>${label}</button>`);
+		const connected = editForm.indexOf('{#if destGdriveRefreshToken}');
+		const notYet = editForm.slice(editForm.indexOf('{:else}', connected), editForm.indexOf('{/if}', connected));
+		expect(notYet).toContain(`Save first, then use "${label}" on the destination.`);
+		expect(addForm).toContain(`click <strong>"${label}"</strong> to authorize your Google account`);
+		expect(markup).not.toContain('Connect Google Account');
+	});
+
 	it('says in the inline edit form when a saved secret is kept, and not in the add form (decision 3)', () => {
 		expect(editForm).toContain(KEPT_ONLY);
 		expect(addForm).not.toContain(KEPT_ONLY);

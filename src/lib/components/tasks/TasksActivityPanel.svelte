@@ -15,12 +15,15 @@
 	import { browser } from '$app/environment';
 	import { parseUTC } from '$lib/utils/date-utils';
 	import { activityLabel } from '$lib/utils/activity-labels';
+	import { failureMessage } from '$lib/api';
 
 	/** The page's: whether the Activity Log is open, remembered in this browser. */
 	let { activityOpen = $bindable() }: { activityOpen: boolean } = $props();
 
 	let activityItems = $state<any[]>([]);
 	let activityLoading = $state(false);
+	/** Why the latest read failed, shown in the panel until a read is answered (card 2317); '' when it did not. */
+	let activityError = $state('');
 	let knownActivityIds = new Set<number>();
 	let newActivityIds = $state(new Set<number>());
 
@@ -30,37 +33,58 @@
 		if (activityOpen && activityItems.length === 0) fetchActivity(true);
 	}
 
+	/**
+	 * Read the list. A refusal is said in the server's words, no answer as no
+	 * answer, and an answer that is not the list (a proxy's page) as one that
+	 * could not be read, in the panel in place of "No activity yet"; a list
+	 * read before stays under it (card 2317: each was dropped without a word).
+	 */
 	export async function fetchActivity(initial = false) {
 		activityLoading = true;
 		try {
-			const res = await fetch('/api/activity');
-			if (res.ok) {
-				const items = await res.json();
-				if (initial) {
-					// First load — seed known IDs, nothing is "new"
-					knownActivityIds = new Set(items.map((i: any) => i.id));
-					newActivityIds = new Set();
-				} else {
-					// Subsequent loads — detect new items
-					const freshIds = new Set<number>();
-					for (const item of items) {
-						if (!knownActivityIds.has(item.id)) {
-							freshIds.add(item.id);
-							knownActivityIds.add(item.id);
-						}
-					}
-					if (freshIds.size > 0) {
-						newActivityIds = new Set([...newActivityIds, ...freshIds]);
-						// Clear the pulse after 30 seconds
-						setTimeout(() => {
-							newActivityIds = new Set([...newActivityIds].filter(id => !freshIds.has(id)));
-						}, 30000);
+			let res: Response;
+			try {
+				res = await fetch('/api/activity');
+			} catch {
+				activityError = 'No answer from the server. The activity could not be loaded.';				return;
+			}
+			if (!res.ok) {
+				activityError = await failureMessage(res, 'The activity could not be loaded.');
+				return;
+			}
+			let items: any[];
+			try {
+				items = await res.json();
+			} catch {
+				activityError = "The server's answer could not be read. The activity could not be loaded.";
+				return;
+			}
+			activityError = '';
+			if (initial) {
+				// First load — seed known IDs, nothing is "new"
+				knownActivityIds = new Set(items.map((i: any) => i.id));
+				newActivityIds = new Set();
+			} else {
+				// Subsequent loads — detect new items
+				const freshIds = new Set<number>();
+				for (const item of items) {
+					if (!knownActivityIds.has(item.id)) {
+						freshIds.add(item.id);
+						knownActivityIds.add(item.id);
 					}
 				}
-				activityItems = items;
+				if (freshIds.size > 0) {
+					newActivityIds = new Set([...newActivityIds, ...freshIds]);
+					// Clear the pulse after 30 seconds
+					setTimeout(() => {
+						newActivityIds = new Set([...newActivityIds].filter(id => !freshIds.has(id)));
+					}, 30000);
+				}
 			}
-		} catch { /* ignore */ }
-		activityLoading = false;
+			activityItems = items;
+		} finally {
+			activityLoading = false;
+		}
 	}
 
 	function formatActivityTime(dateStr: string) {
@@ -104,9 +128,13 @@
 	<div class="activity-list">
 		{#if activityLoading}
 			<div class="activity-loading">Loading activity...</div>
-		{:else if activityItems.length === 0}
-			<div class="activity-empty">No activity yet</div>
 		{:else}
+			{#if activityError}
+				<div class="activity-error" role="alert">{activityError}</div>
+			{/if}
+			{#if activityItems.length === 0 && !activityError}
+				<div class="activity-empty">No activity yet</div>
+			{/if}
 			{#each activityItems as item}
 				<div class="activity-item" class:activity-new={newActivityIds.has(item.id)}>
 					<div class="activity-avatar">{item.userEmoji || '👤'}</div>
@@ -137,13 +165,6 @@
 
 <style>
 	/* Activity Panel */
-	.activity-toggle-btn {
-		position: relative;
-	}
-	.activity-toggle-btn.active {
-		color: var(--accent-indigo);
-		background: var(--glass-hover);
-	}
 	.activity-panel-header h3 svg {
 		opacity: 0.6;
 	}

@@ -10,6 +10,7 @@
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
+	import { onDestroy } from 'svelte';
 	import { answerBody, failureMessage } from '$lib/api';
 	import { NO_ANSWER } from '$lib/admin/send';
 
@@ -27,13 +28,41 @@
 	let smtpPass = $state('');
 	let smtpFromAddress = $state('');
 	let smtpFromName = $state('DumpFire');
-	// appUrl is now in Application Settings section above
 	let smtpLoading = $state(true);
 	let smtpSaving = $state(false);
 	let smtpTesting = $state(false);
 	let smtpTestTo = $state('');
 	let smtpMessage = $state('');
 	let smtpIsError = $state(false);
+
+	/**
+	 * The timer that clears a success line (card 2308): kept, so that the next
+	 * Save or Send Test clears it before its own line is shown, and the panel
+	 * going clears it. An earlier one cleared a later line early.
+	 */
+	let messageTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Set as the panel goes: an answer that comes after that starts no timer (the card 2308 review). */
+	let destroyed = false;
+
+	function stopMessageTimer() {
+		if (messageTimer !== null) clearTimeout(messageTimer);
+		messageTimer = null;
+	}
+
+	/** A success line cleared after `ms`; a failure stays until the next save or test, as a failure toast does. */
+	function clearMessageLater(ms: number) {
+		stopMessageTimer();
+		if (destroyed) return;
+		messageTimer = setTimeout(() => {
+			messageTimer = null;
+			if (!smtpIsError) smtpMessage = '';
+		}, ms);
+	}
+
+	onDestroy(() => {
+		destroyed = true;
+		stopMessageTimer();
+	});
 
 	$effect(() => {
 		// The superadmin's too, and not asked for by anybody else: this panel is
@@ -88,8 +117,7 @@
 					smtpUser = data.user || '';
 					smtpPass = data.pass || '';
 					smtpFromAddress = data.fromAddress || '';
-				smtpFromName = data.fromName || 'DumpFire';
-				// appUrl loaded separately in loadAppUrl()
+					smtpFromName = data.fromName || 'DumpFire';
 				}
 			}
 		} catch {}
@@ -98,6 +126,7 @@
 
 	async function saveSmtp() {
 		smtpSaving = true;
+		stopMessageTimer();
 		smtpMessage = '';
 		try {
 			const res = await fetch('/api/admin/smtp', {
@@ -125,12 +154,12 @@
 		}
 		smtpSaving = false;
 		await loadMailStatus();
-		// A failure stays until the next save or test, as a failure toast does.
-		if (!smtpIsError) setTimeout(() => { if (!smtpIsError) smtpMessage = ''; }, 5000);
+		if (!smtpIsError) clearMessageLater(5000);
 	}
 
 	async function testSmtp() {
 		smtpTesting = true;
+		stopMessageTimer();
 		smtpMessage = '';
 		const recipient = smtpTestTo.trim() || currentUser?.email;
 		try {
@@ -153,7 +182,7 @@
 		}
 		smtpTesting = false;
 		await loadMailStatus();
-		if (!smtpIsError) setTimeout(() => { if (!smtpIsError) smtpMessage = ''; }, 8000);
+		if (!smtpIsError) clearMessageLater(8000);
 	}
 </script>
 

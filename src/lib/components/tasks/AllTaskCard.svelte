@@ -284,12 +284,6 @@
 		white-space: nowrap;
 	}
 
-	.column-tag {
-		font-size: 0.6rem;
-		color: var(--text-tertiary);
-		font-style: italic;
-	}
-
 	.card-meta {
 		display: flex;
 		align-items: center;
