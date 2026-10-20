@@ -353,6 +353,7 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. One oper
 - **`GET /cards/:cardId/comments` answers `userEmoji` `"👤"` for an author with no emoji** (card 2302), as `POST /cards/:cardId/comments` and `GET` and `PUT /comments/:commentId` already did, where it was `null` against the `Comment` schema, whose `userEmoji` is a required string. Only an account restored from an old backup, or changed directly in the database, has no emoji; no stored data changes (item 83).
 - **`PUT /comments/:commentId` with the comment's own text writes nothing** (card 2284), as an update to a card that changes nothing writes nothing (card 2183). Text that is the comment's own once both are trimmed keeps its `updatedAt`, logs no `api:comment_edited` and sends no live update, and is answered `200` with the comment as it is stored, with its author. It wrote the comment again with a new `updatedAt`, which the web application shows as "(edited)", and recorded an edit nobody made. A caller who may not edit the comment is still refused `403` first, whatever text it sends (item 84). The web application's `PUT /api/cards/{id}/comments/{commentId}` does the same, and its card window sends nothing for a save with the text unchanged.
 - **`DELETE /comments/:commentId` is new** (card 2283), where the route answered `405`. Who may delete a comment is who may in the web application: its author while they can still edit the board it is on, or an administrator; a board's owner may not delete a comment somebody else wrote. No body; `200` `{ "success": true }`; `400` `Invalid comment ID`, `404` `Comment not found`, `403` `No edit access to this board` and `403` `You can only delete your own comments`, the web application's words. It logs `api:comment_deleted`, `Deleted a comment on "<card>"`, or `Deleted a comment by <author> on "<card>"` when the caller is not the author, never the comment's text, and sends a live update. A delete made in the web application, `DELETE /api/cards/{id}/comments/{commentId}`, now logs `comment_deleted` in the same words and sends the same update; neither was recorded, so `GET /audit-log` and `GET /reports/activity` had no trace of a delete, an administrator's included. **No webhook is sent for a delete**: there is no `comment.deleted` event, so re-reading `GET /cards/:cardId/comments` is the only way to learn that a comment has gone (item 85). See [Comments](#comments).
+- **`DELETE /cards/:cardId` on a card already archived writes nothing** (card 2285). It is still answered `200` `{ "success": true }`, so a retried archive does not fail, but `archivedAt` keeps its first value, `updatedAt` is not moved, no second `api:card_archived` is logged and no live update is sent. Both stamps were set again to the time of the second request, which lost the time the card was archived, and a second "Archived card" was recorded. An archive made in the web application, `DELETE /api/cards/{id}`, is the same. A restore of a card that is not archived already answered so (item 86). See [Delete a Card](#delete-a-card).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but reach the keys every caller uses:
 
@@ -561,7 +562,7 @@ never followed by a rollback.
 
 | Request | Removes | Leaves |
 |---|---|---|
-| `DELETE /api/v1/cards/:cardId` | Nothing: the card is **archived**. `archivedAt` is set and a `card_archived` entry is written | Everything. Its subtasks, comments, attachments, dependency links and sub-boards are untouched, and restoring the card brings it back whole |
+| `DELETE /api/v1/cards/:cardId` | Nothing: the card is **archived**. `archivedAt` is set and a `card_archived` entry is written. A card already archived is left as it is, with no entry | Everything. Its subtasks, comments, attachments, dependency links and sub-boards are untouched, and restoring the card brings it back whole |
 | `DELETE /api/v1/cards/:cardId?permanent=true` | The card, its subtasks, comments, assignees and attachments; every sub-board under it, at every depth, with everything on it; every dependency link with a deleted card or subtask at either end | Cards that were waiting on a deleted card. They are no longer waiting on it |
 | `DELETE /api/v1/columns/:columnId` | The column and **every card in it**, archived or not. Each card goes as a permanent delete does | The board and its other columns |
 | `DELETE /api/v1/boards/:boardId` | The board with its columns, cards, labels, milestones, webhooks and card categories (since 2026-10-14: the categories were kept, as categories of no board); every sub-board under it, with its categories; the report schedules that name it | Cards on other boards that were in one of its milestones, now in no milestone, and any that carried one of its categories, now in none |
@@ -580,7 +581,7 @@ What each delete records:
 
 | Delete | Activity and audit log | Webhook |
 |---|---|---|
-| Archive | `card_archived`, with the card's id | None |
+| Archive | `card_archived`, with the card's id, only when the card was not already archived (since 2026-10-14) | None |
 | Restore (`PUT /cards/:cardId` with `archivedAt: null`) | `card_restored`, with the card's id and title, only when the card was archived (since 2026-10-14) | None |
 | Card, permanent | `card_deleted`, with a null `cardId`: the card is gone | One `card.deleted`, carrying the id of the card asked for. Cards on sub-boards under it go with it and get no `card.deleted` of their own |
 | Column | One `column_deleted` on its board, naming the column and how many cards went with it | None, for the column or for any card in it |
@@ -953,7 +954,8 @@ By default, this **archives** the card (soft-delete). Add `?permanent=true` to p
 
 **Archive.** `archivedAt` is set and a `card_archived` activity entry is written. Nothing
 else is touched: no subtask, comment, attachment, dependency link or sub-board. No webhook
-is sent.
+is sent. A card already archived is answered `200` as it is, with nothing written and no
+live update: `archivedAt` keeps its first value and no second entry is logged (card 2285).
 
 **Permanent delete.** The card goes with its subtasks, comments, assignees and attachments,
 with every sub-board under it and everything on those, and with every dependency link that

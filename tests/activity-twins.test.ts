@@ -2807,6 +2807,33 @@ describe('nothing changed, nothing recorded', () => {
 			sent.restore();
 		}
 	});
+
+	// Card 2285: archiving a card already archived stamped it again with now,
+	// so the first archive time was lost, moved its `updatedAt`, recorded a
+	// second "Archived card" and told the board. The restore already answers a
+	// card that is not archived as it is, with nothing written; this is its
+	// other half. Still 200, so a retried `DELETE` does not fail. The board has
+	// a webhook that takes every event, so none is sent either.
+	it.each([
+		['the internal route', '/api/cards'],
+		['the v1 route', '/api/v1/cards']
+	])('archiving a card already archived, through %s, answers 200 and writes and tells nothing', async (_tree, base) => {
+		const s = archivedScene();
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const res = await api('DELETE', `${base}/${s.first.id}`, { user: s.owner });
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({ success: true });
+			// `archivedAt` and `updatedAt` as they were, and no entry.
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
 });
 
 describe('the details', () => {

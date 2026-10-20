@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.72
+version: 1.73
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1066,6 +1066,14 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   is no `comment.deleted` event, so re-reading `GET /cards/:cardId/comments` is the only way
   to learn that a comment has gone (item 85). See
   [`DELETE /api/v1/comments/:commentId`](#delete-apiv1commentscommentid).
+- **`DELETE /cards/:cardId` on a card already archived writes nothing** (card 2285). It is
+  still answered `200` `{ "success": true }`, so a retried archive does not fail, but
+  `archivedAt` keeps its first value, `updatedAt` is not moved, no second
+  `api:card_archived` is logged and no live update is sent. Both stamps were set again to
+  the time of the second request, which lost the time the card was archived, and a second
+  "Archived card" was recorded. An archive made in the web application,
+  `DELETE /api/cards/{id}`, is the same. A restore of a card that is not archived already
+  answered so (item 86). See [`DELETE /api/v1/cards/:cardId`](#delete-apiv1cardscardid).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2052,7 +2060,7 @@ flowchart TD
 
 | Request | Removes | Leaves |
 |---------|---------|--------|
-| `DELETE /api/v1/cards/:cardId` | Nothing. The card is archived: `archivedAt` is set and one `card_archived` entry is written | Everything: subtasks, comments, attachments, dependency links, sub-boards. Restoring the card brings it back whole |
+| `DELETE /api/v1/cards/:cardId` | Nothing. The card is archived: `archivedAt` is set and one `card_archived` entry is written. A card already archived is left as it is, with no entry | Everything: subtasks, comments, attachments, dependency links, sub-boards. Restoring the card brings it back whole |
 | `DELETE /api/v1/cards/:cardId?permanent=true` | The card, its subtasks, comments, assignees and attachments; every sub-board under it, at every depth, with everything on it; every dependency link that has a deleted card or subtask at either end | Cards that were waiting on a deleted card, which are no longer waiting on it |
 | `DELETE /api/v1/columns/:columnId` | The column and **every card in it**, archived or not, each as a permanent card delete | The board and its other columns |
 | `DELETE /api/v1/boards/:boardId` | The board, its columns, cards, labels, milestones, webhooks and card categories (since 2026-10-14: the categories were kept, as categories of no board); every sub-board under it, with its categories; the report schedules that name it | Cards on other boards that were in one of its milestones, which are then in no milestone, and any that carried one of its categories, which then has none |
@@ -2068,7 +2076,7 @@ What a delete records:
 
 | Delete | Activity and audit log (`action`) | Webhook |
 |--------|-----------------------------------|---------|
-| Archive | `card_archived` | None |
+| Archive | `card_archived`, only when the card was not already archived (since 2026-10-14) | None |
 | Restore (`PUT /api/v1/cards/:cardId` with `archivedAt: null`) | `card_restored`, with the card's title, only when the card was archived (since 2026-10-14) | None |
 | Card, permanent | `card_deleted`, with `cardId` null because the card is gone | `card.deleted`, once, for the card asked for. Cards on sub-boards under it go with it and get no `card.deleted` of their own |
 | Column | `column_deleted`, once for the column. Its detail names the column and how many cards went with it | None, for the column or for any of its cards |
@@ -2569,7 +2577,9 @@ Archive a card. Add `?permanent=true` to hard-delete. Both answer `200` with
 
 - **Archive** (the default) sets `archivedAt` and writes a `card_archived` activity entry.
   Nothing else is touched: the card keeps its subtasks, comments, attachments, dependency
-  links and sub-boards, and has them all when it is restored. No webhook is sent.
+  links and sub-boards, and has them all when it is restored. No webhook is sent. A card
+  already archived is answered `200` as it is, with nothing written and no live update:
+  `archivedAt` keeps its first value and no second entry is logged (card 2285).
 - **`?permanent=true`** deletes the card, its subtasks, comments and attachments, every
   sub-board under it with everything on it, and every dependency link that has a deleted
   card or subtask at either end. It writes one `card_deleted` activity entry and sends one

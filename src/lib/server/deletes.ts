@@ -22,6 +22,7 @@
  *
  * Archiving is not deleting. `archiveCard` stamps the card and writes the
  * entry, and touches nothing else, so that restoring it brings it back whole.
+ * A card already archived it leaves as it is, writing nothing (card 2285).
  *
  * A user is deleted here too (`deleteUser`). The keys take what was theirs,
  * except for five columns that name a user with no `ON DELETE` action, which
@@ -321,15 +322,26 @@ export function trashAfterCommit(files: readonly UploadFile[]): void {
  * Archive a card: `archived_at`, and the entry that says so. Nothing else is
  * touched, no dependency link, file or sub-board, so a restore finds it all.
  * Returns null if there is no such card.
+ *
+ * A card already archived is handed back as it is, with `archived: false`
+ * and nothing written: no new stamp, so the first archive time is kept, and
+ * no second entry (card 2285). It is read in this transaction, so two
+ * archives racing cannot both write. The restore has the same rule for a
+ * card that is not archived (`card-restore.ts`).
  */
 export function archiveCard(
 	cardId: number,
 	actor: DeleteActor,
 	source: ActivitySource
-): { title: string; boardId: number } | null {
+): { title: string; boardId: number; archived: boolean } | null {
 	return inTransaction(() => {
 		const card = cardAndBoard(cardId);
 		if (!card) return null;
+
+		const { archivedAt } = sqlite.prepare('SELECT archived_at AS archivedAt FROM cards WHERE id = ?').get(cardId) as {
+			archivedAt: string | null;
+		};
+		if (archivedAt !== null) return { ...card, archived: false };
 
 		const now = stamp();
 		sqlite.prepare('UPDATE cards SET archived_at = ?, updated_at = ? WHERE id = ?').run(now, now, cardId);
@@ -341,7 +353,7 @@ export function archiveCard(
 			source,
 			...actorFields(actor)
 		});
-		return card;
+		return { ...card, archived: true };
 	});
 }
 
