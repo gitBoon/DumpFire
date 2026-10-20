@@ -16,6 +16,9 @@
 	 *     and every write: shown at once, put back on a refusal or no answer
 	 *     with the server's words said, slice B2b)
 	 *   - board-patches.ts (each write's change to the columns, and its undo)
+	 *   - card-window.svelte.ts (the card window: the card it is open on, as
+	 *     the board has it now, its save of only the fields changed since it
+	 *     opened, and its archive; slice B2c)
 	 */
 	import type { PageData } from './$types';
 	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
@@ -50,7 +53,8 @@
 	import { getLevel, getXpProgress, loadXp as fetchXpData } from '$lib/board/xp-utils';
 	import { connectSSE } from '$lib/board/sse';
 	import { BoardState, type WriteWords } from '$lib/board/board-state.svelte';
-	import { copyColumns, insertColumn, moveCards, patchCard, removeCard, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
+	import { CARD_GONE, CardWindow, type CardWindowSave } from '$lib/board/card-window.svelte';
+	import { copyColumns, insertColumn, moveCards, patchCard, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
 	import { BULK_HOLD_MS, type Release } from '$lib/board/refresh-schedule';
 	import type { BoardContentsData } from '$lib/board/contents-answer';
 	import { openingView, readBoardView, resolveListColumn, viewFromUrl, withViewParams, writeBoardView, type BoardViewChoice } from '$lib/board/board-view';
@@ -309,9 +313,13 @@
 
 	// ─── Card Modal ──────────────────────────────────────────────────────────
 
-	let showCardModal = $state(false);
-	let editingCard = $state<CardType | null>(null);
-	let cardModalColumnId = $state<number | null>(null);
+	/**
+	 * The card window (card 2280, slice B2c): the card it is open on, found in
+	 * the board state by its id and following it as each read arrives, and its
+	 * save and archive. A save sends only the fields changed since the window
+	 * opened, so a change someone else made meanwhile is not sent back.
+	 */
+	const cardWindow = new CardWindow(boardState, data.board.id);
 
 	// The card an address names is opened on the first load and after every
 	// navigation that keeps this page: SvelteKit keeps it for every address of
@@ -321,10 +329,7 @@
 	// or, on this board, leaves a saved card's window with an address that
 	// names no card, as Back does (Q-F's review).
 	afterNavigate(({ from, to }) => {
-		if (cardActions.navigationClosesWindow(from, to, editingCard !== null)) {
-			showCardModal = false;
-			editingCard = null;
-		}
+		if (cardActions.navigationClosesWindow(from, to, cardWindow.cardId !== null)) cardWindow.close();
 		openCardFromAddress(to?.url);
 	});
 
@@ -351,8 +356,7 @@
 		if (!url || !named) return;
 		const cardId = Number(named);
 		const card = boardState.columns.flatMap((c) => c.cards).find((c) => c.id === cardId);
-		showCardModal = false;
-		editingCard = null;
+		cardWindow.close();
 		await nextTick();
 		const shown = new URL(url);
 		shown.searchParams.delete('card');
@@ -360,99 +364,48 @@
 		if (card) openCardModal(card);
 	}
 
+	// The board's own copy of the card, found by its id: one kept from a drag
+	// or the blocked window is stale once a write is answered or taken back.
 	function openCardModal(card: CardType) {
-		editingCard = card;
-		cardModalColumnId = card.columnId;
-		showCardModal = true;
+		cardWindow.openCard(card);
 	}
 
 	function openNewCardModal(columnId: number) {
-		editingCard = null;
-		cardModalColumnId = columnId;
-		showCardModal = true;
+		cardWindow.openNew(columnId);
 	}
 
-	async function saveCard(cardData: { title: string; description: string; priority: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[]; pendingLabelIds?: number[] }) {
+	/**
+	 * Saves the card window through its controller (slice B2c), which holds
+	 * the board's reads while it is out. A saved card sends only the fields
+	 * changed since the window opened, shown on the board at once and taken
+	 * back alone if refused; a new card is made with its subtasks, labels,
+	 * assignees and sub-boards, and the board read once. A refusal, or no
+	 * answer, keeps the window open with what was typed, and the reason is
+	 * said; what was done, and each part of a new card that was not, is said
+	 * in the order the controller gives it.
+	 */
+	async function saveCard(cardData: CardWindowSave) {
 		const started = toasts.navigation();
-		const release = boardState.hold();
-		try {
-			const result = await cardActions.saveCard(editingCard, cardModalColumnId, data.board.id, boardState.columns, cardData);
-			if (result.failure) {
-				// No card was made, or the update was not saved (slice B2b): the
-				// window stays open with what was typed, and the reason is said. It
-				// used to say "Created", and an update closed it as if saved.
-				toasts.add(result.failure, 'error', started);
-				return;
-			}
-			showCardModal = false;
-			if (result.isNew && cardData.title) {
-				toasts.add(`Created "${cardData.title}"`);
-
-				// A label of its template that was not put on it (card 2163): the card is kept.
-				// A label deleted while the window was open is no longer among the
-				// board's, and is not named by its number, which says nothing.
-				for (const { labelId, message } of result.labelFailures ?? []) {
-					const label = boardState.labels.find((label) => label.id === labelId);
-					const named = label ? `The template's label "${label.name}"` : 'A label of the template that no longer exists';
-					toasts.add(`${named} was not put on "${cardData.title}". ${message}`, 'error', started);
-				}
-
-				// A pending subtask that was not made, named (slice B2b): the card is kept.
-				for (const { title, message } of result.subtaskFailures ?? []) {
-					toasts.add(`Subtask "${title}" was not added to "${cardData.title}". ${message}`, 'error', started);
-				}
-
-				// Assign pending users to the newly created card, each answer read
-				// (slice B2b): someone not assigned is named, and the card is kept.
-				if (result.cardId && cardData.pendingAssigneeIds?.length) {
-					for (const { userId, message } of await cardActions.assignPending(result.cardId, cardData.pendingAssigneeIds)) {
-						const member = boardState.boardUsers.find((user) => user.id === userId);
-						const named = member ? `"${member.username}"` : 'Someone no longer on this board';
-						toasts.add(`${named} was not assigned to "${cardData.title}". ${message}`, 'error', started);
-					}
-				}
-
-				// Create pending sub-boards for the newly created card. One refused is
-				// said in the server's words, and the card is kept: on a board nested
-				// as deep as sub-boards may be, every one is refused (card 2172).
-				if (result.cardId && cardData.pendingSubBoards?.length) {
-					for (const sbName of cardData.pendingSubBoards) {
-						let res: Response;
-						try {
-							res = await fetch('/api/boards', {
-								method: 'POST',
-								headers: { 'Content-Type': 'application/json' },
-								body: JSON.stringify({ name: sbName, parentCardId: result.cardId })
-							});
-						} catch {
-							toasts.add(`No answer from the server. Sub-board "${sbName}" may not have been made.`, 'error', started);
-							continue;
-						}
-						if (res.ok) {
-							toasts.add(`Sub-board "${sbName}" created`);
-						} else {
-							toasts.add(`Sub-board "${sbName}" was not made. ${await api.failureMessage(res, 'The server refused it.')}`, 'error', started);
-						}
-					}
-				}
-			} else if (!result.isNew && editingCard) {
-				toasts.add('Card updated');
-			}
-			editingCard = null;
-			// Read once: a new card with its subtasks, labels, assignees and
-			// sub-boards is the reader's to draw. The card window's controller
-			// (slice B2c) takes the answer instead.
-			boardState.refresh();
-		} finally {
-			release();
+		const written = await cardWindow.save(cardData);
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return;
+		}
+		for (const { message, failed } of written.told) {
+			if (failed) toasts.add(message, 'error', started);
+			else toasts.add(message);
 		}
 	}
 
 	/**
-	 * Archive a card. The request is a DELETE with no `permanent`, which stamps
-	 * the card as archived and touches nothing else. Restore, in the Archived
-	 * Cards panel, brings it back whole. Deleting it for good is done from that
-	 * panel (`permanentlyDeleteCard`).
+	 * Archive a card, from its window or the card menu. The request is a
+	 * DELETE with no `permanent`, which stamps the card as archived and
+	 * touches nothing else. Restore, in the Archived Cards panel, brings it
+	 * back whole. Deleting it for good is done from that panel
+	 * (`permanentlyDeleteCard`). Sent only once the confirm is pressed, by the
+	 * card window's controller (slice B2c), which holds the board's reads
+	 * while it is out, and takes the card off the board as answered, with no
+	 * read, and closes its window only once the server has archived it.
 	 */
 	function confirmDeleteCard(cardId: number) {
 		const card = boardState.columns.flatMap(c => c.cards).find(c => c.id === cardId);
@@ -462,23 +415,14 @@
 			'Archive Card',
 			async () => {
 				const started = toasts.navigation();
-				const release = boardState.hold();
-				try {
-					const failure = await api.deleteFailure(() => cardActions.deleteCard(cardId, data.board.id), 'card', 'archived');
-					confirmState.show = false;
-					if (failure) {
-						// The card is still on the board, so it stays open.
-						toasts.add(failure, 'error', started);
-						return;
-					}
-					toasts.add('Card archived. Restore it from Archived Cards.', 'info');
-					showCardModal = false;
-					editingCard = null;
-					// Taken off the board as answered, with no read (slice B2b).
-					boardState.columns = removeCard(boardState.columns, cardId).columns;
-				} finally {
-					release();
+				const failure = await cardWindow.archive(cardId);
+				confirmState.show = false;
+				if (failure) {
+					// The card is still on the board, so its window stays open.
+					toasts.add(failure, 'error', started);
+					return;
 				}
+				toasts.add('Card archived. Restore it from Archived Cards.', 'info');
 			}
 		);
 	}
@@ -806,10 +750,9 @@
 				toasts.add(await api.failureMessage(res, 'The board was not linked.'), 'error', started);
 				return;
 			}
+			// The card's window shows its sub-boards from the card as this read
+			// draws it: the controller finds the card by its id (slice B2c).
 			await boardState.refreshNow();
-			// The card's window shows its sub-boards from the card as it was read.
-			const open = boardState.columns.flatMap(c => c.cards).find(c => c.id === cardId);
-			if (open && editingCard?.id === cardId) editingCard = open;
 			toasts.add('Board linked as sub-board');
 		});
 	}
@@ -833,15 +776,9 @@
 					toasts.add(failure, 'error', started);
 					return;
 				}
-				// Read at once, once the delete's own hold is let go, as for a link.
+				// Read at once, once the delete's own hold is let go, as for a link;
+				// the card's window shows the card as this read draws it.
 				await boardState.refreshNow();
-				if (editingCard) {
-					const cardId = editingCard.id;
-					for (const col of boardState.columns) {
-						const found = col.cards.find(c => c.id === cardId);
-						if (found) { editingCard = found; break; }
-					}
-				}
 				toasts.add('Sub-board deleted');
 			}
 		);
@@ -2176,19 +2113,20 @@
 <Toast />
 
 <!-- Card Modal -->
-{#if showCardModal}
+{#if cardWindow.open}
 	<CardModal
-		card={editingCard}
+		card={cardWindow.card}
 		categories={boardState.categories}
 		labels={boardState.labels}
 		boardId={data.board.id}
 		boardUsers={boardState.boardUsers.map(u => ({ ...u, emoji: u.emoji || '👤' }))}
 		onSave={saveCard}
-		onDelete={editingCard ? () => confirmDeleteCard(editingCard!.id) : undefined}
-		onClose={() => { showCardModal = false; editingCard = null; }}
-		onCreateSubBoard={editingCard ? (name) => createSubBoard(editingCard!, name) : undefined}
-		onDeleteSubBoard={editingCard ? (boardId) => deleteSubBoard(boardId) : undefined}
-		onLinkSubBoard={editingCard ? (boardId) => linkSubBoard(editingCard!.id, boardId) : undefined}
+		onDelete={cardWindow.card ? () => confirmDeleteCard(cardWindow.cardId!) : undefined}
+		onClose={() => cardWindow.close()}
+		onCreateSubBoard={cardWindow.card ? (name) => createSubBoard(cardWindow.card!, name) : undefined}
+		onDeleteSubBoard={cardWindow.card ? (boardId) => deleteSubBoard(boardId) : undefined}
+		onLinkSubBoard={cardWindow.card ? (boardId) => linkSubBoard(cardWindow.cardId!, boardId) : undefined}
+		notice={cardWindow.gone ? CARD_GONE : ''}
 		availableBoards={boardState.linkableBoards.map(b => ({ id: b.id, name: b.name, emoji: b.emoji || '📋' }))}
 		milestones={boardState.milestones}
 	/>

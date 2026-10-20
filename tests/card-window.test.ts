@@ -29,6 +29,14 @@
  *
  * The plan is `docs/planning/cards-2143-2146-2147-2148-2163-2164-2167-pages.md`
  * (decisions 8 and 14, section 6).
+ *
+ * The board page's card window is opened, kept in step with the board, saved
+ * and archived by one controller, `src/lib/board/card-window.svelte.ts`
+ * (card 2280, slice B2c of card 2012's part B; decision 10). Its save sends
+ * only the fields changed since the window opened, so a change someone else
+ * made meanwhile is not sent back (found nearby B3 there, the lost update
+ * card 2183 noted). Its cases are at the end, run against a real board state
+ * whose reads are answered by the contents route.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -39,6 +47,9 @@ import { db } from '$lib/server/db';
 import { activityLog, cardLabels, cards, labels, type Card } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import * as cardActions from '$lib/board/card-actions';
+import { BoardState } from '$lib/board/board-state.svelte';
+import { CARD_GONE, CardWindow, changedFields, windowFields, WINDOW_FIELDS } from '$lib/board/card-window.svelte';
+import type { BoardContentsData } from '$lib/board/contents-answer';
 import { templateLabelIds } from '$lib/templates';
 import type { CardType, ColumnType } from '$lib/types';
 import { api } from './helpers/api';
@@ -339,5 +350,445 @@ describe('which navigations close the board page’s card window, navigationClos
 
 	it('says close on a first load, which comes from nowhere: no window is open yet, so none is lost', () => {
 		expect(closes(null, at('3', '?card=12'), false)).toBe(true);
+	});
+});
+
+/**
+ * The card window's variables as the window fills them when it opens on
+ * `card`: each of CardModal's `let x = $state(...)` initialisers, read from
+ * its source and run with `card` given. The window fills its fields from its
+ * card once, as it is made, and never again.
+ */
+function windowOpenedOn(card: Record<string, unknown> | null): typeof NEW_TASK {
+	const source = readFileSync(join(process.cwd(), MODAL), 'utf8');
+	const script = ts.createSourceFile(MODAL, /<script lang="ts">([\s\S]*?)<\/script>/.exec(source)![1], ts.ScriptTarget.Latest, true);
+	const state: Record<string, unknown> = { ...NEW_TASK, card };
+	const filled: string[] = [];
+	for (const statement of script.statements) {
+		if (!ts.isVariableStatement(statement)) continue;
+		for (const declared of statement.declarationList.declarations) {
+			const name = declared.name.getText();
+			const initial = declared.initializer;
+			if (name === 'card' || !(name in NEW_TASK) || !initial || !ts.isCallExpression(initial) || initial.expression.getText() !== '$state') continue;
+			const built = ts.transpile(`(${initial.arguments[0].getText()})`, { target: ts.ScriptTarget.ES2022 });
+			state[name] = new Function('card', `return ${built}`)(card);
+			filled.push(name);
+		}
+	}
+	// Each field a save sends is one the window fills from its card.
+	expect(filled).toEqual(expect.arrayContaining([...WINDOW_FIELDS]));
+	return state as typeof NEW_TASK;
+}
+
+describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2280, slice B2c)', () => {
+	const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+	/** A board state's reads, answered by the contents route for `user`, as the board page's are. */
+	const readsAs = (user: SessionUser) => async (input: RequestInfo | URL) => {
+		const res = await api('GET', String(input), { user });
+		return json(res.status, res.body);
+	};
+
+	let made: BoardState[] = [];
+	afterEach(() => {
+		for (const state of made) state.dispose();
+		made = [];
+	});
+
+	/** The board page's board state and card window, made from the board's contents as the route gives them. */
+	async function boardPage(fixture: BoardFixture, user = owner) {
+		const read = readsAs(user);
+		const first = (await (await read(`/api/boards/${fixture.board.id}/contents`)).json()) as BoardContentsData;
+		const boardState = new BoardState(first, { invalidate: async () => {}, fetch: read });
+		made.push(boardState);
+		return { boardState, cardWindow: new CardWindow(boardState, fixture.board.id) };
+	}
+
+	/** A board state made from `contents` alone, whose reads are counted and never answered. */
+	function standIn(contents: Partial<BoardContentsData>) {
+		const reads: string[] = [];
+		const boardState = new BoardState(
+			{
+				board: { id: 9, name: 'Board', emoji: null, parentCardId: null },
+				breadcrumbs: [],
+				columns: [],
+				categories: [],
+				labels: [],
+				linkableBoards: [],
+				canEdit: true,
+				canManage: true,
+				userBoardRole: 'owner',
+				boardUsers: [],
+				blockedState: {},
+				cardTokens: {},
+				boardTokenSummary: null,
+				milestones: [],
+				...contents
+			} as BoardContentsData,
+			{
+				invalidate: async () => {},
+				fetch: (input) => {
+					reads.push(String(input));
+					return new Promise<Response>(() => {});
+				}
+			}
+		);
+		made.push(boardState);
+		return { boardState, reads, cardWindow: new CardWindow(boardState, 9) };
+	}
+
+	const shown = (boardState: BoardState, id: number) => boardState.columns.flatMap((c) => c.cards).find((c) => c.id === id);
+	const asCard = (card: CardType | null) => card as unknown as Record<string, unknown>;
+
+	/** `fetch` as the page calls it, each request kept and answered when the test says: a `Response`, or 'none' for no answer. */
+	function heldAnswers() {
+		const asked: { what: string; body: Record<string, unknown>; answer: (res: Response | 'none') => void }[] = [];
+		vi.stubGlobal(
+			'fetch',
+			(url: string, init: RequestInit) =>
+				new Promise<Response>((resolve, reject) =>
+					asked.push({
+						what: `${init.method} ${url}`,
+						body: JSON.parse(String(init.body)),
+						answer: (res) => (res === 'none' ? reject(new TypeError('Failed to fetch')) : resolve(res))
+					})
+				)
+		);
+		return asked;
+	}
+
+	it('sends only the fields changed since the window opened: a description someone else changed meanwhile is not sent back (the lost update)', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Plan', description: 'Old notes', priority: 'low' });
+		const { boardState, cardWindow } = await boardPage(A);
+		cardWindow.openCard(shown(boardState, card.id)!);
+		const typing = windowOpenedOn(asCard(cardWindow.card));
+
+		// Someone else changes the description while the window is open, and the
+		// board reads it: the window's card follows the board.
+		expect((await api('PUT', `/api/cards/${card.id}`, { user: owner, body: { description: 'Their notes' } })).status).toBe(200);
+		await boardState.refreshNow();
+		expect(cardWindow.card?.description).toBe('Their notes');
+
+		// The user changes the title alone.
+		const sent = replay();
+		const saved = await cardWindow.save(windowSaves({ ...typing, card: asCard(cardWindow.card), title: 'Plan, renamed' }));
+
+		expect(saved).toEqual({ ok: true, told: [{ message: 'Card updated', failed: false }] });
+		expect(sent).toEqual([{ method: 'PUT', url: `/api/cards/${card.id}`, body: { title: 'Plan, renamed', boardId: A.board.id } }]);
+		expect([cardRow(card.id).title, cardRow(card.id).description, cardRow(card.id).priority]).toEqual(['Plan, renamed', 'Their notes', 'low']);
+		expect(shown(boardState, card.id)).toMatchObject({ title: 'Plan, renamed', description: 'Their notes' });
+		expect(cardWindow.open).toBe(false);
+	});
+
+	it('keeps what the user typed when the board is read meanwhile: the window’s card follows the board, and the field typed is the one sent', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Plan', priority: 'low' });
+		const { boardState, cardWindow } = await boardPage(A);
+		cardWindow.openCard(shown(boardState, card.id)!);
+		const typing = { ...windowOpenedOn(asCard(cardWindow.card)), title: 'Mine' };
+
+		// Someone else renames the card and raises its priority as the user types.
+		expect((await api('PUT', `/api/cards/${card.id}`, { user: owner, body: { title: 'Theirs', priority: 'high' } })).status).toBe(200);
+		await boardState.refreshNow();
+		expect(cardWindow.card).toMatchObject({ title: 'Theirs', priority: 'high' });
+
+		const sent = replay();
+		await cardWindow.save(windowSaves({ ...typing, card: asCard(cardWindow.card) }));
+		// The title typed is sent, the priority not touched is not: a field both changed is the last save's.
+		expect(sent.map((request) => request.body)).toEqual([{ title: 'Mine', boardId: A.board.id }]);
+		expect([cardRow(card.id).title, cardRow(card.id).priority]).toEqual(['Mine', 'high']);
+	});
+
+	it('is a window whose typed fields no read can overwrite: each is filled from its card once, and no $effect of the window sets one', () => {
+		const source = readFileSync(join(process.cwd(), MODAL), 'utf8');
+		const script = ts.createSourceFile(MODAL, /<script lang="ts">([\s\S]*?)<\/script>/.exec(source)![1], ts.ScriptTarget.Latest, true);
+		const assigned: string[] = [];
+		const visit = (node: ts.Node, inEffect: boolean) => {
+			const effect = inEffect || (ts.isCallExpression(node) && /^\$effect(\.pre)?$/.test(node.expression.getText()));
+			if (effect && ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) assigned.push(node.left.getText());
+			ts.forEachChild(node, (child) => visit(child, effect));
+		};
+		visit(script, false);
+		expect(assigned.filter((name) => (WINDOW_FIELDS as readonly string[]).includes(name))).toEqual([]);
+		// Its subtasks are filled, and its cost read, for the card, keyed by the
+		// card's id alone, and not again for every read of the board: a read sent
+		// before a tick was answered would untick it.
+		const flat = source.replace(/\s+/g, ' ');
+		expect(flat).toContain('const windowCardId = $derived(card?.id);');
+		expect(flat).toContain('$effect(() => { if (!windowCardId) return; untrack(() => { if (card) cardSubtasks = (card.subtasks || []).map((s) => ({ ...s })); }); });');
+		expect(flat).toContain('const id = windowCardId;');
+		expect(assigned.filter((name) => name === 'cardSubtasks')).toHaveLength(1);
+
+		// The subtasks are copies, filled from the card in both places: a tick in
+		// the window changes its own list, not the board state's card (the B2c review).
+		expect(flat).toContain('let cardSubtasks = $state<SubtaskType[]>((card?.subtasks || []).map((s) => ({ ...s })));');
+		const declared = script.statements
+			.filter(ts.isVariableStatement)
+			.flatMap((statement) => [...statement.declarationList.declarations])
+			.find((declaration) => declaration.name.getText() === 'cardSubtasks')!;
+		const fill = new Function('card', `return ${ts.transpile(`(${(declared.initializer as ts.CallExpression).arguments[0].getText()})`, { target: ts.ScriptTarget.ES2022 })}`);
+		const onBoard = { subtasks: [{ id: 1, title: 'One', completed: false }] };
+		const filled = fill(onBoard);
+		expect(filled).toEqual(onBoard.subtasks);
+		filled[0].completed = true;
+		expect(onBoard.subtasks[0].completed).toBe(false);
+	});
+
+	it('shows the On Hold box from the window’s own note: a note someone else wrote meanwhile neither shows a blank box nor takes the box away mid-edit (the B2c review)', () => {
+		const source = readFileSync(join(process.cwd(), MODAL), 'utf8');
+		const before = source.slice(0, source.indexOf('<div class="on-hold-note-display">'));
+		const opened = before.lastIndexOf('{#if ');
+		const condition = before.slice(opened + '{#if '.length, before.indexOf('}', opened));
+		const shows = (card: { onHoldNote: string }, onHoldNote: string, editingOnHold: boolean) =>
+			Boolean(new Function('card', 'onHoldNote', 'editingOnHold', `return (${condition});`)(card, onHoldNote, editingOnHold));
+
+		// Opened with no note; someone else moves the card into On Hold with one, and the board reads it.
+		expect(shows({ onHoldNote: 'Theirs' }, '', false)).toBe(false);
+		// Opened on a note the user is editing; someone else drags the card out, which clears it.
+		expect(shows({ onHoldNote: '' }, 'Waiting on the supplier, typed', true)).toBe(true);
+		// Emptied while being edited: kept, to be typed in.
+		expect(shows({ onHoldNote: '' }, '', true)).toBe(true);
+		expect(shows({ onHoldNote: 'Waiting' }, 'Waiting', false)).toBe(true);
+		expect(shows({ onHoldNote: '' }, '', false)).toBe(false);
+	});
+
+	it('takes back only its own fields when the save is refused, keeps the window open, and gives the server’s words', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Plan', description: 'Old notes', priority: 'low' });
+		const { boardState, cardWindow } = await boardPage(A);
+		cardWindow.openCard(shown(boardState, card.id)!);
+		const typing = windowOpenedOn(asCard(cardWindow.card));
+		expect((await api('PUT', `/api/cards/${card.id}`, { user: owner, body: { description: 'Their notes' } })).status).toBe(200);
+		await boardState.refreshNow();
+
+		const asked = heldAnswers();
+		const saving = cardWindow.save(windowSaves({ ...typing, card: asCard(cardWindow.card), title: 'Plan, renamed', priority: 'high' }));
+		// Shown on the board at once, and the board's reads held while it is out.
+		expect(shown(boardState, card.id)).toMatchObject({ title: 'Plan, renamed', priority: 'high', description: 'Their notes' });
+		expect(boardState.holds).toBe(1);
+		expect(asked.map((a) => [a.what, a.body])).toEqual([[`PUT /api/cards/${card.id}`, { title: 'Plan, renamed', priority: 'high', boardId: A.board.id }]]);
+		asked[0].answer(json(403, { message: 'Viewers cannot change cards' }));
+
+		expect(await saving).toEqual({ ok: false, failure: 'Viewers cannot change cards' });
+		// Its two fields back; the description someone else changed is not put back to what the window opened on.
+		expect(shown(boardState, card.id)).toMatchObject({ title: 'Plan', priority: 'low', description: 'Their notes' });
+		expect(cardWindow.open).toBe(true);
+		expect(cardWindow.cardId).toBe(card.id);
+		expect(boardState.holds).toBe(0);
+
+		// Sent again with no answer: the same, in the no-answer words.
+		const again = cardWindow.save(windowSaves({ ...typing, card: asCard(cardWindow.card), title: 'Plan, renamed' }));
+		asked[1].answer('none');
+		expect(await again).toEqual({ ok: false, failure: 'No answer from the server. The card may not have been saved.' });
+		expect(shown(boardState, card.id)?.title).toBe('Plan');
+		expect(cardWindow.open).toBe(true);
+	});
+
+	it('sends nothing for a window saved as it opened, every field filled or none, and closes it', async () => {
+		const full = makeCard(A.cols['To Do'], {
+			title: 'Full',
+			description: 'Notes',
+			priority: 'high',
+			dueDate: '2026-11-02',
+			onHoldNote: 'Waiting on the supplier',
+			businessValue: 'Saves an hour a day',
+			summary: 'Faster invoices',
+			theme: 'maintenance',
+			customerImpact: 'internal',
+			closeReason: 'delivered',
+			releaseState: 'live'
+		});
+		const bare = makeCard(A.cols['To Do'], { title: 'Bare' });
+		const { boardState, cardWindow } = await boardPage(A);
+		const sent = replay();
+		for (const card of [full, bare]) {
+			cardWindow.openCard(shown(boardState, card.id)!);
+			const untouched = windowOpenedOn(asCard(cardWindow.card));
+			expect(changedFields(windowFields(cardWindow.card!), windowSaves(untouched)), card.title).toEqual({});
+			expect(await cardWindow.save(windowSaves(untouched))).toEqual({ ok: true, told: [] });
+			expect(cardWindow.open).toBe(false);
+		}
+		expect(sent).toEqual([]);
+	});
+
+	it('sends a field emptied in the window as the window sends it, so it is cleared', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Held', onHoldNote: 'Waiting', summary: 'Short', dueDate: '2026-11-02' });
+		const { boardState, cardWindow } = await boardPage(A);
+		cardWindow.openCard(shown(boardState, card.id)!);
+		const sent = replay();
+		await cardWindow.save(windowSaves({ ...windowOpenedOn(asCard(cardWindow.card)), onHoldNote: '', summary: '', dueDate: '' }));
+		expect(sent.map((request) => request.body)).toEqual([{ onHoldNote: '', summary: null, dueDate: null, boardId: A.board.id }]);
+		expect([cardRow(card.id).onHoldNote, cardRow(card.id).summary, cardRow(card.id).dueDate]).toEqual(['', null, null]);
+	});
+
+	it('names each subtask, assignee, label and sub-board of a new card that was refused, keeps the card, and reads the board once', async () => {
+		const { boardState, cardWindow } = standIn({
+			columns: [{ id: 3, boardId: 9, title: 'To Do', position: 0, color: '#888888', showAddCard: true, wipLimit: 0, cards: [] }] as unknown as ColumnType[],
+			labels: [{ id: 4, boardId: 9, name: 'Bug', color: '#ff0000' }] as BoardContentsData['labels'],
+			boardUsers: [
+				{ id: 1, username: 'owner', emoji: '👤' },
+				{ id: 2, username: 'editor', emoji: '🦊' }
+			] as BoardContentsData['boardUsers']
+		});
+		const sent: string[] = [];
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			const body = JSON.parse(String(init.body));
+			sent.push(`${init.method} ${url}`);
+			if (url === '/api/cards') return json(201, { id: 50 });
+			if (url === '/api/subtasks') return body.title === 'Two' ? json(400, { message: 'A subtask title is at most 500 characters' }) : json(201, { id: 1 });
+			if (url === '/api/labels') return json(400, { message: 'That label belongs to a different board' });
+			if (url === '/api/cards/50/assignees') return body.userId === 1 ? json(201, {}) : json(403, { message: 'That user cannot open this board' });
+			if (url === '/api/boards' && body.name === 'Lost') throw new TypeError('Failed to fetch');
+			if (url === '/api/boards') return body.name === 'Deep' ? json(409, { message: 'Sub-boards can be nested at most 20 levels deep.' }) : json(201, { id: 70 });
+			return json(500, {});
+		});
+		const refresh = vi.spyOn(boardState, 'refresh');
+		cardWindow.openNew(3);
+		expect([cardWindow.open, cardWindow.cardId, cardWindow.columnId, cardWindow.card]).toEqual([true, null, 3, null]);
+
+		const saved = await cardWindow.save({
+			...windowSaves({ ...NEW_TASK, title: 'New' }),
+			pendingSubtasks: ['One', 'Two'].map((title) => JSON.stringify({ title })),
+			// 4 is the board's; 8 was deleted while the window was open.
+			pendingLabelIds: [4, 8],
+			// 1 and 2 are the board's; 99 is no longer on it.
+			pendingAssigneeIds: [1, 2, 99],
+			pendingSubBoards: ['Plans', 'Deep', 'Lost']
+		});
+
+		expect(saved).toEqual({
+			ok: true,
+			told: [
+				{ message: 'Created "New"', failed: false },
+				{ message: 'The template\'s label "Bug" was not put on "New". That label belongs to a different board', failed: true },
+				{ message: 'A label of the template that no longer exists was not put on "New". That label belongs to a different board', failed: true },
+				{ message: 'Subtask "Two" was not added to "New". A subtask title is at most 500 characters', failed: true },
+				{ message: '"editor" was not assigned to "New". That user cannot open this board', failed: true },
+				{ message: 'Someone no longer on this board was not assigned to "New". That user cannot open this board', failed: true },
+				{ message: 'Sub-board "Plans" created', failed: false },
+				{ message: 'Sub-board "Deep" was not made. Sub-boards can be nested at most 20 levels deep.', failed: true },
+				{ message: 'No answer from the server. Sub-board "Lost" may not have been made.', failed: true }
+			]
+		});
+		expect(sent).toEqual([
+			'POST /api/cards',
+			'POST /api/subtasks',
+			'POST /api/subtasks',
+			'PUT /api/labels',
+			'PUT /api/labels',
+			'POST /api/cards/50/assignees',
+			'POST /api/cards/50/assignees',
+			'POST /api/cards/50/assignees',
+			'POST /api/boards',
+			'POST /api/boards',
+			'POST /api/boards'
+		]);
+		// Closed, and the board read once for the new card, which is the reader's to draw.
+		expect(cardWindow.open).toBe(false);
+		expect(refresh).toHaveBeenCalledTimes(1);
+		expect(boardState.holds).toBe(0);
+	});
+
+	it('keeps the New Task window open with what was typed when no card is made, and sends nothing more', async () => {
+		const { boardState, cardWindow } = standIn({ columns: [{ id: 3, boardId: 9, title: 'To Do', position: 0, cards: [] }] as unknown as ColumnType[] });
+		const asked = heldAnswers();
+		cardWindow.openNew(3);
+		const saving = cardWindow.save({ ...windowSaves({ ...NEW_TASK, title: 'New' }), pendingAssigneeIds: [1], pendingSubBoards: ['Plans'] });
+		// The board's reads are held while the card is made.
+		expect(boardState.holds).toBe(1);
+		asked[0].answer(json(403, { message: 'Viewers cannot add cards' }));
+		expect(await saving).toEqual({ ok: false, failure: 'Viewers cannot add cards' });
+		expect(asked.map((a) => a.what)).toEqual(['POST /api/cards']);
+		expect([cardWindow.open, cardWindow.columnId]).toEqual([true, 3]);
+		expect(boardState.holds).toBe(0);
+	});
+
+	it('archives a card, held while it is out, and takes it off the board and closes its window only once the server has; a refusal keeps both', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Plan' });
+		const { boardState, cardWindow } = await boardPage(A);
+		cardWindow.openCard(shown(boardState, card.id)!);
+
+		const asked = heldAnswers();
+		const refusing = cardWindow.archive(card.id);
+		expect(boardState.holds).toBe(1);
+		asked[0].answer(json(403, { message: 'Viewers cannot archive cards' }));
+		expect(await refusing).toBe('Viewers cannot archive cards');
+		expect([cardWindow.open, shown(boardState, card.id)?.id]).toEqual([true, card.id]);
+
+		const archiving = cardWindow.archive(card.id);
+		expect(asked.map((a) => a.what)).toEqual([`DELETE /api/cards/${card.id}`, `DELETE /api/cards/${card.id}`]);
+		asked[1].answer(json(200, { success: true }));
+		expect(await archiving).toBeNull();
+		expect([cardWindow.open, shown(boardState, card.id)]).toEqual([false, undefined]);
+		expect(boardState.holds).toBe(0);
+	});
+
+	it('opens on the board’s own copy of a card by its id, keeps it if the board loses it, and forgets it on close', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Plan' });
+		const { boardState, cardWindow } = await boardPage(A);
+		// A copy kept from earlier (a drag's, the blocked window's) is not what the window shows.
+		const stale = { ...shown(boardState, card.id)!, title: 'As the drag found it' };
+		cardWindow.openCard(stale);
+		expect(cardWindow.card?.title).toBe('Plan');
+		expect([cardWindow.open, cardWindow.cardId, cardWindow.columnId]).toEqual([true, card.id, A.cols['To Do'].id]);
+
+		// Archived by someone else: the window keeps the card it opened on.
+		expect((await api('DELETE', `/api/cards/${card.id}`, { user: owner })).status).toBe(200);
+		await boardState.refreshNow();
+		expect(shown(boardState, card.id)).toBeUndefined();
+		expect(cardWindow.card?.title).toBe('Plan');
+
+		cardWindow.close();
+		expect([cardWindow.open, cardWindow.cardId, cardWindow.columnId, cardWindow.card]).toEqual([false, null, null, null]);
+	});
+
+	// The B2c review: the window showed the card as it opened once the board
+	// lost it, and a save sent a PUT for a card no longer there.
+	it('keeps the last copy of a card the board loses, says it is gone, and refuses a save with no request; a sub-board linked meanwhile stays shown', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Plan' });
+		const sub = makeBoard({ owner, name: 'Sub' });
+		const { boardState, cardWindow } = await boardPage(A);
+		cardWindow.openCard(shown(boardState, card.id)!);
+		const typing = windowOpenedOn(asCard(cardWindow.card));
+		expect(cardWindow.gone).toBe(false);
+
+		// A board linked under the card, and the board read: the window shows it.
+		expect((await api('PUT', `/api/boards/${sub.board.id}`, { user: owner, body: { parentCardId: card.id } })).status).toBe(200);
+		await boardState.refreshNow();
+		expect(cardWindow.card?.subBoards.map((board) => board.id)).toEqual([sub.board.id]);
+
+		// Someone else archives the card, and the read takes it off the board.
+		expect((await api('DELETE', `/api/cards/${card.id}`, { user: owner })).status).toBe(200);
+		await boardState.refreshNow();
+		expect(shown(boardState, card.id)).toBeUndefined();
+		expect(cardWindow.gone).toBe(true);
+		expect(cardWindow.card?.subBoards.map((board) => board.id)).toEqual([sub.board.id]);
+
+		const sent = replay();
+		expect(await cardWindow.save(windowSaves({ ...typing, card: asCard(cardWindow.card), title: 'Plan, renamed' }))).toEqual({ ok: false, failure: CARD_GONE });
+		expect(sent).toEqual([]);
+		expect([cardWindow.open, cardWindow.cardId]).toEqual([true, card.id]);
+		expect(CARD_GONE).toBe('This card is no longer on this board.');
+	});
+
+	// The B2c review: the fields a save is compared with were taken as the
+	// window was opened, and a read drawn before the window was made filled it
+	// with newer ones; a later save then sent them over a third change.
+	it('compares a save with the fields the window was filled with, though a read lands between opening it and making it', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Plan', description: 'Old notes' });
+		const { boardState, cardWindow } = await boardPage(A);
+		cardWindow.openCard(shown(boardState, card.id)!);
+		// A read drawn before the window is made.
+		expect((await api('PUT', `/api/cards/${card.id}`, { user: owner, body: { description: 'Their notes' } })).status).toBe(200);
+		await boardState.refreshNow();
+		// The window is made, and fills its fields from the card it is handed.
+		const typing = windowOpenedOn(asCard(cardWindow.card));
+		expect(typing.description).toBe('Their notes');
+
+		// A third change, read; the user changes the title alone.
+		expect((await api('PUT', `/api/cards/${card.id}`, { user: owner, body: { description: 'Third notes' } })).status).toBe(200);
+		await boardState.refreshNow();
+		const sent = replay();
+		await cardWindow.save(windowSaves({ ...typing, card: asCard(cardWindow.card), title: 'Plan, renamed' }));
+		expect(sent.map((request) => request.body)).toEqual([{ title: 'Plan, renamed', boardId: A.board.id }]);
+		expect(cardRow(card.id).description).toBe('Third notes');
 	});
 });
