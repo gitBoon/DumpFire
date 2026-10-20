@@ -3368,7 +3368,8 @@ describe('the review fixes to card 2117’s slices 2 to 5 (version 1.7)', () => 
 	it('offers the shared categories in All Tasks’ card window, as R3 says', () => {
 		const page = readFileSync(join(ROOT, 'src/routes/all/+page.svelte'), 'utf8');
 
-		expect(page).toContain('categories={data.categories.filter((c: any) => c.boardId === editingBoardId || c.boardId === null) as any}');
+		// The open card's board, the card window controller's since card 2281's slice C3a-1.
+		expect(page).toContain('categories={data.categories.filter((c: any) => c.boardId === cardWindow.boardId || c.boardId === null) as any}');
 	});
 
 	it('answers a save of the mail settings with nothing it knows 400, as the backup settings answer one', async () => {

@@ -2,8 +2,9 @@
  * card-window.svelte.ts — the card window's controller: which card the window
  * is open on, that card as the board has it now, and the window's save and
  * archive (card 2280, slice B2c of card 2012's part B; its decision 10). The
- * board page uses it; All Tasks, All To Do and the plan page are to move onto
- * it in card 2281's slice C3a, and keep their own handlers until then.
+ * board page uses it on its board state; All Tasks, All To Do and the plan
+ * page use it over their own lists, through `./page-card-window.svelte.ts`
+ * (card 2281, slice C3a-1).
  *
  *   - **Open.** The window is opened on a card by its id, and shows the
  *     board's own copy of it (`card`), not the copy it was opened from: a

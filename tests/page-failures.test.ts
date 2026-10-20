@@ -84,7 +84,7 @@ import * as bulkActions from '$lib/board/bulk-actions';
 import * as cardActions from '$lib/board/card-actions';
 import * as dndHandlers from '$lib/board/dnd-handlers';
 import { BoardState } from '$lib/board/board-state.svelte';
-import { CardWindow } from '$lib/board/card-window.svelte';
+import { CardWindow, changedFields, WINDOW_FIELDS, windowFields } from '$lib/board/card-window.svelte';
 import { copyColumns, moveCards, patchCard, removeCard, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
 import * as apiModule from '$lib/api';
 import * as boardActions from '$lib/board/board-actions';
@@ -2422,15 +2422,20 @@ const WRITES: Record<string, Write[]> = {
 	'src/routes/all/+page.svelte': [
 		// The review's O3: a move to another board that took the card out of its milestone says so.
 		{ name: 'doMoveCard', reads: 'failureMessage', done: ['showMoveModal = false', 'playMoveSound()', 'playCompleteSound()', "toasts.add(leftGoal, 'info')"] },
-		{ name: 'saveCard', reads: 'failureMessage', done: ["toasts.add('Card updated')", 'showCardModal = false'] },
-		{ name: 'deleteCard', reads: 'deleteFailure', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'showCardModal = false'] },
+		// The card window's save and archive, sent, read and put back by its
+		// controller (card 2281, slice C3a-1; `tests/page-card-window.test.ts`),
+		// which gives back what to say.
+		{ name: 'saveFromWindow', via: 'cardWindow.save', done: ['toasts.add(message)', 'await invalidateAll()'] },
+		{ name: 'archiveFromWindow', via: 'cardWindow.archive', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'await invalidateAll()'] },
 		{ name: 'restoreArchivedCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)', "toasts.add('Card restored')"] },
 		{ name: 'permanentlyDeleteArchivedCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)'] }
 	],
-	// Card 2240: All To Do opens the card window as All Tasks does, with no Move window.
+	// Card 2240: All To Do opens the card window as All Tasks does, with no
+	// Move window; through the same controller since card 2281's slice C3a-1,
+	// so it sends no write of its own (NO_WRITE_OF_ITS_OWN).
 	'src/routes/todo/+page.svelte': [
-		{ name: 'saveCard', reads: 'failureMessage', done: ["toasts.add('Card updated')", 'showCardModal = false'] },
-		{ name: 'deleteCard', reads: 'deleteFailure', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'showCardModal = false'] }
+		{ name: 'saveFromWindow', via: 'cardWindow.save', done: ['toasts.add(message)', 'await invalidateAll()'] },
+		{ name: 'archiveFromWindow', via: 'cardWindow.archive', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'await invalidateAll()'] }
 	],
 	'src/routes/teams/+page.svelte': [
 		{ name: 'createTeam', reads: 'failureMessage', done: ['showCreateTeam = false', "showToast('Team created')"] },
@@ -2619,6 +2624,9 @@ const TESTED_ABOVE: Record<string, string[]> = {
 	'src/lib/components/card/CardAttachments.svelte': ['uploadFile']
 };
 
+/** Files above whose every write goes through a module, so that none sends one itself. */
+const NO_WRITE_OF_ITS_OWN = ['src/routes/todo/+page.svelte'];
+
 describe('every write of the seven pages of card 2109, of the label picker, and of the four screens of card 2148, says when it was refused', () => {
 	const writes = apiWrites();
 
@@ -2639,7 +2647,8 @@ describe('every write of the seven pages of card 2109, of the label picker, and 
 				.map((fn) => fn.name!.text);
 			const named = [...WRITES[file].map((write) => write.name), ...(TESTED_ABOVE[file] ?? [])];
 
-			expect(sending.length).toBeGreaterThan(0);
+			if (NO_WRITE_OF_ITS_OWN.includes(file)) expect(sending).toEqual([]);
+			else expect(sending.length).toBeGreaterThan(0);
 			expect(sending.filter((name) => !named.includes(name))).toEqual([]);
 		}
 	);
@@ -3126,29 +3135,106 @@ describe('a page whose session has ended, for the seven pages of card 2109', () 
 	});
 });
 
-// All To Do (card 2240) carries its own copy of All Tasks' card window
-// handlers, held to the same rules here until card 2012 merges them.
-describe.each(['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])('archiving a card from %s', (file) => {
+// Card 2281, slice C3a-1 (the plan's section 6.3, case 2). All To Do (card
+// 2240) carried its own copy of All Tasks' card window handlers, held alike
+// here, and the plan page saved through card-actions and said "Card updated"
+// whatever came back. All three now open, save and archive the window
+// through the board page's controller, over their own lists
+// (`src/lib/board/page-card-window.svelte.ts`, whose cases are in
+// `tests/page-card-window.test.ts`; the pages are mounted in
+// `tests/card-window-pages.test.ts`). The plan page's window has no Archive,
+// as before.
+const WINDOW_PAGES = [
+	{ file: 'src/routes/all/+page.svelte', save: 'saveFromWindow', archive: 'archiveFromWindow', list: 'buckets', derived: 'let buckets = $derived(data.buckets);' },
+	{ file: 'src/routes/todo/+page.svelte', save: 'saveFromWindow', archive: 'archiveFromWindow', list: 'cards', derived: 'let cards = $derived(data.cards);' },
+	{ file: 'src/routes/plan/[id]/+page.svelte', save: 'saveCardFromPlan', archive: null, list: 'modalCard', derived: null }
+];
+
+describe.each(WINDOW_PAGES)('the card window on $file goes through the controller (card 2281, slice C3a-1)', ({ file, save, archive, list, derived }) => {
 	const page = scriptOf(file);
 	const board = scriptOf('src/routes/board/[id]/+page.svelte');
+	const source = readFileSync(join(ROOT, file), 'utf8');
+	const markup = source.slice(source.indexOf('</script>'));
+	const opened = markup.slice(markup.indexOf('<CardModal'));
+	const modal = opened.slice(0, opened.indexOf('/>')).replace(/\s+/g, ' ');
 
-	it('asks first, in the board page’s words, and sends the archive only once it is confirmed', () => {
-		const archiving = functionNamed(page, 'deleteCard');
-		const asked = callsOf(archiving, 'showConfirm');
-		expect(asked).toHaveLength(1);
-		expect(asked[0].arguments[1].getText()).toBe('cardArchiveWarning(editingCard.title)');
+	it('makes one controller, over the page’s own list, and keeps no card, board or open flag of the window’s own', () => {
+		const made = page.statements.filter((statement) => /new PageCardWindow\(/.test(statement.getText()));
+		expect(made).toHaveLength(1);
+		expect(made[0].getText()).toMatch(new RegExp(`^const cardWindow = new PageCardWindow\\(\\s*\\{ get: \\(\\) => .*\\b${list}\\b.*, set: \\(next\\) => \\(${list} = `, 's'));
+		expect(made[0].getText()).toContain('() => invalidateAll()');
+		// The list is the load's, written to by a save, and replaced by each re-read (the C3a-1 review).
+		if (derived) expect(page.statements.map((statement) => statement.getText())).toContain(derived);
+		expect(source).not.toMatch(/\b(editingCard|showCardModal|editingBoardId)\b/);
+		expect(callsOf(functionNamed(page, 'openCard'), 'cardWindow.openCard')).toHaveLength(1);
 
-		const confirmed = asked[0].arguments[3];
-		expect(ts.isArrowFunction(confirmed)).toBe(true);
-		const requests = callsOf(archiving, 'fetch');
-		expect(requests).toHaveLength(1);
-		expect(requests[0].arguments[1].getText()).toContain("method: 'DELETE'");
-		expect(isWithin(requests[0], confirmed)).toBe(true);
+		expect(modal).toContain('card={cardWindow.card}');
+		expect(modal).toContain(`onSave={${save}}`);
+		expect(markup.match(/<CardModal\b/g)).toHaveLength(1);
 	});
 
-	it('says the same as the board page before and after, from one text', () => {
+	it('defines no saveCard or deleteCard of its own, and sends no save or archive itself', () => {
+		// Not by any name in the file, script or markup (`saveCardFromPlan` is the plan page's handler).
+		expect(source).not.toMatch(/\b(saveCard|deleteCard)\b/);
+		expect(page.getText()).not.toMatch(/cardActions\.|from '\$lib\/board\/card-actions'/);
+		const writes = apiWrites();
+		for (const name of [save, archive].filter((name): name is string => !!name)) {
+			const fn = functionNamed(page, name);
+			for (const callee of ['fetch', 'deleteFailure', 'failureMessage']) expect(callsOf(fn, callee), `${name} ${callee}`).toEqual([]);
+			// No call in it sends a write: neither a `fetch` that writes nor a write of `$lib/api.ts`.
+			const sending: string[] = [];
+			const visit = (node: ts.Node) => {
+				if (ts.isCallExpression(node)) {
+					const write = writeOf(node, writes);
+					if (write) sending.push(write);
+				}
+				ts.forEachChild(node, visit);
+			};
+			visit(fn);
+			expect(sending, name).toEqual([]);
+		}
+		expect(callsOf(functionNamed(page, save), 'cardWindow.save')).toHaveLength(1);
+	});
+
+	it('says a refusal in the controller’s words, with the window left open; nothing for a save with nothing changed; what was done once saved, and reads the page again', async () => {
+		const run = async (result: unknown) => {
+			const said: unknown[][] = [];
+			const reread = vi.fn(async () => {});
+			const close = vi.fn();
+			const names = file.includes('/plan/') ? [save, 'closeCard'] : [save];
+			const fn = new Function(
+				'cardWindow',
+				'toasts',
+				'invalidateAll',
+				`let modalCard = {}, modalContext = {};\n${runnable(page, names)}\nreturn ${save};`
+			)({ save: async () => result, close }, { navigation: () => 'started', add: (...args: unknown[]) => said.push(args) }, reread);
+			await fn({ title: 'Plan' });
+			return { said, rereads: reread.mock.calls.length, closed: close.mock.calls.length };
+		};
+
+		expect(await run({ ok: false, failure: 'Viewers cannot change cards' })).toEqual({ said: [['Viewers cannot change cards', 'error', 'started']], rereads: 0, closed: 0 });
+		expect(await run({ ok: true, told: [{ message: 'Card updated', failed: false }] })).toMatchObject({ said: [['Card updated']], rereads: 1 });
+		// Nothing changed: nothing said. The plan page reads the plan again as its window closes, saved or not, as before (card 2221).
+		expect(await run({ ok: true, told: [] })).toMatchObject({ said: [], rereads: file.includes('/plan/') ? 1 : 0 });
+	});
+
+	it('archives through the controller once confirmed, saying the same as the board page before and after, from one text; or offers no Archive, as before', () => {
+		if (!archive) {
+			expect(modal).not.toContain('onDelete');
+			return;
+		}
+		const archiving = functionNamed(page, archive);
+		const asked = callsOf(archiving, 'showConfirm');
+		expect(asked).toHaveLength(1);
+		expect(asked[0].arguments[1].getText()).toBe('cardArchiveWarning(cardWindow.card?.title)');
+		const confirmed = asked[0].arguments[3];
+		expect(ts.isArrowFunction(confirmed)).toBe(true);
+		const archived = callsOf(archiving, 'cardWindow.archive');
+		expect(archived).toHaveLength(1);
+		expect(isWithin(archived[0], confirmed)).toBe(true);
+		expect(modal).toContain(`onDelete={${archive}}`);
+
 		expect(callsOf(functionNamed(board, 'confirmDeleteCard'), 'api.cardArchiveWarning')).toHaveLength(1);
-		expect(callsOf(functionNamed(page, 'deleteCard'), 'cardArchiveWarning')).toHaveLength(1);
 		for (const tree of [page, board]) {
 			expect(tree.getText()).toContain("toasts.add('Card archived. Restore it from Archived Cards.', 'info');");
 			expect(tree.getText()).not.toContain('It is taken off the board and nothing on it is deleted');
@@ -3157,11 +3243,6 @@ describe.each(['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])('
 			'Archive "Ship it"? It is taken off the board and nothing on it is deleted. It can be restored from Archived Cards, in the More menu.'
 		);
 		expect(cardArchiveWarning(undefined)).toMatch(/^Archive this card\? /);
-	});
-
-	it('has the confirmation and the toast in its markup', () => {
-		const source = readFileSync(join(ROOT, file), 'utf8');
-		const markup = source.slice(source.indexOf('</script>'));
 
 		expect(markup).toContain('{#if confirmState.show}');
 		expect(markup).toContain('onConfirm={() => { confirmState.show = false; confirmState.onConfirm(); }}');
@@ -3176,12 +3257,20 @@ describe.each(['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])('
 // Reporting section empty on a card with values, and showed no "Created from
 // request by ..."; and its save sent none of the five, so what was typed
 // there was dropped. The route itself is run in `tests/card-updates.test.ts`.
+// Since card 2281's slice C3a-1 both pages hand the window their row through
+// the controller's adapter (`windowCard`), and a save sends what the
+// controller finds changed among `WINDOW_FIELDS`.
 describe.each(['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])('the card window on %s (card 2186)', (file) => {
 	const page = scriptOf(file);
 	const REPORTING = ['summary', 'theme', 'customerImpact', 'closeReason', 'releaseState'];
 
 	it('hands the window the row as loaded, with its fall-backs, so the reporting fields and requestOrigin come with it', () => {
-		const given = assignmentsTo(functionNamed(page, 'openCard'), 'editingCard');
+		// The page hands the controller the row itself, building nothing of its own.
+		expect(callsOf(functionNamed(page, 'openCard'), 'cardWindow.openCard').map((call) => call.getText())).toEqual(['cardWindow.openCard(card, card.boardId)']);
+		expect(functionNamed(page, 'openCard').getText()).not.toMatch(/\.\.\.card/);
+
+		const adapter = scriptOf('src/lib/board/page-card-window.svelte.ts', `<script lang="ts">${readFileSync(join(ROOT, 'src/lib/board/page-card-window.svelte.ts'), 'utf8')}</script>`);
+		const given = assignmentsTo(functionNamed(adapter, 'windowCard'), 'shown');
 		expect(given).toHaveLength(1);
 		const object = given[0].right;
 		expect(ts.isObjectLiteralExpression(object)).toBe(true);
@@ -3194,13 +3283,14 @@ describe.each(['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])('
 		);
 	});
 
-	it('sends the five reporting fields with the rest of a save', () => {
-		expect(bodiesSent(functionNamed(page, 'saveCard'))).toEqual([
-			['title', 'description', 'priority', 'categoryId', 'dueDate', 'onHoldNote', 'businessValue', 'boardId', ...REPORTING]
-		]);
+	it('sends each of the five reporting fields changed in a save, as the window gives it', () => {
+		// Among the fields the controller compares and sends, and nothing of a save is built by the page.
+		for (const name of REPORTING) expect(WINDOW_FIELDS, name).toContain(name);
+		expect(bodiesSent(functionNamed(page, 'saveFromWindow'))).toEqual([]);
 		// As the window gives them: text, or null for a cleared field, which clears it.
-		const said = functionNamed(page, 'saveCard').getText().replace(/\s+/g, ' ');
-		for (const name of REPORTING) expect(said).toContain(`${name}: cardData.${name}`);
+		const card = { id: 7, title: 'Plan', summary: 'Old words', theme: 'Growth' } as unknown as CardType;
+		const typed = { title: 'Plan', description: '', priority: 'medium', categoryId: null, dueDate: null, summary: 'New words', theme: null, customerImpact: 'Faster', closeReason: null, releaseState: 'Shipped' };
+		expect(changedFields(windowFields(card), typed)).toEqual({ summary: 'New words', theme: null, customerImpact: 'Faster', releaseState: 'Shipped' });
 	});
 
 	// Review of card 2198: the window was given every account, so a mention
@@ -3214,7 +3304,7 @@ describe.each(['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])('
 		expect(load).toContain('fetch(`/api/cards/${cardId}/context`)');
 		expect(load).toContain('const body = await res.json();');
 		// An answer for a card no longer open is not used.
-		expect(load).toContain('if (editingCard?.id === cardId) editingBoardUsers = body.boardUsers;');
+		expect(load).toContain('if (cardWindow.cardId === cardId) editingBoardUsers = body.boardUsers;');
 	});
 });
 
@@ -7108,8 +7198,9 @@ describe('the board page draws from its board state and reads the board alone (c
 // with the board, saved and archived by its controller,
 // `src/lib/board/card-window.svelte.ts`, whose cases (the lost update among
 // them) run in `tests/card-window.test.ts`. CardModal's props are unchanged:
-// All Tasks, All To Do and the plan page keep their own handlers until card
-// 2281's slice C3a.
+// All Tasks, All To Do and the plan page draw the same window through the
+// same controller since card 2281's slice C3a-1 (the describe of their own,
+// above).
 describe('the board page’s card window goes through its controller (card 2280, slice B2c)', () => {
 	const PAGE = 'src/routes/board/[id]/+page.svelte';
 	const board = () => scriptOf(PAGE);
