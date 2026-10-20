@@ -15,6 +15,12 @@
   changed it, and a refusal is said in the line under the picker in the
   server's own words (`failureMessage`), as the window's other controls say
   theirs (card 2109).
+
+  Enter in a name box makes or renames the label, and so does Ctrl+Enter
+  (Cmd+Enter), which goes no further: the card window saves itself on
+  Ctrl+Enter, and would otherwise save and close as well (card 2280, slice
+  B5c; the comment box does the same). Escape there closes the form, as its
+  Cancel does, and not the window.
 -->
 <script lang="ts">
 	import * as api from '$lib/api';
@@ -140,6 +146,23 @@
 		pickerError = '';
 	}
 
+	/**
+	 * A name box's keys. Enter does `enter`, and Ctrl/Cmd+Enter does too and
+	 * is kept from the window, which would save and close (card 2280, slice
+	 * B5c). Escape does `close`, as the form's Cancel, and is kept from the
+	 * window, which would close (the B5 review).
+	 */
+	function nameKeys(e: KeyboardEvent, enter: () => void, close: () => void) {
+		if (e.key === 'Escape') {
+			e.stopPropagation();
+			close();
+			return;
+		}
+		if (e.key !== 'Enter') return;
+		if (e.ctrlKey || e.metaKey) e.stopPropagation();
+		enter();
+	}
+
 	function stopEditing() {
 		editingId = null;
 		confirmingDelete = false;
@@ -218,7 +241,7 @@
 	{#if editMode}
 		{#if editingLabel}
 			<div class="label-form">
-				<input type="text" class="label-input" placeholder="Label name" maxlength="200" bind:value={editName} onkeydown={(e) => e.key === 'Enter' && saveLabel()} aria-label="Label name" />
+				<input type="text" class="label-input" placeholder="Label name" maxlength="200" bind:value={editName} onkeydown={(e) => nameKeys(e, saveLabel, stopEditing)} aria-label="Label name" />
 				<div class="label-colors">
 					{#each COLUMN_COLORS as color}
 						<button class="label-swatch" class:active={editColor === color} style="background: {drawnColour(color)}" onclick={() => (editColor = color)} aria-label="Colour {color}" type="button"></button>
@@ -244,7 +267,7 @@
 	{:else if showNew}
 		<div class="label-form">
 			<!-- svelte-ignore a11y_autofocus -->
-			<input type="text" class="label-input" placeholder="Label name" maxlength="200" bind:value={newName} onkeydown={(e) => e.key === 'Enter' && createLabel()} aria-label="New label name" autofocus />
+			<input type="text" class="label-input" placeholder="Label name" maxlength="200" bind:value={newName} onkeydown={(e) => nameKeys(e, createLabel, () => (showNew = false))} aria-label="New label name" autofocus />
 			<div class="label-colors">
 				{#each COLUMN_COLORS as color}
 					<button class="label-swatch" class:active={newColor === color} style="background: {drawnColour(color)}" onclick={() => (newColor = color)} aria-label="Colour {color}" type="button"></button>

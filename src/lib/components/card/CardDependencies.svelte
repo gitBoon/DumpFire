@@ -160,6 +160,10 @@
 	across every board the user can see, because dependencies are deliberately
 	cross-board — a migration touches several projects and the picker has to
 	reach those cards. Foreign cards show as "Board / column".
+
+	Escape in its search box closes the picker and goes no further: the key
+	went on to the window's handler, which closed the whole window and what
+	was typed in it (card 2280, slice B5c).
 -->
 {#snippet depPicker(placeholder: string)}
 	<div class="dep-picker">
@@ -170,7 +174,7 @@
 			{placeholder}
 			bind:value={pickerQuery}
 			oninput={onPickerInput}
-			onkeydown={(e) => { if (e.key === 'Escape') { pickerMode = null; pickerQuery = ''; pickerResults = []; } }}
+			onkeydown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); pickerMode = null; pickerQuery = ''; pickerResults = []; } }}
 			autofocus
 		/>
 		<button class="dep-picker-cancel" title="Cancel" onclick={() => { pickerMode = null; pickerQuery = ''; pickerResults = []; }}>✕</button>

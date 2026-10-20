@@ -9,6 +9,11 @@
   deleting are the page's callbacks. What is typed, the names queued and
   whether the link picker is open are the window's, bound here, so they are
   kept while More options is shut or another tab is shown.
+
+  Enter in a name box creates the sub-board (or queues the name), and so
+  does Ctrl+Enter (Cmd+Enter), which goes no further: the window saves
+  itself on Ctrl+Enter, and would otherwise save and close as well (card
+  2280, slice B5c; the comment box does the same).
 -->
 <script lang="ts">
 	import type { CardType } from '$lib/types';
@@ -59,7 +64,7 @@
 		{/if}
 		{#if onCreateSubBoard}
 			<div class="subboard-create-row">
-				<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." maxlength="200" bind:value={newSubBoardName} onkeydown={(e) => e.key === 'Enter' && newSubBoardName.trim() && onCreateSubBoard!(newSubBoardName.trim())} />
+				<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." maxlength="200" bind:value={newSubBoardName} onkeydown={(e) => { if (e.key !== 'Enter') return; if (e.ctrlKey || e.metaKey) e.stopPropagation(); if (newSubBoardName.trim()) onCreateSubBoard!(newSubBoardName.trim()); }} />
 				<button class="btn-ghost subboard-add-btn" onclick={() => { if (newSubBoardName.trim()) onCreateSubBoard!(newSubBoardName.trim()); }} disabled={!newSubBoardName.trim()}>+ Create</button>
 			</div>
 		{/if}
@@ -89,7 +94,7 @@
 			</div>
 		{/if}
 		<div class="subboard-create-row">
-			<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." maxlength="200" bind:value={newPendingSubBoardName} onkeydown={(e) => { if (e.key === 'Enter' && newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} />
+			<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." maxlength="200" bind:value={newPendingSubBoardName} onkeydown={(e) => { if (e.key !== 'Enter') return; if (e.ctrlKey || e.metaKey) e.stopPropagation(); if (newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} />
 			<button class="btn-ghost subboard-add-btn" onclick={() => { if (newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} disabled={!newPendingSubBoardName.trim()}>+ Add</button>
 		</div>
 	{/if}
