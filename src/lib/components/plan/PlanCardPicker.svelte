@@ -11,6 +11,7 @@
   cards, as before.
 -->
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import type { PageData } from '../../../routes/plan/[id]/$types';
 
 	let {
@@ -53,6 +54,11 @@
 			}
 		}, 250);
 	}
+
+	// A search still waiting when the page is left is not sent (card 2328).
+	onDestroy(() => {
+		if (pickTimer) clearTimeout(pickTimer);
+	});
 
 	async function attachCard(cardId: number) {
 		await mutate({ cardId, attach: true });

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.51
+version: 1.52
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3560,6 +3560,29 @@ Card 2292's checks 240 to 242 and 244 come here. Then, with T on no board:
 Nothing is done to the database. The older image reads every board for the activity report again, counts the boards left out in `meta.boardsExcludedForAccess`, counts a milestone's cards on every board, and answers a named board the caller cannot open, or one that does not exist, `200`.
 
 The older image also sends to every active webhook, held ones included (a setter who lost the board, or none recorded), and answers no `pausedBecause`. So **before going back, switch off or delete any held webhook that must not send**: check 252's ids, and any webhook Query B or Query A lists then.
+
+### The Work Table's Remove Button, the Picker's Late Search and the Request Toasts' Poll
+
+**Cards 2320, 2328 and 2312.** No migration, no setting, no route; the page code only. The plan page's ✕ that takes a card out of a goal was always invisible (its reveal rule was left on the lists it moved out of in September); it now shows on the row under the pointer or holding the keyboard's focus, and always on a touch screen. The plan page's card picker no longer sends a search started just before the page was left. The dashboard's request toasts no longer leave a 30-second poll running when the dashboard is left before the inbox's first answer, start the poll even when that first read fails, and clear their toasts' timers when the page goes.
+
+**Owner to know.** On a phone or tablet the ✕ is now always shown in the work table's last column. After a failed first read, the first poll takes the count without raising a toast for each request already waiting.
+
+#### After the deploy
+
+On production, as any account that can change a goal, on a goal with at least one card; a browser with its developer tools' network panel.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 259 | 2320 | Open the goal's plan page. Move the pointer over a card row of **The work** | A ✕ appears at the right end of that row only, and goes when the pointer leaves | No ✕ on hover |
+| 260 | 2320 | On the same page, press Tab until the focus reaches a row's ✕ | The ✕ shown with its focus ring; Tab on to the next row, and that row's ✕ shows | A focus ring around nothing |
+| 261 | 2320 | Open the plan page on a phone or tablet | The ✕ shown on every card row, without a tap | No ✕ until tapped |
+| 262 | 2328 | In the network panel tick **Preserve log** and filter on `cards/search`. On the plan page, open **+ Add cards**, type one letter and press **Alt+←** straight away | No `cards/search` request at all | Any `cards/search` request |
+| 263 | 2312 | Throttle the network panel to **Slow 3G**, open the dashboard and leave it by a sidebar link before `/api/requests` answers, to any page but **Inbox** (which reads `/api/requests` itself). Stop throttling and wait 70 s on that page | No further `GET /api/requests` | A `requests` call every 30 s |
+| 264 | 2312 | With a request waiting in the inbox, block the address `/api/requests` in the network panel, open the dashboard, unblock it, and wait 35 s | One `GET /api/requests` at about 30 s; the header shows the count; **no** "New Request" toast for the request already waiting | No poll, or a toast for the old request |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image hides the work table's ✕ again (still clickable), sends a picker search started just before the page is left, and on the dashboard can leave a poll running for the life of the tab, never starts it after a failed first read, and after a refused one (an error answer) toasts every waiting request on the first poll.
 
 ## Changing the Schema
 

@@ -15,17 +15,22 @@
  * again only when the work it charts changed); and the graph drawn with each
  * node's box and each edge as HEAD's page drew them (`tests/plan-graph.test.ts`
  * pins the same numbers on `$lib/plan-graph`). `fetch` and `invalidateAll`
- * are stand-ins; what each request sent is kept.
+ * are stand-ins; what each request sent is kept. The work table's ✕ is
+ * checked against the component's compiled CSS: what shows it must match the
+ * table as drawn (card 2320). The picker's cases run on fake timers, so no
+ * search one of them leaves waiting reaches a later case (card 2328).
  *
  * The card window's saves are held in `tests/card-window-pages.test.ts`; the
  * source pins of the same code are in `tests/plan-table.test.ts`,
  * `tests/page-failures.test.ts`, `tests/subtask-order.test.ts` and
  * `tests/timestamps.test.ts`.
  */
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Svelte from 'svelte';
+import { compile } from 'svelte/compiler';
 
 import PlanPage from '../src/routes/plan/[id]/+page.svelte';
 import { toasts } from '$lib/stores/toast';
@@ -174,6 +179,8 @@ afterEach(() => {
 		drawn.target.remove();
 		drawn = null;
 	}
+	// After the unmount, so a fake timer is cleared by the component as a fake one, and none outlives its case.
+	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	document.body.innerHTML = '';
 	// The toasts are the app's, not the page's: each case starts with none.
@@ -182,10 +189,11 @@ afterEach(() => {
 	for (const toast of shown) toasts.dismiss(toast.id);
 });
 
-/** Lets the stand-in answers and what they set off settle. */
+/** Lets the stand-in answers and what they set off settle; on fake timers, by moving them on by nothing. */
 async function settle() {
 	for (let i = 0; i < 10; i++) {
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
+		else await new Promise((resolve) => setTimeout(resolve, 0));
 		await tick();
 	}
 	flushSync();
@@ -200,6 +208,55 @@ async function draw(data: unknown = planData()) {
 	flushSync();
 	await settle();
 	return props;
+}
+
+/** Leaves the page: unmounts it as `afterEach` does, within the case. */
+function leave() {
+	unmount(drawn!.component);
+	drawn!.target.remove();
+	drawn = null;
+}
+
+/**
+ * What gives the work table's ✕ a style (card 2320). Each rule of
+ * WorkTable.svelte's compiled CSS whose declarations `wanted` accepts and
+ * which, with Svelte's scoping class and the states `:hover`,
+ * `:has(:focus-visible)`, `:focus-within` and `:focus-visible` taken off,
+ * matches `button` in the page as drawn: named by the state and the element
+ * it is on (`tr:hover`; `self:focus-visible` for the button's own), or by its
+ * media condition. A rule written for markup the table has not got names
+ * nothing. `revealsOf` asks for `opacity: 1`.
+ */
+const revealsOf = (button: Element) => stylesOf(button, (style) => style.opacity === '1');
+
+function stylesOf(button: Element, wanted: (style: CSSStyleDeclaration) => boolean) {
+	const file = join(process.cwd(), 'src/lib/components/plan/WorkTable.svelte');
+	const { css } = compile(readFileSync(file, 'utf8'), { filename: file, css: 'external' });
+	const style = document.createElement('style');
+	style.textContent = css!.code;
+	document.head.appendChild(style);
+	const found: string[] = [];
+	const walk = (rules: CSSRuleList, media: string | null) => {
+		for (const rule of [...rules]) {
+			if ('media' in rule) walk((rule as CSSMediaRule).cssRules, (rule as CSSMediaRule).media.mediaText);
+			if (!('selectorText' in rule) || !wanted((rule as CSSStyleRule).style)) continue;
+			for (const selector of (rule as CSSStyleRule).selectorText.split(',')) {
+				const parts = selector.replace(/:where\(\.svelte-[\w-]+\)/g, '').replace(/\.svelte-[\w-]+/g, '').trim().split(/\s+/);
+				const states = /:has\(:focus-visible\)|:hover|:focus-within|:focus-visible/g;
+				if (!button.matches(parts.map((part) => part.replace(states, '')).join(' '))) continue;
+				if (media) found.push(media);
+				parts.forEach((part, i) => {
+					for (const [state] of part.matchAll(states)) found.push(i === parts.length - 1 ? `self${state}` : `${part.replace(states, '')}${state}`);
+				});
+			}
+		}
+	};
+	try {
+		walk(style.sheet!.cssRules, null);
+	} finally {
+		style.remove();
+	}
+	return found;
 }
 
 const $ = <T extends Element = HTMLElement>(selector: string) => document.querySelector<T>(selector);
@@ -256,6 +313,11 @@ describe('the plan page opens its card window from each block (card 2281, slice 
 });
 
 describe('the plan page’s card picker (card 2281, slice C3a-3)', () => {
+	// The picker waits 250 ms before it searches: on fake timers, so a search a case leaves waiting goes with it (card 2328).
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	});
+
 	it('opens from the header’s Add cards, searches, and adds the card chosen through the page’s one PATCH path', async () => {
 		await draw();
 		expect($('.picker-input')).toBeNull();
@@ -265,7 +327,7 @@ describe('the plan page’s card picker (card 2281, slice C3a-3)', () => {
 		expect(add.classList.contains('is-on')).toBe(true);
 
 		type($<HTMLInputElement>('.picker-input')!, 'notes');
-		await new Promise((resolve) => setTimeout(resolve, 300));
+		await vi.advanceTimersByTimeAsync(300);
 		await settle();
 		expect(sent.map((s) => s.what)).toContain('GET /api/cards/search?q=notes');
 		expect(textOf($('.picker-result'))).toBe('#21 Write the notes 📋 Website / To Do');
@@ -292,6 +354,15 @@ describe('the plan page’s card picker (card 2281, slice C3a-3)', () => {
 		expect(add.classList.contains('is-on')).toBe(false);
 		click(add);
 		expect($<HTMLInputElement>('.picker-input')!.value).toBe('');
+	});
+
+	it('sends no search once the page is left with one still waiting (card 2328)', async () => {
+		await draw();
+		click($$('.hdr-btn.primary')[0]);
+		type($<HTMLInputElement>('.picker-input')!, 'notes');
+		leave();
+		await vi.advanceTimersByTimeAsync(300);
+		expect(sent.map((s) => s.what)).not.toContain('GET /api/cards/search?q=notes');
 	});
 });
 
@@ -349,6 +420,16 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 		click($('.work-table .detach'));
 		await settle();
 		expect(patches()).toEqual([{ cardId: 7, attach: false }]);
+	});
+
+	it('shows the work table’s ✕ on its row’s hover and keyboard focus, on its own keyboard focus with a ring of its own, and always on a touch screen (card 2320)', async () => {
+		await draw();
+		const detach = $('.work-table .detach')!;
+		expect(revealsOf(detach)).toEqual(expect.arrayContaining(['tr:hover', 'tr:has(:focus-visible)', 'self:focus-visible', '(hover: none)']));
+		// app.css takes every button's outline away: the ✕'s keyboard focus draws a ring of its own.
+		expect(stylesOf(detach, (style) => style.getPropertyValue('outline-style') === 'solid' || /\bsolid\b/.test(style.getPropertyValue('outline')))).toContain(
+			'self:focus-visible'
+		);
 	});
 
 	it('says a refusal in the page, above the blocks', async () => {

@@ -611,7 +611,19 @@
 		font-size: 0.68rem; color: var(--text-tertiary); border-radius: var(--radius-sm);
 		opacity: 0; transition: all var(--duration-fast) var(--ease-out);
 	}
-	.list-card:hover .detach { opacity: 1; }
+	/* Shown on the row the pointer is over or the keyboard is in, and on its own
+	   keyboard focus; a screen with no hover shows it always, or the tap that
+	   found it would be the one that removed the card (card 2320: the reveal
+	   was left on the lists the ✕ moved out of, so it never showed). The row's
+	   keyboard focus, not any focus: a click on the row's ▸ leaves no ✕ shown.
+	   app.css takes every button's outline away, so its focus ring is its own. */
+	.work-table tbody tr:hover .detach,
+	.work-table tbody tr:has(:focus-visible) .detach,
+	.detach:focus-visible { opacity: 1; }
+	.detach:focus-visible { outline: 2px solid var(--accent-rose); outline-offset: 1px; }
+	@media (hover: none) {
+		.detach { opacity: 1; }
+	}
 	.detach:hover { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); }
 
 	/* ─── Blocked groups ───────────────────────────────────────────────── */
