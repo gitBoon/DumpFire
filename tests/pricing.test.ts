@@ -523,7 +523,12 @@ describe('one entry, priced the same in the card window as in the card total', (
 	});
 
 	it('the card window prices every entry and every subtask through costInputOf', () => {
-		const source = readFileSync(join(process.cwd(), 'src/lib/components/CardModal.svelte'), 'utf8');
+		// Each subtask's share in the window, each entry in its cost section (card 2280, slice B4: CardTokenCost.svelte).
+		const window = readFileSync(join(process.cwd(), 'src/lib/components/CardModal.svelte'), 'utf8');
+		const section = readFileSync(join(process.cwd(), 'src/lib/components/card/CardTokenCost.svelte'), 'utf8');
+		expect(window).toContain('costOf(mine.map(costInputOf))');
+		expect(section).toContain('costOf([costInputOf(e)])');
+		const source = window + section;
 		const calls = [...source.matchAll(/costOf\(([^\n]*)/g)].map((m) => m[1]);
 		expect(calls.length).toBeGreaterThanOrEqual(2);
 		for (const args of calls) {

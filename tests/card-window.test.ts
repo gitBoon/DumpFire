@@ -38,7 +38,7 @@
  * card 2183 noted). Its cases are at the end, run against a real board state
  * whose reads are answered by the contents route.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -508,6 +508,20 @@ describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2
 			ts.forEachChild(node, (child) => visit(child, effect));
 		};
 		visit(script, false);
+		// And its sections (card 2280, slice B4), which are handed the fields bound:
+		// none sets one in an $effect, or has an $effect or onMount at all, so
+		// none fills a field, a list or the cost again when a read hands the
+		// window its card afresh. Each of their scripts, the module one too.
+		const sections = (readdirSync(join(process.cwd(), 'src/lib/components/card')) as string[]).filter((file) => file.endsWith('.svelte'));
+		expect(sections.length).toBeGreaterThan(0);
+		for (const file of sections) {
+			const text = readFileSync(join(process.cwd(), 'src/lib/components/card', file), 'utf8');
+			for (const block of text.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) {
+				const tree = ts.createSourceFile(file, block[1], ts.ScriptTarget.Latest, true);
+				visit(tree, false);
+				expect(block[1], file).not.toMatch(/\$effect|\bonMount\b/);
+			}
+		}
 		expect(assigned.filter((name) => (WINDOW_FIELDS as readonly string[]).includes(name))).toEqual([]);
 		// Its subtasks are filled, and its cost read, for the card, keyed by the
 		// card's id alone, and not again for every read of the board: a read sent

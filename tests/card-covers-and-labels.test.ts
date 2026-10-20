@@ -371,6 +371,8 @@ const BOARD_PAGE = 'src/routes/board/[id]/+page.svelte';
 /** What each card on the board shows: moved from the board page by card 2280's slice B3. */
 const BOARD_CARD = 'src/lib/components/board/KanbanCardBody.svelte';
 const CARD_WINDOW = 'src/lib/components/CardModal.svelte';
+/** The card window's cover picker: moved from the window by card 2280's slice B4. */
+const COVER_PICKER = 'src/lib/components/card/CardCoverPicker.svelte';
 
 /** Every Svelte file under `src`, as a path from the repository. */
 const svelteFiles = () =>
@@ -420,10 +422,10 @@ describe('a cover, as the pages draw it', () => {
 				for (const value of values) expect(guards, `${file}: ${style[0]}`).toContain(`isCoverValue(${value})`);
 			}
 		}
-		// The board's strip, and in the card window its header strip and the custom swatch.
-		expect(drawn.sort()).toEqual([BOARD_CARD, CARD_WINDOW, CARD_WINDOW].sort());
+		// The board's strip, and in the card window its header strip and (in its cover picker) the custom swatch.
+		expect(drawn.sort()).toEqual([BOARD_CARD, CARD_WINDOW, COVER_PICKER].sort());
 		// Each is read whole as blocks that open and close: none is left open at its end.
-		for (const file of [BOARD_PAGE, BOARD_CARD, CARD_WINDOW]) {
+		for (const file of [BOARD_PAGE, BOARD_CARD, CARD_WINDOW, COVER_PICKER]) {
 			const markup = markupOf(file);
 			expect(blocksAround(markup, markup.length), file).toEqual([]);
 		}
@@ -449,8 +451,10 @@ describe('the card window’s labels and cover', () => {
 	it('are offered on a saved card only, and labels whether or not the board has any yet', () => {
 		const picker = [...markup.matchAll(/<LabelPicker\b[^>]*\/>/g)];
 		expect(picker.map((found) => found[0])).toEqual(['<LabelPicker cardId={card.id} {boardId} {labels} bind:selected={cardLabelIds} />']);
-		const coverSwatches = [...markup.matchAll(/\{#each COVER_PRESETS as preset\}/g)];
-		expect(coverSwatches).toHaveLength(1);
+		// The presets are drawn by the cover picker (card 2280, slice B4), once, and the window draws the picker.
+		expect([...markupOf(COVER_PICKER).matchAll(/\{#each COVER_PRESETS as preset\}/g)]).toHaveLength(1);
+		const coverSwatches = [...markup.matchAll(/<CardCoverPicker\b[^>]*\/>/g)];
+		expect(coverSwatches.map((found) => found[0])).toEqual(['<CardCoverPicker {card} {boardId} bind:coverUrl bind:windowError />']);
 
 		for (const found of [...picker, ...coverSwatches]) {
 			const around = blocksAround(markup, found.index!);
@@ -462,9 +466,13 @@ describe('the card window’s labels and cover', () => {
 
 	it('have no picker of the window’s own left: labels are put on through LabelPicker.svelte, and the presets come from $lib/colours', () => {
 		const source = readFileSync(join(ROOT, CARD_WINDOW), 'utf8');
-		expect(source).not.toMatch(/\bfunction toggleLabel\b/);
-		expect(source).not.toContain('coverPresets');
-		expect(source).toContain("import { COVER_PRESETS, isCoverValue } from '$lib/colours';");
+		const cover = readFileSync(join(ROOT, COVER_PICKER), 'utf8');
+		for (const file of [source, cover]) {
+			expect(file).not.toMatch(/\bfunction toggleLabel\b/);
+			expect(file).not.toContain('coverPresets');
+		}
+		expect(cover).toContain("import { COVER_PRESETS, isCoverValue } from '$lib/colours';");
+		expect(source).toContain("import { isCoverValue } from '$lib/colours';");
 		expect(source).toContain("import LabelPicker from './LabelPicker.svelte';");
 	});
 });
