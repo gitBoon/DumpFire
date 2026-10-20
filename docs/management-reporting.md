@@ -1,9 +1,9 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.5
+version: 1.6
 status: As-Built
-date: 2026-10-19
+date: 2026-10-20
 tags:
   - reporting
   - audit-log
@@ -303,7 +303,7 @@ Then **read `meta` before quoting a figure**:
 | `completedOutsideWindow` | Cards in Complete that did not complete in this period. |
 | `missingSummaryCount` | Appendix lines falling back to technical titles. |
 | `attribution` | Current assignment stands in for historic assignment, which is not recorded. |
-| `boardsExcludedForAccess` | Boards omitted because the caller cannot see them. |
+| `boardsExcludedForAccess` | Always 0, deprecated (card 2326): the report reads only boards you can open, and refuses a named board you cannot open. It counted the boards left out, which told a reader when a board they could not open was worked on. |
 
 ## Files
 
@@ -313,7 +313,7 @@ Then **read `meta` before quoting a figure**:
 | `src/lib/server/reporting-fields.ts` | Validation of the five fields |
 | `src/lib/reporting.ts` | Vocabularies shared with the client |
 | `src/lib/server/logActivity.ts` | Single writer, canonical vocabulary, source marker |
-| `src/routes/api/v1/reports/activity/+server.ts` | Report endpoint |
+| `src/routes/api/v1/reports/activity/+server.ts` | Report endpoint. Reads the query; the builder reads only the boards the caller can open, and answers a board named in `boardIds` that does not exist `404` `Board N not found`, and one the caller cannot open `403` `No access to board N`, administrators included (card 2326) |
 | `src/routes/api/v1/audit-log/+server.ts` | Audit query, canonical action, paging |
 | `src/routes/api/v1/cards/[cardId]/board-history/+server.ts` | Board spans |
 | `src/lib/components/board/CompletionPromptModal.svelte` | Post-completion prompt |

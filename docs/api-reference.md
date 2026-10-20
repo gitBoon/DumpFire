@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.66
+version: 1.67
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1004,6 +1004,20 @@ new; these answers and fields are:
   completions, are as they were. In the web application the dashboard's Velocity window
   (`GET /api/velocity`) counts the same way (item 79). See
   [What a List Gives](authentication-security.md#what-a-list-gives).
+- **`GET /reports/activity` reads only the boards the key's user can open** (card 2326), and
+  `meta.boardsExcludedForAccess` is always `0`, still in every answer and marked deprecated.
+  It counted the boards with activity in the window that the key's user could not open, so
+  polling a narrow window told them when such a board was worked on, and naming one in
+  `boardIds` whether it had. A board named in `boardIds` is now checked in the order given, as
+  `GET /burndown` checks one, administrators included: one that does not exist is `404`
+  `Board 7 not found`, and one the key's user cannot open is `403` `No access to board 7`,
+  where both were `200` with nothing of the board. A saved list that holds a deleted board
+  now fails. A milestone in `milestones` counts `totalCards`, `completedAtStart` and
+  `completedAtEnd` over its cards on boards the key's user can open, as its burndown does (an
+  administrator's over every board): a card moved onto a board they could not open was
+  counted, so moving `from` across its completion told them the second it was completed.
+  Every other figure is as it was for the boards the key's user can open (item 80).
+  See [Reporting](#reporting).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2111,7 +2125,7 @@ and about 18 minutes of hand collation.
 |---|---|---|
 | `userId` | everyone | Report on one person, by id (`400` `userId must be an integer` otherwise). Another user requires admin. |
 | `from`, `to` | last 30 days | Each a date (`2026-10-14`), a timestamp in ISO 8601, or `YYYY-MM-DD HH:MM:SS` in UTC ([Timestamps](#timestamps)); anything else is `400` `from is not a date`. Bare dates are whole days; `to` is inclusive. A timestamp with an offset, or with no zone, is read in UTC. `from` after `to` is `400`. `period.from` and `period.to` are answered in ISO 8601. |
-| `boardIds` | all visible | Comma-separated ids; one that is not a whole number of 1 or more is `400` `boardIds must be a comma-separated list of ids`. |
+| `boardIds` | all visible | Comma-separated ids; one that is not a whole number of 1 or more is `400` `boardIds must be a comma-separated list of ids`. Each is then checked in the order given, administrators included, as `GET /api/v1/burndown` checks one: a board that does not exist is `404` `Board 7 not found`, and one you cannot open `403` `No access to board 7` (card 2326; both were `200`). |
 | `include` | — | `subtasks`, `comments` |
 | `commentLimit` | 3 (max 20) | Most recent comments per card: a whole number, 0 or more. `0` gives each card an empty `comments` list, more than 20 is read as 20, and a negative number or a fraction is `400` `commentLimit must be a whole number of 0 or more`. |
 
@@ -2122,12 +2136,16 @@ reports correctly.
 
 A card's `milestoneName` is `null` when it is in no milestone or in one the key's user
 cannot open, and `milestones` lists only the milestones they can open (card 2257); a card's
-`milestoneId` is given either way.
+`milestoneId` is given either way. A milestone's counts are of its cards on boards the key's
+user can open, as its burndown counts them (card 2326).
 
-`meta` carries the caveats that make a figure quotable —
-`closeReasonAssumedCount`, `completedOutsideWindow`, `missingSummaryCount`,
-`attribution`, `boardsExcludedForAccess`. Read it before quoting a headline
-number.
+Only the boards the key's user can open are read (card 2326). `meta` carries the
+caveats that make a figure quotable — `closeReasonAssumedCount`,
+`completedOutsideWindow`, `missingSummaryCount`, `attribution`. Read it before
+quoting a headline number. `meta.boardsExcludedForAccess` is always `0` and marked
+deprecated: it counted the boards with activity that were left out, which told a
+reader when a board they could not open was worked on. It stays in the answer
+because the schema requires it.
 
 Full design rationale: [Management Activity Reporting](management-reporting.md).
 

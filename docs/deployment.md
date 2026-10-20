@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.49
+version: 1.50
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3459,9 +3459,11 @@ Nothing is done to the database. The older image's card window on All Tasks, All
 |---|---|---|---|---|
 | 239 | 2292 | Immediately before the deploy, with your own (administrator's) API key, `GET /api/v1/me/stats`; write down `activeCards` and `avgCycleTimeDays` | Two figures, kept for check 243 | — |
 
+Check 245, in the next section, is also before the deploy: it makes the throwaway account T both sections use and saves the activity report's answers.
+
 #### After the deploy
 
-Check 243 is the first step after the deploy, before 240. Checks 240 to 244 run on production in one sitting. **O** is your own account; **T** is a throwaway ordinary account O makes on the admin page for these checks, with an email address in a mailbox O controls (sharing and assigning mail T) and a password typed there, so that no invite mail is sent. T signs in from a separate browser profile or a private window, so that O's own session is kept. Signed in as T, make T's API key on **My Account** (Generate Key). As O, make a scratch board "Check 2292" with three open cards in To Do. While T exists it is listed to everyone signed in (the user pickers, `GET /api/users`) and on the public request form, so check 244 removes it.
+Check 243 is the first step after the deploy. Then come checks 248 to 250 of the [next section](#the-activity-report-reads-only-boards-you-can-open), which need T on no board and change nothing, then 240 to 242, then 244, all on production in one sitting. **O** is your own account. **T** is the release's one throwaway ordinary account, made before the deploy for check 245 of the next section, and described there; its email address is in a mailbox O controls, so sharing and assigning mail T. T is torn down once, at the end of the next section's checks. As O, make a scratch board "Check 2292" with three open cards in To Do.
 
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
@@ -3469,11 +3471,59 @@ Check 243 is the first step after the deploy, before 240. Checks 240 to 244 run 
 | 241 | 2292 | As O, take T off Check 2292 (Share Board, remove). With T's key, `GET /api/v1/me/stats` again; signed in as T, reload the dashboard, its Velocity window and My Tasks (**Active Tasks**) | `activeCards` **0**; `avgCycleTimeDays` **null**; Velocity's total **0**; the Active tile 0 and My Tasks empty; `recentActivity` has nothing of Check 2292; `cardsCompleted` and `streak` as in check 240 | Any of the three figures still counting Check 2292 |
 | 242 | 2292 | Signed in as T, compare the dashboard with `me/stats` | Active tile = `activeCards` = My Tasks' count (all 0); Velocity's total = Completed this week (both 0) | Two screens disagreeing |
 | 243 | 2292 | First, right after the deploy and before check 240: with O's key, `GET /api/v1/me/stats` | The two figures of check 239 (as an administrator O opens every board), unless one of your own assigned cards was completed, archived, assigned or unassigned in between | A figure changed with none of your own assigned cards changed |
-| 244 | 2292 | Signed in as T, revoke T's key (My Account); as O, delete T (Admin, User Management) and the board Check 2292 | T no longer in the user pickers or on the request form; the board gone | T or the board left |
+| 244 | 2292 | As O, delete the board Check 2292. T is kept, and torn down at the end of the next section's checks | The board gone | The board left |
 
 #### Going back to the previous image
 
 Nothing is done to the database. The older image counts `activeCards`, `avgCycleTimeDays` and the Velocity window over every board again.
+
+### The Activity Report Reads Only Boards You Can Open
+
+<!-- Card 2325 renames this section "Webhooks Stop When Their Setter Cannot Open the Board, and the Activity Report Reads Only Boards You Can Open" (and the link to it from card 2292's section) when it adds its part. -->
+
+**Card 2326.** No migration, no setting, no new route or field. `GET /api/v1/reports/activity` read every board, or every board named in `boardIds`, and dropped afterwards the cards of boards the caller could not open, counting those boards in `meta.boardsExcludedForAccess`. The count went up whenever something happened on such a board, and the window takes times to the second, so polling it told anyone with a key when boards they could not open were worked on; naming one in `boardIds` told them whether that board had activity. Now the report reads only the boards the caller can open, the count is always `0` (still in the answer, marked deprecated), and a board named in `boardIds` is checked first, as the burndown checks one. A milestone in the report is counted over its cards on boards the caller can open, as its burndown is: a card moved onto a board they could not open was counted, and moving `from` across its completion told them when it was completed. Every other figure is as it was for the boards the caller can open. See [What a List Gives](authentication-security.md#what-a-list-gives).
+
+<!-- Card 2325 (webhooks) adds its part of this lead paragraph here, in its own commit. -->
+
+**Owner to know.**
+
+- **`boardIds` on `GET /api/v1/reports/activity` naming a board the caller cannot open goes from `200` to `403` `No access to board N`, and naming a board that does not exist goes to `404` `Board N not found`, administrators included**, so a saved list that holds a deleted board now fails. Each id is checked in the order given, and the first at fault is the answer.
+- **`meta.boardsExcludedForAccess` is always `0`** (deprecated, still in the answer). Nothing in this repository reads it; a client outside it that does reads "no board left out", which is true.
+- **A milestone's counts in the report can fall for anyone but an administrator**: its cards on boards they cannot open are left out, as the milestone's burndown already leaves them out.
+
+<!-- Card 2325 adds its owner-to-know bullets here: a webhook whose setter cannot open its board is held; a webhook with no recorded setter is held, Query B the gate. -->
+
+#### Before the deploy
+
+**O** is your own administrator account and API key. **T** is the release's one throwaway ordinary account, used by card 2292's checks too: O makes it on the admin page **before the deploy** (check 245 needs its key then), with a password typed there, so that no invite mail is sent, and an email address in a mailbox O controls. T signs in from a separate browser profile or a private window, so that O's own session is kept, and makes its own API key on **My Account** (Generate Key). T is on no board. While T exists it is listed to everyone signed in (the user pickers, `GET /api/users`) and on the public request form, so it is torn down once, at the very end of the release's checks.
+
+Checks 245 and 248 ask for a fixed, closed window in the past, `?from=2026-09-01&to=2026-09-30`, so that work done in between cannot move a figure.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 245 | 2326 | Make T and T's key. **Immediately before the deploy**, with T's key `GET /api/v1/reports/activity?from=2026-09-01&to=2026-09-30`; with O's key the same. Save each whole answer to a file (`t-245.json`, `o-245.json`) | T's `meta.boardsExcludedForAccess` probably above 0 (the fault being fixed); O's `0` | — (a record, kept for check 248) |
+
+<!-- Card 2325 adds checks 246 (Query A) and 247 (Query B, the gate) here. -->
+
+#### After the deploy
+
+Checks 248 to 250 run straight after check 243 of card 2292's section, before its check 240. They are GETs, and change nothing.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 248 | 2326 | The two GETs of check 245 again, the same window, each whole answer saved (`t-248.json`, `o-248.json`). Compare each with its file from check 245, with `meta.generatedAt` taken out of both | O's two identical. T's identical but for `meta.boardsExcludedForAccess`, now `0`, and the counts of a milestone with a card on a board T cannot open, which are now left out (the second fix), so a milestone may also drop from T's list. Either may differ if a card of that window was edited, completed or deleted in between, or a card joined or left a listed milestone | T's count is not 0, or anything else differs with no such change |
+| 249 | 2326 | With T's key, `GET /api/v1/reports/activity?boardIds=<any private board T is not on>`; then `?boardIds=999999` | `403` `{"message":"No access to board <id>"}`; then `404` `{"message":"Board 999999 not found"}` | `200` to either |
+| 250 | 2326 | With O's key, `GET /api/v1/reports/activity?boardIds=999999` | `404` `{"message":"Board 999999 not found"}` (the change for administrators) | `200` |
+
+<!-- Card 2325 adds checks 251 to 257 here, and moves the tear-down below into its check 258. -->
+
+**Tear down**, once, at the very end of the release's checks (after card 2292's check 244): signed in as T, revoke T's key (My Account); as O, delete T (Admin, User Management). T is then no longer in the user pickers or on the request form. Delete the saved answers: they hold card titles.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image reads every board for the activity report again, counts the boards left out in `meta.boardsExcludedForAccess`, counts a milestone's cards on every board, and answers a named board the caller cannot open, or one that does not exist, `200`.
+
+<!-- Card 2325 adds its going-back paragraph here: held webhooks send again on the older image, so switch off or delete any that must not. -->
 
 ## Changing the Schema
 
