@@ -40,11 +40,18 @@ export const READS: readonly string[] = ['listComments'];
  * (`GET /api/cards/:id/comments`, `GET /api/v1/cards/:cardId/comments`). The
  * card is looked for and the caller asked for view access (404, then 403, in
  * the tree's words, `says`).
+ *
+ * `created_at` is to the second, so comments made in the same second (a
+ * request's discussion copied on accept, an agent posting several in a row)
+ * are put the later first by id, as the activity report puts them (card
+ * 2301). An author with no emoji is listed with the placeholder the add and
+ * v1's single read answer, as the `Comment` schema's required string says
+ * (card 2302).
  */
 export function listComments(user: SessionUser | null | undefined, at: { cardId: number }, opts: { says?: string }) {
 	requireCard(user, at.cardId, 'view', opts.says);
 
-	return db
+	const rows = db
 		.select({
 			id: cardComments.id,
 			cardId: cardComments.cardId,
@@ -58,8 +65,9 @@ export function listComments(user: SessionUser | null | undefined, at: { cardId:
 		.from(cardComments)
 		.innerJoin(users, eq(cardComments.userId, users.id))
 		.where(eq(cardComments.cardId, at.cardId))
-		.orderBy(desc(cardComments.createdAt))
+		.orderBy(desc(cardComments.createdAt), desc(cardComments.id))
 		.all();
+	return rows.map((row) => ({ ...row, userEmoji: row.userEmoji || '👤' }));
 }
 
 /** What each tree's new comment does differently today (R2). */

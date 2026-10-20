@@ -9,7 +9,7 @@ import type { RequestHandler } from './$types';
 
 /**
  * GET /api/v1/cards/:cardId/comments — List all comments on a card (newest
- * first). The work is `listComments` in `$lib/server/card-comments`, which
+ * first, and the later first within one second, card 2301). The work is `listComments` in `$lib/server/card-comments`, which
  * the internal list shares (card 2012).
  */
 export const GET: RequestHandler = async ({ params, locals }) => {

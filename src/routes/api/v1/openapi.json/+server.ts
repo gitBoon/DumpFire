@@ -220,6 +220,8 @@ const spec = {
 			'A webhook whose setter cannot open the board, and one with no recorded setter (made before setters were recorded on 2026-10-18/19), is held: nothing is sent and active is left as it is; lastDelivery says "Not sent: the account that set it up can no longer open this board" or "Not sent: nobody is recorded as having set it up". ' +
 			'A webhook answered to the board\'s owner or an administrator, and the answer to the create, carry pausedBecause: null unless the webhook is on and held, then one of two sentences saying why and what to do. ' +
 			'A held webhook is sent again when its setter can open the board again; the board owner or an administrator takes one over by switching it off and then on, which makes them its setter, and sets a new secret, updating the receiver. ' +
+			'(82) GET /api/v1/cards/{cardId}/comments lists comments made in the same second the later first, by id, in a list that is still newest first: they came back in no set order, in practice the earlier first, so a request\'s discussion copied onto its card on accept, and several comments posted in a row, read upside down. ' +
+			'(83) the same list answers userEmoji "👤" for an author with no emoji, as POST there and GET and PUT /api/v1/comments/{commentId} do, where it was null against the Comment schema, whose userEmoji is a required string. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -3519,7 +3521,7 @@ const spec = {
 			get: {
 				tags: ['Comments'],
 				summary: 'List comments',
-				description: 'Returns all comments on a card, newest first.',
+				description: 'Returns all comments on a card, newest first and, within one second, the later first (by id). An author with no emoji is listed with userEmoji "👤", as every other comment answer has it.',
 				operationId: 'listComments',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				responses: {

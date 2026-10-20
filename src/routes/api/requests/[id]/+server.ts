@@ -162,10 +162,11 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 				resolvedAt: stamp()
 			}).where(eq(taskRequests.id, id)).run();
 
-			// Copy discussion messages as card comments
+			// Copy discussion messages as card comments, in the order they were
+			// sent: by id within one second (cards 2301 and 2302's plan, ruling 10).
 			const msgs = db.select().from(requestMessages)
 				.where(eq(requestMessages.requestId, id))
-				.orderBy(asc(requestMessages.createdAt))
+				.orderBy(asc(requestMessages.createdAt), asc(requestMessages.id))
 				.all();
 			for (const m of msgs) {
 				const who = m.senderType === 'admin' ? `🛡️ ${m.senderName}` : `👤 ${m.senderName}`;
