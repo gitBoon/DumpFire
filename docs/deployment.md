@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.52
+version: 1.53
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3583,6 +3583,25 @@ On production, as any account that can change a goal, on a goal with at least on
 #### Going back to the previous image
 
 Nothing is done to the database. The older image hides the work table's ✕ again (still clickable), sends a picker search started just before the page is left, and on the dashboard can leave a poll running for the life of the tab, never starts it after a failed first read, and after a refused one (an error answer) toasts every waiting request on the first poll.
+
+### Comments: Same-Second Order and One Emoji Shape
+
+**Cards 2301 and 2302.** No migration, no setting, no new route or field. A comment's `created_at` is kept to the second, and a card's comment list (the card window, `GET /api/cards/:id/comments` and `GET /api/v1/cards/:cardId/comments`) was ordered by it alone, so comments made in the same second came back in no set order, in practice the earliest first inside a list that is newest first. Accepting a task request copies its whole discussion onto the new card in one loop, so those copies always read upside down. Now a tie is broken by id, the later first, as the activity report already breaks it, and the discussion is copied in the order it was sent (by id within one second). The same list answered `userEmoji` `null` for an author with no emoji, where every other comment answer, and the `Comment` schema, have `"👤"`; it now answers `"👤"` too. Only an account restored from an old backup, or changed directly in the database, has no emoji; no stored data changes.
+
+**Owner to know.** Nothing a person sees changes but the order of comments made in the same second, chiefly a request's discussion on the card it was accepted into, which now reads newest first like the rest. The card window already drew `"👤"` for an author with no emoji.
+
+#### After the deploy
+
+On production, with your own API key, on a **scratch board** of your own with no other members and **no webhooks**, and a scratch card made on it by hand, not from a request: a comment mails the board's members and the card's requester and fires `comment.added`. Every comment is posted to the scratch card. The board and card are kept for the later checks of this group; delete them at the end of the release's checks.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 265 | 2301 | With your key, `POST /api/v1/cards/<card>/comments` five times in one PowerShell loop (`{"content": "c1"}` to `"c5"`), then `GET /api/v1/cards/<card>/comments`. If no two share a `createdAt`, run the loop again | At least two share a `createdAt`; among those, the higher `id` is listed first, and the whole list is newest first | Two with one `createdAt` listed lower `id` first |
+| 266 | 2302 | `GET /api/v1/cards/<card>/comments` | Every `userEmoji` is text | Any `null` |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image lists comments of one second in no set order (in practice the earliest first), copies a request's discussion in no set order within one second, and answers `userEmoji` `null` in the list for an author with no emoji.
 
 ## Changing the Schema
 

@@ -34,12 +34,14 @@ import {
 	activityLog,
 	boardCategories,
 	boards,
+	cardComments,
 	cardLabels,
 	cards,
 	categories,
 	milestones,
 	taskRequests,
 	tokenUsage,
+	users,
 	type Card,
 	type CardComment
 } from '$lib/server/db/schema';
@@ -1388,6 +1390,41 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		expect(ids(v1Subtasks.body)).toEqual([1]);
 		// The page's list with no card named is empty, as it was.
 		expect((await api('GET', '/api/subtasks', { user: s.viewer })).body).toEqual([]);
+
+		// Comments made in the same second come back the later first, by id, in
+		// a list that is newest first (card 2301); they came back in no set
+		// order, in practice the earlier first. And an author with no emoji is
+		// listed with the placeholder the add answers, not `null` (card 2302).
+		db.update(users).set({ emoji: null }).where(eq(users.id, s.helper.id)).run();
+		const sent = effects();
+		let added: ApiResult[];
+		try {
+			added = [
+				await api('POST', `/api/cards/${s.first.id}/comments`, { user: s.helper, body: { content: 'Two' } }),
+				await api('POST', `/api/v1/cards/${s.first.id}/comments`, { user: s.helper, body: { content: 'Three' } })
+			];
+			await sent.settle();
+		} finally {
+			sent.restore();
+		}
+		expect(added.map((res) => res.status)).toEqual([201, 201]);
+		const tied = [s.comment.id, ...added.map((res) => res.body.id as number)];
+		for (const text of ['Four', 'Five', 'Six']) tied.push(makeComment(s.first, s.owner, text).id);
+		const later = makeComment(s.first, s.owner, 'Seven').id;
+		for (const id of tied) {
+			db.update(cardComments).set({ createdAt: '2026-10-20 09:00:00' }).where(eq(cardComments.id, id)).run();
+		}
+		db.update(cardComments).set({ createdAt: '2026-10-20 09:00:01' }).where(eq(cardComments.id, later)).run();
+		const newestFirst = [later, ...tied.slice().reverse()];
+		for (const path of [`/api/cards/${s.first.id}/comments`, `/api/v1/cards/${s.first.id}/comments`]) {
+			const listed = await api('GET', path, { user: s.viewer });
+			expect(listed.status).toBe(200);
+			expect(ids(listed.body)).toEqual(newestFirst);
+			const emojiOf = (id: number) => (listed.body as { id: number; userEmoji: unknown }[]).find((row) => row.id === id)!.userEmoji;
+			for (const res of added) expect(emojiOf(res.body.id)).toBe(res.body.userEmoji);
+			expect(added.map((res) => res.body.userEmoji)).toEqual(['👤', '👤']);
+			expect(newestFirst.map(emojiOf).every((emoji) => typeof emoji === 'string' && emoji !== '')).toBe(true);
+		}
 
 		expect({
 			'internal comments, an outsider': await said(api('GET', `/api/cards/${s.first.id}/comments`, { user: outsider })),

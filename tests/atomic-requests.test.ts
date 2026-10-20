@@ -264,6 +264,45 @@ describe('PATCH /api/requests/:id, accept', () => {
 		]);
 	});
 
+	// Messages sent in the same second are copied in the order they were sent,
+	// by id, and the card's comment list shows the copies newest first (cards
+	// 2301 and 2302's plan, section 8, ruling 10). The copies are written in
+	// one loop, so they always share a second, and the list used to show them
+	// in no set order: in practice the earliest first, upside down.
+	it('copies messages of one second in the order they were sent, and lists the copies newest first', async () => {
+		const s = scene();
+		db.insert(requestMessages)
+			.values(
+				['One', 'Two', 'Three'].map((message) => ({
+					requestId: s.request.id,
+					senderType: 'requester',
+					senderName: 'Rita',
+					message,
+					createdAt: '2026-10-01 11:00:00'
+				}))
+			)
+			.run();
+
+		const res = await recording(() => accept(s));
+		expect(res.status).toBe(200);
+
+		const copied = (text: string) => `**👤 Rita (from request discussion):**\n${text}`;
+		const inOrder = [
+			'**🛡️ owner (from request discussion):**\nWhich columns?',
+			copied('All of them'),
+			copied('One'),
+			copied('Two'),
+			copied('Three')
+		];
+		expect(
+			db.select({ content: cardComments.content }).from(cardComments).orderBy(cardComments.id).all().map((row) => row.content)
+		).toEqual(inOrder);
+
+		const listed = await api('GET', `/api/cards/${res.body.resolvedCardId}/comments`, { user: s.owner });
+		expect(listed.status).toBe(200);
+		expect((listed.body as { content: string }[]).map((row) => row.content)).toEqual(inOrder.slice().reverse());
+	});
+
 	it('reads the request, and checks it is still waiting, inside the transaction that accepts it', async () => {
 		const s = scene();
 		const reads = watchReads('task_requests');

@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.68
+version: 1.69
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1034,6 +1034,17 @@ new; these answers and fields are:
   over by switching it off, then on (which makes them its setter), with a new secret, and
   updates the receiver; `{"active": true}` for one already on takes nothing over (item 81).
   See [Webhooks](#webhooks).
+- **`GET /cards/:cardId/comments` lists comments made in the same second the later first**
+  (card 2301), by id, in a list that is still newest first. A comment's `createdAt` is kept
+  to the second, and comments of one second came back in no set order, in practice the
+  earlier first: a request's discussion copied onto its card when it is accepted, and several
+  comments posted in a row, read upside down. The discussion is now copied in the order it
+  was sent, by id within one second, so its copies list newest first (item 82).
+- **`GET /cards/:cardId/comments` answers `userEmoji` `"👤"` for an author with no emoji**
+  (card 2302), as `POST /cards/:cardId/comments` and `GET` and `PUT /comments/:commentId`
+  already did, where it was `null` against the `Comment` schema, whose `userEmoji` is a
+  required string. Only an account restored from an old backup, or changed directly in the
+  database, has no emoji; no stored data changes (item 83).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -3260,7 +3271,10 @@ attachment is saved to disk, and so is an image when its name is clicked.
 
 #### `GET /api/v1/cards/:cardId/comments`
 
-List all comments on a card.
+List all comments on a card, newest first. A comment's `createdAt` is kept to the second;
+comments made in the same second are listed the later first, by id (card 2301). Each has
+its author's `username` and `userEmoji`, which is `"👤"` for an author with no emoji, as in
+every other comment answer (card 2302).
 
 #### `POST /api/v1/cards/:cardId/comments`
 
