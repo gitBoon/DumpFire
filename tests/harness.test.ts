@@ -121,7 +121,8 @@ const TEST_FILES = [
 	'uploads.test.ts',
 	'user-delete.test.ts',
 	'webhooks.test.ts',
-	'write-as.test.ts'
+	'write-as.test.ts',
+	'xp-leaderboard.svelte.test.ts'
 ];
 
 describe('the suite', () => {

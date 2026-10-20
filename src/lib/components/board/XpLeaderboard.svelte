@@ -11,11 +11,15 @@
 	import { getLevel, getXpProgress } from '$lib/board/xp-utils';
 
 	let { entries }: { entries: XpEntry[] } = $props();
+
+	// A sorted copy (card 2304). Sorting `entries` itself writes to the page's
+	// state while drawing, which Svelte refuses once there are two people.
+	const ranked = $derived([...entries].sort((a, b) => b.xp - a.xp));
 </script>
 
 {#if entries.length > 0}
 	<div class="xp-bar-container">
-		{#each entries.sort((a, b) => b.xp - a.xp) as entry (entry.name)}
+		{#each ranked as entry (entry.name)}
 			{@const level = getLevel(entry.xp)}
 			{@const progress = getXpProgress(entry.xp)}
 			<div class="xp-entry" title="{entry.name}: {entry.xp} XP (Level {level})">
