@@ -48,7 +48,7 @@ import { activityLog, cardLabels, cards, labels, type Card } from '$lib/server/d
 import type { SessionUser } from '$lib/server/auth';
 import * as cardActions from '$lib/board/card-actions';
 import { BoardState } from '$lib/board/board-state.svelte';
-import { CARD_GONE, CardWindow, changedFields, windowFields, WINDOW_FIELDS } from '$lib/board/card-window.svelte';
+import { CARD_GONE, CardWindow, changedFields, windowFields, WINDOW_FIELDS, WindowEdits, type WindowFields } from '$lib/board/card-window.svelte';
 import type { BoardContentsData } from '$lib/board/contents-answer';
 import { templateLabelIds } from '$lib/templates';
 import type { CardType, ColumnType } from '$lib/types';
@@ -380,6 +380,25 @@ function windowOpenedOn(card: Record<string, unknown> | null): typeof NEW_TASK {
 	return state as typeof NEW_TASK;
 }
 
+/**
+ * CardModal's follow `$effect` (card 2280, slice B5d), read from its source
+ * and compiled: the one that hands `edits.follow` the fields shown. Where
+ * there is none it is `() => {}`, so the window is run as one whose fields
+ * are filled once; the case "no $effect of the window sets a typed field but
+ * the follow's" holds that it is there.
+ */
+function followEffect(): string {
+	const source = readFileSync(join(process.cwd(), MODAL), 'utf8');
+	const script = ts.createSourceFile(MODAL, /<script lang="ts">([\s\S]*?)<\/script>/.exec(source)![1], ts.ScriptTarget.Latest, true);
+	let found: string | null = null;
+	const visit = (node: ts.Node) => {
+		if (ts.isCallExpression(node) && node.expression.getText() === '$effect' && node.arguments[0]?.getText().includes('edits.follow(')) found = node.arguments[0].getText();
+		ts.forEachChild(node, visit);
+	};
+	visit(script);
+	return found ? ts.transpile(`(${found})`, { target: ts.ScriptTarget.ES2022 }) : '(() => {});';
+}
+
 describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2280, slice B2c)', () => {
 	const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -498,16 +517,73 @@ describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2
 		expect([cardRow(card.id).title, cardRow(card.id).priority]).toEqual(['Mine', 'high']);
 	});
 
-	it('is a window whose typed fields no read can overwrite: each is filled from its card once, and no $effect of the window sets one', () => {
+	it('is a window whose typed fields no read can overwrite: no $effect of the window sets one but the follow’s, which sets each only to what edits.follow brought (card 2280, slice B5d)', () => {
 		const source = readFileSync(join(process.cwd(), MODAL), 'utf8');
 		const script = ts.createSourceFile(MODAL, /<script lang="ts">([\s\S]*?)<\/script>/.exec(source)![1], ts.ScriptTarget.Latest, true);
-		const assigned: string[] = [];
-		const visit = (node: ts.Node, inEffect: boolean) => {
-			const effect = inEffect || (ts.isCallExpression(node) && /^\$effect(\.pre)?$/.test(node.expression.getText()));
-			if (effect && ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) assigned.push(node.left.getText());
+		// The names an expression assigns to: one, or each in a destructuring.
+		const targets = (node: ts.Expression): string[] => {
+			if (ts.isIdentifier(node)) return [node.text];
+			if (ts.isParenthesizedExpression(node)) return targets(node.expression);
+			if (ts.isArrayLiteralExpression(node)) return node.elements.flatMap((element) => targets(ts.isSpreadElement(element) ? element.expression : element));
+			if (ts.isObjectLiteralExpression(node)) {
+				return node.properties.flatMap((property) =>
+					ts.isShorthandPropertyAssignment(property) ? [property.name.text] : ts.isPropertyAssignment(property) ? targets(property.initializer) : ts.isSpreadAssignment(property) ? targets(property.expression) : []
+				);
+			}
+			// A default in a destructuring: `[title = 'x'] = ...`.
+			if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) return targets(node.left);
+			return [];
+		};
+		// The names a node assigns to: `=`, a compound assignment (`+=`, `??=` and
+		// the rest), a destructuring one, `++` and `--` (the B5d review).
+		const assigns = (node: ts.Node): string[] => {
+			if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) return targets(node.left);
+			if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) && (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) return targets(node.operand);
+			return [];
+		};
+		const isTyped = (name: string) => (WINDOW_FIELDS as readonly string[]).includes(name);
+		// Each assignment made inside an $effect, with the $effect it is in; and
+		// each name used inside an $effect, to find a function of the window's
+		// called (or handed on) from one.
+		const assigned: { name: string; node: ts.Node; effect: ts.CallExpression }[] = [];
+		const used: { name: string; effect: ts.CallExpression }[] = [];
+		const visit = (node: ts.Node, inEffect: ts.CallExpression | null) => {
+			const effect = inEffect ?? (ts.isCallExpression(node) && /^\$effect(\.pre)?$/.test(node.expression.getText()) ? node : null);
+			if (effect) {
+				for (const name of assigns(node)) assigned.push({ name, node, effect });
+				if (ts.isIdentifier(node) && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node)) used.push({ name: node.text, effect });
+			}
 			ts.forEachChild(node, (child) => visit(child, effect));
 		};
-		visit(script, false);
+		visit(script, null);
+
+		// No $effect calls a function of the window's that sets a typed field,
+		// itself or through another (the B5d review): `applyTemplate` and
+		// `createCategoryInline` do, and are called from the window's controls.
+		const functions = new Map<string, ts.Node>();
+		for (const statement of script.statements) {
+			if (ts.isFunctionDeclaration(statement) && statement.name) functions.set(statement.name.text, statement);
+			if (!ts.isVariableStatement(statement)) continue;
+			for (const declared of statement.declarationList.declarations) {
+				if (declared.initializer && (ts.isArrowFunction(declared.initializer) || ts.isFunctionExpression(declared.initializer))) functions.set(declared.name.getText(), declared.initializer);
+			}
+		}
+		const settingTyped = new Set<string>();
+		for (let grew = true; grew; ) {
+			grew = false;
+			for (const [name, fn] of functions) {
+				if (settingTyped.has(name)) continue;
+				let sets = false;
+				const look = (node: ts.Node) => {
+					if (assigns(node).some(isTyped) || (ts.isIdentifier(node) && settingTyped.has(node.text))) sets = true;
+					ts.forEachChild(node, look);
+				};
+				look(fn);
+				if (sets) settingTyped.add(name), (grew = true);
+			}
+		}
+		expect([...settingTyped].sort()).toEqual(['applyTemplate', 'createCategoryInline']);
+		expect(used.filter(({ name }) => settingTyped.has(name)).map(({ name }) => name)).toEqual([]);
 		// And its sections (card 2280, slice B4), which are handed the fields bound:
 		// none sets one in an $effect, or has an $effect or onMount at all, so
 		// none fills a field, a list or the cost again when a read hands the
@@ -518,11 +594,42 @@ describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2
 			const text = readFileSync(join(process.cwd(), 'src/lib/components/card', file), 'utf8');
 			for (const block of text.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) {
 				const tree = ts.createSourceFile(file, block[1], ts.ScriptTarget.Latest, true);
-				visit(tree, false);
+				visit(tree, null);
 				expect(block[1], file).not.toMatch(/\$effect|\bonMount\b/);
 			}
 		}
-		expect(assigned.filter((name) => (WINDOW_FIELDS as readonly string[]).includes(name))).toEqual([]);
+
+		// The one $effect that sets a typed field is the window's follow (card
+		// 2280, slice B5d): on the board page, given `edits`, it hands
+		// `edits.follow` the fields as shown and the card's as the board has it
+		// now, and sets each field, once, to what that brought back, and only
+		// when it brought one. `follow` brings back only fields the user has not
+		// touched (its cases are below), so no effect sets a field typed in.
+		// Given no `edits` (All Tasks, All To Do, the plan page) it sets nothing.
+		const typed = assigned.filter(({ name }) => isTyped(name));
+		const follows = [...new Set(typed.map(({ effect }) => effect))];
+		expect(follows).toHaveLength(1);
+		const [follow] = follows;
+		const body = (follow.arguments[0] as ts.ArrowFunction).body as ts.Block;
+		// The field whose box has the focus is held (the B5d review): not brought
+		// until it is left, so a read does not move the caret in it.
+		expect(body.statements.map((statement) => statement.getText().replace(/\s+/g, ' ')).slice(0, 3)).toEqual([
+			'if (!edits) return;',
+			`const shown: WindowFields = { ${WINDOW_FIELDS.join(', ')} };`,
+			'const brought = edits.follow(shown, card ? windowFields(card) : null, focusedField);'
+		]);
+		expect(typed.map(({ name }) => name)).toEqual([...WINDOW_FIELDS]);
+		for (const { name, node } of typed) {
+			// A plain `=` to the field alone.
+			expect(ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(node.left), name).toBe(true);
+			const set = node as ts.BinaryExpression;
+			expect(set.right.getText().replace(/ as \w+( \| null)?$/, ''), name).toBe(`brought.${name}`);
+			const guard = set.parent.parent;
+			expect(ts.isIfStatement(guard) && guard.thenStatement === set.parent ? guard.expression.getText() : null, name).toBe(`brought.${name} !== undefined`);
+		}
+		// And it sets nothing else.
+		expect(assigned.filter(({ effect }) => effect === follow).map(({ name }) => name)).toEqual([...WINDOW_FIELDS]);
+		expect(body.statements).toHaveLength(3 + WINDOW_FIELDS.length);
 		// Its subtasks are filled, and its cost read, for the card, keyed by the
 		// card's id alone, and not again for every read of the board: a read sent
 		// before a tick was answered would untick it.
@@ -530,7 +637,7 @@ describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2
 		expect(flat).toContain('const windowCardId = $derived(card?.id);');
 		expect(flat).toContain('$effect(() => { if (!windowCardId) return; untrack(() => { if (card) cardSubtasks = (card.subtasks || []).map((s) => ({ ...s })); }); });');
 		expect(flat).toContain('const id = windowCardId;');
-		expect(assigned.filter((name) => name === 'cardSubtasks')).toHaveLength(1);
+		expect(assigned.filter(({ name }) => name === 'cardSubtasks')).toHaveLength(1);
 
 		// The subtasks are copies, filled from the card in both places: a tick in
 		// the window changes its own list, not the board state's card (the B2c review).
@@ -804,5 +911,272 @@ describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2
 		await cardWindow.save(windowSaves({ ...typing, card: asCard(cardWindow.card), title: 'Plan, renamed' }));
 		expect(sent.map((request) => request.body)).toEqual([{ title: 'Plan, renamed', boardId: A.board.id }]);
 		expect(cardRow(card.id).description).toBe('Third notes');
+	});
+
+	// Card 2280, slice B5d (the B2c review's note 4): in the board page's
+	// window, a field the user has not touched shows the board's value as
+	// each read brings it; one touched stays as typed. The window was all
+	// frozen at open: a field someone else changed showed its old value, and
+	// picking that old value again sent nothing.
+	describe('untouched fields follow the board; touched ones stay as typed (card 2280, slice B5d)', () => {
+		/** Someone else's change to a card, as the board will read it. */
+		const theirs = async (id: number, body: Record<string, unknown>) =>
+			expect((await api('PUT', `/api/cards/${id}`, { user: owner, body })).status).toBe(200);
+
+		/**
+		 * The board page's window on `cardWindow`'s card: its fields as CardModal
+		 * fills them (`windowOpenedOn`), and CardModal's own follow `$effect`
+		 * (`followEffect`), run with them as Svelte runs it, once the window is
+		 * made and again after each read of the board and each change typed
+		 * (`draw`). What the user types is set on `fields`, then drawn.
+		 */
+		function windowOnBoard(cardWindow: CardWindow) {
+			const fields: Record<string, unknown> = { ...windowOpenedOn(asCard(cardWindow.card)) };
+			const effect = followEffect();
+			const draw = () => {
+				// No box has the focus: a focused one is held (the jsdom file's case).
+				Object.assign(fields, { card: cardWindow.card, edits: cardWindow.edits, windowFields, focusedField: null });
+				(new Function('scope', `with (scope) { return ${effect} }`)(fields) as () => void)();
+			};
+			draw();
+			return { fields, draw, saves: () => windowSaves({ ...fields, card: asCard(cardWindow.card) } as unknown as typeof NEW_TASK) };
+		}
+
+		it('shows the board’s new priority where it was not touched, and a save sends nothing for it', async () => {
+			const card = makeCard(A.cols['To Do'], { title: 'Plan', priority: 'low' });
+			const { boardState, cardWindow } = await boardPage(A);
+			cardWindow.openCard(shown(boardState, card.id)!);
+			const window = windowOnBoard(cardWindow);
+			expect(window.fields.priority).toBe('low');
+
+			await theirs(card.id, { priority: 'high' });
+			await boardState.refreshNow();
+			window.draw();
+			expect(window.fields.priority).toBe('high');
+
+			// Saved as it shows: nothing is sent, and the window closes.
+			const sent = replay();
+			expect(await cardWindow.save(window.saves())).toEqual({ ok: true, told: [] });
+			expect(sent).toEqual([]);
+
+			// Opened again; someone else changes the priority again; the user renames the card.
+			cardWindow.openCard(shown(boardState, card.id)!);
+			const again = windowOnBoard(cardWindow);
+			await theirs(card.id, { priority: 'critical' });
+			await boardState.refreshNow();
+			again.draw();
+			again.fields.title = 'Plan, renamed';
+			again.draw();
+			expect(again.fields.priority).toBe('critical');
+			await cardWindow.save(again.saves());
+			expect(sent.map((request) => request.body)).toEqual([{ title: 'Plan, renamed', boardId: A.board.id }]);
+			expect([cardRow(card.id).title, cardRow(card.id).priority]).toEqual(['Plan, renamed', 'critical']);
+		});
+
+		it('sends a value picked again after someone else changed it away: it is a change from what the window shows', async () => {
+			const card = makeCard(A.cols['To Do'], { title: 'Plan', priority: 'low' });
+			const { boardState, cardWindow } = await boardPage(A);
+			cardWindow.openCard(shown(boardState, card.id)!);
+			const window = windowOnBoard(cardWindow);
+
+			await theirs(card.id, { priority: 'high' });
+			await boardState.refreshNow();
+			window.draw();
+			expect(window.fields.priority).toBe('high');
+			// The user picks low again, the value the window opened on.
+			window.fields.priority = 'low';
+			window.draw();
+
+			const sent = replay();
+			expect(await cardWindow.save(window.saves())).toEqual({ ok: true, told: [{ message: 'Card updated', failed: false }] });
+			expect(sent.map((request) => request.body)).toEqual([{ priority: 'low', boardId: A.board.id }]);
+			expect(cardRow(card.id).priority).toBe('low');
+		});
+
+		it('keeps a title the user typed when a read brings someone else’s, and follows the fields not touched', async () => {
+			const card = makeCard(A.cols['To Do'], { title: 'Plan', description: 'Old notes' });
+			const { boardState, cardWindow } = await boardPage(A);
+			cardWindow.openCard(shown(boardState, card.id)!);
+			const window = windowOnBoard(cardWindow);
+			window.fields.title = 'Mine';
+			window.draw();
+
+			await theirs(card.id, { title: 'Theirs', description: 'Their notes', summary: 'Their summary' });
+			await boardState.refreshNow();
+			window.draw();
+			expect([window.fields.title, window.fields.description, window.fields.summary]).toEqual(['Mine', 'Their notes', 'Their summary']);
+			expect(cardWindow.edits.touched).toEqual(new Set(['title']));
+
+			// Typed back to what it opened on, it is still the user's: a read does not take it.
+			window.fields.title = 'Plan';
+			window.draw();
+			await theirs(card.id, { title: 'Theirs again' });
+			await boardState.refreshNow();
+			window.draw();
+			expect(window.fields.title).toBe('Plan');
+
+			// Typed back to the title it started from ('Plan'), while the board's has
+			// moved on: what the window shows is the user's choice, and is sent
+			// (the B5d review: it was taken as no change, and silently not saved).
+			// Nothing not touched is sent.
+			const sent = replay();
+			expect(await cardWindow.save(window.saves())).toEqual({ ok: true, told: [{ message: 'Card updated', failed: false }] });
+			expect(sent.map((request) => request.body)).toEqual([{ title: 'Plan', boardId: A.board.id }]);
+			expect([cardRow(card.id).title, cardRow(card.id).description]).toEqual(['Plan', 'Their notes']);
+		});
+
+		// The B5d review: a touched field set back to the value it started from
+		// was compared with that value alone, so after someone else changed it
+		// the save sent nothing, and the window had shown the user's choice.
+		it('sends a touched field set back to its start when someone else has changed it since: the choice shown wins', async () => {
+			const card = makeCard(A.cols['To Do'], { title: 'Plan', priority: 'medium' });
+			const { boardState, cardWindow } = await boardPage(A);
+			cardWindow.openCard(shown(boardState, card.id)!);
+			const window = windowOnBoard(cardWindow);
+			window.fields.priority = 'high';
+			window.draw();
+			window.fields.priority = 'medium';
+			window.draw();
+			await theirs(card.id, { priority: 'low' });
+			await boardState.refreshNow();
+			window.draw();
+			expect(window.fields.priority).toBe('medium');
+
+			const sent = replay();
+			await cardWindow.save(window.saves());
+			expect(sent.map((request) => request.body)).toEqual([{ priority: 'medium', boardId: A.board.id }]);
+			expect(cardRow(card.id).priority).toBe('medium');
+
+			// Set back to its start with the board's value unchanged: no change, nothing sent.
+			cardWindow.openCard(shown(boardState, card.id)!);
+			const again = windowOnBoard(cardWindow);
+			again.fields.priority = 'high';
+			again.draw();
+			again.fields.priority = 'medium';
+			again.draw();
+			expect(await cardWindow.save(again.saves())).toEqual({ ok: true, told: [] });
+			expect(sent).toHaveLength(1);
+		});
+
+		it('sends a typed title over a read that brought someone else’s, and nothing it did not touch', async () => {
+			const card = makeCard(A.cols['To Do'], { title: 'Plan', description: 'Old notes' });
+			const { boardState, cardWindow } = await boardPage(A);
+			cardWindow.openCard(shown(boardState, card.id)!);
+			const window = windowOnBoard(cardWindow);
+			window.fields.title = 'Mine';
+			window.draw();
+			await theirs(card.id, { title: 'Theirs', description: 'Their notes' });
+			await boardState.refreshNow();
+			window.draw();
+			expect([window.fields.title, window.fields.description]).toEqual(['Mine', 'Their notes']);
+
+			const sent = replay();
+			await cardWindow.save(window.saves());
+			expect(sent.map((request) => request.body)).toEqual([{ title: 'Mine', boardId: A.board.id }]);
+			expect([cardRow(card.id).title, cardRow(card.id).description]).toEqual(['Mine', 'Their notes']);
+		});
+
+		it('keeps the touched fields after a refused save, and still follows the untouched ones', async () => {
+			const card = makeCard(A.cols['To Do'], { title: 'Plan', description: 'Old notes', priority: 'low' });
+			const { boardState, cardWindow } = await boardPage(A);
+			cardWindow.openCard(shown(boardState, card.id)!);
+			const window = windowOnBoard(cardWindow);
+			Object.assign(window.fields, { title: 'Plan, renamed', priority: 'high' });
+			window.draw();
+			await theirs(card.id, { description: 'Their notes' });
+			await boardState.refreshNow();
+			window.draw();
+
+			const asked = heldAnswers();
+			const saving = cardWindow.save(window.saves());
+			// Shown on the board at once: the window, drawn, keeps what was typed.
+			window.draw();
+			expect(asked.map((a) => a.body)).toEqual([{ title: 'Plan, renamed', priority: 'high', boardId: A.board.id }]);
+			asked[0].answer(json(403, { message: 'Viewers cannot change cards' }));
+			expect(await saving).toEqual({ ok: false, failure: 'Viewers cannot change cards' });
+
+			// The board takes its two fields back; the window, drawn, keeps them as typed.
+			expect(shown(boardState, card.id)).toMatchObject({ title: 'Plan', priority: 'low' });
+			window.draw();
+			expect([window.fields.title, window.fields.priority, window.fields.description]).toEqual(['Plan, renamed', 'high', 'Their notes']);
+
+			// Someone else changes the description and the title; the read follows the one not touched.
+			await theirs(card.id, { description: 'Third notes', title: 'Theirs' });
+			await boardState.refreshNow();
+			window.draw();
+			expect([window.fields.title, window.fields.priority, window.fields.description]).toEqual(['Plan, renamed', 'high', 'Third notes']);
+
+			const sent = replay();
+			expect(await cardWindow.save(window.saves())).toEqual({ ok: true, told: [{ message: 'Card updated', failed: false }] });
+			expect(sent.map((request) => request.body)).toEqual([{ title: 'Plan, renamed', priority: 'high', boardId: A.board.id }]);
+			expect([cardRow(card.id).title, cardRow(card.id).priority, cardRow(card.id).description]).toEqual(['Plan, renamed', 'high', 'Third notes']);
+		});
+
+		it('edits.follow: takes what the window started from on its first call, marks a field touched once it shows another value, and never brings back a touched one', () => {
+			const opened = windowFields({ title: 'Plan', priority: 'low' } as CardType);
+			const edits = new WindowEdits();
+			expect(edits.follow({ ...opened }, opened)).toEqual({});
+			expect(edits.started).toEqual(opened);
+
+			// The board changes two fields; the user has touched neither: both brought, and started from.
+			const board: WindowFields = { ...opened, title: 'Theirs', priority: 'high' };
+			expect(edits.follow({ ...opened }, board)).toEqual({ title: 'Theirs', priority: 'high' });
+			expect(edits.started).toEqual(board);
+
+			// The user types a title; the board changes title and description: only the description is brought.
+			const shownNow: WindowFields = { ...board, title: 'Mine' };
+			expect(edits.follow(shownNow, { ...board, title: 'Theirs again', description: 'Their notes' })).toEqual({ description: 'Their notes' });
+			expect(edits.touched).toEqual(new Set(['title']));
+			// The title started from what the window showed when it was touched.
+			expect(edits.started?.title).toBe('Theirs');
+
+			// Typed back to that, still touched: never brought.
+			expect(edits.follow({ ...board, description: 'Their notes' }, { ...board, title: 'Fourth', description: 'Their notes' })).toEqual({});
+			expect(edits.touched).toEqual(new Set(['title']));
+			// No card (a New Task window): nothing brought, a change still marked.
+			expect(edits.follow({ ...board, description: 'Their notes', priority: 'critical' }, null)).toEqual({});
+			expect(edits.touched).toEqual(new Set(['title', 'priority']));
+		});
+
+		// The B5d review: the window holds the field whose box has the focus, so a
+		// read does not move the caret in it.
+		it('edits.follow holds the field whose box has the focus: neither brought nor started from until it is left; the focus alone is no touch', () => {
+			const opened = windowFields({ title: 'Plan', description: 'Old notes' } as CardType);
+			const edits = new WindowEdits();
+			expect(edits.follow({ ...opened }, opened, 'description')).toEqual({});
+			const board: WindowFields = { ...opened, title: 'Theirs', description: 'Their notes' };
+			expect(edits.follow({ ...opened }, board, 'description')).toEqual({ title: 'Theirs' });
+			expect(edits.started?.description).toBe('Old notes');
+			expect(edits.touched.size).toBe(0);
+			// Left: brought on the next follow, and started from.
+			expect(edits.follow({ ...opened, title: 'Theirs' }, board, null)).toEqual({ description: 'Their notes' });
+			expect(edits.started?.description).toBe('Their notes');
+			expect(edits.touched.size).toBe(0);
+			// Typed in while it has the focus: touched, as any field.
+			expect(edits.follow({ ...board, title: 'Mine' }, { ...board, title: 'Fourth' }, 'title')).toEqual({});
+			expect(edits.touched).toEqual(new Set(['title']));
+		});
+
+		it('is given on the board page alone: the board page hands its window the controller’s edits, and All Tasks, All To Do and the plan page hand theirs none', () => {
+			const page = readFileSync(join(process.cwd(), 'src/routes/board/[id]/+page.svelte'), 'utf8').replace(/\s+/g, ' ');
+			expect(page).toContain('edits={cardWindow.edits}');
+			// A new edits is a new window (the B5d review): what one window typed is
+			// never taken by another's edits as what it started from.
+			expect(page).toContain('{#if cardWindow.open} {#key cardWindow.edits} <CardModal card={cardWindow.card}');
+			expect(page).toMatch(/milestones=\{boardState\.milestones\} \/> \{\/key\} \{\/if\}/);
+			for (const file of ['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte', 'src/routes/plan/[id]/+page.svelte']) {
+				const text = readFileSync(join(process.cwd(), file), 'utf8');
+				const opened = text.slice(text.indexOf('<CardModal'));
+				expect(opened.slice(0, opened.indexOf('/>')), file).not.toMatch(/\bedits\b/);
+			}
+			// A new window is a new edits: what one window started from is not another's.
+			const { cardWindow } = standIn({});
+			const first = cardWindow.edits;
+			cardWindow.openNew(3);
+			expect(cardWindow.edits).not.toBe(first);
+			const second = cardWindow.edits;
+			cardWindow.close();
+			expect(cardWindow.edits).not.toBe(second);
+		});
 	});
 });

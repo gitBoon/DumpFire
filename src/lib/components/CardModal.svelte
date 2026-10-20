@@ -9,7 +9,8 @@
 	 * Its sections are components of their own, in ./card/ (card 2280, slice
 	 * B4). The window keeps what it saves and what must outlast a section
 	 * being hidden (another tab shown, More options shut): its fields, which
-	 * it fills from its card once and hands to `onSave`, the lists it reads
+	 * it fills from its card and hands to `onSave` (on the board page, each
+	 * the user has not touched follows the card, slice B5d), the lists it reads
 	 * when it opens, and which dropdown or dialog is open. Each section is
 	 * handed those as props, bound where it changes them, and sends its own
 	 * writes, saying a refusal in the window's message box (`windowError`).
@@ -34,6 +35,7 @@
 	import { templateLabelIds } from '$lib/templates';
 	import { parseStamp } from '$lib/timestamps';
 	import { failureMessage } from '$lib/api';
+	import { windowFields, type WindowEdits, type WindowField, type WindowFields } from '$lib/board/card-window.svelte';
 	import { onMount, untrack } from 'svelte';
 	import type { CardType, CategoryType, LabelType, SubtaskType, DependencyRefType, MilestoneType } from '$lib/types';
 
@@ -52,6 +54,7 @@
 		availableBoards = [],
 		milestones = [],
 		notice = '',
+		edits,
 	}: {
 		card: CardType | null;
 		categories: CategoryType[];
@@ -68,6 +71,13 @@
 		milestones?: MilestoneType[];
 		/** Said at the top of the window while it holds: the board page's "This card is no longer on this board." (card 2280, the B2c review). */
 		notice?: string;
+		/**
+		 * The board page's controller's (card 2280, slice B5d): given, the fields
+		 * the user has not touched follow the card as each read hands it afresh.
+		 * All Tasks, All To Do and the plan page give none, and the fields are
+		 * filled once.
+		 */
+		edits?: WindowEdits;
 	} = $props();
 
 	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
@@ -133,11 +143,69 @@
 	let closeReason = $state(card?.closeReason || '');
 	let releaseState = $state(card?.releaseState || '');
 
-	// Open the section by default once anything in it has been recorded, so an
-	// existing value is never hidden behind a collapsed heading.
+	// Open the section as the window opens if anything in it has been recorded,
+	// so a value recorded then is not hidden behind a collapsed heading. One a
+	// read brings while the window is open (slice B5d) does not open it.
 	let showReporting = $state(
 		!!(card?.summary || card?.theme || card?.customerImpact || card?.closeReason || card?.releaseState)
 	);
+
+	/**
+	 * The field whose box has the focus, which the follow holds (the B5d
+	 * review): a value set into the box being typed in moved its caret to the
+	 * end. Set as the focus moves within the window (`onfocusin` and
+	 * `onfocusout` on its overlay), from the box's id or class. Priority and
+	 * category are picked from the chips' dropdowns, which have no caret, and
+	 * are not held. The focus alone is no touch: a box left untyped in
+	 * follows again, the title the window gives the focus as it opens too.
+	 */
+	let focusedField = $state<WindowField | null>(null);
+	const FIELD_BOXES: [string, WindowField][] = [
+		['#card-title', 'title'],
+		['#card-desc', 'description'],
+		['#card-bv', 'businessValue'],
+		['.on-hold-edit', 'onHoldNote'],
+		['#card-summary', 'summary'],
+		['#card-theme', 'theme'],
+		['#card-impact', 'customerImpact'],
+		['#card-close', 'closeReason'],
+		['#card-release', 'releaseState'],
+		['.chip-dropdown input[type="date"]', 'dueDate']
+	];
+	function boxField(target: EventTarget | null): WindowField | null {
+		if (!(target instanceof Element)) return null;
+		return FIELD_BOXES.find(([selector]) => target.matches(selector))?.[1] ?? null;
+	}
+
+	/**
+	 * The fields follow the card where nothing was typed (card 2280, slice
+	 * B5d; the B2c review's note 4). On the board page, given `edits`, this
+	 * hands `edits.follow` the twelve fields as shown and the card's as the
+	 * board has it now, as the window is made and again after each read and
+	 * each change typed. It marks each field shown with another value than it
+	 * gave it as touched, and brings back only untouched fields the board has
+	 * changed: so this sets no field the user has touched, and a field someone
+	 * else changed no longer shows its old value. The field whose box has the
+	 * focus is held until it is left (`focusedField`). With no `edits` it sets
+	 * nothing, and the fields are filled once, as before.
+	 */
+	$effect(() => {
+		if (!edits) return;
+		const shown: WindowFields = { title, description, priority, categoryId, dueDate, onHoldNote, businessValue, summary, theme, customerImpact, closeReason, releaseState };
+		const brought = edits.follow(shown, card ? windowFields(card) : null, focusedField);
+		if (brought.title !== undefined) title = brought.title as string;
+		if (brought.description !== undefined) description = brought.description as string;
+		if (brought.priority !== undefined) priority = brought.priority as string;
+		if (brought.categoryId !== undefined) categoryId = brought.categoryId as number | null;
+		if (brought.dueDate !== undefined) dueDate = brought.dueDate as string;
+		if (brought.onHoldNote !== undefined) onHoldNote = brought.onHoldNote as string;
+		if (brought.businessValue !== undefined) businessValue = brought.businessValue as string;
+		if (brought.summary !== undefined) summary = brought.summary as string;
+		if (brought.theme !== undefined) theme = brought.theme as string;
+		if (brought.customerImpact !== undefined) customerImpact = brought.customerImpact as string;
+		if (brought.closeReason !== undefined) closeReason = brought.closeReason as string;
+		if (brought.releaseState !== undefined) releaseState = brought.releaseState as string;
+	});
 
 	// Chip dropdown visibility
 	let showPriorityDrop = $state(false);
@@ -598,7 +666,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Card editor" bind:this={overlay}>
+<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Card editor" bind:this={overlay} onfocusin={(e) => (focusedField = boxField(e.target))} onfocusout={() => (focusedField = null)}>
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-content card-modal-content" onclick={(e) => { e.stopPropagation(); closeAllDropdowns(); }} role="document">
 		{#if isCoverValue(coverUrl)}
@@ -705,9 +773,10 @@
 		-->
 		<CardReportingFields bind:summary bind:theme bind:customerImpact bind:closeReason bind:releaseState bind:showReporting />
 
-		<!-- On Hold Note: shown from the window's own note, which a read never
-		     changes, so a note someone else wrote meanwhile neither shows a blank
-		     box nor takes it away mid-edit (card 2280, the B2c review). -->
+		<!-- On Hold Note: shown from the window's own note, which a read changes
+		     only while the user has not touched it (slice B5d): a note someone
+		     else writes then shows, and a box being edited is never taken away
+		     mid-edit, nor one emptied while editing (card 2280, the B2c review). -->
 		{#if onHoldNote || editingOnHold}
 			<div class="on-hold-note-display">
 				<div class="on-hold-label">
