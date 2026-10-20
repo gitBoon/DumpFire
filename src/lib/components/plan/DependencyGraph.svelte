@@ -227,8 +227,10 @@
 	/* These were links until cards started opening in place. They are buttons
 	   now — the browser's button defaults have to be undone so nothing shifts.
 	   (Card 2281, slice C3a-3: each block resets its own buttons; the critical
-	   path and the work table reset theirs.) */
-	button.list-card {
+	   path and the work table reset theirs.) By its class alone and before the
+	   card's own style, which sets its box after it: `button.list-card`
+	   outweighed that style and took the box away (card 2321). */
+	.list-card {
 		appearance: none; background: none; border: none; font: inherit;
 		padding: 0; text-align: left; cursor: pointer; color: inherit;
 	}
@@ -257,7 +259,6 @@
 		transition: all var(--duration-fast) var(--ease-out);
 	}
 	.list-card:hover { border-color: var(--accent-indigo); }
-	.list-card.on-critical { border-left: 3px solid var(--accent-rose); }
 
 	/* ─── Graph ────────────────────────────────────────────────────────── */
 

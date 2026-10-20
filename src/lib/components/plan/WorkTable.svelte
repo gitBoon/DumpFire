@@ -3,8 +3,8 @@
   its subtasks, searchable, filtered by state, sortable, each card opening
   to its subtasks (remembered in this browser for the goal) and each row to
   what it waits on; a card or blocker opens in the page's card window, and
-  ✕ takes a card out of the goal (card 2281, slice C3a-3: moved from
-  src/routes/plan/[id]/+page.svelte).
+  ✕ takes a card out of the goal once its dialog is answered (card 2281,
+  slice C3a-3: moved from src/routes/plan/[id]/+page.svelte; card 2335).
 
   Its rows are arranged by $lib/plan-table from the plan's nodes and the
   subtasks the page's load gave it. Taking a card out goes through the
@@ -29,6 +29,7 @@
 		type TableRow
 	} from '$lib/plan-table';
 	import type { Node } from '$lib/plan-graph';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	let {
 		data,
@@ -167,7 +168,17 @@
 
 	const STATE_LABEL: Record<RowState, string> = { done: 'Done', ready: 'Startable', blocked: 'Blocked', open: 'Open' };
 
+	/**
+	 * Taking a card out of the goal asks first, with the dialog every other
+	 * removal in the app asks with (card 2335: one stray click on ✕ took it
+	 * out). The card itself is not changed; putting it back is a search in
+	 * + Add cards, so a confirmation costs less than an undo would, which
+	 * would be a second change that can itself be refused.
+	 */
+	let detaching = $state<{ id: number; title: string } | null>(null);
+
 	async function detachCard(cardId: number) {
+		detaching = null;
 		await mutate({ cardId, attach: false });
 	}
 </script>
@@ -334,7 +345,7 @@
 							<td class="col-state"><span class="state-chip state-{r.state}">{STATE_LABEL[r.state]}</span></td>
 							<td class="col-actions">
 								{#if r.kind === 'card'}
-									<button class="detach" title="Remove from this milestone" onclick={() => detachCard(r.id)}>✕</button>
+									<button class="detach" title="Remove from this goal" onclick={() => (detaching = { id: r.id, title: r.title })}>✕</button>
 								{/if}
 							</td>
 						</tr>
@@ -368,6 +379,17 @@
 		</div>
 	{/if}
 </section>
+
+{#if detaching}
+	{@const card = detaching}
+	<ConfirmModal
+		title="Remove From Goal"
+		message="#{card.id} “{card.title}” leaves “{milestone.name}”. The card itself stays on its board as it is, and can be added back with + Add cards."
+		confirmText="Remove"
+		onConfirm={() => detachCard(card.id)}
+		onCancel={() => (detaching = null)}
+	/>
+{/if}
 
 <style>
 	/* These were links until cards started opening in place. They are buttons
@@ -491,11 +513,6 @@
 
 	.col-expand { width: 26px; }
 	.col-id { width: 64px; }
-	.col-id a {
-		font-size: 0.72rem; font-weight: 700; color: var(--text-tertiary);
-		font-variant-numeric: tabular-nums; text-decoration: none;
-	}
-	.col-id a:hover { color: var(--accent-indigo); }
 
 	.col-title { max-width: 0; width: 45%; }
 	/* The title gives way first: the subtask button and the critical-path chip
@@ -626,9 +643,8 @@
 	}
 	.detach:hover { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); }
 
-	/* ─── Blocked groups ───────────────────────────────────────────────── */
+	/* ─── What a row waits on, listed under it ─────────────────────────── */
 
-	.blocked-group { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
 	.blocker-list { display: flex; flex-direction: column; gap: 2px; padding-left: var(--space-lg); }
 	.blocker {
 		display: flex; align-items: baseline; gap: 6px;

@@ -33,10 +33,11 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
+	import { failureMessage } from '$lib/api';
 	import { PageCardWindow } from '$lib/board/page-card-window.svelte';
 	import type { CardWindowSave } from '$lib/board/card-window.svelte';
 	import type { CardType } from '$lib/types';
-	import { key, type Node, type WorkRef } from '$lib/plan-graph';
+	import { key, type Node } from '$lib/plan-graph';
 	// The plan's blocks (card 2281, slice C3a-3), each drawn where its markup was.
 	import PlanHeader from '$lib/components/plan/PlanHeader.svelte';
 	import PlanCardPicker from '$lib/components/plan/PlanCardPicker.svelte';
@@ -54,42 +55,46 @@
 	const milestoneId = $derived(milestone.id);
 	const nodes = $derived(summary.graph.nodes as Node[]);
 	const nodeByKey = $derived(new Map(nodes.map((n) => [key(n), n])));
-	const criticalKeys = $derived(
-		new Set((summary.criticalPathNodes as WorkRef[]).map(key))
-	);
 
 	let busy = $state(false);
 	let actionError = $state('');
 	let picking = $state(false);
 
-	/** One PATCH path for every edit on this page, so error handling is uniform. */
+	/**
+	 * One PATCH path for every edit on this page, so error handling is uniform.
+	 * A refusal is said in the server's words; no answer is said as no answer,
+	 * since the change may have been made (card 2314: it said nothing). Each
+	 * is said above the blocks and in a toast too, which stays on screen
+	 * wherever the page is scrolled to: the ✕ that sent it may be far below.
+	 */
 	async function mutate(body: Record<string, unknown>) {
 		busy = true;
 		actionError = '';
+		const started = toasts.navigation();
+		const failed = (words: string) => {
+			actionError = words;
+			toasts.add(words, 'error', started);
+		};
 		try {
-			const res = await fetch(`/api/milestones/${milestone.id}`, {
-				method: 'PATCH',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(body)
-			});
+			let res: Response;
+			try {
+				res = await fetch(`/api/milestones/${milestone.id}`, {
+					method: 'PATCH',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(body)
+				});
+			} catch {
+				failed('No answer from the server. It is not known whether that change was saved.');
+				return;
+			}
 			if (!res.ok) {
-				const err = await res.json().catch(() => ({}));
-				actionError = err.message || 'That change could not be saved';
+				failed(await failureMessage(res, 'That change could not be saved'));
 				return;
 			}
 			await invalidateAll();
 		} finally {
 			busy = false;
 		}
-	}
-
-	/**
-	 * Reaching the board itself, for anything the modal does not cover. Kept as a
-	 * deliberate act rather than the default — following a critical path used to
-	 * mean a round trip to another screen for every card on it.
-	 */
-	function cardHref(n: { id: number; boardId: number }): string {
-		return `/board/${n.boardId}?card=${n.id}`;
 	}
 
 	// ─── Card modal, opened in place ─────────────────────────────────────────
@@ -103,7 +108,6 @@
 		boardUsers: { id: number; username: string; email?: string; emoji: string }[];
 		milestones: any[];
 	} | null>(null);
-	let modalLoading = $state(false);
 
 	/**
 	 * The card window (card 2281, slice C3a-1): saved through the board page's
@@ -120,7 +124,9 @@
 	 * Open a card without leaving the plan.
 	 *
 	 * The board page has its whole payload to hand; this view spans boards, so it
-	 * fetches the one card's context on demand instead.
+	 * fetches the one card's context on demand instead. A refusal is said in
+	 * the server's words, and no answer as no answer (card 2314: it said
+	 * nothing, and every refusal "Could not open that card").
 	 */
 	async function openCard(ref: { kind?: string; id: number; parentCardId?: number; withheld?: boolean }) {
 		// Work on a board the viewer cannot open has nothing to open: its card
@@ -130,26 +136,35 @@
 		const cardId = ref.kind === 'subtask' ? ref.parentCardId : ref.id;
 		if (!cardId) return;
 
-		modalLoading = true;
+		const started = toasts.navigation();
+		let res: Response;
 		try {
-			const res = await fetch(`/api/cards/${cardId}/context`);
-			if (!res.ok) {
-				toasts.add('Could not open that card', 'error');
-				return;
-			}
-			const ctx = await res.json();
-			modalCard = ctx.card;
-			modalContext = {
-				boardId: ctx.boardId,
-				categories: ctx.categories,
-				labels: ctx.labels,
-				boardUsers: ctx.boardUsers,
-				milestones: ctx.milestones
-			};
-			cardWindow.openCard(ctx.card, ctx.boardId);
-		} finally {
-			modalLoading = false;
+			res = await fetch(`/api/cards/${cardId}/context`);
+		} catch {
+			toasts.add('No answer from the server. The card could not be opened.', 'error', started);
+			return;
 		}
+		if (!res.ok) {
+			toasts.add(await failureMessage(res, 'That card could not be opened.'), 'error', started);
+			return;
+		}
+		// An answer that is not the card's context (a proxy's page) was an answer, not none.
+		let ctx: { card: CardType; boardId: number } & NonNullable<typeof modalContext>;
+		try {
+			ctx = await res.json();
+		} catch {
+			toasts.add("The server's answer could not be read. The card could not be opened.", 'error', started);
+			return;
+		}
+		modalCard = ctx.card;
+		modalContext = {
+			boardId: ctx.boardId,
+			categories: ctx.categories,
+			labels: ctx.labels,
+			boardUsers: ctx.boardUsers,
+			milestones: ctx.milestones
+		};
+		cardWindow.openCard(ctx.card, ctx.boardId);
 	}
 
 	/**
