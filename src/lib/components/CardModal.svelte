@@ -58,7 +58,7 @@
 		labels: LabelType[];
 		boardId: number;
 		boardUsers?: { id: number; username: string; email?: string; emoji: string }[];
-		onSave: (data: { title: string; description: string; priority: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[]; pendingLabelIds?: number[] }) => void;
+		onSave: (data: { title: string; description: string; priority: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[]; pendingLabelIds?: number[] }) => void | Promise<unknown>;
 		onDelete?: () => void;
 		onClose: () => void;
 		onCreateSubBoard?: (name: string) => void;
@@ -117,7 +117,6 @@
 	// svelte-ignore state_referenced_locally
 	let categoryId = $state<number | null>(card?.categoryId ?? null);
 	let dueDate = $state(card?.dueDate || '');
-	let showDueDate = $state(!!card?.dueDate);
 	let descPreview = $state(false);
 	let onHoldNote = $state(card?.onHoldNote || '');
 	let businessValue = $state(card?.businessValue || '');
@@ -270,7 +269,16 @@
 		showTemplatePicker = false;
 	}
 
+	/**
+	 * A save handed to the page and not yet answered: no second one is sent
+	 * until it is, by Ctrl+Enter, Enter in the title or the button (the B5
+	 * review): a create sent twice would make the card twice. Every page's
+	 * `onSave` hands back its promise.
+	 */
+	let saving = $state(false);
+
 	function save() {
+		if (saving) return;
 		if (!title.trim()) {
 			titleError = true;
 			setTimeout(() => (titleError = false), 1500);
@@ -278,7 +286,7 @@
 		}
 		// No colour tag: the window has no control for one, and the empty one it
 		// sent cleared a tag set through the API at every save (card 2147).
-		onSave({
+		const out = onSave({
 			title: title.trim(), description, priority, categoryId,
 			// An emptied box is sent as '' when the card held a value, which clears it; otherwise left out (card 2200).
 			dueDate: dueDate || null, onHoldNote: onHoldNote || (card?.onHoldNote ? '' : undefined),
@@ -303,6 +311,11 @@
 				? templateLabels
 				: undefined
 		});
+		if (out) {
+			saving = true;
+			const answered = () => { saving = false; };
+			out.then(answered, answered);
+		}
 	}
 
 	function openNewPendingSubtask() {
@@ -361,13 +374,41 @@
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (showSubtaskModal) return; // Let subtask modal handle its own escape
-		if (e.key !== 'Escape') return;
+		// Ctrl+Enter (Cmd+Enter) saves, as the footer says (card 2280, slice B5c).
+		// The comment, label, sub-board and category boxes keep theirs: they
+		// stop it before it gets here.
+		const saveKey = e.key === 'Enter' && (e.ctrlKey || e.metaKey);
+		if (e.key !== 'Escape' && !saveKey) return;
 		// A confirmation the page opened over this window, such as All Tasks' or
 		// the board page's "Archive Card", answers Escape itself, as Cancel. It
 		// used to close this window as well, and with it what was typed in it.
 		const confirming = document.querySelector('.confirm-modal');
 		if (confirming && !overlay?.contains(confirming)) return;
-		onClose();
+		if (saveKey) {
+			// Not while a template dialog is open: its own Enter is its answer.
+			if (showTemplatePicker || showSaveTemplate) return;
+			// The key is the window's: a focused button is not pressed by it too.
+			e.preventDefault();
+			// A held key repeats; and `save()` sends one save at a time.
+			if (!e.repeat) save();
+			return;
+		}
+		// Not while a save is on its way: a refused one leaves the window open
+		// with what was typed, which an Escape pressed by accident would lose
+		// (the B5 review). Cancel and ✕ still close: they are meant.
+		if (saving) return;
+		// Escape closes the innermost thing open, and the window only when
+		// nothing is (the B5 review). A section's own, a comment or a label being
+		// edited, is closed by its box, which stops it; the dependency picker's
+		// box does too, and the picker is the window's, closed here wherever
+		// the focus is.
+		if (showSaveTemplate) showSaveTemplate = false;
+		else if (showTemplatePicker) showTemplatePicker = false;
+		else if (showNewCategory) showNewCategory = false;
+		else if (showPriorityDrop || showCategoryDrop || showDueDateDrop || showAssigneeDrop) closeAllDropdowns();
+		else if (pickerMode) { pickerMode = null; pickerQuery = ''; pickerResults = []; }
+		else if (showLinkPicker) showLinkPicker = false;
+		else onClose();
 	}
 
 	// Subtask operations
@@ -597,7 +638,7 @@
 			<div class="dep-error window-error" role="status">{notice}</div>
 		{/if}
 		<div class="title-field" class:title-error={titleError}>
-			<input id="card-title" class="modal-title-input" type="text" placeholder="What needs to be done?" maxlength="500" bind:value={title} oninput={() => (titleError = false)} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && save()} autofocus />
+			<input id="card-title" class="modal-title-input" type="text" placeholder="What needs to be done?" maxlength="500" bind:value={title} oninput={() => (titleError = false)} onkeydown={(e) => e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && save()} autofocus />
 			{#if titleError}<span class="title-error-msg">A title is required</span>{/if}
 		</div>
 
@@ -713,7 +754,7 @@
 		{#if showNewCategory}
 		<div class="inline-cat-form" style="margin-bottom: var(--space-lg);">
 			<label style="font-size:0.75rem; font-weight:600; color:var(--text-secondary); margin-bottom:6px; display:block;">New Category</label>
-			<input type="text" class="inline-cat-input" placeholder="Category name..." bind:value={newCatName} onkeydown={(e) => e.key === 'Enter' && createCategoryInline()} autofocus />
+			<input type="text" class="inline-cat-input" placeholder="Category name..." bind:value={newCatName} onkeydown={(e) => { if (e.key !== 'Enter') return; if (e.ctrlKey || e.metaKey) e.stopPropagation(); createCategoryInline(); }} autofocus />
 			<div class="inline-cat-colors">
 				{#each COLUMN_COLORS.slice(0, 8) as color}
 					<button class="cat-color-swatch" class:active={newCatColor === color} style="background: {drawnColour(color)}" onclick={() => (newCatColor = color)} type="button"></button>
@@ -828,7 +869,7 @@
 			</div>
 			<div class="footer-right">
 				<button class="btn-cancel" onclick={onClose}>Cancel</button>
-				<button class="btn-create" onclick={save} disabled={!title.trim()}>
+				<button class="btn-create" onclick={save} disabled={!title.trim() || saving}>
 					{card ? 'Save Changes' : 'Create task'}
 				</button>
 			</div>

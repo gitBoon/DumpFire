@@ -464,7 +464,8 @@ describe('the card window’s own messages and Escape, src/lib/components/CardMo
 		expect(handler).toContain("const confirming = document.querySelector('.confirm-modal');");
 		expect(handler).toContain(leaves);
 		expect(handler.indexOf(leaves)).toBeLessThan(handler.indexOf('onClose();'));
-		expect(handler).toContain("if (e.key !== 'Escape') return;");
+		// Escape, and Ctrl+Enter, which saves (card 2280, slice B5c: tests/card-window-keys.svelte.test.ts).
+		expect(handler).toContain("if (e.key !== 'Escape' && !saveKey) return;");
 		expect(source).toContain('aria-label="Card editor" bind:this={overlay}>');
 
 		// What it looks for is the confirmation those pages open, which answers Escape itself.
@@ -500,7 +501,8 @@ describe('the card window’s save and its template’s labels, src/lib/componen
 		expect(labelled?.getText().replace(/\s+/g, ' ')).toBe('pendingLabelIds: !card && templateLabels.length > 0 ? templateLabels : undefined');
 
 		// Nor does the type of what it hands the page name one.
-		const typed = /onSave: \(data: \{([^}]*)\}\) => void;/.exec(modal.getText())![1];
+		// (It hands back the page's promise, so that one save is out at a time: card 2280, slice B5c.)
+		const typed = /onSave: \(data: \{([^}]*)\}\) => void \| Promise<unknown>;/.exec(modal.getText())![1];
 		expect(typed).not.toContain('colorTag');
 		expect(typed).toContain('pendingLabelIds?: number[]');
 	});

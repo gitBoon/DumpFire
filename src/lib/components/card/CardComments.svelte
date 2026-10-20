@@ -110,6 +110,22 @@
 		editingCommentText = '';
 	}
 
+	/**
+	 * Ctrl+Enter (Cmd+Enter) in a comment box sends that comment, and goes no
+	 * further: the window saves itself on Ctrl+Enter (its `handleKeydown`, on
+	 * `window`), and would otherwise save and close with the comment (card
+	 * 2280, slice B5c). Svelte delegates this handler to the root the page is
+	 * mounted in, which the key reaches before `window`, so stopping it here
+	 * keeps it from the window's handler; `tests/card-window-keys.svelte.test.ts`
+	 * holds that. Escape in a comment being edited stops the edit, as its
+	 * Cancel does, and is stopped the same way, or it would close the window.
+	 */
+	function sendKey(e: KeyboardEvent, send: () => void) {
+		if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey)) return;
+		e.stopPropagation();
+		send();
+	}
+
 	function commentTimeAgo(dateStr: string): string {
 		const then = parseStamp(dateStr)?.getTime();
 		if (then === undefined) return '';
@@ -125,7 +141,7 @@
 <!-- Comments Tab -->
 <div class="comments-section">
 	<div class="comment-input-area">
-		<textarea class="comment-input" placeholder="Write a comment... (supports **markdown**)" bind:value={newComment} rows="3" onkeydown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) postComment(); }}></textarea>
+		<textarea class="comment-input" placeholder="Write a comment... (supports **markdown**)" bind:value={newComment} rows="3" onkeydown={(e) => sendKey(e, postComment)}></textarea>
 		<div class="comment-input-actions">
 			<span class="comment-hint">Ctrl+Enter to send</span>
 			<button class="btn-primary small" onclick={postComment} disabled={!newComment.trim()}>Post Comment</button>
@@ -151,7 +167,7 @@
 							{#if comment.createdAt !== comment.updatedAt}<span class="comment-edited">(edited)</span>{/if}
 						</div>
 						{#if editingCommentId === comment.id}
-							<textarea class="comment-edit-input" bind:value={editingCommentText} rows="3"></textarea>
+							<textarea class="comment-edit-input" bind:value={editingCommentText} rows="3" onkeydown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); editingCommentId = null; } else sendKey(e, () => saveEditComment(comment.id)); }}></textarea>
 							<div class="comment-edit-actions">
 								<button class="btn-primary small" onclick={() => saveEditComment(comment.id)}>Save</button>
 								<button class="btn-ghost small" onclick={() => (editingCommentId = null)}>Cancel</button>
