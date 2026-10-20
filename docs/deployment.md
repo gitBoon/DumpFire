@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.46
+version: 1.47
 status: As-Built
-date: 2026-10-19
+date: 2026-10-20
 tags:
   - docker
   - deployment
@@ -33,7 +33,9 @@ tags:
   - attachment-sweep
   - webhooks
   - webhook-allow-list
-description: "Docker deployment, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
+  - board-page
+  - card-window
+description: "Docker deployment, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -3319,6 +3321,72 @@ Checks 191 and 192 need two scratch boards you own, A and B, and a public reques
 #### Going back to the previous image
 
 Nothing is done to the database. The older image sends nothing for a reopening or a move to another board again, but for a move into another board's Complete column, for which it still sends the joined board `card.completed`.
+
+### The Board Page and the Card Window Apply Each Change
+
+**Card 2280** (part B of card 2012's plan). No migration, no setting, no environment variable: nothing to configure. The board page used to re-run its whole load after every change it made and on every live event, so each change was read twice and a burst of 20 changes 20 times, and twenty of its changes said nothing when refused. Now a change shows at once and its answer is taken, or, refused, that change alone goes back and the server's words are said; other people's changes are followed by one read of the board's contents for a burst, never during a drag; and the card window saves only the fields changed in it. One read route is new, `GET /api/boards/[id]/contents`, the web application's own and not under `/api/v1/`. See [The Board Page and the Card Window](architecture.md#the-board-page-and-the-card-window) and, for what users see, [Real-Time Updates](feature-overview.md#real-time-updates) and [Cards](feature-overview.md#cards).
+
+```mermaid
+flowchart LR
+    Event["A live event on the board"] --> Wait["Gathered for 250 ms,<br/>at most 1 s; held during a drag<br/>or a write of the page's own"]
+    Wait --> Read["GET /api/boards/id/contents"]
+    Read -->|"200"| Draw["Drawn"]
+    Read -->|"401, 403, 404"| Refusal["The board's refusal page"]
+    Read -->|"5xx or no answer"| Keep["Screen kept; read again on reconnect"]
+```
+
+**Owner to know.**
+
+- **Nothing to configure.** The new route answers the board page's own session, with what the load answered, under the load's own access check (`404` `Board not found`, then `403` `You do not have access to this board`), and a `200` carries `cache-control: private, no-store`. The proxy caches nothing already ([Reverse Proxy](#reverse-proxy--nginx)), and a session's requests are not rate limited, so nothing changes there.
+- **The proxy's access log changes shape.** An open board page now asks `GET /api/boards/<id>/contents` about once for each change made on the board, by anyone, where it asked `GET /board/<id>/__data.json?x-sveltekit-invalidated=…` twice for each of its own changes and once for each event.
+- **A page left open across the deploy should be reloaded**, a board page or the dashboard above all. It keeps the old scripts until it is: it still works, re-reading its whole load after every change, but nothing of this card applies in it. The bar "DumpFire has been updated…" asks for the reload within about a minute ([A page left open across a deploy](architecture.md#a-page-left-open-across-a-deploy)).
+- **Users will see changes take effect at once and refusals said** (a card renamed on the board, pin, priority, Move to, completion prompt, adding and deleting categories, which show once the server has taken them (a refused one keeps its name in the box), drags, board name and emoji, a column's colour, WIP limit and Add Task switch), bulk priority and archive reporting per card, an On Hold note written only once the card has moved, the card window keeping someone else's change to another field, Ctrl+Enter saving the window, Escape closing the innermost thing in it, "Todo" columns getting Add Task, and the cover's custom colour opening on the cover's colour.
+- **All Tasks, All To Do and the plan page are unchanged** but for the card window's keys and cover colour: their card windows still send every field on save until card 2281 moves them onto the board's controller.
+
+#### After the deploy
+
+Checks 193 to 213 run on production, in two browsers, on a scratch board made for them. **A** is a throwaway ordinary account an administrator creates for these checks, with an email address the person running them owns and a password set on the admin page, so that no invite mail is sent; **B** is an administrator. In B, make a board "Check 2280" (it has To Do, On Hold, In Progress and Complete), and in its Share window share it with A as Editor: that sends a "Board shared" mail to A's address. Open it in both, with A's developer tools open on **Network**. For check 194, give the board 40 cards with an API key of A's, not B's: Editor is enough to make cards through `/api/v1/`, a wrong board id is then refused `403` rather than writing on a real board, and the key goes with A's account after check 213. Signed in as A, make the key on the Account page (Generate Key), and run in PowerShell, with the host name alone, the key and the board's id from its address (`/board/<id>`):
+
+```powershell
+$hostName = 'dumpfire.example.com'; $key = '<A key>'; $board = <board id>
+$headers = @{ Authorization = "Bearer $key" }
+$column = (Invoke-RestMethod -Uri "https://$hostName/api/v1/boards/$board/columns" -Headers $headers)[0].id
+1..40 | ForEach-Object {
+  Invoke-RestMethod -Method Post -Uri "https://$hostName/api/v1/boards/$board/cards" `
+    -Headers $headers -ContentType 'application/json' `
+    -Body (@{ columnId = $column; title = "Check card $_" } | ConvertTo-Json) | Out-Null
+}
+```
+
+The first column is To Do. A key is allowed 60 requests a minute, so running the script twice within a minute is refused `429` partway; wait a minute and run the rest. Check 213 deletes the board; delete A's account after it, which takes its key.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 193 | 2280 | In A: rename a card on the board itself, drag it to In Progress, change its priority from its menu (right-click) | Each shows at once and stays; B shows each within about a second; A's Network shows one or two `GET /api/boards/<id>/contents` per change and no `__data.json` | A `__data.json` per change, or a card flickers back |
+| 194 | 2280 | In A: select 20 cards and change their priority from the bulk bar; then select 20 and archive them | Each change shows at once; A's Network shows one or two contents reads for each bulk change, not 20; B follows | 20 reads, or a changed card flips back |
+| 195 | 2280 | In A, press on a card and start dragging it, and keep holding; in B, move another card | A's drag is not interrupted; on the drop both moves show in A | A's card jumps back during the drag |
+| 196 | 2280 | In B, rename the board and change its emoji in the header | A's header follows within about a second | A keeps the old name until reloaded |
+| 197 | 2280 | In A, set Network to **Offline** and change a card's priority with its dot; in B, change another card's title; in A, back **Online**, then switch to another browser tab and back (a return to the tab reads the board; or keep A offline under 5 s) | A says "No answer from the server. The priority may not have been changed." and the old priority is back; once back on the tab, A shows B's new title within about a second | A keeps the new priority, or stays stale |
+| 198 | 2280 | In A, set Network to **3G** (Chrome's slow preset) and make two quick changes to one card: its priority with its dot, then its title on the board | Both stay; nothing jumps back while the answers arrive. Network back to **No throttling** | The first change's read briefly undoes the second |
+| 199 | 2280 | In A, drag a card into On Hold and press **Cancel**; drag it again, type a note and **Confirm** | Cancel puts the card back at once; the confirmed move keeps the note, shown on the card | A note on a card that did not move, or the card left in On Hold after Cancel |
+| 200 | 2280 | In A, open card X's window, add a subtask and leave it unticked; close it and drag X into Complete; while the blocked window ("…incomplete subtask…") is open, in B move another card; then close the window | The blocked window; X back in its column at once; B's move shows in A only after the window closes | X in Complete, or the board changing under the open window |
+| 201 | 2280 | In A, keyboard: edit a card's title on the board and press Enter; edit it again, type, and press Escape; rename a column and press Enter; open a column's WIP limit, and in a card's window the category chip's new category form and Save as Template | Enter saves each; Escape leaves the card's title as it was and sends nothing; the WIP limit, new category and template name boxes take the focus as they open | Escape saves, or a box without the focus |
+| 202 | 2280 | In A, hover a card, and a column's header; pin a card that is new; set a column's WIP limit below its count | The drag handle shows on the card, the column's actions on its header; the New badge sits left of the pin; the column's colour bar pulses | Either not shown on hover (a scoped rule lost) |
+| 203 | 2280 | In A, scroll the To Do column down and the board sideways; in B, change a card | A's scroll is kept across the refresh | A jumps to the top or the left |
+| 204 | 2280 | In A, switch to the list view and pick a column; in B, change a card in it; in A, switch back to the board | The list follows B's change; the board view is as it was | The list stays stale |
+| 205 | 2280 | In A, on the board, open a card in To Do and set its goal first (make a goal on the Planning page if there is none); then open its window from the board, from All Tasks, from All To Do and from that goal's plan page; on the board's, use every section: add and tick a subtask, comment, attach a small file, add a dependency, the sub-board section, a cover, Save as Template, the reporting fields | Each window opens with every section; each change saves as before | A section missing or not saving |
+| 206 | 2280 | Open one card's window in A and in B; in B, change its due date and **Save**; in A, change only its title and **Save** | The card has B's due date and A's title | B's due date overwritten |
+| 207 | 2280 | Open a card's window in A; in B, change that card's priority and description; then in A type in the title box, and in B rename the card; in A, **Cancel**. Open the window again in A and, typing nothing, **Save** | B's priority and description show in A's window within about a second; then the typed title stays as typed through B's rename, the caret where it was; opened again with nothing typed, **Save** closes it with nothing said | The window keeps the old values, the typed title replaced, or "Card updated" with nothing typed |
+| 208 | 2280 | In A's card window: type in the description, then Ctrl+Enter; open it again, type a comment and Ctrl+Enter; open the dependency search and Escape, then Escape again; open it again, open the priority chip's dropdown and Escape | Ctrl+Enter saves once ("Card updated" once) and closes; in the comment box it posts the comment and the window stays open; the first Escape closes only the search and the second the window; Escape closes only the dropdown | Two saves, the comment box saving the window, or Escape closing the window first |
+| 209 | 2280 | In B, rename the To Do column "Todo" | In A, after the refresh, the column shows Add Task, a double-click in its empty space opens New Task, and its menu shows Show Add Task ticked. Rename it back to "To Do" | No Add Task on "Todo" |
+| 210 | 2280 | In A, on a saved card, More options, **Cover**: pick the first gradient, then open the custom colour box | It opens on the gradient's first colour, a blue-violet (`#667eea`), not black | Black |
+| 211 | 2280 | In B's Share window, make A a Viewer; in A, rename a card on the board, add a category, rename the board, and drag a card into On Hold with a note and Confirm. Then make A an Editor again | Each is refused in the server's words (such as "No edit access to this board") and the screen goes back; the On Hold card is back in its column with no note | A change left on screen, nothing said, or a note on a card that did not move |
+| 212 | 2280 | In B's Share window, remove A from the board; wait up to 30 s (the stream's heartbeat). Then share it with A again as Editor and open it again in A | A shows "You do not have access to this board"; opened again, the board | A keeps drawing the board |
+| 213 | 2280 | In B, delete the board "Check 2280" | Within a few seconds A shows "Board not found". Then delete A's account | A keeps drawing the board |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image re-reads the whole board after every change again, says nothing for the twenty refusals, and its card window sends every field. A page loaded from this image and left open across the change finds the contents route gone and asks for its whole load after each event, showing an empty board for a moment each time; reload it (the update bar asks within a minute).
 
 ## Changing the Schema
 

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.35
+version: 1.36
 status: As-Built
 date: 2026-10-20
 tags:
@@ -18,7 +18,10 @@ tags:
   - errors
   - services
   - api-trees
-description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, and how a page left open notices a new version"
+  - board-page
+  - card-window
+  - live-updates
+description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -98,7 +101,9 @@ flowchart TB
         ArchivedView["Archived Tasks"]
         AdminPanel["Admin Panel"]
         Reports["Reports"]
-        CardModal["Card Modal"]
+        CardModal["Card Modal\nand its 11 sections"]
+        BoardState["Board State + Refresh Schedule\nboard-state.svelte.ts,\nrefresh-schedule.ts (card 2280)"]
+        CardWindowCtl["Card-Window Controller\ncard-window.svelte.ts (card 2280)"]
     end
 
     subgraph Server["SvelteKit Server"]
@@ -106,6 +111,7 @@ flowchart TB
 
         subgraph InternalAPI["Internal API"]
             BoardsAPI["Boards"]
+            ContentsAPI["Board Contents\nGET /api/boards/[id]/contents"]
             CardsAPI["Cards"]
             ColumnsAPI["Columns"]
             SubtasksAPI["Subtasks"]
@@ -139,6 +145,7 @@ flowchart TB
             ApiErrors["API Failures\napi-errors.ts"]
             V1Json["v1 Answers in ISO 8601\nv1-json.ts"]
             CrossBoard["Cross-Board Cards\ncross-board-cards.ts"]
+            BoardContents["Board Contents Reader\nboard-contents.ts (card 2280)"]
         end
 
         DB[("SQLite")]
@@ -162,6 +169,12 @@ flowchart TB
     ExternalAPI --> V1Json
     Uploads --> Files
     CrossBoard --> BoardAccess
+    BoardView --> BoardState
+    BoardView --> CardWindowCtl
+    CardWindowCtl --> BoardState
+    BoardState -->|"one coalesced read"| ContentsAPI
+    ContentsAPI --> BoardContents
+    BoardContents --> BoardAccess
     SSE -.->|"Server-Sent Events"| Client
     ReportEngine -.->|"SMTP"| EmailServer["Email Server"]
     BackupService -.->|"Push"| BackupDest["Backup Destinations"]
@@ -702,7 +715,7 @@ sequenceDiagram
 - **Only the session that opened it counts.** Another session of the same account ending does not end the stream.
 - **A check that cannot be made ends the stream too.** The check runs inside the heartbeat's `try`. If it throws, the stream ends as for a session that has gone, and one `WARN` line is written under `AUTH`, "Live stream ended: its session could not be checked", with the route and the error. Nothing escapes the timer, where it would end the process.
 - **What the page does.** Nothing new: `keepStreamOpen()` sees the stream drop, asks again three seconds later, is answered `401` and stays closed, and a page that holds a stream (a board, the dashboard, All Tasks, Burndown) goes to the login page by itself, about 35 seconds after the session ended at most. A page that holds none (Account, Admin, Reports) goes there at its next request. A stream that ended because its holder changed their own password opens again at once on the browser's new cookie, one that `/api/events` ended for a change of role opens again with the role as it is now, and the page re-reads its data. The audit console's own `EventSource` is refused when it tries again (`401`, or `403` for an account that is no longer an administrator), gives up, and the console shows it is disconnected.
-- **What access each stream checks again** (card 2170). Each decides everything again at one moment, its heartbeat. The board stream asks, after the session, whether the board row is still there and the account as it is now can open it (`canViewBoard`); if not, it enqueues one last `update` with `{"type":"access"}` on its own stream, not emitted to anyone else, and ends, and the board page re-reads and shows its load's refusal, "You do not have access to this board" or "Board not found". It opens only on a board that is there and that the caller can open (`requireBoard(user, id, 'view')`: `404`, administrators included, `403`, or `400` for an id that is not one). `/api/events` keeps each board's answer until its next heartbeat, which forgets them all once the session and the role are checked; the 30-second clock it kept them by is gone. An administrator made an ordinary user stops receiving the log and every board's events at the next heartbeat, and a board's events too unless they are on it.
+- **What access each stream checks again** (card 2170). Each decides everything again at one moment, its heartbeat. The board stream asks, after the session, whether the board row is still there and the account as it is now can open it (`canViewBoard`); if not, it enqueues one last `update` with `{"type":"access"}` on its own stream, not emitted to anyone else, and ends, and the board page re-reads and shows its load's refusal, "You do not have access to this board" or "Board not found" (since card 2280 the access event is a read of the board's contents sent at once, never held, whose `403` or `404` empties the page and asks for the load once: see [The Board Page and the Card Window](#the-board-page-and-the-card-window)). It opens only on a board that is there and that the caller can open (`requireBoard(user, id, 'view')`: `404`, administrators included, `403`, or `400` for an id that is not one). `/api/events` keeps each board's answer until its next heartbeat, which forgets them all once the session and the role are checked; the 30-second clock it kept them by is gone. An administrator made an ordinary user stops receiving the log and every board's events at the next heartbeat, and a board's events too unless they are on it.
 - **A deleted board is told first.** A delete's own event is delivered in the same synchronous run as its commit (`emit` queues it with `afterCommit`, and the outermost transaction starts the queued effects as it returns), and a heartbeat is a timer, which cannot run in between. A stream closed after an `enqueue` still hands the reader what was enqueued, so the deleted board's page always has `{ type: 'board', action: 'deleted' }` before the access event and the end. Board ids are never used again, so ending a stream on a deleted board loses nothing.
 
 ```mermaid
@@ -740,7 +753,7 @@ In the browser every stream but one is opened by `keepStreamOpen()` in `src/lib/
 
 ### The board page follows the board it shows
 
-The board page's stream is the page's own: `connectSSE(data.board.id, ...)` (`src/lib/board/sse.ts`) is called in its `onMount` and closed in its `onDestroy`. SvelteKit keeps a page's component when only its params change, so until card 2184 a sub-board badge, a breadcrumb, a link in the card window, or Back and Forward between two boards showed the second board in the first board's page, still listening to the first board's stream, with its selection, panels, search, filters and card window carried over. `src/routes/board/[id]/+layout.svelte` now renders the page inside `{#key page.params.id}` (`page` from `$app/state`): a change of board destroys the page, which closes the first stream, and makes it afresh, which opens the second, with everything else empty. The key is the board and not the address, so a `?card=` link on the same board, `invalidateAll()` and SvelteKit's `replaceState` keep the page, its stream, its drag state and its scroll.
+The board page's stream is the page's own: `connectSSE(data.board.id, ...)` (`src/lib/board/sse.ts`) is called in its `onMount` and closed in its `onDestroy`. SvelteKit keeps a page's component when only its params change, so until card 2184 a sub-board badge, a breadcrumb, a link in the card window, or Back and Forward between two boards showed the second board in the first board's page, still listening to the first board's stream, with its selection, panels, search, filters and card window carried over. `src/routes/board/[id]/+layout.svelte` now renders the page inside `{#key page.params.id}` (`page` from `$app/state`): a change of board destroys the page, which closes the first stream, and makes it afresh, which opens the second, with everything else empty. The key is the board and not the address, so a `?card=` link on the same board, `invalidateAll()` and SvelteKit's `replaceState` keep the page, its stream, its drag state and its scroll. Since card 2280 the page calls `invalidateAll()` in one place only, when a read of its board is refused, and makes its board state and its card-window controller once per page, so the key makes them afresh for each board too: see [The Board Page and the Card Window](#the-board-page-and-the-card-window).
 
 ```mermaid
 sequenceDiagram
@@ -794,6 +807,219 @@ sequenceDiagram
 - **Above everything.** The bar is drawn after `.app-layout`, not inside it, at `z-index: 10001`. `.app-layout` is `position: relative; z-index: 1`, which makes everything a page draws, its windows and overlays included, one layer beneath anything outside it; and the toast is at 10000. `tests/page-failures.test.ts` holds the bar above every other `z-index` under `src`. The user badge in the corner is drawn inside `.app-layout`, at `z-index: 100`, beneath the pages' windows (1000 and up): outside it, it was drawn above every window and its dimmed backdrop. It is opaque, `var(--bg-elevated)` with `var(--shadow-md)` over the global `.glass`'s background of 2 to 6% (card 2239), and `--user-badge-space` on `.app-layout` (the badge's offset, its height of 18px plus the taller of 28px and 1.8rem, about 47px at the default font size and more when the root font is larger, a gap and `--update-bar-space`) is where each page ends its last line or its scroll (the API docs' sidebar included), so nothing a page draws is left under it: the audit page's Live Console footer read through it.
 - **The next move is a full load.** A `beforeNavigate` in the same layout sets `location.href = to.url.href` when `updated.current && !willUnload && to?.url`, SvelteKit's documented pattern, so a link or a `goto` once the bar has shown loads the new version.
 - **The first release.** A page loaded before the release that brought this asks nothing, so for that release open tabs are reloaded by hand: see [Deployment](deployment.md#updating-a-running-installation), step 7.
+
+## The Board Page and the Card Window
+
+Card 2280 (part B of card 2012's plan, `docs/planning/card-2012-service-layer-and-pages.md`). Until then the board page called `invalidateAll()` 23 times: after each of its own writes, and on every live event from its board's stream, one call per event with nothing to gather a burst. Every write is told to every page open on its board, the page that made it included, so each change on the board page re-ran the whole board load twice, once after the write and once for its own echo, breadcrumbs, linkable boards and all; a bulk change of 20 cards by someone else re-ran it 20 times; and whichever re-read landed was copied over the page by an `$effect`, under a drag in hand or a field being typed in. Twenty of the page's writes also threw their answer away, so a refusal said nothing and the change stayed on screen until the next re-read put it back.
+
+Now the page draws from one **board state**, made once from its load. A change of the page's own is shown at once and sent; its answer is taken, or, refused or unanswered, that change alone is taken back and the server's words are said. A live event asks for one **read of the board's contents**, `GET /api/boards/[id]/contents`, gathered with any others in the next quarter of a second and never sent while a drag or a write of the page's own is out. The whole load is asked again in one case only: when that read is refused, so that the load's own refusal page shows. The card window is opened, kept in step with the board, saved and archived by one **controller**. And the page and the window are split into components: eight new ones for the board, eleven for the window.
+
+### How it fits together
+
+```mermaid
+flowchart TB
+    subgraph Page["Board page: board/[id]/+page.svelte"]
+        Comps["8 board components<br/>header, columns, cards, panels"]
+        Fns["the page's write functions"]
+        State["BoardState<br/>board-state.svelte.ts"]
+        Sched["refresh schedule<br/>refresh-schedule.ts"]
+        Patches["board-patches.ts<br/>a change and its undo"]
+        Verdict["contents-answer.ts<br/>apply, refused or keep"]
+        Window["CardWindow<br/>card-window.svelte.ts"]
+        Modal["CardModal.svelte<br/>and its 11 sections"]
+        Stream["connectSSE<br/>sse.ts"]
+    end
+    subgraph Server["Server"]
+        Load["+page.server.ts load"]
+        Route["GET /api/boards/[id]/contents"]
+        Reader["readBoardContents<br/>board-contents.ts"]
+        Writes["the write routes<br/>/api/cards, /api/columns, /api/boards"]
+        Events["/api/boards/[id]/events"]
+    end
+    Load --> Reader
+    Route --> Reader
+    Load -->|"data, once per board"| State
+    State -->|"draws"| Comps
+    Comps -->|"callbacks"| Fns
+    Fns -->|"write, writeCard, writeColumn"| State
+    State -->|"the change shown, its undo kept"| Patches
+    State -->|"send"| Writes
+    Writes -->|"commit, then emit"| Events
+    Events --> Stream
+    Stream -->|"update with type access"| State
+    Stream -->|"any other update, a reconnect, a return to the tab"| State
+    State -->|"refresh, accessChanged"| Sched
+    Sched -->|"one read at a time"| Route
+    Route --> Verdict
+    Verdict -->|"apply: take, the sorts put back"| State
+    Verdict -->|"refused: emptied, invalidateAll once"| Refusal["the load's refusal page"]
+    Modal -->|"onSave, edits"| Window
+    Window -->|"the card by id, writeCard, hold, refresh"| State
+```
+
+- **One reader for the first draw and every refresh.** `readBoardContents(user, boardId)` in `src/lib/server/board-contents.ts` is the board load's body, moved whole. The page's load (`src/routes/board/[id]/+page.server.ts`) returns it, and so does the new internal route `GET /api/boards/[id]/contents`, so the first draw and a refresh cannot differ: the same access check, the same fields, each as this caller may see it. It answers the board row, the breadcrumbs, the caller's role (`canEdit`, `canManage`, `userBoardRole`) and the linkable boards beside the columns with their cards, the categories, labels, members, blocked state, token totals and goals, so a rename by someone else, or a role taken away or given, shows at the next refresh.
+- **Live events still carry nothing readable** ([What an event carries](#real-time-updates-via-sse)). The page does not patch itself from an event; an event is a reason to read the board again, under the reader's own access check.
+- **Holds and generations.** Every write of the page's own, and a drag from its first move to the move's answer, holds the reads. A read already out when a hold is taken, or when a write settles, was sent before that change and may answer the board as it was: its answer is dropped, by its generation number, and the board is read again once the last hold is let go.
+- **Writes through the board state.** `boardState.write(change, send, words, take?)` shows the change, holds, sends, and on success puts the answer's value of each field sent on the board (`writeCard`, `writeColumn`); on a refusal or no answer it takes that change alone back, reads the board once, and gives the page the words to say. The board is not read after a write that was taken: its own live event is.
+- **The card-window controller.** `new CardWindow(boardState, boardId)` opens the window on a card by its id and hands the window the board state's copy of it as each read arrives. A save sends only the fields the user changed, through `writeCard`.
+- **A refused read shows the refusal page.** A `401`, `403` or `404` from the contents route empties the board state and calls `invalidateAll()` once, so the load runs, refuses in its own words ("You do not have access to this board", "Board not found") and the error page replaces the board. If that load finds the board open after all (access given back meanwhile), the page's one `$effect` that reads `data` hands it to `boardState.take()`, and the state follows the board again with a new schedule.
+
+One write and one refresh, as they happen:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant P as Board page
+    participant B as BoardState
+    participant Q as Refresh schedule
+    participant S as Server
+    U->>P: change a card's priority from its menu
+    P->>B: writeCard(card 42, priority high, send, words)
+    B->>Q: hold, which moves the generation on
+    B->>B: patchCard - shown at once, the undo kept
+    B->>S: PUT /api/cards/42
+    alt taken
+        S-->>B: 200 with the row
+        B->>B: patchCardStill - the answer's priority, only while it still shows high
+    else refused or no answer
+        S-->>B: 4xx, 5xx or nothing
+        B->>B: the undo, only while it still shows high
+        B->>Q: one read asked for, held for now
+        B-->>P: the server's words
+        P->>U: an error toast in those words
+    end
+    B->>Q: settled, then the release (a read that waited goes at once)
+    S->>S: commit, then emit an update to board 7
+    S-->>P: the update, its own echo, through sse.ts
+    P->>B: refresh
+    B->>Q: schedule - 250 ms after the last call, at most 1 s after the first
+    Q->>S: GET /api/boards/7/contents (one at a time, none while held)
+    S-->>Q: 200, the contents as this caller may see them, private, no-store
+    Q->>B: applied only if the generation has not moved - take, the sorts put back
+```
+
+### The modules in `src/lib/board`
+
+| Module | What it holds | Used by |
+|---|---|---|
+| `board-state.svelte.ts` (new) | `class BoardState`, a `$state` field for each key of the contents (`board`, `breadcrumbs`, `columns`, `categories`, `labels`, `linkableBoards`, `canEdit`, `canManage`, `userBoardRole`, `boardUsers`, `blockedState`, `cardTokens`, `boardTokenSummary`, `milestones`), with `columnSorts` and `refused`. `new BoardState(data, { invalidate, fetch?, ...timing })`; `take(data)`; `setSort(columnId, sort)`; `refresh()`; `refreshNow()` (no 250 ms wait, awaitable, still held; the sub-board link and delete); `accessChanged()`; `hold(options?)`, `holds`, `inFlight`; `write`, `writeCard`, `writeColumn`; `dispose()`. Types `WriteResult` (`{ ok: true, res, answer }` or `{ ok: false, failure }`), `WriteWords` (`refused`, `noAnswer`) | The board page; `bulk-actions.ts` (`BoardWriter`); `card-window.svelte.ts` (`CardWindowBoard`) |
+| `refresh-schedule.ts` (new) | `refreshSchedule(run, timing?)`: `schedule()`, `now()`, `access()`, `hold(options?)` returning a `Release` (counted once, with `released`), `settled()`, `holds`, `inFlight`, `dispose()`. `REFRESH_DELAY_MS` 250, `REFRESH_MAX_WAIT_MS` 1,000, `HOLD_WATCHDOG_MS` 30,000, `BULK_HOLD_MS` five minutes; `HoldOptions` `{ watchdog?, watchdogMs? }`. Plain TypeScript on the page's own timers, so the tests run it with fake ones | `BoardState`; the page imports `BULK_HOLD_MS` and `Release` |
+| `board-patches.ts` (new) | Pure functions on the columns, each `(columns, …) → { columns, undo(current) }`: `patchCard`, `moveCards` (sets `columnId` and `position`), `insertCard`, `removeCard`, `patchColumn`, `insertColumn`, `removeColumn`, `reorderColumns`. And `patchCardStill`, `patchColumnStill` (an answer put only on a field that still shows what its write set), `answeredFields(answer, fields)`, `copyColumns`, `withCurrentCards(columns, current, dragged)`, `undoDrag(current, before, dragged)`. Nothing given is changed; a column or card not touched is handed back as the same object | `BoardState`, the page, `bulk-actions.ts`, `card-window.svelte.ts` |
+| `contents-answer.ts` (new) | `contentsVerdict(status)`: 2xx `apply`, `401`, `403` or `404` `refused`, anything else or no answer `keep`. `askForContents(boardId, fetch)`, which never throws, asks with `cache: 'no-store'`, and takes a success that is not the contents (a proxy's page) as `keep`. `type BoardContentsData`, the page's view of the reader's answer (the server's type is not imported into the page), `BreadcrumbType`, `BoardBlockerType` | `BoardState`, the page |
+| `card-window.svelte.ts` (new) | `class CardWindow(board, boardId)`: `open`, `cardId`, `columnId`, `edits` (`$state.raw`), the getters `card` and `gone`; `openCard(card)`, `openNew(columnId)`, `close()`, `save(saved)` → `SaveResult` (`{ ok: false, failure }` or `{ ok: true, told }`), `archive(cardId)` → the words, or `null` once archived. `class WindowEdits` (`started`, `touched`, `follow(shown, now, held?)`); `WINDOW_FIELDS`, the twelve fields a save sends; `windowFields(card)`, CardModal's own initialisers; `changedFields(started, saved)`; `CARD_GONE`; types `CardWindowSave`, `CardWindowBoard`, `Told` | The board page; `CardModal.svelte` (`WindowEdits`, `windowFields`) |
+| `sse.ts` | `connectSSE(boardId, callbacks)`: `onUpdate(event)` is handed what the `update` said, `boardEvent(e.data)` (the parsed object, or `null`), and `null` for a reconnect and a return to the tab, so the page can tell the access event from the rest | The board page |
+| `card-actions.ts`, `board-actions.ts`, `bulk-actions.ts`, `dnd-handlers.ts` | Each write gives back its answer, or the words for a refusal. `saveCard` gives back `failure` and `subtaskFailures`; `assignPending(cardId, userIds)`; `setPinned`. `bulkMove`, `bulkDelete` and `bulkPriority` take the board state (`BoardWriter`) and show every card at once; `bulkMove` sends one `reorderCards` request, and only `bulkDelete` and `bulkPriority` send card by card, each after the one before is answered; `bulkPriority` returns `{ changed, failed }`. `confirmOnHold` sends the move first and the note only once the move is taken, returning `{ failure, noteFailure }`. `board-actions.ts`'s `addCategory` and `deleteCategory`, which nothing called, are gone | The board page; the plan page, All Tasks and All To Do keep their own card-window handlers until card 2281 |
+
+```mermaid
+classDiagram
+    class BoardState {
+        board
+        columns
+        labels
+        boardUsers
+        columnSorts
+        refused
+        take(data)
+        refresh()
+        refreshNow()
+        accessChanged()
+        hold(options) Release
+        write(change, send, words, take)
+        writeCard(cardId, fields, send, words)
+        writeColumn(columnId, fields, send, words)
+        dispose()
+    }
+    class RefreshSchedule {
+        schedule()
+        now()
+        access()
+        hold(options) Release
+        settled()
+        holds
+        inFlight
+        dispose()
+    }
+    class CardWindow {
+        open
+        cardId
+        columnId
+        edits
+        card
+        gone
+        openCard(card)
+        openNew(columnId)
+        close()
+        save(saved) SaveResult
+        archive(cardId)
+    }
+    class WindowEdits {
+        started
+        touched
+        follow(shown, now, held)
+    }
+    BoardState *-- RefreshSchedule : reads through
+    CardWindow --> BoardState : CardWindowBoard
+    CardWindow *-- WindowEdits : one per window
+```
+
+### The components
+
+The page (2,002 lines, CRLF) keeps its script whole: every `$state`, every write, the board state, the card window, the drag handlers and the windows. It keeps the kanban skeleton too, because `animate:flip` must sit on the direct child of a keyed `{#each}` and svelte-dnd-action needs a zone's direct children to be its items: each `.kanban-column` and `.kanban-card` element stays in the page, and their contents are components. Each component under `src/lib/components/board/` is handed what it shows as props, `bind:` for what is typed in it, and calls back into the page's functions:
+
+| Component | What it draws |
+|---|---|
+| `BoardHeader.svelte` | The header: breadcrumbs or the back button, the emoji, the name and its edit box, the cost pill, the search, the assignee filter, Hide blocked, the view switch, Planning, All To Do, Add Column, the theme picker; snippets `xp` and `more` |
+| `XpLeaderboard.svelte` | The XP bars, from a sorted copy of the page's list (card 2304: it sorted the page's state in place while drawing, which Svelte refuses) |
+| `BoardMoreMenu.svelte` | The More menu and its items, one callback each |
+| `KanbanColumnHeader.svelte` | A column's head: colour bar, title and rename box, count, sort badge, Add Task, colour picker, column menu with its WIP-limit box. The rename and WIP-limit state stays in the page, one for the whole board |
+| `KanbanCardBody.svelte` | Everything inside a card on the board: cover strip, pin, New badge, selection tick, drag handle, category strip, title with its inline edit and priority dot, description, On Hold note, badges, labels, assignees |
+| `ActivityPanel.svelte`, `ArchivePanel.svelte` | The Activity Log's and Archived Cards' bodies |
+| `SidePanel.svelte` | The frame both panels share: heading, close button, scrolling body |
+
+Four rules that style a component's element from the page's element are `:global` under the page's element (`.kanban-column:hover :global(.column-actions)`, `.kanban-card:hover :global(.drag-handle)`, `.kanban-card.card-pinned :global(.new-badge)`, `.wip-warning :global(.column-top-bar)`). Svelte scopes such a rule out of the child silently, and `npm run check` does not say so, since `svelte.config.js` filters `css_unused_selector`.
+
+The card window, `src/lib/components/CardModal.svelte` (1,273 lines, CRLF), keeps its props, every typed field's `$state` initialiser and `save()`, the header, the title, the tabs, the On Hold box, the labels, the footer and `handleKeydown`, and with them everything that must outlast a section being hidden (a section inside `{#if}` is destroyed when it hides, so state of its own would be lost on a switch of tab). Its sections are under `src/lib/components/card/`, each handed the window's state as props and `bind:`:
+
+| Component | What it draws, and the writes it sends |
+|---|---|
+| `CardDescription.svelte` | The description's Write and Preview tabs |
+| `CardMetaChips.svelte` | The priority, category, due date and assignee chips with their dropdowns; `assignUser`, `unassignUser` |
+| `CardReportingFields.svelte` | The Reporting section's five fields |
+| `CardSubtasks.svelte` | A saved card's subtasks and a new card's pending ones; `toggleSubtask`. It draws `CardTokenCost` |
+| `CardTokenCost.svelte` | The cost block: summary, models, entries |
+| `CardComments.svelte` | The Comments tab; `postComment`, `deleteComment`, `saveEditComment` |
+| `CardAttachments.svelte` | The Files tab; `uploadFile`, `deleteAttachment` |
+| `CardDependencies.svelte` | The goal and the dependency lists with the picker; `addDependency`, `removeDependency`, `saveMilestone` |
+| `CardSubBoards.svelte` | The Sub-board section, saved card and new card |
+| `CardCoverPicker.svelte` | The Cover section; `setCover`, `clearCover`. Its custom colour opens on `coverPickerColour(coverUrl)` (`$lib/colours`): the cover's own colour, a gradient's first colour, or `#6366f1`, never black |
+| `CardTemplates.svelte` | The Save as Template and From template dialogs; `saveAsTemplate`, `deleteTemplate` |
+
+The window's fifteen writes of its own (now in its sections, but for the New Category form's `createCategoryInline`, which stays in the window) neither hold the board's reads nor change the board state: the board shows them at the read their live event asks for. All Tasks, All To Do and the plan page draw the same `<CardModal>` with their own handlers, unchanged, until card 2281 moves them onto the controller.
+
+### The rules
+
+- **Timing.** A call to `schedule()` waits 250 ms for the next and sends one read for the burst, but never more than 1 s after the first call not yet served, so a stream of events still shows. One read is out at a time; a call while one is out is served by one more read after it, never one beside it.
+- **Generations.** Each read is sent with the schedule's generation. `hold()` and `settled()` move it on: a write's `finally` calls `settled()` before it lets its hold go. An answer whose generation has moved is not applied; the board is read again, as urgently as that read was, for whoever waited on it.
+- **Holds are a count**, each let go once, and the last let go sends the read that waited at once. Every write of the page's own holds while it is out (`write()` does it itself; the card window's `archive` and a new card's save hold too). A drag holds from its first consider (`holdDrag`) to the move's answer (`takeDragHold`, let go in the finally that follows the move); a keyboard drag stopped with Space, Enter, Escape or a click outside (`DRAG_STOPPED`, with no finalize) lets go in `stopDrag`. No hold is taken during an inline edit: the text being typed is the edit's own state, and a read cannot overwrite it.
+- **Watchdogs.** A hold left open is let go after 30 s, so the board cannot stop following for good. The On Hold note window and the blocked window hold for as long as they are open with `hold({ watchdog: false })`, unwatched, since their end is a person's Confirm or Cancel; the schedule's `dispose()` spends them with the page. The three bulk changes hold with `{ watchdogMs: BULK_HOLD_MS }`, five minutes: a bulk archive or priority change sends its cards one after another, which can take longer than 30 s, and `fetch` has no time limit of its own.
+- **An access read is not held, and its answer not dropped.** `accessChanged()` sends its read as soon as no read is out, held or not, and its answer is applied even when the generation has moved, so a run of drags and writes cannot keep a refusal back; when it has moved, an ordinary read is asked as well, which the last release sends.
+- **The still-holds rule.** A write's answer, and its undo, are put only on a field that still shows the value that write set (`patchCardStill`, `patchColumnStill`, and the undo of `patchCard` and `patchColumn`). Two quick changes to one field then keep the later one, whichever is answered first, and a refused first change does not undo the second. Of two quick changes both refused, the screen shows the first's value until the one read the refusals ask for.
+- **`answeredFields`.** A taken write puts on the card only the answer's value of the fields it sent, never the whole row: the row's other fields are as the server had them when that write was answered, and would undo a second change still out. A patch merges: nothing the answer lacks is lost (a bare row has no subtasks, labels or assignees).
+- **`withCurrentCards` and `undoDrag`.** A drop's columns, and the columns kept when a drag began (`dragFrom`, `copyColumns` at the first move, and at each keyboard hop), are stale once another write is answered or taken back. A drop is drawn through `withCurrentCards(result.updatedColumns, boardState.columns, dragged)`, and a refused, blocked or cancelled move is put back with `undoDrag(boardState.columns, dragFrom, dragged)`: only the columns that held a dragged card then or hold one now are rebuilt, in their old order, with the cards as they are now; a card archived meanwhile stays off.
+- **What is read again, and what is not.** A taken write is not followed by a read; its live event is. A refused or unanswered write is followed by one. A restore, a duplicate and a new card's save read the board once, since the card they add is the reader's to draw with its subtasks, labels, sub-boards and assignees, where an answer is a bare row. The sub-board link and delete `await boardState.refreshNow()`, since a sub-board's progress is worked out on the server. The share window's close reads it for the members.
+- **The column sorts** are the board state's (`setSort`), put back on the columns after every read.
+
+### The card window's save
+
+- **It sends only what the user changed.** The controller compares what the window hands `onSave` with what each field started from (`changedFields`): empty, `null` and left out are one value, and the title, summary and customer impact are compared trimmed. A change someone else made to another field while the window was open is not sent back over theirs (the lost update card 2183 noted). A save with nothing changed sends nothing and closes the window. A field both changed is the last save's.
+- **It goes through `writeCard`**: shown on the board at once, held while out; taken, the answer's value of each field sent; refused or unanswered, those fields alone put back (under the still-holds rule), the server's words handed back for the page to say, and the window left open with what was typed.
+- **`WindowEdits`, and fields that follow the board.** On the board page the window is handed the controller's `edits`, and CardModal's one follow `$effect` calls `edits.follow(shown, windowFields(card), focusedField)` after each change typed and each read. A field shown with a value other than the one it started from is touched, for good, and stays as typed. Each untouched field whose value on the board has changed is brought into the window, and `started` moves to it, so it is never sent. A touched field set back to its start is still sent when the board's value has moved since, since what the window shows is the user's choice. The box that has the focus (`focusedField`, from the overlay's `focusin` and `focusout`) is not brought until it is left, so a read never moves the caret; the focus alone is no touch. All Tasks, All To Do and the plan page pass no `edits`, so their windows are filled once and their saves send every field, as before.
+- **A new window is a new `edits`.** `edits` is `$state.raw`, a new `WindowEdits` at each `openCard`, `openNew` and `close`, and the page draws the window inside `{#key cardWindow.edits}`, so each open makes the window afresh from its card. The first read of `card` after opening sets `edits.started` from the card the window is made with.
+- **A card the board loses** (archived, deleted or moved away by someone else) is shown as it was last found; `gone` is true, the window shows `CARD_GONE` ("This card is no longer on this board.") through its optional `notice` prop, and a save is refused with no request.
+- **A new card** is made by `cardActions.saveCard`, then its people (`assignPending`) and its sub-boards, each answer read; whatever is refused is named in order in `told`, the card is kept, the board read once. A create refused keeps the New Task window open.
+- **Archive** is sent from the page's confirmation alone, by `cardWindow.archive(cardId)`: the card is taken off the board and its window closed only once the server has archived it.
+- **The controller says nothing itself.** It hands back what to say (`failure`, or `told` with each `failed`), and the page puts it in its toasts, with the navigation it started in.
+- **The window's keys.** Ctrl+Enter (Cmd+Enter) calls `save()` once (not on a held key's repeat, and not while a template dialog is open); a box with an Enter of its own (a comment, a comment being edited, a label's name, a sub-board's name, the new category) does its own job and stops the key. `save()` sends one save at a time: `saving` is set while the page's promise is out, and Save, Enter in the title and Ctrl+Enter wait. Escape closes the innermost thing open (a template dialog, the template picker, the new category form, a chip's dropdown, the dependency picker, the sub-board link picker) and the window only when nothing is, and never while a save is out; Cancel and ✕ always close.
 
 ## Work Kept Off the Server's Thread
 
@@ -1288,3 +1514,5 @@ stateDiagram-v2
 8. **One way to read a body, and no schema library** — Every handler reads its body, its path ids and its query through the small readers of `request-body.ts`, which refuse what a field cannot hold with a `400` that names it. A schema library would have been the first validation dependency in the project; checks written into each handler are how the two API trees drifted apart. A value the row already holds is accepted as it is, so rows stored before the rules still save. See [Reading a body](#reading-a-body).
 
 9. **One service per action, both API trees** — The internal tree and `/api/v1/` keep their own paths, bodies, words and answers, and call one function for the work between them, so the two cannot drift apart again. A service writes only inside the `writeAs` callback that hands it the caller, which `inWrite()` checks when it runs and a source test checks on every route. See [One Service per Action, Both Trees](#one-service-per-action-both-trees).
+
+10. **The board page applies each answer and reads only its board** — It draws from one board state, shows a change at once and takes the answer, or takes that change alone back and says the server's words, and follows other people's changes by reading `GET /api/boards/[id]/contents`, one read for a burst and none under a drag or a write in flight, from the same reader as its load. Not chosen: patching from live events, which by rule carry nothing a reader may not read; and `invalidate('board:<id>')`, which re-runs the same whole load. See [The Board Page and the Card Window](#the-board-page-and-the-card-window).
