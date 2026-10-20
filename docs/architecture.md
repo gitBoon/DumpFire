@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.36
+version: 1.37
 status: As-Built
 date: 2026-10-20
 tags:
@@ -21,7 +21,8 @@ tags:
   - board-page
   - card-window
   - live-updates
-description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, and how a page left open notices a new version"
+  - components
+description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -94,16 +95,18 @@ flowchart TD
 ```mermaid
 flowchart TB
     subgraph Client["Browser Client"]
-        Dashboard["Dashboard"]
+        Dashboard["Dashboard\nand its 7 components (card 2281)"]
         BoardView["Board View + DnD"]
-        AllTasks["All Tasks"]
+        AllTasks["All Tasks\nand its 6 components (card 2281)"]
         AllToDo["All To Do"]
+        PlanPage["Plan Page\nits 7 components, plan-graph.ts (card 2281)"]
         ArchivedView["Archived Tasks"]
-        AdminPanel["Admin Panel"]
+        AdminPanel["Admin Panel\nand its 14 components (card 2281)"]
         Reports["Reports"]
         CardModal["Card Modal\nand its 11 sections"]
         BoardState["Board State + Refresh Schedule\nboard-state.svelte.ts,\nrefresh-schedule.ts (card 2280)"]
         CardWindowCtl["Card-Window Controller\ncard-window.svelte.ts (card 2280)"]
+        PageCardWin["Card Window off the Board\npage-card-window.svelte.ts (card 2281)"]
     end
 
     subgraph Server["SvelteKit Server"]
@@ -172,6 +175,11 @@ flowchart TB
     BoardView --> BoardState
     BoardView --> CardWindowCtl
     CardWindowCtl --> BoardState
+    AllTasks --> PageCardWin
+    AllToDo --> PageCardWin
+    PlanPage --> PageCardWin
+    PageCardWin -->|"a controller per card, over the page's own list"| CardWindowCtl
+    AllTasks -.->|"refresh-schedule.ts alone: one re-read per burst"| BoardState
     BoardState -->|"one coalesced read"| ContentsAPI
     ContentsAPI --> BoardContents
     BoardContents --> BoardAccess
@@ -908,7 +916,7 @@ sequenceDiagram
 | `contents-answer.ts` (new) | `contentsVerdict(status)`: 2xx `apply`, `401`, `403` or `404` `refused`, anything else or no answer `keep`. `askForContents(boardId, fetch)`, which never throws, asks with `cache: 'no-store'`, and takes a success that is not the contents (a proxy's page) as `keep`. `type BoardContentsData`, the page's view of the reader's answer (the server's type is not imported into the page), `BreadcrumbType`, `BoardBlockerType` | `BoardState`, the page |
 | `card-window.svelte.ts` (new) | `class CardWindow(board, boardId)`: `open`, `cardId`, `columnId`, `edits` (`$state.raw`), the getters `card` and `gone`; `openCard(card)`, `openNew(columnId)`, `close()`, `save(saved)` → `SaveResult` (`{ ok: false, failure }` or `{ ok: true, told }`), `archive(cardId)` → the words, or `null` once archived. `class WindowEdits` (`started`, `touched`, `follow(shown, now, held?)`); `WINDOW_FIELDS`, the twelve fields a save sends; `windowFields(card)`, CardModal's own initialisers; `changedFields(started, saved)`; `CARD_GONE`; types `CardWindowSave`, `CardWindowBoard`, `Told` | The board page; `CardModal.svelte` (`WindowEdits`, `windowFields`) |
 | `sse.ts` | `connectSSE(boardId, callbacks)`: `onUpdate(event)` is handed what the `update` said, `boardEvent(e.data)` (the parsed object, or `null`), and `null` for a reconnect and a return to the tab, so the page can tell the access event from the rest | The board page |
-| `card-actions.ts`, `board-actions.ts`, `bulk-actions.ts`, `dnd-handlers.ts` | Each write gives back its answer, or the words for a refusal. `saveCard` gives back `failure` and `subtaskFailures`; `assignPending(cardId, userIds)`; `setPinned`. `bulkMove`, `bulkDelete` and `bulkPriority` take the board state (`BoardWriter`) and show every card at once; `bulkMove` sends one `reorderCards` request, and only `bulkDelete` and `bulkPriority` send card by card, each after the one before is answered; `bulkPriority` returns `{ changed, failed }`. `confirmOnHold` sends the move first and the note only once the move is taken, returning `{ failure, noteFailure }`. `board-actions.ts`'s `addCategory` and `deleteCategory`, which nothing called, are gone | The board page; the plan page, All Tasks and All To Do keep their own card-window handlers until card 2281 |
+| `card-actions.ts`, `board-actions.ts`, `bulk-actions.ts`, `dnd-handlers.ts` | Each write gives back its answer, or the words for a refusal. `saveCard` gives back `failure` and `subtaskFailures`; `assignPending(cardId, userIds)`; `setPinned`. `bulkMove`, `bulkDelete` and `bulkPriority` take the board state (`BoardWriter`) and show every card at once; `bulkMove` sends one `reorderCards` request, and only `bulkDelete` and `bulkPriority` send card by card, each after the one before is answered; `bulkPriority` returns `{ changed, failed }`. `confirmOnHold` sends the move first and the note only once the move is taken, returning `{ failure, noteFailure }`. `board-actions.ts`'s `addCategory` and `deleteCategory`, which nothing called, are gone | The board page and the card-window controller. Since card 2281 All Tasks, All To Do and the plan page save their card window through the controller and call none of these; `saveCard`'s update path (an `editingCard` given) has no caller in `src` now, the controller using its create path alone, and is still called by the tests |
 
 ```mermaid
 classDiagram
@@ -994,7 +1002,7 @@ The card window, `src/lib/components/CardModal.svelte` (1,273 lines, CRLF), keep
 | `CardCoverPicker.svelte` | The Cover section; `setCover`, `clearCover`. Its custom colour opens on `coverPickerColour(coverUrl)` (`$lib/colours`): the cover's own colour, a gradient's first colour, or `#6366f1`, never black |
 | `CardTemplates.svelte` | The Save as Template and From template dialogs; `saveAsTemplate`, `deleteTemplate` |
 
-The window's fifteen writes of its own (now in its sections, but for the New Category form's `createCategoryInline`, which stays in the window) neither hold the board's reads nor change the board state: the board shows them at the read their live event asks for. All Tasks, All To Do and the plan page draw the same `<CardModal>` with their own handlers, unchanged, until card 2281 moves them onto the controller.
+The window's fifteen writes of its own (now in its sections, but for the New Category form's `createCategoryInline`, which stays in the window) neither hold the board's reads nor change the board state: the board shows them at the read their live event asks for. All Tasks, All To Do and the plan page draw the same `<CardModal>` and, since card 2281, save it through the same controller over their own lists: see [The Card Window off the Board](#the-card-window-off-the-board).
 
 ### The rules
 
@@ -1013,13 +1021,247 @@ The window's fifteen writes of its own (now in its sections, but for the New Cat
 
 - **It sends only what the user changed.** The controller compares what the window hands `onSave` with what each field started from (`changedFields`): empty, `null` and left out are one value, and the title, summary and customer impact are compared trimmed. A change someone else made to another field while the window was open is not sent back over theirs (the lost update card 2183 noted). A save with nothing changed sends nothing and closes the window. A field both changed is the last save's.
 - **It goes through `writeCard`**: shown on the board at once, held while out; taken, the answer's value of each field sent; refused or unanswered, those fields alone put back (under the still-holds rule), the server's words handed back for the page to say, and the window left open with what was typed.
-- **`WindowEdits`, and fields that follow the board.** On the board page the window is handed the controller's `edits`, and CardModal's one follow `$effect` calls `edits.follow(shown, windowFields(card), focusedField)` after each change typed and each read. A field shown with a value other than the one it started from is touched, for good, and stays as typed. Each untouched field whose value on the board has changed is brought into the window, and `started` moves to it, so it is never sent. A touched field set back to its start is still sent when the board's value has moved since, since what the window shows is the user's choice. The box that has the focus (`focusedField`, from the overlay's `focusin` and `focusout`) is not brought until it is left, so a read never moves the caret; the focus alone is no touch. All Tasks, All To Do and the plan page pass no `edits`, so their windows are filled once and their saves send every field, as before.
+- **`WindowEdits`, and fields that follow the board.** On the board page the window is handed the controller's `edits`, and CardModal's one follow `$effect` calls `edits.follow(shown, windowFields(card), focusedField)` after each change typed and each read. A field shown with a value other than the one it started from is touched, for good, and stays as typed. Each untouched field whose value on the board has changed is brought into the window, and `started` moves to it, so it is never sent. A touched field set back to its start is still sent when the board's value has moved since, since what the window shows is the user's choice. The box that has the focus (`focusedField`, from the overlay's `focusin` and `focusout`) is not brought until it is left, so a read never moves the caret; the focus alone is no touch. All Tasks, All To Do and the plan page hand the window their controller's `edits` the same way since card 2281 (the C3a-1 review); before, they passed none, so their windows were filled once and their saves sent every field.
 - **A new window is a new `edits`.** `edits` is `$state.raw`, a new `WindowEdits` at each `openCard`, `openNew` and `close`, and the page draws the window inside `{#key cardWindow.edits}`, so each open makes the window afresh from its card. The first read of `card` after opening sets `edits.started` from the card the window is made with.
 - **A card the board loses** (archived, deleted or moved away by someone else) is shown as it was last found; `gone` is true, the window shows `CARD_GONE` ("This card is no longer on this board.") through its optional `notice` prop, and a save is refused with no request.
 - **A new card** is made by `cardActions.saveCard`, then its people (`assignPending`) and its sub-boards, each answer read; whatever is refused is named in order in `told`, the card is kept, the board read once. A create refused keeps the New Task window open.
 - **Archive** is sent from the page's confirmation alone, by `cardWindow.archive(cardId)`: the card is taken off the board and its window closed only once the server has archived it.
 - **The controller says nothing itself.** It hands back what to say (`failure`, or `told` with each `failed`), and the page puts it in its toasts, with the navigation it started in.
 - **The window's keys.** Ctrl+Enter (Cmd+Enter) calls `save()` once (not on a held key's repeat, and not while a template dialog is open); a box with an Enter of its own (a comment, a comment being edited, a label's name, a sub-board's name, the new category) does its own job and stops the key. `save()` sends one save at a time: `saving` is set while the page's promise is out, and Save, Enter in the title and Ctrl+Enter wait. Escape closes the innermost thing open (a template dialog, the template picker, the new category form, a chip's dropdown, the dependency picker, the sub-board link picker) and the window only when nothing is, and never while a save is out; Cancel and ✕ always close.
+
+## The Other Large Pages, in Components
+
+Card 2281 (part C of card 2012's plan, `docs/planning/card-2012-service-layer-and-pages.md`) split the four other pages over about 1,900 lines the way part B split the board page, and changed nothing any of them does: the admin page (3,073 lines, now 317), the dashboard (2,348, now 193), All Tasks (2,029 after slice C3a-1, now 768 with slice C3b's re-read) and the plan page (1,997, now 311). Reports, the docs page and Burndown (each under 1,500) were left. Each slice moved code line for line (every moved line unchanged but for what a component boundary forces; 97.2 to 99.7% of the lines removed from the dashboard, All Tasks and the plan page reappear unchanged), compiled the page's CSS before and after to show no rule lost and no winning rule changed, and kept every test's meaning: the tests that read a page's source now read the file that holds each piece, and look for what is said to be gone in the page and every one of its components. All To Do (890 lines) was not split; it moved its card window onto the controller with the others.
+
+```mermaid
+flowchart LR
+    subgraph Admin["src/routes/admin/+page.svelte"]
+        AF["isSuperadmin frame,<br/>confirm, reset notice,<br/>invite link"]
+    end
+    subgraph Dash["src/routes/+page.svelte"]
+        DF["live refresh, Delete Board,<br/>the grid, the window flags,<br/>the clock"]
+    end
+    subgraph Tasks["src/routes/all/+page.svelte"]
+        TF["stream listener, filters,<br/>buckets, Load more, Statistics,<br/>card window, confirm"]
+    end
+    subgraph Plan["src/routes/plan/[id]/+page.svelte"]
+        PF["summary, mutate,<br/>card window"]
+    end
+    AC["src/lib/components/admin/<br/>14 components"]
+    AM["src/lib/admin/<br/>send.ts, format.ts"]
+    DC["src/lib/components/dashboard/<br/>7 components"]
+    DM["src/lib/dashboard/format.ts"]
+    TC["src/lib/components/tasks/<br/>6 components"]
+    PC["src/lib/components/plan/<br/>7 components"]
+    PG["src/lib/plan-graph.ts"]
+    RS["src/lib/board/refresh-schedule.ts"]
+    PW["src/lib/board/page-card-window.svelte.ts"]
+    AF --> AC
+    AC --> AM
+    DF --> DC
+    DC --> DM
+    TF --> TC
+    TF -->|"one re-read per burst"| RS
+    TF --> PW
+    PF --> PC
+    PC --> PG
+    PF --> PW
+    ToDo["src/routes/todo/+page.svelte<br/>(not split)"] --> PW
+```
+
+### How a page is split
+
+- **What stays in the page.** Its props and load, its live refresh, its re-reads after the writes it keeps, every write the page's parts share (the plan page's `mutate`, the dashboard's Delete Board), the dialogs drawn over the whole page (each page's confirm), and the card window. Each component is drawn where its markup was, so the order of windows on screen is as it was.
+- **A write that moved into a component took its re-read with it.** A page that keeps writes of its own still calls `invalidateAll()` after them, as before the split (its load is cheap and its writes rare); the admin page keeps none. Eight components call it after their own writes, as the page did: `BoardContextMenu`, `MoveCardModal`, `TasksArchivePanel`, `DangerZonePanel`, `UsersPanel`, `TeamsPanel`, `BoardManagementPanel` and `ResetPasswordDialog` (which also re-reads as it opens, for the key counts). The other components that write re-read nothing, as their code did on the page: `AppUrlPanel`, `SmtpPanel`, `ScheduledBackupsPanel` and `GDriveConnectModal` keep to their own settings (re-reading those where the page did), `BoardsTable`'s star changes the row in place, `CreateBoardModal` goes to the new board, and an import in `BackupRestorePanel` reloads the whole page.
+- **State two components share stays in the page and is bound in.** A component writes a flag of the page's with `bind:` (`showCreate`, `expandedBoards`, `picking`, `activityOpen`, `inviteLink`, `resetNotice`) and reads one with a plain prop. A component the page or another part has to reach is held with `bind:this` and calls an exported function (`openBoardContextMenu`, `openActiveTasksModal`, `openMoveModal`, `toggleActivity`, `fetchActivity`, `celebrate`, `loadMailStatus`, the users panel's reset dialog, the backups panel's Drive box). The page's callbacks (`confirm`, `mutate`, `openCard`) are handed down as props.
+- **A component whose state must outlast it being shut is always mounted.** The dashboard's create window (a typed name survives Cancel), the plan page's card picker (what was typed is kept while Add cards shuts it), and All Tasks' Activity Log and Archived Cards (their lists are kept while shut) are drawn whether open or not, as their markup was.
+- **The CSS rule.** Svelte scopes a component's styles to it, so a page's rule no longer reaches markup that moved into a component. A rule only one component uses moved with its element. A rule several components share stays in the page, written `<wrapper> :global(...)` under the page's own element (`.admin-page`, `.all-panels-area`, `.plan-body`), so it reaches every component drawn inside that element and nothing outside the page. Where a rule like that would outrank a component's own rule for the same element, or where a component is drawn outside the wrapper, the rule is copied into each component that needs it instead, with a comment at each copy naming the other copies.
+
+### The admin page
+
+The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuperadmin}` / `{:else}` frames **with every superadmin panel inside them** (the `{:else}` draws the "🔒 The superadmin's" notice), the confirm dialog, the reset notice and the invite dialog in their places after `.admin-page`, and the CSS several panels share. `src/lib/admin/send.ts` holds `sent(send, fallback)` (the answer on success; on a refusal the server's words in a toast and `null`; no answer, `NO_ANSWER`), `NO_ANSWER` and `showToast`; `src/lib/admin/format.ts` holds `formatBytes`, `formatDuration`, `formatRelativeTime`, `destTypeLabels` and the `DestType` and `BackupHistoryEntry` types.
+
+| Component (`src/lib/components/admin/`) | Drawn for | What it holds |
+|---|---|---|
+| `AdminOverview.svelte` | every administrator | Database Overview: the counts of boards, columns, cards, categories, users and teams, and the database's size |
+| `AppUrlPanel.svelte` | the superadmin | The App URL; reads its own setting when drawn (its local `data`, which hid the page's, is `settings`) |
+| `BackupRestorePanel.svelte` | the superadmin | Export, the import, its dialog and its report; `importOutsideDefault` |
+| `ScheduledBackupsPanel.svelte` | the superadmin | The schedule, the destinations and their Test and Confirm, Run Now; reads its own settings when drawn; draws the two forms, the history and the Drive box |
+| `DestinationForm.svelte` | the superadmin | The add and edit forms kept verbatim behind `mode`, their fields bound from the panel so Edit and Add behave as before |
+| `GDriveConnectModal.svelte` | the superadmin | The Google Drive connect box, opened by the panel through `bind:this` |
+| `BackupHistory.svelte` | the superadmin | The backup history, `showAllHistory` bound to the panel so "Show all" survives Run Now |
+| `BoardManagementPanel.svelte` | every administrator | Clear a board's cards or categories, or delete it, each through the page's `confirm` |
+| `UsersPanel.svelte` | every administrator | The accounts: create, invite, role, delete, resend; sets the page's `inviteLink` and asks the mail panel to read again after an invite (`loadMailStatus`); draws `ResetPasswordDialog` |
+| `ResetPasswordDialog.svelte` | every administrator | The password reset, opened by 🔑 through `bind:this` |
+| `InviteLinkDialog.svelte` | every administrator | An invite link whose mail was not sent, bound to the page's `inviteLink`; carries its own copies of the modal rules, being drawn after `.admin-page` |
+| `TeamsPanel.svelte` | every administrator | Teams and their members |
+| `SmtpPanel.svelte` | the superadmin | The mail settings and Send Test; reads its own settings when drawn; exports `loadMailStatus`, which the page hands the users panel as a callback; takes `currentUser` |
+| `DangerZonePanel.svelte` | every administrator; Reset Everything inside its own `{#if isSuperadmin}` | Purge Archived Cards, Vacuum, Reset All XP and Reset Everything, each through the page's `confirm`; sets the page's `resetNotice` |
+
+`tests/page-failures.test.ts` lists each component as superadmin-only or shown to every administrator, and follows each of its tags up to the page: a superadmin component's tags must all be inside the page's `{#if isSuperadmin}` and not in its `{:else}`, and an administrator's inside no `{#if}` at all.
+
+### The dashboard
+
+The page keeps its props, `connectLiveRefresh(() => invalidateAll())`, `deleteBoard` with its `ConfirmModal`, the grid, the Category Manager, Velocity and Spend windows, and the clock (`clock`, set on each live refresh and on a 15-second tick), which it hands to the sidebar and Active Tasks so the due figures and words move on at midnight in both. `src/lib/dashboard/format.ts` holds `timeAgo`, which the table and the sidebar share.
+
+| Component (`src/lib/components/dashboard/`) | What it holds |
+|---|---|
+| `DashboardHeader.svelte` | The header, the More menu with its window click handler, the typewriter; reads `inboxCount`, binds `showCreate` |
+| `RequestToasts.svelte` | The new-request toasts and the inbox poll; binds the page's `inboxCount` |
+| `BoardsTable.svelte` | The boards table: favourites, groupings, the star and its request, sub-boards, the progress bars; binds `showCreate`, `expandedBoards`, `collapsedCategories`, `showCategoryManager`; a row's right-click calls the page's `openBoardContextMenu` |
+| `AnalyticsSidebar.svelte` | The analytics tiles and the due figures on `clock`; binds `showVelocityModal`, `showSpendModal`; its Active Tasks tile calls `openActiveTasksModal` |
+| `BoardContextMenu.svelte` | A board's context menu and its writes (file under a grouping or a new one, make a sub-board), and Delete Board through the page's `confirmDeleteBoard`; exports `openBoardContextMenu`; binds `expandedBoards` and `collapsedCategories` |
+| `CreateBoardModal.svelte` | New Board, always mounted; binds `showCreate` |
+| `ActiveTasksModal.svelte` | Active Tasks, its due words on `clock`; exports `openActiveTasksModal`, which reads its list as it opens |
+
+The page has no `:global` rule. The progress bar's rules are copied from `BoardsTable.svelte` into `AnalyticsSidebar.svelte`, since a `.dashboard :global(...)` rule in the page would outrank the table's `.fill-all`; the spinner's, with its keyframes, into `ActiveTasksModal.svelte`, which is drawn outside `.dashboard`.
+
+### All Tasks
+
+The page keeps its props, the live stream (its one `keepStreamOpen`), the filters, sorting and buckets (`let buckets = $derived(data.buckets)`), Load more, Statistics, the card window through the controller, the confirm dialog and every re-read.
+
+| Component (`src/lib/components/tasks/`) | What it holds |
+|---|---|
+| `AllTasksHeader.svelte` | Filters, search, Hide blocked and the More menu; binds `boardFilter`, `searchQuery`, `hideBlocked`, `showMoreMenu`. Its board filter is as it was, not `BoardFilterSelect.svelte`, which would change its width and add a label |
+| `AllTaskCard.svelte` | A card's face; calls the page's `openCard` and opens the Move window |
+| `TasksActivityPanel.svelte` | The Activity Log, always mounted; binds `activityOpen`; exports `toggleActivity` and `fetchActivity` |
+| `TasksArchivePanel.svelte` | Archived Cards, always mounted; restore, and delete for good through the page's `showConfirm`; binds `showArchivePanel` |
+| `MoveCardModal.svelte` | The Move window and its request; exports `openMoveModal` |
+| `LiveToasts.svelte` | The live toasts and the fireworks queue; exports `addLiveToast` and `celebrate`, which queues each completion and plays them in turn |
+
+The eight rules both side panels share stay in the page as `.all-panels-area :global(...)`.
+
+**The live re-read (slice C3b).** The stream's `update` listener gives each event its own toast and sound, and hands the re-read to `liveRefresh.schedule()`. `liveRefresh` is `refreshSchedule` from `src/lib/board/refresh-schedule.ts` over a run that calls `invalidateAll()` and, while the Activity Log is open, its `fetchActivity()`, together, so a burst of events (a bulk change of 20 cards is 20) is one re-read 250 ms after the last event, no later than about a second after the first, and never two at once. The 250 ms still lets a `celebrate` event start its fireworks first. Only `schedule()` and `dispose()` (in `onDestroy`) are used: no holds, since the page's own writes re-read the page themselves; no generations, since `invalidateAll` draws its own answer; no access reads, since the global stream has no refusal of a board. The reconnect and visibility re-reads, the re-reads after the page's own writes and Load more are unchanged. Before, each event set its own 250 ms timer, and 20 events were 20 full re-reads.
+
+### The plan page
+
+The page keeps its props, the summary and milestone values (`milestoneId` a number, so what reads it is not re-run by every re-read), `mutate` (the one `PATCH /api/milestones/{id}` path) with `busy` and `actionError`, `picking`, the card window through the controller, and the CSS its blocks share. Each block that changes the goal is handed `mutate`; each that opens a card, `openCard`.
+
+| Component (`src/lib/components/plan/`) | What it holds |
+|---|---|
+| `PlanHeader.svelte` | Rename, Close and Reopen, the target date, the late tag on a 15-second tick; binds `picking` |
+| `PlanCardPicker.svelte` | Add cards, always mounted; binds `picking` |
+| `PlanProgress.svelte` | The progress block |
+| `PlanBurndown.svelte` | The burndown, fetched on its key and not on every new summary, with its "Against the target" and "Time to deliver" tips |
+| `CriticalPathPanel.svelte` | The critical path |
+| `WorkTable.svelte` | The work table: `cardGroups(nodes, summary.blocked, data.subtasks)`, the expanders, and removing a card through `mutate` |
+| `DependencyGraph.svelte` | The graph, which keeps the geometry reactive by deriving each piece from `src/lib/plan-graph.ts` |
+
+`src/lib/plan-graph.ts` holds the graph's geometry as plain functions, each body as it was in the page: `drawnKey`, `drawnNodes`, `drawnEdges`, `layers`, `nodeHeight`, `positions`, `graphWidth`, `graphHeight`, `edgePath`, `criticalSteps`, `isCriticalEdge`, `clip`, the sizes (`NODE_W`, `NODE_H`, `SUB_H`, `GAP_X`, `GAP_Y`, `PAD`), `key`, and the `Node` and `WorkRef` types. Drawn before and after the move, the node boxes and edge paths are byte-identical.
+
+Thirteen rules several blocks share stay in the page as `.plan-body :global(...)`. `.panel`, the panel's frame, is copied into each block, since a page rule would outrank the card picker's border; and `PlanBurndown.svelte` keeps its own copy of `.muted`, since its tips open outside `.plan-body`.
+
+### The card window off the board
+
+All Tasks, All To Do and the plan page draw the board page's `<CardModal>` and save it through the board page's controller, `CardWindow` in `src/lib/board/card-window.svelte.ts`, unchanged (slice C3a-1). The controller works on a board state, and these pages have none: they span boards, and each draws its own list from its load. `src/lib/board/page-card-window.svelte.ts` gives the controller what it needs of a board state over that list.
+
+```mermaid
+classDiagram
+    class CardWindowBoard {
+        <<interface>>
+        columns
+        labels
+        boardUsers
+        writeCard(cardId, fields, send, words) WriteResult
+        hold() Release
+        refresh()
+    }
+    class BoardState
+    class PageCards {
+        get()
+        set(next)
+    }
+    class PageCardBoard {
+        columns
+        labels empty
+        boardUsers empty
+        keep(card)
+        writeCard(cardId, fields, send, words) WriteResult
+        hold() Release
+        refresh()
+    }
+    class PageCardWindow {
+        boardId
+        open
+        cardId
+        card
+        edits
+        openCard(card, boardId)
+        close()
+        save(saved) SaveResult
+        archive(cardId)
+    }
+    class CardWindow {
+        edits
+        openCard(card)
+        save(saved) SaveResult
+        archive(cardId)
+    }
+    class BoardPage
+    class AllTasks
+    class AllToDo
+    class PlanPage
+    BoardState ..|> CardWindowBoard
+    PageCardBoard ..|> CardWindowBoard
+    PageCardBoard --> PageCards : the page's own list
+    PageCardWindow *-- PageCardBoard : one per page
+    PageCardWindow --> CardWindow : a new one per card opened
+    CardWindow --> CardWindowBoard
+    BoardPage --> CardWindow : over its board state
+    AllTasks --> PageCardWindow : its buckets
+    AllToDo --> PageCardWindow : one group of its cards
+    PlanPage --> PageCardWindow : a one-card group of modalCard
+```
+
+- **`PageCards<G>`** is a page's own list, `{ get(): G[]; set(next: G[]): void }`, in groups of `{ cards }`: All Tasks hands its buckets, All To Do one group of its rows (`let cards = $derived(data.cards)`), the plan page a one-card group of the card its window opened on (`modalCard`, read with the card's context). A writable `$derived` is written by a save and replaced by each re-read.
+- **A fresh controller per card.** A controller is made for one board, and these pages span boards, so `PageCardWindow.openCard(card, boardId)` makes a new `CardWindow` for that card's board each time. `open`, `cardId`, `card`, `edits`, `save`, `archive` and `close` are the open controller's; `card` is the row through `windowCard(row)`, which adds the window's fall-backs (card 2186's list, moved from the pages) and is kept per row, so the window is handed the same object until the row changes.
+- **`writeCard` shows the change at once and puts it back under the still-holds rule.** It patches the page's list (`patchCard`) and sends. On a refusal or no answer it puts back those fields alone through `patchCard`'s undo, each only while the card still shows what this save set, so a newer read that replaced the card is kept, and returns the server's words or the no-answer words ("The card was not saved.", "No answer from the server. The card may not have been saved."). On success it takes the answer's value of each field sent (`answeredFields` and `patchCardStill`). It reads nothing after: the page does, as it did before.
+- **The card is kept while its window is open.** While the window is open on a card the page's list no longer has (a live re-read after someone moved it out of To Do, or out of All Tasks' capped Complete bucket), `columns` hands the controller the card as last found, in an extra group marked as kept that `set` strips off. So `gone` is never true off the board, and the save goes as it did before, where the board page says `CARD_GONE`. The pages pass no `notice`.
+- **`hold` holds nothing.** These pages schedule no reads; its `Release` says it is spent once called, however often. A re-read that lands while a save is out shows the card as it was until the page's own re-read after the save.
+- **`refresh` is the page's re-read**, `invalidateAll()`. `labels` and `boardUsers` are empty: only a New Task window reads them, and none of these pages opens one.
+- **`{#key cardWindow.edits}`, and `edits` passed.** Each page passes `edits={cardWindow.edits}` and draws the window inside `{#key cardWindow.edits}`, as the board page does. Each open is a window made afresh from its card, so a second card opened while the first's details were loading cannot show the first card's fields, and the fields the user has not touched follow the card as the page's list changes (on All Tasks and All To Do, with each live re-read), while a touched one stays as typed.
+
+A save off the board:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant M as CardModal
+    participant P as Page
+    participant W as CardWindow
+    participant A as PageCardBoard
+    participant S as Server
+    U->>M: Save
+    M->>P: onSave(saved)
+    P->>W: cardWindow.save(saved)
+    W->>W: changedFields, against what edits says each field started from
+    alt nothing changed
+        W->>W: close, nothing sent
+        W-->>P: ok, told empty
+        Note over P: nothing said. The plan page re-reads as its window closes
+    else fields changed
+        W->>A: writeCard(card, the changed fields, send, words)
+        A->>A: patchCard - shown on the page's list at once, the undo kept
+        A->>S: PUT /api/cards/42 with the changed fields and boardId
+        alt taken
+            S-->>A: 200 with the row
+            A->>A: patchCardStill - the answer's value of each field sent
+            A-->>W: ok
+            W->>W: close
+            W-->>P: told - Card updated
+            P->>U: Card updated, then invalidateAll
+        else refused or no answer
+            S-->>A: 4xx, 5xx or nothing
+            A->>A: the undo, each field only while it still shows what this save set
+            A-->>W: the server's words, or the no-answer words
+            W-->>P: not ok, the words
+            P->>U: an error toast in those words, the window open with what was typed
+        end
+    end
+```
+
+- **Each page's handlers.** All Tasks and All To Do lost their own `saveCard` and `deleteCard`: `saveFromWindow` and `archiveFromWindow` call `cardWindow.save` and `cardWindow.archive` and say what comes back, in the board page's words. Archive asks first with `cardArchiveWarning` in the page's confirm, and the controller takes the card off the page and closes the window only once the server has archived it; a refused archive keeps the window. The plan page's `saveCardFromPlan` saves the same way; its window has no Archive, as before. On success it closes the window (whose `closeCard` re-reads the plan) only when the window is still on the card saved, or shut; a save answered after its window was closed and another opened re-reads the plan alone and leaves the new window as it is.
+- **What did not change.** The toasts on success, `invalidateAll()` after a save or an archive, the plan page's re-read on every close (the window's own writes, a subtask ticked or a dependency added, tell the plan page nothing, so it cannot tell a close after one from a close after nothing), the window's own fifteen writes, and each page's people for the window, read from `GET /api/cards/{id}/context` (All Tasks and All To Do through `loadBoardUsers`, the plan page with the card's context).
 
 ## Work Kept Off the Server's Thread
 

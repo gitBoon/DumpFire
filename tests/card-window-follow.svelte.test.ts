@@ -167,7 +167,7 @@ describe('the card window follows its card where nothing was typed (card 2280, s
 		expect(seen).toBe(4);
 	});
 
-	it('on All Tasks, All To Do and the plan page (no edits) keeps the fields it was filled with, as before', () => {
+	it('given no edits keeps the fields it was filled with (no page does this now: all four host pages pass edits inside {#key cardWindow.edits} since card 2281’s slice C3a-1)', () => {
 		const { props, target } = draw();
 		props.card = { ...opened, title: 'Theirs', description: 'Their notes', priority: 'high' } as CardType;
 		flushSync();
