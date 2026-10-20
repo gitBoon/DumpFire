@@ -466,7 +466,8 @@ describe('the card window’s own messages and Escape, src/lib/components/CardMo
 		expect(handler.indexOf(leaves)).toBeLessThan(handler.indexOf('onClose();'));
 		// Escape, and Ctrl+Enter, which saves (card 2280, slice B5c: tests/card-window-keys.svelte.test.ts).
 		expect(handler).toContain("if (e.key !== 'Escape' && !saveKey) return;");
-		expect(source).toContain('aria-label="Card editor" bind:this={overlay}>');
+		// With the box that has the focus told to the follow (card 2280, the B5d review).
+		expect(source).toContain('aria-label="Card editor" bind:this={overlay} onfocusin={(e) => (focusedField = boxField(e.target))} onfocusout={() => (focusedField = null)}>');
 
 		// What it looks for is the confirmation those pages open, which answers Escape itself.
 		const confirmation = readFileSync(join(ROOT, 'src/lib/components/ConfirmModal.svelte'), 'utf8');

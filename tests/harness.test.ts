@@ -74,6 +74,7 @@ const TEST_FILES = [
 	'card-covers-and-labels.test.ts',
 	'card-updates.test.ts',
 	'card-window.test.ts',
+	'card-window-follow.svelte.test.ts',
 	'card-window-keys.svelte.test.ts',
 	'check-at-the-write.test.ts',
 	'colours.test.ts',

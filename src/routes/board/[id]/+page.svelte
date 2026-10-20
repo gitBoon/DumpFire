@@ -351,8 +351,9 @@
 	 * link to another board makes the page, and so the state, afresh
 	 * (`./+layout.svelte`; card 2280, slice B2a). A window already open is
 	 * closed first, and the card opened after the next tick: the window fills
-	 * its fields from its card once, when it is made, and would otherwise show
-	 * the first card's fields under the second's id. What was typed in it and
+	 * its fields from its card when it is made, and a field typed in is never
+	 * changed after (slice B5d), so it would otherwise show what was typed for
+	 * the first card under the second's id. What was typed in it and
 	 * not saved is lost, as it is when a link leads to another page.
 	 *
 	 * The address is put right with SvelteKit's `replaceState`, after that tick:
@@ -386,7 +387,8 @@
 	/**
 	 * Saves the card window through its controller (slice B2c), which holds
 	 * the board's reads while it is out. A saved card sends only the fields
-	 * changed since the window opened, shown on the board at once and taken
+	 * the user changed in the window (the others follow the board, slice
+	 * B5d, and are never sent back), shown on the board at once and taken
 	 * back alone if refused; a new card is made with its subtasks, labels,
 	 * assignees and sub-boards, and the board read once. A refusal, or no
 	 * answer, keeps the window open with what was typed, and the reason is
@@ -1704,8 +1706,11 @@
 
 <Toast />
 
-<!-- Card Modal -->
+<!-- Card Modal. A new `edits` is a new window (card 2280, slice B5d, the
+     review): its fields filled from its card afresh, never taken by another
+     window's edits as what it started from. -->
 {#if cardWindow.open}
+	{#key cardWindow.edits}
 	<CardModal
 		card={cardWindow.card}
 		categories={boardState.categories}
@@ -1719,9 +1724,11 @@
 		onDeleteSubBoard={cardWindow.card ? (boardId) => deleteSubBoard(boardId) : undefined}
 		onLinkSubBoard={cardWindow.card ? (boardId) => linkSubBoard(cardWindow.cardId!, boardId) : undefined}
 		notice={cardWindow.gone ? CARD_GONE : ''}
+		edits={cardWindow.edits}
 		availableBoards={boardState.linkableBoards.map(b => ({ id: b.id, name: b.name, emoji: b.emoji || '📋' }))}
 		milestones={boardState.milestones}
 	/>
+	{/key}
 {/if}
 
 <!-- Confirm Modal -->
