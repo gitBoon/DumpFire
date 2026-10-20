@@ -25,7 +25,7 @@ import type { CategoryType, ColumnType, LabelType, MilestoneType, SortOption } f
 import { sortCards } from '$lib/utils/card-utils';
 import type { Patched } from './board-patches';
 import { askForContents, type BoardBlockerType, type BoardContentsData, type BreadcrumbType } from './contents-answer';
-import { refreshSchedule, type RefreshSchedule, type RefreshTiming } from './refresh-schedule';
+import { refreshSchedule, type HoldOptions, type RefreshSchedule, type RefreshTiming, type Release } from './refresh-schedule';
 
 export type BoardStateOptions = RefreshTiming & {
 	/** Asks the page's whole load again: the page's `invalidateAll`, used only when the read is refused. */
@@ -130,9 +130,13 @@ export class BoardState {
 		this.#schedule.access();
 	}
 
-	/** Hold the reads (a drag, a write, the on-hold or blocked window). Returns the release. */
-	hold(): () => void {
-		return this.#schedule.hold();
+	/**
+	 * Hold the reads (a drag, a write, the on-hold or blocked window). Returns
+	 * the release, which says when it is spent; `{ watchdog: false }` for a
+	 * hold a window on screen ends.
+	 */
+	hold(options?: HoldOptions): Release {
+		return this.#schedule.hold(options);
 	}
 
 	/** Holds open now. */

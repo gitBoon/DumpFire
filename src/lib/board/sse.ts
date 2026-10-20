@@ -18,9 +18,32 @@
  */
 import { keepStreamOpen } from '$lib/live-stream';
 
+/**
+ * What an `update` event said, as the server sent it: `{"type":"access"}`
+ * when the caller may no longer open the board (card 2170), else what
+ * changed. It carries nothing a reader may not read; the page reads the
+ * board again to see what changed.
+ */
+export type BoardEvent = { type?: unknown; [key: string]: unknown };
+
+/** An `update` event's data, read: its object, or null for anything else. */
+export function boardEvent(data: unknown): BoardEvent | null {
+	if (typeof data !== 'string') return null;
+	try {
+		const read = JSON.parse(data);
+		return read && typeof read === 'object' && !Array.isArray(read) ? (read as BoardEvent) : null;
+	} catch {
+		return null;
+	}
+}
+
 export interface SSECallbacks {
-	/** Called when the server pushes an 'update' event (data changed). */
-	onUpdate: () => void;
+	/**
+	 * Called when the board may have changed: with what an 'update' event
+	 * said, so the page can tell the access event from the rest (card 2280,
+	 * slice B2a), and with null for a reconnect and a return to the tab.
+	 */
+	onUpdate: (event: BoardEvent | null) => void;
 	/** Called when the server pushes a 'celebrate' event (card completed). */
 	onCelebrate: (data: { cardTitle: string; userName: string; userEmoji: string; xpGained: number }) => void;
 	/** Called when the server pushes an 'xp-update' event. */
@@ -37,8 +60,8 @@ export interface SSECallbacks {
  */
 export function connectSSE(boardId: number, callbacks: SSECallbacks): () => void {
 	function listen(eventSource: EventSource) {
-		eventSource.addEventListener('update', () => {
-			callbacks.onUpdate();
+		eventSource.addEventListener('update', (e) => {
+			callbacks.onUpdate(boardEvent(e.data));
 		});
 
 		eventSource.addEventListener('celebrate', (e) => {
@@ -72,12 +95,12 @@ export function connectSSE(boardId: number, callbacks: SSECallbacks): () => void
 	 * makes a figure recorded in a terminal current on alt-tab.
 	 */
 	function onVisibilityChange() {
-		if (document.visibilityState === 'visible') callbacks.onUpdate();
+		if (document.visibilityState === 'visible') callbacks.onUpdate(null);
 	}
 	document.addEventListener('visibilitychange', onVisibilityChange);
 
 	// Every open after the first follows a gap, and the board is re-read.
-	const close = keepStreamOpen(`/api/boards/${boardId}/events`, listen, () => callbacks.onUpdate());
+	const close = keepStreamOpen(`/api/boards/${boardId}/events`, listen, () => callbacks.onUpdate(null));
 
 	/** Cleanup: close the connection and cancel any pending reconnect. */
 	return () => {

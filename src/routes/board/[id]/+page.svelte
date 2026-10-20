@@ -11,6 +11,8 @@
 	 *   - bulk-actions.ts  (multi-select operations)
 	 *   - xp-utils.ts      (XP levelling calculations)
 	 *   - sse.ts           (Server-Sent Events connection)
+	 *   - board-state.svelte.ts (what the page draws, and the re-read of the
+	 *     board's contents alone, coalesced and held; card 2280, slice B2a)
 	 */
 	import type { PageData } from './$types';
 	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
@@ -24,14 +26,14 @@
 	import { toasts } from '$lib/stores/toast';
 
 	// Shared types
-	import type { CardType, ColumnType, CategoryType, LabelType, ActivityType, SortOption, XpEntry, BlockedState, OnHoldState } from '$lib/types';
+	import type { CardType, ColumnType, ActivityType, SortOption, XpEntry, BlockedState, OnHoldState } from '$lib/types';
 
 	// Shared utilities
 	import { COLUMN_COLORS, FLIP_DURATION_MS } from '$lib/utils/constants';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, formatDueDate, isStale, isNew } from '$lib/utils/date-utils';
 	import { parseStamp } from '$lib/timestamps';
-	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, sortCards, getCategoryById, getLabelById, getPriorityLabel, getSortLabel } from '$lib/utils/card-utils';
+	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, getCategoryById, getLabelById, getPriorityLabel, getSortLabel } from '$lib/utils/card-utils';
 	import { isCoverValue } from '$lib/colours';
 	import { drawnColour } from '$lib/colours';
 	import { activityLabel } from '$lib/utils/activity-labels';
@@ -45,6 +47,9 @@
 	import * as bulkOps from '$lib/board/bulk-actions';
 	import { getLevel, getXpProgress, loadXp as fetchXpData } from '$lib/board/xp-utils';
 	import { connectSSE } from '$lib/board/sse';
+	import { BoardState } from '$lib/board/board-state.svelte';
+	import type { Release } from '$lib/board/refresh-schedule';
+	import type { BoardContentsData } from '$lib/board/contents-answer';
 	import { openingView, readBoardView, resolveListColumn, viewFromUrl, withViewParams, writeBoardView, type BoardViewChoice } from '$lib/board/board-view';
 
 	// Components
@@ -71,17 +76,34 @@
 	let { data }: { data: PageData } = $props();
 
 	/**
+	 * What the page draws: the board, its columns and cards, categories,
+	 * labels, members, blocked state, costs and goals, made once from the load
+	 * (`./+layout.svelte` makes the page, and so this, afresh for each board).
+	 * It reads the board's contents again when the board changes, a burst as
+	 * one read and none while a drag or a write of the page's own is out; the
+	 * page's whole load is asked again only when that read is refused, so the
+	 * load's refusal page shows (card 2280, slice B2a). Cast as the load's
+	 * columns always were: the server's rows are wider than `$lib/types`.
+	 */
+	const boardState = new BoardState(data as unknown as BoardContentsData, { invalidate: invalidateAll });
+
+	// A refused read asks for the load again. If that load finds the board open
+	// after all (access given back meanwhile), the page stays and its new data
+	// is the board: handed over then, and only then. No other load is copied
+	// over what the page draws, so a read never lands under a drag in hand.
+	$effect(() => {
+		const next = data;
+		untrack(() => {
+			if (boardState.refused) boardState.take(next as unknown as BoardContentsData);
+		});
+	});
+
+	/**
 	 * Cost per card, keyed by id. Cards absent from this map have nothing
 	 * recorded and show no badge at all — not a zero, which would assert a
 	 * measurement that was never taken.
 	 */
-	const cardTokens = $derived(
-		(data.cardTokens ?? {}) as Record<number, { tokens: number; costUsd: number | null }>
-	);
-
-	let boardColumns = $state<ColumnType[]>(data.columns as unknown as ColumnType[]);
-	let boardCategories = $state<CategoryType[]>(data.categories as CategoryType[]);
-	let boardLabels = $state<LabelType[]>((data.labels || []) as LabelType[]);
+	const cardTokens = $derived(boardState.cardTokens);
 
 	// ─── Panel State ─────────────────────────────────────────────────────────
 
@@ -101,16 +123,23 @@
 		inlineEditValue = card.title;
 	}
 
+	// The edit's text is its own state, which a read cannot overwrite: the
+	// reads are held only while the title is sent (R6).
 	async function saveInlineEdit(cardId: number) {
 		const trimmed = inlineEditValue.trim();
 		if (!trimmed) { inlineEditCardId = null; return; }
-		const col = boardColumns.find(c => c.cards.some(cd => cd.id === cardId));
-		const card = col?.cards.find(cd => cd.id === cardId);
-		if (card && card.title !== trimmed) {
-			card.title = trimmed;
-			boardColumns = [...boardColumns];
-			await api.updateCard(cardId, { title: trimmed, boardId: data.board.id });
-			toasts.add('Title updated');
+		const release = boardState.hold();
+		try {
+			const col = boardState.columns.find(c => c.cards.some(cd => cd.id === cardId));
+			const card = col?.cards.find(cd => cd.id === cardId);
+			if (card && card.title !== trimmed) {
+				card.title = trimmed;
+				boardState.columns = [...boardState.columns];
+				await api.updateCard(cardId, { title: trimmed, boardId: data.board.id });
+				toasts.add('Title updated');
+			}
+		} finally {
+			release();
 		}
 		inlineEditCardId = null;
 	}
@@ -129,9 +158,14 @@
 		e.stopPropagation();
 		const idx = PRIORITY_CYCLE.indexOf(card.priority as any);
 		const next = PRIORITY_CYCLE[(idx + 1) % PRIORITY_CYCLE.length];
-		card.priority = next;
-		boardColumns = [...boardColumns];
-		await api.updateCard(card.id, { priority: next, boardId: data.board.id });
+		const release = boardState.hold();
+		try {
+			card.priority = next;
+			boardState.columns = [...boardState.columns];
+			await api.updateCard(card.id, { priority: next, boardId: data.board.id });
+		} finally {
+			release();
+		}
 	}
 
 	// ─── Bulk Selection ──────────────────────────────────────────────────────
@@ -156,39 +190,54 @@
 	 * to another column at once is refused whole, and nothing moves (card 2209).
 	 */
 	async function handleBulkMove(targetColumnId: number) {
-		const targetCol = boardColumns.find(c => c.id === targetColumnId);
+		const targetCol = boardState.columns.find(c => c.id === targetColumnId);
 		if (!targetCol) return;
 		const started = toasts.navigation();
-		const failure = await bulkOps.bulkMove(selectedCards, targetColumnId, targetCol.cards.length, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
-		if (failure) {
-			toasts.add(failure, 'error', started);
-		} else {
-			clearSelection();
+		const release = boardState.hold();
+		try {
+			const failure = await bulkOps.bulkMove(selectedCards, targetColumnId, targetCol.cards.length, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
+			if (failure) {
+				toasts.add(failure, 'error', started);
+			} else {
+				clearSelection();
+			}
+			boardState.refresh();
+		} finally {
+			release();
 		}
-		await invalidateAll();
 	}
 
 	async function handleBulkDelete() {
 		// Each card is archived, not deleted (`api.deleteCard`).
 		const started = toasts.navigation();
-		const { archived, failed } = await bulkOps.bulkDelete(selectedCards, data.board.id);
-		if (archived > 0) {
-			toasts.add(`${archived} ${archived === 1 ? 'card' : 'cards'} archived. Restore from Archived Cards.`, 'info');
+		const release = boardState.hold();
+		try {
+			const { archived, failed } = await bulkOps.bulkDelete(selectedCards, data.board.id);
+			if (archived > 0) {
+				toasts.add(`${archived} ${archived === 1 ? 'card' : 'cards'} archived. Restore from Archived Cards.`, 'info');
+			}
+			if (failed.length > 0) {
+				// What the server did not archive is still on the board, and stays selected.
+				toasts.add(`${failed.length} ${failed.length === 1 ? 'card' : 'cards'} not archived. ${failed[0].message}`, 'error', started);
+				selectedCards = new Set(failed.map((f) => f.cardId));
+			} else {
+				clearSelection();
+			}
+			boardState.refresh();
+		} finally {
+			release();
 		}
-		if (failed.length > 0) {
-			// What the server did not archive is still on the board, and stays selected.
-			toasts.add(`${failed.length} ${failed.length === 1 ? 'card' : 'cards'} not archived. ${failed[0].message}`, 'error', started);
-			selectedCards = new Set(failed.map((f) => f.cardId));
-		} else {
-			clearSelection();
-		}
-		await invalidateAll();
 	}
 
 	async function handleBulkPriority(priority: string) {
-		await bulkOps.bulkPriority(selectedCards, priority, data.board.id);
-		clearSelection();
-		await invalidateAll();
+		const release = boardState.hold();
+		try {
+			await bulkOps.bulkPriority(selectedCards, priority, data.board.id);
+			clearSelection();
+			boardState.refresh();
+		} finally {
+			release();
+		}
 	}
 
 	// ─── Column Editing ──────────────────────────────────────────────────────
@@ -214,19 +263,24 @@
 		const title = editColumnTitle.trim();
 		if (!title) return;
 		const started = toasts.navigation();
-		let res: Response;
+		const release = boardState.hold();
 		try {
-			res = await boardActions.updateColumn(colId, { title }, data.board.id);
-		} catch {
-			toasts.add('No answer from the server. The column may not have been renamed.', 'error', started);
-			return;
+			let res: Response;
+			try {
+				res = await boardActions.updateColumn(colId, { title }, data.board.id);
+			} catch {
+				toasts.add('No answer from the server. The column may not have been renamed.', 'error', started);
+				return;
+			}
+			if (!res.ok) {
+				toasts.add(await api.failureMessage(res, 'The column was not renamed.'), 'error', started);
+				return;
+			}
+			const col = boardState.columns.find((c) => c.id === colId);
+			if (col) col.title = title;
+		} finally {
+			release();
 		}
-		if (!res.ok) {
-			toasts.add(await api.failureMessage(res, 'The column was not renamed.'), 'error', started);
-			return;
-		}
-		const col = boardColumns.find((c) => c.id === colId);
-		if (col) col.title = title;
 	}
 
 	// ─── Card Modal ──────────────────────────────────────────────────────────
@@ -254,14 +308,14 @@
 	 * Opens the card `?card=` names, if it is on the board now shown, and takes
 	 * the parameter off the address.
 	 *
-	 * The card is looked for in `data.columns`, which SvelteKit has set before
-	 * it calls `afterNavigate`: after a link to another board they are that
-	 * board's, and `boardColumns` is filled from them only by an `$effect`. A
-	 * window already open is closed first, and the card opened after the next
-	 * tick: the window fills its fields from its card once, when it is made, and
-	 * would otherwise show the first card's fields under the second's id. What
-	 * was typed in it and not saved is lost, as it is when a link leads to
-	 * another page.
+	 * The card is looked for in the board state, which is this board's: it is
+	 * made from the load as the page is, before `afterNavigate` runs, and a
+	 * link to another board makes the page, and so the state, afresh
+	 * (`./+layout.svelte`; card 2280, slice B2a). A window already open is
+	 * closed first, and the card opened after the next tick: the window fills
+	 * its fields from its card once, when it is made, and would otherwise show
+	 * the first card's fields under the second's id. What was typed in it and
+	 * not saved is lost, as it is when a link leads to another page.
 	 *
 	 * The address is put right with SvelteKit's `replaceState`, after that tick:
 	 * on the first load `afterNavigate` runs before the router counts itself
@@ -272,7 +326,7 @@
 		const named = url?.searchParams.get('card');
 		if (!url || !named) return;
 		const cardId = Number(named);
-		const card = (data.columns as unknown as ColumnType[]).flatMap((c) => c.cards).find((c) => c.id === cardId);
+		const card = boardState.columns.flatMap((c) => c.cards).find((c) => c.id === cardId);
 		showCardModal = false;
 		editingCard = null;
 		await nextTick();
@@ -296,65 +350,70 @@
 
 	async function saveCard(cardData: { title: string; description: string; priority: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[]; pendingLabelIds?: number[] }) {
 		const started = toasts.navigation();
-		const result = await cardActions.saveCard(editingCard, cardModalColumnId, data.board.id, boardColumns, cardData);
-		if (result.failure) {
-			// No card was made: the window stays open with what was typed, and
-			// the reason is said. It used to say "Created".
-			toasts.add(result.failure, 'error', started);
-			return;
-		}
-		showCardModal = false;
-		if (result.isNew && cardData.title) {
-			toasts.add(`Created "${cardData.title}"`);
-
-			// A label of its template that was not put on it (card 2163): the card is kept.
-			// A label deleted while the window was open is no longer among the
-			// board's, and is not named by its number, which says nothing.
-			for (const { labelId, message } of result.labelFailures ?? []) {
-				const label = boardLabels.find((label) => label.id === labelId);
-				const named = label ? `The template's label "${label.name}"` : 'A label of the template that no longer exists';
-				toasts.add(`${named} was not put on "${cardData.title}". ${message}`, 'error', started);
+		const release = boardState.hold();
+		try {
+			const result = await cardActions.saveCard(editingCard, cardModalColumnId, data.board.id, boardState.columns, cardData);
+			if (result.failure) {
+				// No card was made: the window stays open with what was typed, and
+				// the reason is said. It used to say "Created".
+				toasts.add(result.failure, 'error', started);
+				return;
 			}
+			showCardModal = false;
+			if (result.isNew && cardData.title) {
+				toasts.add(`Created "${cardData.title}"`);
 
-			// Assign pending users to the newly created card
-			if (result.cardId && cardData.pendingAssigneeIds?.length) {
-				await Promise.all(cardData.pendingAssigneeIds.map(userId =>
-					fetch(`/api/cards/${result.cardId}/assignees`, {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ userId })
-					})
-				));
-			}
+				// A label of its template that was not put on it (card 2163): the card is kept.
+				// A label deleted while the window was open is no longer among the
+				// board's, and is not named by its number, which says nothing.
+				for (const { labelId, message } of result.labelFailures ?? []) {
+					const label = boardState.labels.find((label) => label.id === labelId);
+					const named = label ? `The template's label "${label.name}"` : 'A label of the template that no longer exists';
+					toasts.add(`${named} was not put on "${cardData.title}". ${message}`, 'error', started);
+				}
 
-			// Create pending sub-boards for the newly created card. One refused is
-			// said in the server's words, and the card is kept: on a board nested
-			// as deep as sub-boards may be, every one is refused (card 2172).
-			if (result.cardId && cardData.pendingSubBoards?.length) {
-				for (const sbName of cardData.pendingSubBoards) {
-					let res: Response;
-					try {
-						res = await fetch('/api/boards', {
+				// Assign pending users to the newly created card
+				if (result.cardId && cardData.pendingAssigneeIds?.length) {
+					await Promise.all(cardData.pendingAssigneeIds.map(userId =>
+						fetch(`/api/cards/${result.cardId}/assignees`, {
 							method: 'POST',
 							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({ name: sbName, parentCardId: result.cardId })
-						});
-					} catch {
-						toasts.add(`No answer from the server. Sub-board "${sbName}" may not have been made.`, 'error', started);
-						continue;
-					}
-					if (res.ok) {
-						toasts.add(`Sub-board "${sbName}" created`);
-					} else {
-						toasts.add(`Sub-board "${sbName}" was not made. ${await api.failureMessage(res, 'The server refused it.')}`, 'error', started);
+							body: JSON.stringify({ userId })
+						})
+					));
+				}
+
+				// Create pending sub-boards for the newly created card. One refused is
+				// said in the server's words, and the card is kept: on a board nested
+				// as deep as sub-boards may be, every one is refused (card 2172).
+				if (result.cardId && cardData.pendingSubBoards?.length) {
+					for (const sbName of cardData.pendingSubBoards) {
+						let res: Response;
+						try {
+							res = await fetch('/api/boards', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({ name: sbName, parentCardId: result.cardId })
+							});
+						} catch {
+							toasts.add(`No answer from the server. Sub-board "${sbName}" may not have been made.`, 'error', started);
+							continue;
+						}
+						if (res.ok) {
+							toasts.add(`Sub-board "${sbName}" created`);
+						} else {
+							toasts.add(`Sub-board "${sbName}" was not made. ${await api.failureMessage(res, 'The server refused it.')}`, 'error', started);
+						}
 					}
 				}
+			} else if (!result.isNew && editingCard) {
+				toasts.add('Card updated');
 			}
-		} else if (!result.isNew && editingCard) {
-			toasts.add('Card updated');
+			editingCard = null;
+			boardState.refresh();
+		} finally {
+			release();
 		}
-		editingCard = null;
-		await invalidateAll();
 	}
 
 	/**
@@ -364,43 +423,68 @@
 	 * panel (`permanentlyDeleteCard`).
 	 */
 	function confirmDeleteCard(cardId: number) {
-		const card = boardColumns.flatMap(c => c.cards).find(c => c.id === cardId);
+		const card = boardState.columns.flatMap(c => c.cards).find(c => c.id === cardId);
 		showConfirm(
 			'Archive Card',
 			api.cardArchiveWarning(card?.title),
 			'Archive Card',
 			async () => {
 				const started = toasts.navigation();
-				const failure = await api.deleteFailure(() => cardActions.deleteCard(cardId, data.board.id), 'card', 'archived');
-				confirmState.show = false;
-				if (failure) {
-					// The card is still on the board, so it stays open.
-					toasts.add(failure, 'error', started);
-					return;
+				const release = boardState.hold();
+				try {
+					const failure = await api.deleteFailure(() => cardActions.deleteCard(cardId, data.board.id), 'card', 'archived');
+					confirmState.show = false;
+					if (failure) {
+						// The card is still on the board, so it stays open.
+						toasts.add(failure, 'error', started);
+						return;
+					}
+					toasts.add('Card archived. Restore it from Archived Cards.', 'info');
+					showCardModal = false;
+					editingCard = null;
+					boardState.refresh();
+				} finally {
+					release();
 				}
-				toasts.add('Card archived. Restore it from Archived Cards.', 'info');
-				showCardModal = false;
-				editingCard = null;
-				await invalidateAll();
 			}
 		);
 	}
 
 	// ─── Board Identity ──────────────────────────────────────────────────────
 
+	// The name and emoji drawn are the board state's, so a rename by someone
+	// else follows; the name being typed is the edit's own, which a read
+	// cannot overwrite.
 	let editingBoardName = $state(false);
-	let boardName = $state(data.board.name);
-	let boardEmoji = $state(data.board.emoji || '📋');
+	let boardNameDraft = $state('');
+	const boardName = $derived(boardState.board.name);
+	const boardEmoji = $derived(boardState.board.emoji || '📋');
 
+	function startEditBoardName() {
+		boardNameDraft = boardName;
+		editingBoardName = true;
+	}
 
+	// Shown at once, as the name typed always was; an empty one is not sent and not shown.
 	async function saveBoardName() {
-		await boardActions.saveBoardName(data.board.id, boardName);
-		editingBoardName = false;
+		const release = boardState.hold();
+		try {
+			if (boardNameDraft.trim()) boardState.board = { ...boardState.board, name: boardNameDraft };
+			await boardActions.saveBoardName(data.board.id, boardNameDraft);
+			editingBoardName = false;
+		} finally {
+			release();
+		}
 	}
 
 	async function saveBoardEmoji(emoji: string) {
-		boardEmoji = emoji;
-		await boardActions.saveBoardEmoji(data.board.id, emoji);
+		const release = boardState.hold();
+		try {
+			boardState.board = { ...boardState.board, emoji };
+			await boardActions.saveBoardEmoji(data.board.id, emoji);
+		} finally {
+			release();
+		}
 	}
 
 	// ─── Add Column Modal ────────────────────────────────────────────────────
@@ -411,15 +495,25 @@
 	let newColumnPosition = $state('end');
 
 	async function addColumn() {
-		await boardActions.addColumn(data.board.id, newColumnTitle, newColumnColor, newColumnPosition, boardColumns);
-		showAddColumnModal = false;
-		newColumnTitle = '';
-		newColumnPosition = 'end';
-		await invalidateAll();
+		const release = boardState.hold();
+		try {
+			await boardActions.addColumn(data.board.id, newColumnTitle, newColumnColor, newColumnPosition, boardState.columns);
+			showAddColumnModal = false;
+			newColumnTitle = '';
+			newColumnPosition = 'end';
+			boardState.refresh();
+		} finally {
+			release();
+		}
 	}
 
 	async function updateColumn(colId: number, updates: Record<string, unknown>) {
-		await boardActions.updateColumn(colId, updates, data.board.id);
+		const release = boardState.hold();
+		try {
+			await boardActions.updateColumn(colId, updates, data.board.id);
+		} finally {
+			release();
+		}
 	}
 
 	function confirmDeleteColumn(colId: number, colTitle: string) {
@@ -429,34 +523,26 @@
 			'Delete Column',
 			async () => {
 				const started = toasts.navigation();
-				const failure = await api.deleteFailure(() => boardActions.deleteColumn(colId, data.board.id), 'column');
-				confirmState.show = false;
-				if (failure) {
-					toasts.add(failure, 'error', started);
-					return;
+				const release = boardState.hold();
+				try {
+					const failure = await api.deleteFailure(() => boardActions.deleteColumn(colId, data.board.id), 'column');
+					confirmState.show = false;
+					if (failure) {
+						toasts.add(failure, 'error', started);
+						return;
+					}
+					boardState.refresh();
+				} finally {
+					release();
 				}
-				await invalidateAll();
 			}
 		);
 	}
 
 	// ─── Category Management ─────────────────────────────────────────────────
 
+	// The category window sends its own adds and deletes (markup below).
 	let showCategoryModal = $state(false);
-	let newCategoryName = $state('');
-	let newCategoryColor = $state('#6366f1');
-
-	async function addCategory() {
-		await boardActions.addCategory(data.board.id, newCategoryName, newCategoryColor);
-		newCategoryName = '';
-		newCategoryColor = '#6366f1';
-		await invalidateAll();
-	}
-
-	async function deleteCategory(id: number) {
-		await boardActions.deleteCategory(id);
-		await invalidateAll();
-	}
 
 	// ─── Confirm Modal ───────────────────────────────────────────────────────
 
@@ -506,79 +592,108 @@
 	async function duplicateCard(card: CardType) {
 		// A copy the server refused is said in its words, and is not "Duplicated".
 		const started = toasts.navigation();
-		const { title, failure, into } = await cardActions.duplicateCard(card, boardColumns, data.board.id, boardCategories);
-		// The copy of a finished card is made in the board's first open column
-		// (card 2134, R1): say which, or the copy seems to have gone nowhere.
-		if (failure) {
-			toasts.add(failure, 'error', started);
-		} else if (title) {
-			toasts.add(into ? `Duplicated "${title} (Copy)" into ${into}` : `Duplicated "${title}"`);
+		const release = boardState.hold();
+		try {
+			const { title, failure, into } = await cardActions.duplicateCard(card, boardState.columns, data.board.id, boardState.categories);
+			// The copy of a finished card is made in the board's first open column
+			// (card 2134, R1): say which, or the copy seems to have gone nowhere.
+			if (failure) {
+				toasts.add(failure, 'error', started);
+			} else if (title) {
+				toasts.add(into ? `Duplicated "${title} (Copy)" into ${into}` : `Duplicated "${title}"`);
+			}
+			contextMenu = { ...contextMenu, show: false };
+			boardState.refresh();
+		} finally {
+			release();
 		}
-		contextMenu = { ...contextMenu, show: false };
-		await invalidateAll();
 	}
 
 	async function togglePin(card: CardType) {
-		const newPinned = await cardActions.togglePin(card, data.board.id);
-		card.pinned = newPinned;
-		boardColumns = [...boardColumns];
-		toasts.add(newPinned ? `Pinned "${card.title}"` : `Unpinned "${card.title}"`);
-		contextMenu = { ...contextMenu, show: false };
+		const release = boardState.hold();
+		try {
+			const newPinned = await cardActions.togglePin(card, data.board.id);
+			card.pinned = newPinned;
+			boardState.columns = [...boardState.columns];
+			toasts.add(newPinned ? `Pinned "${card.title}"` : `Unpinned "${card.title}"`);
+			contextMenu = { ...contextMenu, show: false };
+		} finally {
+			release();
+		}
 	}
 
 	/** A refusal is said in the server's words: on a board nested as deep as sub-boards may be, every one is refused (card 2172). */
 	async function createSubBoard(card: CardType, name?: string) {
 		contextMenu = { ...contextMenu, show: false };
 		const started = toasts.navigation();
-		const made = await cardActions.createSubBoard(card.id, name || card.title);
-		if ('message' in made) {
-			toasts.add(made.message, 'error', started);
-			return;
+		const release = boardState.hold();
+		try {
+			const made = await cardActions.createSubBoard(card.id, name || card.title);
+			if ('message' in made) {
+				toasts.add(made.message, 'error', started);
+				return;
+			}
+			window.location.href = `/board/${made.id}`;
+		} finally {
+			release();
 		}
-		window.location.href = `/board/${made.id}`;
 	}
 
-	/** Asks first: linking hands the board's deletion to this board's editors. A refusal is said in the server's words. */
+	/**
+	 * Asks first: linking hands the board's deletion to this board's editors. A
+	 * refusal is said in the server's words. The board is read at once once the
+	 * link's own hold is let go: the sub-board's progress is the server's.
+	 */
 	function linkSubBoard(cardId: number, boardId: number) {
-		const name = data.linkableBoards.find(b => b.id === boardId)?.name ?? 'this board';
+		const name = boardState.linkableBoards.find(b => b.id === boardId)?.name ?? 'this board';
 		showConfirm('Link Board', api.subBoardLinkWarning(name), 'Link', async () => {
 			const started = toasts.navigation();
+			const release = boardState.hold();
 			let res: Response;
 			try {
 				res = await cardActions.linkSubBoard(cardId, boardId);
 			} catch {
 				toasts.add('No answer from the server. The board may not have been linked.', 'error', started);
 				return;
+			} finally {
+				release();
 			}
 			if (!res.ok) {
 				toasts.add(await api.failureMessage(res, 'The board was not linked.'), 'error', started);
 				return;
 			}
-			await invalidateAll();
+			await boardState.refreshNow();
 			// The card's window shows its sub-boards from the card as it was read.
-			const open = boardColumns.flatMap(c => c.cards).find(c => c.id === cardId);
+			const open = boardState.columns.flatMap(c => c.cards).find(c => c.id === cardId);
 			if (open && editingCard?.id === cardId) editingCard = open;
 			toasts.add('Board linked as sub-board');
 		});
 	}
 
 	function deleteSubBoard(boardId: number) {
-		const sbName = cardActions.findSubBoardName(boardId, boardColumns);
+		const sbName = cardActions.findSubBoardName(boardId, boardState.columns);
 		showConfirm(
 			'Delete Sub-board',
 			api.boardDeleteWarning(sbName),
 			'Delete',
 			async () => {
 				const started = toasts.navigation();
-				const failure = await api.deleteFailure(() => cardActions.deleteSubBoard(boardId), 'sub-board');
+				const release = boardState.hold();
+				let failure: string | null;
+				try {
+					failure = await api.deleteFailure(() => cardActions.deleteSubBoard(boardId), 'sub-board');
+				} finally {
+					release();
+				}
 				if (failure) {
 					toasts.add(failure, 'error', started);
 					return;
 				}
-				await invalidateAll();
+				// Read at once, once the delete's own hold is let go, as for a link.
+				await boardState.refreshNow();
 				if (editingCard) {
 					const cardId = editingCard.id;
-					for (const col of boardColumns) {
+					for (const col of boardState.columns) {
 						const found = col.cards.find(c => c.id === cardId);
 						if (found) { editingCard = found; break; }
 					}
@@ -590,17 +705,9 @@
 
 	// ─── Column Sort ─────────────────────────────────────────────────────────
 
-	let columnSorts = $state<Record<number, SortOption>>({});
-
+	// The sorts are the board state's, put back on the columns after every read.
 	function setColumnSort(columnId: number, sort: SortOption) {
-		columnSorts = { ...columnSorts, [columnId]: sort };
-		if (sort !== 'none') {
-			const col = boardColumns.find(c => c.id === columnId);
-			if (col) {
-				col.cards = sortCards([...col.cards], sort, boardCategories);
-				boardColumns = [...boardColumns];
-			}
-		}
+		boardState.setSort(columnId, sort);
 		openDropdown = null;
 	}
 
@@ -616,12 +723,10 @@
 	 * is already taken on this page by the completion-blocker modal, which is a
 	 * different kind of "blocked" (incomplete subtasks, not an unfinished card).
 	 */
-	const dependencyBlockers = $derived(
-		(data.blockedState ?? {}) as Record<number, { id: number; title: string; columnTitle: string; boardName: string; boardId: number | null; withheld: boolean }[]>
-	);
+	const dependencyBlockers = $derived(boardState.blockedState);
 
 	const milestoneNameById = $derived(
-		new Map((data.milestones ?? []).map((m: { id: number; name: string }) => [m.id, m.name]))
+		new Map(boardState.milestones.map((m: { id: number; name: string }) => [m.id, m.name]))
 	);
 
 	/** Blockers for a card that are still open, or an empty list. */
@@ -689,7 +794,7 @@
 
 	/** Shows the board or the list, remembers it for this viewer and board, and puts it in the address. */
 	function setBoardView(choice: BoardViewChoice) {
-		const columnId = choice.view === 'list' ? resolveListColumn(boardColumns, choice.columnId) : choice.columnId;
+		const columnId = choice.view === 'list' ? resolveListColumn(boardState.columns, choice.columnId) : choice.columnId;
 		boardView = { ...choice, columnId };
 		if (currentUser) writeBoardView(currentUser.id, data.board.id, boardView);
 		replaceState(withViewParams(new URL(location.href), boardView), $page.state);
@@ -698,10 +803,12 @@
 	// A column deleted while the list shows it (by anyone, live): the list
 	// moves to To Do, and the address and the remembered choice with it, at
 	// once. Not before the view's first navigation, when the router has not
-	// started and that navigation puts the column right in any case.
+	// started and that navigation puts the column right in any case. Nor while
+	// the board is refused: its columns are emptied then, not deleted, and the
+	// choice remembered is kept for the board's return (card 2280, slice B2a).
 	$effect(() => {
-		const columnId = resolveListColumn(boardColumns, boardView.columnId);
-		if (boardViewRead && boardView.view === 'list' && columnId !== boardView.columnId) untrack(() => setBoardView(boardView));
+		const columnId = resolveListColumn(boardState.columns, boardView.columnId);
+		if (boardViewRead && !boardState.refused && boardView.view === 'list' && columnId !== boardView.columnId) untrack(() => setBoardView(boardView));
 	});
 
 
@@ -729,43 +836,53 @@
 		// refusal, a card deleted for good in another tab among them, used to
 		// take the row away and say "Card restored" all the same.
 		const started = toasts.navigation();
-		const failure = await api.deleteFailure(
-			() =>
-				fetch(`/api/boards/${data.board.id}/archive`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ cardId })
-				}),
-			'card',
-			'restored'
-		);
-		if (failure) {
-			toasts.add(failure, 'error', started);
-			return;
+		const release = boardState.hold();
+		try {
+			const failure = await api.deleteFailure(
+				() =>
+					fetch(`/api/boards/${data.board.id}/archive`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ cardId })
+					}),
+				'card',
+				'restored'
+			);
+			if (failure) {
+				toasts.add(failure, 'error', started);
+				return;
+			}
+			archivedCards = archivedCards.filter(c => c.id !== cardId);
+			toasts.add('Card restored');
+			boardState.refresh();
+		} finally {
+			release();
 		}
-		archivedCards = archivedCards.filter(c => c.id !== cardId);
-		toasts.add('Card restored');
-		await invalidateAll();
 	}
 
 	async function permanentlyDeleteCard(cardId: number) {
 		// The card leaves the list only when the server says it is gone.
 		const started = toasts.navigation();
-		const failure = await api.deleteFailure(
-			() =>
-				fetch(`/api/cards/${cardId}?permanent=true`, {
-					method: 'DELETE',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ boardId: data.board.id })
-				}),
-			'card'
-		);
-		if (failure) {
-			toasts.add(failure, 'error', started);
-			return;
+		const release = boardState.hold();
+		try {
+			const failure = await api.deleteFailure(
+				() =>
+					fetch(`/api/cards/${cardId}?permanent=true`, {
+						method: 'DELETE',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ boardId: data.board.id })
+					}),
+				'card'
+			);
+			if (failure) {
+				toasts.add(failure, 'error', started);
+				return;
+			}
+			archivedCards = archivedCards.filter(c => c.id !== cardId);
+			toasts.add('Card permanently deleted', 'info');
+		} finally {
+			release();
 		}
-		archivedCards = archivedCards.filter(c => c.id !== cardId);
-		toasts.add('Card permanently deleted', 'info');
 	}
 
 	// ─── WIP Limit Editing ─────────────────────────────────────────────────────
@@ -782,9 +899,9 @@
 		// An emptied number input is not a number. That is "no limit", which is 0.
 		const limit = Number.isFinite(wipLimitInput) ? Math.max(0, Math.trunc(wipLimitInput)) : 0;
 		await updateColumn(colId, { wipLimit: limit });
-		const col = boardColumns.find(c => c.id === colId);
+		const col = boardState.columns.find(c => c.id === colId);
 		if (col) col.wipLimit = limit;
-		boardColumns = [...boardColumns];
+		boardState.columns = [...boardState.columns];
 		editingWipColumn = null;
 		toasts.add(limit > 0 ? `WIP limit set to ${limit}` : 'WIP limit removed');
 	}
@@ -823,21 +940,52 @@
 
 		// Nothing typed is the same as skipping — do not write empty values over
 		// anything already recorded.
-		if (Object.keys(patch).length > 0) {
-			await api.updateCard(current.id, { ...patch, boardId: data.board.id });
+		const release = boardState.hold();
+		try {
+			if (Object.keys(patch).length > 0) {
+				await api.updateCard(current.id, { ...patch, boardId: data.board.id });
+			}
+			nextCompletionPrompt();
+			if (completionQueue.length === 0) boardState.refresh();
+		} finally {
+			release();
 		}
-		nextCompletionPrompt();
-		if (completionQueue.length === 0) await invalidateAll();
 	}
 
+	/**
+	 * The hold of the On Hold note window. Nothing is sent until the note is
+	 * confirmed, so the reads are held, however long the window is open (no
+	 * watchdog: B2a review), until that move is answered, or Cancel puts the
+	 * card back.
+	 */
+	let onHoldRelease: Release | null = null;
+
+	function releaseOnHold() {
+		onHoldRelease?.();
+		onHoldRelease = null;
+	}
+
+	// Closed as the hold is let go, answered or not: a window left open after
+	// no answer would send a second Confirm unheld (B2a review). No answer is
+	// said, and the board read as the hold is let go shows where the card is;
+	// after a success that read is one with the move's own echo.
 	async function confirmOnHold() {
-		await dndHandlers.confirmOnHold(onHoldState, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
-		onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
+		const started = toasts.navigation();
+		try {
+			await dndHandlers.confirmOnHold(onHoldState, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
+		} catch {
+			toasts.add('No answer from the server. The card may not have been put on hold.', 'error', started);
+		} finally {
+			onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
+			boardState.refresh();
+			releaseOnHold();
+		}
 	}
 
-	async function cancelOnHold() {
+	function cancelOnHold() {
 		onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
-		await invalidateAll();
+		boardState.refresh();
+		releaseOnHold();
 	}
 
 	// ─── Theme & User ────────────────────────────────────────────────────────
@@ -847,7 +995,7 @@
 
 	// User from server-side auth
 	let currentUser = $derived($page.data.user);
-	let canManage = $derived(data.canManage);
+	let canManage = $derived(boardState.canManage);
 	let showShareModal = $state(false);
 	let showMoreMenu = $state(false);
 
@@ -874,78 +1022,137 @@
 
 	// ─── Drag & Drop ─────────────────────────────────────────────────────────
 
+	// A drag holds the board's reads from its first move, before the columns
+	// change, until the move it makes is answered (R6): a read landing then
+	// would draw the board as it was, under the user's hand.
+	let dragHold: Release | null = null;
+
+	/** Hold the reads for the drag in hand, once; a hold the watchdog has let go is not used again. */
+	function holdDrag() {
+		if (!dragHold || dragHold.released) dragHold = boardState.hold();
+	}
+
+	/** The drag's hold, for the drop that sends its move to let go once answered. */
+	function takeDragHold(): Release {
+		const release = dragHold && !dragHold.released ? dragHold : boardState.hold();
+		dragHold = null;
+		return release;
+	}
+
+	/**
+	 * A keyboard drag ends with a consider and no drop (svelte-dnd-action's
+	 * DRAG_STOPPED, on Space, Enter, Escape or a click outside; each arrow move
+	 * is a drop of its own): the drag's hold is let go there (B2a review).
+	 */
+	function stopDrag() {
+		dragHold?.();
+		dragHold = null;
+	}
+
 	function handleColumnDndConsider(e: CustomEvent) {
-		boardColumns = e.detail.items;
+		if (e.detail.info?.trigger === TRIGGERS.DRAG_STOPPED) {
+			boardState.columns = e.detail.items;
+			stopDrag();
+			return;
+		}
+		holdDrag();
+		boardState.columns = e.detail.items;
 	}
 
 	async function handleColumnDndFinalize(e: CustomEvent) {
-		boardColumns = e.detail.items;
-		await dndHandlers.handleColumnDndFinalize(boardColumns, data.board.id);
+		const release = takeDragHold();
+		try {
+			boardState.columns = e.detail.items;
+			await dndHandlers.handleColumnDndFinalize(boardState.columns, data.board.id);
+		} finally {
+			release();
+		}
 	}
 
 	function handleCardDndConsider(columnId: number, e: CustomEvent) {
-		const col = boardColumns.find((c) => c.id === columnId);
+		if (e.detail.info?.trigger === TRIGGERS.DRAG_STOPPED) {
+			takeCardItems(columnId, e);
+			stopDrag();
+			return;
+		}
+		holdDrag();
+		takeCardItems(columnId, e);
+	}
+
+	/** A card zone's items, as the drag left them. */
+	function takeCardItems(columnId: number, e: CustomEvent) {
+		const col = boardState.columns.find((c) => c.id === columnId);
 		if (col) col.cards = e.detail.items;
-		boardColumns = [...boardColumns];
+		boardState.columns = [...boardState.columns];
 	}
 
 	async function handleCardDndFinalize(columnId: number, e: CustomEvent) {
 		// Clear sort on manual drag
-		if (columnSorts[columnId]) {
-			columnSorts = { ...columnSorts, [columnId]: 'none' };
-		}
+		if (boardState.columnSorts[columnId]) boardState.setSort(columnId, 'none');
 		// A drop into another column fires here twice, in either order: for the
 		// column dropped into, and for the column the card left. The call for
 		// the column dropped into sends both (card 2213), so the other only
 		// takes its items. It used to send the whole board as well, past the On
 		// Hold note and the blocked-card check, so Cancel on the note did not
-		// undo the move.
+		// undo the move. The drag's hold is the other call's to let go.
 		if (e.detail.info?.trigger === TRIGGERS.DROPPED_INTO_ANOTHER) {
-			handleCardDndConsider(columnId, e);
+			takeCardItems(columnId, e);
 			return;
 		}
+		const release = takeDragHold();
 		const started = toasts.navigation();
-		const result = await dndHandlers.handleCardDndFinalize(
-			columnId, e.detail.items, boardColumns,
-			data.board.id, currentUser?.username || '', currentUser?.emoji || '👤'
-		);
-		switch (result.action) {
-			case 'blocked':
-				blockedState = result.blockedState;
-				await invalidateAll();
-				break;
-			case 'on-hold':
-				onHoldState = result.onHoldState;
-				boardColumns = result.updatedColumns;
-				break;
-			case 'refused':
-				// Not moved: the columns are put back as the server has them, and
-				// the server's words are said. No sound, no completion prompt.
-				toasts.add(result.message, 'error', started);
-				await invalidateAll();
-				break;
-			case 'committed':
-				boardColumns = result.updatedColumns;
-				for (const entry of result.movedCards) {
-					if (entry.isComplete) {
-						playCompleteSound();
-						queueCompletionPrompt(entry.card);
-					} else {
-						playMoveSound();
+		try {
+			const result = await dndHandlers.handleCardDndFinalize(
+				columnId, e.detail.items, boardState.columns,
+				data.board.id, currentUser?.username || '', currentUser?.emoji || '👤'
+			);
+			switch (result.action) {
+				case 'blocked':
+					blockedState = result.blockedState;
+					boardState.refresh();
+					break;
+				case 'on-hold':
+					onHoldState = result.onHoldState;
+					boardState.columns = result.updatedColumns;
+					// The move waits for its note. The window holds, out of the
+					// watchdog's reach, until Confirm is answered or Cancel; taken
+					// before the drag's own is let go, so no read slips between. One
+					// left from an earlier window is let go first: unwatched, it
+					// would hold the board for good.
+					releaseOnHold();
+					onHoldRelease = boardState.hold({ watchdog: false });
+					break;
+				case 'refused':
+					// Not moved: the columns are put back as the server has them, and
+					// the server's words are said. No sound, no completion prompt.
+					toasts.add(result.message, 'error', started);
+					boardState.refresh();
+					break;
+				case 'committed':
+					boardState.columns = result.updatedColumns;
+					for (const entry of result.movedCards) {
+						if (entry.isComplete) {
+							playCompleteSound();
+							queueCompletionPrompt(entry.card);
+						} else {
+							playMoveSound();
+						}
+						// Starting something that is still waiting on another card is
+						// allowed — sometimes you know better than the graph — but it
+						// should never happen silently.
+						warnIfStillBlocked(entry.card, entry.toName);
 					}
-					// Starting something that is still waiting on another card is
-					// allowed — sometimes you know better than the graph — but it
-					// should never happen silently.
-					warnIfStillBlocked(entry.card, entry.toName);
-				}
-				// Check WIP limit on destination column
-				if (result.movedCards.length > 0) {
-					const destCol = boardColumns.find(c => c.id === columnId);
-					if (destCol && destCol.wipLimit > 0 && destCol.cards.length > destCol.wipLimit) {
-						toasts.add(`⚠ ${destCol.title} exceeds WIP limit (${destCol.cards.length}/${destCol.wipLimit})`, 'warning');
+					// Check WIP limit on destination column
+					if (result.movedCards.length > 0) {
+						const destCol = boardState.columns.find(c => c.id === columnId);
+						if (destCol && destCol.wipLimit > 0 && destCol.cards.length > destCol.wipLimit) {
+							toasts.add(`⚠ ${destCol.title} exceeds WIP limit (${destCol.cards.length}/${destCol.wipLimit})`, 'warning');
+						}
 					}
-				}
-				break;
+					break;
+			}
+		} finally {
+			release();
 		}
 	}
 
@@ -981,13 +1188,16 @@
 	// destroyed. `./+layout.svelte` makes the page afresh for each board, so a
 	// link to another board, or Back to one, closes the first board's stream
 	// and opens the second's (card 2184); a `?card=` link on this board keeps
-	// the page and its stream.
+	// the page and its stream. What the stream says is the board state's to
+	// read: the access event at once, never held, so a board taken away shows
+	// its refusal; any other change, a reconnect or a return to the tab, after
+	// the burst and once nothing holds it (card 2280, slice B2a).
 	onMount(() => {
 		refreshXp();
 		tickInterval = setInterval(() => { tick++; }, 15000);
 		if (browser) {
 			cleanupSSE = connectSSE(data.board.id, {
-				onUpdate: () => invalidateAll(),
+				onUpdate: (event) => (event?.type === 'access' ? boardState.accessChanged() : boardState.refresh()),
 				onCelebrate: (d) => {
 					celebrateCardTitle = d.cardTitle;
 					celebrateUserName = d.userName;
@@ -1005,15 +1215,7 @@
 	onDestroy(() => {
 		if (cleanupSSE) cleanupSSE();
 		if (tickInterval) clearInterval(tickInterval);
-	});
-
-	/** Sync board state when page data changes (e.g. after invalidateAll). */
-	$effect(() => {
-		boardColumns = data.columns as unknown as ColumnType[];
-		boardCategories = data.categories as CategoryType[];
-		boardLabels = (data.labels || []) as LabelType[];
-		boardName = data.board.name;
-		boardEmoji = data.board.emoji || '📋';
+		boardState.dispose();
 	});
 </script>
 
@@ -1027,11 +1229,11 @@
 <div class="board-page">
 	<header class="board-header">
 		<div class="board-header-left">
-			{#if data.breadcrumbs && data.breadcrumbs.length > 0}
+			{#if boardState.breadcrumbs && boardState.breadcrumbs.length > 0}
 				<nav class="breadcrumbs">
 					<a href="/" class="breadcrumb-link breadcrumb-home" title="Dashboard">🔥</a>
 					<span class="breadcrumb-sep">›</span>
-					{#each data.breadcrumbs as crumb}
+					{#each boardState.breadcrumbs as crumb}
 						<!-- A board above this one that the caller cannot open has no name and no link (card 2130), nor has the "…" above the nearest 20 (card 2172). -->
 						{#if crumb.href}
 							<a href={crumb.href} class="breadcrumb-link">{crumb.emoji} {crumb.label}</a>
@@ -1053,14 +1255,14 @@
 				<input
 					class="board-name-input"
 					type="text"
-					bind:value={boardName}
+					bind:value={boardNameDraft}
 					onblur={saveBoardName}
 					onkeydown={(e) => e.key === 'Enter' && saveBoardName()}
 					autofocus
 				/>
 			{:else}
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
-				<h1 class="board-name" onclick={() => (editingBoardName = true)} role="button" tabindex="0">
+				<h1 class="board-name" onclick={startEditBoardName} role="button" tabindex="0">
 					{boardName}
 					<span class="board-id">#{data.board.id}</span>
 				</h1>
@@ -1068,11 +1270,11 @@
 			<!-- What this board has cost. Only shown once something is recorded:
 			     a permanent "—" in the header would be noise on every board
 			     nobody reports against. -->
-			{#if data.boardTokenSummary}
-				<span class="hdr-cost" title="{formatTokens(data.boardTokenSummary.total)} tokens across this board · {NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
-					{formatTokens(data.boardTokenSummary.total)}
-					{#if data.boardTokenSummary.costUsd !== null}
-						<span class="hdr-cost-money">{formatUsd(data.boardTokenSummary.costUsd)}</span>
+			{#if boardState.boardTokenSummary}
+				<span class="hdr-cost" title="{formatTokens(boardState.boardTokenSummary.total)} tokens across this board · {NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
+					{formatTokens(boardState.boardTokenSummary.total)}
+					{#if boardState.boardTokenSummary.costUsd !== null}
+						<span class="hdr-cost-money">{formatUsd(boardState.boardTokenSummary.costUsd)}</span>
 					{/if}
 				</span>
 			{/if}
@@ -1122,7 +1324,7 @@
 			{#if currentUser}
 				<option value={currentUser.id}>👤 My Cards</option>
 			{/if}
-			{#each data.boardUsers.filter(u => u.id !== currentUser?.id) as u}
+			{#each boardState.boardUsers.filter(u => u.id !== currentUser?.id) as u}
 				<option value={u.id}>{u.emoji || '👤'} {u.username}</option>
 			{/each}
 		</select>
@@ -1220,18 +1422,23 @@
 									<span class="more-item-icon">🔗</span> Share Board
 								</button>
 							{/if}
-							{#if data.breadcrumbs && data.breadcrumbs.length > 0}
+							{#if boardState.breadcrumbs && boardState.breadcrumbs.length > 0}
 								<button class="more-dropdown-item more-danger" onclick={() => {
 									showMoreMenu = false;
 									showConfirm('Delete Sub-board', api.boardDeleteWarning(boardName), 'Delete', async () => {
-										const parentHref = data.breadcrumbs[data.breadcrumbs.length - 1]?.href || '/';
+										const parentHref = boardState.breadcrumbs[boardState.breadcrumbs.length - 1]?.href || '/';
 										const started = toasts.navigation();
-										const failure = await api.deleteFailure(() => api.deleteBoardApi(data.board.id), 'sub-board');
-										if (failure) {
-											toasts.add(failure, 'error', started);
-											return;
+										const release = boardState.hold();
+										try {
+											const failure = await api.deleteFailure(() => api.deleteBoardApi(data.board.id), 'sub-board');
+											if (failure) {
+												toasts.add(failure, 'error', started);
+												return;
+											}
+											window.location.href = parentHref;
+										} finally {
+											release();
 										}
-										window.location.href = parentHref;
 									});
 								}}>
 									<span class="more-item-icon">🗑️</span> Delete Sub-board
@@ -1249,8 +1456,8 @@
 	<!-- One column at a time, for a portrait monitor (card 2079); the Kanban block below is left as it was. -->
 	{#if boardView.view === 'list'}
 	<ColumnListView
-		columns={boardColumns}
-		categories={boardCategories}
+		columns={boardState.columns}
+		categories={boardState.categories}
 		filter={{ search: searchQuery, assigneeId: filterAssigneeId, hideBlocked }}
 		blockerCount={(cardId) => blockersFor(cardId).length}
 		{blockerTooltip}
@@ -1270,7 +1477,7 @@
 		<div
 			class="columns-wrapper"
 			use:dndzone={{
-				items: boardColumns,
+				items: boardState.columns,
 				flipDurationMs: FLIP_DURATION_MS,
 				type: 'columns',
 				dropTargetStyle: { outline: '2px solid rgba(99, 102, 241, 0.4)', borderRadius: '14px' }
@@ -1278,7 +1485,7 @@
 			onconsider={handleColumnDndConsider}
 			onfinalize={handleColumnDndFinalize}
 		>
-			{#each boardColumns as column (column.id)}
+			{#each boardState.columns as column (column.id)}
 				<div class="kanban-column glass" class:wip-warning={column.wipLimit > 0 && column.cards.length >= column.wipLimit} animate:flip={{ duration: FLIP_DURATION_MS }}>
 					<div class="column-header">
 						<div class="column-top-bar" style="background: {drawnColour(column.color)}"></div>
@@ -1298,10 +1505,10 @@
 									{column.title}
 								</h3>
 							{/if}
-							<span class="column-count" class:wip-over={column.wipLimit > 0 && column.cards.length >= column.wipLimit}>{#if searchQuery.trim() || filterAssigneeId !== null || hideBlocked}{column.cards.filter(c => matchesSearch(c, searchQuery, boardCategories) && (filterAssigneeId === null || c.assignees?.some(a => a.id === filterAssigneeId)) && passesBlockedFilter(c.id)).length}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}{#if column.wipLimit > 0}<span class="wip-limit-label">/{column.wipLimit}</span>{/if}</span>
-							{#if columnSorts[column.id] && columnSorts[column.id] !== 'none'}
+							<span class="column-count" class:wip-over={column.wipLimit > 0 && column.cards.length >= column.wipLimit}>{#if searchQuery.trim() || filterAssigneeId !== null || hideBlocked}{column.cards.filter(c => matchesSearch(c, searchQuery, boardState.categories) && (filterAssigneeId === null || c.assignees?.some(a => a.id === filterAssigneeId)) && passesBlockedFilter(c.id)).length}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}{#if column.wipLimit > 0}<span class="wip-limit-label">/{column.wipLimit}</span>{/if}</span>
+							{#if boardState.columnSorts[column.id] && boardState.columnSorts[column.id] !== 'none'}
 								<button class="sort-badge" onclick={() => setColumnSort(column.id, 'none')} title="Clear sort">
-									{getSortLabel(columnSorts[column.id])} ✕
+									{getSortLabel(boardState.columnSorts[column.id])} ✕
 								</button>
 							{/if}
 							{#if column.title.toLowerCase() === 'to do' || column.showAddCard}
@@ -1348,22 +1555,22 @@
 										</button>
 										<div class="menu-divider"></div>
 										<div class="menu-label">Sort by</div>
-										<button class="column-menu-item" class:active-sort={columnSorts[column.id] === 'date-asc'} onclick={() => setColumnSort(column.id, 'date-asc')}>
+										<button class="column-menu-item" class:active-sort={boardState.columnSorts[column.id] === 'date-asc'} onclick={() => setColumnSort(column.id, 'date-asc')}>
 											↑ Oldest first
 										</button>
-										<button class="column-menu-item" class:active-sort={columnSorts[column.id] === 'date-desc'} onclick={() => setColumnSort(column.id, 'date-desc')}>
+										<button class="column-menu-item" class:active-sort={boardState.columnSorts[column.id] === 'date-desc'} onclick={() => setColumnSort(column.id, 'date-desc')}>
 											↓ Newest first
 										</button>
-										<button class="column-menu-item" class:active-sort={columnSorts[column.id] === 'priority'} onclick={() => setColumnSort(column.id, 'priority')}>
+										<button class="column-menu-item" class:active-sort={boardState.columnSorts[column.id] === 'priority'} onclick={() => setColumnSort(column.id, 'priority')}>
 											⚡ Priority
 										</button>
-										<button class="column-menu-item" class:active-sort={columnSorts[column.id] === 'category'} onclick={() => setColumnSort(column.id, 'category')}>
+										<button class="column-menu-item" class:active-sort={boardState.columnSorts[column.id] === 'category'} onclick={() => setColumnSort(column.id, 'category')}>
 											🏷 Category
 										</button>
-										<button class="column-menu-item" class:active-sort={columnSorts[column.id] === 'assignee'} onclick={() => setColumnSort(column.id, 'assignee')}>
+										<button class="column-menu-item" class:active-sort={boardState.columnSorts[column.id] === 'assignee'} onclick={() => setColumnSort(column.id, 'assignee')}>
 											👤 Assignee
 										</button>
-										{#if columnSorts[column.id] && columnSorts[column.id] !== 'none'}
+										{#if boardState.columnSorts[column.id] && boardState.columnSorts[column.id] !== 'none'}
 											<button class="column-menu-item" onclick={() => setColumnSort(column.id, 'none')}>
 												✕ Clear sort
 											</button>
@@ -1432,7 +1639,7 @@
 								class="kanban-card"
 								class:card-completed={isCompleteColumn(column)}
 								class:card-on-hold={isOnHoldColumn(column.title)}
-								class:card-hidden={!matchesSearch(card, searchQuery, boardCategories) || (filterAssigneeId !== null && !card.assignees?.some(a => a.id === filterAssigneeId)) || !passesBlockedFilter(card.id)}
+								class:card-hidden={!matchesSearch(card, searchQuery, boardState.categories) || (filterAssigneeId !== null && !card.assignees?.some(a => a.id === filterAssigneeId)) || !passesBlockedFilter(card.id)}
 								class:card-stale={isStale(card.createdAt) && !isCompleteColumn(column)}
 								class:card-selected={selectedCards.has(card.id)}
 								class:card-pinned={card.pinned}
@@ -1463,8 +1670,8 @@
 										<circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/>
 									</svg>
 								</div>
-									{#if getCategoryById(card.categoryId, boardCategories)?.color}
-									<div class="card-color-strip" style="background: {drawnColour(getCategoryById(card.categoryId, boardCategories)?.color)}; --strip-color: {drawnColour(getCategoryById(card.categoryId, boardCategories)?.color)}"></div>
+									{#if getCategoryById(card.categoryId, boardState.categories)?.color}
+									<div class="card-color-strip" style="background: {drawnColour(getCategoryById(card.categoryId, boardState.categories)?.color)}; --strip-color: {drawnColour(getCategoryById(card.categoryId, boardState.categories)?.color)}"></div>
 								{/if}
 								{#if inlineEditCardId === card.id}
 								<!-- svelte-ignore a11y_autofocus -->
@@ -1517,8 +1724,8 @@
 									<span class="priority-badge priority-{card.priority}">
 										{getPriorityLabel(card.priority)}
 									</span>
-									{#if getCategoryById(card.categoryId, boardCategories)}
-										{@const cat = getCategoryById(card.categoryId, boardCategories)!}
+									{#if getCategoryById(card.categoryId, boardState.categories)}
+										{@const cat = getCategoryById(card.categoryId, boardState.categories)!}
 										<span class="category-badge" style="background: {drawnColour(cat.color)}20; color: {drawnColour(cat.color)}; border: 1px solid {drawnColour(cat.color)}40">
 											{cat.name}
 										</span>
@@ -1565,7 +1772,7 @@
 								{#if card.labelIds && card.labelIds.length > 0}
 									<div class="card-labels">
 										{#each card.labelIds as labelId}
-										{@const label = getLabelById(labelId, boardLabels)}
+										{@const label = getLabelById(labelId, boardState.labels)}
 											{#if label}
 												<span class="label-chip" style="background: {drawnColour(label.color)}25; color: {drawnColour(label.color)}; border: 1px solid {drawnColour(label.color)}40">{label.name}</span>
 											{/if}
@@ -1618,8 +1825,8 @@
 {/if}
 {#if showStatsPanel}
 	<StatsPanel
-		{boardColumns}
-		{boardCategories}
+		boardColumns={boardState.columns}
+		boardCategories={boardState.categories}
 		boardId={data.board.id}
 		onClose={() => (showStatsPanel = false)}
 	/>
@@ -1677,7 +1884,7 @@
 {#if selectionMode && selectedCards.size > 0}
 	<BulkActionBar
 		selectedCount={selectedCards.size}
-		columns={boardColumns}
+		columns={boardState.columns}
 		onMove={handleBulkMove}
 		onPriority={handleBulkPriority}
 		onDelete={handleBulkDelete}
@@ -1692,26 +1899,36 @@
 		columnId={contextMenu.columnId}
 		x={contextMenu.x}
 		y={contextMenu.y}
-		columns={boardColumns}
+		columns={boardState.columns}
 		onClose={closeDropdowns}
 		onMove={async (card, targetColId) => {
-			const col = boardColumns.find(c => c.id === targetColId);
+			const col = boardState.columns.find(c => c.id === targetColId);
 			if (!col) return;
 			const updates = [{ id: card.id, columnId: targetColId, position: col.cards.length }];
-			await api.reorderCards(updates, data.board.id, currentUser.name, currentUser.emoji);
-			toasts.add(`Moved to ${col.title}`);
-			// WIP limit violation alert
-			if (col.wipLimit > 0 && col.cards.length + 1 > col.wipLimit) {
-				toasts.add(`⚠ ${col.title} exceeds WIP limit (${col.cards.length + 1}/${col.wipLimit})`, 'warning');
+			const release = boardState.hold();
+			try {
+				await api.reorderCards(updates, data.board.id, currentUser.name, currentUser.emoji);
+				toasts.add(`Moved to ${col.title}`);
+				// WIP limit violation alert
+				if (col.wipLimit > 0 && col.cards.length + 1 > col.wipLimit) {
+					toasts.add(`⚠ ${col.title} exceeds WIP limit (${col.cards.length + 1}/${col.wipLimit})`, 'warning');
+				}
+				contextMenu = { ...contextMenu, show: false };
+				boardState.refresh();
+			} finally {
+				release();
 			}
-			contextMenu = { ...contextMenu, show: false };
-			await invalidateAll();
 		}}
 		onPriority={async (card, priority) => {
-			await api.updateCard(card.id, { priority, boardId: data.board.id });
-			toasts.add(`Priority → ${priority}`);
-			contextMenu = { ...contextMenu, show: false };
-			await invalidateAll();
+			const release = boardState.hold();
+			try {
+				await api.updateCard(card.id, { priority, boardId: data.board.id });
+				toasts.add(`Priority → ${priority}`);
+				contextMenu = { ...contextMenu, show: false };
+				boardState.refresh();
+			} finally {
+				release();
+			}
 		}}
 		onTogglePin={(card) => togglePin(card)}
 		onDuplicate={(card) => duplicateCard(card)}
@@ -1726,18 +1943,18 @@
 {#if showCardModal}
 	<CardModal
 		card={editingCard}
-		categories={boardCategories}
-		labels={boardLabels}
+		categories={boardState.categories}
+		labels={boardState.labels}
 		boardId={data.board.id}
-		boardUsers={data.boardUsers.map(u => ({ ...u, emoji: u.emoji || '👤' }))}
+		boardUsers={boardState.boardUsers.map(u => ({ ...u, emoji: u.emoji || '👤' }))}
 		onSave={saveCard}
 		onDelete={editingCard ? () => confirmDeleteCard(editingCard!.id) : undefined}
 		onClose={() => { showCardModal = false; editingCard = null; }}
 		onCreateSubBoard={editingCard ? (name) => createSubBoard(editingCard!, name) : undefined}
 		onDeleteSubBoard={editingCard ? (boardId) => deleteSubBoard(boardId) : undefined}
 		onLinkSubBoard={editingCard ? (boardId) => linkSubBoard(editingCard!.id, boardId) : undefined}
-		availableBoards={data.linkableBoards.map(b => ({ id: b.id, name: b.name, emoji: b.emoji || '📋' }))}
-		milestones={data.milestones ?? []}
+		availableBoards={boardState.linkableBoards.map(b => ({ id: b.id, name: b.name, emoji: b.emoji || '📋' }))}
+		milestones={boardState.milestones}
 	/>
 {/if}
 
@@ -1782,7 +1999,7 @@
 <!-- Add Column Modal -->
 {#if showAddColumnModal}
 	<AddColumnModal
-		columns={boardColumns}
+		columns={boardState.columns}
 		onAdd={({ title, position, color }) => {
 			newColumnTitle = title;
 			newColumnPosition = position;
@@ -1819,14 +2036,24 @@
 {#if showCategoryModal}
 	<!-- Not one a card here carries from a board the caller cannot open (card 2128): it is not theirs to manage. -->
 	<CategoryModal
-		categories={boardCategories.filter((c) => !c.carried)}
+		categories={boardState.categories.filter((c) => !c.carried)}
 		onAdd={async ({ name, color }) => {
-			await api.createCategory({ boardId: data.board.id, name, color });
-			await invalidateAll();
+			const release = boardState.hold();
+			try {
+				await api.createCategory({ boardId: data.board.id, name, color });
+				boardState.refresh();
+			} finally {
+				release();
+			}
 		}}
 		onDeleteCategory={async (id) => {
-			await api.deleteCategoryApi(id);
-			await invalidateAll();
+			const release = boardState.hold();
+			try {
+				await api.deleteCategoryApi(id);
+				boardState.refresh();
+			} finally {
+				release();
+			}
 		}}
 		onClose={() => (showCategoryModal = false)}
 	/>
@@ -1844,7 +2071,7 @@
 
 <!-- Share modal -->
 {#if showShareModal}
-	<ShareModal boardId={data.board.id} boardName={boardName} canManage={data.canManage} onClose={() => { showShareModal = false; invalidateAll(); }} />
+	<ShareModal boardId={data.board.id} boardName={boardName} canManage={boardState.canManage} onClose={() => { showShareModal = false; boardState.refresh(); }} />
 {/if}
 
 <style>
