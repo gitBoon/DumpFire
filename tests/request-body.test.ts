@@ -3519,8 +3519,8 @@ describe('the review fixes to card 2117’s slices 2 to 5 (version 1.7)', () => 
 			expect(actions).toContain("title: `${card.title.slice(0, 500 - ' (Copy)'.length)} (Copy)`,");
 			expect(actions).toContain('name: name.slice(0, 200),');
 
-			// The dashboard made the parent card, and then had the board refused.
-			expect(source('src/routes/+page.svelte')).toContain('placeholder="Sub-board name..." maxlength="200"');
+			// The dashboard made the parent card, and then had the board refused (its context menu's form, card 2281's slice C2).
+			expect(source('src/lib/components/dashboard/BoardContextMenu.svelte')).toContain('placeholder="Sub-board name..." maxlength="200"');
 		});
 
 		it('lets no one type past the new limits of a request: the requester’s name and the reason for a rejection', () => {

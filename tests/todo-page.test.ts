@@ -831,7 +831,8 @@ describe('the three ways in (test 16)', () => {
 	});
 
 	it('the dashboard has an All To Do pill straight after All Tasks', () => {
-		const source = read('src/routes/+page.svelte');
+		// In the dashboard's header (card 2281, slice C2: moved from src/routes/+page.svelte).
+		const source = read('src/lib/components/dashboard/DashboardHeader.svelte');
 		const all = source.indexOf('<a href="/all" class="nav-pill">');
 		const todo = source.indexOf('<a href="/todo" class="nav-pill" id="todo-link">');
 		const inbox = source.indexOf('<a href="/inbox" class="nav-pill">');

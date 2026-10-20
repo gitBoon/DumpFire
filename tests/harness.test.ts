@@ -81,6 +81,7 @@ const TEST_FILES = [
 	'colours.test.ts',
 	'columns.test.ts',
 	'content-security-policy.test.ts',
+	'dashboard.test.ts',
 	'database-location.test.ts',
 	'deletes-no-parent-key.test.ts',
 	'deletes.test.ts',
