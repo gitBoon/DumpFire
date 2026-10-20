@@ -785,6 +785,13 @@ function adminComponents(): string[] {
 		.map((name) => `src/lib/components/admin/${name}`);
 }
 
+/** The components All Tasks is split into (card 2281, slice C3a-2). */
+function tasksComponents(): string[] {
+	return (readdirSync(join(ROOT, 'src/lib/components/tasks')) as string[])
+		.filter((name) => name.endsWith('.svelte'))
+		.map((name) => `src/lib/components/tasks/${name}`);
+}
+
 /** The modules the admin page and its components share (`sent`, the formatters). */
 function adminModules(): string[] {
 	return (readdirSync(join(ROOT, 'src/lib/admin')) as string[]).filter((name) => name.endsWith('.ts')).map((name) => `src/lib/admin/${name}`);
@@ -1898,6 +1905,8 @@ describe('where the watch and the streams are used, read from the source', () =>
 			expect(source.match(/keepStreamOpen\(/g), file).toHaveLength(1);
 			expect(source, file).not.toMatch(/setTimeout\(connect/);
 		}
+		// All Tasks' one stream is the page's: none of its components opens another (card 2281, slice C3a-2).
+		for (const file of tasksComponents()) expect(readFileSync(join(ROOT, file), 'utf8'), file).not.toContain('keepStreamOpen(');
 	});
 });
 
@@ -2419,14 +2428,20 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'permanentlyDeleteCard', reads: 'deleteFailure', done: ['await invalidateAll()'] },
 		{ name: 'purgeAll', reads: 'failureMessage', done: ['await invalidateAll()'] }
 	],
+	// All Tasks: the page keeps the card window's save and archive, and each
+	// other write moved to the component that sends it (card 2281, slice C3a-2).
 	'src/routes/all/+page.svelte': [
-		// The review's O3: a move to another board that took the card out of its milestone says so.
-		{ name: 'doMoveCard', reads: 'failureMessage', done: ['showMoveModal = false', 'playMoveSound()', 'playCompleteSound()', "toasts.add(leftGoal, 'info')"] },
 		// The card window's save and archive, sent, read and put back by its
 		// controller (card 2281, slice C3a-1; `tests/page-card-window.test.ts`),
 		// which gives back what to say.
 		{ name: 'saveFromWindow', via: 'cardWindow.save', done: ['toasts.add(message)', 'await invalidateAll()'] },
-		{ name: 'archiveFromWindow', via: 'cardWindow.archive', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'await invalidateAll()'] },
+		{ name: 'archiveFromWindow', via: 'cardWindow.archive', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'await invalidateAll()'] }
+	],
+	'src/lib/components/tasks/MoveCardModal.svelte': [
+		// The review's O3: a move to another board that took the card out of its milestone says so.
+		{ name: 'doMoveCard', reads: 'failureMessage', done: ['showMoveModal = false', 'playMoveSound()', 'playCompleteSound()', "toasts.add(leftGoal, 'info')"] }
+	],
+	'src/lib/components/tasks/TasksArchivePanel.svelte': [
 		{ name: 'restoreArchivedCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)', "toasts.add('Card restored')"] },
 		{ name: 'permanentlyDeleteArchivedCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)'] }
 	],
@@ -2624,8 +2639,12 @@ const TESTED_ABOVE: Record<string, string[]> = {
 	'src/lib/components/card/CardAttachments.svelte': ['uploadFile']
 };
 
-/** Files above whose every write goes through a module, so that none sends one itself. */
-const NO_WRITE_OF_ITS_OWN = ['src/routes/todo/+page.svelte'];
+/**
+ * Files above whose every write goes through a module, so that none sends one
+ * itself; All Tasks since card 2281's slice C3a-2, whose Move window and
+ * Archived Cards send theirs from components of their own.
+ */
+const NO_WRITE_OF_ITS_OWN = ['src/routes/todo/+page.svelte', 'src/routes/all/+page.svelte'];
 
 describe('every write of the seven pages of card 2109, of the label picker, and of the four screens of card 2148, says when it was refused', () => {
 	const writes = apiWrites();
@@ -2702,6 +2721,23 @@ describe('every write of the seven pages of card 2109, of the label picker, and 
 				return found;
 			});
 		const sending = filesUnder('src/lib/components/dashboard', '.svelte').filter(sends);
+		expect(sending.length).toBeGreaterThan(0);
+		expect(sending.filter((file) => !(file in WRITES))).toEqual([]);
+	});
+
+	// Card 2281, slice C3a-2: the same for All Tasks' components.
+	it('has every component of All Tasks that sends a write, src/lib/components/tasks/', () => {
+		const sends = (file: string) =>
+			scriptOf(file).statements.some((statement) => {
+				let found = false;
+				const visit = (node: ts.Node) => {
+					if (ts.isCallExpression(node) && writeOf(node, writes)) found = true;
+					ts.forEachChild(node, visit);
+				};
+				visit(statement);
+				return found;
+			});
+		const sending = tasksComponents().filter(sends);
 		expect(sending.length).toBeGreaterThan(0);
 		expect(sending.filter((file) => !(file in WRITES))).toEqual([]);
 	});
@@ -3049,6 +3085,8 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			...filesUnder('src/lib/components/admin', '.svelte'),
 			// And the admin page itself, which is in the table of writes no longer (slice C1b).
 			ADMIN_PAGE,
+			// All Tasks' Move window and live toasts (card 2281, slice C3a-2).
+			...tasksComponents(),
 			...Object.keys(WRITES).filter((file) => file.startsWith('src/routes/'))
 		]) {
 			for (const below of zIndexes(dialog)) expect(toast, dialog).toBeGreaterThan(below);
@@ -3072,6 +3110,16 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 
 	// Card 2281, slice C1a: and the admin page's panels show theirs through the page's.
 	it.each(adminComponents())('%s shows its toasts through the admin page’s shared one, and no toast of its own', (file) => {
+		const source = readFileSync(join(ROOT, file), 'utf8');
+
+		expect(source).not.toContain('<Toast');
+		expect(source).not.toContain('toast-notification');
+		expect(source).not.toMatch(/setTimeout\(\(\) => \(toast = ''\)/);
+	});
+
+	// Card 2281, slice C3a-2: and All Tasks' components show theirs through the page's
+	// (the live toasts of other people's changes are LiveToasts' own, as they were the page's).
+	it.each(tasksComponents())('%s shows its toasts through All Tasks’ shared one, and no toast of its own', (file) => {
 		const source = readFileSync(join(ROOT, file), 'utf8');
 
 		expect(source).not.toContain('<Toast');
@@ -3144,16 +3192,21 @@ describe('a page whose session has ended, for the seven pages of card 2109', () 
 // `tests/page-card-window.test.ts`; the pages are mounted in
 // `tests/card-window-pages.test.ts`). The plan page's window has no Archive,
 // as before.
+// All Tasks' parts are in components of their own since slice C3a-2: what is
+// said to be gone is looked for in each of them as well (`parts`).
 const WINDOW_PAGES = [
-	{ file: 'src/routes/all/+page.svelte', save: 'saveFromWindow', archive: 'archiveFromWindow', list: 'buckets', derived: 'let buckets = $derived(data.buckets);' },
-	{ file: 'src/routes/todo/+page.svelte', save: 'saveFromWindow', archive: 'archiveFromWindow', list: 'cards', derived: 'let cards = $derived(data.cards);' },
-	{ file: 'src/routes/plan/[id]/+page.svelte', save: 'saveCardFromPlan', archive: null, list: 'modalCard', derived: null }
+	{ file: 'src/routes/all/+page.svelte', save: 'saveFromWindow', archive: 'archiveFromWindow', list: 'buckets', derived: 'let buckets = $derived(data.buckets);', parts: tasksComponents() },
+	{ file: 'src/routes/todo/+page.svelte', save: 'saveFromWindow', archive: 'archiveFromWindow', list: 'cards', derived: 'let cards = $derived(data.cards);', parts: [] },
+	{ file: 'src/routes/plan/[id]/+page.svelte', save: 'saveCardFromPlan', archive: null, list: 'modalCard', derived: null, parts: [] }
 ];
 
-describe.each(WINDOW_PAGES)('the card window on $file goes through the controller (card 2281, slice C3a-1)', ({ file, save, archive, list, derived }) => {
+describe.each(WINDOW_PAGES)('the card window on $file goes through the controller (card 2281, slice C3a-1)', ({ file, save, archive, list, derived, parts }) => {
 	const page = scriptOf(file);
 	const board = scriptOf('src/routes/board/[id]/+page.svelte');
 	const source = readFileSync(join(ROOT, file), 'utf8');
+	/** The page and its components, as one text, and their scripts. */
+	const everywhere = [source, ...parts.map((part) => readFileSync(join(ROOT, part), 'utf8'))].join('\n');
+	const scripts = [page, ...parts.map((part) => scriptOf(part))];
 	const markup = source.slice(source.indexOf('</script>'));
 	const opened = markup.slice(markup.indexOf('<CardModal'));
 	const modal = opened.slice(0, opened.indexOf('/>')).replace(/\s+/g, ' ');
@@ -3165,7 +3218,7 @@ describe.each(WINDOW_PAGES)('the card window on $file goes through the controlle
 		expect(made[0].getText()).toContain('() => invalidateAll()');
 		// The list is the load's, written to by a save, and replaced by each re-read (the C3a-1 review).
 		if (derived) expect(page.statements.map((statement) => statement.getText())).toContain(derived);
-		expect(source).not.toMatch(/\b(editingCard|showCardModal|editingBoardId)\b/);
+		expect(everywhere).not.toMatch(/\b(editingCard|showCardModal|editingBoardId)\b/);
 		expect(callsOf(functionNamed(page, 'openCard'), 'cardWindow.openCard')).toHaveLength(1);
 
 		expect(modal).toContain('card={cardWindow.card}');
@@ -3174,9 +3227,9 @@ describe.each(WINDOW_PAGES)('the card window on $file goes through the controlle
 	});
 
 	it('defines no saveCard or deleteCard of its own, and sends no save or archive itself', () => {
-		// Not by any name in the file, script or markup (`saveCardFromPlan` is the plan page's handler).
-		expect(source).not.toMatch(/\b(saveCard|deleteCard)\b/);
-		expect(page.getText()).not.toMatch(/cardActions\.|from '\$lib\/board\/card-actions'/);
+		// Not by any name in the file, script or markup (`saveCardFromPlan` is the plan page's handler), nor in its components.
+		expect(everywhere).not.toMatch(/\b(saveCard|deleteCard)\b/);
+		for (const script of scripts) expect(script.getText(), script.fileName).not.toMatch(/cardActions\.|from '\$lib\/board\/card-actions'/);
 		const writes = apiWrites();
 		for (const name of [save, archive].filter((name): name is string => !!name)) {
 			const fn = functionNamed(page, name);
@@ -3246,9 +3299,13 @@ describe.each(WINDOW_PAGES)('the card window on $file goes through the controlle
 
 		expect(markup).toContain('{#if confirmState.show}');
 		expect(markup).toContain('onConfirm={() => { confirmState.show = false; confirmState.onConfirm(); }}');
-		// All Tasks' Archived Cards panel deletes for good; All To Do has no such panel.
-		if (file === 'src/routes/all/+page.svelte') expect(callsOf(functionNamed(page, 'permanentlyDeleteArchivedCard'), 'showConfirm')).toHaveLength(1);
-		expect(page.getText()).not.toMatch(/window\.(alert|confirm)\(/);
+		// All Tasks' Archived Cards panel deletes for good, through the page's confirm (its panel's since slice C3a-2); All To Do has no such panel.
+		if (file === 'src/routes/all/+page.svelte') {
+			const panel = scriptOf('src/lib/components/tasks/TasksArchivePanel.svelte');
+			expect(callsOf(functionNamed(panel, 'permanentlyDeleteArchivedCard'), 'showConfirm')).toHaveLength(1);
+			expect(markup).toContain('<TasksArchivePanel bind:this={archivePanel} {showConfirm} bind:showArchivePanel />');
+		}
+		for (const script of scripts) expect(script.getText(), script.fileName).not.toMatch(/window\.(alert|confirm)\(/);
 	});
 });
 
@@ -3468,7 +3525,8 @@ describe("a move to another board that takes the card out of its milestone (card
 	});
 
 	it('is said by All Tasks for a move that succeeded, read from its answer', () => {
-		const said = functionNamed(scriptOf('src/routes/all/+page.svelte'), 'doMoveCard').getText().replace(/\s+/g, ' ');
+		// In its Move window (card 2281, slice C3a-2: moved from src/routes/all/+page.svelte).
+		const said = functionNamed(scriptOf('src/lib/components/tasks/MoveCardModal.svelte'), 'doMoveCard').getText().replace(/\s+/g, ' ');
 
 		expect(said).toContain('const leftGoal = leftMilestoneNotice(await answerBody(res));');
 		expect(said).toContain("if (leftGoal) toasts.add(leftGoal, 'info');");
@@ -3488,7 +3546,8 @@ describe("a move to another board that takes the card out of its milestone (card
 			expect(source, file).not.toContain('id="move-board"');
 			expect(source, file).not.toMatch(/columnId: move/);
 		}
-		expect(readFileSync(join(ROOT, 'src/routes/all/+page.svelte'), 'utf8')).toContain('id="move-board"');
+		// All Tasks' Move window is a component of its own (card 2281, slice C3a-2).
+		expect(readFileSync(join(ROOT, 'src/lib/components/tasks/MoveCardModal.svelte'), 'utf8')).toContain('id="move-board"');
 	});
 });
 

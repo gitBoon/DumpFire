@@ -2895,7 +2895,17 @@ describe('one set of activity labels, for the board page and All Tasks (card 221
 		// The board page's Activity Log is its panel's (card 2280, slice B3: moved from the page).
 		const board = readFileSync(join(ROOT, 'src/lib/components/board/ActivityPanel.svelte'), 'utf8');
 		const boardPage = readFileSync(join(ROOT, 'src/routes/board/[id]/+page.svelte'), 'utf8');
-		const all = readFileSync(join(ROOT, 'src/routes/all/+page.svelte'), 'utf8');
+		// All Tasks' is its activity panel's (card 2281, slice C3a-2: moved from the page); no label is written out on the page or any of its parts either.
+		const all = readFileSync(join(ROOT, 'src/lib/components/tasks/TasksActivityPanel.svelte'), 'utf8');
+		const allParts = [
+			'src/routes/all/+page.svelte',
+			...(readdirSync(join(ROOT, 'src/lib/components/tasks')) as string[]).filter((name) => name.endsWith('.svelte')).map((name) => `src/lib/components/tasks/${name}`)
+		];
+		for (const file of allParts) {
+			const source = readFileSync(join(ROOT, file), 'utf8');
+			for (const label of new Set(Object.values(ACTIVITY_LABELS))) expect(source, `${file}: ${label}`).not.toContain(`'${label}'`);
+			expect(source, file).not.toContain('getActionLabel');
+		}
 
 		for (const label of new Set(Object.values(ACTIVITY_LABELS))) expect(boardPage, `board page: ${label}`).not.toContain(`'${label}'`);
 		expect(boardPage).toContain('<ActivityPanel {activities} loading={loadingActivities} onClose={() => (showActivityPanel = false)} />');
