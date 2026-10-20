@@ -256,6 +256,8 @@ const spec = {
 			'is listed in the 409 as `Card not found` (it was `Card does not exist or is archived`), so an archived card on a board the key\'s user cannot edit is listed as one they cannot edit, with its id and no title, ' +
 			'as the single detach answers 403. POST …/cards/bulk still refuses an archived card. A milestone whose only members were archived can now be emptied, and the plan-created mail, ' +
 			'which counts archived members when it decides a milestone was empty, is then sent by the next bulk attach to it. ' +
+			'(93) GET /api/v1/boards/{boardId}/cards lists the board\'s cards by column, in order of column position, ties by column id, and within a column in order of card position, ties by card id. ' +
+			'It listed the columns in the order they were made in, so a column moved or added between two others came in the wrong place. The cards are read in one query, and an answer\'s fields are unchanged. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2839,8 +2841,10 @@ const spec = {
 				tags: ['Cards'],
 				summary: 'List cards on a board',
 				description:
-					'Returns the board\'s cards, column by column and in order of position within each. Each card comes with the title of its column and a count of its subtasks. ' +
-					'Archived cards are left out unless `archived=true`.',
+					'Returns the board\'s cards, column by column in order of column position, ties by column id, and within a column in order of card position, ties by card id. ' +
+					'Each card comes with the title of its column and a count of its subtasks. ' +
+					'Archived cards are left out unless `archived=true`, and take their place by position among the rest. `columnId` narrows the list to that column of this board: ' +
+					'a column of another board gives an empty list. Until 2026-10-14 the columns came in the order they were made in, so a column moved or added between two others was listed in the wrong place (item 93).',
 				operationId: 'listCards',
 				parameters: [
 					{ $ref: '#/components/parameters/boardId' },

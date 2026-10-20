@@ -33,7 +33,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		? db.select({ id: cards.id, title: cards.title, columnId: cards.columnId, position: cards.position })
 			.from(cards)
 			.where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt)))
-			.orderBy(asc(cards.position))
+			// Ties by id (card 2295), as the API's listing breaks them.
+			.orderBy(asc(cards.position), asc(cards.id))
 			.all()
 		: [];
 
