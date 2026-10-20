@@ -752,8 +752,31 @@ function blocksAround(source: string, index: number): { condition: string; inEls
 // Card 2281, slice C1a: the admin page's backup half is in components of its
 // own under src/lib/components/admin, which the page draws. What was read
 // from the page is read from the file that now holds it, and what is said to
-// be gone is looked for in the page and in every one of them.
+// be gone is looked for in the page and in every one of them. Slice C1b moved
+// the rest the same way: every section of the page is a component now.
 const ADMIN_PAGE = 'src/routes/admin/+page.svelte';
+
+/** The admin page's components that are the superadmin's alone (card 2281, slices C1a and C1b). */
+const SUPERADMIN_COMPONENTS = [
+	'AppUrlPanel',
+	'BackupHistory',
+	'BackupRestorePanel',
+	'DestinationForm',
+	'GDriveConnectModal',
+	'ScheduledBackupsPanel',
+	'SmtpPanel'
+].map((name) => `src/lib/components/admin/${name}.svelte`);
+
+/** And those every administrator is shown (card 2281, slice C1b). */
+const ADMINISTRATOR_COMPONENTS = [
+	'AdminOverview',
+	'BoardManagementPanel',
+	'DangerZonePanel',
+	'InviteLinkDialog',
+	'ResetPasswordDialog',
+	'TeamsPanel',
+	'UsersPanel'
+].map((name) => `src/lib/components/admin/${name}.svelte`);
 
 /** The components the admin page is split into. */
 function adminComponents(): string[] {
@@ -796,6 +819,20 @@ function drawnForSuperadminOnly(component: string): boolean {
 	);
 }
 
+/**
+ * Whether an admin component is drawn for every administrator (card 2281,
+ * slice C1b): each of its tags, in the page or in the component that draws
+ * it, followed up to the page, is inside no `{#if}` at all.
+ */
+function drawnForEveryAdministrator(component: string): boolean {
+	const name = component.slice(component.lastIndexOf('/') + 1, -'.svelte'.length);
+	const tags = adminSvelteSources().flatMap(({ file, source }) =>
+		[...source.matchAll(new RegExp(`<${name}[\\s/>]`, 'g'))].map((tag) => ({ file, source, at: tag.index! }))
+	);
+	expect(tags.length, `the tags of ${name}`).toBeGreaterThan(0);
+	return tags.every(({ file, source, at }) => blocksAround(source, at).length === 0 && (file === ADMIN_PAGE || drawnForEveryAdministrator(file)));
+}
+
 describe('the admin page, src/routes/admin/+page.svelte', () => {
 	const file = ADMIN_PAGE;
 	const source = readFileSync(join(ROOT, file), 'utf8');
@@ -819,7 +856,10 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	/**
 	 * Whether the one place `text` is in the markup, of the page or of one of
 	 * its components, is shown to the superadmin only: in the page, inside its
-	 * `{#if isSuperadmin}`; in a component, one the page draws there.
+	 * `{#if isSuperadmin}`; in a component, one the page draws there, or one
+	 * the page draws for everybody and hands its own `isSuperadmin`, inside
+	 * the component's `{#if isSuperadmin}` (card 2281, slice C1b: Reset
+	 * Everything in the danger zone).
 	 */
 	const forSuperadminOnly = (text: string) => {
 		const holders = adminSources().filter((admin) => admin.source.includes(text));
@@ -828,10 +868,20 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 			text
 		).toHaveLength(1);
 		const [holder] = holders;
-		const held = holder.source.slice(holder.source.indexOf('</script>'));
+		const heldFrom = holder.source.indexOf('</script>');
+		const held = holder.source.slice(heldFrom);
 		expect(held.split(text), text).toHaveLength(2);
-		if (holder.file !== ADMIN_PAGE) return drawnForSuperadminOnly(holder.file);
-		return blocksAround(source, from + markup.indexOf(text)).some((block) => block.condition === 'isSuperadmin' && !block.inElse);
+		const inSuperadminBlock = (within: string, at: number) =>
+			blocksAround(within, at).some((block) => block.condition === 'isSuperadmin' && !block.inElse);
+		if (holder.file !== ADMIN_PAGE) {
+			if (drawnForSuperadminOnly(holder.file)) return true;
+			const name = holder.file.slice(holder.file.lastIndexOf('/') + 1, -'.svelte'.length);
+			const tags = [...source.matchAll(new RegExp(`<${name}[\\s/>][^>]*>`, 'g'))].map((tag) => tag[0]);
+			// The page's own isSuperadmin, under that name: `{isSuperadmin}` or `isSuperadmin={isSuperadmin}`, and not `foo={isSuperadmin}`.
+			const handsItOn = (tag: string) => /\s(\{isSuperadmin\}|isSuperadmin=\{isSuperadmin\})[\s/>]/.test(tag);
+			return tags.length > 0 && tags.every(handsItOn) && inSuperadminBlock(holder.source, heldFrom + held.indexOf(text));
+		}
+		return inSuperadminBlock(source, from + markup.indexOf(text));
 	};
 
 	it.each([
@@ -863,8 +913,19 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	// Card 2281, slice C1a: each panel and each part of one is drawn only
 	// where the page draws for the superadmin, every place it is drawn (the
 	// destination form is drawn twice, for an edit and for an add).
-	it.each(adminComponents())('draws %s for the superadmin and for nobody else', (component) => {
+	it.each(SUPERADMIN_COMPONENTS)('draws %s for the superadmin and for nobody else', (component) => {
 		expect(drawnForSuperadminOnly(component)).toBe(true);
+	});
+
+	// Card 2281, slice C1b: and the sections every administrator is shown are
+	// drawn for each of them, in no block at all.
+	it.each(ADMINISTRATOR_COMPONENTS)('draws %s for every administrator', (component) => {
+		expect(drawnForEveryAdministrator(component)).toBe(true);
+		expect(drawnForSuperadminOnly(component)).toBe(false);
+	});
+
+	it('has each of its components in one of those two lists, so that a new one is held to one of them', () => {
+		expect([...SUPERADMIN_COMPONENTS, ...ADMINISTRATOR_COMPONENTS].sort()).toEqual([...adminComponents()].sort());
 	});
 
 	it('tells an administrator, in their place, whose they are and who that is', () => {
@@ -880,31 +941,30 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	});
 
 	it('asks the server for none of it when it opens, unless it is the superadmin who opened it', () => {
-		// What is asked for as the page opens is asked in an `$effect`. The
-		// mail settings in the page's, which begins by leaving; the backup
-		// settings and the App URL in their panels' own (card 2281, slice C1a),
-		// which the page draws for the superadmin alone.
+		// What is asked for as the page opens is asked in an `$effect`: the
+		// backup settings and the App URL in their panels' own (card 2281, slice
+		// C1a), the mail settings in the mail panel's (slice C1b; on the page
+		// its effect began by leaving for anybody else), each a panel the page
+		// draws for the superadmin alone.
 		const LOADS: [file: string, load: string][] = [
 			[SCHEDULED, 'loadBackupConfig'],
 			['src/lib/components/admin/AppUrlPanel.svelte', 'loadAppUrl'],
-			[ADMIN_PAGE, 'loadSmtpConfig']
+			['src/lib/components/admin/SmtpPanel.svelte', 'loadSmtpConfig']
 		];
 		const effectsOf = (tree: ts.SourceFile) =>
 			tree.statements.filter((statement) => ts.isExpressionStatement(statement) && statement.getText().startsWith('$effect('));
 		const bodyOf = (effect: ts.Statement) => ((((effect as ts.ExpressionStatement).expression as ts.CallExpression).arguments[0] as ts.ArrowFunction).body as ts.Block);
 
-		// Each called once in all, in an effect, and none in the page's script but the mail settings.
+		// Each called once in all, in an effect, and none in the page's script, which has no effect of its own.
 		expect(LOADS.flatMap(([, load]) => adminSvelteSources().flatMap((admin) => effectsOf(scriptOf(admin.file)).flatMap((effect) => callsOf(effect, load))))).toHaveLength(3);
-		for (const load of ['loadBackupConfig', 'loadAppUrl']) expect(callsOf(page, load), load).toEqual([]);
+		for (const [, load] of LOADS) expect(callsOf(page, load), load).toEqual([]);
+		expect(effectsOf(page)).toEqual([]);
 		for (const [held, load] of LOADS) {
 			const tree = scriptOf(held);
 			const loading = effectsOf(tree).filter((effect) => callsOf(effect, load).length > 0);
 			expect(loading, load).toHaveLength(1);
-			if (held === ADMIN_PAGE) expect(bodyOf(loading[0]).statements[0].getText()).toBe('if (!isSuperadmin) return;');
-			else {
-				expect(bodyOf(loading[0]).statements.map((statement) => statement.getText())).toEqual([`${load}();`]);
-				expect(drawnForSuperadminOnly(held), held).toBe(true);
-			}
+			expect(bodyOf(loading[0]).statements.map((statement) => statement.getText())).toEqual([`${load}();`]);
+			expect(drawnForSuperadminOnly(held), held).toBe(true);
 			// And none of the three is called as the script runs, outside a function.
 			const atTheTop = tree.statements.filter((statement) => ts.isExpressionStatement(statement) && !effectsOf(tree).includes(statement));
 			expect(atTheTop.flatMap((statement) => callsOf(statement, load)), load).toEqual([]);
@@ -1066,9 +1126,11 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	});
 
 	it('says after a change of role that an invite sent earlier no longer works, when the answer says one ended', () => {
-		const changing = functionNamed(page, 'changeUserRole');
+		// The users panel (card 2281, slice C1b).
+		const users = scriptOf('src/lib/components/admin/UsersPanel.svelte');
+		const changing = functionNamed(users, 'changeUserRole');
 
-		expect(branches(page, 'changeUserRole', 'answerBody')).toEqual(['ok']);
+		expect(branches(users, 'changeUserRole', 'answerBody')).toEqual(['ok']);
 		const said = changing.getText().replace(/\s+/g, ' ');
 		expect(said).toContain('const invitesEnded = result?.invitesEnded;');
 		expect(said).toContain(
@@ -1252,8 +1314,9 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 	});
 });
 
-describe('the admin page’s password dialog, src/routes/admin/+page.svelte', () => {
-	const file = 'src/routes/admin/+page.svelte';
+// Card 2281, slice C1b: the dialog and its script are a component of the admin page, drawn by the users panel.
+describe('the admin page’s password dialog, src/lib/components/admin/ResetPasswordDialog.svelte', () => {
+	const file = 'src/lib/components/admin/ResetPasswordDialog.svelte';
 	const source = readFileSync(join(ROOT, file), 'utf8');
 	const page = scriptOf(file);
 	const markup = source.slice(source.indexOf('</script>'));
@@ -1313,8 +1376,16 @@ describe('the admin page’s password dialog, src/routes/admin/+page.svelte', ()
 	});
 
 	it('reads the counts again when the dialog opens, and shows none until it has', () => {
-		// The one way the dialog opens.
-		expect(markup).toContain('onclick={() => openResetDialog(u.id)} title="Reset password">🔑</button>');
+		// The one way the dialog opens: 🔑 on a row of the users panel, which draws the dialog.
+		const users = readFileSync(join(ROOT, 'src/lib/components/admin/UsersPanel.svelte'), 'utf8');
+		expect(users).toContain('onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>');
+		expect(users).toContain('<ResetPasswordDialog bind:this={resetDialog} {data} />');
+		expect(
+			adminSources()
+				.map((admin) => admin.source)
+				.join('\n')
+				.match(/openResetDialog\(/g)
+		).toHaveLength(2);
 		expect(assignmentsTo(page, 'resetPasswordUserId').map((assignment) => assignment.right.getText())).toEqual(['userId', 'null']);
 		expect(markup).not.toMatch(/resetPasswordUserId = (?!null)/);
 
@@ -2400,23 +2471,35 @@ const WRITES: Record<string, Write[]> = {
 		},
 		{ name: 'runManualBackup', reads: 'sent', done: ['await loadBackupConfig()'] }
 	],
-	'src/routes/admin/+page.svelte': [
+	// The rest of the admin page, each section in a component of its own (card
+	// 2281, slice C1b): the page itself sends no write now.
+	'src/lib/components/admin/BoardManagementPanel.svelte': [
 		{ name: 'deleteBoard', reads: 'sent', done: ["showToast('Board deleted')"] },
 		{ name: 'clearBoardCards', reads: 'sent', done: ["showToast('All cards cleared from board')"] },
-		{ name: 'clearBoardCategories', reads: 'sent', done: ["showToast('All categories cleared from board')"] },
+		{ name: 'clearBoardCategories', reads: 'sent', done: ["showToast('All categories cleared from board')"] }
+	],
+	'src/lib/components/admin/DangerZonePanel.svelte': [
 		{ name: 'resetDatabase', reads: 'failureMessage', done: ['window.location.href = redirect'] },
 		{ name: 'vacuumDatabase', reads: 'sent', done: ["showToast('Database vacuumed. Unused space was reclaimed.')"] },
 		{ name: 'resetAllXp', reads: 'sent', done: ["showToast('All XP has been reset to 0')"] },
-		{ name: 'purgeArchivedCards', reads: 'sent', done: ['await invalidateAll()'] },
+		{ name: 'purgeArchivedCards', reads: 'sent', done: ['await invalidateAll()'] }
+	],
+	'src/lib/components/admin/UsersPanel.svelte': [
 		{ name: 'createUser', reads: 'sent', done: ['showCreateUser = false'] },
 		{ name: 'changeUserRole', reads: 'failureMessage', putsBack: ['putBack()'], done: ['await invalidateAll()'] },
-		{ name: 'resetPassword', reads: 'failureMessage', done: ['resetPasswordUserId = null'] },
 		{ name: 'deleteUser', reads: 'sent', done: ["showToast('User deleted')"] },
-		{ name: 'resendInvite', reads: 'sent' },
+		{ name: 'resendInvite', reads: 'sent' }
+	],
+	'src/lib/components/admin/ResetPasswordDialog.svelte': [
+		{ name: 'resetPassword', reads: 'failureMessage', done: ['resetPasswordUserId = null'] }
+	],
+	'src/lib/components/admin/TeamsPanel.svelte': [
 		{ name: 'createTeam', reads: 'sent', done: ['showCreateTeam = false', "showToast('Team created')"] },
 		{ name: 'deleteTeam', reads: 'sent', done: ["showToast('Team deleted')"] },
 		{ name: 'addTeamMember', reads: 'sent', done: ['addMemberUserId = null', "showToast('Member added')"] },
-		{ name: 'removeTeamMember', reads: 'sent', done: ["showToast('Member removed')"] },
+		{ name: 'removeTeamMember', reads: 'sent', done: ["showToast('Member removed')"] }
+	],
+	'src/lib/components/admin/SmtpPanel.svelte': [
 		{ name: 'saveSmtp', reads: 'failureMessage', done: ["smtpMessage = 'SMTP settings saved!'"] },
 		{ name: 'testSmtp', reads: 'failureMessage' }
 	],
@@ -2871,10 +2954,18 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			'src/lib/components/LabelPicker.svelte',
 			'src/lib/components/ShareModal.svelte',
 			'src/lib/components/SubtaskModal.svelte',
-			'src/routes/account/+page.svelte'
+			'src/routes/account/+page.svelte',
+			// The admin page's mail panel, under the panel (card 2281, slice C1b).
+			'src/lib/components/admin/SmtpPanel.svelte'
 		];
-		// The App URL panel says a refusal only through `sent`, which is held to it below (card 2281, slice C1a).
-		const throughSent = ['src/lib/components/admin/AppUrlPanel.svelte'];
+		// The App URL panel says a refusal only through `sent`, which is held to it below (card 2281, slice C1a);
+		// so do the board and team panels, and the danger zone, whose reset says its own in the page's notice (slice C1b).
+		const throughSent = [
+			'src/lib/components/admin/AppUrlPanel.svelte',
+			'src/lib/components/admin/BoardManagementPanel.svelte',
+			'src/lib/components/admin/TeamsPanel.svelte',
+			'src/lib/components/admin/DangerZonePanel.svelte'
+		];
 		if (ownLine.includes(file) || throughSent.includes(file)) expect(checked).toEqual([]);
 		else expect(checked.length).toBeGreaterThan(0);
 	});
@@ -2921,6 +3012,8 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			'src/lib/components/ConfirmModal.svelte',
 			// The admin page's panels and their dialogs (card 2281, slice C1a).
 			...filesUnder('src/lib/components/admin', '.svelte'),
+			// And the admin page itself, which is in the table of writes no longer (slice C1b).
+			ADMIN_PAGE,
 			...Object.keys(WRITES).filter((file) => file.startsWith('src/routes/'))
 		]) {
 			for (const below of zIndexes(dialog)) expect(toast, dialog).toBeGreaterThan(below);
@@ -4278,8 +4371,9 @@ describe('the user badge, the update bar, the avatar and the subtask window’s 
 	});
 });
 
-describe('the admin page’s user rows, src/routes/admin/+page.svelte', () => {
-	const file = 'src/routes/admin/+page.svelte';
+// Card 2281, slice C1b: the rows are in the users panel, a component of the admin page.
+describe('the admin page’s user rows, src/lib/components/admin/UsersPanel.svelte', () => {
+	const file = 'src/lib/components/admin/UsersPanel.svelte';
 	const source = readFileSync(join(ROOT, file), 'utf8');
 	const from = source.indexOf('</script>');
 	const markup = source.slice(from);
@@ -4303,7 +4397,7 @@ describe('the admin page’s user rows, src/routes/admin/+page.svelte', () => {
 	});
 
 	it('shows 🔑 where the rule lets the caller use it, their own row included, and 🔒 everywhere else', () => {
-		const key = around('onclick={() => openResetDialog(u.id)} title="Reset password">🔑</button>');
+		const key = around('onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>');
 		expect(key.some((block) => block.condition === RULE && !block.inElse)).toBe(true);
 		expect(key.some((block) => block.condition === NOT_OWN)).toBe(false);
 
@@ -4311,7 +4405,7 @@ describe('the admin page’s user rows, src/routes/admin/+page.svelte', () => {
 		expect(lock.some((block) => block.condition === RULE && block.inElse)).toBe(true);
 	});
 
-	it('asks the one rule the server asks, which the page and the guard import', () => {
+	it('asks the one rule the server asks, which the page’s users panel and the guard import', () => {
 		expect(scriptOf(file).getText()).toContain("import { mayManageAccount } from '$lib/account-rule';");
 		const guard = readFileSync(join(ROOT, 'src/lib/server/route-guards.ts'), 'utf8');
 		expect(guard).toContain("import { mayManageAccount } from '$lib/account-rule';");
@@ -4512,15 +4606,25 @@ describe('the check itself', () => {
 	});
 });
 
-describe('the admin page’s invite whose mail was not sent, src/routes/admin/+page.svelte (card 2196)', () => {
-	const file = 'src/routes/admin/+page.svelte';
+// Card 2281, slice C1b: Create User, 📧 and their script are in the users
+// panel, the dialog in a component of its own, the mail panel's record in the
+// mail panel; the link itself is the page's, bound into the first two.
+describe('the admin page’s invite whose mail was not sent, src/lib/components/admin/UsersPanel.svelte and InviteLinkDialog.svelte (card 2196)', () => {
+	const file = 'src/lib/components/admin/UsersPanel.svelte';
 	const source = readFileSync(join(ROOT, file), 'utf8');
 	const tree = scriptOf(file);
-	// The page is CRLF in the working copy: lines are joined with \n to read the markup.
-	const markup = source.slice(source.indexOf('</script>')).replace(/\r\n/g, '\n');
-	const opens = markup.indexOf('<!-- The link of an invite whose mail was not sent');
-	/** The dialog's markup, to the next comment at the start of a line after its own (its own inside are indented). */
-	const dialog = opens === -1 ? '' : markup.slice(opens, markup.indexOf('\n<!--', opens + 4));
+	const markup = source.slice(source.indexOf('</script>'));
+	const DIALOG = 'src/lib/components/admin/InviteLinkDialog.svelte';
+	const dialogSource = readFileSync(join(ROOT, DIALOG), 'utf8');
+	const dialogTree = scriptOf(DIALOG);
+	const opens = dialogSource.indexOf('<!-- The link of an invite whose mail was not sent');
+	/** The dialog's markup, from its comment to the component's style. */
+	const dialog = opens === -1 ? '' : dialogSource.slice(opens, dialogSource.indexOf('<style>', opens));
+	const SMTP = 'src/lib/components/admin/SmtpPanel.svelte';
+	const smtpSource = readFileSync(join(ROOT, SMTP), 'utf8');
+	const smtpTree = scriptOf(SMTP);
+	// The page is CRLF in the working copy: lines are joined with \n to read it.
+	const pageSource = readFileSync(join(ROOT, ADMIN_PAGE), 'utf8').replace(/\r\n/g, '\n');
 
 	/** Every `inviteLink = <something>` in a function, the clearing `= null` left out. */
 	const linkSet = (fn: ts.Node) => {
@@ -4553,26 +4657,41 @@ describe('the admin page’s invite whose mail was not sent, src/routes/admin/+p
 	});
 
 	it('sets the link nowhere else, puts it in no toast and in no storage, and clears it with Done', () => {
-		const touching = tree.statements
+		// Looked for in the page and in every one of its components.
+		const scripts = adminSvelteSources().map((admin) => scriptOf(admin.file, admin.source));
+		const touching = scripts
+			.flatMap((script) => script.statements)
 			.filter((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && !!statement.name)
 			.filter((fn) => /\binviteLink\b/.test(fn.getText()))
 			.map((fn) => fn.name!.text)
 			.sort();
 		expect(touching).toEqual(['closeInviteLink', 'copyInviteLink', 'createUser', 'resendInvite']);
-		expect(linkSet(functionNamed(tree, 'closeInviteLink'))).toEqual([]);
-		expect(statementsOf(functionNamed(tree, 'closeInviteLink'), 'inviteLink = null')).toHaveLength(1);
+		expect(linkSet(functionNamed(dialogTree, 'closeInviteLink'))).toEqual([]);
+		expect(statementsOf(functionNamed(dialogTree, 'closeInviteLink'), 'inviteLink = null')).toHaveLength(1);
 
-		for (const call of callsOf(tree, 'showToast')) {
-			expect(call.getText(), call.getText()).not.toMatch(/inviteLink|inviteUrl/);
+		for (const script of scripts) {
+			for (const call of callsOf(script, 'showToast')) {
+				expect(call.getText(), call.getText()).not.toMatch(/inviteLink|inviteUrl/);
+			}
+			expect(script.getText()).not.toMatch(/(localStorage|sessionStorage|history\.|goto\()[^\n]*invite/i);
 		}
-		expect(tree.getText()).not.toMatch(/(localStorage|sessionStorage|history\.|goto\()[^\n]*invite/i);
 
 		expect(dialog.split('onclick={closeInviteLink}>Done</button>')).toHaveLength(2);
-		expect(markup.split('{#if inviteLink}')).toHaveLength(2);
+		const allMarkup = adminSvelteSources()
+			.map((admin) => admin.source.slice(admin.source.indexOf('</script>')))
+			.join('\n');
+		expect(allMarkup.split('{#if inviteLink}')).toHaveLength(2);
+		expect(dialogSource.split('{#if inviteLink}')).toHaveLength(2);
+		// No markup sets it: only the users panel's two functions, and Done.
+		expect(allMarkup).not.toMatch(/inviteLink\s*=[^=]/);
+		// The page holds it, and hands it to the panel that sets it and the dialog that shows it.
+		expect(pageSource).toContain('let inviteLink = $state<{ url: string; username: string; message: string } | null>(null);');
+		expect(pageSource.split('\n').filter((line) => line.includes('<UsersPanel ') && line.includes(' bind:inviteLink '))).toHaveLength(1);
+		expect(pageSource).toContain('<InviteLinkDialog bind:inviteLink {isSuperadmin} />');
 	});
 
 	it('copies the link with the clipboard, as the Account page copies a new key', () => {
-		expect(functionNamed(tree, 'copyInviteLink').getText()).toContain('navigator.clipboard.writeText(inviteLink.url)');
+		expect(functionNamed(dialogTree, 'copyInviteLink').getText()).toContain('navigator.clipboard.writeText(inviteLink.url)');
 		expect(dialog).toContain('onclick={copyInviteLink}');
 	});
 
@@ -4617,6 +4736,10 @@ describe('the admin page’s invite whose mail was not sent, src/routes/admin/+p
 			const tried = functionNamed(tree, name).body!.statements.find((statement): statement is ts.TryStatement => ts.isTryStatement(statement));
 			expect(tried!.finallyBlock?.statements.map((statement) => statement.getText()), name).toContain('if (isSuperadmin) loadMailStatus();');
 		}
+		// The panel's loadMailStatus is the mail panel's own (card 2281, slice C1b), reached through the page.
+		expect(pageSource).toContain('loadMailStatus={() => smtpPanel?.loadMailStatus()}');
+		expect(pageSource).toContain('<SmtpPanel bind:this={smtpPanel} currentUser={data.currentUser} />');
+		expect(smtpTree.getText()).toContain('export async function loadMailStatus() {');
 	});
 
 	it('focuses Copy when the dialog opens, and describes the dialog by its words (review fixes, item 3)', () => {
@@ -4640,16 +4763,17 @@ describe('the admin page’s invite whose mail was not sent, src/routes/admin/+p
 
 	it('reads the mail panel’s record only from an answer that is a success, when the panel loads and after Save and Send Test', () => {
 		for (const name of ['loadSmtpConfig', 'loadMailStatus']) {
-			const set = statementsOf(functionNamed(tree, name), 'mailStatus = readMailStatus(data.mailStatus)');
+			const set = statementsOf(functionNamed(smtpTree, name), 'mailStatus = readMailStatus(data.mailStatus)');
 			expect(set, name).toHaveLength(1);
 			expect(branchOf(set[0]), name).toBe('ok');
 		}
-		expect(callsOf(functionNamed(tree, 'saveSmtp'), 'loadMailStatus')).toHaveLength(1);
-		expect(callsOf(functionNamed(tree, 'testSmtp'), 'loadMailStatus')).toHaveLength(1);
+		expect(callsOf(functionNamed(smtpTree, 'saveSmtp'), 'loadMailStatus')).toHaveLength(1);
+		expect(callsOf(functionNamed(smtpTree, 'testSmtp'), 'loadMailStatus')).toHaveLength(1);
 	});
 
 	it('shows decision 11’s block in the mail panel, under Send Test, to the superadmin alone', () => {
-		const panel = markup.slice(markup.indexOf('<h2>📧 Email / SMTP</h2>'), markup.indexOf('<!-- Danger zone -->'));
+		const smtpMarkup = smtpSource.slice(smtpSource.indexOf('</script>'));
+		const panel = smtpMarkup.slice(smtpMarkup.indexOf('<h2>📧 Email / SMTP</h2>'));
 		const block = panel.slice(panel.indexOf('{#if mailStatus}'));
 		expect(panel.indexOf('{#if mailStatus}')).toBeGreaterThan(panel.indexOf('onclick={testSmtp}'));
 		for (const words of [
@@ -4662,8 +4786,9 @@ describe('the admin page’s invite whose mail was not sent, src/routes/admin/+p
 		]) {
 			expect(block, words).toContain(words);
 		}
-		const at = source.indexOf('{#if mailStatus}');
-		expect(blocksAround(source, at).some((b) => b.condition === 'isSuperadmin' && !b.inElse)).toBe(true);
+		// In the mail panel, which the page draws for the superadmin alone.
+		expect(smtpSource.split('{#if mailStatus}')).toHaveLength(2);
+		expect(drawnForSuperadminOnly(SMTP)).toBe(true);
 	});
 });
 
