@@ -4264,11 +4264,30 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 
 describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, slice 4)', () => {
 	// Read as text: the page is CRLF in the working copy, so lines are joined with \n first.
-	const page = readFileSync(join(process.cwd(), 'src/routes/admin/+page.svelte'), 'utf8').replace(/\r\n/g, '\n');
-	const markup = page.slice(page.indexOf('</script>'));
-	const row = markup.slice(markup.indexOf('{#each backupDestinations as dest'), markup.indexOf('<!-- Inline edit form -->'));
-	const editForm = markup.slice(markup.indexOf('<!-- Inline edit form -->'), markup.indexOf('<!-- Add Destination Form -->'));
-	const addForm = markup.slice(markup.indexOf('<!-- Add Destination Form -->'), markup.indexOf('<!-- Backup History -->'));
+	const read = (file: string) => readFileSync(join(process.cwd(), file), 'utf8').replace(/\r\n/g, '\n');
+	// Card 2281, slice C1a: the panel, its add and edit forms and Google Drive's
+	// Connect box are components of the page, each read for what it holds; the
+	// page and all of them together for what is held to be nowhere.
+	const ADMIN = 'src/lib/components/admin';
+	const admin = [
+		'src/routes/admin/+page.svelte',
+		...readdirSync(join(process.cwd(), ADMIN)).filter((name) => name.endsWith('.svelte')).map((name) => `${ADMIN}/${name}`),
+		// The modules they share: `sent` and the formatters.
+		...readdirSync(join(process.cwd(), 'src/lib/admin')).filter((name) => name.endsWith('.ts')).map((name) => `src/lib/admin/${name}`)
+	];
+	const panel = read(`${ADMIN}/ScheduledBackupsPanel.svelte`);
+	const form = read(`${ADMIN}/DestinationForm.svelte`);
+	const connectBox = read(`${ADMIN}/GDriveConnectModal.svelte`);
+	// A module is script alone, with no markup.
+	const scriptOf = (source: string) => (source.includes('</script>') ? source.slice(0, source.indexOf('</script>')) : source);
+	const markupOf = (source: string) => (source.includes('</script>') ? source.slice(source.indexOf('</script>')) : '');
+	/** The page, every component of it and their modules, whole. */
+	const page = admin.map(read).join('\n');
+	/** Their markup, all of it. */
+	const markup = admin.map((file) => markupOf(read(file))).join('\n');
+	const row = markupOf(panel).slice(markupOf(panel).indexOf('{#each backupDestinations as dest'), markupOf(panel).indexOf('<!-- Inline edit form -->'));
+	const editForm = markupOf(form).slice(markupOf(form).indexOf('<!-- Inline edit form -->'), markupOf(form).indexOf('<!-- Add Destination Form -->'));
+	const addForm = markupOf(form).slice(markupOf(form).indexOf('<!-- Add Destination Form -->'));
 
 	/** R2's line under a connection that reaches all of Drive. */
 	const NARROW_IT =
@@ -4287,7 +4306,9 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 		'type it again when you change them. A connected Google Drive destination is removed, added again and connected.';
 
 	it('reads a connection’s recorded scope and the folder’s name with the server’s own functions, and imports nothing of the server’s', () => {
-		expect(page).toContain("import { driveScopeIsNarrow, dumpfireFolderName } from '$lib/drive-scope';");
+		// The scope in the panel's rows, the folder's name in the forms.
+		expect(panel).toContain("import { driveScopeIsNarrow } from '$lib/drive-scope';");
+		expect(form).toContain("import { dumpfireFolderName } from '$lib/drive-scope';");
 		expect(page).not.toMatch(/from '\$lib\/server/);
 		// The folder named on the page is the one Connect makes.
 		expect(dumpfireFolderName(new Date('2026-10-18T12:00:00Z'))).toBe('DumpFire backups (made 2026-10-18)');
@@ -4295,16 +4316,18 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 
 	it('shows a connection narrowed to DumpFire’s files as Connected, any other as all of Drive, and Connect only where there is no connection (decision 7, R2, R6)', () => {
 		expect(row).toMatch(
-			/\{#if dest\.refreshToken\}\s*\{#if driveScopeIsNarrow\(dest\.grantedScope\)\}\s*<span[^>]*>✅ Connected<\/span>\s*\{:else\}\s*<span[^>]*>⚠️ Connected · all of Drive<\/span>\s*\{\/if\}\s*\{:else\}\s*<button[^>]*onclick=\{\(\) => connectGDriveOAuth\(dest\.name\)\}>🔗 Connect<\/button>\s*\{\/if\}/
+			/\{#if dest\.refreshToken\}\s*\{#if driveScopeIsNarrow\(dest\.grantedScope\)\}\s*<span[^>]*>✅ Connected<\/span>\s*\{:else\}\s*<span[^>]*>⚠️ Connected · all of Drive<\/span>\s*\{\/if\}\s*\{:else\}\s*<button[^>]*onclick=\{\(\) => gdriveConnect\?\.connectGDriveOAuth\(dest\.name\)\}>🔗 Connect<\/button>\s*\{\/if\}/
 		);
+		// The Connect box the button calls is the one the panel draws.
+		expect(markupOf(panel)).toContain('<GDriveConnectModal bind:this={gdriveConnect} {loadBackupConfig} />');
 		// No "Connect again" as an action on a destination: the page would lead
 		// into the wrong order (R2). The phrase is only in the two toasts of card
 		// 2251's paste box, for a Connect Google ended with an error, which leaves
 		// the destination unconnected and its Connect button showing.
 		expect(markup).not.toContain('Connect again');
-		const script = page.slice(0, page.indexOf('</script>'));
-		const fn = script.slice(script.indexOf('async function exchangeGDriveCode()'), script.indexOf('// ─── Board Management'));
-		expect(script.match(/Connect again/g)).toHaveLength(2);
+		const scripts = admin.map((file) => scriptOf(read(file))).join('\n');
+		const fn = scriptOf(connectBox).slice(scriptOf(connectBox).indexOf('async function exchangeGDriveCode()'));
+		expect(scripts.match(/Connect again/g)).toHaveLength(2);
 		expect(fn.match(/Press Connect again/g)).toHaveLength(2);
 		expect(markup.match(/connectGDriveOAuth\(/g)).toHaveLength(1);
 	});
@@ -4348,8 +4371,9 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 	});
 
 	it('shows a refused save or Connect in the server’s own words (decisions 3, 8 and 9)', () => {
-		const script = page.slice(0, page.indexOf('</script>'));
-		expect(script).toContain('showToast(await failureMessage(res, fallback), \'error\', started);');
-		expect(script).toContain("showToast(said || 'Failed to connect', 'error', started);");
+		// The save through `sent`, which the page and its panels share (card 2281, slice C1a).
+		expect(read('src/lib/admin/send.ts')).toContain('showToast(await failureMessage(res, fallback), \'error\', started);');
+		expect(scriptOf(panel)).toContain("import { sent, showToast } from '$lib/admin/send';");
+		expect(scriptOf(connectBox)).toContain("showToast(said || 'Failed to connect', 'error', started);");
 	});
 });
