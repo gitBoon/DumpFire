@@ -1425,7 +1425,8 @@ describe('archived cards on a sub-board (card 2205)', () => {
 		const readers: Record<string, string> = {
 			getCompletionBlocker: bodyOf(completion, 'getCompletionBlocker'),
 			hiddenOpenCountsFor: bodyOf(access, 'hiddenOpenCountsFor'),
-			'the board page': read('src/routes/board/[id]/+page.server.ts'),
+			// The board page's load and its refresh, through their one reader (card 2280).
+			'the board page': read('src/lib/server/board-contents.ts'),
 			'the card context': read('src/routes/api/cards/[id]/context/+server.ts'),
 			'the dashboard': read('src/routes/+page.server.ts')
 		};

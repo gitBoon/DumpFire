@@ -6,7 +6,7 @@
  */
 
 import { db } from './db';
-import { boardMembers, boardTeams, teamMembers, boards } from './db/schema';
+import { boardMembers, boardTeams, teamMembers, boards, type Board } from './db/schema';
 import { eq, and, inArray, or } from 'drizzle-orm';
 import type { SessionUser } from './auth';
 
@@ -44,10 +44,25 @@ export function getBoardRole(user: Actor, boardId: number): BoardRole | 'admin' 
 		return 'admin';
 	}
 
-	// Check if user is the board creator
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) return null;
 
+	return roleOnBoard(user, board);
+}
+
+/**
+ * The same answer as `getBoardRole`, for a board whose row the caller has
+ * already read: it does not read the row again. The board page's breadcrumb
+ * walk reads each board above it, and asked `canViewBoard` of each, which read
+ * it a second time (card 2172's note, folded in by card 2280).
+ */
+export function roleOnBoard(user: Actor, board: Pick<Board, 'id' | 'createdBy' | 'isPublic'>): BoardRole | 'admin' | null {
+	if (user.role === 'admin' || user.role === 'superadmin') {
+		return 'admin';
+	}
+	const boardId = board.id;
+
+	// Check if user is the board creator
 	if (board.createdBy === user.id) {
 		return 'owner';
 	}

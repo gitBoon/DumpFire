@@ -898,6 +898,15 @@ const TABLE: Record<string, Case | Case[]> = {
 		signedIn((w) => `/api/boards/${w.publicBoard.board.id}/cards`, { of: 'a public board' })
 	],
 	'GET /api/boards/[id]/cfd': view((w) => `/api/boards/${w.A.board.id}/cfd`),
+	// What the board page refreshes itself with (card 2280): the board load's
+	// reader, so the load's three ways in.
+	'GET /api/boards/[id]/contents': [
+		view((w) => `/api/boards/${w.A.board.id}/contents`),
+		own('guest', ['outsider'], (w) => `/api/boards/${w.A.board.id}/contents`, {
+			of: 'through a team the board is shared with'
+		}),
+		signedIn((w) => `/api/boards/${w.publicBoard.board.id}/contents`, { of: 'a public board' })
+	],
 	'GET /api/boards/[id]/events': view((w) => `/api/boards/${w.A.board.id}/events`, { stream: true }),
 	'GET /api/boards/[id]/export/csv': view((w) => `/api/boards/${w.A.board.id}/export/csv`),
 	'POST /api/boards/[id]/favourite': view((w) => `/api/boards/${w.A.board.id}/favourite`),
