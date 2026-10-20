@@ -2892,9 +2892,13 @@ describe('one set of activity labels, for the board page and All Tasks (card 221
 	});
 
 	it('is what both pages call, and neither has words of its own', () => {
-		const board = readFileSync(join(ROOT, 'src/routes/board/[id]/+page.svelte'), 'utf8');
+		// The board page's Activity Log is its panel's (card 2280, slice B3: moved from the page).
+		const board = readFileSync(join(ROOT, 'src/lib/components/board/ActivityPanel.svelte'), 'utf8');
+		const boardPage = readFileSync(join(ROOT, 'src/routes/board/[id]/+page.svelte'), 'utf8');
 		const all = readFileSync(join(ROOT, 'src/routes/all/+page.svelte'), 'utf8');
 
+		for (const label of new Set(Object.values(ACTIVITY_LABELS))) expect(boardPage, `board page: ${label}`).not.toContain(`'${label}'`);
+		expect(boardPage).toContain('<ActivityPanel {activities} loading={loadingActivities} onClose={() => (showActivityPanel = false)} />');
 		for (const [page, source] of [['board', board], ['all', all]]) {
 			expect(source, page).toContain("import { activityLabel } from '$lib/utils/activity-labels';");
 			// No label of the table written out on the page.
@@ -2902,6 +2906,7 @@ describe('one set of activity labels, for the board page and All Tasks (card 221
 		}
 		expect(board).toContain('<span class="activity-action">{activityLabel(activity.action)}</span>');
 		expect(board).not.toContain(".replace('api:'");
+		expect(boardPage).not.toContain(".replace('api:'");
 		// The labels are written as they are read: no capital laid on each word.
 		expect(/\.activity-action \{([^}]*)\}/.exec(board)?.[1]).not.toContain('text-transform');
 		expect(all).toContain('{activityLabel(item.action)}');

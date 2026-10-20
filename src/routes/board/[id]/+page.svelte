@@ -19,6 +19,14 @@
 	 *   - card-window.svelte.ts (the card window: the card it is open on, as
 	 *     the board has it now, its save of only the fields changed since it
 	 *     opened, and its archive; slice B2c)
+	 *
+	 * What it draws is in components (slice B3, a move): the header with its
+	 * XP bars and More menu, each column's head and each card's body, and the
+	 * Activity Log and Archived Cards panels, under $lib/components/board/.
+	 * Each is handed what it shows and calls back into this page, which keeps
+	 * every write, the board state, the card window, the columns and cards
+	 * themselves (the direct children of their keyed `{#each}`, which
+	 * `animate:flip` and the drag zones need) and the windows.
 	 */
 	import type { PageData } from './$types';
 	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
@@ -34,14 +42,9 @@
 	import type { CardType, CategoryType, ColumnType, ActivityType, SortOption, XpEntry, BlockedState, OnHoldState } from '$lib/types';
 
 	// Shared utilities
-	import { COLUMN_COLORS, FLIP_DURATION_MS } from '$lib/utils/constants';
-	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
-	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, formatDueDate, isStale, isNew } from '$lib/utils/date-utils';
-	import { parseStamp } from '$lib/timestamps';
-	import { isCompleteColumn, isOnHoldColumn, subtaskProgress, matchesSearch, getCategoryById, getLabelById, getPriorityLabel, getSortLabel } from '$lib/utils/card-utils';
-	import { isCoverValue } from '$lib/colours';
-	import { drawnColour } from '$lib/colours';
-	import { activityLabel } from '$lib/utils/activity-labels';
+	import { FLIP_DURATION_MS } from '$lib/utils/constants';
+	import { isStale } from '$lib/utils/date-utils';
+	import { isCompleteColumn, isOnHoldColumn, matchesSearch } from '$lib/utils/card-utils';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	// Board-specific modules
@@ -50,7 +53,7 @@
 	import * as cardActions from '$lib/board/card-actions';
 	import * as dndHandlers from '$lib/board/dnd-handlers';
 	import * as bulkOps from '$lib/board/bulk-actions';
-	import { getLevel, getXpProgress, loadXp as fetchXpData } from '$lib/board/xp-utils';
+	import { loadXp as fetchXpData } from '$lib/board/xp-utils';
 	import { connectSSE } from '$lib/board/sse';
 	import { BoardState, type WriteWords } from '$lib/board/board-state.svelte';
 	import { CARD_GONE, CardWindow, type CardWindowSave } from '$lib/board/card-window.svelte';
@@ -63,10 +66,7 @@
 	import CardModal from '$lib/components/CardModal.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ShareModal from '$lib/components/ShareModal.svelte';
-	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import Toast from '$lib/components/Toast.svelte';
-	import { formatTokens } from '$lib/tokens';
-	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
 	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
 	import BulkActionBar from '$lib/components/board/BulkActionBar.svelte';
 	import ContextMenu from '$lib/components/board/ContextMenu.svelte';
@@ -75,8 +75,14 @@
 	import CategoryModal from '$lib/components/board/CategoryModal.svelte';
 	import OnHoldModal from '$lib/components/board/OnHoldModal.svelte';
 	import CompletionPromptModal from '$lib/components/board/CompletionPromptModal.svelte';
-	import BoardViewSwitch from '$lib/components/board/BoardViewSwitch.svelte';
 	import ColumnListView from '$lib/components/board/ColumnListView.svelte';
+	import BoardHeader from '$lib/components/board/BoardHeader.svelte';
+	import XpLeaderboard from '$lib/components/board/XpLeaderboard.svelte';
+	import BoardMoreMenu from '$lib/components/board/BoardMoreMenu.svelte';
+	import KanbanColumnHeader from '$lib/components/board/KanbanColumnHeader.svelte';
+	import KanbanCardBody from '$lib/components/board/KanbanCardBody.svelte';
+	import ActivityPanel from '$lib/components/board/ActivityPanel.svelte';
+	import ArchivePanel from '$lib/components/board/ArchivePanel.svelte';
 
 	// ─── Props & Core State ──────────────────────────────────────────────────
 
@@ -784,6 +790,30 @@
 		);
 	}
 
+	/**
+	 * The More menu's Delete Sub-board, for this board when it is a sub-board:
+	 * asked first, and the page goes to the board above it only once it is
+	 * deleted. Written in the menu's markup until the menu became a component
+	 * (slice B3), which closes itself and then calls this.
+	 */
+	function confirmDeleteThisSubBoard() {
+		showConfirm('Delete Sub-board', api.boardDeleteWarning(boardName), 'Delete', async () => {
+			const parentHref = boardState.breadcrumbs[boardState.breadcrumbs.length - 1]?.href || '/';
+			const started = toasts.navigation();
+			const release = boardState.hold();
+			try {
+				const failure = await api.deleteFailure(() => api.deleteBoardApi(data.board.id), 'sub-board');
+				if (failure) {
+					toasts.add(failure, 'error', started);
+					return;
+				}
+				window.location.href = parentHref;
+			} finally {
+				release();
+			}
+		});
+	}
+
 	// ─── Column Sort ─────────────────────────────────────────────────────────
 
 	// The sorts are the board state's, put back on the columns after every read.
@@ -1427,231 +1457,53 @@
 
 <div class="board-page-wrapper">
 <div class="board-page">
-	<header class="board-header">
-		<div class="board-header-left">
-			{#if boardState.breadcrumbs && boardState.breadcrumbs.length > 0}
-				<nav class="breadcrumbs">
-					<a href="/" class="breadcrumb-link breadcrumb-home" title="Dashboard">🔥</a>
-					<span class="breadcrumb-sep">›</span>
-					{#each boardState.breadcrumbs as crumb}
-						<!-- A board above this one that the caller cannot open has no name and no link (card 2130), nor has the "…" above the nearest 20 (card 2172). -->
-						{#if crumb.href}
-							<a href={crumb.href} class="breadcrumb-link">{crumb.emoji} {crumb.label}</a>
-						{:else}
-							<span class="breadcrumb-link breadcrumb-withheld" title={crumb.title}>{#if crumb.emoji}{crumb.emoji} {/if}{crumb.label}</span>
-						{/if}
-						<span class="breadcrumb-sep">›</span>
-					{/each}
-				</nav>
-			{:else}
-				<a href="/" class="back-btn btn-ghost" id="back-to-dashboard">
-					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-						<path d="M10 12L6 8l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-					</svg>
-				</a>
-			{/if}
-			<EmojiPicker value={boardEmoji} onSelect={(emoji) => saveBoardEmoji(emoji)} />
-			{#if editingBoardName}
-				<input
-					class="board-name-input"
-					type="text"
-					bind:value={boardNameDraft}
-					onblur={saveBoardName}
-					onkeydown={(e) => e.key === 'Enter' && saveBoardName()}
-					autofocus
-				/>
-			{:else}
-				<!-- svelte-ignore a11y_click_events_have_key_events -->
-				<h1 class="board-name" onclick={startEditBoardName} role="button" tabindex="0">
-					{boardName}
-					<span class="board-id">#{data.board.id}</span>
-				</h1>
-			{/if}
-			<!-- What this board has cost. Only shown once something is recorded:
-			     a permanent "—" in the header would be noise on every board
-			     nobody reports against. -->
-			{#if boardState.boardTokenSummary}
-				<span class="hdr-cost" title="{formatTokens(boardState.boardTokenSummary.total)} tokens across this board · {NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
-					{formatTokens(boardState.boardTokenSummary.total)}
-					{#if boardState.boardTokenSummary.costUsd !== null}
-						<span class="hdr-cost-money">{formatUsd(boardState.boardTokenSummary.costUsd)}</span>
-					{/if}
-				</span>
-			{/if}
-		</div>
-
-		<!-- XP Leaderboard -->
-		{#if xpLeaderboard.length > 0}
-			<div class="xp-bar-container">
-				{#each xpLeaderboard.sort((a, b) => b.xp - a.xp) as entry (entry.name)}
-					{@const level = getLevel(entry.xp)}
-					{@const progress = getXpProgress(entry.xp)}
-					<div class="xp-entry" title="{entry.name}: {entry.xp} XP (Level {level})">
-						<span class="xp-avatar">{entry.emoji}</span>
-						<div class="xp-info">
-							<div class="xp-name-row">
-								<span class="xp-name">{entry.name}</span>
-								<span class="xp-level">Lv.{level}</span>
-							</div>
-							<div class="xp-track">
-								<div class="xp-fill" style="width: {progress}%"></div>
-							</div>
-						</div>
-					</div>
-				{/each}
-			</div>
-		{/if}
-
-		<div class="search-wrapper hdr-search">
-			<svg class="search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
-				<circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
-				<path d="M9.5 9.5L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-			</svg>
-			<input
-				class="search-input"
-				type="text"
-				placeholder="Search tasks or #id..."
-				bind:value={searchQuery}
+	<!-- The header (slice B3: a component). The name typed, the search and the
+	     filters are this page's, bound; the XP bars and the More menu are
+	     drawn in it from here, each with what it needs of this page. -->
+	<BoardHeader
+		boardId={data.board.id}
+		{boardName}
+		{boardEmoji}
+		breadcrumbs={boardState.breadcrumbs}
+		tokenSummary={boardState.boardTokenSummary}
+		editingName={editingBoardName}
+		bind:nameDraft={boardNameDraft}
+		bind:searchQuery
+		bind:filterAssigneeId
+		bind:hideBlocked
+		{currentUser}
+		boardUsers={boardState.boardUsers}
+		view={boardView.view}
+		onEmoji={(emoji) => saveBoardEmoji(emoji)}
+		onStartRename={startEditBoardName}
+		onRename={saveBoardName}
+		onViewChange={(view) => setBoardView({ ...boardView, view })}
+		onAddColumn={() => (showAddColumnModal = true)}
+	>
+		{#snippet xp()}
+			<!-- XP Leaderboard -->
+			<XpLeaderboard entries={xpLeaderboard} />
+		{/snippet}
+		{#snippet more()}
+			<BoardMoreMenu
+				bind:open={showMoreMenu}
+				{showActivityPanel}
+				{showStatsPanel}
+				{showArchivePanel}
+				{selectionMode}
+				{canManage}
+				isSubBoard={boardState.breadcrumbs && boardState.breadcrumbs.length > 0}
+				boardId={data.board.id}
+				onToggleActivity={toggleActivityPanel}
+				onToggleStats={toggleStatsPanel}
+				onToggleArchive={toggleArchivePanel}
+				onManageCategories={() => (showCategoryModal = true)}
+				onToggleSelection={() => { selectionMode = !selectionMode; if (!selectionMode) clearSelection(); }}
+				onShare={() => (showShareModal = true)}
+				onDeleteSubBoard={confirmDeleteThisSubBoard}
 			/>
-			{#if searchQuery}
-				<button class="search-clear btn-ghost" onclick={() => (searchQuery = '')}>
-					<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-				</button>
-			{/if}
-		</div>
-		<select class="hdr-control assignee-filter" bind:value={filterAssigneeId}>
-			<option value={null}>All assignees</option>
-			{#if currentUser}
-				<option value={currentUser.id}>👤 My Cards</option>
-			{/if}
-			{#each boardState.boardUsers.filter(u => u.id !== currentUser?.id) as u}
-				<option value={u.id}>{u.emoji || '👤'} {u.username}</option>
-			{/each}
-		</select>
-		<button
-			class="hdr-control blocked-filter-toggle"
-			class:is-on={hideBlocked}
-			onclick={() => (hideBlocked = !hideBlocked)}
-			title="Hide cards that are still waiting on another card"
-		>
-			<svg width="13" height="13" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-				<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
-				<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-			</svg>
-			Hide blocked
-		</button>
-
-		<div class="board-header-right">
-			<BoardViewSwitch view={boardView.view} onChange={(view) => setBoardView({ ...boardView, view })} />
-			<!-- Scoped to this board: arriving from a board, the question is about
-			     this board's goals, not every goal in the workspace. -->
-			<a href="/plan?board={data.board.id}" class="hdr-control hdr-action" title="Planning — critical path and what is startable for this board">
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-					<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-					<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-					<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-					<path d="M5.2 7.1L6.4 4.9M9.6 4.9l1.2 2.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
-					<path d="M5.3 8.9l5.4 2.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
-				</svg>
-				Planning
-			</a>
-			<!-- Every board's To Do column as one table, filtered to this board and
-			     its sub-boards (card 2240). Shown on every board, one with no To Do
-			     column too: its sub-boards may have one. -->
-			<a href="/todo?board={data.board.id}" class="hdr-control hdr-action" title="This board's To Do column, and its sub-boards', with every other board's a filter away">
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-					<rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/>
-					<path d="M4.8 6.2l1.2 1.2 2-2.2M9.6 6.4h2M4.8 10.2h6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-				</svg>
-				All To Do
-			</a>
-			<button class="hdr-control hdr-action" onclick={() => (showAddColumnModal = true)} title="Add column">
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-					<rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
-					<path d="M8 5v6M5 8h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-				</svg>
-				Add Column
-			</button>
-
-			<!-- More menu (progressive disclosure) -->
-			<div class="more-menu-wrapper">
-				<button class="hdr-control hdr-action more-menu-trigger" class:active-panel-btn={showMoreMenu} onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="More actions">
-					<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-						<circle cx="3" cy="8" r="1.5" fill="currentColor"/>
-						<circle cx="8" cy="8" r="1.5" fill="currentColor"/>
-						<circle cx="13" cy="8" r="1.5" fill="currentColor"/>
-					</svg>
-					More
-				</button>
-				{#if showMoreMenu}
-					<!-- svelte-ignore a11y_click_events_have_key_events -->
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div class="more-dropdown" onclick={(e) => e.stopPropagation()}>
-						<div class="more-dropdown-section">
-							<div class="more-dropdown-label">Panels</div>
-							<button class="more-dropdown-item" class:more-active={showActivityPanel} onclick={() => { toggleActivityPanel(); showMoreMenu = false; }}>
-								<span class="more-item-icon">📋</span> Activity Log
-								{#if showActivityPanel}<span class="more-check">✓</span>{/if}
-							</button>
-							<button class="more-dropdown-item" class:more-active={showStatsPanel} onclick={() => { toggleStatsPanel(); showMoreMenu = false; }}>
-								<span class="more-item-icon">📊</span> Statistics
-								{#if showStatsPanel}<span class="more-check">✓</span>{/if}
-							</button>
-							<button class="more-dropdown-item" class:more-active={showArchivePanel} onclick={() => { toggleArchivePanel(); showMoreMenu = false; }}>
-								<span class="more-item-icon">🗄️</span> Archived Cards
-								{#if showArchivePanel}<span class="more-check">✓</span>{/if}
-							</button>
-						</div>
-
-						<div class="more-dropdown-divider"></div>
-
-						<div class="more-dropdown-section">
-							<div class="more-dropdown-label">Board</div>
-							<a class="more-dropdown-item" href="/burndown?boardIds={data.board.id}" onclick={() => (showMoreMenu = false)}>
-								<span class="more-item-icon">📉</span> Burndown
-							</a>
-							<button class="more-dropdown-item" onclick={() => { showCategoryModal = true; showMoreMenu = false; }}>
-								<span class="more-item-icon">🏷️</span> Manage Categories
-							</button>
-							<button class="more-dropdown-item" class:more-active={selectionMode} onclick={() => { selectionMode = !selectionMode; if (!selectionMode) clearSelection(); showMoreMenu = false; }}>
-								<span class="more-item-icon">☑️</span> Bulk Select
-								{#if selectionMode}<span class="more-check">✓</span>{/if}
-							</button>
-							{#if canManage}
-								<button class="more-dropdown-item" onclick={() => { showShareModal = true; showMoreMenu = false; }}>
-									<span class="more-item-icon">🔗</span> Share Board
-								</button>
-							{/if}
-							{#if boardState.breadcrumbs && boardState.breadcrumbs.length > 0}
-								<button class="more-dropdown-item more-danger" onclick={() => {
-									showMoreMenu = false;
-									showConfirm('Delete Sub-board', api.boardDeleteWarning(boardName), 'Delete', async () => {
-										const parentHref = boardState.breadcrumbs[boardState.breadcrumbs.length - 1]?.href || '/';
-										const started = toasts.navigation();
-										const release = boardState.hold();
-										try {
-											const failure = await api.deleteFailure(() => api.deleteBoardApi(data.board.id), 'sub-board');
-											if (failure) {
-												toasts.add(failure, 'error', started);
-												return;
-											}
-											window.location.href = parentHref;
-										} finally {
-											release();
-										}
-									});
-								}}>
-									<span class="more-item-icon">🗑️</span> Delete Sub-board
-								</button>
-							{/if}
-						</div>
-					</div>
-				{/if}
-			</div>
-
-			<ThemePicker />
-		</div>
-	</header>
+		{/snippet}
+	</BoardHeader>
 
 	<!-- One column at a time, for a portrait monitor (card 2079); the Kanban block below is left as it was. -->
 	{#if boardView.view === 'list'}
@@ -1687,127 +1539,33 @@
 		>
 			{#each boardState.columns as column (column.id)}
 				<div class="kanban-column glass" class:wip-warning={column.wipLimit > 0 && column.cards.length >= column.wipLimit} animate:flip={{ duration: FLIP_DURATION_MS }}>
-					<div class="column-header">
-						<div class="column-top-bar" style="background: {drawnColour(column.color)}"></div>
-						<div class="column-title-row">
-							{#if editingColumn === column.id && canManage}
-								<input
-									class="column-title-input"
-									type="text"
-									bind:value={editColumnTitle}
-									onblur={() => finishEditColumn(column.id)}
-									onkeydown={(e) => e.key === 'Enter' && finishEditColumn(column.id)}
-									autofocus
-								/>
-							{:else}
-								<!-- svelte-ignore a11y_click_events_have_key_events -->
-								<h3 class="column-title" onclick={() => canManage && startEditColumn(column)} role="button" tabindex="0">
-									{column.title}
-								</h3>
-							{/if}
-							<span class="column-count" class:wip-over={column.wipLimit > 0 && column.cards.length >= column.wipLimit}>{#if searchQuery.trim() || filterAssigneeId !== null || hideBlocked}{column.cards.filter(c => matchesSearch(c, searchQuery, boardState.categories) && (filterAssigneeId === null || c.assignees?.some(a => a.id === filterAssigneeId)) && passesBlockedFilter(c.id)).length}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}{#if column.wipLimit > 0}<span class="wip-limit-label">/{column.wipLimit}</span>{/if}</span>
-							{#if boardState.columnSorts[column.id] && boardState.columnSorts[column.id] !== 'none'}
-								<button class="sort-badge" onclick={() => setColumnSort(column.id, 'none')} title="Clear sort">
-									{getSortLabel(boardState.columnSorts[column.id])} ✕
-								</button>
-							{/if}
-							{#if column.title.toLowerCase() === 'to do' || column.showAddCard}
-								<button class="add-card-badge" onclick={() => openNewCardModal(column.id)} title="Add task">
-									<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-									Add Task
-								</button>
-							{/if}
-							<div class="column-actions">
-							<div class="color-picker-wrapper">
-								<button class="btn-ghost column-action-btn" title="Change color" onclick={(e) => { e.stopPropagation(); toggleDropdown(`color-${column.id}`); }}>
-									<span class="color-dot" style="background: {drawnColour(column.color)}"></span>
-								</button>
-								{#if openDropdown === `color-${column.id}`}
-									<!-- svelte-ignore a11y_click_events_have_key_events -->
-									<!-- svelte-ignore a11y_no_static_element_interactions -->
-									<div class="color-picker-dropdown show" onclick={(e) => e.stopPropagation()}>
-										{#each COLUMN_COLORS as color}
-											<button
-												class="color-swatch"
-												class:active={column.color === color}
-												style="background: {drawnColour(color)}"
-												onclick={() => setColumnColor(column.id, color)}
-											></button>
-										{/each}
-									</div>
-								{/if}
-							</div>
-							<div class="column-menu-wrapper">
-								<button class="btn-ghost column-action-btn" title="Column options" onclick={(e) => { e.stopPropagation(); toggleDropdown(`menu-${column.id}`); }}>
-									<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-										<circle cx="7" cy="3" r="1.2" fill="currentColor"/>
-										<circle cx="7" cy="7" r="1.2" fill="currentColor"/>
-										<circle cx="7" cy="11" r="1.2" fill="currentColor"/>
-									</svg>
-								</button>
-								{#if openDropdown === `menu-${column.id}`}
-									<!-- svelte-ignore a11y_click_events_have_key_events -->
-									<!-- svelte-ignore a11y_no_static_element_interactions -->
-									<div class="column-menu-dropdown show" onclick={(e) => e.stopPropagation()}>
-										<button class="column-menu-item" onclick={() => { startEditColumn(column); closeDropdowns(); }}>
-											<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2L4 10H2v-2l6.5-6.5z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-											Rename
-										</button>
-										<div class="menu-divider"></div>
-										<div class="menu-label">Sort by</div>
-										<button class="column-menu-item" class:active-sort={boardState.columnSorts[column.id] === 'date-asc'} onclick={() => setColumnSort(column.id, 'date-asc')}>
-											↑ Oldest first
-										</button>
-										<button class="column-menu-item" class:active-sort={boardState.columnSorts[column.id] === 'date-desc'} onclick={() => setColumnSort(column.id, 'date-desc')}>
-											↓ Newest first
-										</button>
-										<button class="column-menu-item" class:active-sort={boardState.columnSorts[column.id] === 'priority'} onclick={() => setColumnSort(column.id, 'priority')}>
-											⚡ Priority
-										</button>
-										<button class="column-menu-item" class:active-sort={boardState.columnSorts[column.id] === 'category'} onclick={() => setColumnSort(column.id, 'category')}>
-											🏷 Category
-										</button>
-										<button class="column-menu-item" class:active-sort={boardState.columnSorts[column.id] === 'assignee'} onclick={() => setColumnSort(column.id, 'assignee')}>
-											👤 Assignee
-										</button>
-										{#if boardState.columnSorts[column.id] && boardState.columnSorts[column.id] !== 'none'}
-											<button class="column-menu-item" onclick={() => setColumnSort(column.id, 'none')}>
-												✕ Clear sort
-											</button>
-										{/if}
-										{#if canManage}
-										<div class="menu-divider"></div>
-										<button class="column-menu-item" onclick={() => toggleShowAddCard(column)}>
-											{column.showAddCard || column.title.toLowerCase() === 'to do' ? '✓' : '○'} Show Add Task
-										</button>
-										{#if editingWipColumn === column.id}
-											<!-- svelte-ignore a11y_click_events_have_key_events -->
-											<!-- svelte-ignore a11y_no_static_element_interactions -->
-											<div class="wip-limit-edit" onclick={(e) => e.stopPropagation()}>
-												<label class="wip-label">WIP Limit (0 = none)</label>
-												<div class="wip-input-row">
-													<input type="number" class="wip-input" min="0" max="99" bind:value={wipLimitInput} onkeydown={(e) => e.key === 'Enter' && saveWipLimit(column.id)} autofocus />
-													<button class="btn-primary small" onclick={() => saveWipLimit(column.id)}>Set</button>
-													<button class="btn-ghost small" onclick={() => (editingWipColumn = null)}>✕</button>
-												</div>
-											</div>
-										{:else}
-											<button class="column-menu-item" onclick={() => startEditWipLimit(column)}>
-												📊 WIP Limit {column.wipLimit > 0 ? `(${column.wipLimit})` : ''}
-											</button>
-										{/if}
-										<div class="menu-divider"></div>
-										<button class="column-menu-item danger" onclick={() => { confirmDeleteColumn(column.id, column.title); closeDropdowns(); }}>
-											<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 3.5h8M4.5 3.5V2.5a.5.5 0 01.5-.5h2a.5.5 0 01.5.5v1m1 0l-.4 6a1 1 0 01-1 .9H4.9a1 1 0 01-1-.9l-.4-6" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
-											Delete column
-										</button>
-										{/if}
-									</div>
-								{/if}
-							</div>
-							</div>
-						</div>
-					</div>
+					<!-- The column's head (slice B3: a component). The column being
+					     renamed and the WIP limit being typed are this page's, one at a
+					     time for the whole board, bound; so is the dropdown open. -->
+					<KanbanColumnHeader
+						{column}
+						{canManage}
+						editing={editingColumn === column.id}
+						bind:editTitle={editColumnTitle}
+						editingWip={editingWipColumn === column.id}
+						bind:wipLimitInput
+						sort={boardState.columnSorts[column.id]}
+						visibleCount={searchQuery.trim() || filterAssigneeId !== null || hideBlocked ? column.cards.filter(c => matchesSearch(c, searchQuery, boardState.categories) && (filterAssigneeId === null || c.assignees?.some(a => a.id === filterAssigneeId)) && passesBlockedFilter(c.id)).length : null}
+						colorOpen={openDropdown === `color-${column.id}`}
+						menuOpen={openDropdown === `menu-${column.id}`}
+						onStartRename={startEditColumn}
+						onFinishRename={finishEditColumn}
+						onSort={setColumnSort}
+						onAddCard={openNewCardModal}
+						onToggleDropdown={toggleDropdown}
+						onColor={setColumnColor}
+						onToggleAddCard={toggleShowAddCard}
+						onStartWip={startEditWipLimit}
+						onSaveWip={saveWipLimit}
+						onCancelWip={() => (editingWipColumn = null)}
+						onDelete={confirmDeleteColumn}
+						onCloseDropdowns={closeDropdowns}
+					/>
 
 
 
@@ -1850,142 +1608,28 @@
 								tabindex="0"
 								id="card-{card.id}"
 							>
-								<!-- The cover: a strip across the top, drawn only for a colour or a preset (card 2010). -->
-								{#if isCoverValue(card.coverUrl)}<div class="card-cover-strip" style="background: {card.coverUrl}" aria-hidden="true"></div>{/if}
-								{#if card.pinned}
-									<span class="pin-indicator" title="Pinned">📌</span>
-								{/if}
-								{#if isNew(card.createdAt) && !isCompleteColumn(column)}
-									<span class="new-badge">New</span>
-								{/if}
-								{#if selectionMode}
-									<div class="select-checkbox" class:checked={selectedCards.has(card.id)}>
-										{#if selectedCards.has(card.id)}✓{/if}
-									</div>
-								{/if}
-								<div class="drag-handle" aria-hidden="true">
-									<svg width="8" height="14" viewBox="0 0 8 14" fill="currentColor">
-										<circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/>
-										<circle cx="2" cy="7" r="1.2"/><circle cx="6" cy="7" r="1.2"/>
-										<circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/>
-									</svg>
-								</div>
-									{#if getCategoryById(card.categoryId, boardState.categories)?.color}
-									<div class="card-color-strip" style="background: {drawnColour(getCategoryById(card.categoryId, boardState.categories)?.color)}; --strip-color: {drawnColour(getCategoryById(card.categoryId, boardState.categories)?.color)}"></div>
-								{/if}
-								{#if inlineEditCardId === card.id}
-								<!-- svelte-ignore a11y_autofocus -->
-								<input
-									class="inline-edit-input"
-									bind:value={inlineEditValue}
-									onkeydown={(e) => handleInlineKeydown(e, card.id)}
-									onblur={() => saveInlineEdit(card.id)}
-									onclick={(e) => e.stopPropagation()}
-									autofocus
+								<!-- What the card shows (slice B3: a component). The title being
+								     typed is this page's, bound. -->
+								<KanbanCardBody
+									{card}
+									isComplete={isCompleteColumn(column)}
+									isOnHold={isOnHoldColumn(column.title)}
+									categories={boardState.categories}
+									labels={boardState.labels}
+									{blockersFor}
+									{blockerTooltip}
+									{milestoneNameById}
+									{cardTokens}
+									{tick}
+									{selectionMode}
+									selected={selectedCards.has(card.id)}
+									editing={inlineEditCardId === card.id}
+									bind:editValue={inlineEditValue}
+									onStartEdit={startInlineEdit}
+									onSaveEdit={saveInlineEdit}
+									onEditKeydown={handleInlineKeydown}
+									onCyclePriority={cyclePriority}
 								/>
-							{:else}
-								<!-- svelte-ignore a11y_no_static_element_interactions -->
-								<h4 class="card-title" ondblclick={(e) => startInlineEdit(card, e)}>
-									<!-- svelte-ignore a11y_click_events_have_key_events -->
-									<!-- svelte-ignore a11y_no_static_element_interactions -->
-									<span class="priority-dot priority-{card.priority}" onclick={(e) => cyclePriority(card, e)} title="Priority: {card.priority} (click to cycle)"></span>
-									<span class="card-id">#{card.id}</span>
-									{card.title}
-								</h4>
-							{/if}
-								{#if card.description}
-									<p class="card-description">{card.description}</p>
-								{/if}
-								{#if isOnHoldColumn(column.title) && card.onHoldNote}
-									<div class="on-hold-note-badge">
-										<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M5 1v4M5 7v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-										{card.onHoldNote}
-									</div>
-								{/if}
-								<div class="card-meta">
-									{#if blockersFor(card.id).length > 0}
-										{@const blockers = blockersFor(card.id)}
-										<span class="blocked-badge" title={blockerTooltip(card.id)}>
-											<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-												<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
-												<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-											</svg>
-											Blocked{#if blockers.length > 1}&nbsp;({blockers.length}){/if}
-										</span>
-									{/if}
-									{#if card.milestoneId && milestoneNameById.get(card.milestoneId)}
-										<a
-											href="/plan/{card.milestoneId}"
-											class="milestone-badge"
-											title="Milestone: {milestoneNameById.get(card.milestoneId)} — open the planning view"
-											onclick={(e) => e.stopPropagation()}
-										>🎯 {milestoneNameById.get(card.milestoneId)}</a>
-									{/if}
-									<span class="priority-badge priority-{card.priority}">
-										{getPriorityLabel(card.priority)}
-									</span>
-									{#if getCategoryById(card.categoryId, boardState.categories)}
-										{@const cat = getCategoryById(card.categoryId, boardState.categories)!}
-										<span class="category-badge" style="background: {drawnColour(cat.color)}20; color: {drawnColour(cat.color)}; border: 1px solid {drawnColour(cat.color)}40">
-											{cat.name}
-										</span>
-									{/if}
-									{#if subtaskProgress(card)}
-										{@const prog = subtaskProgress(card)!}
-										{@const pct = prog.done / prog.total}
-										<span class="subtask-badge" class:all-done={prog.done === prog.total}>
-											<svg class="progress-ring" width="14" height="14" viewBox="0 0 14 14">
-												<circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--glass-border)" stroke-width="2"/>
-												<circle cx="7" cy="7" r="5.5" fill="none"
-													stroke={prog.done === prog.total ? '#22c55e' : '#6366f1'}
-													stroke-width="2"
-													stroke-dasharray={2 * Math.PI * 5.5}
-													stroke-dashoffset={2 * Math.PI * 5.5 * (1 - pct)}
-													transform="rotate(-90 7 7)"
-													stroke-linecap="round"/>
-											</svg>
-											{prog.done}/{prog.total}
-										</span>
-									{/if}
-									{#if card.subBoards.length > 0}
-										{#each card.subBoards as sb}
-											<a href="/board/{sb.id}" class="subboard-badge" class:all-done={sb.total > 0 && sb.done === sb.total} title="{sb.emoji} {sb.name} — {sb.done}/{sb.total} complete" onclick={(e) => e.stopPropagation()}>
-												🗂️ {sb.name} {sb.done}/{sb.total}
-											</a>
-										{/each}
-									{/if}
-									{#if card.dueDate}
-										{@const dueStatus = getDueStatus(card.dueDate)}
-										<span class="due-badge" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {formatDueDate(card.dueDate)}">
-											{#if dueStatus === 'overdue'}⚠️{:else if dueStatus === 'today'}🔥{:else if dueStatus === 'soon'}📅{:else}📅{/if}
-											Due {getDueRelative(card.dueDate, tick)}
-										</span>
-									{/if}
-									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt, tick)}</span>
-									{#if cardTokens[card.id]}
-										{@const tc = cardTokens[card.id]}
-										<span class="cost-badge" title="{formatTokens(tc.tokens)} tokens{tc.costUsd !== null ? ` · ${formatUsd(tc.costUsd)} at API rates — ${NOT_BILLED_NOTE}. ${BLEND_NOTE}` : ` · ${UNPRICED_SUM_NOTE}, so it cannot be priced`}">
-											{formatTokens(tc.tokens)}{#if tc.costUsd !== null} · {formatUsd(tc.costUsd)}{/if}
-										</span>
-									{/if}
-								</div>
-								{#if card.labelIds && card.labelIds.length > 0}
-									<div class="card-labels">
-										{#each card.labelIds as labelId}
-										{@const label = getLabelById(labelId, boardState.labels)}
-											{#if label}
-												<span class="label-chip" style="background: {drawnColour(label.color)}25; color: {drawnColour(label.color)}; border: 1px solid {drawnColour(label.color)}40">{label.name}</span>
-											{/if}
-										{/each}
-									</div>
-								{/if}
-								{#if card.assignees && card.assignees.length > 0}
-									<div class="card-assignees">
-										{#each card.assignees as assignee}
-											<span class="assignee-chip">{assignee.emoji} {assignee.username}</span>
-										{/each}
-									</div>
-								{/if}
 							</div>
 						{/each}
 					</div>
@@ -1997,31 +1641,7 @@
 </div> <!-- /.board-page -->
 <div class="board-panels-area">
 {#if showActivityPanel}
-	<aside class="board-side-panel">
-		<div class="board-side-panel-header">
-			<h3>📋 Activity Log</h3>
-			<button class="btn-ghost" onclick={() => (showActivityPanel = false)} title="Close">✕</button>
-		</div>
-		<div class="board-side-panel-body">
-			{#if loadingActivities}
-				<p class="panel-empty">Loading...</p>
-			{:else if activities.length === 0}
-				<p class="panel-empty">No activity yet.</p>
-			{:else}
-				{#each activities as activity}
-					<div class="activity-item">
-						<span class="activity-emoji">{activity.userEmoji}</span>
-						<div class="activity-info">
-							<!-- All Tasks' words, from one table (card 2212). -->
-							<span class="activity-action">{activityLabel(activity.action)}</span>
-							<span class="activity-detail">{activity.detail}</span>
-							<span class="activity-time">{parseStamp(activity.createdAt)?.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) ?? ''} · {activity.userName}</span>
-						</div>
-					</div>
-				{/each}
-			{/if}
-		</div>
-	</aside>
+	<ActivityPanel {activities} loading={loadingActivities} onClose={() => (showActivityPanel = false)} />
 {/if}
 {#if showStatsPanel}
 	<StatsPanel
@@ -2032,49 +1652,18 @@
 	/>
 {/if}
 {#if showArchivePanel}
-	<aside class="board-side-panel">
-		<div class="board-side-panel-header">
-			<h3>🗄️ Archived Cards</h3>
-			<button class="btn-ghost" onclick={() => (showArchivePanel = false)} title="Close">✕</button>
-		</div>
-		<div class="board-side-panel-body">
-			{#if loadingArchive}
-				<div class="archive-loading">Loading...</div>
-			{:else if archivedCards.length === 0}
-				<div class="archive-empty">
-					<span class="archive-empty-icon">📦</span>
-					<p>No archived cards</p>
-					<p class="archive-empty-hint">Archived cards appear here and can be restored</p>
-				</div>
-			{:else}
-				<div class="archive-list">
-					{#each archivedCards as card (card.id)}
-						<div class="archive-card">
-							<div class="archive-card-info">
-								<span class="archive-card-title">{card.title}</span>
-								{#if card.archivedAt}
-									<span class="archive-card-date">Archived {parseStamp(card.archivedAt)?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) ?? ''}</span>
-								{/if}
-							</div>
-							<div class="archive-card-actions">
-								<button class="btn-ghost small" onclick={() => restoreCard(card.id)} title="Restore">
-									↩️ Restore
-								</button>
-								<button class="btn-ghost small danger" onclick={() => {
-									showConfirm('Delete Permanently', api.cardDeleteWarning(card.title), 'Delete Forever', async () => {
-										await permanentlyDeleteCard(card.id);
-										confirmState.show = false;
-									});
-								}} title="Delete permanently">
-									🗑️
-								</button>
-							</div>
-						</div>
-					{/each}
-				</div>
-			{/if}
-		</div>
-	</aside>
+	<ArchivePanel
+		cards={archivedCards}
+		loading={loadingArchive}
+		onClose={() => (showArchivePanel = false)}
+		onRestore={(cardId) => restoreCard(cardId)}
+		onDeleteForever={(card) => {
+			showConfirm('Delete Permanently', api.cardDeleteWarning(card.title), 'Delete Forever', async () => {
+				await permanentlyDeleteCard(card.id);
+				confirmState.show = false;
+			});
+		}}
+	/>
 {/if}
 </div> <!-- /.board-panels-area -->
 </div> <!-- /.board-page-wrapper -->
@@ -2238,309 +1827,16 @@
 	.board-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; flex: 1; min-width: 0; }
 	.board-panels-area { display: flex; flex-shrink: 0; }
 
-	/* Side panels — push content */
-	.board-side-panel {
-		width: 340px; height: 100vh; flex-shrink: 0;
-		background: var(--bg-surface); border-left: 1px solid var(--glass-border);
-		display: flex; flex-direction: column;
-		animation: panelSlideIn 0.2s ease-out;
-	}
-	@keyframes panelSlideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
-	.board-side-panel-header {
-		display: flex; align-items: center; justify-content: space-between;
-		padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--glass-border);
-		flex-shrink: 0;
-	}
-	.board-side-panel-header h3 { font-size: 0.9rem; font-weight: 700; margin: 0; }
-	.board-side-panel-body { flex: 1; overflow-y: auto; padding: var(--space-md); }
-
-	/* Activity items (inline in board page now) */
-	.activity-item {
-		display: flex; gap: var(--space-sm); padding: var(--space-sm);
-		border-radius: var(--radius-sm); transition: background 0.15s;
-	}
-	.activity-item:hover { background: var(--glass-bg); }
-	.activity-emoji { font-size: 1.2rem; flex-shrink: 0; }
-	.activity-info { display: flex; flex-direction: column; min-width: 0; }
-	.activity-action { font-weight: 600; font-size: 0.78rem; }
-	.activity-detail { font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-	.activity-time { font-size: 0.65rem; color: var(--text-tertiary); }
-	.panel-empty { color: var(--text-tertiary); text-align: center; padding: var(--space-xl); font-size: 0.85rem; }
-
-	.board-header {
-		display: flex; align-items: center; justify-content: space-between;
-		padding: var(--space-md) var(--space-xl); border-bottom: 1px solid var(--glass-border);
-		flex-shrink: 0; gap: var(--space-md); flex-wrap: wrap;
-	}
-	.board-header-left { display: flex; align-items: center; gap: var(--space-md); min-width: 0; flex: 1 1 auto; }
-	.board-header-right { display: flex; align-items: center; gap: var(--space-sm); flex-shrink: 0; flex-wrap: wrap; }
-	.back-btn { padding: var(--space-sm); }
-
-	/* More menu dropdown */
-	.more-menu-wrapper { position: relative; }
-	.more-menu-trigger { display: flex; align-items: center; gap: 6px; }
-	.more-dropdown {
-		position: absolute; top: calc(100% + 6px); right: 0;
-		background: var(--bg-card); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-lg); min-width: 220px;
-		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.04);
-		z-index: 200; padding: var(--space-xs) 0;
-		animation: moreDropdownIn 0.15s ease-out;
-		backdrop-filter: blur(12px);
-	}
-	@keyframes moreDropdownIn {
-		from { opacity: 0; transform: translateY(-6px) scale(0.97); }
-		to { opacity: 1; transform: translateY(0) scale(1); }
-	}
-	.more-dropdown-section { padding: var(--space-xs) 0; }
-	.more-dropdown-label {
-		font-size: 0.62rem; font-weight: 700; text-transform: uppercase;
-		letter-spacing: 0.08em; color: var(--text-tertiary);
-		padding: var(--space-xs) var(--space-md) 4px;
-	}
-	.more-dropdown-divider {
-		height: 1px; background: var(--glass-border);
-		margin: var(--space-xs) var(--space-md);
-	}
-	.more-dropdown-item {
-		display: flex; align-items: center; gap: var(--space-sm);
-		width: 100%; padding: 7px var(--space-md);
-		border: none; background: transparent;
-		color: var(--text-secondary); font-size: 0.82rem; font-weight: 500;
-		font-family: var(--font-family); cursor: pointer;
-		text-decoration: none; text-align: left;
-		transition: all 0.1s ease;
-	}
-	.more-dropdown-item:hover {
-		background: rgba(99, 102, 241, 0.08); color: var(--text-primary);
-	}
-	.more-dropdown-item.more-active {
-		color: var(--accent-indigo); font-weight: 600;
-	}
-	.more-dropdown-item.more-danger { color: var(--text-tertiary); }
-	.more-dropdown-item.more-danger:hover {
-		color: var(--accent-rose); background: rgba(244, 63, 94, 0.08);
-	}
-	.more-item-icon { font-size: 0.9rem; width: 20px; text-align: center; flex-shrink: 0; }
-	.more-check {
-		margin-left: auto; font-size: 0.75rem; font-weight: 700;
-		color: var(--accent-indigo);
-	}
-
-	.breadcrumbs {
-		display: flex;
-		align-items: center;
-		gap: var(--space-xs);
-		font-size: 0.8rem;
-		flex-shrink: 1;
-		min-width: 0;
-		overflow: hidden;
-	}
-
-	.breadcrumb-home {
-		font-size: 1.25rem;
-		line-height: 1;
-		flex-shrink: 0;
-	}
-
-	.breadcrumb-link {
-		color: var(--text-secondary);
-		text-decoration: none;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		max-width: 160px;
-		transition: color var(--duration-fast) var(--ease-out);
-	}
-
-	.breadcrumb-link:hover {
-		color: var(--text-primary);
-	}
-
-	/* Not a link: it does not answer the pointer as one. */
-	.breadcrumb-withheld,
-	.breadcrumb-withheld:hover {
-		color: var(--text-tertiary);
-		cursor: default;
-	}
-
-	.breadcrumb-sep {
-		color: var(--text-tertiary);
-		font-weight: 300;
-		flex-shrink: 0;
-	}
-
-	/* What has been spent, on the header strip. Sized to be read at a glance:
-	   this is the figure the whole ledger exists to surface, and at 0.72rem it
-	   was easy to miss entirely. The money carries the most weight because it
-	   is the part people act on. Identical on the board and All Tasks headers. */
-	.hdr-cost {
-		display: inline-flex; align-items: baseline; gap: 8px;
-		padding: 5px 14px; border-radius: var(--radius-full);
-		background: var(--bg-surface);
-		border: 1px solid var(--accent-purple-glow, var(--glass-border));
-		font-size: 1rem; font-weight: 600; line-height: 1.25;
-		color: var(--text-primary);
-		font-variant-numeric: tabular-nums; white-space: nowrap;
-	}
-	.hdr-cost-money { font-weight: 800; font-size: 1.1rem; color: var(--accent-purple, #8b5cf6); }
-	.board-name {
-		font-size: 1.25rem; cursor: pointer; padding: 2px var(--space-sm);
-		border-radius: var(--radius-sm); transition: background var(--duration-fast) var(--ease-out);
-		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-	}
-	.board-name:hover { background: var(--glass-hover); }
-	.board-name-input { font-size: 1.25rem; font-weight: 700; padding: 2px var(--space-sm); background: var(--bg-surface); width: 300px; }
-	.board-stats { font-size: 0.8rem; color: var(--text-tertiary); font-weight: 500; white-space: nowrap; }
-	.theme-toggle { font-size: 0; }
-	.nav-btn {
-		display: inline-flex; align-items: center; gap: 4px;
-		font-size: 0.78rem !important; font-weight: 600;
-		text-decoration: none; color: var(--text-secondary);
-	}
-	.nav-btn:hover { color: var(--text-primary); }
-
-	/* Search bar */
-	.search-wrapper {
-		position: relative; display: flex; align-items: center;
-		flex: 1; max-width: 280px;
-	}
-	.search-icon {
-		position: absolute; left: 10px; color: var(--text-tertiary);
-		pointer-events: none;
-	}
-	/* Header controls come from .hdr-control / .hdr-search in app.css so the
-	   board, All Tasks and the planning view cannot drift apart again. Only
-	   what is genuinely local to this header stays here. */
-	.search-input { width: 100%; }
-	.assignee-filter { padding-right: 8px; }
-
-
-	.search-input::placeholder { color: var(--text-tertiary); }
-	.search-input:focus { outline: none; border-color: var(--accent-indigo); }
-	.search-clear {
-		position: absolute; right: 6px; padding: 3px !important;
-		opacity: 0.5;
-	}
-	.search-clear:hover { opacity: 1; }
-	.assignee-filter:focus { outline: none; border-color: var(--accent-indigo); }
-
-	/* Amber is specific to "blocked", so this state stays local to the filter. */
-	.blocked-filter-toggle.is-on {
-		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
-		border-color: rgba(245, 158, 11, 0.35);
-	}
-
-	/* Amber, not red: a blocked card is waiting, not broken. On Hold already owns
-	   red on this board and the two states have to stay distinguishable. */
-	.blocked-badge {
-		display: inline-flex; align-items: center; gap: 3px;
-		padding: 1px 8px; border-radius: var(--radius-full);
-		font-size: 0.68rem; font-weight: 700; white-space: nowrap;
-		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
-		border: 1px solid rgba(245, 158, 11, 0.3);
-		cursor: help;
-	}
-
-	.milestone-badge {
-		display: inline-flex; align-items: center; gap: 3px;
-		padding: 1px 8px; border-radius: var(--radius-full);
-		font-size: 0.66rem; font-weight: 600; text-decoration: none;
-		max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-		background: rgba(139, 92, 246, 0.1); color: #a78bfa;
-		border: 1px solid rgba(139, 92, 246, 0.22);
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.milestone-badge:hover { background: rgba(139, 92, 246, 0.2); border-color: rgba(139, 92, 246, 0.45); }
-
-	/* Sort badge */
-	.sort-badge {
-		display: inline-flex; align-items: center; gap: 3px;
-		padding: 1px 8px; border-radius: var(--radius-full);
-		font-size: 0.6rem; font-weight: 600; white-space: nowrap;
-		background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo);
-		border: 1px solid rgba(99, 102, 241, 0.2);
-		cursor: pointer; font-family: var(--font-family);
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.sort-badge:hover { background: rgba(99, 102, 241, 0.2); }
-
-	/* Menu label */
-	.menu-label {
-		font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
-		letter-spacing: 0.05em; color: var(--text-tertiary);
-		padding: var(--space-xs) var(--space-md);
-	}
-	.column-menu-item.active-sort {
-		color: var(--accent-indigo); font-weight: 600;
-	}
+	/* The header, its XP bars and More menu, each column's head, each card's
+	   body and the two side panels style themselves, in their components
+	   (slice B3). What a component draws that is styled by a state of an
+	   element this page keeps (a column's or a card's hover, a pinned card, a
+	   column over its WIP limit) is styled here, `:global` under that element. */
 
 	/* Card hidden by search */
 	.kanban-card.card-hidden {
 		display: none;
 	}
-
-	/* XP Bars */
-	.xp-bar-container {
-		display: flex; gap: var(--space-md); align-items: center;
-		flex: 1; justify-content: center; max-width: 500px;
-		min-width: 0; overflow-x: auto;
-	}
-	.xp-entry {
-		display: flex; align-items: center; gap: 6px;
-		padding: 4px 8px; border-radius: var(--radius-md);
-		background: var(--glass-bg); border: 1px solid var(--glass-border);
-		min-width: 120px; flex-shrink: 0;
-	}
-	.xp-avatar { font-size: 1rem; flex-shrink: 0; }
-	.xp-info { flex: 1; min-width: 0; }
-	.xp-name-row { display: flex; justify-content: space-between; align-items: center; gap: 4px; }
-	.xp-name { font-size: 0.65rem; font-weight: 600; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.xp-level {
-		font-size: 0.6rem; font-weight: 800; color: var(--accent-amber);
-		background: rgba(245, 158, 11, 0.1); padding: 0 4px; border-radius: var(--radius-full);
-		white-space: nowrap;
-	}
-	.xp-track {
-		height: 4px; background: var(--bg-base); border-radius: var(--radius-full);
-		margin-top: 3px; overflow: hidden;
-	}
-	.xp-fill {
-		height: 100%; border-radius: var(--radius-full);
-		background: linear-gradient(90deg, var(--accent-indigo), var(--accent-purple));
-		transition: width var(--duration-normal) var(--ease-out);
-	}
-
-	.user-badge {
-		display: flex; align-items: center; gap: 6px;
-		padding: 4px var(--space-sm) 4px 4px; border-radius: var(--radius-full);
-		background: var(--glass-bg); border: 1px solid var(--glass-border);
-		cursor: pointer; transition: all var(--duration-fast) var(--ease-out);
-	}
-	.user-badge:hover { background: var(--glass-hover); }
-	.user-emoji { font-size: 1.1rem; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; background: var(--bg-base); border-radius: 50%; }
-	.user-name { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); }
-
-	/* Column menu */
-	.column-menu-wrapper { position: relative; display: inline-flex; }
-	.column-menu-dropdown {
-		display: none; position: absolute; top: calc(100% + 4px); right: 0; z-index: 500;
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-md); padding: var(--space-xs);
-		min-width: 150px; box-shadow: var(--shadow-lg);
-	}
-	.column-menu-wrapper:hover .column-menu-dropdown, .column-menu-dropdown.show { display: block; }
-	.column-menu-item {
-		display: flex; align-items: center; gap: var(--space-sm); width: 100%;
-		padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm);
-		background: transparent; color: var(--text-secondary); font-size: 0.8rem;
-		font-weight: 500; text-align: left; font-family: var(--font-family); cursor: pointer;
-		border: none; transition: all var(--duration-fast) var(--ease-out);
-	}
-	.column-menu-item:hover { background: var(--glass-hover); color: var(--text-primary); }
-	.column-menu-item.danger { color: var(--accent-rose); }
-	.column-menu-item.danger:hover { background: rgba(244, 63, 94, 0.1); }
-	.menu-divider { height: 1px; background: var(--glass-border); margin: var(--space-xs) 0; }
 
 	.kanban-container { flex: 1; display: flex; padding: var(--space-lg); overflow: hidden; min-height: 0; }
 	.columns-wrapper { display: flex; gap: var(--space-lg); flex: 1; height: 100%; min-height: 0; }
@@ -2549,46 +1845,8 @@
 		flex: 1; min-width: 240px; height: 100%; min-height: 0;
 		display: flex; flex-direction: column; border-radius: var(--radius-lg);
 	}
-	.column-header { padding: var(--space-md) var(--space-lg) 0; flex-shrink: 0; display: flex; flex-direction: column; gap: 0; }
-	.column-top-bar { height: 3px; margin: 0 calc(-1 * var(--space-lg)); margin-bottom: var(--space-md); opacity: 0.8; border-radius: 0 0 var(--radius-sm) var(--radius-sm); }
-	.column-title-row { display: flex; align-items: center; gap: var(--space-xs); }
-	.column-title { font-size: 0.9rem; font-weight: 600; cursor: pointer; padding: 2px var(--space-xs); border-radius: var(--radius-sm); transition: background var(--duration-fast) var(--ease-out); white-space: nowrap; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-	.column-title:hover { background: var(--glass-hover); }
-	.column-title-input { font-size: 0.9rem; font-weight: 600; padding: 2px var(--space-xs); width: 100%; }
-	.column-count {
-		font-size: 0.78rem; font-weight: 700; color: var(--text-secondary);
-		background: var(--bg-base); padding: 2px 8px;
-		border-radius: var(--radius-full); flex-shrink: 0;
-		border: 1px solid var(--glass-border);
-		min-width: 22px; text-align: center;
-	}
-	.column-actions { display: flex; align-items: center; gap: 0; opacity: 0; transition: opacity var(--duration-fast) var(--ease-out); flex-shrink: 0; margin-left: auto; margin-bottom: var(--space-xs); }
-	.kanban-column:hover .column-actions { opacity: 1; }
-	.column-action-btn { padding: 2px !important; }
-	.add-card-badge {
-		display: flex; align-items: center; gap: 4px;
-		padding: 3px 10px 3px 7px; border-radius: var(--radius-full);
-		background: var(--accent-indigo); color: white;
-		border: none; cursor: pointer; flex-shrink: 0;
-		font-size: 0.68rem; font-weight: 600; font-family: var(--font-family);
-		transition: all var(--duration-fast) var(--ease-out);
-		box-shadow: 0 1px 4px rgba(99, 102, 241, 0.3);
-		white-space: nowrap;
-	}
-	.add-card-badge:hover { transform: scale(1.05); background: var(--accent-purple); box-shadow: 0 2px 8px rgba(99, 102, 241, 0.5); }
-	.add-card-badge:active { transform: scale(0.95); }
-
-	.color-picker-wrapper { position: relative; }
-	.color-picker-dropdown {
-		display: none; position: absolute; top: 100%; right: 0; z-index: 500;
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-md); padding: var(--space-sm);
-		gap: 4px; flex-wrap: wrap; width: 160px; box-shadow: var(--shadow-lg);
-	}
-	.color-picker-wrapper:hover .color-picker-dropdown, .color-picker-dropdown.show { display: flex; }
-	.color-swatch { width: 24px; height: 24px; border-radius: var(--radius-sm); border: 2px solid transparent; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); }
-	.color-swatch:hover { transform: scale(1.15); }
-	.color-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 8px rgba(255, 255, 255, 0.2); }
+	/* The column's actions (in its head, `KanbanColumnHeader.svelte`) show on its hover. */
+	.kanban-column:hover :global(.column-actions) { opacity: 1; }
 
 	/* A list's scroll ends above the user badge (card 2239), or its last card is under it. */
 	.column-cards {
@@ -2659,128 +1917,15 @@
 		border-color: rgba(239, 68, 68, 0.25);
 		box-shadow: 0 4px 12px rgba(239, 68, 68, 0.1);
 	}
-	/* On Hold note badge — still rendered inline in card */
-	.on-hold-note-badge {
-		display: flex; align-items: flex-start; gap: 4px;
-		padding: 4px 8px; margin-bottom: var(--space-sm);
-		background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.15);
-		border-radius: var(--radius-sm); font-size: 0.7rem; color: var(--accent-rose);
-		line-height: 1.4; font-style: italic;
-	}
-	.on-hold-note-badge svg { flex-shrink: 0; margin-top: 2px; }
-
-	.card-color-strip {
-		position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
-		border-radius: 5px 0 0 5px;
-		box-shadow: 2px 0 8px var(--strip-color, transparent);
-	}
-	/* Absolute, as the category strip is, so that nothing else on the card moves. */
-	.card-cover-strip { position: absolute; left: 0; right: 0; top: 0; height: 6px; pointer-events: none; }
-	.card-title { font-size: 0.85rem; font-weight: 500; line-height: 1.4; margin-bottom: var(--space-xs); cursor: text; }
-	.inline-edit-input {
-		width: 100%; font-size: 0.85rem; font-weight: 500; line-height: 1.4;
-		margin-bottom: var(--space-xs); padding: 2px 4px; border: 1px solid var(--accent-indigo);
-		border-radius: var(--radius-sm); background: var(--bg-base); color: var(--text-primary);
-		font-family: var(--font-family); outline: none;
-		box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
-	}
-	.priority-dot {
-		display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-		margin-right: 4px; vertical-align: middle; cursor: pointer;
-		transition: transform 0.15s ease;
-	}
-	.priority-dot:hover { transform: scale(1.5); }
-	.priority-dot.priority-low { background: #94a3b8; }
-	.priority-dot.priority-medium { background: #3b82f6; }
-	.priority-dot.priority-high { background: #f59e0b; }
-	.priority-dot.priority-critical { background: #ef4444; }
-	.card-description { font-size: 0.75rem; color: var(--text-tertiary); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: var(--space-sm); }
-	.card-meta { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
-	/* Cost sits beside the creation date: both are facts about the card over
-	   time, and read together they answer "how long, and how much". Only shown
-	   when something was recorded — never a zero or a dash, which would put a
-	   false measurement on every card that predates the ledger. */
-	.cost-badge {
-		font-size: 0.65rem; flex-shrink: 0; white-space: nowrap;
-		padding: 1px 6px; border-radius: var(--radius-full);
-		background: var(--glass-hover); color: var(--text-secondary);
-		font-variant-numeric: tabular-nums;
-	}
-	.card-date { font-size: 0.65rem; color: var(--text-secondary); margin-left: auto; flex-shrink: 0; }
-	.category-badge { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: var(--radius-full); font-size: 0.68rem; font-weight: 600; }
-
-	/* Drag handle */
-	.drag-handle {
-		position: absolute; top: 50%; left: 4px; transform: translateY(-50%);
-		color: var(--text-tertiary); opacity: 0; transition: opacity 0.15s;
-		cursor: grab;
-	}
-	.kanban-card:hover .drag-handle { opacity: 0.4; }
-	.kanban-card:hover .drag-handle:hover { opacity: 0.8; }
+	/* The drag handle (in the card's body, `KanbanCardBody.svelte`) shows on the card's hover. */
+	.kanban-card:hover :global(.drag-handle) { opacity: 0.4; }
+	.kanban-card:hover :global(.drag-handle:hover) { opacity: 0.8; }
 	.kanban-card { padding-left: calc(var(--space-md) + 12px); }
-
-	/* Due date badge */
-	.due-badge {
-		display: inline-flex; align-items: center; gap: 2px;
-		font-size: 0.62rem; font-weight: 600; padding: 1px 6px;
-		border-radius: var(--radius-full); white-space: nowrap;
-		background: rgba(136, 136, 170, 0.08); color: var(--text-secondary);
-	}
-	.due-badge.due-overdue { background: rgba(239, 68, 68, 0.12); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.25); }
-	.due-badge.due-today { background: rgba(245, 158, 11, 0.12); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.25); }
-	.due-badge.due-soon { background: rgba(234, 179, 8, 0.08); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.15); }
 
 	/* Stale card */
 	.kanban-card.card-stale { border-left: 2px solid rgba(136, 136, 170, 0.3); }
 
-	/* Search count */
-	.of-total { opacity: 0.5; font-size: 0.6rem; }
-
-	.subtask-badge {
-		display: inline-flex; align-items: center; gap: 3px;
-		padding: 1px 8px; border-radius: var(--radius-full);
-		font-size: 0.68rem; font-weight: 600;
-		background: rgba(136, 136, 170, 0.1); color: var(--text-secondary);
-		border: 1px solid rgba(136, 136, 170, 0.2);
-	}
-	.subtask-badge.all-done { background: rgba(16, 185, 129, 0.1); color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.2); }
-
-	.subboard-badge {
-		display: inline-flex; align-items: center; gap: 3px;
-		padding: 1px 8px; border-radius: var(--radius-full);
-		font-size: 0.68rem; font-weight: 600;
-		background: rgba(99, 102, 241, 0.1); color: #818cf8;
-		border: 1px solid rgba(99, 102, 241, 0.2);
-		text-decoration: none; transition: all var(--duration-fast) var(--ease-out);
-	}
-	.subboard-badge:hover { background: rgba(99, 102, 241, 0.2); border-color: rgba(99, 102, 241, 0.4); }
-	.subboard-badge.all-done { background: rgba(16, 185, 129, 0.1); color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.2); }
-
-	/* Card labels */
-	.card-labels { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
-	.label-chip { display: inline-flex; align-items: center; padding: 0px 6px; border-radius: var(--radius-full); font-size: 0.58rem; font-weight: 600; white-space: nowrap; }
-	.card-assignees { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-	.assignee-chip {
-		display: inline-flex; align-items: center; gap: 3px;
-		padding: 1px 8px; border-radius: var(--radius-full);
-		font-size: 0.65rem; font-weight: 600; white-space: nowrap;
-		background: rgba(99, 102, 241, 0.08); color: var(--accent-indigo);
-		border: 1px solid rgba(99, 102, 241, 0.2);
-	}
-
-	/* Selection checkbox */
-	.select-checkbox {
-		position: absolute; top: 6px; right: 6px; width: 18px; height: 18px;
-		border: 2px solid var(--glass-border); border-radius: 4px;
-		display: flex; align-items: center; justify-content: center;
-		font-size: 0.65rem; font-weight: 800; z-index: 2;
-		background: var(--bg-surface); color: var(--accent-indigo); transition: all 0.15s;
-	}
-	.select-checkbox.checked { background: var(--accent-indigo); color: white; border-color: var(--accent-indigo); }
 	.kanban-card.card-selected { outline: 2px solid var(--accent-indigo); outline-offset: -2px; }
-
-	/* Active panel button */
-	.active-panel-btn { background: rgba(99, 102, 241, 0.12) !important; color: var(--accent-indigo) !important; }
 
 	/* Empty column */
 	.empty-column-prompt {
@@ -2792,26 +1937,9 @@
 	.empty-text { font-size: 0.78rem; font-weight: 600; }
 	.empty-hint { font-size: 0.65rem; opacity: 0.6; }
 
-	/* Pin indicator */
-	.pin-indicator { position: absolute; top: 4px; right: 4px; font-size: 0.7rem; z-index: 2; opacity: 0.7; }
 	.kanban-card.card-pinned { border-top: 2px solid var(--accent-indigo); }
-
-	/* New badge */
-	.new-badge {
-		position: absolute; top: 4px; right: 4px; z-index: 2;
-		font-size: 0.5rem; font-weight: 700; text-transform: uppercase;
-		letter-spacing: 0.06em; padding: 1px 6px;
-		border-radius: var(--radius-full);
-		background: linear-gradient(135deg, #22c55e, #10b981);
-		color: #fff;
-		box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
-		animation: newPulse 2s ease-in-out infinite;
-	}
-	.kanban-card.card-pinned .new-badge { right: 22px; }
-	@keyframes newPulse {
-		0%, 100% { box-shadow: 0 0 6px rgba(34, 197, 94, 0.3); }
-		50% { box-shadow: 0 0 12px rgba(34, 197, 94, 0.6); }
-	}
+	/* A pinned card's New badge (in its body) moves left of the pin. */
+	.kanban-card.card-pinned :global(.new-badge) { right: 22px; }
 
 	/* Drag shadow */
 	:global(.kanban-card[aria-grabbed="true"]) {
@@ -2820,80 +1948,15 @@
 		opacity: 0.9;
 	}
 
-	/* Progress ring */
-	.progress-ring { flex-shrink: 0; transition: stroke-dashoffset 0.3s ease-out; }
-
 	/* ─── WIP Limit Styles ──────────────────────────────────────────────── */
 	.wip-warning { box-shadow: inset 0 0 0 2px rgba(245, 158, 11, 0.35); }
-	.wip-warning .column-top-bar { animation: wip-pulse 2s ease-in-out infinite; }
+	/* The colour bar is in the column's head; the keyframes are this page's. */
+	.wip-warning :global(.column-top-bar) { animation: wip-pulse 2s ease-in-out infinite; }
 	@keyframes wip-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-	.wip-over { color: #f59e0b !important; font-weight: 700; }
-	.wip-limit-label { color: var(--text-tertiary); font-weight: 400; }
-
-	.wip-limit-edit { padding: 8px 12px; }
-	.wip-label { font-size: 0.72rem; font-weight: 600; color: var(--text-secondary); display: block; margin-bottom: 6px; }
-	.wip-input-row { display: flex; align-items: center; gap: 6px; }
-	.wip-input {
-		width: 60px; padding: 4px 8px; border-radius: var(--radius-sm);
-		border: 1px solid var(--glass-border); background: var(--bg-surface);
-		color: var(--text-primary); font-size: 0.82rem; text-align: center;
-		font-family: var(--font-family);
-	}
-	.wip-input:focus { outline: none; border-color: var(--accent-indigo); }
-
-	/* ─── Archive Panel Styles ──────────────────────────────────────────── */
-	.archive-panel {
-		position: fixed; top: 0; right: 0; bottom: 0; width: 360px; z-index: 100;
-		background: var(--bg-card); border-left: 1px solid var(--glass-border);
-		box-shadow: -4px 0 24px rgba(0,0,0,0.15); display: flex; flex-direction: column;
-		animation: slide-in-right 0.2s ease-out;
-	}
-	@keyframes slide-in-right { from { transform: translateX(100%); } to { transform: translateX(0); } }
-	.side-panel-header {
-		display: flex; align-items: center; justify-content: space-between;
-		padding: var(--space-lg); border-bottom: 1px solid var(--glass-border); flex-shrink: 0;
-	}
-	.side-panel-header h3 { font-size: 0.95rem; font-weight: 700; }
-	.side-panel-body { flex: 1; overflow-y: auto; padding: var(--space-md); }
-
-	.archive-loading { text-align: center; padding: var(--space-xl); color: var(--text-tertiary); font-size: 0.85rem; }
-
-	.archive-empty { text-align: center; padding: var(--space-xl) var(--space-md); }
-	.archive-empty-icon { font-size: 2rem; display: block; margin-bottom: var(--space-sm); }
-	.archive-empty p { color: var(--text-secondary); font-size: 0.85rem; margin: 2px 0; }
-	.archive-empty-hint { color: var(--text-tertiary); font-size: 0.75rem; }
-
-	.archive-list { display: flex; flex-direction: column; gap: var(--space-sm); }
-	.archive-card {
-		display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm);
-		padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md);
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.archive-card:hover { border-color: var(--accent-indigo); }
-	.archive-card-info { flex: 1; min-width: 0; }
-	.archive-card-title { font-size: 0.82rem; font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.archive-card-date { font-size: 0.68rem; color: var(--text-tertiary); }
-	.archive-card-actions { display: flex; gap: 4px; flex-shrink: 0; }
-	.archive-card-actions .danger { color: var(--accent-rose); }
-	.archive-card-actions .danger:hover { background: rgba(239, 68, 68, 0.1); }
 
 	/* ─── Mobile Responsive ──────────────────────────────────────────────── */
 
 	@media (max-width: 768px) {
-		.board-header {
-			padding: var(--space-sm) var(--space-md);
-			gap: var(--space-sm);
-		}
-		.board-header-left { gap: var(--space-sm); }
-		.board-header-right { gap: var(--space-xs); }
-		.board-name { font-size: 1rem; max-width: 180px; }
-		.board-stats { display: none; }
-		.search-wrapper { max-width: 100%; }
-		.xp-bar-container { display: none; }
-		.breadcrumb { font-size: 0.7rem; }
-		.breadcrumb-link { max-width: 100px; }
-
 		.kanban-container {
 			padding: var(--space-sm);
 			overflow-x: auto;
@@ -2915,35 +1978,15 @@
 		.kanban-card {
 			padding: var(--space-md) var(--space-lg) !important;
 		}
-		.card-title { font-size: 0.9rem; }
 
 		/* Side panels become full-width on mobile */
 		.board-page-wrapper { flex-direction: column; }
-		.board-side-panel {
-			width: 100% !important;
-			height: 50vh;
-		}
-
-		/* Touch-friendly buttons */
-		.btn-ghost, .column-action-btn, .nav-btn {
-			min-height: 36px;
-			min-width: 36px;
-		}
-		.more-dropdown-item, .column-menu-item {
-			padding: var(--space-md) var(--space-lg) !important;
-			min-height: 40px;
-		}
 	}
 
 	@media (max-width: 480px) {
-		.board-header { flex-direction: column; align-items: stretch; }
-		.board-header-left { flex-wrap: wrap; }
-		.board-header-right { justify-content: flex-end; }
 		.kanban-column {
 			flex: 0 0 92vw;
 			max-width: 92vw;
 		}
-		.nav-btn span { display: none; }
-		.user-name { display: none; }
 	}
 </style>

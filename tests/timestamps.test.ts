@@ -1409,9 +1409,9 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 			});
 		}
 		expect(faults).toEqual([]);
-		// The board page, the card window, the board's statistics and the dashboard read theirs inline.
-		expect(sourceOf('src/routes/board/[id]/+page.svelte')).toContain('parseStamp(card.archivedAt)');
-		expect(sourceOf('src/routes/board/[id]/+page.svelte')).toContain('parseStamp(activity.createdAt)');
+		// The board page (its Archived Cards and Activity Log panels, card 2280's slice B3), the card window, the board's statistics and the dashboard read theirs inline.
+		expect(sourceOf('src/lib/components/board/ArchivePanel.svelte')).toContain('parseStamp(card.archivedAt)');
+		expect(sourceOf('src/lib/components/board/ActivityPanel.svelte')).toContain('parseStamp(activity.createdAt)');
 		expect(sourceOf('src/lib/components/CardModal.svelte')).toContain('parseStamp(card.createdAt)');
 		expect(sourceOf('src/lib/components/board/StatsPanel.svelte')).toContain('parseStamp(c.createdAt)');
 		expect(sourceOf('src/routes/+page.svelte')).toContain('parseStamp(a.lastActivity)');
@@ -1559,7 +1559,8 @@ describe('a due date is a calendar day, counted from the viewer’s own today (c
 	});
 
 	it('every page shows a due date through the one helper: badges, the card window, the dashboard and All To Do', () => {
-		for (const file of ['src/routes/all/+page.svelte', 'src/routes/board/[id]/+page.svelte', 'src/lib/components/board/CardListRow.svelte', 'src/routes/todo/+page.svelte']) {
+		// The board's card: its body, moved from the board page by card 2280's slice B3.
+		for (const file of ['src/routes/all/+page.svelte', 'src/lib/components/board/KanbanCardBody.svelte', 'src/lib/components/board/CardListRow.svelte', 'src/routes/todo/+page.svelte']) {
 			expect(sourceOf(file), file).toContain('title="Due {formatDueDate(card.dueDate)}"');
 		}
 		// The card window: a subtask is overdue from the day after its due day.

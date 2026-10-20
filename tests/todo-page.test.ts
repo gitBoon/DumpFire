@@ -818,10 +818,12 @@ describe('the board filter, src/lib/components/BoardFilterSelect.svelte (test 15
 
 describe('the three ways in (test 16)', () => {
 	it('the board header links to /todo?board=<id> after Planning, with BoardViewSwitch still first', () => {
-		const source = read('src/routes/board/[id]/+page.svelte');
+		// The board's header, moved from the board page by card 2280's slice B3; the page hands it the board's id.
+		const source = read('src/lib/components/board/BoardHeader.svelte');
+		expect(read('src/routes/board/[id]/+page.svelte')).toMatch(/<BoardHeader\s+boardId=\{data\.board\.id\}/);
 		expect(source).toMatch(/<div class="board-header-right">\s*<BoardViewSwitch /);
-		const planning = source.indexOf('<a href="/plan?board={data.board.id}"');
-		const todo = source.indexOf('<a href="/todo?board={data.board.id}" class="hdr-control hdr-action"');
+		const planning = source.indexOf('<a href="/plan?board={boardId}"');
+		const todo = source.indexOf('<a href="/todo?board={boardId}" class="hdr-control hdr-action"');
 		const addColumn = source.indexOf('title="Add column"');
 		expect(planning).toBeGreaterThan(-1);
 		expect(todo).toBeGreaterThan(planning);

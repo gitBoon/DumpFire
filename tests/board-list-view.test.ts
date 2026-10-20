@@ -255,6 +255,15 @@ describe('the page and the components, as source', () => {
 		}
 		for (const other of [
 			'src/routes/board/[id]/+page.svelte',
+			// What the board page draws, in its components (card 2280, slice B3).
+			'src/lib/components/board/BoardHeader.svelte',
+			'src/lib/components/board/BoardMoreMenu.svelte',
+			'src/lib/components/board/KanbanColumnHeader.svelte',
+			'src/lib/components/board/KanbanCardBody.svelte',
+			'src/lib/components/board/ActivityPanel.svelte',
+			'src/lib/components/board/ArchivePanel.svelte',
+			'src/lib/components/board/SidePanel.svelte',
+			'src/lib/components/board/XpLeaderboard.svelte',
 			'src/lib/components/board/ColumnListView.svelte',
 			'src/lib/components/board/CardListRow.svelte',
 			'src/lib/components/board/BoardViewSwitch.svelte'
@@ -281,8 +290,13 @@ describe('the page and the components, as source', () => {
 		expect(list).toBeGreaterThan(-1);
 		expect(source.slice(list, kanban)).toMatch(/<ColumnListView[\s\S]*\{:else\}/);
 		expect(source.indexOf('{/if}\r\n</div> <!-- /.board-page -->') > kanban || source.indexOf('{/if}\n</div> <!-- /.board-page -->') > kanban).toBe(true);
-		// The header control, first among the right-hand actions.
-		expect(source).toMatch(/<div class="board-header-right">\s*<BoardViewSwitch /);
+		// The header control, first among the right-hand actions, in the board's
+		// header (card 2280, slice B3: moved from the page), which hands its
+		// choice to the page's setBoardView.
+		expect(read('src/lib/components/board/BoardHeader.svelte')).toMatch(/<div class="board-header-right">\s*<BoardViewSwitch \{view\} onChange=\{\(view\) => onViewChange\(view\)\} \/>/);
+		expect(source).toContain('onViewChange={(view) => setBoardView({ ...boardView, view })}');
+		expect(source.indexOf('<BoardHeader')).toBeGreaterThan(-1);
+		expect(source.indexOf('<BoardHeader')).toBeLessThan(list);
 
 		// The view's afterNavigate is registered after the card window's, so the
 		// address it puts right is the one openCardFromAddress has already put
