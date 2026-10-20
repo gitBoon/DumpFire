@@ -3678,6 +3678,126 @@ describe('recent activity, on the boards the caller can open (card 2126)', () =>
 	});
 });
 
+describe('what me/stats counts (card 2292)', () => {
+	type Json = any;
+	type Caller = Exclude<Who, 'nobody'>;
+
+	/** `days` days ago, in the stored form. */
+	const daysAgo = (days: number) => stamp(new Date(Date.now() - days * 86_400_000));
+
+	const meStats = async (user: SessionUser): Promise<Json> => {
+		const res = await api('GET', '/api/v1/me/stats', { user });
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		return res.body;
+	};
+	/** The Velocity window's total over its shortest range, which holds today. */
+	const velocity = async (user: SessionUser): Promise<number> => {
+		const res = await api('GET', '/api/velocity?days=14', { user });
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		return res.body.summary.total;
+	};
+	const analytics = async (who: Caller): Promise<Json> => ((await pageData('/', who)) as Json).analytics;
+	/** How many cards My Tasks lists, over every board it groups them by. */
+	const myTasks = async (who: Caller): Promise<number> => {
+		const res = await api('GET', '/api/my-tasks', { user: w[who] });
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		return (res.body as { cards: unknown[] }[]).reduce((n, group) => n + group.cards.length, 0);
+	};
+
+	/** A card in the board's Complete column, raised `days` days ago and completed now, assigned to `who`. */
+	const completedOn = (on: { cols: Record<string, Column> }, who: SessionUser, days = 0): Card => {
+		const card = makeCard(on.cols['Complete'], { title: `Completed after ${days} days`, createdAt: daysAgo(days), completedAt: stamp() });
+		assignCard(card, who);
+		return card;
+	};
+
+	/**
+	 * A user who opens no board. Everyone signed in opens a public board, so the
+	 * world's public board is made private first.
+	 */
+	const opensNoBoard = (): SessionUser => {
+		db.update(boards).set({ isPublic: false }).where(eq(boards.id, w.publicBoard.board.id)).run();
+		return makeUser({ username: 'nowhere' });
+	};
+
+	it("counts `outsider` the open card of board B and not board A's, which they lost; their completions and streak as they were", async () => {
+		// The world assigns them board B's card and board A's other card. A
+		// completion of theirs on board A, logged today, is their own record and
+		// stays counted (card 2126, decision 13).
+		db.insert(activityLog)
+			.values({ boardId: w.A.board.id, cardId: w.A.other.id, userId: w.outsider.id, action: 'card_completed', detail: `Completed "${MARK} other card"`, userName: w.outsider.username, source: 'ui' })
+			.run();
+
+		const stats = await meStats(w.outsider);
+		expect(stats.activeCards).toBe(1);
+		expect({ completed: stats.cardsCompleted.total, streak: stats.streak }).toEqual({ completed: 1, streak: 1 });
+	});
+
+	it('counts an administrator a card on a board they are no member of', async () => {
+		assignCard(w.A.card, w.admin);
+		expect((await meStats(w.admin)).activeCards).toBe(1);
+	});
+
+	it('answers a user who opens no board 0 open cards and no cycle time', async () => {
+		const nowhere = opensNoBoard();
+		assignCard(w.A.card, nowhere);
+		completedOn(w.A, nowhere, 3);
+
+		expect(await meStats(nowhere)).toMatchObject({ activeCards: 0, avgCycleTimeDays: null });
+	});
+
+	it("averages `outsider`'s cycle time over board B's completed card and not board A's", async () => {
+		completedOn(w.A, w.outsider, 10);
+		completedOn(w.B, w.outsider, 2);
+		expect((await meStats(w.outsider)).avgCycleTimeDays).toBe(2);
+	});
+
+	it("counts `outsider`'s Velocity board B's completion and not board A's", async () => {
+		completedOn(w.A, w.outsider);
+		completedOn(w.B, w.outsider);
+		expect(await velocity(w.outsider)).toBe(1);
+	});
+
+	it('counts a card of board A to `guest`, who opens it through a team', async () => {
+		assignCard(w.A.card, w.guest);
+		expect((await meStats(w.guest)).activeCards).toBe(1);
+	});
+
+	it("counts an administrator's Velocity a completion on a board they are no member of", async () => {
+		completedOn(w.A, w.admin);
+		expect(await velocity(w.admin)).toBe(1);
+	});
+
+	it('answers a user who opens no board a Velocity of 0', async () => {
+		const nowhere = opensNoBoard();
+		completedOn(w.A, nowhere);
+		expect(await velocity(nowhere)).toBe(0);
+	});
+
+	it('gives `outsider` the same open count in me/stats, the dashboard and My Tasks', async () => {
+		const counted = [(await meStats(w.outsider)).activeCards, (await analytics('outsider')).active, await myTasks('outsider')];
+		expect(counted).toEqual([1, 1, 1]);
+	});
+
+	it('gives `outsider` the same completions this week in Velocity and the dashboard', async () => {
+		completedOn(w.A, w.outsider);
+		completedOn(w.B, w.outsider);
+		const counted = [await velocity(w.outsider), (await analytics('outsider')).completedThisWeek];
+		expect(counted).toEqual([1, 1]);
+	});
+
+	it('counts `outsider` the cards of a public board they are no member of, in me/stats and Velocity', async () => {
+		// Everyone signed in opens a public board. Its open card joins board B's
+		// in the open count; its completed card, 4 days open, is the only one
+		// averaged, and the only completion in Velocity.
+		assignCard(w.publicBoard.card, w.outsider);
+		completedOn(w.publicBoard, w.outsider, 4);
+
+		const stats = await meStats(w.outsider);
+		expect([stats.activeCards, stats.avgCycleTimeDays, await velocity(w.outsider)]).toEqual([2, 4, 1]);
+	});
+});
+
 /** What the page at `path` gives `who`, its load called as SvelteKit calls it. It must give its data. */
 async function pageData(path: string, who: Exclude<Who, 'nobody'>): Promise<Record<string, unknown>> {
 	const res = await pageLoad(path, { user: w[who] });

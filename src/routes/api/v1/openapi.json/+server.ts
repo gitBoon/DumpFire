@@ -205,6 +205,9 @@ const spec = {
 			'(78) a reopening and a move to another board send card.moved, by PUT /api/v1/cards/{cardId}/move as by the web application: a card moved out of a Complete column sends its board\'s webhooks card.moved with data.action card_reopened, ' +
 			'and a card moved to another board sends the board it left card.moved with card_moved_away and the board it joined card.moved with card_moved_in, each with that board\'s own activity entry as detail, which names neither board; ' +
 			'both sent nothing, so a receiver of card.moved missed them. A move into a Complete column still sends card.completed instead of card.moved, and one into another board\'s Complete column sends the joined board both. ' +
+			'(79) GET /api/v1/me/stats counts activeCards and averages avgCycleTimeDays over the cards the key\'s user is assigned to on boards they can open now, the same boards the web application\'s dashboard and My Tasks count (an open card is still one with no completedAt here, where those two go by its column): ' +
+			'both counted every board, so a user taken off a board saw the two figures move as cards there were completed, archived or unassigned; ' +
+			'a user who can open no board is answered activeCards 0 and avgCycleTimeDays null. The shape is unchanged, and cardsCompleted and streak, which count the user\'s own completions, are as they were. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -1102,13 +1105,13 @@ const spec = {
 					avgCycleTimeDays: {
 						type: ['number', 'null'],
 						description:
-							'Mean days from creation to completion, to one decimal place, over the completed cards the user is assigned to. null when there is none. An average of 0 is 0: until 2026-10-14 it was null.'
+							'Mean days from creation to completion, to one decimal place, over the completed cards the user is assigned to on boards the key\'s user can open. null when there is none. An average of 0 is 0: until 2026-10-14 it was null, and the cards of every board were averaged.'
 					},
 					streak: {
 						type: 'integer',
 						description: 'Consecutive UTC days with at least one completion, counted back from today, or from yesterday if there is none today'
 					},
-					activeCards: { type: 'integer', description: 'Cards the user is assigned to that are neither completed nor archived' },
+					activeCards: { type: 'integer', description: 'Cards the user is assigned to that are neither completed nor archived, on boards the key\'s user can open. Until 2026-10-14 the cards of every board were counted.' },
 					recentActivity: {
 						type: 'array',
 						description:
@@ -2276,8 +2279,9 @@ const spec = {
 				tags: ['User'],
 				summary: 'Get personal stats',
 				description:
-					'How the key\'s user is doing: cards completed in all, in the last 7 days and in the last 30, the average days from a card\'s creation to its completion, ' +
-					'the current streak of days with a completion, how many cards are assigned and open, and the last 20 activity entries on boards the key\'s user can open.',
+					'How the key\'s user is doing: cards completed in all, in the last 7 days and in the last 30, the average days from creation to completion of the cards assigned to them, ' +
+					'the current streak of days with a completion, how many cards are assigned and open, and the last 20 activity entries. The average, the open count and the entries ' +
+					'are of boards the key\'s user can open; the completed count and the streak are of the user\'s own completions, on any board.',
 				operationId: 'getMeStats',
 				responses: {
 					'200': {

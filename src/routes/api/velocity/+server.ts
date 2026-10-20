@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { columns, cards, cardAssignees } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
 import { completeColumnIds } from '$lib/column-role';
+import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
@@ -12,8 +13,8 @@ import type { RequestHandler } from './$types';
  * Returns completion counts bucketed per day (ranges ≤ 31 days) or per
  * 7-day week (longer ranges), plus summary stats and a comparison with
  * the preceding period of equal length. "Completed" matches the dashboard
- * definition: assigned to the user, not archived, sitting in a
- * Complete/Done column, with a completedAt timestamp.
+ * definition: assigned to the user, on a board they can open, not
+ * archived, sitting in a Complete/Done column, with a completedAt timestamp.
  */
 
 const ALLOWED_RANGES = new Set([14, 28, 91, 182, 365]);
@@ -34,11 +35,23 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		.all();
 	const cardIds = assignments.map(a => a.cardId);
 
+	// Only cards on boards the caller can open now (card 2292), as the
+	// dashboard's tiles beside this window count them since card 2130: someone
+	// taken off a board went on seeing its completions here. Filtered here, as
+	// the dashboard load filters, rather than in the query: the rows are read
+	// anyway, and a caller who opens no board simply keeps none. `null` is an
+	// administrator, who opens every board.
 	let myCards: typeof cards.$inferSelect[] = [];
 	if (cardIds.length > 0) {
-		myCards = db.select().from(cards)
+		const accessible = getAccessibleBoardIds(user);
+		const opens = accessible === null ? null : new Set(accessible);
+		myCards = db.select({ card: cards, boardId: columns.boardId })
+			.from(cards)
+			.innerJoin(columns, eq(cards.columnId, columns.id))
 			.where(and(inArray(cards.id, cardIds), isNull(cards.archivedAt)))
-			.all();
+			.all()
+			.filter(row => opens === null || opens.has(row.boardId))
+			.map(row => row.card);
 	}
 
 	// Identify done columns among the cards' columns

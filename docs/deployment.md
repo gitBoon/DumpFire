@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.48
+version: 1.49
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3443,6 +3443,37 @@ Checks 214 to 229 and 231 to 238 run on production, in two browsers, unless mark
 #### Going back to the previous image
 
 Nothing is done to the database. The older image's card window on All Tasks, All To Do and the plan page sends every field on save again, the plan page says "Card updated" whatever comes back, and All Tasks re-reads once for every live change. A page loaded from this image and left open across the change keeps working; reload it (the update bar asks within a minute).
+
+### My Stats and the Velocity Window Count Only Boards You Can Open
+
+**Card 2292.** No migration, no setting, no new route or field. `GET /api/v1/me/stats` counted `activeCards` and averaged `avgCycleTimeDays` over the cards the key's user is assigned to on every board, and the dashboard's Velocity window (`GET /api/velocity`) counted completions the same way, so someone taken off a board saw those figures move as work went on there. Now they count only the boards the caller can open, as the dashboard's tiles and My Tasks have since card 2130. `cardsCompleted` and `streak`, the caller's own completions, are unchanged. See [What a List Gives](authentication-security.md#what-a-list-gives).
+
+**Owner to know.**
+
+- **A former member's figures fall once, on the deploy**: anyone still assigned to cards on a board they were taken off sees `activeCards`, the average and Velocity drop to what the boards they can open hold. An administrator opens every board, so an administrator's figures do not change.
+- **`cardsCompleted` and `streak` can still drop when a board is deleted**: the activity entries go with their board, the caller's own completions among them. That is how it was before this card, not a fault of it.
+
+#### Before the deploy
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 239 | 2292 | Immediately before the deploy, with your own (administrator's) API key, `GET /api/v1/me/stats`; write down `activeCards` and `avgCycleTimeDays` | Two figures, kept for check 243 | — |
+
+#### After the deploy
+
+Check 243 is the first step after the deploy, before 240. Checks 240 to 244 run on production in one sitting. **O** is your own account; **T** is a throwaway ordinary account O makes on the admin page for these checks, with an email address in a mailbox O controls (sharing and assigning mail T) and a password typed there, so that no invite mail is sent. T signs in from a separate browser profile or a private window, so that O's own session is kept. Signed in as T, make T's API key on **My Account** (Generate Key). As O, make a scratch board "Check 2292" with three open cards in To Do. While T exists it is listed to everyone signed in (the user pickers, `GET /api/users`) and on the public request form, so check 244 removes it.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 240 | 2292 | Share Check 2292 with T as Editor. As O, assign T to all three cards, then move one into Complete. Signed in as T, comment on one of its cards. With T's key, `GET /api/v1/me/stats`; signed in as T, open the dashboard and its **Velocity** window | `activeCards` **2**; `avgCycleTimeDays` a number, about 0; Velocity's total **1**; the dashboard's Active tile 2 and Completed this week 1; `cardsCompleted.total` 0 and `streak` 0 (the completion was O's); `recentActivity` holds T's comment | `activeCards` not 2, or Velocity not 1 |
+| 241 | 2292 | As O, take T off Check 2292 (Share Board, remove). With T's key, `GET /api/v1/me/stats` again; signed in as T, reload the dashboard, its Velocity window and My Tasks (**Active Tasks**) | `activeCards` **0**; `avgCycleTimeDays` **null**; Velocity's total **0**; the Active tile 0 and My Tasks empty; `recentActivity` has nothing of Check 2292; `cardsCompleted` and `streak` as in check 240 | Any of the three figures still counting Check 2292 |
+| 242 | 2292 | Signed in as T, compare the dashboard with `me/stats` | Active tile = `activeCards` = My Tasks' count (all 0); Velocity's total = Completed this week (both 0) | Two screens disagreeing |
+| 243 | 2292 | First, right after the deploy and before check 240: with O's key, `GET /api/v1/me/stats` | The two figures of check 239 (as an administrator O opens every board), unless one of your own assigned cards was completed, archived, assigned or unassigned in between | A figure changed with none of your own assigned cards changed |
+| 244 | 2292 | Signed in as T, revoke T's key (My Account); as O, delete T (Admin, User Management) and the board Check 2292 | T no longer in the user pickers or on the request form; the board gone | T or the board left |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image counts `activeCards`, `avgCycleTimeDays` and the Velocity window over every board again.
 
 ## Changing the Schema
 

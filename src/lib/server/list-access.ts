@@ -31,10 +31,14 @@ import { subBoardProgress } from './card-completion';
  * 10.
  *
  * Both listed every entry of the caller's, so someone taken off a board went
- * on reading what was done there, card titles included. The counts beside them
- * (completed, streak, cycle time) are not filtered: they name nothing, and are
- * the caller's own record. An administrator opens every board and is given
- * every entry. Entries made in the same second are listed newest first by id.
+ * on reading what was done there, card titles included. Of the counts beside
+ * them in `me/stats`, the completed count and streak are not filtered: they are
+ * the caller's own entries in the log, and name nothing. The open count and
+ * cycle time are read from the caller's assignments and are filtered, in that
+ * route, to the boards the caller can open (card 2292), since they moved as
+ * work went on on a board the caller had lost. An administrator opens every
+ * board and is given every entry. Entries made in the same second are listed
+ * newest first by id.
  *
  * The board is asked as `+board_id`, which SQLite cannot answer from an
  * index: so it reads the log newest first by `idx_activity_log_created_at`
