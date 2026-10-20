@@ -55,6 +55,7 @@
 		milestones = [],
 		notice = '',
 		edits,
+		commentsTold = 0,
 	}: {
 		card: CardType | null;
 		categories: CategoryType[];
@@ -78,6 +79,14 @@
 		 * filled once.
 		 */
 		edits?: WindowEdits;
+		/**
+		 * Raised by the page each time its live stream says this card's
+		 * comments changed, or it has been away (a reconnect, a return to the
+		 * tab), as `commentsChanged` in `$lib/board/sse` says (card 2282). The
+		 * board page, All Tasks and All To Do give it; the plan page has no
+		 * stream. A change re-reads the comments, quietly.
+		 */
+		commentsTold?: number;
 	} = $props();
 
 	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
@@ -638,14 +647,75 @@
 		}, 250);
 	}
 
-	async function loadComments() {
+	/**
+	 * Read the card's comments. The window's own reads (as it opens, and the
+	 * tab opened on none) say "Loading comments..." while they wait; a live
+	 * re-read (`quiet`) never does, so the thread is not swapped out and the
+	 * comment being edited keeps its box, focus, caret and text (card 2282,
+	 * ruling 1).
+	 *
+	 * Each read has a number, and an answer is taken only if its read is newer
+	 * than the floor, which it then becomes: an earlier read answering after a
+	 * later one is dropped, and one that fails drops nothing, so the newest
+	 * answer that came is what shows. A comment posted, edited or deleted here
+	 * raises the floor to the last read sent (`commentWritten`): a read sent
+	 * before it answers with the comments as they were, and the write's own
+	 * live event sends a newer one (the slice 3 review).
+	 */
+	let commentsRead = 0;
+	let commentsFloor = 0;
+	async function loadComments(quiet = false) {
 		if (!card) return;
-		loadingComments = true;
+		const read = ++commentsRead;
+		if (!quiet) loadingComments = true;
+		let taken = false;
 		try {
 			const res = await fetch(`/api/cards/${card.id}/comments`);
-			if (res.ok) comments = await res.json();
-		} finally { loadingComments = false; }
+			if (!res.ok) return;
+			const list: CommentItem[] = await res.json();
+			if (read > commentsFloor) {
+				commentsFloor = read;
+				comments = list;
+				taken = true;
+			}
+		} catch {
+			// No answer: the comments shown stay as they are.
+		} finally {
+			// The window's own read is over, or newer comments are shown.
+			if (taken || !quiet) loadingComments = false;
+		}
 	}
+
+	/** A comment posted, edited or deleted in this window: no read sent before it is taken. */
+	function commentWritten() {
+		commentsFloor = commentsRead;
+	}
+
+	/**
+	 * The page's count of being told (`commentsTold`), as this window last
+	 * acted on it. A window takes the count it opens with as its start, since
+	 * it reads its comments as it opens anyway; each later change re-reads
+	 * them, 250 ms on, so that a burst of changes (the pages' own refresh
+	 * delay) is one read.
+	 */
+	// svelte-ignore state_referenced_locally
+	let commentsToldSeen = commentsTold;
+	let commentsReRead: ReturnType<typeof setTimeout> | null = null;
+	$effect(() => {
+		const told = commentsTold;
+		untrack(() => {
+			if (told === commentsToldSeen) return;
+			commentsToldSeen = told;
+			if (!card?.id || commentsReRead) return;
+			commentsReRead = setTimeout(() => {
+				commentsReRead = null;
+				loadComments(true);
+			}, 250);
+		});
+	});
+	$effect(() => () => {
+		if (commentsReRead) clearTimeout(commentsReRead);
+	});
 
 	// ─── Attachments ─────────────────────────────────────────────────────
 	// The files, read here when the tab is opened on none (the tab shows their
@@ -813,7 +883,7 @@
 		{/if} <!-- end details tab / new card -->
 
 		<!-- The Comments and Files tabs: each shows itself on its tab of a saved card. -->
-		<CardComments {card} {activeTab} {boardUsers} bind:comments {loadingComments} bind:windowError />
+		<CardComments {card} {activeTab} {boardUsers} bind:comments {loadingComments} bind:windowError onWritten={commentWritten} />
 
 		<CardAttachments {card} {activeTab} bind:attachments {loadingAttachments} {loadAttachments} bind:windowError />
 

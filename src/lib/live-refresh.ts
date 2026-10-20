@@ -14,20 +14,26 @@
  *
  * The board has its own richer handler in $lib/board/sse.ts (it needs the
  * per-board stream plus celebrations), and All Tasks keeps its own because it
- * drives toasts off the event payload. This is the plain case: refresh only.
+ * drives toasts off the event payload. This is the plain case: refresh, and,
+ * for a page with a card window (To Do), what each update said and each gap,
+ * so the window can tell whether its comments changed (card 2282).
  *
  * Opening it again after a failure, and how long to wait first, is
  * $lib/live-stream.ts's: it backs off, and does not open again a stream that
  * was refused because the session has ended.
  */
 import { keepStreamOpen } from '$lib/live-stream';
+import { boardEvent, type BoardEvent } from '$lib/board/sse';
 
 /**
  * Opens the connection and returns a cleanup function that closes it.
  *
  * @param onRefresh — called when the page's data should be re-read.
+ * @param onEvent — called at once with what each `update` said, and with
+ *   null on a reconnect and on a return to the tab, which may have missed
+ *   some (card 2282). The re-read is scheduled as before.
  */
-export function connectLiveRefresh(onRefresh: () => void): () => void {
+export function connectLiveRefresh(onRefresh: () => void, onEvent?: (event: BoardEvent | null) => void): () => void {
 	let pending: ReturnType<typeof setTimeout> | null = null;
 
 	/**
@@ -44,8 +50,18 @@ export function connectLiveRefresh(onRefresh: () => void): () => void {
 		}, 250);
 	}
 
+	/** A gap in which events may have been missed: said, then re-read. */
+	function caughtUp() {
+		onEvent?.(null);
+		scheduleRefresh();
+	}
+
 	function listen(eventSource: EventSource) {
-		eventSource.addEventListener('update', () => scheduleRefresh());
+		eventSource.addEventListener('update', (e) => {
+			const event = boardEvent(e.data);
+			if (event) onEvent?.(event);
+			scheduleRefresh();
+		});
 		eventSource.addEventListener('xp-update', () => scheduleRefresh());
 	}
 
@@ -56,12 +72,12 @@ export function connectLiveRefresh(onRefresh: () => void): () => void {
 	 * recorded in a terminal current on alt-tab.
 	 */
 	function onVisibilityChange() {
-		if (document.visibilityState === 'visible') scheduleRefresh();
+		if (document.visibilityState === 'visible') caughtUp();
 	}
 	document.addEventListener('visibilitychange', onVisibilityChange);
 
 	// Every open after the first follows a gap, and the page is re-read.
-	const close = keepStreamOpen('/api/events', listen, scheduleRefresh);
+	const close = keepStreamOpen('/api/events', listen, caughtUp);
 
 	return () => {
 		document.removeEventListener('visibilitychange', onVisibilityChange);

@@ -57,7 +57,7 @@
 	import * as dndHandlers from '$lib/board/dnd-handlers';
 	import * as bulkOps from '$lib/board/bulk-actions';
 	import { loadXp as fetchXpData } from '$lib/board/xp-utils';
-	import { connectSSE } from '$lib/board/sse';
+	import { commentsChanged, connectSSE } from '$lib/board/sse';
 	import { BoardState, type WriteWords } from '$lib/board/board-state.svelte';
 	import { CARD_GONE, CardWindow, type CardWindowSave } from '$lib/board/card-window.svelte';
 	import { copyColumns, insertColumn, moveCards, patchCard, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
@@ -1418,6 +1418,8 @@
 	// ─── Lifecycle ───────────────────────────────────────────────────────────
 
 	let cleanupSSE: (() => void) | null = null;
+	/** How often the stream has said the open card's comments may have changed: the card window's `commentsTold`. */
+	let commentsTold = $state(0);
 
 	// The live stream is this page's, opened as it mounts and closed as it is
 	// destroyed. `./+layout.svelte` makes the page afresh for each board, so a
@@ -1426,13 +1428,19 @@
 	// the page and its stream. What the stream says is the board state's to
 	// read: the access event at once, never held, so a board taken away shows
 	// its refusal; any other change, a reconnect or a return to the tab, after
-	// the burst and once nothing holds it (card 2280, slice B2a).
+	// the burst and once nothing holds it (card 2280, slice B2a). A change to
+	// the open card's comments, a reconnect or a return to the tab also tells
+	// the card window to read its comments again (card 2282).
 	onMount(() => {
 		refreshXp();
 		tickInterval = setInterval(() => { tick++; }, 15000);
 		if (browser) {
 			cleanupSSE = connectSSE(data.board.id, {
-				onUpdate: (event) => (event?.type === 'access' ? boardState.accessChanged() : boardState.refresh()),
+				onUpdate: (event) => {
+					if (commentsChanged(event, cardWindow.cardId)) commentsTold++;
+					if (event?.type === 'access') boardState.accessChanged();
+					else boardState.refresh();
+				},
 				onCelebrate: (d) => {
 					celebrateCardTitle = d.cardTitle;
 					celebrateUserName = d.userName;
@@ -1725,6 +1733,7 @@
 		onLinkSubBoard={cardWindow.card ? (boardId) => linkSubBoard(cardWindow.cardId!, boardId) : undefined}
 		notice={cardWindow.gone ? CARD_GONE : ''}
 		edits={cardWindow.edits}
+		{commentsTold}
 		availableBoards={boardState.linkableBoards.map(b => ({ id: b.id, name: b.name, emoji: b.emoji || '📋' }))}
 		milestones={boardState.milestones}
 	/>

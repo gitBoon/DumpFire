@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.70
+version: 1.71
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1662,7 +1662,10 @@ API:
   their operation above writes, with `source` `ui`, in the transaction of the write, and
   send the live update it sends, once that is committed: `{ "type": "card" }` to the
   card's board for an assignment (of someone already assigned too, with no entry and no
-  mail), a removal and a comment edited; `{ "type": "board" }` to the board, once, for an
+  mail) and a removal; `{ "type": "comment", "cardId": <the card> }` for a comment edited
+  (card 2282; it was `{ "type": "card" }`), as for a comment added on either route, which
+  sent none, and for an "Unblocked" notice, beside its `{ "type": "card" }`: a card window
+  open on the card reads its comments again; `{ "type": "board" }` to the board, once, for an
   update that sent a field, beside the updates to the boards a `parentCardId` left and
   joined; and `{ "type": "board", "action": "created" }` to the board a new sub-board's
   card is on. An update that sends no field writes nothing and sends nothing, and is

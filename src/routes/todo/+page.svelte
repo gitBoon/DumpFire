@@ -35,6 +35,7 @@
 	import { boardPathText, chosenBoardId, inBoardFilter } from '$lib/board-tree';
 	import { cardArchiveWarning } from '$lib/api';
 	import { connectLiveRefresh } from '$lib/live-refresh';
+	import { commentsChanged } from '$lib/board/sse';
 	import { drawnColour } from '$lib/colours';
 	import {
 		dropUnknownChoices,
@@ -220,9 +221,17 @@
 	let tick = $state(0);
 	let tickInterval: ReturnType<typeof setInterval> | null = null;
 	let closeLive: (() => void) | null = null;
+	/**
+	 * How often the stream has said the open card's comments may have
+	 * changed, or the page has been away: the card window's `commentsTold`,
+	 * which re-reads them (card 2282).
+	 */
+	let commentsTold = $state(0);
 
 	onMount(() => {
-		closeLive = connectLiveRefresh(() => invalidateAll());
+		closeLive = connectLiveRefresh(() => invalidateAll(), (event) => {
+			if (commentsChanged(event, cardWindow.cardId)) commentsTold++;
+		});
 		tickInterval = setInterval(() => { tick++; }, 60000);
 	});
 
@@ -645,6 +654,7 @@
 		onDelete={archiveFromWindow}
 		onClose={() => cardWindow.close()}
 		edits={cardWindow.edits}
+		{commentsTold}
 	/>
 	{/key}
 {/if}

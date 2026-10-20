@@ -44,10 +44,11 @@ vi.mock('$app/stores', () => {
 // In a browser: the page opens its live stream and reads whether the Activity Log was left open only there.
 vi.mock('$app/environment', () => ({ dev: false, building: false, browser: true, version: 'test' }));
 // The page's live stream would open an EventSource, which jsdom has not got: the listeners the page puts on it are kept, to be handed events.
-const stream = vi.hoisted(() => ({ listen: null as null | ((source: EventSource) => void) }));
+const stream = vi.hoisted(() => ({ listen: null as null | ((source: EventSource) => void), reopened: null as null | (() => void) }));
 vi.mock('$lib/live-stream', () => ({
-	keepStreamOpen: vi.fn((_url: string, listen: (source: EventSource) => void) => {
+	keepStreamOpen: vi.fn((_url: string, listen: (source: EventSource) => void, reopened: () => void) => {
 		stream.listen = listen;
+		stream.reopened = reopened;
 		return () => {};
 	})
 }));
@@ -107,6 +108,7 @@ const data = () => ({
 beforeEach(() => {
 	sent = [];
 	stream.listen = null;
+	stream.reopened = null;
 	navigation.invalidateAll.mockClear();
 	archived = [{ id: 9, title: 'Old idea', boardName: 'Website' }];
 	activity = [{ id: 1, action: 'card_created', userName: 'bob', userEmoji: '🐻', detail: 'Plan', boardName: 'Website', createdAt: '2026-10-20 09:00:00' }];
@@ -207,6 +209,39 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 
 		expect(document.querySelector<HTMLInputElement>('#card-title')!.value).toBe('Plan');
 		expect(asked('GET /api/cards/7/context')).toHaveLength(1);
+	});
+
+	// Card 2282: the open card window reads its comments again when the page's
+	// stream says they changed, and after a gap in which it may have missed
+	// that: a reconnect, and a return to the tab, each with its own handler here.
+	it('tells the open card window to read its comments again for its card’s comment event, a reconnect and a return to the tab, and not for another card’s', async () => {
+		const target = draw();
+		cardNamed(target, 'Plan').click();
+		await settle();
+		const commentReads = () => asked('GET /api/cards/7/comments').length;
+		expect(commentReads()).toBe(1);
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		try {
+			const afterTheWait = async () => {
+				await vi.advanceTimersByTimeAsync(300);
+				flushSync();
+				return commentReads();
+			};
+
+			streamSends('update', { type: 'comment', cardId: 8 });
+			expect(await afterTheWait()).toBe(1);
+			streamSends('update', { type: 'comment', cardId: 7 });
+			expect(await afterTheWait()).toBe(2);
+			stream.reopened!();
+			flushSync();
+			expect(await afterTheWait()).toBe(3);
+			Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+			document.dispatchEvent(new Event('visibilitychange'));
+			flushSync();
+			expect(await afterTheWait()).toBe(4);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('opens the Move window from a card’s Move button, without its card window, and the move reaches its request', async () => {

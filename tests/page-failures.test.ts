@@ -90,7 +90,7 @@ import * as apiModule from '$lib/api';
 import * as boardActions from '$lib/board/board-actions';
 import type { BoardContentsData } from '$lib/board/contents-answer';
 import { BULK_HOLD_MS, refreshSchedule } from '$lib/board/refresh-schedule';
-import { connectSSE } from '$lib/board/sse';
+import { commentsChanged, connectSSE } from '$lib/board/sse';
 import { SOURCES, TRIGGERS } from 'svelte-dnd-action';
 import { keepStreamOpen, reconnectDelay, streamVerdict, type StreamEnvironment } from '$lib/live-stream';
 import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
@@ -6470,12 +6470,28 @@ describe('the board page draws from its board state and reads the board alone (c
 		const onUpdate = callbacks.properties.find((property) => property.name?.getText() === 'onUpdate') as ts.PropertyAssignment;
 		const called: string[] = [];
 		const state = { refresh: () => called.push('refresh'), accessChanged: () => called.push('accessChanged') };
-		const route = new Function('boardState', `return ${ts.transpile(onUpdate.initializer.getText(), { target: ts.ScriptTarget.ES2022 })}`)(state);
+		// The card window is open on card 5. Its comments changed, or the page
+		// was away (null), raises the window's `commentsTold` (card 2282).
+		const { route, commentsTold } = new Function(
+			'boardState',
+			'cardWindow',
+			'commentsChanged',
+			`let commentsTold = 0; const route = ${ts.transpile(onUpdate.initializer.getText(), { target: ts.ScriptTarget.ES2022 })}; return { route, commentsTold: () => commentsTold };`
+		)(state, { cardId: 5 }, commentsChanged);
 		route({ type: 'access' });
 		route({ type: 'card', id: 5 });
+		expect(commentsTold()).toBe(0);
+		route({ type: 'comment', cardId: 6 });
+		expect(commentsTold()).toBe(0);
+		route({ type: 'comment', cardId: 5 });
+		expect(commentsTold()).toBe(1);
 		route(null);
+		expect(commentsTold()).toBe(2);
 		route(undefined);
-		expect(called).toEqual(['accessChanged', 'refresh', 'refresh', 'refresh']);
+		expect(commentsTold()).toBe(3);
+		expect(called).toEqual(['accessChanged', 'refresh', 'refresh', 'refresh', 'refresh', 'refresh']);
+		// And the window is handed the count, inside its own tag.
+		expect(readFileSync(join(ROOT, 'src/routes/board/[id]/+page.svelte'), 'utf8')).toMatch(/<CardModal\b(?:(?!\/>)[\s\S])*\{commentsTold\}(?:(?!\/>)[\s\S])*\/>/);
 	});
 
 	it('holds the reads from a drag’s first move, before the columns change, until the move’s answer, let go in a finally', () => {

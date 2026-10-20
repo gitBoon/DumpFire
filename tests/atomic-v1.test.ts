@@ -1119,8 +1119,12 @@ describe('POST /api/v1/cards/:cardId/comments', () => {
 			'email to mentioned@example.test: New comment on: First',
 			'email to mentioned@example.test: owner mentioned you: First',
 			'email to rita@example.test: New comment on your request: Please build this',
-			'webhook comment.added'
+			'webhook comment.added',
+			// Then the open pages, naming the card, so that a card window open on
+			// it re-reads its comments (card 2282). None was sent.
+			'event update (comment) on board 1'
 		]);
+		expect(run.effects.at(-1)).toMatchObject({ kind: 'event', data: { type: 'comment', cardId: 1 } });
 	});
 
 	it('answers an empty comment, a card that is not there and a caller who may only look, the card first', async () => {
@@ -1180,7 +1184,8 @@ describe('PUT /api/v1/comments/:commentId', () => {
 		});
 
 		expect(shape(run.writes)).toEqual(['update card_comments set', 'insert into activity_log']);
-		expect(run.effects.map(name)).toEqual(['event update (card) on board 1']);
+		// The comment event, naming the card, where it was `{ type: 'card' }` (card 2282).
+		expect(run.effects.map(name)).toEqual(['event update (comment) on board 1']);
 	});
 
 	it('lets an administrator edit a comment somebody else wrote', async () => {

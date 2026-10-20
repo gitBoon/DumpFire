@@ -36,6 +36,17 @@ import { inWrite, type ServiceOptions } from './write-as';
 export const READS: readonly string[] = ['listComments'];
 
 /**
+ * The live update a change to a card's comments sends its board (card 2282):
+ * the card named, so that a card window open on it re-reads its comments
+ * and no other window does (`commentsChanged` in `$lib/board/sse`). Every
+ * page re-reads on any update that is not `access`, as for any other. The
+ * "Unblocked" notice sends the same (`announceUnblocked` in `planning.ts`).
+ */
+function commentEvent(cardId: number): { type: 'comment'; cardId: number } {
+	return { type: 'comment', cardId };
+}
+
+/**
  * A card's comments, newest first, each with its author's name and emoji
  * (`GET /api/cards/:id/comments`, `GET /api/v1/cards/:cardId/comments`). The
  * card is looked for and the caller asked for view access (404, then 403, in
@@ -86,7 +97,9 @@ export type AddCommentOptions = {
  * content is read (400): text of 1 to 50,000 characters once trimmed, as an
  * edit is (card 2117, R1). Then the comment, its entry, the mail to the
  * board's members and to anyone it mentions, and the mail to whoever asked
- * for the card. No live event is sent (found nearby F1, its own card).
+ * for the card, and last the live event `{ type: 'comment', cardId }` to the
+ * card's board, in both trees, so that a card window open on the card
+ * re-reads its comments (card 2282). It sent none.
  *
  * The answer is the comment with its author's name and emoji, as they are now.
  */
@@ -137,6 +150,8 @@ export function addComment(
 	});
 
 	if (opts.mailBeforeEntry) record();
+
+	emit(boardId, 'update', commentEvent(cardId));
 
 	return { ...comment, username: user.username, userEmoji: user.emoji || '👤' };
 }
@@ -218,7 +233,7 @@ export function editComment(
 		...actorOf(user)
 	});
 
-	emit(boardId, 'update', { type: 'card' });
+	emit(boardId, 'update', commentEvent(comment.cardId));
 
 	return row;
 }

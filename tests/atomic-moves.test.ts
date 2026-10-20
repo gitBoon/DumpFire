@@ -150,9 +150,17 @@ describe('PUT /api/cards/:id', () => {
 			'email to assignee@example.test: Card moved: First → Complete',
 			'email to assignee@example.test: Unblocked: Waiting',
 			'event update',
+			'event update',
 			'event update (moved)',
 			'event xp-update',
 			'event celebrate'
+		]);
+		// The waiting card's board is told of the card and of its new "Unblocked"
+		// comment, so a card window open on the waiting card shows it (card 2282).
+		// Waiting is the scene's second card.
+		expect(run.effects.filter((e) => e.kind === 'event' && e.event === 'update').slice(0, 2).map((e) => (e as { data: unknown }).data)).toEqual([
+			{ type: 'card' },
+			{ type: 'comment', cardId: 2 }
 		]);
 	});
 
@@ -252,6 +260,8 @@ describe('PUT /api/cards/reorder', () => {
 			'webhook card.completed',
 			'email to assignee@example.test: Card moved: First → Complete',
 			'email to assignee@example.test: Unblocked: Waiting',
+			'event update',
+			// The notice's comment event (card 2282).
 			'event update',
 			'event update (moved)',
 			'event xp-update',
@@ -544,6 +554,8 @@ describe('PUT /api/v1/cards/:id/move', () => {
 			'webhook card.completed',
 			'email to assignee@example.test: Card moved: First → Complete',
 			'email to assignee@example.test: Unblocked: Waiting',
+			'event update',
+			// The notice's comment event (card 2282).
 			'event update',
 			'event update (moved_away)',
 			'event update (moved_in)',
@@ -1605,6 +1617,8 @@ describe('PUT /api/subtasks/:id', () => {
 			'event update',
 			'email to assignee@example.test: Unblocked: Waiting',
 			'event update',
+			// The notice's comment event (card 2282).
+			'event update',
 			'email to rita@example.test: Subtask completed on your request: Please build this'
 		]);
 	});
@@ -1708,6 +1722,8 @@ describe('PUT /api/v1/subtasks/:id', () => {
 		]);
 		expect(run.effects.map(name)).toEqual([
 			'email to assignee@example.test: Unblocked: Review it (subtask)',
+			'event update',
+			// The notice's comment event (card 2282).
 			'event update',
 			'event update'
 		]);

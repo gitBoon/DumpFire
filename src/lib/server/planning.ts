@@ -1536,5 +1536,8 @@ export function announceUnblocked(
 		// The unblocked work may well be on another board; refresh that one too
 		// so its "Blocked" chip clears without a reload.
 		emit(u.boardId, 'update', { type: 'card' });
+		// The notice is a comment on the waiting card: a card window open on it
+		// re-reads its comments (card 2282), as for any comment added.
+		emit(u.boardId, 'update', { type: 'comment', cardId: u.cardId });
 	}
 }

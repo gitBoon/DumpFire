@@ -716,8 +716,12 @@ describe('the page, src/routes/todo/+page.svelte, read from its source (test 15)
 		for (const load of ['src/routes/todo/+page.server.ts', 'src/routes/+layout.server.ts']) {
 			expect(read(load), load).not.toMatch(/\burl\b/);
 		}
-		// Opened when the page is, closed when it goes.
-		expect(script).toMatch(/onMount\(\(\) => \{\s*closeLive = connectLiveRefresh\(\(\) => invalidateAll\(\)\);/);
+		// Opened when the page is, closed when it goes. What each update said,
+		// and each gap, tells the open card window whether its comments
+		// changed (card 2282): `connectLiveRefresh`'s calls of `onEvent` are
+		// held in `tests/card-window-comments.svelte.test.ts`.
+		expect(script).toMatch(/onMount\(\(\) => \{\s*closeLive = connectLiveRefresh\(\(\) => invalidateAll\(\), \(event\) => \{\s*if \(commentsChanged\(event, cardWindow\.cardId\)\) commentsTold\+\+;\s*\}\);/);
+		expect(source).toMatch(/<CardModal\b(?:(?!\/>)[\s\S])*\{commentsTold\}(?:(?!\/>)[\s\S])*\/>/);
 		expect(script).toMatch(/onDestroy\(\(\) => \{\s*closeLive\?\.\(\);/);
 	});
 

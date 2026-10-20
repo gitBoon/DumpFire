@@ -3558,7 +3558,7 @@ const spec = {
 			post: {
 				tags: ['Comments'],
 				summary: 'Add a comment',
-				description: 'Posts a comment on a card. Notifies board members via email. Anyone it names as `@username` who can open the card\'s board is also told by email, and nobody else. A name is the longest username that the text after `@` begins with, in any case; an `@` inside a word, as in an email address, is not a mention. Only the first 200 `@` of a comment that could start a name are read. Needs edit access to the card\'s board: a viewer can read comments and cannot add one.',
+				description: 'Posts a comment on a card. Notifies board members via email. Anyone it names as `@username` who can open the card\'s board is also told by email, and nobody else. A name is the longest username that the text after `@` begins with, in any case; an `@` inside a word, as in an email address, is not a mention. Only the first 200 `@` of a comment that could start a name are read. Needs edit access to the card\'s board: a viewer can read comments and cannot add one. Logs api:comment_added to the activity feed and emits a live board update.',
 				operationId: 'createComment',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {

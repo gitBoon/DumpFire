@@ -23,6 +23,7 @@
 	import { boardPlaces as placesOf, chosenBoardId, inBoardFilter } from '$lib/board-tree';
 	import { cardArchiveWarning } from '$lib/api';
 	import { keepStreamOpen } from '$lib/live-stream';
+	import { commentsChanged } from '$lib/board/sse';
 	import { refreshSchedule } from '$lib/board/refresh-schedule';
 	import { playCreateSound, playNotifySound } from '$lib/utils/sounds';
 	import { drawnColour } from '$lib/colours';
@@ -47,6 +48,8 @@
 	// $lib/live-stream.ts's: it backs off, and does not open again a stream
 	// that was refused because the session has ended.
 	let closeStream: (() => void) | null = null;
+	/** How often the stream has said the open card's comments may have changed: the card window's `commentsTold` (card 2282). */
+	let commentsTold = $state(0);
 
 	/** The live notices and the fireworks, which the stream's events are handed to. */
 	let liveToasts = $state<ReturnType<typeof LiveToasts>>();
@@ -80,6 +83,8 @@
 					liveToasts?.addLiveToast({ type: 'moved', cardTitle: d.cardTitle, userName: d.userName || 'Someone', userEmoji: d.userEmoji || '👤', fromColumn: d.fromColumn, toColumn: d.toColumn });
 					playNotifySound();
 				}
+				// The open card's comments changed: its window reads them again (card 2282).
+				if (d && commentsChanged(d, cardWindow.cardId)) commentsTold++;
 			} catch { /* fallback — still refresh */ }
 			// Each event's notice is its own; the re-read is the burst's.
 			liveRefresh.schedule();
@@ -108,7 +113,17 @@
 	 * recorded in a terminal current on alt-tab.
 	 */
 	function onVisibilityChange() {
-		if (document.visibilityState === 'visible') invalidateAll();
+		if (document.visibilityState === 'visible') caughtUp();
+	}
+
+	/**
+	 * After a gap (a reconnect, a return to the tab) in which events may have
+	 * been missed: the page is read again, and the open card window reads its
+	 * comments again, one of them perhaps being about its card (card 2282).
+	 */
+	function caughtUp() {
+		commentsTold++;
+		invalidateAll();
 	}
 
 	onMount(() => {
@@ -118,7 +133,7 @@
 			// nothing replays them, so every open after the first re-reads,
 			// rather than waiting for the next change. Without this a figure
 			// recorded during the gap stays stale.
-			closeStream = keepStreamOpen('/api/events', listenToGlobalSSE, () => invalidateAll());
+			closeStream = keepStreamOpen('/api/events', listenToGlobalSSE, caughtUp);
 			document.addEventListener('visibilitychange', onVisibilityChange);
 		}
 	});
@@ -481,6 +496,7 @@
 		onDelete={archiveFromWindow}
 		onClose={() => cardWindow.close()}
 		edits={cardWindow.edits}
+		{commentsTold}
 	/>
 	{/key}
 {/if}
