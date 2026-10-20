@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.47
+version: 1.48
 status: As-Built
 date: 2026-10-20
 tags:
@@ -826,7 +826,7 @@ The board's activity panel and the All Tasks activity panel name each action in 
 | `card_moved_away`, `card_moved_in` | Moved card to another board, Moved card from another board. Their text names neither board (card 2181): `"T" moved to another board (To Do → Done)` on the board it left, `"T" moved from another board (To Do → Done)` on the one it joined. All Tasks and the Audit page list each under its own board. To trace where a card went, use All Tasks (for the boards you can open), the Audit page (administrators), or `GET /api/v1/cards/:cardId/board-history`, which lists each board the card has been on, with its dates. Entries written before card 2181 still name the other board |
 | `cards_purged`, `cards_cleared`, `column_deleted` | Purged archived cards, Cleared cards, Deleted column |
 | `subtask_created`, `subtask_updated`, `subtask_completed`, `subtask_deleted`, and `subtask_toggled`, written by older versions | Created subtask, Updated subtask, Completed subtask, Deleted subtask, Updated subtask |
-| `comment_added`, `comment_edited` | Added comment, Edited comment |
+| `comment_added`, `comment_edited`, `comment_deleted` | Added comment, Edited comment, Deleted comment (card 2283: a delete was not recorded) |
 | `assignee_added`, `assignee_removed` | Assigned user, Unassigned user |
 | `dependency_added`, `dependency_removed`, `dependencies_bulk_added` | Added dependency, Removed dependency, Added dependencies |
 | `board_created`, `board_updated`, `milestone_created` | Created board, Updated board, Created milestone |

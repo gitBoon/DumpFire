@@ -1598,6 +1598,18 @@ const TABLE: Record<string, Case | Case[]> = {
 			setup: (w) => void db.update(cardComments).set({ userId: w.viewer.id }).where(eq(cardComments.id, w.A.comment.id)).run()
 		})
 	],
+	// New with card 2283, and who may use it is who may on
+	// DELETE /api/cards/[id]/comments/[commentId] (decision 5): the PUT's three rows.
+	'DELETE /api/v1/comments/[commentId]': [
+		own('editor', ['outsider', 'viewer', 'owner'], (w) => `/api/v1/comments/${w.A.comment.id}`),
+		own('admin', ['outsider'], (w) => `/api/v1/comments/${w.formerComment.id}`, {
+			of: 'a comment whose author has lost the board'
+		}),
+		own('admin', ['viewer'], (w) => `/api/v1/comments/${w.A.comment.id}`, {
+			of: 'a comment whose author can now only view the board',
+			setup: (w) => void db.update(cardComments).set({ userId: w.viewer.id }).where(eq(cardComments.id, w.A.comment.id)).run()
+		})
+	],
 
 	'POST /api/v1/dependencies/bulk': [
 		edit((w) => json('/api/v1/dependencies/bulk', { links: [{ blocked: w.A.loose.id, blocker: w.A.card.id }] }), {

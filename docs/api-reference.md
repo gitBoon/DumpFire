@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.71
+version: 1.72
 status: As-Built
 date: 2026-10-20
 tags:
@@ -331,8 +331,8 @@ either.
 
 ### Changes on 2026-10-14
 
-The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. No operation is
-new; these answers and fields are:
+The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. One operation is
+new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fields are:
 
 - **A `413` carries `limitBytes`**, the limit as a number of bytes, beside a `message` that
   says the limit. It was `{ "message": "Payload Too Large" }` alone, which it still is for a
@@ -1052,6 +1052,20 @@ new; these answers and fields are:
   author. It wrote the comment again with a new `updatedAt`, which the web application shows
   as "(edited)", and recorded an edit nobody made. A caller who may not edit the comment is
   still refused `403` first, whatever text it sends (item 84).
+- **`DELETE /comments/:commentId` is new** (card 2283), where the route answered `405`. Who
+  may delete a comment is who may in the web application: its author while they can still
+  edit the board it is on, or an administrator; a board's owner may not delete a comment
+  somebody else wrote. No body; `200` `{ "success": true }`; `400` `Invalid comment ID`,
+  `404` `Comment not found`, `403` `No edit access to this board` and `403`
+  `You can only delete your own comments`, the web application's words. It logs
+  `api:comment_deleted`, `Deleted a comment on "<card>"`, or
+  `Deleted a comment by <author> on "<card>"` when the caller is not the author, never the
+  comment's text, and sends a live update. A delete made in the web application,
+  `DELETE /api/cards/{id}/comments/{commentId}`, now logs `comment_deleted` in the same words
+  and sends the same update; neither was recorded. **No webhook is sent for a delete**: there
+  is no `comment.deleted` event, so re-reading `GET /cards/:cardId/comments` is the only way
+  to learn that a comment has gone (item 85). See
+  [`DELETE /api/v1/comments/:commentId`](#delete-apiv1commentscommentid).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -1664,7 +1678,8 @@ API:
   card's board for an assignment (of someone already assigned too, with no entry and no
   mail) and a removal; `{ "type": "comment", "cardId": <the card> }` for a comment edited
   (card 2282; it was `{ "type": "card" }`), as for a comment added on either route, which
-  sent none, and for an "Unblocked" notice, beside its `{ "type": "card" }`: a card window
+  sent none, for a comment deleted on either route, which sent none either (card 2283), and
+  for an "Unblocked" notice, beside its `{ "type": "card" }`: a card window
   open on the card reads its comments again; `{ "type": "board" }` to the board, once, for an
   update that sent a field, beside the updates to the boards a `parentCardId` left and
   joined; and `{ "type": "board", "action": "created" }` to the board a new sub-board's
@@ -3314,6 +3329,25 @@ Text that is the comment's own once both are trimmed changes nothing (card 2284)
 written, `updatedAt` is kept, no `api:comment_edited` is logged and no live update is sent,
 and the answer is `200` with the comment as it is stored, outer spaces and all. The caller is
 checked first, so one who may not edit the comment is refused `403` whatever text it sends.
+
+#### `DELETE /api/v1/comments/:commentId`
+
+Delete a comment (card 2283; new on 2026-10-14, item 85). No body. Who may is who may edit
+it, and who may in the web application: the comment's author while they can still edit the
+board it is on, or an admin. A board's owner may not delete a comment somebody else wrote.
+Answers `200` `{ "success": true }`; `400` `Invalid comment ID`, `404` `Comment not found`,
+`403` `No edit access to this board` (a viewer, someone off the board, or the author once
+they have lost edit access) and `403` `You can only delete your own comments`. Nothing is
+deleted on a refusal.
+
+The delete logs `api:comment_deleted` to the activity feed, `Deleted a comment on "<card>"`,
+or `Deleted a comment by <author> on "<card>"` when the caller is not the author (an admin
+removing someone's words), and never the comment's text: the log is read by everyone on the
+board. It pushes a live board update, `{ "type": "comment", "cardId": <the card> }`, so a
+card window open on the card loses it. **No webhook is sent**: there is no
+`comment.deleted` event (nor `comment.edited`), so a receiver mirroring a card's comments
+learns that one has gone only by reading
+[`GET /api/v1/cards/:cardId/comments`](#get-apiv1cardscardidcomments) again.
 
 ### Webhooks
 

@@ -4,7 +4,7 @@ import { db } from '$lib/server/db';
 import { cardComments, cards, columns, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
-import { editComment } from '$lib/server/card-comments';
+import { deleteComment, editComment } from '$lib/server/card-comments';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -69,4 +69,25 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	const edited = writeAs(locals, (caller) => withAuthor(editComment(caller, { commentId }, body, { source: 'api' })));
 
 	return json(edited);
+};
+
+/**
+ * DELETE /api/v1/comments/:commentId — Delete a comment (card 2283).
+ *
+ * Who may is who may on DELETE /api/cards/[id]/comments/[commentId]: the
+ * comment's author while they can still edit the board it is on, or an
+ * admin; the board's owner is not let in for that. No body is read. Answers
+ * `{ success: true }`, and refuses in that route's words.
+ */
+export const DELETE: RequestHandler = async ({ params, locals }) => {
+	requireUser(locals.user);
+	const commentId = pathId(params.commentId, 'comment');
+
+	// One transaction, as the edit's: the comment read, the caller checked, the
+	// comment deleted and its `api:comment_deleted` entry written, after asking
+	// whether the key is still open and who its account is now (card 2253). The
+	// work is `deleteComment` in `$lib/server/card-comments`, which the session
+	// route shares; it tells the board, and sends no webhook.
+	writeAs(locals, (caller) => deleteComment(caller, { commentId }, null, { source: 'api' }));
+	return json({ success: true });
 };

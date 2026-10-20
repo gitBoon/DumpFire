@@ -99,7 +99,7 @@ const V1_JSON = '$lib/server/v1-json';
  * has lost some, fails. Adding operations to the document means changing it,
  * knowingly.
  */
-const OPERATIONS = 80;
+const OPERATIONS = 81;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -2634,9 +2634,10 @@ describe('what a route answers, against the schema the document gives for it', (
 		await ok('DELETE', `/api/v1/subtasks/${made.id}`);
 
 		expect(await ok('GET', `/api/v1/cards/${first.id}/comments`)).toHaveLength(1);
-		await ok('POST', `/api/v1/cards/${first.id}/comments`, { content: 'Said' });
+		const said = await ok('POST', `/api/v1/cards/${first.id}/comments`, { content: 'Said' });
 		await ok('GET', `/api/v1/comments/${comment.id}`);
 		await ok('PUT', `/api/v1/comments/${comment.id}`, { content: 'Said again' });
+		await ok('DELETE', `/api/v1/comments/${said.id}`);
 
 		expect(await ok('GET', `/api/v1/boards/${board.id}/labels`)).toHaveLength(1);
 		const urgent = await ok('POST', `/api/v1/boards/${board.id}/labels`, { name: 'Urgent' });

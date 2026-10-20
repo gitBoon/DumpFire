@@ -1509,6 +1509,8 @@ describe('every write handler asks who the caller is at the write (card 2253)', 
 			'src/routes/api/v1/cards/[cardId]/subtasks/+server.ts POST',
 			'src/routes/api/v1/cards/[cardId]/tokens/+server.ts POST',
 			'src/routes/api/v1/comments/[commentId]/+server.ts PUT',
+			// Card 2283: the v1 comment delete, new, keeping it from the start.
+			'src/routes/api/v1/comments/[commentId]/+server.ts DELETE',
 			'src/routes/api/v1/dependencies/bulk/+server.ts POST',
 			'src/routes/api/v1/milestones/+server.ts POST',
 			'src/routes/api/v1/milestones/[milestoneId]/+server.ts PATCH',

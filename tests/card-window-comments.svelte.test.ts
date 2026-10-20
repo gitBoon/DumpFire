@@ -513,6 +513,35 @@ describe('the card window re-reads its comments when told (card 2282, tests 14 t
 		expect(loading(target)).toBe(false);
 	});
 
+	// Card 2283: a delete sends the comment event an add and an edit send, so
+	// the window open on the card elsewhere loses the comment. The event as the
+	// server sends it for a delete (held in tests/activity-twins.test.ts),
+	// heard as To Do hears it.
+	it('loses a comment deleted elsewhere, and its count falls, told by the delete’s event as a page hears it', async () => {
+		const { props, target } = await drawWindow([comment(2, 'Posted to the wrong card'), comment(1, 'First')]);
+		const close = connectLiveRefresh(
+			() => {},
+			(event) => {
+				if (commentsChanged(event, 7)) props.commentsTold++;
+			}
+		);
+		const listeners: Record<string, (e: MessageEvent) => void> = {};
+		stream.listen!({ addEventListener: (name: string, run: (e: MessageEvent) => void) => (listeners[name] = run) } as unknown as EventSource);
+		expect(badge(target)).toBe('2');
+
+		listeners.update(new MessageEvent('update', { data: JSON.stringify({ type: 'comment', cardId: 7 }) }));
+		flushSync();
+		await pass(250);
+		expect(commentReads()).toBe(2);
+		reads[1]([comment(1, 'First')]);
+		await pass();
+		close();
+
+		expect(shown(target)).toEqual(['First']);
+		expect(badge(target)).toBe('1');
+		expect(loading(target)).toBe(false);
+	});
+
 	it('sends no re-read once the window has closed with one waiting', async () => {
 		const { props } = await drawWindow([comment(1, 'First')]);
 

@@ -1900,6 +1900,8 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			subtask_deleted: null,
 			comment_added: 'comment.added',
 			comment_edited: null,
+			// No `comment.deleted`: a new event would reach every webhook that asks for all (card 2283, decision 8).
+			comment_deleted: null,
 			assignee_added: null,
 			assignee_removed: null,
 			dependency_added: null,

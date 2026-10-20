@@ -13,7 +13,7 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
-			'**Changed on 2026-10-14 (version 1.2.0).** New answers and fields: (1) a 413 for a body over the size limit carries `limitBytes`, ' +
+			'**Changed on 2026-10-14 (version 1.2.0).** New answers and fields, and one new operation, (85): (1) a 413 for a body over the size limit carries `limitBytes`, ' +
 			'the limit as a number, beside its `message`; (2) a 413 for a body that declares more than the limit in Content-Length is answered ' +
 			'before the key is looked at, so a request with no key, or a wrong one, can be answered 413 where it was 401; (3) a request with no key ' +
 			'DumpFire accepts, a missing Authorization header included, is counted against the address it came from (an IPv6 address by its /64 network: (51)), 60 a minute, and the ' +
@@ -224,6 +224,9 @@ const spec = {
 			'(83) the same list answers userEmoji "👤" for an author with no emoji, as POST there and GET and PUT /api/v1/comments/{commentId} do, where it was null against the Comment schema, whose userEmoji is a required string. ' +
 			'(84) PUT /api/v1/comments/{commentId} with text that is the comment\'s own once both are trimmed writes nothing, keeps updatedAt, logs no api:comment_edited and sends no live update, and answers 200 with the comment as it is stored (with its author, as before): ' +
 			'it wrote the comment again with a new updatedAt, which the web application shows as "(edited)", and recorded an edit nobody made. A caller who may not edit the comment is still refused 403 first. ' +
+			'(85) DELETE /api/v1/comments/{commentId} is new, where the route answered 405: the comment\'s author while they can edit its board, or an administrator, as in the web application; no body; 200 {"success": true}; ' +
+			'400 Invalid comment ID, 404 Comment not found, 403 No edit access to this board and 403 You can only delete your own comments. It logs api:comment_deleted (a delete made in the web application now logs comment_deleted; neither was recorded) and sends a live board update. ' +
+			'No webhook is sent for it: re-reading the comment list is the only way to learn that a comment has gone. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -3689,6 +3692,46 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Comment not found' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			},
+			delete: {
+				tags: ['Comments'],
+				summary: 'Delete a comment',
+				description:
+					'Deletes the comment (new on 2026-10-14, change item 85). Only the comment\'s author or an admin may delete it, and the author only while they can still edit the board the comment is on, as for an edit; the board\'s owner may not delete a comment somebody else wrote. ' +
+					'No request body. Logs api:comment_deleted to the activity feed, its detail Deleted a comment on "<card>", or Deleted a comment by <author> on "<card>" when the caller is not the author; the comment\'s text is not recorded. Emits a live board update. ' +
+					'No webhook is sent: there is no comment.deleted event, so a receiver mirroring comments learns that one has gone only by reading GET /api/v1/cards/{cardId}/comments again.',
+				operationId: 'deleteComment',
+				parameters: [{ name: 'commentId', in: 'path', required: true, schema: { type: 'integer', minimum: 1 }, description: 'Comment ID: a whole number of 1 or more. Anything else is 400 Invalid comment ID.' }],
+				responses: {
+					'200': {
+						description: 'Deleted',
+						content: {
+							'application/json': {
+								schema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+								example: { success: true }
+							}
+						}
+					},
+					'400': {
+						description: 'commentId is not a whole number of 1 or more. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid comment ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description:
+							'No edit access to the board the comment is on, which its author is answered too once they have lost the board or can only view it (`No edit access to this board`). ' +
+							'Or not the comment author and not an admin, which is the example. Nothing was deleted.',
+						content: {
+							'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'You can only delete your own comments' } }
+						}
+					},
+					'404': {
+						description: 'There is no such comment',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Comment not found' } } }
+					},
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
 				}

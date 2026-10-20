@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.35
+version: 1.36
 status: As-Built
 date: 2026-10-20
 tags:
@@ -414,7 +414,7 @@ Configure email sending from the Admin panel. Test with a single click.
 
 DumpFire has a full REST API for automation:
 - **API keys** — generate and manage from your account
-- **80 operations** — boards, cards, subtasks, assignees, and more
+- **81 operations** — boards, cards, subtasks, assignees, and more
 - **Rate limited** — 60 requests/minute per key
 - **Every field checked** — a field the API cannot use is refused with a `400` that names it, before anything is written: a priority it does not know, a date not written `YYYY-MM-DD`, text where a number belongs
 - **A key sees what its user sees** — lists, dependencies and plans leave out, or show as "on a board you cannot open", what is on boards the key's user cannot open; a webhook's address and secret are given only to the board's owner and administrators

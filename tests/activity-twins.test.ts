@@ -48,6 +48,7 @@ import {
 import type { SessionUser } from '$lib/server/auth';
 import { ACTIONS, canonicalAction } from '$lib/server/logActivity';
 import { ACTIVITY_LABELS, activityLabel } from '$lib/utils/activity-labels';
+import { boardEvent, commentsChanged } from '$lib/board/sse';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type RecordedEffect } from './helpers/effects';
@@ -724,6 +725,32 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		told: { internal: [COMMENT_UPDATE], v1: [COMMENT_UPDATE] }
 	},
 	{
+		row: 11,
+		what: 'deleting a comment',
+		build: cardScene,
+		internal: (s) => api('DELETE', `/api/cards/${s.first.id}/comments/${s.comment.id}`, { user: s.owner }),
+		v1: (s) => api('DELETE', `/api/v1/comments/${s.comment.id}`, { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		// Recorded, in the same words in both trees, and the open card window
+		// told; no webhook, though the scene's takes every event: there is no
+		// `comment.deleted` (card 2283, decisions 6 to 8). Neither was done.
+		sources: { internal: ['comment_deleted ui'], v1: ['api:comment_deleted api'] },
+		entries: (() => {
+			const entry = {
+				boardId: 1,
+				cardId: 1,
+				userId: 1,
+				action: 'comment_deleted',
+				detail: 'Deleted a comment on "First"',
+				userName: 'owner',
+				userEmoji: '👤',
+				source: undefined
+			};
+			return { internal: [entry], v1: [entry] };
+		})(),
+		told: { internal: [COMMENT_UPDATE], v1: [COMMENT_UPDATE] }
+	},
+	{
 		row: 12,
 		what: "putting a label on a card (the page's toggle, against v1's add)",
 		build: () => labelScene(false),
@@ -1236,6 +1263,8 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			await ask('v1 comment edit, unchanged, not the author', api('PUT', `/api/v1/comments/${s.comment.id}`, { ...helper, body: asItWas }));
 			await ask('internal comment delete', api('DELETE', `${card}/comments/${helpers.id}`, viewer));
 			await ask('internal comment delete, not the author', api('DELETE', `${card}/comments/${s.comment.id}`, helper));
+			await ask('v1 comment delete', api('DELETE', `/api/v1/comments/${helpers.id}`, viewer));
+			await ask('v1 comment delete, not the author', api('DELETE', `/api/v1/comments/${s.comment.id}`, helper));
 			await ask('internal label', api('PUT', '/api/labels', { ...viewer, body: { cardId: s.first.id, labelId: 1 } }));
 			await ask('v1 label on', api('POST', `${v1Card}/labels`, { ...viewer, body: { labelId: 1 } }));
 			await ask('v1 label off', api('DELETE', `${v1Card}/labels`, { ...viewer, body: { labelId: 1 } }));
@@ -1268,6 +1297,9 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'v1 comment edit, unchanged, not the author': '403 You can only edit your own comments',
 			'internal comment delete': '403 No edit access to this board',
 			'internal comment delete, not the author': '403 You can only delete your own comments',
+			// The page's words, the v1 delete being new (card 2283, decision 4).
+			'v1 comment delete': '403 No edit access to this board',
+			'v1 comment delete, not the author': '403 You can only delete your own comments',
 			'internal label': '403 No edit access to this board',
 			'v1 label on': '403 No edit access to this board',
 			'v1 label off': '403 No edit access to this board',
@@ -1318,6 +1350,8 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		await ask('v1 comment edit, empty', api('PUT', `/api/v1/comments/${s.comment.id}`, { ...as, body: { content: '' } }));
 		await ask('internal comment delete, no comment', api('DELETE', `${card}/comments/999`, as));
 		await ask('internal comment delete, on another card', api('DELETE', `/api/cards/${other.id}/comments/${s.comment.id}`, as));
+		await ask('v1 comment delete, no comment', api('DELETE', '/api/v1/comments/999', as));
+		await ask('v1 comment delete, an id that is none', api('DELETE', '/api/v1/comments/abc', as));
 		await ask('internal label, no cardId', api('PUT', '/api/labels', { ...as, body: { labelId: 1 } }));
 		await ask('internal label, no card', api('PUT', '/api/labels', { ...as, body: { cardId: 999, labelId: 1 } }));
 		await ask('v1 label on, no card', api('POST', '/api/v1/cards/999/labels', { ...as, body: { labelId: 1 } }));
@@ -1366,6 +1400,8 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'v1 comment edit, empty': '400 Comment cannot be empty',
 			'internal comment delete, no comment': '404 Comment not found',
 			'internal comment delete, on another card': '404 Comment not found',
+			'v1 comment delete, no comment': '404 Comment not found',
+			'v1 comment delete, an id that is none': '400 Invalid comment ID',
 			'internal label, no cardId': '400 Invalid card ID',
 			'internal label, no card': '404 Card not found',
 			'v1 label on, no card': '404 Card not found',
@@ -2095,12 +2131,13 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		});
 	});
 
-	it('has a case for each pair moved so far that writes in both trees, rows 1 to 7, 9, 10, 12, 14 to 18, 21, 22, 24 to 27, 29 and 30', () => {
-		// Rows 8, 13, 19 and 23 are reads, row 11 (a comment deleted) and row 28
-		// (the column reorder) the page's alone, and row 20 (the token writes)
-		// v1's alone: the cases above hold their words and what they do.
+	it('has a case for each pair moved so far that writes in both trees, rows 1 to 7, 9 to 12, 14 to 18, 21, 22, 24 to 27, 29 and 30', () => {
+		// Rows 8, 13, 19 and 23 are reads, row 28 (the column reorder) the
+		// page's alone, and row 20 (the token writes) v1's alone: the cases
+		// above hold their words and what they do. Row 11 (a comment deleted)
+		// was the page's alone until v1 had a delete (card 2283).
 		expect([...new Set(SERVICE_TWINS.map((twin) => twin.row))]).toEqual([
-			1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 14, 15, 16, 17, 18, 21, 22, 24, 25, 26, 27, 29, 30
+			1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 14, 15, 16, 17, 18, 21, 22, 24, 25, 26, 27, 29, 30
 		]);
 	});
 
@@ -2212,6 +2249,9 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	],
 	'src/routes/api/cards/[id]/comments/[commentId]/+server.ts DELETE': [
 		{ service: 'deleteComment', args: [code('caller'), { cardId: code('cardId'), commentId: code('commentId') }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/v1/comments/[commentId]/+server.ts DELETE': [
+		{ service: 'deleteComment', args: [code('caller'), { commentId: code('commentId') }, null, { source: 'api' }] }
 	],
 	'src/routes/api/labels/+server.ts PUT': [{ service: 'toggleCardLabel', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
 	'src/routes/api/v1/cards/[cardId]/labels/+server.ts POST': [
@@ -2871,6 +2911,49 @@ describe('the details', () => {
 		expect(res.status).toBe(201);
 		expect(entries()).toMatchObject([{ boardId: res.body.id, action: expect.stringMatching(/board_created$/) }]);
 		expect(told).toEqual([]);
+	});
+
+	// An administrator removing someone's words is named with whose they were,
+	// and the text is never recorded (card 2283, decision 6).
+	it.each([
+		['the internal route', (s: Scene) => `/api/cards/${s.first.id}/comments/${s.comment.id}`],
+		['the v1 route', (s: Scene) => `/api/v1/comments/${s.comment.id}`]
+	])("an administrator deleting the owner's comment, through %s, names its author and not its text", async (_tree, path) => {
+		const s = scene();
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+
+		const { res, told } = await recorded(() => api('DELETE', path(s), { user: admin }));
+
+		expect(res.status).toBe(200);
+		expect(db.select().from(cardComments).all()).toEqual([]);
+		expect(entries()).toMatchObject([
+			{ cardId: s.first.id, userName: 'admin', action: expect.stringMatching(/comment_deleted$/), detail: 'Deleted a comment by owner on "First"' }
+		]);
+		expect(told).toEqual([`event update {"type":"comment","cardId":${s.first.id}} on board ${s.A.board.id}`]);
+	});
+
+	// What the open card window does with it is held in
+	// tests/card-window-comments.svelte.test.ts; here, that the delete's event
+	// is one the window open on that card is told of, and no other card's.
+	it.each([
+		['the internal route', (s: Scene) => `/api/cards/${s.first.id}/comments/${s.comment.id}`],
+		['the v1 route', (s: Scene) => `/api/v1/comments/${s.comment.id}`]
+	])("a comment deleted, through %s, tells the window open on its card, and no other card's", async (_tree, path) => {
+		const s = scene();
+		const other = makeCard(s.A.cols['To Do'], { title: 'Other' });
+		const sent = effects();
+		try {
+			const res = await api('DELETE', path(s), { user: s.owner });
+			await sent.settle();
+			expect(res.status).toBe(200);
+			// Read as a page reads it off the stream: the data sent as JSON.
+			const updates = sent.events.filter((e) => e.event === 'update').map((e) => boardEvent(JSON.stringify(e.data)));
+			expect(updates).not.toEqual([]);
+			expect(updates.some((event) => commentsChanged(event, s.first.id))).toBe(true);
+			expect(updates.some((event) => commentsChanged(event, other.id))).toBe(false);
+		} finally {
+			sent.restore();
+		}
 	});
 });
 

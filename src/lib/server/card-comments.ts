@@ -10,8 +10,9 @@
  * `writeAs`, its answer and, through its options, what it does differently
  * today: its words for a refusal (`says`), the words of its entry and the
  * order it records and mails in (R2 of
- * `docs/planning/card-2012-service-layer-and-pages.md`). The comment delete is
- * the page's alone; it is here so that the module holds every comment write.
+ * `docs/planning/card-2012-service-layer-and-pages.md`). The comment delete
+ * was the page's alone; v1 has had it since card 2283, through the same
+ * function.
  *
  * Each write has the one shape of a service (`ServiceOptions` in
  * `write-as.ts`): `inWrite()` first, then `requireUser(caller)` (401), the
@@ -239,19 +240,44 @@ export function editComment(
 }
 
 /**
- * Delete a comment (`DELETE /api/cards/:id/comments/:commentId`; v1 has no
- * comment delete). Its author's or an administrator's, on a board the caller
- * can still edit, and on the card in the path. Nothing is recorded and nobody
- * told (found nearby F2, its own card). There is no body.
+ * Delete a comment (`DELETE /api/cards/:id/comments/:commentId` with
+ * `at.cardId`, `DELETE /api/v1/comments/:commentId` without). Its author's or
+ * an administrator's, on a board the caller can still edit, and with
+ * `at.cardId` on that card. There is no body.
+ *
+ * The delete is recorded, `comment_deleted`, `Deleted a comment on "<card>"`,
+ * or `Deleted a comment by <author> on "<card>"` when the caller is not its
+ * author (an administrator removing someone's words), and never with its
+ * text: the log is read by everyone on the board, and a comment deleted
+ * because something was pasted by mistake must not live on there. Then the
+ * live event `{ type: 'comment', cardId }`, so that a card window open on
+ * the card loses it. Neither was done (card 2283). The entry fires no
+ * webhook: `comment_deleted` is not in `ACTION_TO_EVENT` (decision 8).
  */
 export function deleteComment(
 	caller: SessionUser | null,
-	at: { cardId: number; commentId: number },
+	at: { commentId: number; cardId?: number },
 	body: null,
 	opts: ServiceOptions
 ): void {
 	inWrite();
 	const user = requireUser(caller);
-	requireOwnComment(user, at.commentId, at.cardId, 'delete');
+	const { comment, card, boardId } = requireOwnComment(user, at.commentId, at.cardId, 'delete');
 	db.delete(cardComments).where(eq(cardComments.id, at.commentId)).run();
+
+	let by = '';
+	if (comment.userId !== user.id) {
+		const author = db.select({ username: users.username }).from(users).where(eq(users.id, comment.userId)).get();
+		by = ` by ${author?.username ?? 'Unknown'}`;
+	}
+	logActivity({
+		boardId,
+		cardId: comment.cardId,
+		action: ACTIONS.commentDeleted,
+		detail: `Deleted a comment${by} on "${card.title}"`,
+		source: opts.source,
+		...actorOf(user)
+	});
+
+	emit(boardId, 'update', commentEvent(comment.cardId));
 }

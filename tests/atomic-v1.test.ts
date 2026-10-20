@@ -1227,6 +1227,62 @@ describe('PUT /api/v1/comments/:commentId', () => {
 	});
 });
 
+describe('DELETE /api/v1/comments/:commentId', () => {
+	const withComment = () => {
+		const s = scene();
+		const comment = makeComment(s.first, s.owner, 'Posted to the wrong card');
+		return { ...s, comment };
+	};
+
+	const remove = (user: SessionUser | null, comment: number | string) => () => api('DELETE', `/api/v1/comments/${comment}`, { user });
+
+	const stored = () => db.select({ id: cardComments.id }).from(cardComments).all();
+
+	// New (card 2283): the page's delete, which recorded nothing, through v1
+	// too, and both now recording it and telling the open card window.
+	it('deletes the comment and writes its activity entry, or neither', async () => {
+		const run = await eachWriteInTurn({
+			build: withComment,
+			request: ({ owner, comment }) => remove(owner, comment.id)(),
+			afterSuccess: ({ owner, A, first }, res: ApiResult) => {
+				expect(res.status).toBe(200);
+				expect(res.body).toEqual({ success: true });
+				expect(stored()).toEqual([]);
+				expect(entries()).toEqual([
+					{
+						boardId: A.board.id,
+						cardId: first.id,
+						userId: owner.id,
+						action: 'api:comment_deleted',
+						detail: 'Deleted a comment on "First"',
+						source: 'api'
+					}
+				]);
+			}
+		});
+
+		expect(shape(run.writes)).toEqual(['delete from card_comments', 'insert into activity_log']);
+		// The open card window's event, and no webhook, though the scene's takes every event.
+		expect(run.effects.map(name)).toEqual(['event update (comment) on board 1']);
+		expect(run.effects.at(-1)).toMatchObject({ kind: 'event', data: { type: 'comment', cardId: 1 } });
+	});
+
+	it('answers in the words the page gives, and deletes nothing it refuses', async () => {
+		const s = withComment();
+
+		await expectRefused(remove(null, s.comment.id), 401);
+		expect((await expectRefused(remove(s.owner, 'abc'), 400)).body.message).toBe('Invalid comment ID');
+		expect((await expectRefused(remove(s.owner, 99999), 404)).body.message).toBe('Comment not found');
+		expect((await expectRefused(remove(s.viewer, s.comment.id), 403)).body.message).toBe('No edit access to this board');
+		const editor = makeUser({ username: 'editor' });
+		addBoardMember(s.A.board, editor, 'editor');
+		expect((await expectRefused(remove(editor, s.comment.id), 403)).body.message).toBe('You can only delete your own comments');
+		await expectRefused(remove(s.outsider, s.comment.id), 403);
+		expect(stored()).toEqual([{ id: s.comment.id }]);
+		expect(entries()).toEqual([]);
+	});
+});
+
 // ─── Milestones ─────────────────────────────────────────────────────────────
 
 describe('POST /api/v1/milestones', () => {
@@ -1417,6 +1473,13 @@ describe('each of these reads what it checks inside the transaction that writes'
 			prepare: (s) => void makeComment(s.first, s.owner, 'Original'),
 			// The only comment there is, so it is comment 1.
 			request: (s) => api('PUT', '/api/v1/comments/1', { user: s.owner, body: { content: 'Edited' } })
+		},
+		{
+			route: 'DELETE /api/v1/comments/:commentId',
+			table: 'card_comments',
+			status: 200,
+			prepare: (s) => void makeComment(s.first, s.owner, 'Original'),
+			request: (s) => api('DELETE', '/api/v1/comments/1', { user: s.owner })
 		},
 		{
 			route: 'POST /api/v1/milestones',
