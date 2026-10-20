@@ -56,6 +56,7 @@ export const ACTIONS = {
 	subtaskDeleted: 'subtask_deleted',
 	commentAdded: 'comment_added',
 	commentEdited: 'comment_edited',
+	commentDeleted: 'comment_deleted',
 	assigneeAdded: 'assignee_added',
 	assigneeRemoved: 'assignee_removed',
 	dependencyAdded: 'dependency_added',

@@ -41,6 +41,7 @@ export const ACTIVITY_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	subtask_toggled: 'Updated subtask',
 	comment_added: 'Added comment',
 	comment_edited: 'Edited comment',
+	comment_deleted: 'Deleted comment',
 	assignee_added: 'Assigned user',
 	assignee_removed: 'Unassigned user',
 	dependency_added: 'Added dependency',

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.56
+version: 1.57
 status: As-Built
 date: 2026-10-20
 tags:
@@ -2497,7 +2497,7 @@ until October 2026.
 | Create/edit/archive/restore cards and subtasks | ✅ | ✅ | ❌ | ✅ |
 | Move and reorder cards | ✅ | ✅ | ❌ | ✅ |
 | Add, edit, reorder and delete columns | ✅ | ✅ | ❌ | ✅ |
-| Comment, and edit or delete your own comment | ✅ | ✅ | ❌ | ✅ |
+| Comment, and edit or delete your own comment (an owner may not edit or delete another's; an admin may edit or delete any; by either API tree, the v1 delete since card 2283) | ✅ | ✅ | ❌ | ✅ |
 | Create a card category or template on the board | ✅ | ✅ | ❌ | ✅ |
 | Create a webhook, change its events, switch it off, and delete it | ✅ | ✅ | ❌ | ✅ |
 | Change a webhook's address or secret, or switch it on (since card 2154: an editor who sends `url` or `secret` at all, or `active: true` for one that is off, is `403`) | ✅ | ❌ | ❌ | ✅ |
@@ -2667,10 +2667,10 @@ Rules that are not a plain board lookup:
   goal across boards keeps its cards. Migration 0057 took out those already in that state.
 - **Being assigned or having commented does not outlive board access.** `/api/my-tasks`
   omits cards on boards the caller can no longer open, and a former member cannot edit
-  comments they wrote while they had access, by either API tree
-  (`PUT /api/v1/comments/:commentId` asks for edit access to the board as well as
-  authorship, which is what posting a comment asks for and what the session route
-  asks). Nor can they delete a card template they saved on that board, which asks for
+  or delete comments they wrote while they had access, by either API tree
+  (`PUT /api/v1/comments/:commentId`, and `DELETE` there, new with card 2283, ask for
+  edit access to the board as well as authorship, which is what posting a comment asks
+  for and what the session routes ask). Nor can they delete a card template they saved on that board, which asks for
   edit access as saving one there does; one saved on no board has no board to ask about
   and stays its maker's. Edit access and not view access: a member who has been made a
   viewer can read their comments and templates and can change neither. Nor do their own

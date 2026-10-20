@@ -75,6 +75,7 @@ import {
 	boardCategories,
 	boardMembers,
 	boards,
+	cardComments,
 	cardLabels,
 	cardTemplates,
 	categories,
@@ -2206,6 +2207,8 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 
 	/** The deletes, which have no body to hold, in an order each can run in: the archive and then the permanent delete last. */
 	const UNHELD = (s: Scene): string[] => [
+		// New with card 2283.
+		`/api/v1/comments/${s.comment.id}`,
 		`/api/v1/tokens/${s.entry.id}`,
 		`/api/v1/subtasks/${s.subtask.id}`,
 		`/api/v1/milestones/${s.milestone.id}`,
@@ -2249,7 +2252,9 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 		await sent.settle();
 
 		expect(db.select().from(tokenUsage).all()).toEqual([]);
-		// An archive is `card_archived`, which fires none.
+		expect(db.select().from(cardComments).all()).toEqual([]);
+		// An archive is `card_archived`, which fires none, and a comment deleted
+		// is `comment_deleted`, which fires none either (card 2283).
 		expect(sent.webhooks.map((w) => w.event)).toEqual(['card.deleted']);
 	});
 
@@ -2282,6 +2287,8 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 			['POST', `/api/v1/cards/${s.a.id}/subtasks`, 403, { message: CARD }],
 			['POST', `/api/v1/cards/${s.a.id}/tokens`, 403, { message: `No edit access to the board holding card #${s.a.id}` }],
 			['PUT', `/api/v1/comments/${s.comment.id}`, 403, { message: 'No edit access to this board' }],
+			// The board is asked about before whose comment it is (card 2283).
+			['DELETE', `/api/v1/comments/${s.comment.id}`, 403, { message: 'No edit access to this board' }],
 			['POST', '/api/v1/milestones', 403, { message: 'No edit access to that board' }],
 			['PATCH', `/api/v1/milestones/${s.milestone.id}`, 403, { message: MILESTONE }],
 			['DELETE', `/api/v1/milestones/${s.milestone.id}`, 403, { message: MILESTONE }],

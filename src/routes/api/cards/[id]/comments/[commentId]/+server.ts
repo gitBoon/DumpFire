@@ -39,7 +39,9 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// The comment read, the caller checked and the comment deleted in one
 	// transaction that asks first whether the session is still open, and who
 	// its account is now (card 2253). The check and the delete were two steps
-	// with no transaction around them.
+	// with no transaction around them. The `comment_deleted` entry and the
+	// board's live update are those `DELETE /api/v1/comments/{id}` writes and
+	// sends (card 2283): a delete had neither.
 	writeAs(locals, (caller) => deleteComment(caller, { cardId, commentId }, null, { source: 'ui' }));
 	return json({ success: true });
 };

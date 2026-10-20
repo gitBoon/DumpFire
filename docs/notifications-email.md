@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.27
+version: 1.28
 status: As-Built
 date: 2026-10-20
 tags:
@@ -988,7 +988,7 @@ flowchart LR
 | Event | Payload | Trigger |
 |-------|---------|---------|
 | `update` | `{type: 'card'}` | Card updated, moved, archived, restored or deleted. A creation carries `action: 'created'`, `cardTitle`, `userName` and `userEmoji`, an accepted request's card among them (card 2108). Someone assigned to a card (also when they already were) or taken off it, on a page or through the API (card 2143). Also sent, beside the comment event below, to the board of a card an "Unblocked" notice is written on |
-| `update` | `{type: 'comment', cardId}` | A comment added or edited on the card, on a page or through the API, sent last, once the comment, its entry and its mail are queued (card 2282; an edit sent `{type: 'card'}` until then); and an "Unblocked" notice written on the card, which is a comment. Not a comment saved with its text unchanged, which sends nothing (card 2284). Every page re-reads on it as on any update; a card window open on that card (the board page, All Tasks, All To Do) also reads its comments again, 250 ms on so a burst is one read, without "Loading comments..." and keeping a comment being edited, so another person's comment shows without reopening the card. The window does the same after a reconnect or a return to the tab, which may have missed one. The plan page's window, which has no stream, does not |
+| `update` | `{type: 'comment', cardId}` | A comment added or edited on the card, on a page or through the API, sent last, once the comment, its entry and its mail are queued (card 2282; an edit sent `{type: 'card'}` until then); a comment deleted, on a page or through `DELETE /api/v1/comments/{id}`, once the row is gone and its `comment_deleted` entry written (card 2283; a delete sent nothing), so a window open on the card loses it; and an "Unblocked" notice written on the card, which is a comment. Not a comment saved with its text unchanged, which sends nothing (card 2284). Every page re-reads on it as on any update; a card window open on that card (the board page, All Tasks, All To Do) also reads its comments again, 250 ms on so a burst is one read, without "Loading comments..." and keeping a comment being edited, so another person's comment shows without reopening the card. The window does the same after a reconnect or a return to the tab, which may have missed one. The plan page's window, which has no stream, does not |
 | `update` | `{type: 'column'}` | Column added, renamed, reordered, deleted |
 | `update` | `{type: 'board'}` | The board updated: renamed, its emoji or dashboard grouping changed, or made public or private, on a page or through the API (card 2143); or put under a card or taken out from under one, which only a page can do (`PUT /api/boards/{id}` with `parentCardId`: `PUT /api/v1/boards/{id}` reads no `parentCardId`). Sent once to the board, and once to each board whose card it joined or left. A request that sent no field sends nothing |
 | `update` | `{type: 'label'}` | A label of the board made, renamed, recoloured or deleted, or put on or taken off one of its cards: on a page (`POST`, `PATCH`, `PUT` and `DELETE /api/labels`), or through the API (`POST /api/v1/boards/{id}/labels`, `PUT` and `DELETE /api/v1/labels/{id}`, `POST` and `DELETE /api/v1/cards/{id}/labels`) |
@@ -1626,6 +1626,12 @@ stateDiagram-v2
 | `card.completed` | `card_completed`: a card moved into a Complete column, **instead of** `card.moved`, or created in one (card 2134) |
 | `card.deleted` | `card_deleted`: a card deleted for good |
 | `comment.added` | `comment_added` |
+
+No other entry sends one. A comment edited (`comment_edited`) or deleted (`comment_deleted`,
+recorded since card 2283) sends no webhook: an empty `events` list means every event, so a new
+`comment.deleted` would start reaching existing receivers unannounced (card 2283, decision 8).
+A receiver mirroring a card's comments learns of an edit or a delete only by reading the
+card's comments again.
 
 The same event is sent whether the action was made in the web UI or through the API. The request is a `POST` made with `node:http` or `node:https` (card 2161; it was `fetch`), and carries the headers `X-DumpFire-Event` and `X-DumpFire-Signature` (`sha256=` and the HMAC-SHA256 of the body under the webhook's secret, or empty when no secret is set), with `Content-Type: application/json`, `Content-Length` (the body is sent whole, never chunked, as `fetch` sent it), `Accept: */*`, `User-Agent: DumpFire-Webhook/1.0` and `Connection: close`, and a body of this shape:
 
