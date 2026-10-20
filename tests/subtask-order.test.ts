@@ -176,7 +176,8 @@ describe('every reader of a card’s subtasks orders them by position, then id',
 
 	it('each reader orders by SUBTASK_ORDER, and none by position alone', () => {
 		const readers: [string, number][] = [
-			['src/routes/board/[id]/+page.server.ts', 1],
+			// The board page's load and GET /api/boards/:id/contents, through their one reader (card 2280).
+			['src/lib/server/board-contents.ts', 1],
 			['src/lib/server/cross-board-cards.ts', 1],
 			['src/routes/api/cards/[id]/context/+server.ts', 1],
 			// GET /api/subtasks and GET /api/v1/cards/:cardId/subtasks, through their one list (card 2012).
