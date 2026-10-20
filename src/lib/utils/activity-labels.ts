@@ -49,7 +49,13 @@ export const ACTIVITY_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	dependencies_bulk_added: 'Added dependencies',
 	board_created: 'Created board',
 	board_updated: 'Updated board',
-	milestone_created: 'Created milestone'
+	milestone_created: 'Created milestone',
+	milestone_updated: 'Updated milestone',
+	milestone_closed: 'Closed milestone',
+	milestone_reopened: 'Reopened milestone',
+	milestone_deleted: 'Deleted milestone',
+	milestone_card_added: 'Added card to milestone',
+	milestone_card_removed: 'Removed card from milestone'
 });
 
 /**

@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.31
+version: 1.32
 status: As-Built
 date: 2026-10-20
 tags:
@@ -453,7 +453,12 @@ drawn for that person:
   either way, as a withheld plan node keeps its id; a subtask is never given its id as if it
   were a card's number, as it once was. At most two mails are built, one of each kind.
 - **"Plan created"** is sent when cards are attached to an empty goal
-  (`POST /api/v1/milestones/{id}/cards/bulk`). The recipients are chosen as before and then
+  (`POST /api/v1/milestones/{id}/cards/bulk`), and by that operation alone (card 2289,
+  decision 11): a card put in a goal one at a time, by the plan page's Add cards, the card
+  window's picker, `POST /api/v1/milestones/{id}/cards` or `milestoneId` on
+  `PUT /api/v1/cards/{cardId}`, sends none, so the first click on a new goal does not mail
+  every administrator a "plan" of one card. The bulk attach is how a plan is laid down whole.
+  The recipients are chosen as before and then
   each is asked `canViewMilestone`: someone who cannot open the plan, such as a former member
   of its board or someone who cannot open every board of a goal across boards, is not mailed.
   The rest are mailed the plan from `getMilestoneSummary(milestoneId, recipient)`, as its page
@@ -994,6 +999,7 @@ flowchart LR
 | `update` | `{type: 'label'}` | A label of the board made, renamed, recoloured or deleted, or put on or taken off one of its cards: on a page (`POST`, `PATCH`, `PUT` and `DELETE /api/labels`), or through the API (`POST /api/v1/boards/{id}/labels`, `PUT` and `DELETE /api/v1/labels/{id}`, `POST` and `DELETE /api/v1/cards/{id}/labels`) |
 | `update` | `{type: 'category'}` | A category of the board made, changed or deleted: on a page (`POST /api/categories`, `PUT` and `DELETE /api/categories/{id}`), or through the API (`POST /api/v1/boards/{id}/categories`, `PUT` and `DELETE /api/v1/categories/{id}`). A shared category, of no board, tells no board |
 | `update` | `{type: 'subtask'}` | A subtask of one of the board's cards made, saved or deleted on a page (`POST /api/subtasks`, `PUT` and `DELETE /api/subtasks/{id}`). The same through the API sends `{type: 'card'}`. Not a save that changes nothing, on a page or through the API, which writes and sends nothing (card 2299) |
+| `update` | `{type: 'milestone'}` | A milestone changed (its name, description, target date or board), closed, reopened or deleted, on a page or through the API (card 2289): sent to each board its entries go on, its own board, or each board holding its cards for one across boards, and on a change of board the boards before and after. A delete is also sent to every board a released card is on, so an open board drops the goal's 🎯 chip without a reload. Not a change that changes nothing. A card put in a milestone or taken out sends `{type: 'card'}`, and only when something was written. Every page re-reads on it as on any update; the plan page has no stream |
 | `update` | `{type: 'board', action: 'created'}` | A sub-board was made under a card on this board, on a page or through `POST /api/v1/boards` (card 2143). Nothing is sent for a board made at the top level |
 | `update` | `{type: 'board', action: 'deleted'}` | The board was deleted, or was a sub-board deleted with a board, card or column |
 | `update` | `{type: 'board', action: 'sub_board_deleted'}` | A sub-board deleted on its own hung from a card on this board, which is still there |
@@ -1632,7 +1638,12 @@ recorded since card 2283) sends no webhook: an empty `events` list means every e
 `comment.deleted` would start reaching existing receivers unannounced (card 2283, decision 8).
 A receiver mirroring a card's comments learns of an edit or a delete only by reading the
 card's comments again. No subtask entry sends one either: an untick or an edit
-(`subtask_updated`, recorded since card 2299) is no more a webhook event than a tick is.
+(`subtask_updated`, recorded since card 2299) is no more a webhook event than a tick is. Nor
+does any goal entry (card 2289): `milestone_updated`, `milestone_closed`, `milestone_reopened`,
+`milestone_deleted`, `milestone_card_added` and `milestone_card_removed` have no event, for the
+same reason, and a new `milestone.*` event is its own card (2343). **Goal membership sends no
+`card.updated` on any route**; a receiver learns it by reading
+`GET /api/v1/milestones/{milestoneId}` or the audit log.
 
 The same event is sent whether the action was made in the web UI or through the API. The request is a `POST` made with `node:http` or `node:https` (card 2161; it was `fetch`), and carries the headers `X-DumpFire-Event` and `X-DumpFire-Signature` (`sha256=` and the HMAC-SHA256 of the body under the webhook's secret, or empty when no secret is set), with `Content-Type: application/json`, `Content-Length` (the body is sent whole, never chunked, as `fetch` sent it), `Accept: */*`, `User-Agent: DumpFire-Webhook/1.0` and `Connection: close`, and a body of this shape:
 
@@ -1661,7 +1672,7 @@ The same event is sent whether the action was made in the web UI or through the 
 | A card moved to another board | the board it left; the board it joined | `card.moved`, `card_moved_away`; `card.moved`, `card_moved_in` |
 | … into the other board's Complete column | as above, and the board it joined | as above, then `card.completed`, `card_completed` |
 | … out of Complete into the other board's open column | as above, and the board it joined | as above, then `card.moved`, `card_reopened` |
-| A card moved within its column (its position only), by a drag, the v1 move or the web application's card update | — | nothing (the card update sent `card.updated` until 2026-10-20, card 2288) |
+| A card moved within its column (its position only), by a drag, the v1 move or the web application's card update | — | nothing (the card update sent `card.updated` until 2026-10-14, the 1.2.0 release, card 2288) |
 
 A delivery for a move to another board carries that board's own entry: `"<title>" moved to another board (<from> → <to>)` on the board it left, `"<title>" moved from another board (<from> → <to>)` on the board it joined. The one on the board it left ends ` and out of milestone "<name>"` when the move took the card out of one of that board's milestones, or ` and out of a milestone of another board` for a third board's (card 2155). Neither names the other board (card 2181); the two columns are the route, one of them the other board's, as in each board's Activity. So a receiver is sent nothing a reader of its board cannot read there. Until 2026-10-19 a reopening and a move to another board sent nothing, and a receiver of `card.moved` missed them.
 
@@ -1683,7 +1694,8 @@ What is not sent:
 
 - **Archiving a card sends nothing.** It writes `card_archived`, which has no event. Nor does restoring one: `card_restored` has none, and a restore through `PUT /api/v1/cards/{cardId}` with no other field sends no `card.updated` either, since it writes `api:card_restored` and no `api:card_updated` (card 2108).
 - **A card update that changes nothing sends nothing** (card 2183). `PUT /api/cards/{id}` and `PUT /api/v1/cards/{cardId}` compare what is sent with what the card holds, and write no entry, so send no `card.updated`, when every field is as stored; one that changes some fields sends one `card.updated` whose `detail` names those alone. The card window sends a card's whole state back with every save, so every Save on an unchanged card sent a `card.updated` until 2026-10-15.
-- **A change of a card's position within its column sends nothing, on every route** (card 2288). A drag (`PUT /api/cards/reorder`) and `PUT /api/v1/cards/{cardId}/move` to the card's own column never sent anything for it. The web application's card update, `PUT /api/cards/{id}` with a `position` and no change of column, wrote `card_updated` "Updated fields: position" and so sent `card.updated`, until 2026-10-20; it now goes through the drag's path, writes the position alone and records nothing. Sent with other fields, it still sends one `card.updated`, whose `detail` no longer names `position`. No page sends a position on that route, so only a hand-made request saw it.
+- **A change of a card's position within its column sends nothing, on every route** (card 2288). A drag (`PUT /api/cards/reorder`) and `PUT /api/v1/cards/{cardId}/move` to the card's own column never sent anything for it. The web application's card update, `PUT /api/cards/{id}` with a `position` and no change of column, wrote `card_updated` "Updated fields: position" and so sent `card.updated`, until 2026-10-14 (the 1.2.0 release); it now goes through the drag's path, writes the position alone and records nothing. Sent with other fields, it still sends one `card.updated`, whose `detail` no longer names `position`. No page sends a position on that route, so only a hand-made request saw it.
+- **A card put in a milestone or taken out sends nothing, on every route** (card 2289). `PUT /api/v1/cards/{cardId}` with a `milestoneId` wrote `api:card_updated` "Updated fields: milestoneId" and so sent `card.updated`, until 2026-10-14 (the 1.2.0 release); it now writes `api:milestone_card_added` or `api:milestone_card_removed`, as the milestone routes (single and bulk) and the web application's picker and plan page do, and none of these has an event. So nothing is sent when `milestoneId` is the only change, or comes with only a restore (`archivedAt: null`, whose `api:card_restored` has no event either). Sent with other fields, it still sends one `card.updated`, whose `detail` no longer names `milestoneId`. A milestone changed, closed, reopened or deleted sends nothing either.
 - **A move out of an On Hold column sends the move's events alone** (card 2208). The move clears the card's on-hold note itself; the board page's drag out of On Hold sent a second request to clear it, which delivered a `card.updated` beside the `card.moved`, until 2026-10-15.
 - **A move into a Complete column sends no `card.moved`.** It sends `card.completed` instead, its entry being a completion (a move into another board's Complete column also sends each board its `card.moved`); a receiver that wants every column change asks for both events. A reopening is sent as `card.moved` (card 2278).
 - **No delivery names another board.** A move to another board is sent to each board as that board's own entry, which names no board (card 2181), and with the board's own `boardId`; the other board's name, and its id, are in neither. A webhook whose board a card left is not told where it went beyond the column in the route, and the joined board's webhooks are not told where it came from beyond its column.

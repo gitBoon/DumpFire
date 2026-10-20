@@ -235,6 +235,15 @@ const spec = {
 			'where it logged one api:dependencies_bulk_added with no card on one board. dependencies_bulk_added is no longer written; an audit-log filter on it finds older entries only, and one on dependency_added now finds the links of a batch too. ' +
 			'(89) the web application\'s card update (PUT /api/cards/{id}) no longer sends the card.updated webhook for a change of a card\'s position within its column, which a drag and PUT /api/v1/cards/{cardId}/move never sent: ' +
 			'it logged card_updated "Updated fields: position" and moved updatedAt. With other fields it still sends card.updated, its detail no longer naming position. Nothing PUT /api/v1/cards/{cardId} accepts or answers changes. ' +
+			'(90) goal changes are logged, where only a milestone made on a board was: PATCH /api/v1/milestones/{milestoneId} logs api:milestone_updated (naming the fields changed among name, description, targetDate and boardId), api:milestone_closed or api:milestone_reopened, ' +
+			'and DELETE /api/v1/milestones/{milestoneId} logs api:milestone_deleted with the count of each board\'s cards released, each with no card, on the milestone\'s board, or for one across boards on each board holding its cards (on a change of board, the boards before and after); ' +
+			'the milestone is named on a board as that board\'s readers knew it before the change (after it, on a board it joins), and as milestone #<id> where it is across boards. ' +
+			'Every operation that puts a card into a milestone or takes it out logs api:milestone_card_added or api:milestone_card_removed on the card\'s board with its id: POST and DELETE /api/v1/milestones/{milestoneId}/cards, ' +
+			'the bulk ones (one entry for each card attached or detached, none for a card skipped) and milestoneId on PUT /api/v1/cards/{cardId}, which logs these in place of naming milestoneId in api:card_updated, ' +
+			'so **card.updated is no longer sent when milestoneId is the only change**, or comes with only a restore (archivedAt null). A card moved from one milestone to another logs one api:milestone_card_added naming the milestone it left, and no api:milestone_card_removed for that one. ' +
+			'A change that changes nothing (every field as stored, or a card put into the milestone it is in) writes nothing, logs nothing and sends no live update, and answers 200 as before; a request that would be refused is still refused first. ' +
+			'No webhook is sent for any goal entry, and goal membership sends no card.updated on any route: read GET /api/v1/milestones/{milestoneId} or the audit log (a milestone.* webhook event is card 2343). ' +
+			'The plan-created mail is still sent by POST /api/v1/milestones/{milestoneId}/cards/bulk alone. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -3019,7 +3028,9 @@ const spec = {
 										description:
 											'The milestone to put the card in, or null to take it out of its milestone. Putting it in needs edit access to that milestone, and a milestone that belongs to one board takes only that board\'s cards; ' +
 											'an archived card is refused. Taking it out, or putting it in another milestone, which takes it out of this one, needs edit access to the milestone it is in. The milestone it is already in, sent back, changes nothing. ' +
-											'With archivedAt null in the same body, the card is restored first.'
+											'With archivedAt null in the same body, the card is restored first. ' +
+											'A change logs `api:milestone_card_added` or `api:milestone_card_removed`, as the milestone operations do, and is not named in `api:card_updated`: ' +
+											'so `card.updated` is not sent when milestoneId is the only change (until 2026-10-14 it logged "Updated fields: milestoneId" and sent `card.updated`).'
 									},
 									summary: { type: ['string', 'null'], maxLength: 200, description: 'Reporting field: the card in plain English. null clears it.' },
 									theme: {
@@ -5056,7 +5067,7 @@ const spec = {
 								properties: {
 									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'Webhook delivery URL: an http or https address' },
 									secret: { type: 'string', maxLength: 256, description: 'Shared secret for HMAC verification' },
-									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end. An empty list, or none, is every event.' }
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end. An empty list, or none, is every event. Goal membership sends no card.updated on any route; read GET /milestones/{milestoneId} or the audit log.' }
 								}
 							},
 							example: { url: 'https://example.com/webhook', secret: 'my-secret', events: ['card.created', 'card.moved'] }
@@ -5145,7 +5156,7 @@ const spec = {
 								properties: {
 									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'An http or https address' },
 									secret: { type: 'string', maxLength: 256 },
-									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added'] }, description: 'Each trimmed of spaces at either end. An empty list is every event.' },
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added'] }, description: 'Each trimmed of spaces at either end. An empty list is every event. Goal membership sends no card.updated on any route; read GET /milestones/{milestoneId} or the audit log.' },
 									active: { type: 'boolean' }
 								}
 							},
@@ -5575,7 +5586,11 @@ const spec = {
 					'one that spans boards by its creator and by an administrator.\n\n' +
 					'`status` closes a milestone and opens it again, and does nothing to its cards. `boardId` gives the milestone to a board, which needs edit access to that board, ' +
 					'or with null makes it span boards. Null is always accepted, and the cards in the milestone stay in it. A board is accepted only when every card in the milestone, archived ones included, ' +
-					'is on that board: a milestone of a board is opened by whoever can open that board, who would otherwise read the titles of cards of other boards. The milestone\'s own board sent back is no change.',
+					'is on that board: a milestone of a board is opened by whoever can open that board, who would otherwise read the titles of cards of other boards. The milestone\'s own board sent back is no change.\n\n' +
+					'**Logged.** A change logs `api:milestone_updated` naming the fields changed (name, description, targetDate, boardId), and a change of status `api:milestone_closed` or `api:milestone_reopened`, ' +
+					'each with no card, on the milestone\'s board, or for one across boards on each board holding its cards; a change of board logs on the boards before and after. ' +
+					'Each names the milestone as that board\'s readers knew it before the change (as it is after, on a board it joins), and one across boards as `milestone #<id>`. ' +
+					'A request whose every field is as stored writes nothing, logs nothing and sends no live update, and is answered 200 with the milestone as it is. No webhook is sent. Until 2026-10-14 nothing was logged.',
 				operationId: 'updateMilestone',
 				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
 				requestBody: {
@@ -5644,7 +5659,9 @@ const spec = {
 				summary: 'Delete a milestone',
 				description:
 					'Permanently deletes the milestone and keeps the work. Every card in it, archived cards included, is left with no milestone, and none is deleted or changed in any other way. ' +
-					'The answer says how many cards were released. The milestone goes and its cards are released together, or neither happens.',
+					'The answer says how many cards were released. The milestone goes and its cards are released together, or neither happens.\n\n' +
+					'It logs `api:milestone_deleted`, with no card, on the milestone\'s board, or for one across boards on each board holding its cards, saying how many of that board\'s cards were released, ' +
+					'and every board of a card released is sent a live update. No webhook is sent. Until 2026-10-14 nothing was logged.',
 				operationId: 'deleteMilestone',
 				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
 				responses: {
@@ -5692,7 +5709,9 @@ const spec = {
 					'Needs edit access to the card\'s board, and the right to change the milestone, and the right to change the milestone the card leaves, if it is in another: until 2026-10-14 it was moved whoever asked. ' +
 					'A milestone that belongs to a board takes cards of that board only. ' +
 					'An archived card is refused, `Card does not exist or is archived`, as the bulk operation refuses one: until 2026-10-14 it was put in.\n\n' +
-					'The same can be done by sending `milestoneId` when updating the card. For several cards at once use the bulk operation.',
+					'The same can be done by sending `milestoneId` when updating the card. For several cards at once use the bulk operation.\n\n' +
+					'It logs `api:milestone_card_added` on the card\'s board, with its id, naming the milestone it left if it was in another (no `api:milestone_card_removed` is logged for that one). ' +
+					'A card already in this milestone is answered 200 as it is, with nothing written, logged or sent; an archived one is still refused. No webhook is sent: goal membership sends no `card.updated` on any route.',
 				operationId: 'addCardToMilestone',
 				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
 				requestBody: {
@@ -5751,7 +5770,8 @@ const spec = {
 				description:
 					'Leaves one card with no milestone. The card is not changed in any other way. Needs the right to change this milestone, and edit access to the card\'s board.\n\n' +
 					'The card must be in this milestone: a card in another, or in none, is 404 `Card is not in this milestone`. Until 2026-10-14 a card in another milestone was taken out of that one, ' +
-					'and a card in none was answered as a success. The same rule holds for `milestoneId: null` on PUT /cards/{cardId}: taking a card out needs the right to change the milestone it is in.',
+					'and a card in none was answered as a success. The same rule holds for `milestoneId: null` on PUT /cards/{cardId}: taking a card out needs the right to change the milestone it is in.\n\n' +
+					'It logs `api:milestone_card_removed` on the card\'s board, with its id. No webhook is sent.',
 				operationId: 'removeCardFromMilestone',
 				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
 				requestBody: {
@@ -5813,7 +5833,8 @@ const spec = {
 					'A card that is in another milestone is moved, and the answer names each one that was. Moving it takes it out of that milestone, so it needs the right to change that one too: ' +
 					'a card in one the key\'s user cannot change is a reason in the 409, `No edit access to milestone #<id>, which holds card #<n>`. An id sent twice is counted once.\n\n' +
 					'When the batch puts the first cards into a milestone that had none, and email is set up, the people assigned to those cards and the administrators are told by email that a plan was created. ' +
-					'A failure to send it changes neither the cards nor the answer.',
+					'A failure to send it changes neither the cards nor the answer. This operation alone sends that mail: a card put in one at a time, here or in the web application, sends none.\n\n' +
+					'Each card put in logs `api:milestone_card_added` on its board, with its id, one moved naming the milestone it left; a card skipped logs nothing. No webhook is sent.',
 				operationId: 'addCardsToMilestone',
 				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
 				requestBody: {
@@ -5890,7 +5911,8 @@ const spec = {
 					'Needs the right to change the milestone, and edit access to the board of every card.\n\n' +
 					'**All or nothing.** Every card is checked before any is taken out. If one is refused none is taken out, and the answer is a 409 that lists every card at fault: ' +
 					'one that does not exist or is archived, and one on a board the key\'s user cannot edit.\n\n' +
-					'A card that is not in this milestone is not a fault: it is skipped and counted, and stays in whatever milestone it is in.',
+					'A card that is not in this milestone is not a fault: it is skipped and counted, and stays in whatever milestone it is in.\n\n' +
+					'Each card taken out logs `api:milestone_card_removed` on its board, with its id; a card skipped logs nothing. No webhook is sent.',
 				operationId: 'removeCardsFromMilestone',
 				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
 				requestBody: {

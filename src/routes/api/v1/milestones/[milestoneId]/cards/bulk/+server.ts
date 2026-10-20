@@ -4,7 +4,7 @@ import { db } from '$lib/server/db';
 import { cards, columns, milestones } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
 import { canEditBoard, getAccessibleBoardIds, type Actor } from '$lib/server/board-access';
-import { canViewMilestone, requireMilestone, MilestoneError } from '$lib/server/milestones';
+import { canViewMilestone, logCardInOrOut, requireMilestone, MilestoneError, type MilestoneRow } from '$lib/server/milestones';
 import { emit } from '$lib/server/events';
 import { getMilestoneSummary, WITHHELD_CARD_TITLE } from '$lib/server/planning';
 import { notifyPlanCreated, type PlanCreatedNotice } from '$lib/server/notifications';
@@ -116,6 +116,12 @@ function planNotice(milestoneId: number, name: string, viewer: Actor): PlanCreat
  * response names those explicitly so it is never a silent surprise. Moving it
  * takes it out of that goal, so the caller must be able to change that goal
  * too (R5); a card in one they cannot is listed under `problems`.
+ *
+ * Each card put in is recorded, `api:milestone_card_added` on its board with
+ * its id, in the transaction that writes it; a card skipped is not (card
+ * 2289, decision 13). One moved names the goal it left, and no entry is
+ * written for that goal. The plan-created mail is sent from here alone, when
+ * the goal held no card before and at least one was put in (decision 11).
  */
 export const POST: RequestHandler = async ({ params, request, url, locals }) => {
 	requireUser(locals.user);
@@ -151,26 +157,28 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 		};
 		// A card in another goal leaves it, which is R5's removal rule: the
 		// caller must be able to change that goal too, as on every route that
-		// takes a card out. It was moved whoever asked.
-		const goalsEditable = new Map<number, boolean>();
-		const mayLeave = (goalId: number) => {
-			if (!goalsEditable.has(goalId)) {
-				let may = true;
+		// takes a card out. It was moved whoever asked. The goal, when they
+		// may, for the card's entry; null when they may not.
+		const goalsLeft = new Map<number, MilestoneRow | null>();
+		const goalLeft = (goalId: number) => {
+			if (!goalsLeft.has(goalId)) {
+				let goal: MilestoneRow | null = null;
 				try {
-					requireMilestone(user, goalId, true);
+					goal = requireMilestone(user, goalId, true);
 				} catch (e) {
 					if (!(e instanceof MilestoneError)) throw e;
-					may = false;
 				}
-				goalsEditable.set(goalId, may);
+				goalsLeft.set(goalId, goal);
 			}
-			return goalsEditable.get(goalId)!;
+			return goalsLeft.get(goalId)!;
 		};
 
 		const problems: { cardId: number; reason: string }[] = [];
 		const toAttach: CardRow[] = [];
 		const alreadyIn: number[] = [];
 		const movedFromOtherGoal: { cardId: number; title: string; fromMilestoneId: number }[] = [];
+		/** The goal each card moved leaves, by card. */
+		const leaving = new Map<number, MilestoneRow>();
 
 		for (const id of cardIds) {
 			const card = loaded.get(id);
@@ -194,11 +202,13 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 				continue;
 			}
 			if (card.milestoneId !== null) {
-				if (!mayLeave(card.milestoneId)) {
+				const left = goalLeft(card.milestoneId);
+				if (!left) {
 					problems.push({ cardId: id, reason: `No edit access to milestone #${card.milestoneId}, which holds card #${id}` });
 					continue;
 				}
 				movedFromOtherGoal.push({ cardId: id, title: card.title, fromMilestoneId: card.milestoneId });
+				leaving.set(id, left);
 			}
 			toAttach.push(card);
 		}
@@ -216,6 +226,7 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 		const now = stamp();
 		for (const card of toAttach) {
 			db.update(cards).set({ milestoneId, updatedAt: now }).where(eq(cards.id, card.cardId)).run();
+			logCardInOrOut(user, 'api', card, milestone, true, leaving.get(card.cardId) ?? null);
 		}
 
 		const touched = new Set(toAttach.map((c) => c.boardId));
@@ -277,7 +288,9 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
  * DELETE /api/v1/milestones/:milestoneId/cards/bulk — take many cards out.
  *
  * Body: `{ "cardIds": [...] }`. Cards that are not in this milestone are
- * skipped rather than erroring. The cards themselves are untouched.
+ * skipped rather than erroring. The cards themselves are untouched. Each card
+ * taken out is recorded, `api:milestone_card_removed` on its board with its
+ * id; a card skipped is not (card 2289).
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -289,8 +302,9 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 	// account is now (card 2253).
 	const outcome = writeAs(locals, (caller) => {
 		const user = requireUser(caller);
+		let milestone: MilestoneRow;
 		try {
-			requireMilestone(user, milestoneId, true);
+			milestone = requireMilestone(user, milestoneId, true);
 		} catch (e) {
 			if (e instanceof MilestoneError) throw error(e.status, e.message);
 			throw e;
@@ -331,6 +345,7 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 		const now = stamp();
 		for (const card of toDetach) {
 			db.update(cards).set({ milestoneId: null, updatedAt: now }).where(eq(cards.id, card.cardId)).run();
+			logCardInOrOut(user, 'api', card, milestone, false);
 		}
 
 		const touched = new Set(toDetach.map((c) => c.boardId));

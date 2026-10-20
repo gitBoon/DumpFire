@@ -363,6 +363,41 @@ describe('PUT /api/v1/cards/:cardId: the milestone and an empty body (card 2183)
 		expectNothingDone(await put(`/api/v1/cards/${held.id}`, { milestoneId: hidden.id, title: 'Held' }), cardRow(held.id), before);
 	});
 
+	// Card 2289, decision 9: a card put in a milestone, or taken out, through
+	// the card update writes the goal's own entry, as every other route does,
+	// in place of naming `milestoneId` in `card_updated`; so `card.updated` is
+	// no longer sent (the board's webhook, made in `beforeEach`, takes every
+	// event) when the milestone is the only change.
+	it('records a milestone alone as api:milestone_card_added, with no api:card_updated and no card.updated', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Loose', updatedAt: STAMP });
+		const goal = makeMilestone({ board: A.board, name: 'Launch', createdBy: owner });
+
+		const res = await put(`/api/v1/cards/${card.id}`, { milestoneId: goal.id });
+
+		expect(res.status).toBe(200);
+		expect(res.body).toMatchObject({ id: card.id, milestoneId: goal.id });
+		expect(cardRow(card.id).milestoneId).toBe(goal.id);
+		expect(entries().map((e) => [e.action, e.cardId, e.detail])).toEqual([['api:milestone_card_added', card.id, 'Added "Loose" to milestone "Launch"']]);
+		expect(sent.webhooks).toEqual([]);
+		expect(sent.events.map((e) => ({ event: e.event, data: e.data }))).toEqual([{ event: 'update', data: { type: 'card' } }]);
+	});
+
+	it('records a milestone taken out with a title as api:milestone_card_removed and api:card_updated naming the title alone', async () => {
+		const card = fullCard();
+
+		const res = await put(`/api/v1/cards/${card.id}`, { milestoneId: null, title: 'Renamed' });
+
+		expect(res.status).toBe(200);
+		expect(cardRow(card.id)).toMatchObject({ milestoneId: null, title: 'Renamed' });
+		const detail = 'Updated fields: title on "Renamed"';
+		expect(entries().map((e) => [e.action, e.detail])).toEqual([
+			['api:milestone_card_removed', 'Removed "Renamed" from milestone "Current"'],
+			['api:card_updated', detail]
+		]);
+		expect(sent.webhooks.map((w) => [w.event, w.body.data.detail])).toEqual([['card.updated', detail]]);
+		expect(sent.events.map((e) => e.event)).toEqual(['update']);
+	});
+
 	it('still answers 400 No valid fields to update for {}', async () => {
 		const card = fullCard();
 		const before = snapshotDb();

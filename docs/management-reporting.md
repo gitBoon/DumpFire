@@ -1,7 +1,7 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.8
+version: 1.9
 status: As-Built
 date: 2026-10-20
 tags:
@@ -141,6 +141,17 @@ card. Since card 2291 a batch of links through the API writes one
 `dependency_added` per link, on the card that waits, and no longer
 `dependencies_bulk_added`, which stays listed for the rows already written; no
 count changes.
+
+A card put in a milestone or taken out is not work on the card either: since card
+2289 every route records it, as `milestone_card_added` or `milestone_card_removed`
+on the card, and neither is counted, in either spelling, as a link is not; it is
+planning. Until then `PUT /api/v1/cards/{cardId}` with a `milestoneId` recorded
+`api:card_updated` naming `milestoneId`, which counted, so whoever put a card in a
+goal that way is no longer credited with it. The card's `updatedAt` still moves when
+it goes in or out, so the card can still enter the window; only the credit to the
+person changes. A milestone's own entries
+(`milestone_updated`, `milestone_closed`, `milestone_reopened`, `milestone_deleted`)
+name no card and never count.
 
 A subtask edited is work on its card, as a subtask ticked is. Since card 2299 an
 untick and a change of a subtask's title, description, priority, colour or due

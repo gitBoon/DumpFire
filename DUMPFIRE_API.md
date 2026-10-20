@@ -269,7 +269,7 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. One oper
 - **The four dependency operations read their ids as ids**, `POST` and `DELETE` on `/cards/:cardId/dependencies` and `/subtasks/:subtaskId/dependencies`. An id in the path of `0`, `1.5` or `-1` is `400` `Invalid card ID` or `Invalid subtask ID`, where it was `404`, and so is `1e3`, which was read as the id 1000. An id in the body of `0`, `-1`, `1.5`, `''` or `false` is `400` `<field> must be an id`, where it was `404` `#0 not found`; `true`, which was read as card 1, and a list, which was read as the id in it, are `400` as well. Two ends sent, one of them no id, is answered `<field> must be an id`, where it was the refusal for sending two.
 - **A subtask's dependencies are recorded in the activity log**, as a card's are: `POST /subtasks/:subtaskId/dependencies` writes `api:dependency_added` on the board of the subtask's card, and `DELETE` writes `api:dependency_removed` on the board of the end that waits. They wrote none. See [Subtask Dependencies](#subtask-dependencies).
 - **A new comment is read as an edit is.** `POST /cards/:cardId/comments` answers `400` `content must be text` for content that is not text, where it was a `500` (and `null` was `Comment cannot be empty`), and `400` `content must be at most 50000 characters` for content over 50,000 characters once trimmed, where any length was stored. `PUT /comments/:commentId` already held an edit to 50,000. It looks for the card, and checks the caller, before it reads the content: a card that is not there is `404` and a key whose user may not edit its board `403`, whatever the content, where an empty or missing one was answered `400` `Comment cannot be empty` first.
-- **The activity report does not count a dependency added or removed as work on a card.** `GET /reports/activity` leaves out a card whose only activity in the window is a `dependency_added`, `dependency_removed` or `dependencies_bulk_added` entry, in either spelling, and a report on one user does not take a card to be theirs for one. The API's own entries for a dependency counted until this date, and the web application now writes them too. `dependencies_bulk_added` is written by older versions only (card 2291).
+- **The activity report does not count a dependency added or removed as work on a card.** `GET /reports/activity` leaves out a card whose only activity in the window is a `dependency_added`, `dependency_removed` or `dependencies_bulk_added` entry, in either spelling, and a report on one user does not take a card to be theirs for one. The API's own entries for a dependency counted until this date, and the web application now writes them too. `dependencies_bulk_added` is written by older versions only (card 2291). Nor does a card put in a milestone or taken out, `milestone_card_added` or `milestone_card_removed` (card 2289): planning, as a link is. The card's `updatedAt` still moves, so the card can still be in the window.
 - **A board member stored with a role other than `owner`, `editor` or `viewer` has a viewer's access.** The web application's sharing stored any text as a role until this date; a member stored as `admin` had an administrator's access to that board, by either API tree.
 - **Every id in a path is read as an id**, on every operation: one that is not a whole number of 1 or more written in digits (`1.5`, `abc`, `0`, `1e3`) is `400` `Invalid <thing> ID`. Some were read as another id (`1e3` as 1000) or as none, and answered `404` or `403`; `GET /cards/:cardId/comments` answered `404`. An id in a query string is read the same way: `columnId` on `GET /boards/:boardId/cards`, `boardId` on `GET /milestones` (`Invalid boardId`), `boardId`, `userId` and `cardId` on `GET /audit-log`, and each of `boardIds` on `GET /reports/activity`. One that was not an id matched nothing, or was left out.
 - **Fields are read by their type and range** on the operations that create or change a board, a board category, a card, a subtask or a milestone, that move a card, that assign and remove an assignee, that edit a comment, and that put a card into a milestone or take it out. A field of the wrong type, or one it may not hold, is `400` naming the field, where it was stored as sent or was a `500`. A value the row already holds, sent back unchanged, is accepted as it is, even one these rules would refuse.
@@ -357,6 +357,7 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. One oper
 - **Unticking or editing a subtask is recorded, and a save that changes nothing writes nothing** (card 2299), on `PUT /subtasks/:subtaskId`. An untick logs `api:subtask_updated`, `Reopened <subtask> (on <card>)`, and mails nobody; a change of `title`, `description`, `priority`, `colorTag` or `dueDate` logs `api:subtask_updated` naming the fields changed, `Updated <subtask> (on <card>): title, dueDate`, after the tick's or untick's entry when one request does both. A change of `position` alone is written and still not recorded. Neither an untick nor an edit was recorded, so `GET /audit-log` showed only ticks. A request whose every field is the value the subtask holds keeps it as it is, logs nothing and sends no live update, and is answered `200` with the subtask; it was written again and the board told. The web application's `PUT /api/subtasks/{id}` is the same, so a Save in the subtask window that changed nothing records nothing. `api:subtask_updated` is work on the card in `GET /reports/activity`, as `api:subtask_completed` is (item 87). See [Update a Subtask](#update-a-subtask).
 - **`POST /dependencies/bulk` records each link it creates** (card 2291), as `POST /cards/:cardId/dependencies` records one: an `api:dependency_added` entry on the board of the card that waits (a subtask's card), with that card's id, `#1559 now waits on #1686`. It wrote one `api:dependencies_bulk_added` entry for the whole batch, with no card, on the first board it touched alone, so a card's history never showed the links a batch made and the other boards' logs said nothing. A link skipped as already recorded writes none, and a batch that writes nothing tells no board, as before. **`dependencies_bulk_added` is no longer written**: `GET /audit-log?action=dependencies_bulk_added` finds older entries only, and `action=dependency_added` now finds the links of a batch too. Neither sends a webhook (item 88). See [Create Many Dependencies](#create-many-dependencies).
 - **The web application's card update no longer sends `card.updated` for a change of position within the card's column** (card 2288). `PUT /api/cards/{id}` with a `position` and no change of column wrote the card with a new `updatedAt`, logged `card_updated` "Updated fields: position" and so sent `card.updated` to the board's webhooks; a drag and `PUT /cards/:cardId/move` to the same column never did. It now goes through the drag's path: the position alone is written, nothing is logged and no webhook is sent. Sent with other fields, it still sends one `card.updated`, whose `detail` names those fields alone. That route takes no key and no page sends it a position, so only a request made by hand from a signed-in browser saw the delivery. Nothing `PUT /cards/:cardId` accepts or answers changes (item 89).
+- **Goal changes are recorded, and goal membership sends no `card.updated`** (card 2289). `PATCH /milestones/:milestoneId` logs `api:milestone_updated` (`Updated milestone "Launch": name, targetDate`, naming the fields changed among `name`, `description`, `targetDate` and `boardId`), and a change of `status` `api:milestone_closed` or `api:milestone_reopened`; `DELETE` logs `api:milestone_deleted` (`Deleted milestone "Launch"; 2 cards on this board released`). Each has no card, and goes on the milestone's board, or for one across boards on each board holding its cards; a change of board goes on the boards before and after. A milestone is named as each board's readers knew it before the change (as it is after, on a board it joins), and one across boards as `milestone #<id>`, since a reader of one of its boards may not be able to open it. Every operation that puts a card in or takes it out logs `api:milestone_card_added` (`Added "First" to milestone "Launch"`, with `(from milestone "Pilot")` when it left another) or `api:milestone_card_removed` on the card's board, with its id: `POST` and `DELETE /milestones/:milestoneId/cards`, the bulk pair (one entry per card attached or detached, none for a card skipped), and **`milestoneId` on `PUT /cards/:cardId`, which logs these in place of naming `milestoneId` in `api:card_updated`, so `card.updated` is no longer sent when `milestoneId` is the only change**. A card moved from one milestone to another logs one `api:milestone_card_added` naming the milestone it left, and no `api:milestone_card_removed` for that one. A change that changes nothing, every field as stored or a card put into the milestone it is in, writes, logs and tells nothing and answers `200` as before, after every refusal. No webhook is sent for any goal entry: read `GET /milestones/{milestoneId}` or the audit log (a `milestone.*` event is card 2343). The two card entries are not work on the card in `GET /reports/activity`. The plan-created mail is still sent by the bulk attach alone (item 90). See [Milestones](#milestones).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but reach the keys every caller uses:
 
@@ -912,6 +913,10 @@ card is refused with `400` `Card does not exist or is archived`. Taking a card o
 `null`, or putting it in another milestone, needs edit access to the milestone it is in,
 as putting it in did (`403` `No edit access to this milestone`). `archivedAt: null` sent
 with a `milestoneId` restores the card first. See [Attach and Detach Cards](#attach-and-detach-cards).
+A changed `milestoneId` logs `api:milestone_card_added` or `api:milestone_card_removed`, as
+the milestone routes do, and is not named in `api:card_updated`: a milestone alone sends no
+`card.updated` webhook. Until 2026-10-14 it was logged as "Updated fields: milestoneId" and
+sent `card.updated` (card 2289).
 
 A restore is recorded as one: `archivedAt: null` on an archived card writes
 `api:card_restored`, with the card's title, as restoring it in the web application writes
@@ -1609,6 +1614,25 @@ milestone:
 { "success": true, "cardsReleased": 9 }
 ```
 
+**What is recorded** (card 2289). A `PATCH` logs `api:milestone_updated`, naming the fields
+changed among `name`, `description`, `targetDate` and `boardId` (`Updated milestone "Launch":
+name, targetDate`), and a change of `status` `api:milestone_closed` or
+`api:milestone_reopened` (`Closed milestone "Launch"`). A `DELETE` logs
+`api:milestone_deleted`, `Deleted milestone "Launch"; 2 cards on this board released` ("no
+cards" when the board had none). Each has no card. It goes on the milestone's board, or for a
+goal across boards on each board holding one of its cards, archived ones included (none for one
+with no cards); a change of board goes on the boards before and after it. On each board the
+milestone is named as that board's readers knew it: by its name before the change on a board it
+stays on or leaves, by its name after on a board it joins, and as `milestone #<id>` where it is
+across boards, since a reader of one of its boards may not be able to open it (card 2257). A
+rename on its own board reads `Updated milestone "Old name": name`. Each of those boards is sent
+a live update (`{ type: 'milestone' }`), and a delete every board of a card it released, so an
+open board drops the goal's chip. No webhook is sent.
+
+A `PATCH` whose every field is as stored writes nothing, logs nothing and sends no live update,
+and answers `200` with the milestone as it is; `{}` is still `400` `No valid fields to update`,
+and a request that would be refused is refused first.
+
 #### Attach and Detach Cards
 
 ```http
@@ -1636,6 +1660,16 @@ milestone takes it out of the one it is in, so the `POST` above, `milestoneId` o
 `DELETE` takes a card out only of the milestone it names: a card that is not in it is `404`
 `Card is not in this milestone`. Until 2026-10-14 it took the card out of whichever
 milestone it was in.
+
+Every route that puts a card in or takes it out logs it on the card's board, with its id
+(card 2289): `api:milestone_card_added`, `Added "First" to milestone "Launch"`, or
+`api:milestone_card_removed`, `Removed "First" from milestone "Launch"`, the milestone named
+by the rule above. A card moved from another milestone reads `… (from milestone "Pilot")`, and
+no `api:milestone_card_removed` is logged for the one it left. These two, the `POST`, the
+`DELETE`, `milestoneId` on `PUT /cards/:cardId` and the batch below, are the same entry. A card
+put into the milestone it is already in is answered `200` as it is, with nothing written,
+logged or sent, and an archived card already in it is still `400`. **Goal membership sends no
+`card.updated` on any route**; read `GET /milestones/{milestoneId}` or the audit log.
 
 #### Export a Plan as PDF
 
@@ -1857,6 +1891,17 @@ entry of `cardIds` is a whole number of 1 or more: one that is not, `null` among
 `400` `cardIds[2] must be an id`, where `null` was read as card 0 and reported in the
 `409`. A card that is not in the milestone is skipped by the `DELETE` and counted, not a
 `404` as on the single-card route, so the same list can be sent again.
+
+Each card attached logs `api:milestone_card_added` on its board, with its id, one moved
+naming the goal it left, and each card detached `api:milestone_card_removed`; a card skipped
+logs nothing (card 2289). A batch of 500 writes 500 entries, and a board's Activity Log shows
+its last 50, so read the audit log for a large one. No webhook is sent.
+
+The `POST` alone sends the **plan-created mail**: when the goal held no card before and at
+least one was attached, the administrators and the cards' assignees who can open the plan are
+mailed "Plan created". A card put in one at a time (the single `POST`, `milestoneId` on
+`PUT /cards/:cardId`, the plan page's Add cards and the card window's picker) sends none, so a
+plan laid down a card at a time mails nobody.
 
 #### Batch Semantics
 
@@ -2275,6 +2320,11 @@ board, sent to the board it left (`card_moved_away`) and to the board it joined
 into a Complete column sends `card.completed` instead; one into another board's Complete column
 sends the joined board both, the arrival and the completion. Ask for both events to hear every
 column change.
+
+Goal membership sends no `card.updated` on any route; read `GET /milestones/{milestoneId}` or
+the audit log. A card put in a milestone or taken out, by any route, `milestoneId` on
+`PUT /cards/:cardId` included since 2026-10-14, and a milestone changed or deleted, send no
+webhook (card 2289; a `milestone.*` event is card 2343).
 
 | Route | Does | Needs | Answers |
 |-------|------|-------|---------|

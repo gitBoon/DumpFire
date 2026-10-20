@@ -188,23 +188,33 @@ describe('PUT /api/v1/cards/:cardId', () => {
 					milestoneId: goal.id,
 					columnId: A.cols['To Do'].id
 				});
+				// The milestone has its own entry, as on every route that puts a card
+				// in one (card 2289, decision 9), and `card_updated` names the rest.
 				expect(entries()).toEqual([
 					{
 						boardId: A.board.id,
 						cardId: first.id,
 						userId: owner.id,
+						action: 'api:milestone_card_added',
+						detail: 'Added "Renamed" to milestone "Goal" (from milestone "Current")',
+						source: 'api'
+					},
+					{
+						boardId: A.board.id,
+						cardId: first.id,
+						userId: owner.id,
 						action: 'api:card_updated',
-						detail: 'Updated fields: title, priority, milestoneId on "Renamed"',
+						detail: 'Updated fields: title, priority on "Renamed"',
 						source: 'api'
 					}
 				]);
 			}
 		});
 
-		// The milestone, then the other fields, then the entry. A failure at the
-		// second or third used to leave the card in its new milestone with its
-		// other changes lost, or changed with nothing to say who changed it.
-		expect(shape(run.writes)).toEqual(['update cards set', 'update cards set', 'insert into activity_log']);
+		// The milestone and its entry, then the other fields and theirs. A
+		// failure at any of them used to leave the card in its new milestone with
+		// its other changes lost, or changed with nothing to say who changed it.
+		expect(shape(run.writes)).toEqual(['update cards set', 'insert into activity_log', 'update cards set', 'insert into activity_log']);
 		expect(run.effects.map(name)).toEqual(['event update (card) on board 1', 'webhook card.updated']);
 	});
 

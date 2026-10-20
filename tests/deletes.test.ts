@@ -1059,7 +1059,8 @@ describe('deleting a milestone', () => {
 			}
 		});
 
-		expect(shape(run.writes)).toEqual(['update cards set', 'delete from milestones']);
+		// The release, the delete, and its entry on the milestone's board (card 2289).
+		expect(shape(run.writes)).toEqual(['update cards set', 'delete from milestones', 'insert into activity_log']);
 	});
 });
 
