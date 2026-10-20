@@ -842,7 +842,8 @@ describe('the three ways in (test 16)', () => {
 	});
 
 	it('All Tasks links to /todo beside Planning, carrying its board filter', () => {
-		const source = read('src/routes/all/+page.svelte');
+		// In its header (card 2281, slice C3a-2: moved from src/routes/all/+page.svelte).
+		const source = read('src/lib/components/tasks/AllTasksHeader.svelte');
 		expect(source).toContain(
 			"const todoHref = $derived(String(boardFilter) === 'all' ? '/todo' : `/todo?${new URLSearchParams({ board: String(boardFilter) })}`);"
 		);

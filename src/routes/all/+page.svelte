@@ -7,8 +7,6 @@
 	 * Live-updates via global SSE and shows celebrations on task completion.
 	 */
 	import type { PageData } from './$types';
-	import { formatTokens } from '$lib/tokens';
-	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
 	import { theme } from '$lib/stores/theme';
 	import { onMount, onDestroy } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
@@ -19,29 +17,24 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import ThemePicker from '$lib/components/ThemePicker.svelte';
-	import FireworksCelebration from '$lib/components/board/FireworksCelebration.svelte';
 	import type { CardType, ColumnType, CategoryType, SortOption } from '$lib/types';
 	import StatsPanel from '$lib/components/board/StatsPanel.svelte';
-	import { getRelativeAge, getDueRelative, getDueStatus, formatDueDate, parseUTC, isNew } from '$lib/utils/date-utils';
-	import { subtaskProgress, sortCards, getSortLabel } from '$lib/utils/card-utils';
-	import { activityLabel } from '$lib/utils/activity-labels';
-	import { boardOptionLabel, boardOptions, boardPathText, boardPlaces as placesOf, chosenBoardId, inBoardFilter } from '$lib/board-tree';
-	import { isCompleteColumnTitle } from '$lib/column-role';
-	import { answerBody, cardArchiveWarning, cardDeleteWarning, deleteFailure, failureMessage, leftMilestoneNotice } from '$lib/api';
+	import { sortCards, getSortLabel } from '$lib/utils/card-utils';
+	import { boardPlaces as placesOf, chosenBoardId, inBoardFilter } from '$lib/board-tree';
+	import { cardArchiveWarning } from '$lib/api';
 	import { keepStreamOpen } from '$lib/live-stream';
-	import { playMoveSound, playCompleteSound, playCreateSound, playNotifySound } from '$lib/utils/sounds';
+	import { playCreateSound, playNotifySound } from '$lib/utils/sounds';
 	import { drawnColour } from '$lib/colours';
+	// All Tasks' parts (card 2281, slice C3a-2), each drawn where its markup was.
+	import AllTasksHeader from '$lib/components/tasks/AllTasksHeader.svelte';
+	import AllTaskCard from '$lib/components/tasks/AllTaskCard.svelte';
+	import TasksActivityPanel from '$lib/components/tasks/TasksActivityPanel.svelte';
+	import TasksArchivePanel from '$lib/components/tasks/TasksArchivePanel.svelte';
+	import MoveCardModal from '$lib/components/tasks/MoveCardModal.svelte';
+	import LiveToasts from '$lib/components/tasks/LiveToasts.svelte';
 
 	let { data }: { data: PageData } = $props();
 
-	/**
-	 * Cost per card. Cards absent from this map have nothing recorded and show
-	 * no badge — never a zero, which would assert a measurement never taken.
-	 */
-	const cardTokens = $derived(
-		(data.cardTokens ?? {}) as Record<number, { tokens: number; costUsd: number | null }>
-	);
 	let currentTheme = $state('light');
 	theme.subscribe((v) => (currentTheme = v));
 
@@ -54,61 +47,8 @@
 	// that was refused because the session has ended.
 	let closeStream: (() => void) | null = null;
 
-	// ─── Fireworks Celebration ────────────────────────────────────────────
-	let showFireworks = $state(false);
-	let celebrateCardTitle = $state('');
-	let celebrateUserName = $state('');
-	let celebrateUserEmoji = $state('');
-	let celebrateXpGained = $state(0);
-
-	type CelebrationItem = { cardTitle: string; userName: string; userEmoji: string; xpGained: number };
-	let celebrationQueue: CelebrationItem[] = [];
-	let celebrationPlaying = false;
-
-	function playNextCelebration() {
-		const next = celebrationQueue.shift();
-		if (!next) {
-			celebrationPlaying = false;
-			return;
-		}
-		celebrationPlaying = true;
-		// Brief reset to re-trigger animation if already showing
-		showFireworks = false;
-		requestAnimationFrame(() => {
-			celebrateCardTitle = next.cardTitle;
-			celebrateUserName = next.userName;
-			celebrateUserEmoji = next.userEmoji;
-			celebrateXpGained = next.xpGained;
-			showFireworks = true;
-			playCompleteSound();
-			setTimeout(() => {
-				showFireworks = false;
-				// Always try to drain the queue
-				setTimeout(playNextCelebration, 300);
-			}, 3000);
-		});
-	}
-
-	// ─── Live Activity Toast ──────────────────────────────────────────────
-	type LiveToast = {
-		id: number;
-		type: 'created' | 'moved';
-		cardTitle: string;
-		userName: string;
-		userEmoji: string;
-		fromColumn?: string;
-		toColumn?: string;
-	};
-	let liveToasts = $state<LiveToast[]>([]);
-	let toastCounter = 0;
-
-	function addLiveToast(toast: Omit<LiveToast, 'id'>) {
-		const id = ++toastCounter;
-		liveToasts = [{ ...toast, id }, ...liveToasts].slice(0, 5);
-		setTimeout(() => {
-			liveToasts = liveToasts.filter(t => t.id !== id);
-		}, 5000);
-	}
+	/** The live notices and the fireworks, which the stream's events are handed to. */
+	let liveToasts = $state<ReturnType<typeof LiveToasts>>();
 
 	/** The page's listeners, put on each stream as it is opened. */
 	function listenToGlobalSSE(eventSource: EventSource) {
@@ -117,19 +57,19 @@
 				const d = JSON.parse(e.data);
 				// Show toast for card creation
 				if (d.action === 'created' && d.cardTitle) {
-					addLiveToast({ type: 'created', cardTitle: d.cardTitle, userName: d.userName || 'Someone', userEmoji: d.userEmoji || '👤' });
+					liveToasts?.addLiveToast({ type: 'created', cardTitle: d.cardTitle, userName: d.userName || 'Someone', userEmoji: d.userEmoji || '👤' });
 					playCreateSound();
 				}
 				// Show toast for card movement
 				if (d.action === 'moved' && d.cardTitle) {
-					addLiveToast({ type: 'moved', cardTitle: d.cardTitle, userName: d.userName || 'Someone', userEmoji: d.userEmoji || '👤', fromColumn: d.fromColumn, toColumn: d.toColumn });
+					liveToasts?.addLiveToast({ type: 'moved', cardTitle: d.cardTitle, userName: d.userName || 'Someone', userEmoji: d.userEmoji || '👤', fromColumn: d.fromColumn, toColumn: d.toColumn });
 					playNotifySound();
 				}
 			} catch { /* fallback — still refresh */ }
 			// Defer data refresh so celebrate event can trigger fireworks first
 			setTimeout(() => {
 				invalidateAll();
-				if (activityOpen) fetchActivity();
+				if (activityOpen) activityPanel?.fetchActivity();
 			}, 250);
 		});
 
@@ -137,13 +77,12 @@
 			try {
 				const d = JSON.parse(e.data);
 				// Queue celebrations so each one shows sequentially
-				celebrationQueue.push({
+				liveToasts?.celebrate({
 					cardTitle: d.cardTitle || '',
 					userName: d.userName || 'Someone',
 					userEmoji: d.userEmoji || '👤',
 					xpGained: d.xpGained || 0
 				});
-				if (!celebrationPlaying) playNextCelebration();
 			} catch {
 				// Ignore parse errors
 			}
@@ -199,23 +138,6 @@
 	 * or a number: a number in it once made `startsWith` throw.
 	 */
 	const chosenBoard = $derived(chosenBoardId(boardFilter));
-	const ownBoardOnly = ' (the chosen board alone, not its sub-boards)';
-
-	/**
-	 * All To Do with this page's board filter, so the two pages hand over the
-	 * same scope (card 2240): a board there takes in its sub-boards, as here.
-	 */
-	const todoHref = $derived(String(boardFilter) === 'all' ? '/todo' : `/todo?${new URLSearchParams({ board: String(boardFilter) })}`);
-
-	/** A card's board tag: the boards its board hangs beneath, then its board. */
-	function boardTag(card: any): string {
-		return boardPathText(boardPlaces.get(card.boardId)?.path ?? [], { emoji: card.boardEmoji, name: card.boardName });
-	}
-
-	/** One group of the board filter, each sub-board indented under its parent. */
-	function filterOptions(group: typeof data.boards) {
-		return boardOptions(group).map(({ board, depth }) => ({ id: board.id, label: boardOptionLabel(board, depth) }));
-	}
 
 	/**
 	 * Open dependency blockers per card, computed server-side in one pass over
@@ -224,28 +146,11 @@
 	const dependencyBlockers = $derived(
 		(data.blockedState ?? {}) as Record<number, { id: number; title: string; columnTitle: string; boardName: string; boardId: number | null; withheld: boolean }[]>
 	);
-	const milestoneNames = $derived((data.milestoneNames ?? {}) as Record<number, string>);
 
 	function blockersFor(cardId: number) {
 		return dependencyBlockers[cardId] ?? [];
 	}
 
-	/**
-	 * Tooltip for the Blocked chip. Every blocker is listed with the column it is
-	 * sitting in, and its board — on a cross-board view the board is always worth
-	 * showing, because the blocker is usually somewhere else entirely. A blocker
-	 * on a board the viewer cannot open is its number and the text in place of
-	 * its title, with no board or column (card 2129).
-	 */
-	function blockerTooltip(cardId: number): string {
-		const open = blockersFor(cardId);
-		if (open.length === 0) return '';
-		return ['Blocked by']
-			.concat(open.map((b) => (b.withheld ? `#${b.id} ${b.title}` : `#${b.id} ${b.title} — ${b.boardName} / ${b.columnTitle}`)))
-			.join('\n');
-	}
-
-	const priorityEmoji: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
 	const bucketColors: Record<string, string> = { 'To Do': '#6366f1', 'On Hold': '#ef4444', 'In Progress': '#f59e0b', 'Complete': '#10b981' };
 
 	function matchesFilters(card: any): boolean {
@@ -302,10 +207,8 @@
 	 */
 	const cardWindow = new PageCardWindow({ get: () => buckets, set: (next) => (buckets = next) }, () => invalidateAll());
 
-	let showMoveModal = $state(false);
-	let moveCard = $state<any>(null);
-	let moveBoardId = $state<number | null>(null);
-	let moveColumnId = $state<number | null>(null);
+	/** The Move window, which each card's Move button opens. */
+	let moveCardModal = $state<ReturnType<typeof MoveCardModal>>();
 
 	function openCard(card: any) {
 		cardWindow.openCard(card, card.boardId);
@@ -334,57 +237,6 @@
 		} catch {
 			if (cardWindow.cardId === cardId) toasts.add("No answer from the server: the people of this card's board are not shown.", 'error', started);
 		}
-	}
-
-	function openMoveModal(card: any) {
-		moveCard = card;
-		moveBoardId = card.boardId;
-		moveColumnId = card.columnId;
-		showMoveModal = true;
-	}
-
-	async function doMoveCard() {
-		if (!moveCard || !moveColumnId) return;
-
-		// Check if moving to a "complete" column for sound effect
-		const targetCol = data.columns.find((c: any) => c.id === moveColumnId);
-		const isCompletingMove = targetCol && isCompleteColumnTitle(targetCol.title);
-
-		// A refusal, such as a card with open subtasks moved to Complete, is
-		// said in the server's words, and the window stays open. It used to
-		// close as if the card had moved.
-		const started = toasts.navigation();
-		let res: Response;
-		try {
-			res = await fetch(`/api/cards/${moveCard.id}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ columnId: moveColumnId, boardId: moveBoardId })
-			});
-		} catch {
-			toasts.add('No answer from the server. The card may not have been moved.', 'error', started);
-			return;
-		}
-		if (!res.ok) {
-			toasts.add(await failureMessage(res, 'The card was not moved.'), 'error', started);
-			return;
-		}
-
-		// A move to another board takes the card out of a milestone of the board
-		// it left, for good: say so (card 2155, the review's O3).
-		const leftGoal = leftMilestoneNotice(await answerBody(res));
-		if (leftGoal) toasts.add(leftGoal, 'info');
-
-		// Play appropriate sound
-		if (isCompletingMove) {
-			playCompleteSound();
-		} else {
-			playMoveSound();
-		}
-
-		showMoveModal = false;
-		moveCard = null;
-		await invalidateAll();
 	}
 
 	/**
@@ -442,10 +294,6 @@
 		});
 	}
 
-	function getBoardColumns(boardId: number) {
-		return data.columns.filter((c: any) => c.boardId === boardId);
-	}
-
 	let loadingMore = $state(false);
 
 	async function loadMoreCompleted() {
@@ -463,135 +311,25 @@
 	}
 
 	let activityOpen = $state(false);
-	let activityItems = $state<any[]>([]);
-	let activityLoading = $state(false);
-	let knownActivityIds = new Set<number>();
-	let newActivityIds = $state(new Set<number>());
+	/** The Activity Log, which the More menu opens and the live stream reads again. */
+	let activityPanel = $state<ReturnType<typeof TasksActivityPanel>>();
 
 	// More menu & panel state
 	let showMoreMenu = $state(false);
 	let showStatsPanel = $state(false);
 	let showArchivePanel = $state(false);
-	let archivedCards = $state<any[]>([]);
-	let loadingArchive = $state(false);
+	/** Archived Cards, which the More menu opens. */
+	let archivePanel = $state<ReturnType<typeof TasksArchivePanel>>();
 
 	onMount(() => {
 		if (browser) {
 			activityOpen = localStorage.getItem('df-activity-open') === 'true';
-			if (activityOpen) fetchActivity(true);
+			if (activityOpen) activityPanel?.fetchActivity(true);
 		}
 	});
 
-	function toggleActivity() {
-		activityOpen = !activityOpen;
-		if (browser) localStorage.setItem('df-activity-open', String(activityOpen));
-		if (activityOpen && activityItems.length === 0) fetchActivity(true);
-	}
-
 	function toggleStatsPanel() {
 		showStatsPanel = !showStatsPanel;
-	}
-
-	async function toggleArchivePanel() {
-		showArchivePanel = !showArchivePanel;
-		if (showArchivePanel && archivedCards.length === 0) await loadAllArchived();
-	}
-
-	async function loadAllArchived() {
-		loadingArchive = true;
-		try {
-			const res = await fetch('/api/cards/archived');
-			if (res.ok) archivedCards = await res.json();
-		} finally { loadingArchive = false; }
-	}
-
-	async function restoreArchivedCard(cardId: number) {
-		// The card leaves the list only when the server says it is restored.
-		const started = toasts.navigation();
-		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/restore`, { method: 'POST' }), 'card', 'restored');
-		if (failure) {
-			toasts.add(failure, 'error', started);
-			return;
-		}
-		archivedCards = archivedCards.filter(c => c.id !== cardId);
-		toasts.add('Card restored');
-		await invalidateAll();
-	}
-
-	function permanentlyDeleteArchivedCard(cardId: number, cardTitle: string) {
-		showConfirm('Delete Permanently', cardDeleteWarning(cardTitle), 'Delete Forever', async () => {
-			// The card leaves the list only when the server says it is gone.
-			const started = toasts.navigation();
-			const failure = await deleteFailure(
-				() =>
-					fetch(`/api/cards/${cardId}?permanent=true`, {
-						method: 'DELETE',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({})
-					}),
-				'card'
-			);
-			if (failure) {
-				toasts.add(failure, 'error', started);
-				return;
-			}
-			archivedCards = archivedCards.filter(c => c.id !== cardId);
-			toasts.add('Card permanently deleted', 'info');
-		});
-	}
-
-	async function fetchActivity(initial = false) {
-		activityLoading = true;
-		try {
-			const res = await fetch('/api/activity');
-			if (res.ok) {
-				const items = await res.json();
-				if (initial) {
-					// First load — seed known IDs, nothing is "new"
-					knownActivityIds = new Set(items.map((i: any) => i.id));
-					newActivityIds = new Set();
-				} else {
-					// Subsequent loads — detect new items
-					const freshIds = new Set<number>();
-					for (const item of items) {
-						if (!knownActivityIds.has(item.id)) {
-							freshIds.add(item.id);
-							knownActivityIds.add(item.id);
-						}
-					}
-					if (freshIds.size > 0) {
-						newActivityIds = new Set([...newActivityIds, ...freshIds]);
-						// Clear the pulse after 30 seconds
-						setTimeout(() => {
-							newActivityIds = new Set([...newActivityIds].filter(id => !freshIds.has(id)));
-						}, 30000);
-					}
-				}
-				activityItems = items;
-			}
-		} catch { /* ignore */ }
-		activityLoading = false;
-	}
-
-	function formatActivityTime(dateStr: string) {
-		if (!dateStr) return '';
-		const d = parseUTC(dateStr);
-		const now = new Date();
-		const diffMs = now.getTime() - d.getTime();
-		const mins = Math.floor(diffMs / 60000);
-		if (mins < 1) return 'just now';
-		if (mins < 60) return `${mins}m ago`;
-		const hrs = Math.floor(mins / 60);
-		if (hrs < 24) return `${hrs}h ago`;
-		const days = Math.floor(hrs / 24);
-		if (days < 7) return `${days}d ago`;
-		return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-	}
-
-	// An action's words are `activityLabel`'s, the board page's too (card 2212).
-	// Whether it was done through the API is this panel's own badge.
-	function isApiAction(action: string): boolean {
-		return action.startsWith('api:');
 	}
 </script>
 
@@ -603,128 +341,20 @@
 
 <div class="all-page-wrapper" onclick={() => { showMoreMenu = false; }}>
 <div class="all-page">
-	<header class="all-header">
-		<div class="all-header-left">
-			<a href="/" class="back-btn btn-ghost" id="back-to-dashboard">
-				<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M11 4L6 9l5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-			</a>
-			<span class="all-icon">🌐</span>
-			<div>
-				<h1 class="all-title">All Tasks</h1>
-				<p class="all-subtitle">
-					{data.totalCards} total · {data.completedCards} complete · {data.totalCards - data.completedCards} remaining
-				</p>
-			</div>
-			<!-- Spend across every board here. Lifted out of the subtitle line so it
-			     can carry the same weight as the board header chip rather than
-			     trailing a row of counts at subtitle size. -->
-			{#if data.allTokenSummary}
-				<span class="hdr-cost" title="{formatTokens(data.allTokenSummary.total)} tokens across every board here · {NOT_BILLED_NOTE}. {SOURCE_NOTE} — {BLEND_NOTE}.">
-					{formatTokens(data.allTokenSummary.total)}
-					{#if data.allTokenSummary.costUsd !== null}
-						<span class="hdr-cost-money">{formatUsd(data.allTokenSummary.costUsd)}</span>
-					{/if}
-				</span>
-			{/if}
-		</div>
-		<div class="all-header-right">
-			<select class="hdr-control board-filter" bind:value={boardFilter}>
-				<option value="all">All Boards</option>
-				{#each (data.boardCategories || []) as cat}
-					{@const catBoards = data.boards.filter((b) => b.filterCategoryId === cat.id)}
-					{#if catBoards.length > 0}
-						<optgroup label="{cat.name}">
-							<option value="cat:{cat.id}">⬛ All {cat.name}</option>
-							{#each filterOptions(catBoards) as option}
-								<option value={String(option.id)}>{option.label}</option>
-							{/each}
-						</optgroup>
-					{/if}
-				{/each}
-				{#each [data.boards.filter((b) => !b.filterCategoryId)] as uncategorizedBoards}
-					{#if uncategorizedBoards.length > 0}
-						<optgroup label="Uncategorized">
-							{#each filterOptions(uncategorizedBoards) as option}
-								<option value={String(option.id)}>{option.label}</option>
-							{/each}
-						</optgroup>
-					{/if}
-				{/each}
-			</select>
-			<div class="search-wrapper hdr-search">
-				<svg class="search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
-					<circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
-					<path d="M10 10l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-				</svg>
-				<input type="text" class="search-input" placeholder="Search tasks or #id..." bind:value={searchQuery} />
-			</div>
-			<button
-				class="hdr-control blocked-filter-toggle"
-				class:is-on={hideBlocked}
-				onclick={() => (hideBlocked = !hideBlocked)}
-				title="Hide cards that are still waiting on another card"
-			>
-				<svg width="13" height="13" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-					<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
-					<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-				</svg>
-				Hide blocked
-			</button>
-			<a
-				href={chosenBoard ? `/plan?board=${chosenBoard}` : '/plan'}
-				class="hdr-control hdr-action"
-				title="Planning — critical path and what is startable{chosenBoard ? ownBoardOnly : ''}"
-			>
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-					<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-					<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-					<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-					<path d="M5.2 7.1L6.4 4.9M9.6 4.9l1.2 2.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
-					<path d="M5.3 8.9l5.4 2.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
-				</svg>
-				Planning
-			</a>
-			<!-- All To Do over the same scope: the chosen board with its sub-boards, or the grouping (card 2240). -->
-			<a href={todoHref} class="hdr-control hdr-action" title="All To Do — every To Do column as one table{boardFilter === 'all' ? '' : ', for the boards chosen here'}">
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-					<rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/>
-					<path d="M4.8 6.2l1.2 1.2 2-2.2M9.6 6.4h2M4.8 10.2h6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-				</svg>
-				All To Do
-			</a>
-			<div class="more-menu-container">
-				<button class="hdr-control hdr-action" class:is-on={showMoreMenu} onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} title="Panels">
-					<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="3" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="13" r="1.2" fill="currentColor"/></svg>
-					More
-				</button>
-				{#if showMoreMenu}
-					<!-- svelte-ignore a11y_click_events_have_key_events -->
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div class="more-dropdown" onclick={(e) => e.stopPropagation()}>
-						<div class="more-dropdown-section">
-							<div class="more-dropdown-label">Panels</div>
-							<button class="more-dropdown-item" class:more-active={activityOpen} onclick={() => { toggleActivity(); showMoreMenu = false; }}>
-								<span class="more-item-icon">📋</span> Activity Log
-								{#if activityOpen}<span class="more-check">✓</span>{/if}
-							</button>
-							<button class="more-dropdown-item" class:more-active={showStatsPanel} onclick={() => { toggleStatsPanel(); showMoreMenu = false; }} title="Statistics{chosenBoard ? ownBoardOnly : ''}">
-								<span class="more-item-icon">📊</span> Statistics
-								{#if showStatsPanel}<span class="more-check">✓</span>{/if}
-							</button>
-							<button class="more-dropdown-item" class:more-active={showArchivePanel} onclick={() => { toggleArchivePanel(); showMoreMenu = false; }}>
-								<span class="more-item-icon">🗄️</span> Archived Cards
-								{#if showArchivePanel}<span class="more-check">✓</span>{/if}
-							</button>
-						</div>
-					</div>
-				{/if}
-			</div>
-			<a class="hdr-control hdr-action export-csv-btn" href={chosenBoard ? `/api/cards/export/csv?boardId=${chosenBoard}` : '/api/cards/export/csv'} download title="Export to CSV{chosenBoard ? ownBoardOnly : ''}">
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-			</a>
-			<ThemePicker />
-		</div>
-	</header>
+	<AllTasksHeader
+		{data}
+		{chosenBoard}
+		{activityOpen}
+		{showStatsPanel}
+		{showArchivePanel}
+		toggleActivity={() => activityPanel?.toggleActivity()}
+		{toggleStatsPanel}
+		toggleArchivePanel={() => archivePanel?.toggleArchivePanel()}
+		bind:boardFilter
+		bind:searchQuery
+		bind:hideBlocked
+		bind:showMoreMenu
+	/>
 
 	<div class="kanban-scroll">
 		<div class="kanban-track">
@@ -773,112 +403,16 @@
 					</div>
 					<div class="card-list">
 						{#each filteredCards as card (card.id)}
-							<div class="card" class:card-pinned={card.pinned} onclick={() => openCard(card)} role="button" tabindex="0">
-								{#if card.colorTag}
-									<div class="card-color-bar" style="background: {drawnColour(card.colorTag)}"></div>
-								{/if}
-								{#if card.pinned}
-									<span class="pin-badge" title="Pinned">📌</span>
-								{/if}
-								{#if isNew(card.createdAt)}
-									<span class="new-badge">New</span>
-								{/if}
-								<div class="card-header">
-									<span class="card-title"><span class="card-id">#{card.id}</span> {card.title}</span>
-									<button class="move-btn" title="Move card" onclick={(e) => { e.stopPropagation(); openMoveModal(card); }}>
-										<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M4 4L2 7l2 3M10 4l2 3-2 3M4 4L7 2l3 2M4 10l3 2 3-2" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/></svg>
-									</button>
-								</div>
-								<div class="card-board-tag">
-									<span class="board-tag" title={boardTag(card)}>{boardTag(card)}</span>
-									{#if card.boardCategoryName}
-										<span class="board-cat-badge" style="background: {drawnColour(card.boardCategoryColor)}20; color: {drawnColour(card.boardCategoryColor)}; border: 1px solid {drawnColour(card.boardCategoryColor)}40">{card.boardCategoryName}</span>
-									{/if}
-								</div>
-								<div class="card-meta">
-									{#if blockersFor(card.id).length > 0}
-										{@const blockers = blockersFor(card.id)}
-										<span class="blocked-badge" title={blockerTooltip(card.id)}>
-											<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-												<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
-												<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-											</svg>
-											Blocked{#if blockers.length > 1}&nbsp;({blockers.length}){/if}
-										</span>
-									{/if}
-									{#if card.milestoneId && milestoneNames[card.milestoneId]}
-										<a
-											href="/plan/{card.milestoneId}"
-											class="milestone-badge"
-											title="Milestone: {milestoneNames[card.milestoneId]} — open the planning view"
-											onclick={(e) => e.stopPropagation()}
-										>🎯 {milestoneNames[card.milestoneId]}</a>
-									{/if}
-									<span class="priority-badge priority-{card.priority}">
-										{priorityEmoji[card.priority] || '🟡'} {card.priority.toUpperCase()}
-									</span>
-									{#if card.categoryId}
-										{@const cat = data.categories.find((c: any) => c.id === card.categoryId)}
-										{#if cat}
-											<span class="category-badge" style="background: {drawnColour(cat.color)}20; color: {drawnColour(cat.color)}; border: 1px solid {drawnColour(cat.color)}40">{cat.name}</span>
-										{/if}
-									{/if}
-									{#if subtaskProgress(card as any)}
-										{@const prog = subtaskProgress(card as any)!}
-										{@const pct = prog.done / prog.total}
-										<span class="subtask-badge" class:all-done={prog.done === prog.total}>
-											<svg class="progress-ring" width="14" height="14" viewBox="0 0 14 14">
-												<circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--glass-border)" stroke-width="2"/>
-												<circle cx="7" cy="7" r="5.5" fill="none"
-													stroke={prog.done === prog.total ? '#22c55e' : '#6366f1'}
-													stroke-width="2"
-													stroke-dasharray={2 * Math.PI * 5.5}
-													stroke-dashoffset={2 * Math.PI * 5.5 * (1 - pct)}
-													transform="rotate(-90 7 7)"
-													stroke-linecap="round"/>
-											</svg>
-											{prog.done}/{prog.total}
-										</span>
-									{/if}
-									{#if card.dueDate}
-										{@const dueStatus = getDueStatus(card.dueDate)}
-										<span class="due-badge" class:due-overdue={dueStatus === 'overdue'} class:due-today={dueStatus === 'today'} class:due-soon={dueStatus === 'soon'} title="Due {formatDueDate(card.dueDate)}">
-											{#if dueStatus === 'overdue'}⚠️{:else if dueStatus === 'today'}🔥{:else if dueStatus === 'soon'}📅{:else}📅{/if}
-											Due {getDueRelative(card.dueDate, tick)}
-										</span>
-									{/if}
-									<span class="card-date" title="Created {parseUTC(card.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}">Created {getRelativeAge(card.createdAt, tick)}</span>
-									{#if cardTokens[card.id]}
-										{@const tc = cardTokens[card.id]}
-										<span class="cost-badge" title="{formatTokens(tc.tokens)} tokens{tc.costUsd !== null ? ` · ${formatUsd(tc.costUsd)} at API rates — ${NOT_BILLED_NOTE}. ${BLEND_NOTE}` : ` · ${UNPRICED_SUM_NOTE}, so it cannot be priced`}">
-											{formatTokens(tc.tokens)}{#if tc.costUsd !== null} · {formatUsd(tc.costUsd)}{/if}
-										</span>
-									{/if}
-								</div>
-								{#if card.onHoldNote && bucket.title === 'On Hold'}
-									<div class="on-hold-note-badge" title={card.onHoldNote}>
-										<svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1"/><path d="M5 3v2.5h2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
-										<span>{card.onHoldNote}</span>
-									</div>
-								{/if}
-								{#if card.labelIds && card.labelIds.length > 0}
-									<div class="card-labels">
-										{#each card.labelIds as labelId}
-											{@const label = data.labels.find((l: any) => l.id === labelId)}
-											{#if label}
-												<span class="label-chip" style="background: {drawnColour(label.color)}25; color: {drawnColour(label.color)}; border: 1px solid {drawnColour(label.color)}40">{label.name}</span>
-											{/if}
-										{/each}
-									</div>
-								{/if}
-								{#if card.assignees && card.assignees.length > 0}
-									<div class="card-assignees">
-										{#each card.assignees as assignee}
-											<span class="assignee-chip">{assignee.emoji || '👤'} {assignee.username}</span>
-										{/each}
-									</div>
-								{/if}
-							</div>
+							<AllTaskCard
+								{data}
+								{card}
+								{bucket}
+								{tick}
+								{boardPlaces}
+								{blockersFor}
+								{openCard}
+								openMoveModal={(toMove) => moveCardModal?.openMoveModal(toMove)}
+							/>
 						{:else}
 							<div class="column-empty">No tasks</div>
 						{/each}
@@ -898,55 +432,7 @@
 	</div>
 </div> <!-- /.all-page -->
 <div class="all-panels-area">
-{#if activityOpen}
-<div class="activity-panel">
-	<div class="activity-panel-header">
-		<h3>
-			<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3h10M2 5.5h7M2 8h8M2 10.5h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-			Activity
-		</h3>
-		<div style="display:flex;gap:4px;">
-			<button class="activity-refresh-btn" onclick={() => fetchActivity()} title="Refresh">
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7a4.5 4.5 0 0 1 8.5-2M11.5 7a4.5 4.5 0 0 1-8.5 2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11 2v3h-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 12V9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-			</button>
-			<button class="activity-refresh-btn" onclick={toggleActivity} title="Close">
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-			</button>
-		</div>
-	</div>
-	<div class="activity-list">
-		{#if activityLoading}
-			<div class="activity-loading">Loading activity...</div>
-		{:else if activityItems.length === 0}
-			<div class="activity-empty">No activity yet</div>
-		{:else}
-			{#each activityItems as item}
-				<div class="activity-item" class:activity-new={newActivityIds.has(item.id)}>
-					<div class="activity-avatar">{item.userEmoji || '👤'}</div>
-					<div class="activity-body">
-						<div class="activity-action-line">
-							<span class="activity-action-label">{item.userName || 'System'}</span>
-							{activityLabel(item.action)}
-							{#if isApiAction(item.action)}
-								<span class="activity-api-badge">API</span>
-							{/if}
-						</div>
-						{#if item.detail}
-							<div class="activity-detail">{item.detail}</div>
-						{/if}
-						<div class="activity-meta">
-							<span>{formatActivityTime(item.createdAt)}</span>
-							{#if item.boardName}
-								<span class="activity-board-tag">{item.boardName}</span>
-							{/if}
-						</div>
-					</div>
-				</div>
-			{/each}
-		{/if}
-	</div>
-</div>
-{/if}
+<TasksActivityPanel bind:this={activityPanel} bind:activityOpen />
 {#if showStatsPanel}
 	{@const syntheticColumns = buckets.map((b, i) => ({
 		id: i + 1,
@@ -965,44 +451,7 @@
 		onClose={() => (showStatsPanel = false)}
 	/>
 {/if}
-{#if showArchivePanel}
-<div class="activity-panel">
-	<div class="activity-panel-header">
-		<h3>🗄️ Archived Cards</h3>
-		<div style="display:flex;gap:4px;">
-			<button class="activity-refresh-btn" onclick={() => loadAllArchived()} title="Refresh">
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 7a4.5 4.5 0 0 1 8.5-2M11.5 7a4.5 4.5 0 0 1-8.5 2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M11 2v3h-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 12V9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-			</button>
-			<button class="activity-refresh-btn" onclick={() => (showArchivePanel = false)} title="Close">
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-			</button>
-		</div>
-	</div>
-	<div class="activity-list" style="padding: var(--space-md);">
-		{#if loadingArchive}
-			<div class="activity-loading">Loading...</div>
-		{:else if archivedCards.length === 0}
-			<div class="activity-empty">
-				<span style="font-size:2rem;">📦</span>
-				<p>No archived cards</p>
-			</div>
-		{:else}
-			{#each archivedCards as card (card.id)}
-				<div class="archive-card-item">
-					<div class="archive-card-info">
-						<span class="archive-card-title">{card.title}</span>
-						{#if card.boardName}<span class="archive-card-board">{card.boardName}</span>{/if}
-					</div>
-					<div style="display:flex;gap:4px;">
-						<button class="btn-ghost small" onclick={() => restoreArchivedCard(card.id)} title="Restore">↩️ Restore</button>
-						<button class="btn-ghost small danger" onclick={() => permanentlyDeleteArchivedCard(card.id, card.title)} title="Delete permanently">🗑️</button>
-					</div>
-				</div>
-			{/each}
-		{/if}
-	</div>
-</div>
-{/if}
+<TasksArchivePanel bind:this={archivePanel} {showConfirm} bind:showArchivePanel />
 </div> <!-- /.all-panels-area -->
 </div> <!-- /all-page-wrapper -->
 
@@ -1037,73 +486,10 @@
 <Toast />
 
 <!-- Move Card Modal -->
-{#if showMoveModal && moveCard}
-	<div class="modal-overlay" role="dialog">
-		<div class="move-modal" onclick={(e) => e.stopPropagation()}>
-			<h3>Move "{moveCard.title}"</h3>
-			<div class="form-group">
-				<label for="move-board">Board</label>
-				<select id="move-board" bind:value={moveBoardId} onchange={() => { moveColumnId = null; }}>
-					{#each data.boards as b}
-						<option value={b.id}>{b.emoji} {b.name}</option>
-					{/each}
-				</select>
-			</div>
-			{#if moveBoardId}
-				<div class="form-group">
-					<label for="move-col">Column</label>
-					<select id="move-col" bind:value={moveColumnId}>
-						<option value={null}>Select column...</option>
-						{#each getBoardColumns(moveBoardId) as col}
-							<option value={col.id}>{col.title}</option>
-						{/each}
-					</select>
-				</div>
-			{/if}
-			<div class="move-actions">
-				<button class="btn-ghost" onclick={() => { showMoveModal = false; moveCard = null; }}>Cancel</button>
-				<button class="btn-primary move-confirm-btn" onclick={doMoveCard} disabled={!moveColumnId}>Move Card</button>
-			</div>
-		</div>
-	</div>
-{/if}
+<MoveCardModal bind:this={moveCardModal} {data} />
 
-<!-- Fireworks celebration -->
-{#if showFireworks}
-	<FireworksCelebration
-		cardTitle={celebrateCardTitle}
-		userName={celebrateUserName}
-		userEmoji={celebrateUserEmoji}
-		xpGained={celebrateXpGained}
-	/>
-{/if}
-
-{#if liveToasts.length > 0}
-	<div class="live-toast-container">
-		{#each liveToasts as toast (toast.id)}
-			<div class="live-toast" class:live-toast-created={toast.type === 'created'} class:live-toast-moved={toast.type === 'moved'}>
-				<div class="live-toast-glow"></div>
-				<div class="live-toast-inner">
-					<span class="live-toast-emoji">{toast.userEmoji}</span>
-					<div class="live-toast-body">
-						<span class="live-toast-user">{toast.userName}</span>
-						{#if toast.type === 'created'}
-							<span class="live-toast-action">created</span>
-							<span class="live-toast-card">"{toast.cardTitle}"</span>
-						{:else}
-							<span class="live-toast-action">moved</span>
-							<span class="live-toast-card">"{toast.cardTitle}"</span>
-							{#if toast.fromColumn && toast.toColumn}
-								<span class="live-toast-cols">{toast.fromColumn} → {toast.toColumn}</span>
-							{/if}
-						{/if}
-					</div>
-					<span class="live-toast-icon">{toast.type === 'created' ? '✨' : '➡️'}</span>
-				</div>
-			</div>
-		{/each}
-	</div>
-{/if}
+<!-- Fireworks celebration, and the live toasts -->
+<LiveToasts bind:this={liveToasts} />
 
 <style>
 	/* Flex wrapper for page + activity panel */
@@ -1121,87 +507,6 @@
 		height: 100vh;
 		overflow: hidden;
 		transition: flex 0.2s ease;
-	}
-
-	.all-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: var(--space-lg) var(--space-xl);
-		border-bottom: 1px solid var(--glass-border);
-		flex-shrink: 0;
-		gap: var(--space-md);
-	}
-
-	.all-header-left {
-		display: flex;
-		align-items: center;
-		gap: var(--space-md);
-		flex-shrink: 0;
-	}
-
-	.all-header-right {
-		display: flex;
-		align-items: center;
-		gap: var(--space-sm);
-		flex-shrink: 0;
-	}
-
-	.all-icon {
-		font-size: 1.75rem;
-	}
-
-	.all-title {
-		font-size: 1.25rem;
-		background: linear-gradient(135deg, var(--text-primary), var(--accent-purple));
-		-webkit-background-clip: text;
-		-webkit-text-fill-color: transparent;
-		background-clip: text;
-	}
-
-	.all-subtitle {
-		font-size: 0.75rem;
-		color: var(--text-secondary);
-		margin-top: 1px;
-	}
-
-
-	.board-filter:focus {
-		border-color: var(--accent-purple);
-	}
-
-	/* Header controls come from .hdr-control / .hdr-search in app.css so this
-	   header and the board's cannot drift apart again. Only what is local to
-	   All Tasks stays here. */
-	.search-wrapper input { width: 210px; }
-	.board-filter { max-width: 190px; padding-right: 8px; }
-
-	/* Amber is specific to "blocked", so this state stays local. */
-	.blocked-filter-toggle.is-on {
-		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
-		border-color: rgba(245, 158, 11, 0.35);
-	}
-
-	.search-icon {
-		position: absolute;
-		left: 10px;
-		color: var(--text-tertiary);
-		pointer-events: none;
-	}
-
-
-	.search-input:focus {
-		border-color: var(--accent-purple);
-	}
-
-	.back-btn {
-		font-size: 0;
-		padding: var(--space-sm);
-		color: var(--text-secondary);
-	}
-
-	.back-btn:hover {
-		color: var(--text-primary);
 	}
 
 	/* Kanban */
@@ -1317,326 +622,12 @@
 		to { transform: rotate(360deg); }
 	}
 
-	.card {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-xs);
-		padding: var(--space-md);
-		border-radius: var(--radius-md);
-		text-decoration: none;
-		color: var(--text-primary);
-		cursor: pointer;
-		transition: all var(--duration-normal) var(--ease-out);
-		position: relative;
-		overflow: hidden;
-		flex-shrink: 0;
-		background: var(--bg-card);
-		border: 1px solid var(--glass-border);
-	}
-
-	.card:hover {
-		transform: translateY(-1px);
-		box-shadow: var(--shadow-md);
-		border-color: var(--glass-border);
-	}
-
-	.card-pinned {
-		border-top: 2px solid var(--accent-indigo);
-	}
-
-	.pin-badge {
-		position: absolute;
-		top: 4px;
-		right: 6px;
-		font-size: 0.65rem;
-	}
-
-	.new-badge {
-		position: absolute;
-		top: 4px;
-		right: 6px;
-		font-size: 0.55rem;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		padding: 1px 6px;
-		border-radius: var(--radius-full);
-		background: linear-gradient(135deg, #22c55e, #10b981);
-		color: #fff;
-		box-shadow: 0 0 8px rgba(34, 197, 94, 0.4);
-		animation: newPulse 2s ease-in-out infinite;
-	}
-
-	.card-pinned .new-badge {
-		right: 24px;
-	}
-
-	@keyframes newPulse {
-		0%, 100% { box-shadow: 0 0 6px rgba(34, 197, 94, 0.3); }
-		50% { box-shadow: 0 0 12px rgba(34, 197, 94, 0.6); }
-	}
-
-	.card-header {
-		display: flex;
-		align-items: flex-start;
-		gap: var(--space-sm);
-	}
-
-	.card-title {
-		font-size: 0.82rem;
-		font-weight: 600;
-		line-height: 1.3;
-	}
-
-	.card-board-tag {
-		display: flex;
-		align-items: center;
-		gap: var(--space-xs);
-		flex-wrap: wrap;
-	}
-
-	.board-tag {
-		font-size: 0.65rem;
-		font-weight: 600;
-		color: var(--accent-purple);
-		background: var(--accent-purple-glow, rgba(139, 92, 246, 0.12));
-		padding: 1px 6px;
-		border-radius: var(--radius-sm);
-		/* A sub-board's tag names the boards above it: one line, cut short with an ellipsis, the whole path in its title. */
-		max-width: 100%;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.column-tag {
-		font-size: 0.6rem;
-		color: var(--text-tertiary);
-		font-style: italic;
-	}
-
-	.card-meta {
-		display: flex;
-		align-items: center;
-		gap: var(--space-xs);
-		flex-wrap: wrap;
-		font-size: 0.7rem;
-	}
-
-	/* Blocked / milestone chips and the filter toggle — deliberately identical to
-	   the board so a card reads the same wherever it is seen. */
-	.blocked-filter-toggle.is-on {
-		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
-		border-color: rgba(245, 158, 11, 0.35);
-	}
-
-	.blocked-badge {
-		display: inline-flex; align-items: center; gap: 3px;
-		padding: 1px 8px; border-radius: var(--radius-full);
-		font-size: 0.68rem; font-weight: 700; white-space: nowrap;
-		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
-		border: 1px solid rgba(245, 158, 11, 0.3);
-		cursor: help;
-	}
-
-	.milestone-badge {
-		display: inline-flex; align-items: center; gap: 3px;
-		padding: 1px 8px; border-radius: var(--radius-full);
-		font-size: 0.66rem; font-weight: 600; text-decoration: none;
-		max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-		background: rgba(139, 92, 246, 0.1); color: #a78bfa;
-		border: 1px solid rgba(139, 92, 246, 0.22);
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.milestone-badge:hover { background: rgba(139, 92, 246, 0.2); border-color: rgba(139, 92, 246, 0.45); }
-
-	.priority-badge {
-		display: inline-flex; align-items: center; gap: 4px;
-		font-size: 0.65rem;
-		font-weight: 600;
-		padding: 2px 8px;
-		border-radius: var(--radius-full);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-
-	.priority-critical { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.25); }
-	.priority-high { background: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249, 115, 22, 0.25); }
-	.priority-medium { background: rgba(234, 179, 8, 0.15); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.25); }
-	.priority-low { background: rgba(34, 197, 94, 0.15); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.25); }
-
-	.subtask-badge {
-		font-size: 0.65rem;
-		font-weight: 600;
-		color: var(--text-secondary);
-		display: flex;
-		align-items: center;
-		gap: 3px;
-	}
-
-	.subtask-badge.all-done {
-		color: #22c55e;
-	}
-
-	.progress-ring { flex-shrink: 0; transition: stroke-dashoffset 0.3s ease-out; }
-
-	.due-badge {
-		font-size: 0.6rem;
-		font-weight: 600;
-		padding: 1px 6px;
-		border-radius: var(--radius-sm);
-		background: rgba(99, 102, 241, 0.1);
-		color: var(--text-secondary);
-	}
-
-	.due-overdue { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
-	.due-today { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
-	.due-soon { background: rgba(249, 115, 22, 0.12); color: #f97316; }
-
-	/* Cost sits beside the creation date: both are facts about the card over
-	   time, and read together they answer "how long, and how much". Only shown
-	   when something was recorded — never a zero or a dash, which would put a
-	   false measurement on every card that predates the ledger. */
-	.cost-badge {
-		font-size: 0.65rem; flex-shrink: 0; white-space: nowrap;
-		padding: 1px 6px; border-radius: var(--radius-full);
-		background: var(--glass-hover); color: var(--text-secondary);
-		font-variant-numeric: tabular-nums;
-	}
-	/* What has been spent, on the header strip. Sized to be read at a glance:
-	   this is the figure the whole ledger exists to surface, and inline in the
-	   subtitle at 0.8rem it was easy to miss entirely. The money carries the
-	   most weight because it is the part people act on. Matches the board. */
-	.hdr-cost {
-		display: inline-flex; align-items: baseline; gap: 8px;
-		padding: 5px 14px; border-radius: var(--radius-full);
-		background: var(--bg-surface);
-		border: 1px solid var(--accent-purple-glow, var(--glass-border));
-		font-size: 1rem; font-weight: 600; line-height: 1.25;
-		color: var(--text-primary);
-		font-variant-numeric: tabular-nums; white-space: nowrap;
-	}
-	.hdr-cost-money { font-weight: 800; font-size: 1.1rem; color: var(--accent-purple, #8b5cf6); }
-	.card-date {
-		font-size: 0.65rem;
-		color: var(--text-secondary);
-		margin-left: auto;
-		flex-shrink: 0;
-	}
-
-	.on-hold-note-badge {
-		display: flex;
-		align-items: flex-start;
-		gap: 4px;
-		font-size: 0.65rem;
-		color: var(--text-tertiary);
-		background: rgba(239, 68, 68, 0.06);
-		padding: 4px 6px;
-		border-radius: var(--radius-sm);
-		border-left: 2px solid var(--accent-rose);
-	}
-
-	.on-hold-note-badge svg { flex-shrink: 0; margin-top: 2px; }
-
-	.on-hold-note-badge span {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		display: -webkit-box;
-		-webkit-line-clamp: 2;
-		line-clamp: 2;
-		-webkit-box-orient: vertical;
-	}
-
 	.column-empty {
 		text-align: center;
 		color: var(--text-tertiary);
 		font-size: 0.8rem;
 		padding: var(--space-xl);
 	}
-
-	.theme-toggle { font-size: 0; }
-
-	/* Color tag bar */
-	.card-color-bar {
-		position: absolute; top: 0; left: 0; right: 0; height: 3px;
-		border-radius: var(--radius-md) var(--radius-md) 0 0;
-	}
-
-	/* Category badge */
-	.category-badge {
-		font-size: 0.6rem; font-weight: 600; padding: 1px 6px;
-		border-radius: var(--radius-sm);
-	}
-
-	/* Board category badge */
-	.board-cat-badge {
-		font-size: 0.58rem; font-weight: 600; padding: 1px 5px;
-		border-radius: var(--radius-sm); white-space: nowrap;
-	}
-
-	/* Label chips */
-	.card-labels {
-		display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px;
-	}
-	.label-chip {
-		font-size: 0.58rem; font-weight: 600; padding: 1px 5px;
-		border-radius: var(--radius-sm); white-space: nowrap;
-	}
-
-	/* Assignee chips */
-	.card-assignees {
-		display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px;
-	}
-	.assignee-chip {
-		display: inline-flex; align-items: center; gap: 2px;
-		font-size: 0.6rem; font-weight: 600;
-		padding: 1px 6px; border-radius: var(--radius-full);
-		background: rgba(99, 102, 241, 0.1); color: #818cf8;
-		border: 1px solid rgba(99, 102, 241, 0.2);
-	}
-
-	/* Card interactions */
-	.card { cursor: pointer; }
-	.card-header { justify-content: space-between; }
-	.move-btn {
-		flex-shrink: 0; background: none; border: none; cursor: pointer;
-		color: var(--text-tertiary); padding: 2px; border-radius: var(--radius-sm);
-		opacity: 0; transition: all var(--duration-fast) var(--ease-out);
-	}
-	.card:hover .move-btn { opacity: 1; }
-	.move-btn:hover { color: var(--accent-indigo); background: rgba(99, 102, 241, 0.08); }
-
-	/* Move Modal */
-	.modal-overlay {
-		position: fixed; inset: 0; z-index: 1000;
-		background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(4px);
-		display: flex; align-items: center; justify-content: center;
-	}
-	.move-modal {
-		background: var(--bg-card); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-lg); padding: var(--space-xl); width: 100%; max-width: 400px;
-		box-shadow: var(--shadow-lg);
-	}
-	.move-modal h3 { font-size: 1rem; font-weight: 700; color: var(--text-primary); margin-bottom: var(--space-lg); }
-	.move-modal .form-group { display: flex; flex-direction: column; gap: var(--space-xs); margin-bottom: var(--space-md); }
-	.move-modal label { font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); }
-	.move-modal select {
-		padding: 8px 12px; border-radius: var(--radius-md);
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		color: var(--text-primary); font-family: var(--font-family); font-size: 0.88rem;
-		cursor: pointer;
-	}
-	.move-modal select:focus { outline: none; border-color: var(--accent-indigo); }
-	.move-actions { display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-lg); }
-	.move-confirm-btn {
-		padding: 8px 20px; border-radius: var(--radius-md); border: none;
-		background: var(--accent-indigo); color: white; font-weight: 600; font-size: 0.85rem;
-		cursor: pointer; font-family: var(--font-family);
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.move-confirm-btn:hover:not(:disabled) { background: #5558e6; transform: translateY(-1px); }
-	.move-confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 	/* Sort dropdown */
 	.sort-wrapper {
@@ -1679,158 +670,12 @@
 		background: rgba(99, 102, 241, 0.1); color: var(--accent-indigo); font-weight: 600;
 	}
 
-	/* ── Live Activity Toasts ─────────────────────────── */
-	.live-toast-container {
-		position: fixed;
-		top: var(--space-xl);
-		left: 50%;
-		transform: translateX(-50%);
-		z-index: 9999;
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-sm);
-		pointer-events: none;
-		max-width: 420px;
-		width: 90%;
-	}
-
-	.live-toast {
-		position: relative;
-		border-radius: var(--radius-lg);
-		overflow: hidden;
-		animation: toastSlideIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-		pointer-events: auto;
-	}
-
-	.live-toast-glow {
-		position: absolute;
-		inset: 0;
-		border-radius: var(--radius-lg);
-		opacity: 0.4;
-		animation: toastGlow 2s ease-in-out infinite;
-	}
-
-	.live-toast-created .live-toast-glow {
-		box-shadow: 0 0 20px rgba(16, 185, 129, 0.3), 0 0 40px rgba(16, 185, 129, 0.15);
-	}
-
-	.live-toast-moved .live-toast-glow {
-		box-shadow: 0 0 20px rgba(99, 102, 241, 0.3), 0 0 40px rgba(99, 102, 241, 0.15);
-	}
-
-	.live-toast-inner {
-		position: relative;
-		display: flex;
-		align-items: center;
-		gap: var(--space-md);
-		padding: var(--space-md) var(--space-lg);
-		background: var(--bg-card);
-		border: 1px solid var(--glass-border);
-		border-radius: var(--radius-lg);
-		backdrop-filter: blur(16px);
-		-webkit-backdrop-filter: blur(16px);
-	}
-
-	.live-toast-created .live-toast-inner {
-		border-left: 3px solid #10b981;
-		background: linear-gradient(135deg, var(--bg-card), rgba(16, 185, 129, 0.04));
-	}
-
-	.live-toast-moved .live-toast-inner {
-		border-left: 3px solid #6366f1;
-		background: linear-gradient(135deg, var(--bg-card), rgba(99, 102, 241, 0.04));
-	}
-
-	.live-toast-emoji {
-		font-size: 1.5rem;
-		flex-shrink: 0;
-		animation: toastBounce 0.6s ease-out;
-	}
-
-	.live-toast-body {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		flex-wrap: wrap;
-		align-items: baseline;
-		gap: 4px;
-		font-size: 0.82rem;
-		line-height: 1.4;
-	}
-
-	.live-toast-user {
-		font-weight: 700;
-		color: var(--text-primary);
-	}
-
-	.live-toast-action {
-		color: var(--text-secondary);
-		font-weight: 500;
-	}
-
-	.live-toast-card {
-		font-weight: 600;
-		color: var(--text-primary);
-		max-width: 200px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.live-toast-cols {
-		display: inline-flex;
-		align-items: center;
-		gap: 2px;
-		font-size: 0.7rem;
-		font-weight: 600;
-		padding: 1px 6px;
-		border-radius: var(--radius-sm);
-		background: rgba(99, 102, 241, 0.1);
-		color: var(--accent-indigo);
-		white-space: nowrap;
-	}
-
-	.live-toast-icon {
-		font-size: 1.1rem;
-		flex-shrink: 0;
-		animation: toastIconPulse 1.5s ease-in-out infinite;
-	}
-
-	@keyframes toastSlideIn {
-		from {
-			opacity: 0;
-			transform: translateY(-30px) scale(0.9);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0) scale(1);
-		}
-	}
-
-	@keyframes toastGlow {
-		0%, 100% { opacity: 0.3; }
-		50% { opacity: 0.6; }
-	}
-
-	@keyframes toastBounce {
-		0% { transform: scale(0.5); }
-		50% { transform: scale(1.2); }
-		100% { transform: scale(1); }
-	}
-
-	@keyframes toastIconPulse {
-		0%, 100% { transform: scale(1); }
-		50% { transform: scale(1.15); }
-	}
-	/* Activity Panel */
-	.activity-toggle-btn {
-		position: relative;
-	}
-	.activity-toggle-btn.active {
-		color: var(--accent-indigo);
-		background: var(--glass-hover);
-	}
-	.activity-panel {
+	/*
+	 * The two side panels, the Activity Log and Archived Cards, share these
+	 * (card 2281, slice C3a-2): each is a component of its own, out of reach
+	 * of the page's scoped rules, and drawn in the panels area.
+	 */
+	.all-panels-area :global(.activity-panel) {
 		width: 360px;
 		height: 100vh;
 		background: var(--bg-surface);
@@ -1845,7 +690,7 @@
 		from { transform: translateX(100%); }
 		to { transform: translateX(0); }
 	}
-	.activity-panel-header {
+	.all-panels-area :global(.activity-panel-header) {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -1853,7 +698,7 @@
 		border-bottom: 1px solid var(--glass-border);
 		flex-shrink: 0;
 	}
-	.activity-panel-header h3 {
+	.all-panels-area :global(.activity-panel-header h3) {
 		margin: 0;
 		font-size: 0.9rem;
 		color: var(--text-primary);
@@ -1861,10 +706,7 @@
 		align-items: center;
 		gap: 8px;
 	}
-	.activity-panel-header h3 svg {
-		opacity: 0.6;
-	}
-	.activity-refresh-btn {
+	.all-panels-area :global(.activity-refresh-btn) {
 		background: none;
 		border: none;
 		color: var(--text-secondary);
@@ -1873,128 +715,24 @@
 		border-radius: 4px;
 		transition: color 0.15s;
 	}
-	.activity-refresh-btn:hover { color: var(--text-primary); }
-	.activity-list {
+	.all-panels-area :global(.activity-refresh-btn:hover) { color: var(--text-primary); }
+	.all-panels-area :global(.activity-list) {
 		flex: 1;
 		overflow-y: auto;
 		padding: 8px 0;
 	}
-	.activity-item {
-		display: flex;
-		gap: 10px;
-		padding: 10px 20px;
-		transition: background 0.15s, border-color 0.15s;
-		border-left: 3px solid transparent;
-	}
-	.activity-item:hover {
-		background: var(--glass-hover);
-	}
-	.activity-item.activity-new {
-		border-left-color: var(--accent-indigo, #6366f1);
-		animation: activityPulse 2s ease-in-out infinite;
-	}
-	@keyframes activityPulse {
-		0%, 100% { background: transparent; }
-		50% { background: rgba(99, 102, 241, 0.08); }
-	}
-	.activity-avatar {
-		width: 28px;
-		height: 28px;
-		border-radius: 50%;
-		background: var(--glass-hover);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		font-size: 14px;
-		flex-shrink: 0;
-		margin-top: 2px;
-	}
-	.activity-body {
-		flex: 1;
-		min-width: 0;
-	}
-	.activity-action-line {
-		font-size: 0.78rem;
-		color: var(--text-primary);
-		line-height: 1.3;
-	}
-	.activity-action-label {
-		font-weight: 600;
-	}
-	.activity-api-badge {
-		display: inline-block;
-		padding: 1px 5px;
-		background: var(--glass-hover);
-		color: var(--accent-indigo);
-		border-radius: 3px;
-		font-size: 0.6rem;
-		font-weight: 700;
-		text-transform: uppercase;
-		margin-left: 4px;
-		vertical-align: middle;
-	}
-	.activity-detail {
-		font-size: 0.72rem;
-		color: var(--text-secondary);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		margin-top: 2px;
-	}
-	.activity-meta {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin-top: 3px;
-		font-size: 0.68rem;
-		color: var(--text-secondary);
-	}
-	.activity-board-tag {
-		padding: 1px 5px;
-		background: var(--bg-elevated);
-		border-radius: 3px;
-		font-size: 0.65rem;
-		color: var(--text-secondary);
-	}
-	.activity-empty {
+	.all-panels-area :global(.activity-empty) {
 		padding: 40px 20px;
 		text-align: center;
 		color: var(--text-secondary);
 		font-size: 0.82rem;
 	}
-	.activity-loading {
+	.all-panels-area :global(.activity-loading) {
 		padding: 30px 20px;
 		text-align: center;
 		color: var(--text-secondary);
 		font-size: 0.8rem;
 	}
-
-	/* More Menu Dropdown */
-	.more-menu-container { position: relative; }
-	.more-dropdown {
-		position: absolute; top: 100%; right: 0;
-		min-width: 200px; padding: var(--space-xs);
-		background: var(--bg-surface); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-md); box-shadow: 0 8px 32px rgba(0,0,0,0.2);
-		z-index: 100; animation: fadeIn 0.1s ease-out;
-	}
-	@keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-	.more-dropdown-label {
-		font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
-		letter-spacing: 0.04em; color: var(--text-tertiary);
-		padding: var(--space-xs) var(--space-sm);
-	}
-	.more-dropdown-item {
-		display: flex; align-items: center; gap: var(--space-sm);
-		width: 100%; padding: var(--space-sm); border: none;
-		background: transparent; color: var(--text-primary);
-		font-size: 0.82rem; cursor: pointer; border-radius: var(--radius-sm);
-		transition: background 0.1s;
-	}
-	.more-dropdown-item:hover { background: var(--glass-hover); }
-	.more-dropdown-item.more-active { color: var(--accent-indigo); }
-	.more-item-icon { font-size: 1rem; }
-	.more-check { margin-left: auto; font-size: 0.8rem; color: var(--accent-emerald); }
 
 	/* All Tasks Stats Panel */
 	.all-stats-grid {
@@ -2014,16 +752,4 @@
 	.all-stats-bar-track { flex: 1; height: 8px; background: var(--glass-bg); border-radius: 4px; overflow: hidden; }
 	.all-stats-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease-out; min-width: 2px; }
 	.all-stats-board-count { font-size: 0.68rem; font-weight: 700; color: var(--text-secondary); width: 40px; text-align: right; }
-
-	/* Archive Card Items */
-	.archive-card-item {
-		display: flex; align-items: center; justify-content: space-between;
-		padding: var(--space-sm); border-radius: var(--radius-sm);
-		border: 1px solid var(--glass-border); margin-bottom: var(--space-xs);
-		transition: border-color 0.15s;
-	}
-	.archive-card-item:hover { border-color: var(--accent-indigo); }
-	.archive-card-info { flex: 1; min-width: 0; }
-	.archive-card-title { font-size: 0.82rem; font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.archive-card-board { font-size: 0.68rem; color: var(--text-tertiary); }
 </style>

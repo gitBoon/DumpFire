@@ -25,7 +25,7 @@
  *
  * The plan is `docs/planning/card-1990-all-tasks-sub-board-search.md` (section 6).
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
@@ -393,23 +393,29 @@ describe('the picker’s search, GET /api/cards/search', () => {
 
 // ─── The page ───────────────────────────────────────────────────────────────
 
+// The page's header and its cards are components of their own since card
+// 2281's slice C3a-2: the filter and the board tag are read where they are.
+const ALL_TASKS_HEADER = 'src/lib/components/tasks/AllTasksHeader.svelte';
+const ALL_TASK_CARD = 'src/lib/components/tasks/AllTaskCard.svelte';
+
 describe('the All Tasks page, src/routes/all/+page.svelte, read from its source', () => {
-	const source = readFileSync(join(process.cwd(), 'src/routes/all/+page.svelte'), 'utf8');
-	const between = (start: string, end: string) => {
+	const read = (file: string) => readFileSync(join(process.cwd(), file), 'utf8');
+	const between = (file: string, start: string, end: string) => {
+		const source = read(file);
 		const from = source.indexOf(start);
 		const to = source.indexOf(end, from);
-		if (from < 0 || to < 0) throw new Error(`the page has no "${start}" … "${end}"`);
+		if (from < 0 || to < 0) throw new Error(`${file} has no "${start}" … "${end}"`);
 		return source.slice(from, to);
 	};
 
 	it('filters each card through inBoardFilter, and by no board or category test of its own', () => {
-		const filters = between('function matchesFilters(', 'function getFilteredCount(');
+		const filters = between('src/routes/all/+page.svelte', 'function matchesFilters(', 'function getFilteredCount(');
 		expect(filters).toContain('inBoardFilter(card.boardId, boardFilter, boardPlaces)');
 		expect(filters).not.toMatch(/categoryId|Number\(boardFilter\)/);
 	});
 
 	it('groups the board filter by the category each board is filtered under, each group in boardOptions order', () => {
-		const select = between('<select class="hdr-control board-filter"', '</select>');
+		const select = between(ALL_TASKS_HEADER, '<select class="hdr-control board-filter"', '</select>');
 		expect(select).toContain('b.filterCategoryId === cat.id');
 		expect(select).toContain('!b.filterCategoryId');
 		expect(select.match(/filterOptions\(/g)).toHaveLength(2);
@@ -417,7 +423,7 @@ describe('the All Tasks page, src/routes/all/+page.svelte, read from its source'
 	});
 
 	it('tags each card with the boards above its board, the whole path in the title', () => {
-		expect(between('<div class="card-board-tag">', '</div>')).toContain('<span class="board-tag" title={boardTag(card)}>{boardTag(card)}</span>');
+		expect(between(ALL_TASK_CARD, '<div class="card-board-tag">', '</div>')).toContain('<span class="board-tag" title={boardTag(card)}>{boardTag(card)}</span>');
 	});
 });
 
@@ -426,13 +432,19 @@ describe('the All Tasks page, src/routes/all/+page.svelte, read from its source'
 describe('the review of card 1990', () => {
 	it('the board filter passes strings: a board option gives its id as a string, so the chosen value is never a number', () => {
 		const source = readFileSync(join(process.cwd(), 'src/routes/all/+page.svelte'), 'utf8');
-		const from = source.indexOf('<select class="hdr-control board-filter"');
-		const select = source.slice(from, source.indexOf('</select>', from));
+		// The filter is in the page's header (card 2281, slice C3a-2), and the page and every one of its parts are read for another reader.
+		const header = readFileSync(join(process.cwd(), ALL_TASKS_HEADER), 'utf8');
+		const parts = (readdirSync(join(process.cwd(), 'src/lib/components/tasks')) as string[])
+			.filter((name) => name.endsWith('.svelte'))
+			.map((name) => readFileSync(join(process.cwd(), 'src/lib/components/tasks', name), 'utf8'));
+		expect(parts.length).toBeGreaterThan(1);
+		const from = header.indexOf('<select class="hdr-control board-filter"');
+		const select = header.slice(from, header.indexOf('</select>', from));
 		// Svelte 5 gives a bound select the option's value as it was passed: a number made `boardFilter` one.
 		expect(select.match(/value=\{String\(option\.id\)\}/g)).toHaveLength(2);
 		expect(select).not.toMatch(/(?<!bind:)value=\{(?!String\()/);
 		// And every other reader of the filter goes through chosenBoardId or inBoardFilter, which take either.
-		expect(source).not.toMatch(/boardFilter\.startsWith|Number\(boardFilter\)|\$\{boardFilter\}/);
+		for (const text of [source, ...parts]) expect(text).not.toMatch(/boardFilter\.startsWith|Number\(boardFilter\)|\$\{boardFilter\}/);
 		expect(source).toContain('chosenBoardId(boardFilter)');
 	});
 

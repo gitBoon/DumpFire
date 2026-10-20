@@ -53,6 +53,7 @@ const TEST_FILES = [
 	'access-control.test.ts',
 	'activity-twins.test.ts',
 	'all-tasks.test.ts',
+	'all-tasks-page.test.ts',
 	'access-every-route.test.ts',
 	'admin-panels.test.ts',
 	'admin-reset.test.ts',
