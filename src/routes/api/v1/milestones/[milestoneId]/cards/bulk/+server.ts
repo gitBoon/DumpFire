@@ -22,8 +22,13 @@ interface CardRow {
 	milestoneId: number | null;
 }
 
-/** Resolve every card in the request in one query, with its board. */
-function loadCards(cardIds: number[]): Map<number, CardRow> {
+/**
+ * Resolve every card in the request in one query, with its board. The attach
+ * reads live cards alone: an archived card is not put in a goal. The detach
+ * reads archived ones too (`archived`, card 2290), and takes them out as the
+ * single detach does.
+ */
+function loadCards(cardIds: number[], { archived }: { archived: boolean }): Map<number, CardRow> {
 	if (cardIds.length === 0) return new Map();
 	const rows = db
 		.select({
@@ -34,7 +39,7 @@ function loadCards(cardIds: number[]): Map<number, CardRow> {
 		})
 		.from(cards)
 		.innerJoin(columns, eq(cards.columnId, columns.id))
-		.where(and(inArray(cards.id, cardIds), isNull(cards.archivedAt)))
+		.where(archived ? inArray(cards.id, cardIds) : and(inArray(cards.id, cardIds), isNull(cards.archivedAt)))
 		.all();
 	return new Map(rows.map((r) => [r.cardId, r]));
 }
@@ -148,7 +153,7 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 		}
 
 		const cardIds = parseCardIds(body);
-		const loaded = loadCards(cardIds);
+		const loaded = loadCards(cardIds, { archived: false });
 
 		const editable = new Map<number, boolean>();
 		const mayEdit = (boardId: number) => {
@@ -291,6 +296,11 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
  * skipped rather than erroring. The cards themselves are untouched. Each card
  * taken out is recorded, `api:milestone_card_removed` on its board with its
  * id; a card skipped is not (card 2289).
+ *
+ * An archived card is taken out too, or skipped when it is not in this
+ * milestone, as `DELETE /api/v1/milestones/:milestoneId/cards` and the page's
+ * detach treat it (card 2290). A card that does not exist is `Card not found`
+ * in the 409.
  */
 export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -310,8 +320,12 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 			throw e;
 		}
 
+		// Archived cards are read too (card 2290): one in this goal is taken out,
+		// with its entry and its board told, as the single detach takes it out,
+		// and one that is not is skipped and counted like any other. They were
+		// reported as cards that do not exist, and the whole batch refused.
 		const cardIds = parseCardIds(body);
-		const loaded = loadCards(cardIds);
+		const loaded = loadCards(cardIds, { archived: true });
 
 		const editable = new Map<number, boolean>();
 		const mayEdit = (boardId: number) => {
@@ -326,7 +340,8 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 		for (const id of cardIds) {
 			const card = loaded.get(id);
 			if (!card) {
-				problems.push({ cardId: id, reason: 'Card does not exist or is archived' });
+				// The single detach's word: an archived card is no longer missing here.
+				problems.push({ cardId: id, reason: 'Card not found' });
 				continue;
 			}
 			if (!mayEdit(card.boardId)) {

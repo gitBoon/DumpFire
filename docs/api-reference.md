@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.78
+version: 1.79
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1148,6 +1148,17 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   `null` on a sub-board included, and `400` `parentCardId must be an id`, where it saved the
   other fields and ignored it (item 91). See
   [`PUT /api/v1/cards/:cardId`](#put-apiv1cardscardid).
+- **`DELETE /milestones/:milestoneId/cards/bulk` takes an archived card out** (card 2290),
+  logging `api:milestone_card_removed`, as `DELETE /milestones/:milestoneId/cards` and
+  `milestoneId: null` on `PUT /cards/:cardId` do, where it refused the whole batch with a
+  `409`. An archived card not in the milestone is skipped and counted, and a card that does
+  not exist is `Card not found` in the `409` (it was `Card does not exist or is archived`),
+  so an archived card on a board the key's user cannot edit is listed as one they cannot
+  edit, by its id with no title. `POST …/cards/bulk` still refuses an archived card. A
+  milestone whose only cards were archived can now be emptied, and the plan-created mail,
+  which counts archived cards when it decides a milestone was empty, is then sent by the next
+  bulk attach to it (item 92). See
+  [`DELETE /api/v1/milestones/:milestoneId/cards/bulk`](#delete-apiv1milestonesmilestoneidcardsbulk).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2904,9 +2915,17 @@ Take many cards out of a milestone, with the same body. The cards themselves are
 
 Both are all or nothing:
 
-- The whole list is checked first. If any card does not exist, is archived, is on a board
-  the caller cannot edit or (for an attach) is on another board than a single-board
-  milestone, the answer is `409` with every problem listed, and no card is changed.
+- The whole list is checked first. If any card does not exist, is archived (for an attach),
+  is on a board the caller cannot edit or (for an attach) is on another board than a
+  single-board milestone, the answer is `409` with every problem listed, and no card is
+  changed. The attach says `Card does not exist or is archived`; the detach says
+  `Card not found` for a card that does not exist (card 2290).
+- **The detach takes an archived card out** (card 2290), as the single-card `DELETE` and
+  `milestoneId: null` on `PUT /cards/:cardId` do, with its entry and a live update to its
+  board, and skips and counts one that is not in the milestone. An archived card on a board
+  the caller cannot edit is `No edit access to the board holding card #<id>`, with no title.
+  Until 2026-10-14 the detach refused the whole batch over an archived card, which still
+  holds its milestone to its board.
 - If the list passes, every card is attached or detached in one transaction. A failure part
   of the way through answers `500` and leaves every card as it was.
 - A card already in the milestone (attach) or not in it (detach) is skipped, not an error,
@@ -2925,6 +2944,8 @@ Both are all or nothing:
   skipped logs nothing (card 2289). No webhook is sent.
 - The attach alone sends the plan-created mail, when the milestone held no card before and at
   least one was attached. A card put in one at a time, by any route or page, sends none.
+  Archived cards count when it decides the milestone held a card, so a milestone emptied of
+  its archived cards by the detach mails on the next bulk attach.
 
 The full contract, with the response fields, is in `DUMPFIRE_API.md` under *Bulk Planning*.
 The fields of the `409` are under [Error Format](#error-format).
