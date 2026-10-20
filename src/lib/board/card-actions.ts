@@ -22,6 +22,12 @@ export type LabelFailure = {
 	message: string;
 };
 
+/** A pending subtask of a new card that was not made: see `saveCard` (card 2280, slice B2b). */
+export type SubtaskFailure = { title: string; message: string };
+
+/** Someone chosen for a new card who was not assigned to it: see `assignPending` (card 2280, slice B2b). */
+export type AssigneeFailure = { userId: number; message: string };
+
 /**
  * Saves a card — either creates a new one or updates an existing one.
  * Also handles creating pending subtasks for newly created cards, and putting
@@ -40,10 +46,15 @@ export type LabelFailure = {
  * A create the server refuses, or that gets no answer, makes no card: it is
  * given back as `failure`, the server's words where it gave them, with
  * `isNew` false, and nothing else is sent. It used to come back as created.
+ * An update refused or unanswered is given back the same way, and the page
+ * keeps the window open with what was typed; its answer was thrown away, and
+ * the window closed as if saved (card 2280, slice B2b). Each pending subtask
+ * is read the same way as a label: one not made comes back in
+ * `subtaskFailures`, and the card is kept.
  *
  * @returns `{ isNew, title }` for activity logging by the caller, with the new
- * card's id and `labelFailures` when a card was created, and `failure` when
- * one was not.
+ * card's id, `labelFailures` and `subtaskFailures` when a card was created,
+ * and `failure` when none was made or the update was not saved.
  */
 export async function saveCard(
 	editingCard: CardType | null,
@@ -69,11 +80,19 @@ export async function saveCard(
 		/** A new card's labels, from the template it was made from: put on once it is made. */
 		pendingLabelIds?: number[];
 	}
-): Promise<{ isNew: boolean; title: string; cardId?: number; labelFailures?: LabelFailure[]; failure?: string }> {
+): Promise<{ isNew: boolean; title: string; cardId?: number; labelFailures?: LabelFailure[]; subtaskFailures?: SubtaskFailure[]; failure?: string }> {
 	const { pendingSubtasks, pendingLabelIds, ...rest } = cardData;
 	if (editingCard) {
 		// Update existing card
-		await api.updateCard(editingCard.id, { ...rest, boardId });
+		let res: Response;
+		try {
+			res = await api.updateCard(editingCard.id, { ...rest, boardId });
+		} catch {
+			return { isNew: false, title: editingCard.title, failure: 'No answer from the server. The card may not have been saved.' };
+		}
+		if (!res.ok) {
+			return { isNew: false, title: editingCard.title, failure: await api.failureMessage(res, 'The card was not saved.') };
+		}
 		return { isNew: false, title: editingCard.title };
 	} else if (cardModalColumnId) {
 		// Create new card
@@ -94,23 +113,32 @@ export async function saveCard(
 			return { isNew: false, title: cardData.title, failure: await api.failureMessage(res, 'The card was not created.') };
 		}
 		const labelFailures: LabelFailure[] = [];
+		const subtaskFailures: SubtaskFailure[] = [];
 		const newCard = await res.json();
-		// Create pending subtasks for the new card
+		// Create pending subtasks for the new card, each answer read: one refused
+		// is named, and the rest are still sent.
 		if (pendingSubtasks && pendingSubtasks.length > 0) {
 			for (let i = 0; i < pendingSubtasks.length; i++) {
 				const stData = JSON.parse(pendingSubtasks[i]);
-				await api.createSubtask({
-					cardId: newCard.id,
-					title: stData.title,
-					description: stData.description || '',
-					priority: stData.priority || 'medium',
-					// Only a colour the server takes (card 2162, decision 4), so a
-					// pending subtask is made even if its colour tag is no colour.
-					colorTag: colourToCopy(stData.colorTag),
-					dueDate: stData.dueDate || null,
-					completed: false,
-					boardId
-				});
+				let made: Response;
+				try {
+					made = await api.createSubtask({
+						cardId: newCard.id,
+						title: stData.title,
+						description: stData.description || '',
+						priority: stData.priority || 'medium',
+						// Only a colour the server takes (card 2162, decision 4), so a
+						// pending subtask is made even if its colour tag is no colour.
+						colorTag: colourToCopy(stData.colorTag),
+						dueDate: stData.dueDate || null,
+						completed: false,
+						boardId
+					});
+				} catch {
+					subtaskFailures.push({ title: stData.title, message: 'No answer from the server, so it may be on the card after all.' });
+					continue;
+				}
+				if (!made.ok) subtaskFailures.push({ title: stData.title, message: await api.failureMessage(made, 'It was refused.') });
 			}
 		}
 		// The template's labels, each once: a second toggle of one would take it off.
@@ -124,9 +152,35 @@ export async function saveCard(
 			}
 			if (!put.ok) labelFailures.push({ labelId, message: await api.failureMessage(put, 'It was refused.') });
 		}
-		return { isNew: true, title: cardData.title, cardId: newCard.id, labelFailures };
+		return { isNew: true, title: cardData.title, cardId: newCard.id, labelFailures, subtaskFailures };
 	}
 	return { isNew: false, title: '' };
+}
+
+/**
+ * Assigns to a new card the people chosen in its window before it was made,
+ * each in turn (card 2280, slice B2b). Each answer is read, and someone not
+ * assigned comes back with what to tell the reader; the page names them, from
+ * the board's members it holds. They were sent together and every answer was
+ * thrown away.
+ */
+export async function assignPending(cardId: number, userIds: number[]): Promise<AssigneeFailure[]> {
+	const failures: AssigneeFailure[] = [];
+	for (const userId of userIds) {
+		let res: Response;
+		try {
+			res = await fetch(`/api/cards/${cardId}/assignees`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ userId })
+			});
+		} catch {
+			failures.push({ userId, message: 'No answer from the server, so they may be assigned after all.' });
+			continue;
+		}
+		if (!res.ok) failures.push({ userId, message: await api.failureMessage(res, 'It was refused.') });
+	}
+	return failures;
 }
 
 /** Where a navigation came from or went to, as SvelteKit's `afterNavigate` gives it: the parts read here. */
@@ -279,11 +333,12 @@ export async function duplicateCard(
 	return made(null);
 }
 
-/** Toggles a card's pinned status. Returns the new pinned state. */
-export async function togglePin(card: CardType, boardId: number): Promise<boolean> {
-	const newPinned = !card.pinned;
-	await api.updateCard(card.id, { pinned: newPinned, boardId });
-	return newPinned;
+/**
+ * Pins or unpins a card. Returns the answer, for the caller to check: it was
+ * thrown away, and the pin shown whatever it was (card 2280, slice B2b).
+ */
+export async function setPinned(cardId: number, pinned: boolean, boardId: number): Promise<Response> {
+	return api.updateCard(cardId, { pinned, boardId });
 }
 
 // ─── Sub-boards ──────────────────────────────────────────────────────────────

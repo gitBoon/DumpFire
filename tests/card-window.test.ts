@@ -213,7 +213,8 @@ describe('a card made from a template carries its labels (card 2163)', () => {
 		const saved = windowSaves({ ...NEW_TASK, title: 'From a template', templateLabels: [urgent.id, bug.id] });
 		const result = await cardActions.saveCard(null, A.cols['To Do'].id, A.board.id, onThePage(A), saved);
 
-		expect(result).toEqual({ isNew: true, title: 'From a template', cardId: expect.any(Number), labelFailures: [] });
+		// No pending subtask failed either (card 2280, slice B2b reads each subtask's answer).
+		expect(result).toEqual({ isNew: true, title: 'From a template', cardId: expect.any(Number), labelFailures: [], subtaskFailures: [] });
 		expect(sent.map((request) => `${request.method} ${request.url}`)).toEqual(['POST /api/cards', 'PUT /api/labels', 'PUT /api/labels']);
 		expect(sent[0].body).not.toHaveProperty('pendingLabelIds');
 		expect(sent.slice(1).map((request) => request.body)).toEqual([

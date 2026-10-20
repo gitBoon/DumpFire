@@ -42,6 +42,13 @@ export const REFRESH_DELAY_MS = 250;
 export const REFRESH_MAX_WAIT_MS = 1000;
 /** When a hold left open is let go. */
 export const HOLD_WATCHDOG_MS = 30_000;
+/**
+ * The watchdog of a bulk change's own hold (card 2280, the B2b re-check): its
+ * cards are sent one at a time, and all of them can take longer than 30 s.
+ * `fetch` has no time limit of its own, so a request that never answers would
+ * otherwise hold the board for good.
+ */
+export const BULK_HOLD_MS = 5 * 60_000;
 
 /** Puts a read's answer on the screen. */
 export type ApplyAnswer = () => void;
@@ -57,8 +64,10 @@ export type Release = (() => void) & { readonly released: boolean };
  * `watchdog: false` keeps the hold out of the watchdog's reach, for a hold
  * whose end the person decides and a window shows, the On Hold note window's
  * (B2a review): it is let go only by its release, or when the schedule stops.
+ * `watchdogMs` lets it go after that long in place of the schedule's 30 s
+ * (a bulk change's, `BULK_HOLD_MS`; the B2b re-check).
  */
-export type HoldOptions = { watchdog?: boolean };
+export type HoldOptions = { watchdog?: boolean; watchdogMs?: number };
 
 /**
  * Sends one read. Resolves to how to apply its answer, or to nothing when
@@ -87,7 +96,7 @@ export type RefreshSchedule = {
 	readonly holds: number;
 	/** Whether a read is out. */
 	readonly inFlight: boolean;
-	/** Stop: no more reads, every timer cleared, every `now()` resolved. */
+	/** Stop: no more reads, every timer cleared, every `now()` resolved, every hold still open spent. */
 	dispose(): void;
 };
 
@@ -113,6 +122,8 @@ export function refreshSchedule(run: RefreshRun, timing: RefreshTiming = {}): Re
 	let inFlight = false;
 	let holds = 0;
 	const watchdogs = new Set<ReturnType<typeof setTimeout>>();
+	/** Marks each hold still open spent: called when the schedule stops (card 2280, slice B2b). */
+	const spenders = new Set<() => void>();
 	let generation = 0;
 	let disposed = false;
 
@@ -224,9 +235,14 @@ export function refreshSchedule(run: RefreshRun, timing: RefreshTiming = {}): Re
 			generation += 1;
 			clearTimer();
 			let watchdog: ReturnType<typeof setTimeout> | null = null;
+			const spend = () => {
+				released = true;
+			};
+			spenders.add(spend);
 			const release = () => {
 				if (released) return;
 				released = true;
+				spenders.delete(spend);
 				if (watchdog !== null) {
 					clearTimeout(watchdog);
 					watchdogs.delete(watchdog);
@@ -236,7 +252,7 @@ export function refreshSchedule(run: RefreshRun, timing: RefreshTiming = {}): Re
 				if (holds === 0 && pending && !inFlight && !disposed) void send();
 			};
 			if (options.watchdog !== false) {
-				watchdog = setTimeout(release, watchdogMs);
+				watchdog = setTimeout(release, options.watchdogMs ?? watchdogMs);
 				watchdogs.add(watchdog);
 			}
 			return Object.defineProperty(release, 'released', { get: spent }) as Release;
@@ -256,6 +272,12 @@ export function refreshSchedule(run: RefreshRun, timing: RefreshTiming = {}): Re
 			clearTimer();
 			for (const watchdog of watchdogs) clearTimeout(watchdog);
 			watchdogs.clear();
+			// A hold still open belongs to a schedule that is gone: spent, so a page
+			// that kept one (a drag's) takes a fresh one from the next schedule, the
+			// one `BoardState.take` makes when a refused board comes back (B2a's
+			// note, done in slice B2b).
+			for (const spend of spenders) spend();
+			spenders.clear();
 			for (const done of waiters) done();
 			waiters = [];
 		}

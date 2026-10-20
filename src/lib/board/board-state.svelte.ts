@@ -1,7 +1,7 @@
 /**
  * board-state.svelte.ts — what the board page draws, and the three ways it
- * changes (card 2280, slice B1 of card 2012's part B; no page uses it yet:
- * slice B2a moves the board page onto it).
+ * changes (card 2280, slice B1 of card 2012's part B; slice B2a moved the
+ * board page onto it, and slice B2b sends its writes through it).
  *
  *   - **Navigation**: the page makes one from its load's data, once per board
  *     (`board/[id]/+layout.svelte` makes the page afresh for each).
@@ -15,15 +15,18 @@
  *   - **A write's own answer** (`write`): the change is shown at once, sent,
  *     and on a refusal or no answer only that change is taken back, the
  *     server's words returned for the page to say, and the board read once.
+ *     On success the answer's value of each field sent is taken (`writeCard`,
+ *     `writeColumn`; slice B2b), and the board is not read again: the
+ *     write's own live event is.
  *
  * It reaches nothing of the browser but what it is given, so the tests make
  * one with a fetch that answers as they choose.
  */
-import { failureMessage } from '$lib/api';
+import { answerBody, failureMessage } from '$lib/api';
 import type { Fetch } from '$lib/signed-out';
-import type { CategoryType, ColumnType, LabelType, MilestoneType, SortOption } from '$lib/types';
+import type { CardType, CategoryType, ColumnType, LabelType, MilestoneType, SortOption } from '$lib/types';
 import { sortCards } from '$lib/utils/card-utils';
-import type { Patched } from './board-patches';
+import { answeredFields, patchCard, patchCardStill, patchColumn, patchColumnStill, type Patched } from './board-patches';
 import { askForContents, type BoardBlockerType, type BoardContentsData, type BreadcrumbType } from './contents-answer';
 import { refreshSchedule, type HoldOptions, type RefreshSchedule, type RefreshTiming, type Release } from './refresh-schedule';
 
@@ -33,8 +36,14 @@ export type BoardStateOptions = RefreshTiming & {
 	fetch?: Fetch;
 };
 
-/** What a write came to: the answer, or the words to say. */
-export type WriteResult = { ok: true; res: Response } | { ok: false; failure: string };
+/**
+ * What a write came to: the answer, with its body read (null when it is not a
+ * JSON object), or the words to say.
+ */
+export type WriteResult = { ok: true; res: Response; answer: Record<string, unknown> | null } | { ok: false; failure: string };
+
+/** What a write says when it is refused (the server's words, where it gives none) and when it gets no answer. */
+export type WriteWords = { refused: string; noAnswer: string };
 
 export class BoardState {
 	board = $state<BoardContentsData['board']>({ id: 0, name: '', emoji: null, parentCardId: null });
@@ -154,13 +163,15 @@ export class BoardState {
 	 * hold the reads while it is out. On a refusal or no answer only `change`
 	 * is taken back, out of the columns as they are by then, the board is read
 	 * once, and the server's words (or `words`) are returned for the page to
-	 * say. On success the answer is returned for the page to take what it
-	 * needs from it.
+	 * say. On success the answer's body is read and returned, and `take`, when
+	 * given, puts what it needs of it on the columns as they are by then
+	 * (card 2280, slice B2b), before the write lets the reads go.
 	 */
 	async write(
 		change: ((columns: ColumnType[]) => Patched<ColumnType>) | null,
 		send: () => Promise<Response>,
-		words: { refused: string; noAnswer: string }
+		words: WriteWords,
+		take?: (columns: ColumnType[], answer: Record<string, unknown> | null) => ColumnType[]
 	): Promise<WriteResult> {
 		const release = this.hold();
 		let undo: Patched<ColumnType>['undo'] | null = null;
@@ -185,12 +196,41 @@ export class BoardState {
 				takeBack();
 				return { ok: false, failure: await failureMessage(res, words.refused) };
 			}
-			return { ok: true, res };
+			const answer = await answerBody(res);
+			if (take) this.columns = take(this.columns, answer);
+			return { ok: true, res, answer };
 		} finally {
 			// Settled first: a read already out began before this write ended.
 			this.#schedule.settled();
 			release();
 		}
+	}
+
+	/**
+	 * Change fields of one card (card 2280, slice B2b): shown at once, sent,
+	 * and on success the answer's value of each of those fields taken, and no
+	 * other field of the row (`answeredFields`); on a refusal or no answer
+	 * those fields alone put back, and the board read once. Either is put only
+	 * on a field that still shows what this write set (the B2b review): a
+	 * second change to the same field, made while this one was out, stays.
+	 */
+	writeCard(cardId: number, fields: Partial<CardType>, send: () => Promise<Response>, words: WriteWords): Promise<WriteResult> {
+		return this.write(
+			(columns) => patchCard(columns, cardId, fields),
+			send,
+			words,
+			(columns, answer) => patchCardStill(columns, cardId, fields, answeredFields(answer, fields))
+		);
+	}
+
+	/** The same for fields of one column: its title, colour, WIP limit or Add Task switch. */
+	writeColumn(columnId: number, fields: Partial<Omit<ColumnType, 'cards'>>, send: () => Promise<Response>, words: WriteWords): Promise<WriteResult> {
+		return this.write(
+			(columns) => patchColumn(columns, columnId, fields),
+			send,
+			words,
+			(columns, answer) => patchColumnStill(columns, columnId, fields, answeredFields(answer, fields))
+		);
 	}
 
 	/** Stop reading: the page is going. */

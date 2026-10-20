@@ -62,7 +62,8 @@ export function touchedUpdates(
 export type DndFinalizeResult =
 	| { action: 'blocked'; blockedState: BlockedState }
 	| { action: 'on-hold'; onHoldState: OnHoldState; updatedColumns: ColumnType[] }
-	| { action: 'committed'; movedCards: { card: CardType; fromName: string; toName: string; isComplete: boolean }[]; updatedColumns: ColumnType[] }
+	/** `updates`: each card's column and place as sent, which the page sets on its cards (card 2280, slice B2b). */
+	| { action: 'committed'; movedCards: { card: CardType; fromName: string; toName: string; isComplete: boolean }[]; updatedColumns: ColumnType[]; updates: { id: number; columnId: number; position: number }[] }
 	/** The server did not take the move, in its own words: the page puts the columns back and says so. */
 	| { action: 'refused'; message: string };
 
@@ -87,7 +88,7 @@ export async function handleCardDndFinalize(
 	const columns = boardColumns.map(c => ({ ...c, cards: [...c.cards] }));
 	const targetCol = columns.find((c) => c.id === columnId);
 	if (!targetCol) {
-		return { action: 'committed', movedCards: [], updatedColumns: columns };
+		return { action: 'committed', movedCards: [], updatedColumns: columns, updates: [] };
 	}
 
 	// ── Check: blocked cards moving to Complete ──
@@ -174,29 +175,52 @@ export async function handleCardDndFinalize(
 		};
 	});
 
-	return { action: 'committed', movedCards: movedEntries, updatedColumns: columns };
+	return { action: 'committed', movedCards: movedEntries, updatedColumns: columns, updates };
 }
 
 /**
- * Confirms an On Hold move — saves the note and commits the card reorder.
+ * Confirms an On Hold move: the move first, and the note only once the move
+ * is taken (card 2280, slice B2b; R7). The note was sent first and neither
+ * answer read, so a refused move left a note on a card that never moved and
+ * said nothing. With no `pendingUpdates` (the move taken already, its note
+ * refused) the note alone is sent.
+ *
+ * @returns `failure`: why the card was not moved, and then no note was sent;
+ * `noteFailure`: why the note was not saved, the card moved. Each null when
+ * there is nothing to say.
  */
 export async function confirmOnHold(
 	onHoldState: OnHoldState,
 	boardId: number,
 	userName: string,
 	userEmoji: string
-): Promise<void> {
-	await api.updateCard(onHoldState.cardId, { onHoldNote: onHoldState.note });
-	await api.reorderCards(onHoldState.pendingUpdates, boardId, userName, userEmoji);
+): Promise<{ failure: string | null; noteFailure: string | null }> {
+	if (onHoldState.pendingUpdates.length > 0) {
+		let moved: Response;
+		try {
+			moved = await api.reorderCards(onHoldState.pendingUpdates, boardId, userName, userEmoji);
+		} catch {
+			return { failure: 'No answer from the server. The card may not have been put on hold.', noteFailure: null };
+		}
+		if (!moved.ok) return { failure: await api.failureMessage(moved, 'The card was not put on hold.'), noteFailure: null };
+	}
+	let noted: Response;
+	try {
+		noted = await api.updateCard(onHoldState.cardId, { onHoldNote: onHoldState.note });
+	} catch {
+		return { failure: null, noteFailure: 'No answer from the server, so the note may not have been saved.' };
+	}
+	return { failure: null, noteFailure: noted.ok ? null : await api.failureMessage(noted, 'The note was refused.') };
 }
 
 /**
- * Persists a new column ordering after drag-and-drop.
+ * Persists a new column ordering after drag-and-drop. Returns the answer, for
+ * the caller to check (card 2280, slice B2b).
  */
 export async function handleColumnDndFinalize(
 	columns: ColumnType[],
 	boardId: number
-): Promise<void> {
+): Promise<Response> {
 	const updates = columns.map((col, i) => ({ id: col.id, position: i }));
-	await api.reorderColumns(updates, boardId);
+	return api.reorderColumns(updates, boardId);
 }
