@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.63
+version: 1.64
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3678,6 +3678,10 @@ Nothing is done to the database. The older image stamps a card archived again wh
 
 **Owner to know (2290).** A bulk detach takes archived cards out of a goal. A goal whose only cards were archived can now be emptied, and the next bulk attach to it then sends the "Plan created" mail: that mail counts archived cards when it decides a goal was empty, so before this release such a goal could never be emptied through the bulk route and never mailed again.
 
+**Card 2295.** No migration, no setting, no new route or field. The API's card listing, `GET /api/v1/boards/{id}/cards`, which the tracking wrapper's `cards` command and the hand-built stakeholder reports read, listed a board's columns in no set order, in practice the order they were made in, so a column moved on the board, or one added later between two others (a "Review" between In Progress and Complete), came in the wrong place, after Complete; and it read each column's cards in a query of its own. Now it lists the cards in the board's order, by column position (ties by column id) and then card position (ties by card id), in one query, and reads the subtask counts for the cards listed alone. An answer's fields are unchanged. The web application's card picker (choosing a card to hang a new sub-board under) breaks a tie of position by id too. The OpenAPI document stays `1.2.0`, with item 93 in its 2026-10-14 note.
+
+**Owner to know (2295).** On a board whose columns were reordered, or had one added between two others, the API's card listing now comes in the board's order, so a report or script built on it sees the columns in a new order from the deploy on. A board never reordered lists as before.
+
 **Owner to know (after the deploy).** The local `.agent` tracking wrapper (`create-board -CategoryId`) and its reference are newer than the copies in Workflow_Central by a large backlog. Export them there once this release is live, comparing each file first: the wrapper's `-CategoryId` help line says it files the board from this release on, and an older server ignores it.
 
 #### After the deploy
@@ -3695,11 +3699,14 @@ On production, with your own API key. **The scratch board:** the one from checks
 | 299 | 2287 | `PUT /api/v1/boards/<scratch>` `{"name": "<its name>", "parentCardId": <T1>}`; `GET /api/v1/boards/<scratch>` | `400` `parentCardId <T1> is not this board's parent card (none): …`; `parentCardId` still null | `200` |
 | 300 | 2290 | `POST /api/v1/milestones/<goal>/cards` `{"cardId": <T2>}`, then the same for T3; `DELETE /api/v1/cards/<T3>` (archive); `DELETE /api/v1/milestones/<goal>/cards/bulk` `{"cardIds": [<T2>, <T3>]}`; open the board's **Activity Log** | `200` `detached: 2`; two "Removed card from milestone" (T2, T3). Then restore T3 from the **Archived** page | `409` |
 | 301 | 2290 | `DELETE /api/v1/milestones/<goal>/cards/bulk` `{"cardIds": [<T2>, 999999999]}` | `409`, `problems` `[{"cardId": 999999999, "reason": "Card not found"}]` | The old reason, or `200` |
-| 303 | all | `GET /api/v1/openapi.json` | `info.version` `1.2.0`; the description holds items 91 and 92; `PUT /api/v1/cards/{cardId}`'s request schema lists `columnId` (only as held) and `position` (ignored), `POST /api/v1/boards`'s lists `categoryId`, and `PUT /api/v1/boards/{boardId}`'s lists `parentCardId` | A version change, or an item or a field missing |
+| 302 | 2295 | `PUT /api/v1/cards/<T1>/move` `{"columnId": <In Progress id>}`; `PUT /api/v1/columns/<To Do id>` `{"position": 9}`; `GET /api/v1/boards/<scratch>/cards` | T1 (In Progress) listed before T2 and T3 (To Do, now last on the board). Then put To Do back with `{"position": 0}`, move T1 back to To Do and `DELETE /api/v1/milestones/<goal>` | T2 and T3 first |
+| 303 | all | `GET /api/v1/openapi.json` | `info.version` `1.2.0`; the description holds items 91 to 93; `PUT /api/v1/cards/{cardId}`'s request schema lists `columnId` (only as held) and `position` (ignored), `POST /api/v1/boards`'s lists `categoryId`, `PUT /api/v1/boards/{boardId}`'s lists `parentCardId`, and `GET /api/v1/boards/{boardId}/cards`'s description gives the order | A version change, or an item or a field missing |
+
+**Afterwards.** Delete the scratch goal if check 302 did not, then the scratch cards and the scratch board, unless a later release's checks still need them.
 
 #### Going back to the previous image
 
-Nothing is done to the database. The older image ignores a `columnId` on `PUT /api/v1/cards/{id}` and a `parentCardId` on `PUT /api/v1/boards/{id}` again, saving the other fields sent with them and answering `200`, and makes a board sent to `POST /api/v1/boards` with a `categoryId` unfiled. A board already filed through the API stays filed. The wrapper's `create-board -CategoryId` is then ignored by the server. The older image's bulk detach refuses a whole batch that lists an archived card again, reporting it as `Card does not exist or is archived`; archived cards already taken out of goals stay out.
+Nothing is done to the database. The older image ignores a `columnId` on `PUT /api/v1/cards/{id}` and a `parentCardId` on `PUT /api/v1/boards/{id}` again, saving the other fields sent with them and answering `200`, and makes a board sent to `POST /api/v1/boards` with a `categoryId` unfiled. A board already filed through the API stays filed. The wrapper's `create-board -CategoryId` is then ignored by the server. The older image's bulk detach refuses a whole batch that lists an archived card again, reporting it as `Card does not exist or is archived`; archived cards already taken out of goals stay out. Its card listing lists the columns in the order they were made in again, reading each column on its own.
 
 ## Changing the Schema
 

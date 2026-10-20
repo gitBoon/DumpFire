@@ -81,6 +81,7 @@ import {
 	makeUser,
 	resetDb
 } from './helpers/fixtures';
+import { watchReads } from './helpers/reads';
 
 const ROOT = process.cwd();
 const KIT = '@sveltejs/kit';
@@ -2005,6 +2006,104 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(keysOf(read.body)).toEqual(propertiesOf(detail));
 		expect(read.body.blockedBy).toHaveLength(1);
 		expect(keysOf(read.body.blockedBy[0])).toEqual(propertiesOf(deref(detail.properties.blockedBy).items));
+	});
+
+	// Card 2295: the listing read the board's columns in no set order (in
+	// practice the order they were made in) and then each column's cards in a
+	// query of its own. It now reads them in one query, in the board's order:
+	// column position, ties by column id, then card position, ties by card id.
+	// The plan is `docs/planning/cards-2287-2290-2295-api.md` (decisions 12 to 14).
+	describe('GET /boards/{boardId}/cards: the board\'s order, in one read (card 2295)', () => {
+		/** Each card listed as `<column>:<title>`, in the order answered. */
+		const listed = (body: { columnTitle: string; title: string }[]) => body.map((c) => `${c.columnTitle}:${c.title}`);
+
+		it('lists the columns in the board\'s order, a column moved to the front first', async () => {
+			const { admin, board, cols } = fixture();
+			db.delete(cards).run();
+			for (const title of ['To Do', 'On Hold', 'In Progress', 'Complete']) makeCard(cols[title], { title: `${title} card` });
+			db.update(columns).set({ position: -1 }).where(eq(columns.id, cols['Complete'].id)).run();
+
+			const res = await api('GET', `/api/v1/boards/${board.id}/cards`, { user: admin });
+
+			expect(res.status).toBe(200);
+			expect(listed(res.body)).toEqual(['Complete:Complete card', 'To Do:To Do card', 'On Hold:On Hold card', 'In Progress:In Progress card']);
+		});
+
+		it('reads the cards of a board of four columns in one query', async () => {
+			const { admin, board, cols } = fixture();
+			for (const title of ['On Hold', 'In Progress', 'Complete']) makeCard(cols[title]);
+
+			const reads = watchReads('cards');
+			let res: ApiResult;
+			try {
+				res = await api('GET', `/api/v1/boards/${board.id}/cards`, { user: admin });
+			} finally {
+				reads.restore();
+			}
+
+			expect(res.status).toBe(200);
+			expect(res.body).toHaveLength(5);
+			expect(reads.inTransaction).toHaveLength(1);
+		});
+
+		// Pin: the two filters, the subtask counts and the answer's properties, as they were.
+		it('filters by column and takes archived cards in, in their place, with each card\'s subtask counts (pin)', async () => {
+			const { admin, board, cols, first, second } = fixture();
+			db.update(cards).set({ position: 0 }).where(eq(cards.id, first.id)).run();
+			db.update(cards).set({ position: 2 }).where(eq(cards.id, second.id)).run();
+			const archived = makeCard(cols['To Do'], { title: 'Archived', position: 1, archivedAt: '2026-10-01 09:00:00' });
+			const elsewhere = makeCard(cols['In Progress'], { title: 'Elsewhere' });
+			makeSubtask(first, { title: 'Done', completed: true });
+			makeSubtask(first, { title: 'Open' });
+			makeSubtask(elsewhere, { title: 'Open there' });
+			const ids = (body: { id: number }[]) => body.map((c) => c.id);
+			const counts = (body: { id: number; subtaskCount: number; subtaskCompleted: number }[]) =>
+				body.map((c) => [c.id, c.subtaskCount, c.subtaskCompleted]);
+
+			const all = await api('GET', `/api/v1/boards/${board.id}/cards`, { user: admin });
+			expect(ids(all.body)).toEqual([first.id, second.id, elsewhere.id]);
+			expect(counts(all.body)).toEqual([[first.id, 2, 1], [second.id, 0, 0], [elsewhere.id, 1, 0]]);
+			expect(keysOf(all.body[0])).toEqual(propertiesOf(answerSchema('GET /api/v1/boards/{boardId}/cards', 200).items));
+
+			const toDo = await api('GET', `/api/v1/boards/${board.id}/cards?columnId=${cols['To Do'].id}`, { user: admin });
+			expect(counts(toDo.body)).toEqual([[first.id, 2, 1], [second.id, 0, 0]]);
+
+			const withArchived = await api('GET', `/api/v1/boards/${board.id}/cards?archived=true`, { user: admin });
+			expect(ids(withArchived.body)).toEqual([first.id, archived.id, second.id, elsewhere.id]);
+		});
+
+		// Security: the board in the path bounds the list whatever the filter
+		// names, so a column of a board the caller cannot open gives nothing.
+		it('answers 200 [] for a column of a board the caller cannot open, with and without archived cards', async () => {
+			const owner = makeUser();
+			const mine = makeBoard({ owner });
+			makeCard(mine.cols['To Do'], { title: 'Mine' });
+			const theirs = makeBoard({ owner: makeUser() });
+			makeCard(theirs.cols['To Do'], { title: 'Theirs' });
+			makeCard(theirs.cols['To Do'], { title: 'Theirs, archived', archivedAt: '2026-10-01 09:00:00' });
+
+			for (const query of [`columnId=${theirs.cols['To Do'].id}`, `columnId=${theirs.cols['To Do'].id}&archived=true`]) {
+				const res = await api('GET', `/api/v1/boards/${mine.board.id}/cards?${query}`, { user: owner });
+				expect([res.status, res.body], query).toEqual([200, []]);
+			}
+		});
+
+		// Pin: two cards at one position in one column come id first in both
+		// trees. The one made second has the lower id, so the order is not the
+		// order they were made in.
+		it('gives two cards at one position in id order, through the picker and the listing alike (pin)', async () => {
+			const { admin, board, cols } = fixture();
+			db.delete(cards).run();
+			makeCard(cols['On Hold'], { id: 50, title: 'Fifty', position: 0 });
+			makeCard(cols['On Hold'], { id: 10, title: 'Ten', position: 0 });
+
+			const picker = await call('GET', `/api/boards/${board.id}/cards`, { user: admin });
+			const listing = await api('GET', `/api/v1/boards/${board.id}/cards?columnId=${cols['On Hold'].id}`, { user: admin });
+
+			const onHold = (rows: { id: number; columnId: number }[]) => rows.filter((c) => c.columnId === cols['On Hold'].id).map((c) => c.id);
+			expect(onHold(picker.body.cards)).toEqual([10, 50]);
+			expect(onHold(listing.body)).toEqual([10, 50]);
+		});
 	});
 
 	it('a board, with its columns from create and read and without them from update', async () => {

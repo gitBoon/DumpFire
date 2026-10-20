@@ -9,55 +9,49 @@ import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
-/** GET /api/v1/boards/:boardId/cards — List all cards on a board. */
+/**
+ * GET /api/v1/boards/:boardId/cards — List all cards on a board.
+ *
+ * In the board's order (card 2295): by column position, ties by column id,
+ * and within a column by card position, ties by card id. The columns came in
+ * no set order, in practice the order they were made in, so a column moved
+ * or added between two others was listed in the wrong place, and each
+ * column's cards were read in a query of their own. Now one query reads them
+ * all, joined to their columns.
+ */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const boardId = pathId(params.boardId, 'board');
 	// A board that is not there is 404 to everyone, then one the caller cannot open 403.
 	requireBoard(locals.user, boardId, 'view');
 
 	const columnFilter = readQueryId(url.searchParams.get('columnId'), 'column');
-
-	// Get all columns for this board
-	const boardColumns = db.select()
-		.from(columns)
-		.where(eq(columns.boardId, boardId))
-		.all();
-
-	if (boardColumns.length === 0) {
-		return json([]);
-	}
-
 	const includeArchived = url.searchParams.get('archived') === 'true';
 
-	let allCards: (typeof cards.$inferSelect)[] = [];
-	for (const col of boardColumns) {
-		if (columnFilter !== undefined && col.id !== columnFilter) continue;
+	// The board in the path bounds the list whatever is filtered: `columnId` is
+	// a condition beside it and never in its place, so a column of another
+	// board, one the caller may not be able to open, gives nothing. The same
+	// conditions narrow the subtask counts below to the cards listed.
+	const listed = and(
+		eq(columns.boardId, boardId),
+		columnFilter !== undefined ? eq(cards.columnId, columnFilter) : undefined,
+		includeArchived ? undefined : isNull(cards.archivedAt)
+	);
 
-		let colCards;
-		if (includeArchived) {
-			colCards = db.select().from(cards)
-				.where(eq(cards.columnId, col.id))
-				.orderBy(asc(cards.position))
-				.all();
-		} else {
-			colCards = db.select().from(cards)
-				.where(and(eq(cards.columnId, col.id), isNull(cards.archivedAt)))
-				.orderBy(asc(cards.position))
-				.all();
-		}
-		allCards = allCards.concat(colCards);
-	}
-
-	// Enrich with column title for convenience
-	const columnMap = new Map(boardColumns.map(c => [c.id, c.title]));
+	const rows = db
+		.select({ card: cards, columnTitle: columns.title })
+		.from(cards)
+		.innerJoin(columns, eq(cards.columnId, columns.id))
+		.where(listed)
+		.orderBy(asc(columns.position), asc(columns.id), asc(cards.position), asc(cards.id))
+		.all();
 
 	// Subtask counts, in one grouped query rather than one call per card.
 	// Reports need "3 of 7 done" for every card on a board; without this a
 	// 196-card report had to fetch each card individually, which is most of what
 	// made the first one cost 229 API calls.
 	const subtaskCounts = new Map<number, { total: number; completed: number }>();
-	if (allCards.length > 0) {
-		const rows = db
+	if (rows.length > 0) {
+		const counts = db
 			.select({
 				cardId: subtasks.cardId,
 				total: sql<number>`COUNT(*)`,
@@ -66,17 +60,17 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 			.from(subtasks)
 			.innerJoin(cards, eq(subtasks.cardId, cards.id))
 			.innerJoin(columns, eq(cards.columnId, columns.id))
-			.where(eq(columns.boardId, boardId))
+			.where(listed)
 			.groupBy(subtasks.cardId)
 			.all();
-		for (const r of rows) {
+		for (const r of counts) {
 			subtaskCounts.set(r.cardId, { total: Number(r.total), completed: Number(r.completed ?? 0) });
 		}
 	}
 
-	const enriched = allCards.map(card => ({
+	const enriched = rows.map(({ card, columnTitle }) => ({
 		...card,
-		columnTitle: columnMap.get(card.columnId) || 'Unknown',
+		columnTitle: columnTitle || 'Unknown',
 		subtaskCount: subtaskCounts.get(card.id)?.total ?? 0,
 		subtaskCompleted: subtaskCounts.get(card.id)?.completed ?? 0
 	}));

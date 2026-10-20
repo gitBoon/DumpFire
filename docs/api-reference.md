@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.79
+version: 1.80
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1159,6 +1159,12 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   which counts archived cards when it decides a milestone was empty, is then sent by the next
   bulk attach to it (item 92). See
   [`DELETE /api/v1/milestones/:milestoneId/cards/bulk`](#delete-apiv1milestonesmilestoneidcardsbulk).
+- **`GET /boards/:boardId/cards` lists the cards in the board's order** (card 2295): by
+  column, in order of column position, ties by column id, and within a column in order of
+  card position, ties by card id. It listed the columns in the order they were made in, so a
+  column moved or added between two others came in the wrong place. The cards are read in one
+  query, and an answer's fields are unchanged (item 93). See
+  [`GET /api/v1/boards/:boardId/cards`](#get-apiv1boardsboardidcards).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2554,12 +2560,26 @@ Each card has a unique numeric ID shown in the UI as `#N`. You can search for ca
 
 #### `GET /api/v1/boards/:boardId/cards`
 
-List cards on a board.
+List cards on a board, in the board's order (card 2295): column by column in order of column
+position, ties by column id, and within a column in order of card position, ties by card id.
+An archived card, with `archived=true`, takes its place by position. The cards are read in
+one query joined to their columns, and the subtask counts for the cards listed alone. Until
+2026-10-14 the columns came in the order they were made in, and each column was read on its
+own.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `columnId` | number | Filter to specific column. A whole number of 1 or more, or `400` `Invalid column ID` |
+| `columnId` | number | Filter to specific column. A whole number of 1 or more, or `400` `Invalid column ID`. A column of another board gives `[]`: the board in the path always bounds the list |
 | `archived` | boolean | Include archived cards |
+
+```mermaid
+flowchart LR
+    Q["GET /boards/:boardId/cards<br/>?columnId and ?archived"] --> G["requireBoard: 404, then 403"]
+    G --> R["one read: cards JOIN columns<br/>WHERE columns.board_id = :boardId<br/>AND the filters"]
+    R --> O["ORDER BY column position, column id,<br/>card position, card id"]
+    O --> S["subtask counts, same WHERE,<br/>grouped by card"]
+    S --> A["each card + columnTitle,<br/>subtaskCount, subtaskCompleted"]
+```
 
 #### `POST /api/v1/boards/:boardId/cards`
 
