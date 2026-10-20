@@ -20,7 +20,7 @@
  * out of id order as well: a reader with no order gives id order and fails, and
  * the ties at 0 pin the id tiebreak. The source check is what holds the tie.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { generateBoardReport, generateCardReport, generateReportPdf } from '$lib/server/reports';
@@ -211,8 +211,9 @@ describe('the milestone graph orders a card’s subtask nodes as the card lists 
 	});
 
 	it('the plan page groups its subtask nodes through orderSubtaskNodes, with the card’s list', () => {
-		const page = source('src/routes/plan/[id]/+page.svelte');
-		expect(page).toContain('orderSubtaskNodes(list, data.subtasks[cardId])');
-		expect(page).not.toContain('list.sort((a, b) => a.id - b.id)');
+		// In its dependency graph, a component of its own since card 2281's slice C3a-3.
+		expect(source('src/lib/components/plan/DependencyGraph.svelte')).toContain('orderSubtaskNodes(list, data.subtasks[cardId])');
+		const plan = ['src/routes/plan/[id]/+page.svelte', 'src/lib/plan-graph.ts', ...readdirSync(join(process.cwd(), 'src/lib/components/plan')).map((name) => `src/lib/components/plan/${name}`)];
+		for (const file of plan) expect(source(file), file).not.toContain('list.sort((a, b) => a.id - b.id)');
 	});
 });

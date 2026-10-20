@@ -109,6 +109,8 @@ const TEST_FILES = [
 	'page-card-window.test.ts',
 	'page-failures.test.ts',
 	'password-checks.test.ts',
+	'plan-graph.test.ts',
+	'plan-page.test.ts',
 	'plan-table.test.ts',
 	'pricing.test.ts',
 	'public-requests.test.ts',

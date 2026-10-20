@@ -792,6 +792,13 @@ function tasksComponents(): string[] {
 		.map((name) => `src/lib/components/tasks/${name}`);
 }
 
+/** The components the plan page is split into (card 2281, slice C3a-3). */
+function planComponents(): string[] {
+	return (readdirSync(join(ROOT, 'src/lib/components/plan')) as string[])
+		.filter((name) => name.endsWith('.svelte'))
+		.map((name) => `src/lib/components/plan/${name}`);
+}
+
 /** The modules the admin page and its components share (`sent`, the formatters). */
 function adminModules(): string[] {
 	return (readdirSync(join(ROOT, 'src/lib/admin')) as string[]).filter((name) => name.endsWith('.ts')).map((name) => `src/lib/admin/${name}`);
@@ -2742,6 +2749,29 @@ describe('every write of the seven pages of card 2109, of the label picker, and 
 		expect(sending.filter((file) => !(file in WRITES))).toEqual([]);
 	});
 
+	// Card 2281, slice C3a-3: the plan page's components send none of their
+	// own. Every change to the goal goes through the page's one PATCH path,
+	// `mutate`, which they are handed. One that sent a write would be held to
+	// nothing here: it would go in the table above, and this case would say so.
+	it('has no component of the plan page that sends a write of its own, src/lib/components/plan/', () => {
+		const sends = (file: string) =>
+			scriptOf(file).statements.some((statement) => {
+				let found = false;
+				const visit = (node: ts.Node) => {
+					if (ts.isCallExpression(node) && writeOf(node, writes)) found = true;
+					ts.forEachChild(node, visit);
+				};
+				visit(statement);
+				return found;
+			});
+		expect(planComponents().length).toBeGreaterThanOrEqual(7);
+		expect(planComponents().filter(sends)).toEqual([]);
+		// The page's `mutate` is the one, handed to the header, the card picker and the work table.
+		expect(scriptOf('src/routes/plan/[id]/+page.svelte').getText()).toContain("method: 'PATCH'");
+		const page = readFileSync(join(ROOT, 'src/routes/plan/[id]/+page.svelte'), 'utf8');
+		for (const name of ['PlanHeader', 'PlanCardPicker', 'WorkTable']) expect(page).toMatch(new RegExp(`<${name} [^>]*\\{mutate\\}`));
+	});
+
 	const cases = Object.entries(WRITES).flatMap(([file, list]) => list.map((write) => [`${file} ${write.name}`, file, write] as const));
 
 	it.each(cases)('%s says what the server said, and changes the page only for a success', (_, file, write) => {
@@ -3192,21 +3222,27 @@ describe('a page whose session has ended, for the seven pages of card 2109', () 
 // `tests/page-card-window.test.ts`; the pages are mounted in
 // `tests/card-window-pages.test.ts`). The plan page's window has no Archive,
 // as before.
-// All Tasks' parts are in components of their own since slice C3a-2: what is
-// said to be gone is looked for in each of them as well (`parts`).
+// All Tasks' parts are in components of their own since slice C3a-2, and
+// the plan page's since slice C3a-3 (with its graph's module): what is said
+// to be gone is looked for in each of them as well (`parts`).
 const WINDOW_PAGES = [
 	{ file: 'src/routes/all/+page.svelte', save: 'saveFromWindow', archive: 'archiveFromWindow', list: 'buckets', derived: 'let buckets = $derived(data.buckets);', parts: tasksComponents() },
 	{ file: 'src/routes/todo/+page.svelte', save: 'saveFromWindow', archive: 'archiveFromWindow', list: 'cards', derived: 'let cards = $derived(data.cards);', parts: [] },
-	{ file: 'src/routes/plan/[id]/+page.svelte', save: 'saveCardFromPlan', archive: null, list: 'modalCard', derived: null, parts: [] }
+	{ file: 'src/routes/plan/[id]/+page.svelte', save: 'saveCardFromPlan', archive: null, list: 'modalCard', derived: null, parts: [...planComponents(), 'src/lib/plan-graph.ts'] }
 ];
 
 describe.each(WINDOW_PAGES)('the card window on $file goes through the controller (card 2281, slice C3a-1)', ({ file, save, archive, list, derived, parts }) => {
 	const page = scriptOf(file);
 	const board = scriptOf('src/routes/board/[id]/+page.svelte');
 	const source = readFileSync(join(ROOT, file), 'utf8');
-	/** The page and its components, as one text, and their scripts. */
+	/** The page and its components, as one text, and their scripts (a module's whole text is its script). */
 	const everywhere = [source, ...parts.map((part) => readFileSync(join(ROOT, part), 'utf8'))].join('\n');
-	const scripts = [page, ...parts.map((part) => scriptOf(part))];
+	const scripts = [
+		page,
+		...parts.map((part) =>
+			part.endsWith('.ts') ? ts.createSourceFile(part, readFileSync(join(ROOT, part), 'utf8'), ts.ScriptTarget.Latest, true) : scriptOf(part)
+		)
+	];
 	const markup = source.slice(source.indexOf('</script>'));
 	const opened = markup.slice(markup.indexOf('<CardModal'));
 	const modal = opened.slice(0, opened.indexOf('/>')).replace(/\s+/g, ' ');
@@ -3224,6 +3260,8 @@ describe.each(WINDOW_PAGES)('the card window on $file goes through the controlle
 		expect(modal).toContain('card={cardWindow.card}');
 		expect(modal).toContain(`onSave={${save}}`);
 		expect(markup.match(/<CardModal\b/g)).toHaveLength(1);
+		// The window is the page's alone: none of its components draws one or makes a controller of its own.
+		for (const part of parts) expect(readFileSync(join(ROOT, part), 'utf8'), part).not.toMatch(/<CardModal\b|new PageCardWindow\(|new CardWindow\(/);
 	});
 
 	it('defines no saveCard or deleteCard of its own, and sends no save or archive itself', () => {
