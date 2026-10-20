@@ -20,6 +20,14 @@
  * table as drawn (card 2320). The picker's cases run on fake timers, so no
  * search one of them leaves waiting reaches a later case (card 2328).
  *
+ * Each read and change the page sends is also answered with a refusal and
+ * with no answer (cards 2314, 2319, 2322): said in the server's words or as
+ * no answer, never as nothing; the picker shows only its latest search's
+ * answer, and the burndown marks a chart no longer current. The ✕ asks first
+ * (card 2335). The unordered cards' box is read from the graph's compiled CSS
+ * as the browser weighs it (card 2321), and the rules the split left for
+ * markup no longer drawn are pinned gone (card 2323).
+ *
  * The card window's saves are held in `tests/card-window-pages.test.ts`; the
  * source pins of the same code are in `tests/plan-table.test.ts`,
  * `tests/page-failures.test.ts`, `tests/subtask-order.test.ts` and
@@ -69,6 +77,12 @@ let sent: { what: string; body: unknown }[] = [];
 let drawn: { component: ReturnType<typeof mount>; target: HTMLElement } | null = null;
 /** How the next change to the goal is answered; a promise holds it until the test lets it go. */
 let answerPatch: () => Response | Promise<Response>;
+/** How the card picker's search for `q` is answered (card 2319). */
+let answerSearch: (q: string) => Response | Promise<Response>;
+/** How the burndown's read is answered (card 2322). */
+let answerBurndown: () => Response | Promise<Response>;
+/** How a card's context, read as its window opens, is answered (card 2314). */
+let answerContext: (id: number) => Response | Promise<Response>;
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -150,6 +164,9 @@ beforeEach(() => {
 	sent = [];
 	navigation.invalidateAll.mockClear();
 	answerPatch = () => json({ id: 4 });
+	answerSearch = () => json([{ id: 21, title: 'Write the notes', boardName: 'Website', boardEmoji: '📋', columnName: 'To Do', milestoneId: null }]);
+	answerBurndown = () => json(burndownDone);
+	answerContext = (id) => json({ card: cardRow(id, TITLES[id]), boardId: 3, categories: [], labels: [], boardUsers: [], milestones: [] });
 	// The burndown's chart watches its own width, which jsdom does not lay out.
 	vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
 	vi.stubGlobal(
@@ -158,14 +175,11 @@ beforeEach(() => {
 			const method = init?.method ?? 'GET';
 			sent.push({ what: `${method} ${url}`, body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined });
 			if (url === '/api/milestones/4' && method === 'PATCH') return answerPatch();
-			if (url.startsWith('/api/burndown')) return json(burndownDone);
-			if (url.startsWith('/api/cards/search')) return json([{ id: 21, title: 'Write the notes', boardName: 'Website', boardEmoji: '📋', columnName: 'To Do', milestoneId: null }]);
+			if (url.startsWith('/api/burndown')) return answerBurndown();
+			if (url.startsWith('/api/cards/search')) return answerSearch(new URL(url, 'http://plan.test').searchParams.get('q') ?? '');
 			// The card's context, which the page reads as the window opens, and the window's own reads.
 			const contextOf = /^\/api\/cards\/(\d+)\/context$/.exec(url);
-			if (contextOf) {
-				const id = Number(contextOf[1]);
-				return json({ card: cardRow(id, TITLES[id]), boardId: 3, categories: [], labels: [], boardUsers: [], milestones: [] });
-			}
+			if (contextOf) return answerContext(Number(contextOf[1]));
 			if (url.includes('/dependencies')) return json({ blockedBy: [], blocks: [] });
 			if (url.includes('/tokens')) return json(null);
 			return json([]);
@@ -225,15 +239,44 @@ function leave() {
  * matches `button` in the page as drawn: named by the state and the element
  * it is on (`tr:hover`; `self:focus-visible` for the button's own), or by its
  * media condition. A rule written for markup the table has not got names
- * nothing. `revealsOf` asks for `opacity: 1`.
+ * nothing. `revealsOf` asks for `opacity: 1`. Another of the plan's
+ * components is read by naming its file.
  */
 const revealsOf = (button: Element) => stylesOf(button, (style) => style.opacity === '1');
 
-function stylesOf(button: Element, wanted: (style: CSSStyleDeclaration) => boolean) {
-	const file = join(process.cwd(), 'src/lib/components/plan/WorkTable.svelte');
-	const { css } = compile(readFileSync(file, 'utf8'), { filename: file, css: 'external' });
+/** A component of the plan page's compiled CSS, as the browser is given it. */
+function cssOf(name: string): string {
+	const file = join(process.cwd(), 'src/lib/components/plan', name);
+	return compile(readFileSync(file, 'utf8'), { filename: file, css: 'external' }).css!.code;
+}
+
+/**
+ * The style in force on `element` from its component's compiled CSS alone
+ * (card 2321): the sheet added with its scoping class put to the one the
+ * drawn element carries, and read with `getComputedStyle`, which in jsdom
+ * weighs each rule's specificity as a browser does. What a rule written
+ * before another of the same weight sets is overruled by it; one that
+ * outweighs it is not.
+ */
+function computedOf(element: Element, name: string, properties: string[]): Record<string, string> {
+	const css = cssOf(name);
+	const compiled = /\.(svelte-[\w-]+)/.exec(css)![1];
+	const drawn = /\bsvelte-[\w-]+/.exec(element.getAttribute('class') ?? '')![0];
 	const style = document.createElement('style');
-	style.textContent = css!.code;
+	style.textContent = css.replaceAll(compiled, drawn);
+	document.head.appendChild(style);
+	try {
+		// Read while the sheet is in: the declaration is live, and worked out again without it once it goes.
+		const computed = getComputedStyle(element);
+		return Object.fromEntries(properties.map((property) => [property, computed.getPropertyValue(property)]));
+	} finally {
+		style.remove();
+	}
+}
+
+function stylesOf(button: Element, wanted: (style: CSSStyleDeclaration) => boolean, name = 'WorkTable.svelte') {
+	const style = document.createElement('style');
+	style.textContent = cssOf(name);
 	document.head.appendChild(style);
 	const found: string[] = [];
 	const walk = (rules: CSSRuleList, media: string | null) => {
@@ -310,6 +353,22 @@ describe('the plan page opens its card window from each block (card 2281, slice 
 		expect(sent.map((s) => s.what)).toContain('GET /api/cards/10/context');
 		expect(titleBox()?.value).toBe('Card 10');
 	});
+
+	// Card 2314: a read that got no answer said nothing, and a refusal said "Could not open that card" whatever the server said.
+	it.each([
+		['gets no answer', () => Promise.reject(new TypeError('Failed to fetch')), 'No answer from the server. The card could not be opened.'],
+		['is refused', () => json({ message: 'You do not have access to this board' }, 403), 'You do not have access to this board'],
+		['is refused with no words of its own', () => json({ message: 'Internal Error' }, 500), 'That card could not be opened.'],
+		['is answered with something that is not its context', () => new Response('<html>proxy</html>', { status: 200 }), "The server's answer could not be read. The card could not be opened."]
+	])('says so in a toast when the card’s read %s, and opens no window (card 2314)', async (_, answer, said) => {
+		answerContext = answer;
+		await draw();
+		click($('.work-table .title-link'));
+		await settle();
+		expect(sent.map((s) => s.what)).toContain('GET /api/cards/7/context');
+		expect(titleBox()).toBeNull();
+		expect($$('.toast-error .toast-msg').map(textOf)).toEqual([said]);
+	});
 });
 
 describe('the plan page’s card picker (card 2281, slice C3a-3)', () => {
@@ -364,6 +423,86 @@ describe('the plan page’s card picker (card 2281, slice C3a-3)', () => {
 		await vi.advanceTimersByTimeAsync(300);
 		expect(sent.map((s) => s.what)).not.toContain('GET /api/cards/search?q=notes');
 	});
+
+	/** What the picker says under its box, beside the results. */
+	const pickerSays = () => $$('.picker-panel .muted, .picker-panel .picker-error').map(textOf);
+	const searches = () => sent.filter((s) => s.what.startsWith('GET /api/cards/search')).map((s) => s.what);
+	const result = (id: number, title: string) => ({ id, title, boardName: 'Website', boardEmoji: '📋', columnName: 'To Do', milestoneId: null });
+
+	it('says nothing and sends nothing once the box is emptied before its search goes out (card 2319)', async () => {
+		await draw();
+		click($$('.hdr-btn.primary')[0]);
+		const box = $<HTMLInputElement>('.picker-input')!;
+		type(box, 'notes');
+		expect(pickerSays()).toEqual(['Searching…']);
+		await vi.advanceTimersByTimeAsync(100);
+		type(box, '');
+		await vi.advanceTimersByTimeAsync(300);
+		await settle();
+		expect(pickerSays()).toEqual([]);
+		expect(searches()).toEqual([]);
+	});
+
+	it('shows the latest search’s answer, not an older one that answers after it (card 2319)', async () => {
+		let answerOlder!: () => void;
+		answerSearch = (q) =>
+			q === 'no'
+				? new Promise<Response>((resolve) => (answerOlder = () => resolve(json([result(31, 'Nobody ordered this')]))))
+				: json([result(21, 'Write the notes')]);
+		await draw();
+		click($$('.hdr-btn.primary')[0]);
+		const box = $<HTMLInputElement>('.picker-input')!;
+		type(box, 'no');
+		await vi.advanceTimersByTimeAsync(300);
+		type(box, 'notes');
+		await vi.advanceTimersByTimeAsync(300);
+		await settle();
+		expect(searches()).toEqual(['GET /api/cards/search?q=no', 'GET /api/cards/search?q=notes']);
+		expect($$('.picker-result .card-title').map(textOf)).toEqual(['Write the notes']);
+		// The older search answers last: not shown, and the picker is not put back to searching or done.
+		answerOlder();
+		await settle();
+		expect($$('.picker-result .card-title').map(textOf)).toEqual(['Write the notes']);
+		expect(pickerSays()).toEqual([]);
+	});
+
+	it.each([
+		['gets no answer', () => Promise.reject(new TypeError('Failed to fetch')), 'No answer from the server. The search could not be run.'],
+		['is refused', () => json({ message: 'Too many searches, wait a moment' }, 429), 'Too many searches, wait a moment'],
+		['is answered with something that is not a list', () => new Response('<html>proxy</html>', { status: 200 }), "The server's answer could not be read. The search could not be run."]
+	])('says so when a search %s, and takes the older results away (card 2319)', async (_, answer, said) => {
+		await draw();
+		click($$('.hdr-btn.primary')[0]);
+		const box = $<HTMLInputElement>('.picker-input')!;
+		type(box, 'notes');
+		await vi.advanceTimersByTimeAsync(300);
+		await settle();
+		expect($$('.picker-result')).toHaveLength(1);
+		answerSearch = answer;
+		type(box, 'notes 2');
+		await vi.advanceTimersByTimeAsync(300);
+		await settle();
+		expect(searches()).toContain('GET /api/cards/search?q=notes%202');
+		expect($$('.picker-result')).toEqual([]);
+		expect(pickerSays()).toEqual([said]);
+	});
+
+	it('is not filled again by a search still out when Done clears it (card 2319)', async () => {
+		let answer!: () => void;
+		answerSearch = () => new Promise<Response>((resolve) => (answer = () => resolve(json([result(21, 'Write the notes')]))));
+		await draw();
+		const add = $$('.hdr-btn.primary')[0];
+		click(add);
+		type($<HTMLInputElement>('.picker-input')!, 'notes');
+		await vi.advanceTimersByTimeAsync(300);
+		click($$('.picker-row .btn-ghost')[0]);
+		answer();
+		await settle();
+		click(add);
+		expect($<HTMLInputElement>('.picker-input')!.value).toBe('');
+		expect($$('.picker-result')).toEqual([]);
+		expect(pickerSays()).toEqual([]);
+	});
 });
 
 describe('the plan page’s changes to the goal go through its one PATCH path (card 2281, slice C3a-3)', () => {
@@ -415,11 +554,32 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 		expect(close().classList.contains('ready')).toBe(true);
 	});
 
-	it('takes a card out of the goal from the work table', async () => {
+	it('takes a card out of the goal from the work table, once Remove is chosen in the dialog it asks first (card 2335)', async () => {
 		await draw();
 		click($('.work-table .detach'));
 		await settle();
+		expect(patches()).toEqual([]);
+		expect(textOf($('.confirm-modal h3'))).toBe('Remove From Goal');
+		expect($('.work-table .detach')!.getAttribute('title')).toBe('Remove from this goal');
+		expect(textOf($('.confirm-message'))).toBe('#7 “Plan” leaves “Launch”. The card itself stays on its board as it is, and can be added back with + Add cards.');
+		click($$('.confirm-actions button').find((b) => textOf(b) === 'Remove')!);
+		await settle();
 		expect(patches()).toEqual([{ cardId: 7, attach: false }]);
+		expect($('.confirm-modal')).toBeNull();
+	});
+
+	it('sends nothing when the dialog the work table’s ✕ opens is cancelled, by Cancel or by Escape (card 2335)', async () => {
+		await draw();
+		click($('.work-table .detach'));
+		click($$('.confirm-actions button').find((b) => textOf(b) === 'Cancel')!);
+		expect($('.confirm-modal')).toBeNull();
+		click($$('.work-table .detach')[1]);
+		expect(textOf($('.confirm-message'))).toContain('#8 “Ship”');
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		flushSync();
+		expect($('.confirm-modal')).toBeNull();
+		await settle();
+		expect(patches()).toEqual([]);
 	});
 
 	it('shows the work table’s ✕ on its row’s hover and keyboard focus, on its own keyboard focus with a ring of its own, and always on a touch screen (card 2320)', async () => {
@@ -440,6 +600,36 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 		await settle();
 		expect(textOf($('.plan-body > .action-error'))).toBe('Viewers cannot change goals');
 		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+	});
+
+	// Card 2314: no answer said nothing; SvelteKit's bare "Internal Error" was shown as the server's words.
+	it.each([
+		['gets no answer', () => Promise.reject(new TypeError('Failed to fetch')), 'No answer from the server. It is not known whether that change was saved.'],
+		['is refused with no words of its own', () => json({ message: 'Internal Error' }, 500), 'That change could not be saved']
+	])('says so in the page and in a toast when a change %s, and frees Close again (card 2314)', async (_, answer, said) => {
+		answerPatch = answer;
+		await draw();
+		const close = $$('.hdr-btn').find((b) => textOf(b) === 'Close') as HTMLButtonElement;
+		click(close);
+		await settle();
+		expect(patches()).toEqual([{ status: 'closed' }]);
+		expect(textOf($('.plan-body > .action-error'))).toBe(said);
+		expect($$('.toast-error .toast-msg').map(textOf)).toEqual([said]);
+		expect(close.disabled).toBe(false);
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+	});
+
+	// The ✕ may be far down the page, out of sight of the words above the blocks: a toast stays on screen.
+	it('says a Remove that gets no answer in a toast as well as above the blocks (card 2335)', async () => {
+		answerPatch = () => Promise.reject(new TypeError('Failed to fetch'));
+		await draw();
+		click($('.work-table .detach'));
+		click($$('.confirm-actions button').find((b) => textOf(b) === 'Remove')!);
+		await settle();
+		expect(patches()).toEqual([{ cardId: 7, attach: false }]);
+		const said = 'No answer from the server. It is not known whether that change was saved.';
+		expect($$('.toast-error .toast-msg').map(textOf)).toEqual([said]);
+		expect(textOf($('.plan-body > .action-error'))).toBe(said);
 	});
 });
 
@@ -470,6 +660,74 @@ describe('the plan page’s progress and burndown draw from its load (card 2281,
 		props.data = planData({}, true);
 		await settle();
 		expect(reads()).toEqual(['GET /api/burndown?milestoneId=4', 'GET /api/burndown?milestoneId=4']);
+	});
+
+	/** The burndown's panel, and what it says. */
+	const burndownPanel = () => $$('section.panel').find((s) => textOf(s.querySelector('h2')) === 'Burndown')!;
+	const burndownSays = () => [...burndownPanel().querySelectorAll(':scope > .muted, :scope > .bd-stale')].map(textOf);
+
+	// Card 2322: a read that got no answer left "Loading the burndown…" for good.
+	it.each([
+		['gets no answer', () => Promise.reject(new TypeError('Failed to fetch')), 'No answer from the server. The burndown could not be loaded.'],
+		['is refused', () => json({ message: 'You cannot see this goal' }, 403), 'You cannot see this goal'],
+		['is answered with something that is not the burndown', () => new Response('<html>proxy</html>', { status: 200 }), "The server's answer could not be read. The burndown could not be loaded."]
+	])('says so in place of the chart when its first read %s (card 2322)', async (_, answer, said) => {
+		answerBurndown = answer;
+		await draw();
+		expect(burndownSays()).toEqual([said]);
+		expect($('.bd-status')).toBeNull();
+	});
+
+	it('keeps the chart drawn when a later read fails, says it may no longer be current, and clears that on the next good read (card 2322)', async () => {
+		const props = await draw();
+		expect(textOf($('.bd-status'))).toBe('✓Done — nothing remaining');
+		expect(burndownSays()).toEqual([]);
+
+		answerBurndown = () => Promise.reject(new TypeError('Failed to fetch'));
+		props.data = planData({}, true);
+		await settle();
+		expect(textOf($('.bd-status'))).toBe('✓Done — nothing remaining');
+		expect(burndownSays()).toEqual([
+			'No answer from the server. The burndown could not be loaded. What is shown is from an earlier read and may no longer be current.'
+		]);
+
+		answerBurndown = () => json(burndownDone);
+		props.data = planData();
+		await settle();
+		expect(burndownSays()).toEqual([]);
+	});
+
+	it('ends the server’s words with a full stop before the note only when they end without one, a ? or a ! (card 2322)', async () => {
+		const props = await draw();
+		const note = ' What is shown is from an earlier read and may no longer be current.';
+		const cases: [string, string][] = [
+			['The burndown is paused for maintenance', 'The burndown is paused for maintenance.'],
+			['Is this goal still yours?', 'Is this goal still yours?'],
+			['Slow down!', 'Slow down!']
+		];
+		let shipDone = false;
+		for (const [words, said] of cases) {
+			answerBurndown = () => json({ message: words }, 503);
+			shipDone = !shipDone;
+			props.data = planData({}, shipDone);
+			await settle();
+			expect(burndownSays()).toEqual([said + note]);
+		}
+	});
+
+	it('says Loading again while a read after a failed first one is out (card 2322)', async () => {
+		answerBurndown = () => Promise.reject(new TypeError('Failed to fetch'));
+		const props = await draw();
+		expect(burndownSays()).toEqual(['No answer from the server. The burndown could not be loaded.']);
+		let answer!: () => void;
+		answerBurndown = () => new Promise<Response>((resolve) => (answer = () => resolve(json(burndownDone))));
+		props.data = planData({}, true);
+		await settle();
+		expect(burndownSays()).toEqual(['Loading the burndown…']);
+		answer();
+		await settle();
+		expect(burndownSays()).toEqual([]);
+		expect(textOf($('.bd-status'))).toBe('✓Done — nothing remaining');
 	});
 });
 
@@ -523,5 +781,35 @@ describe('the plan page draws its graph as HEAD’s page drew it (card 2281, sli
 			edges: ['crit M 214 53 C 251 53, 251 53, 288 53']
 		});
 		expect($$('.list-card').map(textOf)).toEqual(['#9 Docs Website / To Do']);
+	});
+
+	// Card 2321: the button reset, `button.list-card`, outweighed the card style, `.list-card`, and took its box away.
+	it('draws each card nobody sequenced in its card’s box, the button’s defaults still undone (card 2321)', async () => {
+		await draw();
+		const card = $('.list-card')!;
+		// The card's box is its padding, background and border, all in one rule; jsdom keeps no `border`
+		// shorthand built on `var()`, so the rule is read by the other two, which the reset also undid.
+		expect(computedOf(card, 'DependencyGraph.svelte', ['padding-top', 'background', 'cursor', 'text-align', 'display'])).toEqual({
+			'padding-top': '7px',
+			background: 'var(--bg-surface)',
+			cursor: 'pointer',
+			'text-align': 'left',
+			display: 'flex'
+		});
+	});
+
+	// Card 2323: left by the split, for markup the blocks no longer draw (`npm run check` cannot say: see the testing guide).
+	it.each([
+		['DependencyGraph.svelte', '.list-card.on-critical'],
+		['WorkTable.svelte', '.blocked-group'],
+		['WorkTable.svelte', '.col-id a']
+	])('keeps no rule in %s for markup it no longer draws: %s (card 2323)', (name, selector) => {
+		const selectors = cssOf(name)
+			.replace(/\/\*[\s\S]*?\*\//g, '')
+			.split('}')
+			.flatMap((rule) => (rule.includes('{') ? rule.slice(0, rule.lastIndexOf('{')).split(',') : []))
+			.map((s) => s.replace(/:where\(\.svelte-[\w-]+\)|\.svelte-[\w-]+/g, '').replace(/\s+/g, ' ').trim());
+		expect(selectors.length).toBeGreaterThan(10);
+		expect(selectors.filter((s) => s === selector || s.startsWith(`${selector}:`))).toEqual([]);
 	});
 });

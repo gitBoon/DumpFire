@@ -16,6 +16,7 @@
 	import type { BurndownResult } from '$lib/burndown';
 	import { chancePercent, deliveryNotes, deliveryText, durationText, paceText, targetVerdict } from '$lib/burndown-text';
 	import InfoTip from '$lib/components/InfoTip.svelte';
+	import { failureMessage } from '$lib/api';
 
 	let {
 		milestone,
@@ -39,20 +40,40 @@
 	let burndownLoading = $state(false);
 	let burndownError = $state('');
 
+	/**
+	 * A refusal is said in the server's words and no answer as no answer; a
+	 * chart already drawn stays, marked as no longer current (card 2322: no
+	 * answer left "Loading the burndown…" for good, and a failed re-read left
+	 * the earlier chart as if it were the goal's now).
+	 */
 	async function loadBurndown(id: number) {
 		burndownLoading = true;
 		try {
-			const res = await fetch(`/api/burndown?milestoneId=${id}`);
-			if (res.ok) {
+			let res: Response;
+			try {
+				res = await fetch(`/api/burndown?milestoneId=${id}`);
+			} catch {
+				burndownError = 'No answer from the server. The burndown could not be loaded.';
+				return;
+			}
+			if (!res.ok) {
+				burndownError = await failureMessage(res, 'The burndown could not be loaded.');
+				return;
+			}
+			// An answer that is not the burndown (a proxy's page) was an answer, not none.
+			try {
 				burndown = await res.json();
 				burndownError = '';
-			} else {
-				burndownError = (await res.json().catch(() => ({}))).message ?? 'Could not load the burndown';
+			} catch {
+				burndownError = "The server's answer could not be read. The burndown could not be loaded.";
 			}
 		} finally {
 			burndownLoading = false;
 		}
 	}
+
+	/** The words of a failed read, ending in a full stop unless they end in one of their own (or ? or !). */
+	const burndownErrorSentence = $derived(/[.?!]$/.test(burndownError) ? burndownError : `${burndownError}.`);
 
 	// Re-read when the work it charts changes (burndownSource, below), not on
 	// every re-read of the plan.
@@ -126,6 +147,10 @@
 		{/if}
 		<a class="panel-link" href="/burndown?milestoneId={milestone.id}">Full chart →</a>
 	</div>
+	{#if burndown && burndownError}
+		<!-- The latest read failed: what is drawn below is the one before it. -->
+		<p class="muted bd-stale" role="status">{burndownErrorSentence} What is shown is from an earlier read and may no longer be current.</p>
+	{/if}
 	{#if burndown && burndownEta}
 		<div class="bd-eta">
 			<InfoTip title="Time to deliver" width={320}>
@@ -169,7 +194,7 @@
 			label="Burndown for {milestone.name}"
 			--bd-surface="var(--bg-card)"
 		/>
-	{:else if burndownError}
+	{:else if burndownError && !burndownLoading}
 		<p class="muted">{burndownError}</p>
 	{:else}
 		<p class="muted">Loading the burndown…</p>
@@ -216,4 +241,11 @@
 	 * outside the page's frame.
 	 */
 	.muted { margin: 0; font-size: 0.8rem; line-height: 1.55; color: var(--text-secondary); }
+
+	/* A chart no longer current says so above it, in words in the page's main text colour (legible on
+	   either theme), marked by a bar in the "tight" verdict's amber (card 2322). */
+	.bd-stale {
+		margin: -4px 0 12px; padding-left: 8px; color: var(--text-primary);
+		border-left: 3px solid var(--accent-amber);
+	}
 </style>

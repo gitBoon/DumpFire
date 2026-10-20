@@ -557,4 +557,35 @@ describe('the page, as source', () => {
 		// And the window's onClose is closeCard.
 		expect(page.source).toMatch(/onClose=\{closeCard\}/);
 	});
+
+	it('leaves no name in the page or its blocks that nothing reads (card 2323: the split left two)', () => {
+		const unread: string[] = [];
+		for (const { file, source, script } of everyFile.filter((f) => f.file.endsWith('.svelte'))) {
+			// What the markup reads: the file less its script, its styles and its comments.
+			const markup = source
+				.replace(/<script lang="ts">[\s\S]*?<\/script>/, '')
+				.replace(/<style>[\s\S]*?<\/style>/, '')
+				.replace(/<!--[\s\S]*?-->/g, '');
+			// Each name the script declares at its top: an import, a function, a const or a let (the props apart, which are the component's API).
+			const declared = script.statements.flatMap((statement): ts.Identifier[] => {
+				if (ts.isImportDeclaration(statement)) {
+					const clause = statement.importClause;
+					const named = clause?.namedBindings && ts.isNamedImports(clause.namedBindings) ? clause.namedBindings.elements.map((e) => e.name) : [];
+					const whole = clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings) ? [clause.namedBindings.name] : [];
+					return [...(clause?.name ? [clause.name] : []), ...named, ...whole];
+				}
+				if (ts.isFunctionDeclaration(statement) && statement.name) return [statement.name];
+				if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.map((d) => d.name).filter(ts.isIdentifier);
+				return [];
+			});
+			// A plain assignment's left side writes the name and does not read it: a `let` only ever set is unread.
+			const written = (n: ts.Node) =>
+				ts.isBinaryExpression(n.parent) && n.parent.left === n && n.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+			for (const name of declared) {
+				const inScript = all(script, (n) => ts.isIdentifier(n) && n !== name && n.text === name.text && !written(n)).length > 0;
+				if (!inScript && !new RegExp(`\\b${name.text}\\b`).test(markup)) unread.push(`${file} ${name.text}`);
+			}
+		}
+		expect(unread).toEqual([]);
+	});
 });

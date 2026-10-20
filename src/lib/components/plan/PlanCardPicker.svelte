@@ -12,6 +12,7 @@
 -->
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { failureMessage } from '$lib/api';
 	import type { PageData } from '../../../routes/plan/[id]/$types';
 
 	let {
@@ -35,24 +36,64 @@
 	let pickQuery = $state('');
 	let pickResults = $state<{ id: number; title: string; boardName: string; boardEmoji: string; columnName: string; milestoneId: number | null }[]>([]);
 	let pickSearching = $state(false);
+	/** Why the latest search found nothing to show: refused, or no answer. */
+	let pickError = $state('');
 	let pickTimer: ReturnType<typeof setTimeout> | null = null;
+	/**
+	 * Which search is the latest: counted on by every keystroke and every
+	 * clear. A search writes what it found only if it is still the latest, so
+	 * a slower, older answer never replaces a newer one, and a box emptied or
+	 * cleared stays so (card 2319).
+	 */
+	let pickSeq = 0;
 
 	function onPickInput() {
 		if (pickTimer) clearTimeout(pickTimer);
+		pickTimer = null;
+		const seq = ++pickSeq;
 		const q = pickQuery.trim();
 		if (!q) {
 			pickResults = [];
+			pickError = '';
+			pickSearching = false;
 			return;
 		}
 		pickSearching = true;
 		pickTimer = setTimeout(async () => {
+			pickTimer = null;
+			let found: typeof pickResults = [];
+			let error = '';
+			let res: Response | null = null;
 			try {
-				const res = await fetch(`/api/cards/search?q=${encodeURIComponent(q)}`);
-				pickResults = res.ok ? await res.json() : [];
-			} finally {
-				pickSearching = false;
+				res = await fetch(`/api/cards/search?q=${encodeURIComponent(q)}`);
+			} catch {
+				error = 'No answer from the server. The search could not be run.';
 			}
+			if (res && !res.ok) error = await failureMessage(res, 'The search was refused.');
+			else if (res) {
+				// An answer that is not a list of cards (a proxy's page) was an answer, not none.
+				try {
+					found = await res.json();
+				} catch {
+					error = "The server's answer could not be read. The search could not be run.";
+				}
+			}
+			if (seq !== pickSeq) return;
+			pickResults = found;
+			pickError = error;
+			pickSearching = false;
 		}, 250);
+	}
+
+	/** Empties the picker, and drops any search still waiting or out. */
+	function clearPick() {
+		if (pickTimer) clearTimeout(pickTimer);
+		pickTimer = null;
+		pickSeq++;
+		pickQuery = '';
+		pickResults = [];
+		pickError = '';
+		pickSearching = false;
 	}
 
 	// A search still waiting when the page is left is not sent (card 2328).
@@ -62,8 +103,7 @@
 
 	async function attachCard(cardId: number) {
 		await mutate({ cardId, attach: true });
-		pickQuery = '';
-		pickResults = [];
+		clearPick();
 	}
 </script>
 
@@ -77,10 +117,12 @@
 				bind:value={pickQuery}
 				oninput={onPickInput}
 			/>
-			<button class="btn-ghost" onclick={() => { picking = false; pickQuery = ''; pickResults = []; }}>Done</button>
+			<button class="btn-ghost" onclick={() => { picking = false; clearPick(); }}>Done</button>
 		</div>
 		{#if pickSearching}
 			<p class="muted">Searching…</p>
+		{:else if pickError}
+			<p class="picker-error" role="alert">{pickError}</p>
 		{:else if pickQuery.trim() && pickResults.length === 0}
 			<p class="muted">No cards match “{pickQuery.trim()}”.</p>
 		{:else if pickResults.length > 0}
@@ -143,4 +185,10 @@
 	.picker-result:hover:not(:disabled) { background: var(--bg-elevated); }
 	.picker-result:disabled { opacity: 0.5; cursor: default; }
 	.already { font-size: 0.66rem; color: var(--text-tertiary); font-style: italic; }
+	/* A search refused or unanswered, in the page's own error style (its .action-error, card 2319). */
+	.picker-error {
+		margin: 0; padding: 8px 12px; font-size: 0.8rem; border-radius: var(--radius-sm);
+		background: rgba(244, 63, 94, 0.1); color: var(--accent-rose);
+		border: 1px solid rgba(244, 63, 94, 0.25);
+	}
 </style>

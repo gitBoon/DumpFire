@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.64
+version: 1.65
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3707,6 +3707,35 @@ On production, with your own API key. **The scratch board:** the one from checks
 #### Going back to the previous image
 
 Nothing is done to the database. The older image ignores a `columnId` on `PUT /api/v1/cards/{id}` and a `parentCardId` on `PUT /api/v1/boards/{id}` again, saving the other fields sent with them and answering `200`, and makes a board sent to `POST /api/v1/boards` with a `categoryId` unfiled. A board already filed through the API stays filed. The wrapper's `create-board -CategoryId` is then ignored by the server. The older image's bulk detach refuses a whole batch that lists an archived card again, reporting it as `Card does not exist or is archived`; archived cards already taken out of goals stay out. Its card listing lists the columns in the order they were made in again, reading each column on its own.
+
+### The Plan Page: Failures Said, the Picker's Search, the Unordered Cards' Box and a Confirmed Remove
+
+**Cards 2314, 2319, 2321, 2322, 2323 and 2335.** No migration, no setting, no route; the plan page's code only. A change to the goal (rename, Close, target date, a card added or taken out) or a card opened that got no answer said nothing; each now says "No answer from the server…", and a refusal is said in the server's words (an opened card's refusal said "Could not open that card" whatever the server said). A change that failed is said in a toast as well as above the blocks, so it is seen from a ✕ far down the page. An answer that is not what was asked for (a proxy's page) says the server's answer could not be read. The card picker no longer stays on "Searching…" when its box is emptied quickly, no longer shows an older search's answer under a newer one, and says a search that failed instead of leaving the older results. The cards nobody sequenced, under the graph, have their box back (background, border, padding), lost since September to the button reset. The burndown no longer stays on "Loading the burndown…" when its read gets no answer, and a chart left from an earlier read is marked as no longer current. Unused code and styles left by the split are gone. The plan is `docs/planning/cards-2314-2319-2321-2322-2323-2335-plan-page.md`.
+
+**Owner to know.** Taking a card out of a goal with the work table's ✕ now asks first, in the app's confirm dialog: **Remove From Goal**, naming the card and the goal, with **Cancel** and **Remove**. The ✕'s tooltip reads "Remove from this goal".
+
+#### After the deploy
+
+On production, as your own account, with a browser's developer tools' network panel. Nothing here completes a card or touches a real goal.
+
+**The scratch board and goal.** On the dashboard make a board "TEST plan page - delete me", with no other members and **no webhooks**, and in its To Do three cards S1, S2 and S3, with no assignee. Open S2 and record that it is blocked by S1; leave S3 with no dependencies. On **Plan**, **New milestone** "Probe plan goal" on the scratch board, with no target date. On its plan page add S1, S2 and S3 one at a time with **+ Add cards** (the picker's single adds; no check here bulk-attaches, which mails "Plan created" for an empty goal). Every check below is on this goal's plan page.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 304 | 2314 | Set the network panel to **Offline** and click **Close** in the header. Set it back to **No throttling** | "No answer from the server. It is not known whether that change was saved." above the blocks and in a red toast; Close clickable again; the goal still open after a reload | Nothing said |
+| 305 | 2314 | **Offline** again, click S1's title in **The work**, then back to **No throttling** | A red toast "No answer from the server. The card could not be opened."; no window opens | Nothing said |
+| 306 | 2319 | Open **+ Add cards**, type a letter and clear the box straight away | Nothing under the box | "Searching…" stays |
+| 307 | 2319 | Type `TEST plan` and wait for the results; set **Offline** and type one more letter; then back to **No throttling** | "No answer from the server. The search could not be run."; the earlier results gone | The earlier results still listed, or nothing said |
+| 308 | 2321 | Look under **Parallel / unordered**, below the graph | S3 in its own box: a background, a border, rounded corners, padding; the border turns indigo under the pointer | Bare lines of text |
+| 309 | 2322 | In the network panel block the address `/api/burndown` (right-click it, **Block request URL**) and reload the page | "No answer from the server. The burndown could not be loaded." in the Burndown panel | "Loading the burndown…" stays |
+| 310 | 2322 | Unblock it and reload: the chart is drawn. Block `/api/burndown` again and set a target date in the header (the burndown is read again when the target date changes; a column change does not) | The chart stays, with "No answer from the server. The burndown could not be loaded. What is shown is from an earlier read and may no longer be current." under the verdict, above the time to deliver and the chart. Unblock it and clear the target date again: the note goes | No note over the old chart |
+| 311 | 2335 | Click S3's ✕ in **The work**; **Cancel**; click it again and **Remove**; then add S3 back with **+ Add cards** | A dialog "Remove From Goal" naming S3 and "Probe plan goal"; Cancel leaves S3 in the goal; Remove takes it out; it comes back with + Add cards | S3 taken out on the first click |
+
+**Afterwards.** With your API key, `DELETE /api/v1/milestones/<Probe plan goal's id>` (its id is in the plan page's address); then delete the scratch board from the dashboard, unless a later release's checks still need them.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image says nothing again for a change or an opened card that gets no answer, and "Could not open that card" for any refusal; its picker can stay on "Searching…" and show an older search's answer; its unordered cards are bare text; its burndown can stay on "Loading…"; and its ✕ takes a card out of a goal on the first click.
 
 ## Changing the Schema
 
