@@ -29,7 +29,7 @@
  * read the options each mail is handed to nodemailer with.
  */
 import nodemailer from 'nodemailer';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionUser } from '$lib/server/auth';
@@ -409,11 +409,24 @@ describe('what a failure of the certificate or STARTTLS says (test 18)', () => {
 });
 
 describe('the mail panel on the admin page (cards 2189 and 2190, slice 4)', () => {
-	// Read as text: the page is CRLF in the working copy, so lines are joined with \n first.
-	const page = readFileSync(join(process.cwd(), 'src/routes/admin/+page.svelte'), 'utf8').replace(/\r\n/g, '\n');
-	const script = page.slice(0, page.indexOf('</script>'));
-	const markup = page.slice(page.indexOf('</script>'));
-	const panel = markup.slice(markup.indexOf('<h2>📧 Email / SMTP</h2>'), markup.indexOf('<!-- Danger zone -->'));
+	// Read as text, lines joined with \n first: the page is CRLF in the working copy.
+	// Card 2281, slice C1b: the panel is a component of the admin page,
+	// read for what it holds; the page and every component of it for what is
+	// held to be nowhere else.
+	const read = (file: string) => readFileSync(join(process.cwd(), file), 'utf8').replace(/\r\n/g, '\n');
+	const ADMIN = 'src/lib/components/admin';
+	const smtp = read(`${ADMIN}/SmtpPanel.svelte`);
+	const page = [
+		'src/routes/admin/+page.svelte',
+		...readdirSync(join(process.cwd(), ADMIN)).filter((name) => name.endsWith('.svelte')).map((name) => `${ADMIN}/${name}`),
+		// The modules they share: `sent` and the formatters.
+		...readdirSync(join(process.cwd(), 'src/lib/admin')).filter((name) => name.endsWith('.ts')).map((name) => `src/lib/admin/${name}`)
+	]
+		.map(read)
+		.join('\n');
+	const script = smtp.slice(0, smtp.indexOf('</script>'));
+	const markup = smtp.slice(smtp.indexOf('</script>'));
+	const panel = markup.slice(markup.indexOf('<h2>📧 Email / SMTP</h2>'));
 	/** The body of one of the script's functions, to the closing brace at its own indent. */
 	const fn = (name: string) => {
 		const at = script.indexOf(`async function ${name}(`);

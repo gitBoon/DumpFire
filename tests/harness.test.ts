@@ -54,7 +54,7 @@ const TEST_FILES = [
 	'activity-twins.test.ts',
 	'all-tasks.test.ts',
 	'access-every-route.test.ts',
-	'admin-backup-panels.test.ts',
+	'admin-panels.test.ts',
 	'admin-reset.test.ts',
 	'archive-answers.test.ts',
 	'atomic-accounts.test.ts',
