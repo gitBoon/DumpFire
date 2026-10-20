@@ -1662,8 +1662,9 @@ describe('PUT /api/subtasks/:id', () => {
 			expect(again.status).toBe(200);
 			expect(notices()).toHaveLength(1);
 			expect(actions()).toEqual(['subtask_completed']);
-			// The page is told to refresh; nobody is mailed a second time.
-			expect(sent.all.map(name)).toEqual(['event update']);
+			// Nobody is mailed a second time, and since card 2299 the page is not
+			// told either: the second tick changes nothing, so it writes nothing.
+			expect(sent.all).toEqual([]);
 		} finally {
 			sent.restore();
 		}
@@ -1709,14 +1710,16 @@ describe('PUT /api/v1/subtasks/:id', () => {
 						content: 'Unblocked: subtask "Written" completed — nothing is blocking subtask "Review it" now.'
 					}
 				]);
-				expect(actions()).toEqual(['api:subtask_completed']);
+				// The rename has its own entry since card 2299, after the tick's.
+				expect(actions()).toEqual(['api:subtask_completed', 'api:subtask_updated']);
 			}
 		});
 
-		// The tick, its entry (card 2108: there was none), then the notice, as
-		// `PUT /api/subtasks/:id` writes them.
+		// The tick, its entry (card 2108: there was none), the rename's entry
+		// (card 2299), then the notice, as `PUT /api/subtasks/:id` writes them.
 		expect(run.writes.map((sql) => sql.split(/[ (]/).slice(0, 3).join(' '))).toEqual([
 			'update "subtasks" set',
+			'insert into "activity_log"',
 			'insert into "activity_log"',
 			'insert into "card_comments"'
 		]);

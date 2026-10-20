@@ -1,7 +1,7 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.6
+version: 1.7
 status: As-Built
 date: 2026-10-20
 tags:
@@ -138,6 +138,14 @@ in either spelling, neither put a card in the window nor make it the work of
 whoever wrote them. Since 14 October 2026 the card window records every link it
 adds or removes, and counted, linking a blocker would have read as work on the
 card.
+
+A subtask edited is work on its card, as a subtask ticked is. Since card 2299 an
+untick and a change of a subtask's title, description, priority, colour or due
+date are recorded as `subtask_updated`, in either spelling, so a card whose only
+activity in the window is such an edit is in the window and is the work of
+whoever made the edit; until then it was neither, and the count of cards worked
+on can rise from the deploy on. A change of a subtask's position alone, and a
+save that changes nothing, are not recorded and do not count.
 
 ## The five reporting fields
 

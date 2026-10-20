@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.36
+version: 1.37
 status: As-Built
 date: 2026-10-20
 tags:
@@ -74,6 +74,7 @@ Break large tasks into smaller steps:
 - A title, description, priority, due date and completion per subtask. The subtask window offers no colour: the one it offered was stored and shown nowhere, so it was taken out (card 2185). A colour set through the API is kept and returned, and shown nowhere
 - Progress bar shows completion percentage on the card
 - **Completion guard** — prevents moving a card to "Complete" if subtasks remain open
+- **Every change is recorded** — ticking a subtask shows in the board's activity panel and on the Audit page as "Completed subtask", and since card 2299 unticking one ("Reopened …") and editing its title, description, priority or due date ("Updated …: title, dueDate") show as "Updated subtask". A Save in the subtask window that changed nothing records nothing and refreshes no other open page. Changing a subtask's place in the list is not recorded
 
 ### Sub-boards
 

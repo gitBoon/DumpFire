@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.73
+version: 1.74
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1074,6 +1074,19 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   "Archived card" was recorded. An archive made in the web application,
   `DELETE /api/cards/{id}`, is the same. A restore of a card that is not archived already
   answered so (item 86). See [`DELETE /api/v1/cards/:cardId`](#delete-apiv1cardscardid).
+- **Unticking or editing a subtask is recorded, and a save that changes nothing writes
+  nothing** (card 2299), on `PUT /subtasks/:subtaskId`. An untick logs
+  `api:subtask_updated`, `Reopened <subtask> (on <card>)`, and mails nobody; a change of
+  `title`, `description`, `priority`, `colorTag` or `dueDate` logs `api:subtask_updated`
+  naming the fields changed, `Updated <subtask> (on <card>): title, dueDate`, after the
+  tick's or untick's entry when one request does both. A change of `position` alone is
+  written and still not recorded. Neither an untick nor an edit was recorded. A request
+  whose every field is the value the subtask holds keeps it as it is, logs nothing and
+  sends no live update, and is answered `200` with the subtask; it was written again and
+  the board told. The web application's `PUT /api/subtasks/{id}` is the same.
+  `api:subtask_updated` is work on the card in `GET /reports/activity`, as
+  `api:subtask_completed` is (item 87). See
+  [`PUT /api/v1/subtasks/:subtaskId`](#put-apiv1subtaskssubtaskid).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2724,6 +2737,14 @@ request, as ticking it in the web UI does. A notice on a card of another board n
 subtask only as `a subtask on another board` (card 2152). A subtask already complete, sent
 `"completed": true` again, writes none of it. Until 2026-10-14 this wrote no entry and
 mailed nobody.
+
+Unticking a subtask writes an `api:subtask_updated` entry, `Reopened <subtask> (on <card>)`,
+and mails nobody. A change of `title`, `description`, `priority`, `colorTag` or `dueDate`
+writes an `api:subtask_updated` entry naming the fields changed,
+`Updated <subtask> (on <card>): title, dueDate`, after the tick or untick when one request
+does both. A change of `position` alone is written and not recorded. A request that
+changes nothing writes nothing, records nothing and sends no live update, and is answered
+`200` with the subtask as it is (card 2299).
 
 #### `DELETE /api/v1/subtasks/:subtaskId`
 
