@@ -12,7 +12,10 @@
 	 *   - xp-utils.ts      (XP levelling calculations)
 	 *   - sse.ts           (Server-Sent Events connection)
 	 *   - board-state.svelte.ts (what the page draws, and the re-read of the
-	 *     board's contents alone, coalesced and held; card 2280, slice B2a)
+	 *     board's contents alone, coalesced and held; card 2280, slice B2a;
+	 *     and every write: shown at once, put back on a refusal or no answer
+	 *     with the server's words said, slice B2b)
+	 *   - board-patches.ts (each write's change to the columns, and its undo)
 	 */
 	import type { PageData } from './$types';
 	import { afterNavigate, invalidateAll, replaceState } from '$app/navigation';
@@ -20,13 +23,12 @@
 	import { onMount, onDestroy, tick as nextTick, untrack } from 'svelte';
 	import { browser } from '$app/environment';
 	import { page } from '$app/stores';
-	import { dndzone, TRIGGERS } from 'svelte-dnd-action';
+	import { dndzone, SOURCES, TRIGGERS } from 'svelte-dnd-action';
 	import { flip } from 'svelte/animate';
-	import { theme } from '$lib/stores/theme';
 	import { toasts } from '$lib/stores/toast';
 
 	// Shared types
-	import type { CardType, ColumnType, ActivityType, SortOption, XpEntry, BlockedState, OnHoldState } from '$lib/types';
+	import type { CardType, CategoryType, ColumnType, ActivityType, SortOption, XpEntry, BlockedState, OnHoldState } from '$lib/types';
 
 	// Shared utilities
 	import { COLUMN_COLORS, FLIP_DURATION_MS } from '$lib/utils/constants';
@@ -47,8 +49,9 @@
 	import * as bulkOps from '$lib/board/bulk-actions';
 	import { getLevel, getXpProgress, loadXp as fetchXpData } from '$lib/board/xp-utils';
 	import { connectSSE } from '$lib/board/sse';
-	import { BoardState } from '$lib/board/board-state.svelte';
-	import type { Release } from '$lib/board/refresh-schedule';
+	import { BoardState, type WriteWords } from '$lib/board/board-state.svelte';
+	import { copyColumns, insertColumn, moveCards, patchCard, removeCard, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
+	import { BULK_HOLD_MS, type Release } from '$lib/board/refresh-schedule';
 	import type { BoardContentsData } from '$lib/board/contents-answer';
 	import { openingView, readBoardView, resolveListColumn, viewFromUrl, withViewParams, writeBoardView, type BoardViewChoice } from '$lib/board/board-view';
 
@@ -124,24 +127,30 @@
 	}
 
 	// The edit's text is its own state, which a read cannot overwrite: the
-	// reads are held only while the title is sent (R6).
+	// reads are held only while the title is sent (R6), by the board state's
+	// write, which shows it at once and puts the old title back, and says why,
+	// when it is refused or unanswered (slice B2b). It said nothing, and the
+	// new title stayed until the board was next read. The blur that follows
+	// Enter finds the title already shown and sends nothing. Nor does the
+	// blur after Escape, which Chromium fires as the input is taken away: the
+	// edit is over by then (the B2b review).
 	async function saveInlineEdit(cardId: number) {
+		if (inlineEditCardId !== cardId) return;
 		const trimmed = inlineEditValue.trim();
-		if (!trimmed) { inlineEditCardId = null; return; }
-		const release = boardState.hold();
-		try {
-			const col = boardState.columns.find(c => c.cards.some(cd => cd.id === cardId));
-			const card = col?.cards.find(cd => cd.id === cardId);
-			if (card && card.title !== trimmed) {
-				card.title = trimmed;
-				boardState.columns = [...boardState.columns];
-				await api.updateCard(cardId, { title: trimmed, boardId: data.board.id });
-				toasts.add('Title updated');
-			}
-		} finally {
-			release();
-		}
 		inlineEditCardId = null;
+		if (!trimmed) return;
+		const card = boardState.columns.flatMap((c) => c.cards).find((c) => c.id === cardId);
+		if (!card || card.title === trimmed) return;
+		const started = toasts.navigation();
+		const written = await boardState.writeCard(cardId, { title: trimmed }, () => api.updateCard(cardId, { title: trimmed, boardId: data.board.id }), {
+			refused: 'The title was not saved.',
+			noAnswer: 'No answer from the server. The title may not have been saved.'
+		});
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return;
+		}
+		toasts.add('Title updated');
 	}
 
 	function cancelInlineEdit() { inlineEditCardId = null; }
@@ -154,18 +163,16 @@
 	// Priority cycling for quick-edit
 	const PRIORITY_CYCLE = ['low', 'medium', 'high', 'critical'] as const;
 
+	/** What a priority change says when it is refused or unanswered: the dot, the card menu (slice B2b). */
+	const PRIORITY_WORDS: WriteWords = { refused: 'The priority was not changed.', noAnswer: 'No answer from the server. The priority may not have been changed.' };
+
 	async function cyclePriority(card: CardType, e: MouseEvent) {
 		e.stopPropagation();
 		const idx = PRIORITY_CYCLE.indexOf(card.priority as any);
 		const next = PRIORITY_CYCLE[(idx + 1) % PRIORITY_CYCLE.length];
-		const release = boardState.hold();
-		try {
-			card.priority = next;
-			boardState.columns = [...boardState.columns];
-			await api.updateCard(card.id, { priority: next, boardId: data.board.id });
-		} finally {
-			release();
-		}
+		const started = toasts.navigation();
+		const written = await boardState.writeCard(card.id, { priority: next }, () => api.updateCard(card.id, { priority: next, boardId: data.board.id }), PRIORITY_WORDS);
+		if (!written.ok) toasts.add(written.failure, 'error', started);
 	}
 
 	// ─── Bulk Selection ──────────────────────────────────────────────────────
@@ -185,6 +192,18 @@
 		selectedCards = new Set();
 	}
 
+	// The three bulk changes go through the board state (slice B2b): the cards
+	// change on the screen at once, and each the server does not take is put
+	// back by it, which reads the board once afterwards. A change made is not
+	// read again: its own live events are. Each holds the reads until its last
+	// card is answered, so a bulk change of 20 cards is not 20 reads, with a
+	// hold of its own whose watchdog waits 5 minutes, not 30 s (the B2b review
+	// and re-check): every card's write takes its hold at once, and a bulk
+	// change of more than 30 s let reads in under the cards still out when
+	// their watchdogs ran out. Its `finally` lets it go once the last card is
+	// answered; `fetch` has no time limit of its own, so a request that never
+	// answers is let go by the watchdog, and the board is read then.
+
 	/**
 	 * A refusal is said, and the selection kept: a move of more than 100 cards
 	 * to another column at once is refused whole, and nothing moves (card 2209).
@@ -193,15 +212,14 @@
 		const targetCol = boardState.columns.find(c => c.id === targetColumnId);
 		if (!targetCol) return;
 		const started = toasts.navigation();
-		const release = boardState.hold();
+		const release = boardState.hold({ watchdogMs: BULK_HOLD_MS });
 		try {
-			const failure = await bulkOps.bulkMove(selectedCards, targetColumnId, targetCol.cards.length, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
+			const failure = await bulkOps.bulkMove(selectedCards, targetColumnId, targetCol.cards.length, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤', boardState);
 			if (failure) {
 				toasts.add(failure, 'error', started);
 			} else {
 				clearSelection();
 			}
-			boardState.refresh();
 		} finally {
 			release();
 		}
@@ -210,31 +228,37 @@
 	async function handleBulkDelete() {
 		// Each card is archived, not deleted (`api.deleteCard`).
 		const started = toasts.navigation();
-		const release = boardState.hold();
+		const release = boardState.hold({ watchdogMs: BULK_HOLD_MS });
 		try {
-			const { archived, failed } = await bulkOps.bulkDelete(selectedCards, data.board.id);
+			const { archived, failed } = await bulkOps.bulkDelete(selectedCards, data.board.id, boardState);
 			if (archived > 0) {
 				toasts.add(`${archived} ${archived === 1 ? 'card' : 'cards'} archived. Restore from Archived Cards.`, 'info');
 			}
 			if (failed.length > 0) {
-				// What the server did not archive is still on the board, and stays selected.
+				// What the server did not archive is back on the board, and stays selected.
 				toasts.add(`${failed.length} ${failed.length === 1 ? 'card' : 'cards'} not archived. ${failed[0].message}`, 'error', started);
 				selectedCards = new Set(failed.map((f) => f.cardId));
 			} else {
 				clearSelection();
 			}
-			boardState.refresh();
 		} finally {
 			release();
 		}
 	}
 
+	// The answers were thrown away, and the selection cleared whatever they were.
 	async function handleBulkPriority(priority: string) {
-		const release = boardState.hold();
+		const started = toasts.navigation();
+		const release = boardState.hold({ watchdogMs: BULK_HOLD_MS });
 		try {
-			await bulkOps.bulkPriority(selectedCards, priority, data.board.id);
-			clearSelection();
-			boardState.refresh();
+			const { failed } = await bulkOps.bulkPriority(selectedCards, priority, data.board.id, boardState);
+			if (failed.length > 0) {
+				// What the server did not change is put back, and stays selected.
+				toasts.add(`${failed.length} ${failed.length === 1 ? 'card' : 'cards'} not changed. ${failed[0].message}`, 'error', started);
+				selectedCards = new Set(failed.map((f) => f.cardId));
+			} else {
+				clearSelection();
+			}
 		} finally {
 			release();
 		}
@@ -354,8 +378,9 @@
 		try {
 			const result = await cardActions.saveCard(editingCard, cardModalColumnId, data.board.id, boardState.columns, cardData);
 			if (result.failure) {
-				// No card was made: the window stays open with what was typed, and
-				// the reason is said. It used to say "Created".
+				// No card was made, or the update was not saved (slice B2b): the
+				// window stays open with what was typed, and the reason is said. It
+				// used to say "Created", and an update closed it as if saved.
 				toasts.add(result.failure, 'error', started);
 				return;
 			}
@@ -372,15 +397,19 @@
 					toasts.add(`${named} was not put on "${cardData.title}". ${message}`, 'error', started);
 				}
 
-				// Assign pending users to the newly created card
+				// A pending subtask that was not made, named (slice B2b): the card is kept.
+				for (const { title, message } of result.subtaskFailures ?? []) {
+					toasts.add(`Subtask "${title}" was not added to "${cardData.title}". ${message}`, 'error', started);
+				}
+
+				// Assign pending users to the newly created card, each answer read
+				// (slice B2b): someone not assigned is named, and the card is kept.
 				if (result.cardId && cardData.pendingAssigneeIds?.length) {
-					await Promise.all(cardData.pendingAssigneeIds.map(userId =>
-						fetch(`/api/cards/${result.cardId}/assignees`, {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({ userId })
-						})
-					));
+					for (const { userId, message } of await cardActions.assignPending(result.cardId, cardData.pendingAssigneeIds)) {
+						const member = boardState.boardUsers.find((user) => user.id === userId);
+						const named = member ? `"${member.username}"` : 'Someone no longer on this board';
+						toasts.add(`${named} was not assigned to "${cardData.title}". ${message}`, 'error', started);
+					}
 				}
 
 				// Create pending sub-boards for the newly created card. One refused is
@@ -410,6 +439,9 @@
 				toasts.add('Card updated');
 			}
 			editingCard = null;
+			// Read once: a new card with its subtasks, labels, assignees and
+			// sub-boards is the reader's to draw. The card window's controller
+			// (slice B2c) takes the answer instead.
 			boardState.refresh();
 		} finally {
 			release();
@@ -442,7 +474,8 @@
 					toasts.add('Card archived. Restore it from Archived Cards.', 'info');
 					showCardModal = false;
 					editingCard = null;
-					boardState.refresh();
+					// Taken off the board as answered, with no read (slice B2b).
+					boardState.columns = removeCard(boardState.columns, cardId).columns;
 				} finally {
 					release();
 				}
@@ -465,25 +498,39 @@
 		editingBoardName = true;
 	}
 
-	// Shown at once, as the name typed always was; an empty one is not sent and not shown.
+	// Shown at once, as the name typed always was; an empty one, or the name
+	// unchanged, is not sent (the blur that follows Enter sends nothing). A
+	// refusal or no answer puts the old name back and says why (slice B2b): it
+	// stayed until the board was next read, and nothing was said.
 	async function saveBoardName() {
-		const release = boardState.hold();
-		try {
-			if (boardNameDraft.trim()) boardState.board = { ...boardState.board, name: boardNameDraft };
-			await boardActions.saveBoardName(data.board.id, boardNameDraft);
-			editingBoardName = false;
-		} finally {
-			release();
+		const name = boardNameDraft.trim();
+		const was = boardState.board.name;
+		editingBoardName = false;
+		if (!name || name === was) return;
+		const started = toasts.navigation();
+		boardState.board = { ...boardState.board, name };
+		const written = await boardState.write(null, () => boardActions.saveBoardName(data.board.id, name), {
+			refused: 'The board was not renamed.',
+			noAnswer: 'No answer from the server. The board may not have been renamed.'
+		});
+		if (!written.ok) {
+			// Only while it still shows this name: a rename sent after it stays (the B2b review).
+			if (boardState.board.name === name) boardState.board = { ...boardState.board, name: was };
+			toasts.add(written.failure, 'error', started);
 		}
 	}
 
 	async function saveBoardEmoji(emoji: string) {
-		const release = boardState.hold();
-		try {
-			boardState.board = { ...boardState.board, emoji };
-			await boardActions.saveBoardEmoji(data.board.id, emoji);
-		} finally {
-			release();
+		const was = boardState.board.emoji;
+		const started = toasts.navigation();
+		boardState.board = { ...boardState.board, emoji };
+		const written = await boardState.write(null, () => boardActions.saveBoardEmoji(data.board.id, emoji), {
+			refused: "The board's emoji was not changed.",
+			noAnswer: "No answer from the server. The board's emoji may not have been changed."
+		});
+		if (!written.ok) {
+			if (boardState.board.emoji === emoji) boardState.board = { ...boardState.board, emoji: was };
+			toasts.add(written.failure, 'error', started);
 		}
 	}
 
@@ -494,26 +541,48 @@
 	let newColumnColor = $state('#6366f1');
 	let newColumnPosition = $state('end');
 
+	// The column answered is put on the board, with no read; a refusal keeps
+	// the window open, and says why (slice B2b).
 	async function addColumn() {
-		const release = boardState.hold();
-		try {
-			await boardActions.addColumn(data.board.id, newColumnTitle, newColumnColor, newColumnPosition, boardState.columns);
-			showAddColumnModal = false;
-			newColumnTitle = '';
-			newColumnPosition = 'end';
-			boardState.refresh();
-		} finally {
-			release();
+		const started = toasts.navigation();
+		const written = await boardState.write(null, () => boardActions.addColumn(data.board.id, newColumnTitle, newColumnColor, newColumnPosition, boardState.columns), {
+			refused: 'The column was not added.',
+			noAnswer: 'No answer from the server. The column may not have been added.'
+		});
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return;
 		}
+		const made = written.answer as unknown as Omit<ColumnType, 'cards'> | null;
+		if (typeof made?.id === 'number' && !boardState.columns.some((c) => c.id === made.id)) {
+			boardState.columns = insertColumn(boardState.columns, { ...made, cards: [] }).columns;
+		}
+		showAddColumnModal = false;
+		newColumnTitle = '';
+		newColumnPosition = 'end';
 	}
 
-	async function updateColumn(colId: number, updates: Record<string, unknown>) {
-		const release = boardState.hold();
-		try {
-			await boardActions.updateColumn(colId, updates, data.board.id);
-		} finally {
-			release();
-		}
+	// A column's colour, WIP limit and Add Task switch went through a wrapper
+	// here that threw each answer away: each looked saved until the board was
+	// next read. Each is sent through the board state now, shown at once and
+	// put back, with the server's words, when it is refused (slice B2b).
+
+	/** What a change to a column's settings says when it is refused or unanswered. */
+	const COLUMN_WORDS: WriteWords = { refused: 'The column was not changed.', noAnswer: 'No answer from the server. The column may not have been changed.' };
+
+	async function setColumnColor(colId: number, color: string) {
+		closeDropdowns();
+		const started = toasts.navigation();
+		const written = await boardState.writeColumn(colId, { color }, () => boardActions.updateColumn(colId, { color }, data.board.id), COLUMN_WORDS);
+		if (!written.ok) toasts.add(written.failure, 'error', started);
+	}
+
+	async function toggleShowAddCard(column: ColumnType) {
+		const showAddCard = !(column.showAddCard || column.title.toLowerCase() === 'to do');
+		closeDropdowns();
+		const started = toasts.navigation();
+		const written = await boardState.writeColumn(column.id, { showAddCard }, () => boardActions.updateColumn(column.id, { showAddCard }, data.board.id), COLUMN_WORDS);
+		if (!written.ok) toasts.add(written.failure, 'error', started);
 	}
 
 	function confirmDeleteColumn(colId: number, colTitle: string) {
@@ -531,7 +600,8 @@
 						toasts.add(failure, 'error', started);
 						return;
 					}
-					boardState.refresh();
+					// Taken off the board as answered, with no read (slice B2b).
+					boardState.columns = removeColumn(boardState.columns, colId).columns;
 				} finally {
 					release();
 				}
@@ -541,8 +611,43 @@
 
 	// ─── Category Management ─────────────────────────────────────────────────
 
-	// The category window sends its own adds and deletes (markup below).
 	let showCategoryModal = $state(false);
+
+	// The category window's add and delete. Each answer was thrown away and
+	// the board read again; a refusal said nothing. The category answered is
+	// put in the list, and one deleted taken out, once the server has taken it
+	// (slice B2b). The cards that carried a deleted one are the reader's: its
+	// live event reads the board. Whether it was added is given back, so the
+	// window keeps the name typed when it was not (the B2b review).
+	async function addCategory({ name, color }: { name: string; color: string }): Promise<boolean> {
+		const started = toasts.navigation();
+		const written = await boardState.write(null, () => api.createCategory({ boardId: data.board.id, name, color }), {
+			refused: `The category "${name}" was not added.`,
+			noAnswer: `No answer from the server. The category "${name}" may not have been added.`
+		});
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return false;
+		}
+		const made = written.answer as unknown as CategoryType | null;
+		if (typeof made?.id === 'number' && !boardState.categories.some((c) => c.id === made.id)) {
+			boardState.categories = [...boardState.categories, made];
+		}
+		return true;
+	}
+
+	async function deleteCategory(id: number) {
+		const started = toasts.navigation();
+		const written = await boardState.write(null, () => api.deleteCategoryApi(id), {
+			refused: 'The category was not deleted.',
+			noAnswer: 'No answer from the server. The category may not have been deleted.'
+		});
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return;
+		}
+		boardState.categories = boardState.categories.filter((c) => c.id !== id);
+	}
 
 	// ─── Confirm Modal ───────────────────────────────────────────────────────
 
@@ -609,17 +714,56 @@
 		}
 	}
 
+	// The card menu's pin, move and priority: each shown at once, and put back
+	// with the server's words when it is refused or unanswered (slice B2b).
+	// Each threw its answer away, and "Moved to X" was said whatever it was.
 	async function togglePin(card: CardType) {
-		const release = boardState.hold();
-		try {
-			const newPinned = await cardActions.togglePin(card, data.board.id);
-			card.pinned = newPinned;
-			boardState.columns = [...boardState.columns];
-			toasts.add(newPinned ? `Pinned "${card.title}"` : `Unpinned "${card.title}"`);
-			contextMenu = { ...contextMenu, show: false };
-		} finally {
-			release();
+		contextMenu = { ...contextMenu, show: false };
+		const pinned = !card.pinned;
+		const started = toasts.navigation();
+		const written = await boardState.writeCard(card.id, { pinned }, () => cardActions.setPinned(card.id, pinned, data.board.id), {
+			refused: pinned ? 'The card was not pinned.' : 'The card was not unpinned.',
+			noAnswer: pinned ? 'No answer from the server. The card may not have been pinned.' : 'No answer from the server. The card may not have been unpinned.'
+		});
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return;
 		}
+		toasts.add(pinned ? `Pinned "${card.title}"` : `Unpinned "${card.title}"`);
+	}
+
+	/** To the end of another column, its WIP limit warned of once the move is taken. */
+	async function moveFromMenu(card: CardType, targetColId: number) {
+		const col = boardState.columns.find((c) => c.id === targetColId);
+		if (!col) return;
+		contextMenu = { ...contextMenu, show: false };
+		const count = col.cards.length;
+		const updates = [{ id: card.id, columnId: targetColId, position: count }];
+		const started = toasts.navigation();
+		const written = await boardState.write((columns) => moveCards(columns, updates), () => api.reorderCards(updates, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤'), {
+			refused: 'The card was not moved.',
+			noAnswer: 'No answer from the server. The card may not have been moved.'
+		});
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return;
+		}
+		toasts.add(`Moved to ${col.title}`);
+		// WIP limit violation alert
+		if (col.wipLimit > 0 && count + 1 > col.wipLimit) {
+			toasts.add(`⚠ ${col.title} exceeds WIP limit (${count + 1}/${col.wipLimit})`, 'warning');
+		}
+	}
+
+	async function setPriorityFromMenu(card: CardType, priority: string) {
+		contextMenu = { ...contextMenu, show: false };
+		const started = toasts.navigation();
+		const written = await boardState.writeCard(card.id, { priority }, () => api.updateCard(card.id, { priority, boardId: data.board.id }), PRIORITY_WORDS);
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return;
+		}
+		toasts.add(`Priority → ${priority}`);
 	}
 
 	/** A refusal is said in the server's words: on a board nested as deep as sub-boards may be, every one is refused (card 2172). */
@@ -895,14 +1039,21 @@
 		wipLimitInput = col.wipLimit || 0;
 	}
 
+	// Said to be set only once the server has taken it; shown at once, and put
+	// back with the server's words when it is not (slice B2b).
 	async function saveWipLimit(colId: number) {
 		// An emptied number input is not a number. That is "no limit", which is 0.
 		const limit = Number.isFinite(wipLimitInput) ? Math.max(0, Math.trunc(wipLimitInput)) : 0;
-		await updateColumn(colId, { wipLimit: limit });
-		const col = boardState.columns.find(c => c.id === colId);
-		if (col) col.wipLimit = limit;
-		boardState.columns = [...boardState.columns];
 		editingWipColumn = null;
+		const started = toasts.navigation();
+		const written = await boardState.writeColumn(colId, { wipLimit: limit }, () => boardActions.updateColumn(colId, { wipLimit: limit }, data.board.id), {
+			refused: 'The WIP limit was not saved.',
+			noAnswer: 'No answer from the server. The WIP limit may not have been saved.'
+		});
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return;
+		}
 		toasts.add(limit > 0 ? `WIP limit set to ${limit}` : 'WIP limit removed');
 	}
 
@@ -910,6 +1061,23 @@
 
 	let blockedState = $state<BlockedState>({ show: false, card: null, incomplete: 0, reason: 'subtasks', subBoardId: null });
 	let onHoldState = $state<OnHoldState>({ show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 });
+
+	/**
+	 * The hold of the blocked window: the board is not read while it says why a
+	 * card cannot be completed (R6; slice B2b), however long it is open (no
+	 * watchdog: its Confirm and Cancel, Escape among them, close it).
+	 */
+	let blockedRelease: Release | null = null;
+
+	function releaseBlocked() {
+		blockedRelease?.();
+		blockedRelease = null;
+	}
+
+	function closeBlocked() {
+		blockedState.show = false;
+		releaseBlocked();
+	}
 
 	// ─── Completion prompt ───────────────────────────────────────────────────
 	// Asked after the move, never before it: the card is already complete and
@@ -934,22 +1102,28 @@
 	async function saveCompletionPrompt() {
 		const current = completionQueue[0];
 		if (!current) return;
-		const patch: Record<string, string> = {};
+		const patch: { summary?: string; closeReason?: string } = {};
 		if (completionSummary.trim()) patch.summary = completionSummary.trim();
 		if (completionReason) patch.closeReason = completionReason;
 
 		// Nothing typed is the same as skipping — do not write empty values over
 		// anything already recorded.
-		const release = boardState.hold();
-		try {
-			if (Object.keys(patch).length > 0) {
-				await api.updateCard(current.id, { ...patch, boardId: data.board.id });
-			}
+		if (Object.keys(patch).length === 0) {
 			nextCompletionPrompt();
-			if (completionQueue.length === 0) boardState.refresh();
-		} finally {
-			release();
+			return;
 		}
+		// Put on the card as answered, with no read. A refusal keeps the prompt,
+		// with what was typed, and says why (slice B2b): it was thrown away.
+		const started = toasts.navigation();
+		const written = await boardState.writeCard(current.id, patch, () => api.updateCard(current.id, { ...patch, boardId: data.board.id }), {
+			refused: 'The summary and close reason were not saved.',
+			noAnswer: 'No answer from the server. The summary and close reason may not have been saved.'
+		});
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return;
+		}
+		nextCompletionPrompt();
 	}
 
 	/**
@@ -960,38 +1134,74 @@
 	 */
 	let onHoldRelease: Release | null = null;
 
+	/**
+	 * The columns as the drag into On Hold found them: Cancel, or a move the
+	 * server refuses, puts the card back from them, at once (slice B2b). Null
+	 * once the move is taken.
+	 */
+	let onHoldFrom: ColumnType[] | null = null;
+
 	function releaseOnHold() {
 		onHoldRelease?.();
 		onHoldRelease = null;
 	}
 
+	/** A move into On Hold not made: the card back where the drag found it, and the board read once. */
+	function putBackOnHold() {
+		if (onHoldFrom) boardState.columns = undoDrag(boardState.columns, onHoldFrom, [onHoldState.cardId]);
+		onHoldFrom = null;
+		boardState.refresh();
+	}
+
 	// Closed as the hold is let go, answered or not: a window left open after
-	// no answer would send a second Confirm unheld (B2a review). No answer is
-	// said, and the board read as the hold is let go shows where the card is;
-	// after a success that read is one with the move's own echo.
+	// no answer would send a second Confirm unheld (B2a review). The move goes
+	// first and the note only once it is taken (slice B2b; R7): a refused move
+	// is said, puts the card back and writes no note. A note refused after the
+	// move was taken is said, and the window kept open, held, on the note
+	// typed: its Confirm sends the note alone, and Cancel leaves the card on
+	// hold without it. A move made is not read again (its own echo is); a
+	// throw here, which the handler does not expect, reads the board.
 	async function confirmOnHold() {
 		const started = toasts.navigation();
+		let noteKept = false;
 		try {
-			await dndHandlers.confirmOnHold(onHoldState, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
+			const { failure, noteFailure } = await dndHandlers.confirmOnHold(onHoldState, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤');
+			if (failure) {
+				putBackOnHold();
+				toasts.add(failure, 'error', started);
+				return;
+			}
+			// Each card of the columns the move touched takes its column and place as sent.
+			boardState.columns = moveCards(boardState.columns, onHoldState.pendingUpdates).columns;
+			onHoldFrom = null;
+			if (noteFailure) {
+				toasts.add(`"${onHoldState.cardTitle}" was put on hold, but its note was not saved. ${noteFailure}`, 'error', started);
+				onHoldState = { ...onHoldState, pendingUpdates: [] };
+				noteKept = true;
+				return;
+			}
+			boardState.columns = patchCard(boardState.columns, onHoldState.cardId, { onHoldNote: onHoldState.note }).columns;
 		} catch {
 			toasts.add('No answer from the server. The card may not have been put on hold.', 'error', started);
-		} finally {
-			onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
 			boardState.refresh();
-			releaseOnHold();
+		} finally {
+			if (!noteKept) {
+				onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
+				onHoldFrom = null;
+				releaseOnHold();
+			}
 		}
 	}
 
+	// The card back where the drag found it, with no read: nothing was sent (slice B2b).
 	function cancelOnHold() {
+		if (onHoldFrom) boardState.columns = undoDrag(boardState.columns, onHoldFrom, [onHoldState.cardId]);
+		onHoldFrom = null;
 		onHoldState = { show: false, cardId: 0, cardTitle: '', note: '', pendingUpdates: [], pendingColumnId: 0 };
-		boardState.refresh();
 		releaseOnHold();
 	}
 
-	// ─── Theme & User ────────────────────────────────────────────────────────
-
-	let currentTheme = $state('light');
-	theme.subscribe((v) => (currentTheme = v));
+	// ─── User ────────────────────────────────────────────────────────────────
 
 	// User from server-side auth
 	let currentUser = $derived($page.data.user);
@@ -1027,9 +1237,21 @@
 	// would draw the board as it was, under the user's hand.
 	let dragHold: Release | null = null;
 
-	/** Hold the reads for the drag in hand, once; a hold the watchdog has let go is not used again. */
+	/**
+	 * The columns as the drag in hand found them, copied at its first move: a
+	 * move refused, blocked or cancelled is put back from them at once, with
+	 * no read (slice B2b). Nothing else changes the columns meanwhile: the
+	 * drag holds the reads.
+	 */
+	let dragFrom: ColumnType[] | null = null;
+
+	/**
+	 * Hold the reads for the drag in hand, once; a hold the watchdog has let go
+	 * is not used again. Keep the columns as the drag found them, once.
+	 */
 	function holdDrag() {
 		if (!dragHold || dragHold.released) dragHold = boardState.hold();
+		dragFrom ??= copyColumns(boardState.columns);
 	}
 
 	/** The drag's hold, for the drop that sends its move to let go once answered. */
@@ -1037,6 +1259,13 @@
 		const release = dragHold && !dragHold.released ? dragHold : boardState.hold();
 		dragHold = null;
 		return release;
+	}
+
+	/** The columns as the drag found them, for the drop that sends its move; a drop with no first move finds them as they are. */
+	function takeDragFrom(): ColumnType[] {
+		const from = dragFrom ?? copyColumns(boardState.columns);
+		dragFrom = null;
+		return from;
 	}
 
 	/**
@@ -1047,6 +1276,7 @@
 	function stopDrag() {
 		dragHold?.();
 		dragHold = null;
+		dragFrom = null;
 	}
 
 	function handleColumnDndConsider(e: CustomEvent) {
@@ -1059,11 +1289,20 @@
 		boardState.columns = e.detail.items;
 	}
 
+	// The new order is shown from the columns as the drag found them, each
+	// column at its index, as sent; a refusal puts back the order and the
+	// places there were, and says why (slice B2b). Its answer was thrown away.
 	async function handleColumnDndFinalize(e: CustomEvent) {
 		const release = takeDragHold();
+		const from = takeDragFrom();
+		const started = toasts.navigation();
 		try {
-			boardState.columns = e.detail.items;
-			await dndHandlers.handleColumnDndFinalize(boardState.columns, data.board.id);
+			const order = (e.detail.items as ColumnType[]).map((c) => c.id);
+			const written = await boardState.write(() => reorderColumns(from, order), () => dndHandlers.handleColumnDndFinalize(e.detail.items, data.board.id), {
+				refused: 'The columns were not reordered.',
+				noAnswer: 'No answer from the server. The columns may not have been reordered.'
+			});
+			if (!written.ok) toasts.add(written.failure, 'error', started);
 		} finally {
 			release();
 		}
@@ -1096,10 +1335,20 @@
 		// Hold note and the blocked-card check, so Cancel on the note did not
 		// undo the move. The drag's hold is the other call's to let go.
 		if (e.detail.info?.trigger === TRIGGERS.DROPPED_INTO_ANOTHER) {
+			// A keyboard drag fires the column left first, with no move between
+			// one arrow's drop and the next: its columns are kept here, before
+			// the card leaves, or a second hop put back would put it nowhere (the
+			// B2b review). A pointer drag kept them at its first move.
+			if (e.detail.info?.source === SOURCES.KEYBOARD) dragFrom ??= copyColumns(boardState.columns);
 			takeCardItems(columnId, e);
 			return;
 		}
 		const release = takeDragHold();
+		const from = takeDragFrom();
+		// The cards this drop carries: the one dragged, and any that came into
+		// the column. Only their columns are put back, and only they may come
+		// back from the copy while on the board nowhere (the B2b re-check).
+		const dragged = [e.detail.info?.id, ...(e.detail.items as CardType[]).filter((c) => c.columnId !== columnId).map((c) => c.id)].filter((id): id is number => typeof id === 'number');
 		const started = toasts.navigation();
 		try {
 			const result = await dndHandlers.handleCardDndFinalize(
@@ -1108,12 +1357,19 @@
 			);
 			switch (result.action) {
 				case 'blocked':
+					// Not sent: the card goes back where the drag found it, at once
+					// (slice B2b), and the window holds the board while it says why,
+					// out of the watchdog's reach, as the On Hold window does; taken
+					// before the drag's own is let go. One left open is let go first.
+					boardState.columns = undoDrag(boardState.columns, from, dragged);
 					blockedState = result.blockedState;
-					boardState.refresh();
+					releaseBlocked();
+					blockedRelease = boardState.hold({ watchdog: false });
 					break;
 				case 'on-hold':
 					onHoldState = result.onHoldState;
-					boardState.columns = result.updatedColumns;
+					boardState.columns = withCurrentCards(result.updatedColumns, boardState.columns, dragged);
+					onHoldFrom = from;
 					// The move waits for its note. The window holds, out of the
 					// watchdog's reach, until Confirm is answered or Cancel; taken
 					// before the drag's own is let go, so no read slips between. One
@@ -1123,13 +1379,20 @@
 					onHoldRelease = boardState.hold({ watchdog: false });
 					break;
 				case 'refused':
-					// Not moved: the columns are put back as the server has them, and
-					// the server's words are said. No sound, no completion prompt.
-					toasts.add(result.message, 'error', started);
+					// Not moved: the cards go back where the drag found them, at once
+					// (slice B2b), the board is read once, and the server's words are
+					// said. No sound, no completion prompt.
+					boardState.columns = undoDrag(boardState.columns, from, dragged);
 					boardState.refresh();
+					toasts.add(result.message, 'error', started);
 					break;
 				case 'committed':
-					boardState.columns = result.updatedColumns;
+					// Each card of the columns the drop touched takes its column and
+					// place as sent (R7): a card moved carried the column it was read
+					// in until the board was read again. Each card as it is now: a
+					// write answered or taken back while the move was out changed the
+					// card on the board, not the drop's copy (the B2b review).
+					boardState.columns = moveCards(withCurrentCards(result.updatedColumns, boardState.columns, dragged), result.updates).columns;
 					for (const entry of result.movedCards) {
 						if (entry.isComplete) {
 							playCompleteSound();
@@ -1531,7 +1794,7 @@
 												class="color-swatch"
 												class:active={column.color === color}
 												style="background: {drawnColour(color)}"
-												onclick={() => { updateColumn(column.id, { color }); column.color = color; closeDropdowns(); }}
+												onclick={() => setColumnColor(column.id, color)}
 											></button>
 										{/each}
 									</div>
@@ -1577,7 +1840,7 @@
 										{/if}
 										{#if canManage}
 										<div class="menu-divider"></div>
-										<button class="column-menu-item" onclick={() => { const newVal = !(column.showAddCard || column.title.toLowerCase() === 'to do'); updateColumn(column.id, { showAddCard: newVal }); column.showAddCard = newVal; closeDropdowns(); }}>
+										<button class="column-menu-item" onclick={() => toggleShowAddCard(column)}>
 											{column.showAddCard || column.title.toLowerCase() === 'to do' ? '✓' : '○'} Show Add Task
 										</button>
 										{#if editingWipColumn === column.id}
@@ -1901,35 +2164,8 @@
 		y={contextMenu.y}
 		columns={boardState.columns}
 		onClose={closeDropdowns}
-		onMove={async (card, targetColId) => {
-			const col = boardState.columns.find(c => c.id === targetColId);
-			if (!col) return;
-			const updates = [{ id: card.id, columnId: targetColId, position: col.cards.length }];
-			const release = boardState.hold();
-			try {
-				await api.reorderCards(updates, data.board.id, currentUser.name, currentUser.emoji);
-				toasts.add(`Moved to ${col.title}`);
-				// WIP limit violation alert
-				if (col.wipLimit > 0 && col.cards.length + 1 > col.wipLimit) {
-					toasts.add(`⚠ ${col.title} exceeds WIP limit (${col.cards.length + 1}/${col.wipLimit})`, 'warning');
-				}
-				contextMenu = { ...contextMenu, show: false };
-				boardState.refresh();
-			} finally {
-				release();
-			}
-		}}
-		onPriority={async (card, priority) => {
-			const release = boardState.hold();
-			try {
-				await api.updateCard(card.id, { priority, boardId: data.board.id });
-				toasts.add(`Priority → ${priority}`);
-				contextMenu = { ...contextMenu, show: false };
-				boardState.refresh();
-			} finally {
-				release();
-			}
-		}}
+		onMove={moveFromMenu}
+		onPriority={setPriorityFromMenu}
 		onTogglePin={(card) => togglePin(card)}
 		onDuplicate={(card) => duplicateCard(card)}
 		onCreateSubBoard={(card) => createSubBoard(card)}
@@ -1982,7 +2218,7 @@
 		confirmText={blockedState.subBoardId !== null ? 'Open Sub-board' : 'Open Card'}
 		confirmDanger={false}
 		onConfirm={() => {
-			blockedState.show = false;
+			closeBlocked();
 			if (blockedState.card) {
 				// A sub-board the caller cannot open is not offered: it is counted, not named.
 				if (blockedState.subBoardId !== null) {
@@ -1992,7 +2228,7 @@
 				}
 			}
 		}}
-		onCancel={() => (blockedState.show = false)}
+		onCancel={closeBlocked}
 	/>
 {/if}
 
@@ -2037,24 +2273,8 @@
 	<!-- Not one a card here carries from a board the caller cannot open (card 2128): it is not theirs to manage. -->
 	<CategoryModal
 		categories={boardState.categories.filter((c) => !c.carried)}
-		onAdd={async ({ name, color }) => {
-			const release = boardState.hold();
-			try {
-				await api.createCategory({ boardId: data.board.id, name, color });
-				boardState.refresh();
-			} finally {
-				release();
-			}
-		}}
-		onDeleteCategory={async (id) => {
-			const release = boardState.hold();
-			try {
-				await api.deleteCategoryApi(id);
-				boardState.refresh();
-			} finally {
-				release();
-			}
-		}}
+		onAdd={addCategory}
+		onDeleteCategory={deleteCategory}
 		onClose={() => (showCategoryModal = false)}
 	/>
 {/if}

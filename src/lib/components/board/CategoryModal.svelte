@@ -11,7 +11,7 @@
 
   /**
    * @prop categories — Current board categories
-   * @prop onAdd — Callback to add a new category
+   * @prop onAdd — Callback to add a new category; resolves to whether it was added
    * @prop onDeleteCategory — Callback to delete a category by ID
    * @prop onClose — Callback to close the modal
    */
@@ -22,20 +22,35 @@
     onClose
   }: {
     categories: CategoryType[];
-    onAdd: (data: { name: string; color: string }) => void;
+    onAdd: (data: { name: string; color: string }) => Promise<boolean>;
     onDeleteCategory: (id: number) => void;
     onClose: () => void;
   } = $props();
 
   let newName = $state('');
   let newColor = $state('#6366f1');
+  /** An add is out: Add and Enter send no second one (the B2b re-check). */
+  let adding = $state(false);
 
-  /** Validates and submits a new category. */
-  function addCategory() {
-    if (!newName.trim()) return;
-    onAdd({ name: newName.trim(), color: newColor });
-    newName = '';
-    newColor = '#6366f1';
+  /**
+   * Validates and submits a new category, one at a time. The name typed is
+   * cleared only once the page says it was added, and only while the box
+   * still holds the name sent: a refusal keeps it, to change and try again,
+   * and a name typed meanwhile is kept (card 2280, the B2b review and
+   * re-check).
+   */
+  async function addCategory() {
+    const name = newName.trim();
+    if (!name || adding) return;
+    adding = true;
+    try {
+      const added = await onAdd({ name, color: newColor });
+      if (!added || newName.trim() !== name) return;
+      newName = '';
+      newColor = '#6366f1';
+    } finally {
+      adding = false;
+    }
   }
 </script>
 
@@ -70,7 +85,7 @@
           <span class="color-swatch small custom" style="background: {drawnColour(newColor)}">✎</span>
         </label>
       </div>
-      <button class="btn-primary small" onclick={addCategory} disabled={!newName.trim()}>Add</button>
+      <button class="btn-primary small" onclick={addCategory} disabled={!newName.trim() || adding}>Add</button>
     </div>
     <div class="modal-actions">
       <div style="flex: 1"></div>

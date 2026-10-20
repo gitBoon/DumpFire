@@ -1,9 +1,13 @@
 /**
- * board-actions.ts — Board-level mutations (name, emoji, columns, categories).
+ * board-actions.ts — Board-level mutations (name, emoji, columns).
  *
- * All functions accept the required IDs/data and return promises.
- * They delegate to the shared API client and handle any necessary
- * position calculation logic (e.g. column insertion positions).
+ * All functions accept the required IDs/data and return the answer, for the
+ * caller to check: the board page sends each through its board state, which
+ * shows the change at once and puts it back on a refusal (card 2280, slice
+ * B2b). They delegate to the shared API client and handle any necessary
+ * position calculation logic (e.g. column insertion positions). The board's
+ * categories are added and deleted by the page's category window through the
+ * API itself.
  */
 
 import * as api from '$lib/api';
@@ -11,22 +15,21 @@ import type { ColumnType } from '$lib/types';
 
 // ─── Board Identity ──────────────────────────────────────────────────────────
 
-/** Updates the board name on the server. */
-export async function saveBoardName(boardId: number, name: string): Promise<void> {
-	if (name.trim()) {
-		await api.updateBoard(boardId, { name: name.trim() });
-	}
+/** Renames the board. The page sends no empty name. Returns the answer. */
+export async function saveBoardName(boardId: number, name: string): Promise<Response> {
+	return api.updateBoard(boardId, { name: name.trim() });
 }
 
-/** Updates the board emoji on the server. */
-export async function saveBoardEmoji(boardId: number, emoji: string): Promise<void> {
-	await api.updateBoard(boardId, { emoji });
+/** Updates the board emoji. Returns the answer. */
+export async function saveBoardEmoji(boardId: number, emoji: string): Promise<Response> {
+	return api.updateBoard(boardId, { emoji });
 }
 
 // ─── Columns ─────────────────────────────────────────────────────────────────
 
 /**
  * Calculates insertion position based on user's choice and adds a new column.
+ * Returns the answer: a success answers the new column, `201`.
  *
  * @param positionChoice — 'start', 'end', or 'after-{columnId}'
  * @param columns — Current board columns (for calculating relative positions)
@@ -37,7 +40,7 @@ export async function addColumn(
 	color: string,
 	positionChoice: string,
 	columns: ColumnType[]
-): Promise<void> {
+): Promise<Response> {
 	let position: number;
 	if (positionChoice === 'end') {
 		position = columns.length > 0 ? Math.max(...columns.map((c) => c.position)) + 1 : 0;
@@ -55,7 +58,7 @@ export async function addColumn(
 		}
 	}
 
-	await api.createColumn({
+	return api.createColumn({
 		boardId,
 		title: title.trim() || 'New Column',
 		position,
@@ -75,17 +78,4 @@ export async function updateColumn(colId: number, updates: Record<string, unknow
 /** Deletes a column via the API. Returns the answer, for the caller to check. */
 export async function deleteColumn(colId: number, boardId: number): Promise<Response> {
 	return api.deleteColumn(colId, boardId);
-}
-
-// ─── Categories ──────────────────────────────────────────────────────────────
-
-/** Creates a new category on a board. */
-export async function addCategory(boardId: number, name: string, color: string): Promise<void> {
-	if (!name.trim()) return;
-	await api.createCategory({ boardId, name: name.trim(), color });
-}
-
-/** Deletes a category by ID. */
-export async function deleteCategory(categoryId: number): Promise<void> {
-	await api.deleteCategoryApi(categoryId);
 }

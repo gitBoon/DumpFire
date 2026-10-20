@@ -26,7 +26,21 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { refreshSchedule, type RefreshSchedule } from '$lib/board/refresh-schedule';
-import { insertCard, insertColumn, moveCards, patchCard, patchColumn, removeCard, removeColumn, reorderColumns } from '$lib/board/board-patches';
+import {
+	answeredFields,
+	copyColumns,
+	insertCard,
+	insertColumn,
+	moveCards,
+	patchCard,
+	patchCardStill,
+	patchColumn,
+	removeCard,
+	removeColumn,
+	reorderColumns,
+	undoDrag,
+	withCurrentCards
+} from '$lib/board/board-patches';
 import { askForContents, contentsVerdict, type BoardContentsData } from '$lib/board/contents-answer';
 import { BoardState } from '$lib/board/board-state.svelte';
 import type { CardType, ColumnType } from '$lib/types';
@@ -177,6 +191,31 @@ describe('refresh-schedule: when a re-read is sent', () => {
 		// A hold taken once the schedule is stopped is spent from the start.
 		s.dispose();
 		expect(s.hold().released).toBe(true);
+	});
+
+	it('lets a hold go after the watchdog time it is given, in place of the 30 s (the re-check: the bulk changes’ 5 minutes)', async () => {
+		const { seen, run } = counted();
+		const s = schedule(run);
+		const long = s.hold({ watchdogMs: 300_000 });
+		s.schedule();
+		await vi.advanceTimersByTimeAsync(299_000);
+		expect([long.released, seen.runs]).toEqual([false, 0]);
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(long.released).toBe(true);
+		expect(seen.runs).toBe(1);
+	});
+
+	it('spends every hold still open when it stops, so a page that kept one takes a fresh one from the next schedule (card 2280, slice B2b)', () => {
+		const { run } = counted();
+		const s = schedule(run);
+		const watched = s.hold();
+		const unwatched = s.hold({ watchdog: false });
+		s.dispose();
+		expect([watched.released, unwatched.released]).toEqual([true, true]);
+		// Let go afterwards, they do nothing.
+		watched();
+		unwatched();
+		expect(s.holds).toBe(2);
 	});
 
 	it('never holds an access event', async () => {
@@ -437,6 +476,92 @@ describe('board-patches: a write on the screen, and its undo', () => {
 		expect(reordered.undo(reordered.columns)).toEqual(original);
 		expect(before).toEqual(original);
 	});
+
+	// Card 2280, slice B2b: the board page's writes read their answers and patch.
+	it('answeredFields takes, of the fields a write sent, the value the answer gives for each, and only those', () => {
+		const sent = { title: 'Mine', priority: 'high' };
+		// The answer is the whole row: a field the write did not send (a title someone else is changing) is not taken.
+		expect(answeredFields({ id: 2, title: 'Mine (trimmed)', priority: 'high', description: 'old' }, sent)).toEqual({ title: 'Mine (trimmed)', priority: 'high' });
+		// A field the answer does not give keeps the value sent; no answer keeps them all.
+		expect(answeredFields({ id: 2, title: 'Mine' }, sent)).toEqual({ title: 'Mine', priority: 'high' });
+		expect(answeredFields(null, sent)).toEqual(sent);
+	});
+
+	it('undoDrag gives each column a drag changed back the cards, in the order, it had when the drag began, and leaves the rest as they are now', () => {
+		const before = board();
+		const from = copyColumns(before);
+		// A copy: a drag that changes the columns in place does not change it.
+		before[0].cards.splice(1, 1);
+		before[1].cards.unshift(card(2, 10, 2, { priority: 'critical' }));
+		expect(ids(from)).toEqual([
+			[10, [1, 2, 3]],
+			[20, [4]]
+		]);
+		const untouched = column(30, 2, [card(5, 30, 1)]);
+		const dragged = [...before, untouched];
+
+		const back = undoDrag(dragged, from, [2]);
+		expect(ids(back)).toEqual([
+			[10, [1, 2, 3]],
+			[20, [4]],
+			[30, [5]]
+		]);
+		expect(back[0].cards[1]).toMatchObject({ id: 2, columnId: 10, position: 2 });
+		expect(back[2]).toBe(untouched);
+		// Nothing moved: the same columns.
+		const still = board();
+		expect(undoDrag(still, copyColumns(still), [2])[0]).toBe(still[0]);
+	});
+
+	it('undoDrag puts back only the columns the drag touched, and leaves off a card taken off the board meanwhile that it was not dragging (the re-check)', () => {
+		const before = board();
+		const from = copyColumns(before);
+		// Card 2 dragged into column 20; card 3 archived meanwhile; column 20 then column 10's card 1 changed by a write.
+		let now = moveCards(before, [{ id: 2, columnId: 20, position: 0 }]).columns;
+		now = removeCard(now, 3).columns;
+		const back = undoDrag(now, from, [2]);
+		expect(ids(back)).toEqual([
+			[10, [1, 2]],
+			[20, [4]]
+		]);
+		// A column the drag did not touch is not put back, even when it changed meanwhile.
+		const other = removeCard(board(), 4).columns;
+		expect(ids(undoDrag(other, copyColumns(board()), [1]))[1]).toEqual([20, []]);
+		// A card the drag carried that is on the board nowhere now (a keyboard hop's) comes back from the copy.
+		const carried = removeCard(board(), 2).columns;
+		expect(ids(undoDrag(carried, copyColumns(board()), [2]))[0]).toEqual([10, [1, 2, 3]]);
+	});
+
+	it('an undo, and patchCardStill, leave a field a later change has taken since; withCurrentCards gives a drop’s copy the cards as they are now (the B2b review)', () => {
+		const first = patchCard(board(), 2, { priority: 'medium' });
+		const second = patchCard(first.columns, 2, { priority: 'high' });
+		expect(first.undo(second.columns)[0].cards[1].priority).toBe('high');
+		expect(patchCardStill(second.columns, 2, { priority: 'medium' }, { priority: 'medium' })[0].cards[1].priority).toBe('high');
+		expect(patchCardStill(first.columns, 2, { priority: 'medium' }, { priority: 'MEDIUM' })[0].cards[1].priority).toBe('MEDIUM');
+		const column = patchColumn(board(), 20, { wipLimit: 3 });
+		expect(column.undo(patchColumn(column.columns, 20, { wipLimit: 5 }).columns)[1].wipLimit).toBe(5);
+
+		const copy = copyColumns(board());
+		const now = patchCard(board(), 2, { title: 'Taken back' }).columns;
+		const fresh = withCurrentCards(copy, now, []);
+		expect(fresh[0].cards[1].title).toBe('Taken back');
+		expect(fresh[1].cards[0]).toBe(now[1].cards[0]);
+		// A card the drop carries that is not on the board now (a keyboard drop's, gone from the column it left) is kept as the copy has it;
+		// any other card not on the board now (archived meanwhile) is left off (the re-check).
+		expect(withCurrentCards(copy, removeCard(now, 4).columns, [4])[1].cards[0]).toBe(copy[1].cards[0]);
+		expect(withCurrentCards(copy, removeCard(now, 4).columns, [2])[1].cards).toEqual([]);
+	});
+
+	it('removeCard: cards taken off one after another go back in their order, whichever is put back first (a bulk archive)', () => {
+		const one = removeCard(board(), 1);
+		const two = removeCard(one.columns, 2);
+		const three = removeCard(two.columns, 3);
+		expect(ids(three.columns)[0]).toEqual([10, []]);
+		// The server refused 2 and 3, answered in either order.
+		expect(ids(three.undo(two.undo(three.columns)))[0]).toEqual([10, [2, 3]]);
+		expect(ids(two.undo(three.undo(three.columns)))[0]).toEqual([10, [2, 3]]);
+		expect(ids(one.undo(three.undo(three.columns)))[0]).toEqual([10, [1, 3]]);
+	});
 });
 
 // ─── The contents answer and the board state ─────────────────────────────────
@@ -622,5 +747,60 @@ describe('the contents answer, and the board state that takes it', () => {
 
 		await vi.advanceTimersByTimeAsync(2000);
 		expect(fetch).toHaveBeenCalledTimes(1);
+	});
+
+	// Card 2280, slice B2b.
+	it('writeCard shows the fields at once, takes the answer’s value of each on success, and nothing else of the row; two quick writes do not undo each other', async () => {
+		const { state } = stateWith([async () => answer(200, contents())]);
+		states.push(state);
+		const words = { refused: 'Not saved.', noAnswer: 'No answer.' };
+		let answerPriority!: (res: Response) => void;
+
+		// A priority change, slow to be answered; then a title change to the same card.
+		const first = state.writeCard(2, { priority: 'low' }, () => new Promise<Response>((done) => (answerPriority = done)), words);
+		expect(state.columns[0].cards[1].priority).toBe('low');
+		const second = state.writeCard(2, { title: 'Mine' }, async () => answer(200, { id: 2, title: 'Mine', priority: 'low' }), words);
+		expect(state.columns[0].cards[1]).toMatchObject({ title: 'Mine', priority: 'low' });
+		expect(await second).toMatchObject({ ok: true, answer: { id: 2, title: 'Mine' } });
+
+		// The first answer is the row as it was stored then, the old title with it: only its own field is taken.
+		answerPriority(answer(200, { id: 2, title: 'Card 2', priority: 'low', description: 'from the server' }));
+		expect((await first).ok).toBe(true);
+		expect(state.columns[0].cards[1]).toMatchObject({ title: 'Mine', priority: 'low', description: '' });
+		expect(state.holds).toBe(0);
+	});
+
+	it('writeColumn puts back the column’s own fields on a refusal, says the server’s words, and reads the board once', async () => {
+		const { state, fetch } = stateWith([async () => answer(200, contents())]);
+		states.push(state);
+		const result = await state.writeColumn(20, { wipLimit: 3 }, async () => answer(403, { message: 'Viewers cannot change a column' }), {
+			refused: 'The WIP limit was not saved.',
+			noAnswer: 'No answer.'
+		});
+		expect(result).toEqual({ ok: false, failure: 'Viewers cannot change a column' });
+		expect(state.columns[1].wipLimit).toBe(0);
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(fetch).toHaveBeenCalledTimes(1);
+
+		// Taken: the answer's value.
+		const taken = await state.writeColumn(20, { color: '#ff0000' }, async () => answer(200, { id: 20, color: '#ff0000' }), { refused: '', noAnswer: '' });
+		expect(taken.ok).toBe(true);
+		expect(state.columns[1].color).toBe('#ff0000');
+	});
+
+	it('a hold kept across a refusal and the board given back is spent, so it is not leaned on for the new schedule (the B2a note)', async () => {
+		const { state } = stateWith([async () => answer(403, { message: 'No' })]);
+		states.push(state);
+		const kept = state.hold();
+		state.accessChanged();
+		await vi.advanceTimersByTimeAsync(10);
+		expect(state.refused).toBe(true);
+		expect(kept.released).toBe(true);
+
+		state.take(contents());
+		const fresh = state.hold();
+		expect(fresh.released).toBe(false);
+		expect(state.holds).toBe(1);
+		fresh();
 	});
 });
