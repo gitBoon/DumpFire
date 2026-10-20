@@ -1033,6 +1033,22 @@ const SERVICE_TWINS: ServiceTwin[] = [
 			return { internal: [entry], v1: [entry] };
 		})()
 	},
+	// Card 2290: an archived card in a goal is taken out by the v1 bulk detach,
+	// as the page's PATCH and the single detach take it out. The bulk refused
+	// the whole batch with a 409.
+	{
+		row: 22,
+		what: "taking an archived card out of a milestone (the page's PATCH with attach: false, against v1's bulk DELETE)",
+		build: () => {
+			const s = archivedScene();
+			makeMilestone({ board: s.A.board, name: 'Launch', createdBy: s.owner, cards: [s.first] });
+			return s;
+		},
+		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id, attach: false } }),
+		v1: (s) => api('DELETE', `/api/v1/milestones/${launch()}/cards/bulk`, { user: s.owner, body: { cardIds: [s.first.id] } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['milestone_card_removed ui'], v1: ['api:milestone_card_removed api'] }
+	},
 	// Slice A4: boards, dashboard groupings, columns, card categories and
 	// labels. No grouping, column change, category or label write records an
 	// entry, and no grouping write tells anyone. Each tree places a new column

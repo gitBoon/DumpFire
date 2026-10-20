@@ -251,6 +251,11 @@ const spec = {
 			'404 Board category not found, one of boards the key\'s user cannot open 403 No access to this board category, and one that is not an id 400 categoryId must be an id, ' +
 			'where each made the board unfiled with 201. PUT /api/v1/boards/{boardId} answers 400 for a parentCardId other than the board\'s own, null on a sub-board included ' +
 			'(`parentCardId 12 is not this board\'s parent card (none): …`), and `parentCardId must be an id` for one that is not an id, where it saved the other fields and ignored it. ' +
+			'(92) DELETE /api/v1/milestones/{milestoneId}/cards/bulk takes an archived card out of the milestone, logging api:milestone_card_removed, as DELETE /api/v1/milestones/{milestoneId}/cards ' +
+			'and milestoneId null on PUT /api/v1/cards/{cardId} do, where it refused the whole batch with a 409. An archived card that is not in the milestone is skipped and counted, and a card that does not exist ' +
+			'is listed in the 409 as `Card not found` (it was `Card does not exist or is archived`), so an archived card on a board the key\'s user cannot edit is listed as one they cannot edit, with its id and no title, ' +
+			'as the single detach answers 403. POST …/cards/bulk still refuses an archived card. A milestone whose only members were archived can now be emptied, and the plan-created mail, ' +
+			'which counts archived members when it decides a milestone was empty, is then sent by the next bulk attach to it. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -5957,9 +5962,12 @@ const spec = {
 					'Leaves up to 500 cards with no milestone in one request. The cards are not changed in any other way. ' +
 					'Needs the right to change the milestone, and edit access to the board of every card.\n\n' +
 					'**All or nothing.** Every card is checked before any is taken out. If one is refused none is taken out, and the answer is a 409 that lists every card at fault: ' +
-					'one that does not exist or is archived, and one on a board the key\'s user cannot edit.\n\n' +
-					'A card that is not in this milestone is not a fault: it is skipped and counted, and stays in whatever milestone it is in.\n\n' +
-					'Each card taken out logs `api:milestone_card_removed` on its board, with its id; a card skipped logs nothing. No webhook is sent.',
+					'one that does not exist (`Card not found`), and one on a board the key\'s user cannot edit (`No edit access to the board holding card #<id>`), an archived one included.\n\n' +
+					'**An archived card is taken out**, as DELETE /api/v1/milestones/{milestoneId}/cards and milestoneId null on PUT /api/v1/cards/{cardId} take it out: an archived card keeps its milestone, ' +
+					'and still holds the milestone to its board. Until 2026-10-14 it was a fault, `Card does not exist or is archived`, and the whole batch was refused (item 92). ' +
+					'A milestone whose only cards were archived can now be emptied, and the next POST …/cards/bulk to it then sends the plan-created mail.\n\n' +
+					'A card that is not in this milestone, archived or not, is not a fault: it is skipped and counted, and stays in whatever milestone it is in.\n\n' +
+					'Each card taken out logs `api:milestone_card_removed` on its board, with its id, and its board is sent a live update; a card skipped logs nothing. No webhook is sent.',
 				operationId: 'removeCardsFromMilestone',
 				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
 				requestBody: {
@@ -5979,7 +5987,7 @@ const spec = {
 				},
 				responses: {
 					'200': {
-						description: 'No card of the batch is in the milestone',
+						description: 'Every card listed that was in the milestone is in none now',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/MilestoneCardsDetached' },
@@ -6003,7 +6011,9 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
 					},
 					'409': {
-						description: 'At least one card cannot be taken out. No card was detached, and every card at fault is listed with the reason.',
+						description:
+							'At least one card cannot be taken out: it does not exist (`Card not found`; until 2026-10-14 `Card does not exist or is archived`, which an archived card was given too), ' +
+							'or it is on a board the key\'s user cannot edit, archived or not. No card was detached, and every card at fault is listed with the reason, by its id and with no title.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/MilestoneCardsDetachRejected' },

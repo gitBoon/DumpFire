@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.62
+version: 1.63
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3674,11 +3674,17 @@ Nothing is done to the database. The older image stamps a card archived again wh
 
 **Owner to know (2287).** A request to `PUT /api/v1/cards/{id}` that sends a `columnId` other than the card's own, or to `PUT /api/v1/boards/{id}` that sends a `parentCardId` other than the board's own, is now refused with a `400` that names the value, the stored one and the right route, where the other fields in it were saved and these ignored. `position` on the card update is still ignored, now said so: reorder with `PUT /cards/{cardId}/move`. `POST /api/v1/boards` files the new board under `categoryId`, and a category that does not exist, that the key's user may not use, or that is not an id is now `404`, `403` or `400` where the board was made unfiled. The tracking workflow sends none of these today. No page uses these routes.
 
+**Card 2290.** No migration, no setting, no new route or field. Archiving a card keeps its goal, and an archived card still holds the goal to its board: a change of the goal's board is refused with "Some cards in this milestone are not on that board (archived cards count too). Take those cards out of it first". The API's bulk detach, `DELETE /api/v1/milestones/{id}/cards/bulk`, which the tracking workflow's `remove-milestone-cards` uses, read live cards alone, so an archived card in the list was reported as `Card does not exist or is archived` and the whole batch was refused, where the single detach and the card window take it out. Now the bulk detach takes an archived card out too, with its "Removed card from milestone" entry and a live update to its board, as the single detach does, and skips and counts one that is not in the goal. A card that does not exist is reported as `Card not found`; an archived card on a board the key's user cannot edit is reported as one they cannot edit, by its id and with no title. The bulk attach still refuses an archived card. The OpenAPI document stays `1.2.0`, with item 92 in its 2026-10-14 note, and the detach's `200` description, which said no card of the batch was in the milestone, now says every card listed that was in it is in none.
+
+**Owner to know (2290).** A bulk detach takes archived cards out of a goal. A goal whose only cards were archived can now be emptied, and the next bulk attach to it then sends the "Plan created" mail: that mail counts archived cards when it decides a goal was empty, so before this release such a goal could never be emptied through the bulk route and never mailed again.
+
 **Owner to know (after the deploy).** The local `.agent` tracking wrapper (`create-board -CategoryId`) and its reference are newer than the copies in Workflow_Central by a large backlog. Export them there once this release is live, comparing each file first: the wrapper's `-CategoryId` help line says it files the board from this release on, and an older server ignores it.
 
 #### After the deploy
 
 On production, with your own API key. **The scratch board:** the one from checks 278 to 294 if it is still there, otherwise one of your own with no other members, **no webhooks**, and three scratch cards T1, T2 and T3 made by hand in To Do, with no assignee. Nothing here completes a card or sends mail. Keep the board and its cards for the later checks of this group and delete them at the end of the release's checks.
+
+**The scratch goal** (checks 300 and 301): made with `POST /api/v1/milestones` `{"name": "Probe goal", "boardId": <scratch>}`; call it `<goal>` below. Cards go in through the single route only: a bulk attach to an empty goal mails "Plan created", and since card 2290 so does one to a goal emptied of its archived cards. No check here bulk-attaches.
 
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
@@ -3687,11 +3693,13 @@ On production, with your own API key. **The scratch board:** the one from checks
 | 297 | 2287 | `PUT /api/v1/cards/<T1>` `{"position": 99}` | `400` `No valid fields to update`; T1's position unchanged (`position` is ignored here) | `200` with the position changed |
 | 298 | 2287 | `POST /api/v1/board-categories` `{"name": "TEST 2287 - delete me"}` (note id G); `POST /api/v1/boards` `{"name": "TEST 2287 board - delete me", "categoryId": G}` (note its id); look at the dashboard once. **Straight away:** `DELETE /api/v1/boards/<that board>`, then `DELETE /api/v1/board-categories/G`. An empty grouping is listed to everyone, so the test grouping shows briefly on every user's dashboard until it is deleted | `201` with `categoryId` G; the test board shown under the test grouping; both deletes `200`, and neither is on the dashboard after | `categoryId` null, or either left behind |
 | 299 | 2287 | `PUT /api/v1/boards/<scratch>` `{"name": "<its name>", "parentCardId": <T1>}`; `GET /api/v1/boards/<scratch>` | `400` `parentCardId <T1> is not this board's parent card (none): …`; `parentCardId` still null | `200` |
-| 303 | all | `GET /api/v1/openapi.json` | `info.version` `1.2.0`; the description holds item 91; `PUT /api/v1/cards/{cardId}`'s request schema lists `columnId` (only as held) and `position` (ignored), `POST /api/v1/boards`'s lists `categoryId`, and `PUT /api/v1/boards/{boardId}`'s lists `parentCardId` | A version change, or an item or a field missing |
+| 300 | 2290 | `POST /api/v1/milestones/<goal>/cards` `{"cardId": <T2>}`, then the same for T3; `DELETE /api/v1/cards/<T3>` (archive); `DELETE /api/v1/milestones/<goal>/cards/bulk` `{"cardIds": [<T2>, <T3>]}`; open the board's **Activity Log** | `200` `detached: 2`; two "Removed card from milestone" (T2, T3). Then restore T3 from the **Archived** page | `409` |
+| 301 | 2290 | `DELETE /api/v1/milestones/<goal>/cards/bulk` `{"cardIds": [<T2>, 999999999]}` | `409`, `problems` `[{"cardId": 999999999, "reason": "Card not found"}]` | The old reason, or `200` |
+| 303 | all | `GET /api/v1/openapi.json` | `info.version` `1.2.0`; the description holds items 91 and 92; `PUT /api/v1/cards/{cardId}`'s request schema lists `columnId` (only as held) and `position` (ignored), `POST /api/v1/boards`'s lists `categoryId`, and `PUT /api/v1/boards/{boardId}`'s lists `parentCardId` | A version change, or an item or a field missing |
 
 #### Going back to the previous image
 
-Nothing is done to the database. The older image ignores a `columnId` on `PUT /api/v1/cards/{id}` and a `parentCardId` on `PUT /api/v1/boards/{id}` again, saving the other fields sent with them and answering `200`, and makes a board sent to `POST /api/v1/boards` with a `categoryId` unfiled. A board already filed through the API stays filed. The wrapper's `create-board -CategoryId` is then ignored by the server.
+Nothing is done to the database. The older image ignores a `columnId` on `PUT /api/v1/cards/{id}` and a `parentCardId` on `PUT /api/v1/boards/{id}` again, saving the other fields sent with them and answering `200`, and makes a board sent to `POST /api/v1/boards` with a `categoryId` unfiled. A board already filed through the API stays filed. The wrapper's `create-board -CategoryId` is then ignored by the server. The older image's bulk detach refuses a whole batch that lists an archived card again, reporting it as `Card does not exist or is archived`; archived cards already taken out of goals stay out.
 
 ## Changing the Schema
 

@@ -430,6 +430,96 @@ describe('DELETE /api/v1/milestones/:milestoneId/cards/bulk', () => {
 		});
 		expect(s.a.map(milestoneOf)).toEqual([s.goal.id, s.goal.id, s.goal.id, null]);
 	});
+
+	// Card 2290: the bulk detach read only live cards, so an archived card in
+	// the goal was reported as one that does not exist and the whole batch was
+	// refused, where the single detach takes it out. An archived card still
+	// holds its goal, and the goal to its board, so taking it out is what the
+	// goal's own refusal tells a caller to do. The plan is
+	// `docs/planning/cards-2287-2290-2295-api.md` (decisions 8 to 11).
+	const archive = (card: Card) => db.update(cards).set({ archivedAt: '2026-10-01 09:00:00' }).where(eq(cards.id, card.id)).run();
+
+	it('takes an archived card out with the live one, each with its entry, or neither (card 2290)', async () => {
+		const run = await eachWriteInTurn({
+			build: () => {
+				const s = withGoal();
+				archive(s.a[1]);
+				return s;
+			},
+			request: (s) =>
+				api('DELETE', `/api/v1/milestones/${s.goal.id}/cards/bulk`, {
+					user: s.owner,
+					body: { cardIds: [s.a[0].id, s.a[1].id] }
+				}),
+			afterSuccess: (s, res: ApiResult) => {
+				expect(res.status).toBe(200);
+				expect(res.body).toEqual({ milestoneId: s.goal.id, detached: 2, skippedNotInMilestone: 0, boardsTouched: [s.A.board.id] });
+				expect([milestoneOf(s.a[0]), milestoneOf(s.a[1])]).toEqual([null, null]);
+				expect(entries()).toEqual(
+					s.a.slice(0, 2).map((card) => ({
+						boardId: s.A.board.id,
+						cardId: card.id,
+						action: 'api:milestone_card_removed',
+						source: 'api',
+						detail: `Removed "${card.title}" from milestone "Goal"`
+					}))
+				);
+			}
+		});
+
+		expect(shape(run.writes)).toEqual(['update cards set', 'insert into activity_log', 'update cards set', 'insert into activity_log']);
+		expect(run.effects.map(name)).toEqual(['event update (card) on board 1']);
+	});
+
+	it('skips and counts an archived card that is not in the goal, leaving its own goal as it is (card 2290)', async () => {
+		const s = withGoal();
+		const elsewhere = makeMilestone({ board: s.A.board, name: 'Elsewhere', cards: [s.a[3]] });
+		archive(s.a[3]);
+
+		const res = await api('DELETE', `/api/v1/milestones/${s.goal.id}/cards/bulk`, {
+			user: s.owner,
+			body: { cardIds: [s.a[0].id, s.a[3].id] }
+		});
+
+		expect(res.status).toBe(200);
+		expect(res.body).toMatchObject({ detached: 1, skippedNotInMilestone: 1 });
+		expect([milestoneOf(s.a[0]), milestoneOf(s.a[3])]).toEqual([null, elsewhere.id]);
+		expect(entries().map((e) => e.cardId)).toEqual([s.a[0].id]);
+	});
+
+	it('lists a card that does not exist as not found, and an archived one the caller may not edit as one they may not edit (card 2290)', async () => {
+		const s = withGoal();
+		archive(s.b);
+		const cardIds = [s.a[0].id, 99999, s.b.id];
+
+		const res = await expectRefused(
+			() => api('DELETE', `/api/v1/milestones/${s.goal.id}/cards/bulk`, { user: s.owner, body: { cardIds } }),
+			409
+		);
+
+		expect(res.body).toEqual({
+			message: 'Batch rejected — nothing was written',
+			detached: 0,
+			problems: [
+				{ cardId: 99999, reason: 'Card not found' },
+				{ cardId: s.b.id, reason: `No edit access to the board holding card #${s.b.id}` }
+			]
+		});
+	});
+
+	// Pin: putting an archived card in a goal is still refused (decision 11), as the single attach refuses it.
+	it('still refuses an archived card in a bulk attach, in its old words (pin)', async () => {
+		const s = withGoal();
+		const empty = makeMilestone({ board: s.A.board, name: 'Empty' });
+		archive(s.a[3]);
+
+		const res = await expectRefused(
+			() => api('POST', `/api/v1/milestones/${empty.id}/cards/bulk`, { user: s.owner, body: { cardIds: [s.a[3].id] } }),
+			409
+		);
+
+		expect(res.body.problems).toEqual([{ cardId: s.a[3].id, reason: 'Card does not exist or is archived' }]);
+	});
 });
 
 // ─── Dependencies ───────────────────────────────────────────────────────────
