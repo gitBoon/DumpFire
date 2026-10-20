@@ -605,7 +605,9 @@ describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2
 		// now, and sets each field, once, to what that brought back, and only
 		// when it brought one. `follow` brings back only fields the user has not
 		// touched (its cases are below), so no effect sets a field typed in.
-		// Given no `edits` (All Tasks, All To Do, the plan page) it sets nothing.
+		// Given no `edits` it sets nothing. All four host pages (the board page,
+		// All Tasks, All To Do and the plan page) pass `edits` inside
+		// `{#key cardWindow.edits}` since card 2281's slice C3a-1.
 		const typed = assigned.filter(({ name }) => isTyped(name));
 		const follows = [...new Set(typed.map(({ effect }) => effect))];
 		expect(follows).toHaveLength(1);

@@ -273,7 +273,8 @@ export async function updateCard(cardId: number, updates: Record<string, unknown
 
 /**
  * What archiving a card does, asked before it is done: on a board, and in the
- * card's window in All Tasks. `title` is the card's, when it is known.
+ * card's window in All Tasks and All To Do. `title` is the card's, when it is
+ * known.
  */
 export function cardArchiveWarning(title?: string | null): string {
 	return `Archive ${title ? `"${title}"` : 'this card'}? It is taken off the board and nothing on it is deleted. It can be restored from Archived Cards, in the More menu.`;
