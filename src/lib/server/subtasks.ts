@@ -31,6 +31,7 @@ import { ACTIONS, actorOf, logActivity } from './logActivity';
 import { notifyRequesterProgress } from './notifications';
 import { announceUnblocked, recordUnblocked, removeWorkNodeEdges } from './planning';
 import { PRIORITIES } from './card-fields';
+import { changedFields } from './card-changes';
 import { SUBTASK_ORDER, nextSubtaskPosition } from './subtask-order';
 import { readBoolean, readChoice, readColour, readDate, readId, readNumber, readText, type RequestBody } from './request-body';
 import { inWrite, type ServiceOptions } from './write-as';
@@ -154,13 +155,20 @@ export type UpdateSubtaskOptions = SubtaskEvent & {
  * colour written `#rrggbb` or empty; `dueDate` a date written `YYYY-MM-DD`,
  * or null; `completed` true or false; `position` a number. A value the
  * subtask already holds, sent back unchanged, is accepted as it is (decision
- * 8). Nothing else is written; a body that names none of them is a 400.
+ * 8). Nothing else is written; a body that names none of them is a 400. Only
+ * the fields that differ from the subtask as stored are written, and a body
+ * that changes nothing writes nothing, records nothing and tells nobody
+ * (card 2299).
  *
  * A tick, from open to done, records `subtask_completed` (`<subtask> (on
  * <card>)`), writes the "Unblocked" notices for work it was the last thing
  * blocking, and mails whoever asked for the card; re-ticking a subtask done
- * already does none of it again. The subtask is read in this transaction, so
- * two requests ticking it cannot both find it open. The answer is the row.
+ * already does none of it again. An untick records `subtask_updated`
+ * (`Reopened <subtask> (on <card>)`), and mails nobody; a change to any
+ * other field but `position` records `subtask_updated` too (`Updated
+ * <subtask> (on <card>): title, dueDate`), after the tick or untick. The
+ * subtask is read in this transaction, so two requests ticking it cannot
+ * both find it open. The answer is the row.
  */
 export function updateSubtask(
 	caller: SessionUser | null,
@@ -198,24 +206,40 @@ export function updateSubtask(
 
 	if (Object.keys(updateData).length === 0) throw error(400, 'No valid fields to update');
 
-	const row = db.update(subtasks).set(updateData).where(eq(subtasks.id, subtaskId)).returning().get();
+	// Only what differs from the subtask as stored (card 2183's rule, card
+	// 2299). A save that changes nothing writes nothing, records nothing and
+	// tells nobody, and is answered with the subtask as it is: the subtask
+	// window sends every field on every save.
+	const changed = changedFields(existing, updateData);
+	if (Object.keys(changed).length === 0) return existing;
+
+	const row = db.update(subtasks).set(changed).where(eq(subtasks.id, subtaskId)).returning().get();
 	if (!row) throw error(404, 'Subtask not found');
 
 	const tell = () => emit(boardId, 'update', { type: opts.eventType });
 	if (opts.tellBeforeEntry) tell();
 
-	// Guarded on the before-state, so re-ticking a subtask already complete
-	// writes none of this again.
-	if (updateData.completed === true && !existing.completed) {
+	// One entry per kind of change, each in `<subtask> (on <card>)`: the tick
+	// (`subtask_completed`) or the untick, then the other fields, named in the
+	// order they are read. A change of position alone is not recorded, as a
+	// card's position within its column is not.
+	// Each `action` is written out, so that the label test can read it.
+	const where = `${row.title} (on ${card.title})`;
+	const on = { boardId, cardId: row.cardId, source: opts.source, ...actorOf(user) };
+	const ticked = changed.completed === true;
+	if (changed.completed !== undefined) {
 		logActivity({
-			boardId,
-			cardId: row.cardId,
-			action: ACTIONS.subtaskCompleted,
-			detail: `${row.title} (on ${card.title})`,
-			source: opts.source,
-			...actorOf(user)
+			...on,
+			action: ticked ? ACTIONS.subtaskCompleted : ACTIONS.subtaskUpdated,
+			detail: ticked ? where : `Reopened ${where}`
 		});
+	}
+	const named = Object.keys(changed).filter((field) => field !== 'completed' && field !== 'position');
+	if (named.length > 0) logActivity({ ...on, action: ACTIONS.subtaskUpdated, detail: `Updated ${where}: ${named.join(', ')}` });
 
+	// Only a tick from open to done, as `changed` holds `completed` only when
+	// it differs, so re-ticking a subtask already complete writes none of this.
+	if (ticked) {
 		// A subtask can be the last thing blocking other work. The notices are
 		// the last write; the mail and the refresh for them wait for the commit.
 		announceUnblocked(recordUnblocked([{ kind: 'subtask', id: subtaskId }], user.id), user, opts.baseUrl ?? null);

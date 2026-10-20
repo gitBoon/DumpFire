@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.37
+version: 1.38
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1370,7 +1370,7 @@ A line that should be stored only if the write was committed, such as "board 12 
 - for a deleted board or sub-board, the report schedules that name it, and the membership of cards on other boards in its milestones;
 - the attachment files, which are moved to the trash once the delete has committed.
 
-Archiving is not deleting: `archiveCard()` stamps the card and writes the activity entry and touches nothing else. `deleteUser()` is in the same module. What each delete removes and leaves is set out in [Data Model](data-model.md#what-a-delete-removes).
+Archiving is not deleting: `archiveCard()` stamps the card and writes the activity entry and touches nothing else. A card that is already archived it leaves as it is, with no new stamp, no entry and no live update, so a retried archive keeps the first archive time (card 2285). `deleteUser()` is in the same module. What each delete removes and leaves is set out in [Data Model](data-model.md#what-a-delete-removes).
 
 Each function in the module opens its own `inTransaction` and checks no access. A route calls it inside the transaction in which it read the row and checked the caller, which makes the delete a savepoint of the route's transaction.
 

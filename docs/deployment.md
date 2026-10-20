@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.57
+version: 1.58
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3626,7 +3626,9 @@ Nothing is done to the database. The older image lists comments of one second in
 
 **Card 2285.** No migration, no setting, no new route or field. Archiving a card that was already archived (a `DELETE` sent again through the API after a timeout, a script run twice, or a stale tab in the web application) stamped it again: `archivedAt` and `updatedAt` were set to the time of the second request, so the time the card was really archived was lost and the Archived page sorted it by the later one; a second "Archived card" entry was written in the board's Activity Log, the Audit page and `GET /api/v1/audit-log`; the activity report counted the card as touched again; and every open page of the board was told. Now an archive of a card already archived is answered as before, `200` `{"success": true}`, so a retry does not fail, but writes nothing, records nothing and tells no open page, in both trees. It is the other half of the rule the restore already has for a card that is not archived. No webhook was or is sent for an archive. The OpenAPI document stays `1.2.0`, with item 86 in its 2026-10-14 note.
 
-**Owner to know.** Nothing a person sees changes but the second "Archived card" entry, which is no longer written, and a card's archive time, which now stays the first one.
+**Card 2299.** No migration, no setting, no new route or field. Unticking a subtask, and changing its title, description, priority, colour or due date, recorded nothing, on a page or through the API: only a tick was in the board's Activity Log, the Audit page and `GET /api/v1/audit-log`. And every save wrote the subtask and told the board's open pages, even one that changed nothing, which the subtask window sends on every Save. Now an untick writes "Updated subtask", `Reopened <subtask> (on <card>)`, and mails nobody; any other change but the subtask's place in the list writes "Updated subtask", `Updated <subtask> (on <card>): title, dueDate`, naming only the fields changed; a request that ticks or unticks and edits writes one entry for each. A save that changes nothing writes nothing, records nothing and tells no open page. A change of position alone is written and told, and not recorded, as before. No webhook was or is sent for any subtask entry. The OpenAPI document stays `1.2.0`, with item 87 in its 2026-10-14 note.
+
+**Owner to know.** Nothing a person sees changes but the second "Archived card" entry, which is no longer written, and a card's archive time, which now stays the first one (2285). **Subtask edits now show in the Activity Log and the Audit page as "Updated subtask"**, and **they count as work on the card in the activity report**, as a tick already did: a card whose only activity in the report's window is an edit to one of its subtasks is now in the window, put down to whoever made the edit, so the count of cards worked on can rise from the deploy on (2299).
 
 #### After the deploy
 
@@ -3635,10 +3637,14 @@ On production, with your own API key. **The scratch board:** one of your own, no
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
 | 278 | 2285 | `DELETE /api/v1/cards/<T3>`; `GET /api/v1/cards/<T3>` and note `archivedAt`; `DELETE` again; `GET` again. Open the board's **Activity Log**. Then restore T3 from the **Archived** page | Both `DELETE`s `200` `{"success": true}`; `archivedAt` the same both times; one "Archived card" entry for T3; T3 back in To Do | A second entry, or a later `archivedAt` |
+| 279 | 2299 | In T1's card window add a subtask "Probe step", tick it, then untick it. Open the board's **Activity Log** | "Completed subtask" `Probe step (on T1)`, then "Updated subtask" `Reopened Probe step (on T1)` | No entry for the untick |
+| 280 | 2299 | Open "Probe step", change the title to "Probe step 2" and set a due date, **Save** | "Updated subtask" `Updated Probe step 2 (on T1): title, dueDate` | No entry, or other fields named (`completed` or `position` among them) |
+| 281 | 2299 | Open "Probe step 2" and **Save** without changing anything | No new entry | A new "Updated subtask" |
+| 282 | 2299 | Note the subtask's `id` (`GET /api/v1/cards/<T1>/subtasks`); `PUT /api/v1/subtasks/<id>` `{"position": 5}` | `200`; no new entry | An entry |
 
 #### Going back to the previous image
 
-Nothing is done to the database. The older image stamps a card archived again when it is archived a second time, losing the first archive time, records a second "Archived card" and tells the board's open pages.
+Nothing is done to the database. The older image stamps a card archived again when it is archived a second time, losing the first archive time, records a second "Archived card" and tells the board's open pages. It records no untick and no subtask edit, and writes and announces a subtask save that changes nothing. `subtask_updated` entries already written stay, and the older image's pages read them as "Updated subtask", the label it already has.
 
 ## Changing the Schema
 

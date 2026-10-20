@@ -828,15 +828,24 @@ describe.each(subtaskRoutes)('ticking a subtask by $name', ({ path, source }) =>
 		expectUnchanged(before);
 	});
 
-	it('unticks it again, with no activity entry for that', async () => {
-		const card = makeCard(A.cols['To Do']);
-		const step = makeSubtask(card, { completed: true });
+	// It wrote no entry for the untick until card 2299; now one
+	// `subtask_updated`, never a second `subtask_completed`.
+	it('unticks it again, with one subtask_updated entry that says it was reopened', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'The card' });
+		const step = makeSubtask(card, { title: 'Write it', completed: true });
 
 		const res = await tick(step.id, false);
 
 		expect(res.status).toBe(200);
 		expect(subtaskRow(step.id).completed).toBe(false);
-		expect(activityFor(card.id)).toHaveLength(0);
+		expect(activityFor(card.id)).toMatchObject([
+			{
+				action: source === 'api' ? 'api:subtask_updated' : 'subtask_updated',
+				source,
+				userId: owner.id,
+				detail: 'Reopened Write it (on The card)'
+			}
+		]);
 	});
 
 	it('is what lets the card be completed: refused before the tick, done after it', async () => {

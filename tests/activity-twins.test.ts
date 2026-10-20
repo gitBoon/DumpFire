@@ -39,6 +39,7 @@ import {
 	cards,
 	categories,
 	milestones,
+	subtasks,
 	taskRequests,
 	tokenUsage,
 	users,
@@ -397,6 +398,13 @@ function subtaskScene(): Scene {
 			accessToken: 'b'.repeat(64)
 		})
 		.run();
+	return s;
+}
+
+/** As `subtaskScene`, with the subtask already ticked off. */
+function tickedScene(): Scene {
+	const s = subtaskScene();
+	db.update(subtasks).set({ completed: true }).where(eq(subtasks.id, 1)).run();
 	return s;
 }
 
@@ -821,6 +829,58 @@ const SERVICE_TWINS: ServiceTwin[] = [
 				v1: [...notices, CARD_UPDATE]
 			};
 		})()
+	},
+	// Card 2299: an untick and an edit wrote no entry in either tree; each
+	// now writes `subtask_updated`, in `subtask_completed`'s form, the same
+	// words in both trees. Neither mails or writes a notice (the requester and
+	// the card waiting on the subtask are there to show it); each tree keeps
+	// its event type (R2).
+	{
+		row: 15,
+		what: 'unticking a subtask, which records it and mails nobody',
+		build: tickedScene,
+		internal: (s) => api('PUT', '/api/subtasks/1', { user: s.owner, body: { completed: false } }),
+		v1: (s) => api('PUT', '/api/v1/subtasks/1', { user: s.owner, body: { completed: false } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['subtask_updated ui'], v1: ['api:subtask_updated api'] },
+		entries: (() => {
+			const entry = {
+				boardId: 1,
+				cardId: 1,
+				userId: 1,
+				action: 'subtask_updated',
+				detail: 'Reopened Draft it (on First)',
+				userName: 'owner',
+				userEmoji: '👤',
+				source: undefined
+			};
+			return { internal: [entry], v1: [entry] };
+		})(),
+		told: { internal: [{ event: 'update', boardId: 1, data: { type: 'subtask' } }], v1: [CARD_UPDATE] }
+	},
+	{
+		row: 15,
+		what: "editing a subtask's title and due date, which names those two",
+		build: subtaskScene,
+		internal: (s) => api('PUT', '/api/subtasks/1', { user: s.owner, body: { title: 'Write it', dueDate: '2026-11-02' } }),
+		v1: (s) => api('PUT', '/api/v1/subtasks/1', { user: s.owner, body: { title: 'Write it', dueDate: '2026-11-02' } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['subtask_updated ui'], v1: ['api:subtask_updated api'] },
+		// The name after the change; neither `completed` nor `position` is ever named.
+		entries: (() => {
+			const entry = {
+				boardId: 1,
+				cardId: 1,
+				userId: 1,
+				action: 'subtask_updated',
+				detail: 'Updated Write it (on First): title, dueDate',
+				userName: 'owner',
+				userEmoji: '👤',
+				source: undefined
+			};
+			return { internal: [entry], v1: [entry] };
+		})(),
+		told: { internal: [{ event: 'update', boardId: 1, data: { type: 'subtask' } }], v1: [CARD_UPDATE] }
 	},
 	{
 		row: 16,
@@ -2834,6 +2894,54 @@ describe('nothing changed, nothing recorded', () => {
 			sent.restore();
 		}
 	});
+
+	// Card 2299 (found nearby N2): the subtask window sends every field on
+	// every save, and a save that changed nothing wrote the row and told the
+	// board. Card 2183's rule now holds for a subtask: nothing written, nothing
+	// recorded, nobody told, and the subtask answered as it is. The window's
+	// whole payload on the page's route; one field sent back through v1.
+	it.each([
+		[
+			'the internal route',
+			'/api/subtasks/1',
+			{ title: 'Draft it', description: '', priority: 'medium', dueDate: null, completed: false, boardId: 1 }
+		],
+		['the v1 route', '/api/v1/subtasks/1', { title: 'Draft it' }]
+	])('saving a subtask unchanged, through %s, writes and tells nothing, and answers the subtask', async (_tree, path, body) => {
+		const s = subtaskScene();
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const res = await api('PUT', path, { user: s.owner, body });
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(res.body).toMatchObject({ id: 1, cardId: s.first.id, title: 'Draft it', completed: false });
+			expectUnchanged(before);
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	// A contract, which passed before card 2299: a change of position alone is
+	// written and told, and is not recorded, as a card's position within its
+	// column is not (card 2288).
+	it('a subtask moved to another position alone, through the v1 route, is written and told, and not recorded', async () => {
+		const s = subtaskScene();
+		const sent = effects();
+		try {
+			const res = await api('PUT', '/api/v1/subtasks/1', { user: s.owner, body: { position: 4 } });
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(db.select().from(subtasks).where(eq(subtasks.id, 1)).get()!.position).toBe(4);
+			expect(entries()).toEqual([]);
+			expect(sent.all.map(name)).toEqual(['event update {"type":"card"} on board 1']);
+		} finally {
+			sent.restore();
+		}
+	});
 });
 
 describe('the details', () => {
@@ -2981,6 +3089,23 @@ describe('the details', () => {
 		} finally {
 			sent.restore();
 		}
+	});
+
+	// Card 2299: one entry per kind of change, as a card moved and edited
+	// writes two. The tick keeps its own action, and the rename is named
+	// after it; `completed` is never among the fields named.
+	it('a subtask ticked and renamed in one request writes subtask_completed, then subtask_updated naming the title', async () => {
+		const s = subtaskScene();
+
+		const { res } = await recorded(() =>
+			api('PUT', '/api/subtasks/1', { user: s.owner, body: { completed: true, title: 'Drafted' } })
+		);
+
+		expect(res.status).toBe(200);
+		expect(entries().map((e) => `${e.action}: ${e.detail}`)).toEqual([
+			'subtask_completed: Drafted (on First)',
+			'subtask_updated: Updated Drafted (on First): title'
+		]);
 	});
 });
 

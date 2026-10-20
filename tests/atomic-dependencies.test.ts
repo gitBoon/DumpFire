@@ -570,6 +570,25 @@ describe('the activity report does not count a dependency added or removed as wo
 		expect(reported(s, s.owner.id)).toEqual([s.first.id]);
 	});
 
+	// Card 2299: a subtask edit is now recorded, as `subtask_updated`, and it
+	// is work on the card, as a tick (`subtask_completed`) is. So a card whose
+	// only activity in the window is an edit to one of its subtasks now enters
+	// it, put down to whoever made the edit. The owner neither made the card
+	// nor is assigned to it, so only the entry can bring it in.
+	it('a subtask edited is work on its card, in the window and for the person who edited it', async () => {
+		const s = scene();
+		db.update(cards).set({ createdAt: '2020-01-01 00:00:00', updatedAt: '2020-01-01 00:00:00' }).run();
+		expect(reported(s)).toEqual([]);
+
+		const res = await api('PUT', `/api/v1/subtasks/${s.step.id}`, { user: s.owner, body: { title: 'Step two' } });
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+		expect(entries().map((entry) => `${entry.action} by ${entry.userId}`)).toEqual([`api:subtask_updated by ${s.owner.id}`]);
+		expect(reported(s)).toEqual([s.first.id]);
+		expect(reported(s, s.owner.id)).toEqual([s.first.id]);
+		expect(reported(s, s.admin.id)).toEqual([]);
+	});
+
 	// The board's activity panel names an entry by its action, as stored
 	// ("dependency added"). The labelled list that named these two,
 	// `getActionLabel`, was read only by a panel nothing drew, and went with it

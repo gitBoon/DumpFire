@@ -229,6 +229,8 @@ const spec = {
 			'No webhook is sent for it: re-reading the comment list is the only way to learn that a comment has gone. ' +
 			'(86) DELETE /api/v1/cards/{cardId} on a card already archived answers 200 {"success": true} as before, but writes nothing and sends no live update: ' +
 			'archivedAt keeps its first value and updatedAt is not moved, where both were stamped again with the time of the second request, and no second api:card_archived is logged. ' +
+			'(87) PUT /api/v1/subtasks/{subtaskId} logs api:subtask_updated for an untick ("Reopened <subtask> (on <card>)") and for a change of title, description, priority, colorTag or dueDate ("Updated <subtask> (on <card>): title, dueDate"), ' +
+			'not for a change of position alone; a request that changes nothing writes nothing, logs nothing and sends no live update, and answers 200 with the subtask. Neither was recorded, and an unchanged request was written and told. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -3434,7 +3436,11 @@ const spec = {
 				description:
 					'Updates the fields sent; at least one must be. A value the subtask already holds, sent back unchanged, is accepted as it is. Completing a subtask that was the last thing another card or subtask was waiting on records and sends the "Unblocked" notices with it. ' +
 					'Completing a subtask writes an api:subtask_completed activity entry, "<subtask> (on <card>)", and mails whoever asked for the card, when it was made from a task request, "Subtask completed on your request", as ticking it in the web application does. ' +
-					'Until 2026-10-14 it wrote neither. A subtask already complete, sent completed true again, writes neither.',
+					'Until 2026-10-14 it wrote neither. A subtask already complete, sent completed true again, writes neither.\n\n' +
+					'Unticking a subtask (completed false on one that is complete) writes an api:subtask_updated entry, "Reopened <subtask> (on <card>)", and mails nobody. ' +
+					'A change of title, description, priority, colorTag or dueDate writes an api:subtask_updated entry naming the fields changed, "Updated <subtask> (on <card>): title, dueDate", ' +
+					'after the tick or untick when one request does both. A change of position alone is written and not recorded. ' +
+					'A request that changes nothing writes nothing, logs nothing and sends no live update, and is answered 200 with the subtask as it is. Until 2026-10-14 neither an untick nor an edit was recorded, and an unchanged request was written and sent a live update (item 87).',
 				operationId: 'updateSubtask',
 				parameters: [{ $ref: '#/components/parameters/subtaskId' }],
 				requestBody: {
