@@ -655,7 +655,8 @@ describe('the parent card the dashboard makes for a sub-board', () => {
 	});
 
 	it('is where the dashboard puts it, and the first column only when every column is a Complete one', () => {
-		const dashboard = readFileSync(join(process.cwd(), 'src/routes/+page.svelte'), 'utf8');
+		// The dashboard's context menu makes it (card 2281, slice C2: moved from src/routes/+page.svelte).
+		const dashboard = readFileSync(join(process.cwd(), 'src/lib/components/dashboard/BoardContextMenu.svelte'), 'utf8');
 		const create = dashboard.slice(dashboard.indexOf('async function createSubBoardInline()'));
 
 		expect(create).toContain('const firstCol = firstOpenColumn(subBoardColumns) ?? subBoardColumns[0];');

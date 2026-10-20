@@ -2582,15 +2582,23 @@ const WRITES: Record<string, Write[]> = {
 		// Its `onDelete()` is held below: a subtask of a card not yet made goes with no request.
 		{ name: 'handleDelete', reads: 'deleteFailure' }
 	],
+	// The dashboard: the page keeps the board's delete, and each other write
+	// moved to the component that sends it (card 2281, slice C2).
 	'src/routes/+page.svelte': [
-		{ name: 'createBoard', reads: 'failureMessage', done: ['showCreate = false', 'goto(`/board/${board.id}`)'] },
-		{ name: 'deleteBoard', reads: 'deleteFailure', done: ['await invalidateAll()'] },
+		{ name: 'deleteBoard', reads: 'deleteFailure', done: ['await invalidateAll()'] }
+	],
+	'src/lib/components/dashboard/CreateBoardModal.svelte': [
+		{ name: 'createBoard', reads: 'failureMessage', done: ['showCreate = false', 'goto(`/board/${board.id}`)'] }
+	],
+	'src/lib/components/dashboard/BoardsTable.svelte': [
 		{
 			name: 'toggleFavourite',
 			reads: 'failureMessage',
 			putsBack: ['showStar(boardId, was)'],
 			done: ['showStar(boardId, (await res.json()).favourited === true)']
-		},
+		}
+	],
+	'src/lib/components/dashboard/BoardContextMenu.svelte': [
 		{ name: 'createSubBoardInline', reads: 'failureMessage', done: ['closeBoardContextMenu()', 'await invalidateAll()'] },
 		{ name: 'setBoardCategory', reads: 'failureMessage', done: ['await invalidateAll()'] },
 		{ name: 'createBoardCategoryInline', reads: 'failureMessage', done: ['await setBoardCategory(boardCtx.boardId, created.id)', 'showNewBoardCat = false'] }
@@ -2668,6 +2676,23 @@ describe('every write of the seven pages of card 2109, of the label picker, and 
 				return found;
 			});
 		const sending = adminComponents().filter(sends);
+		expect(sending.length).toBeGreaterThan(0);
+		expect(sending.filter((file) => !(file in WRITES))).toEqual([]);
+	});
+
+	// Card 2281, slice C2: the same for the dashboard's components.
+	it('has every component of the dashboard that sends a write, src/lib/components/dashboard/', () => {
+		const sends = (file: string) =>
+			scriptOf(file).statements.some((statement) => {
+				let found = false;
+				const visit = (node: ts.Node) => {
+					if (ts.isCallExpression(node) && writeOf(node, writes)) found = true;
+					ts.forEachChild(node, visit);
+				};
+				visit(statement);
+				return found;
+			});
+		const sending = filesUnder('src/lib/components/dashboard', '.svelte').filter(sends);
 		expect(sending.length).toBeGreaterThan(0);
 		expect(sending.filter((file) => !(file in WRITES))).toEqual([]);
 	});
@@ -2761,12 +2786,13 @@ describe('no page throws away the answer to a write', () => {
 	// `board-actions.ts`, had no caller and went.
 	it('finds none', () => {
 		const writes = apiWrites();
-		// With the admin page's modules (card 2281, slice C1a).
+		// With the admin page's modules (card 2281, slice C1a) and the dashboard's (slice C2).
 		const files = [
 			...filesUnder('src/routes', '.svelte'),
 			...filesUnder('src/lib/components', '.svelte'),
 			...filesUnder('src/lib/board', '.ts'),
-			...filesUnder('src/lib/admin', '.ts')
+			...filesUnder('src/lib/admin', '.ts'),
+			...filesUnder('src/lib/dashboard', '.ts')
 		];
 		const found = files.flatMap((file) => discardedIn(file, readFileSync(join(ROOT, file), 'utf8'), writes));
 
@@ -3068,8 +3094,9 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			...filesUnder('src/routes', '.ts'),
 			...filesUnder('src/lib/components', '.svelte'),
 			...filesUnder('src/lib/board', '.ts'),
-			// The admin page's `sent` and formatters (card 2281, slice C1a).
-			...filesUnder('src/lib/admin', '.ts')
+			// The admin page's `sent` and formatters (card 2281, slice C1a), and the dashboard's (slice C2).
+			...filesUnder('src/lib/admin', '.ts'),
+			...filesUnder('src/lib/dashboard', '.ts')
 		];
 		const alerting = files.filter((file) => /\balert\(/.test(readFileSync(join(ROOT, file), 'utf8')));
 
@@ -4123,13 +4150,21 @@ describe('the share and subtask windows, the dashboard and the account page say 
 	});
 
 	it('the dashboard says each refusal in the shared toast, and a sub-board’s on its form’s line, in the server’s words', () => {
-		const dashboard = svelteFile('src/routes/+page.svelte');
+		// Each in the component that now sends it (card 2281, slice C2).
+		const menu = svelteFile('src/lib/components/dashboard/BoardContextMenu.svelte');
+		const holder: Record<string, ReturnType<typeof svelteFile>> = {
+			createBoard: svelteFile('src/lib/components/dashboard/CreateBoardModal.svelte'),
+			toggleFavourite: svelteFile('src/lib/components/dashboard/BoardsTable.svelte'),
+			setBoardCategory: menu,
+			createBoardCategoryInline: menu
+		};
 
 		for (const name of ['createBoard', 'toggleFavourite', 'setBoardCategory', 'createBoardCategoryInline']) {
-			const asked = callsOf(functionNamed(dashboard.tree, name), 'failureMessage');
+			const asked = callsOf(functionNamed(holder[name].tree, name), 'failureMessage');
 			expect(asked.length, name).toBeGreaterThan(0);
 			expect(asked.map(givenTo), name).toEqual(asked.map(() => "failureToasts.add(…, 'error', started)"));
 		}
+		const dashboard = menu;
 		const subBoard = callsOf(functionNamed(dashboard.tree, 'createSubBoardInline'), 'failureMessage');
 		expect(subBoard.map(givenTo)).toEqual(['subBoardError', 'subBoardError']);
 		// Its two texts as they were, for an answer that gives no reason.

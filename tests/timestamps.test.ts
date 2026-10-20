@@ -1354,12 +1354,25 @@ function bodyOf(source: string, name: string): string {
 	throw new Error(`function ${name} does not close`);
 }
 
-/** Every page and component, and the utilities they share (the admin page's among them, card 2281). */
+/** The dashboard's parts (card 2281, slice C2), where each piece the pins below read now is. */
+const DASHBOARD_SIDEBAR = 'src/lib/components/dashboard/AnalyticsSidebar.svelte';
+const DASHBOARD_ACTIVE_TASKS = 'src/lib/components/dashboard/ActiveTasksModal.svelte';
+
+/** The dashboard page, each of its components and its module, as one text: everywhere a thing said to be gone could be. */
+function dashboardEverywhere(): string {
+	const under = (dir: string, ext: string) =>
+		(readdirSync(join(process.cwd(), dir)) as string[]).filter((name) => name.endsWith(ext)).map((name) => `${dir}/${name}`);
+	const files = ['src/routes/+page.svelte', ...under('src/lib/components/dashboard', '.svelte'), ...under('src/lib/dashboard', '.ts')];
+	expect(files.length).toBeGreaterThan(8);
+	return files.map(sourceOf).join('\n');
+}
+
+/** Every page and component, and the utilities they share (the admin page's and the dashboard's among them, card 2281). */
 function pageSources(): string[] {
 	const root = join(process.cwd(), 'src');
 	return (readdirSync(root, { recursive: true }) as string[])
 		.map((file) => file.split('\\').join('/'))
-		.filter((file) => file.endsWith('.svelte') || /^lib\/(utils|admin)\/[^/]+\.ts$/.test(file))
+		.filter((file) => file.endsWith('.svelte') || /^lib\/(utils|admin|dashboard)\/[^/]+\.ts$/.test(file))
 		.map((file) => `src/${file}`);
 }
 
@@ -1368,7 +1381,8 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 	// form with `new Date()`, as local time, or patched it with `+ 'Z'`, which
 	// made "Invalid Date" of a value that already ended in Z (A13).
 	const HELPERS: [file: string, name: string][] = [
-		['src/routes/+page.svelte', 'timeAgo'],
+		// The dashboard's, which its boards table and sidebar share (card 2281, slice C2: moved to a module of its own).
+		['src/lib/dashboard/format.ts', 'timeAgo'],
 		['src/routes/account/+page.svelte', 'formatDate'],
 		// The admin page's backup history (card 2281, slice C1a: moved to a module of its own).
 		['src/lib/admin/format.ts', 'formatRelativeTime'],
@@ -1416,7 +1430,8 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 		expect(sourceOf('src/lib/components/board/ActivityPanel.svelte')).toContain('parseStamp(activity.createdAt)');
 		expect(sourceOf('src/lib/components/CardModal.svelte')).toContain('parseStamp(card.createdAt)');
 		expect(sourceOf('src/lib/components/board/StatsPanel.svelte')).toContain('parseStamp(c.createdAt)');
-		expect(sourceOf('src/routes/+page.svelte')).toContain('parseStamp(a.lastActivity)');
+		// The dashboard's sort by activity, in its boards table (card 2281, slice C2).
+		expect(sourceOf('src/lib/components/dashboard/BoardsTable.svelte')).toContain('parseStamp(a.lastActivity)');
 	});
 
 	it('the card window writes an edited comment’s time in the stored form, as the server does', () => {
@@ -1576,11 +1591,13 @@ describe('a due date is a calendar day, counted from the viewer’s own today (c
 		expect(formatDue).toContain('daysUntilDue(d)');
 		expect(formatDue).toContain('formatDueDate(d, ');
 		expect(formatDue).not.toMatch(/new Date\(/);
-		// The dashboard's own counters, renamed so that they do not hide the helper.
-		const dashboard = sourceOf('src/routes/+page.svelte');
-		expect(dashboard).not.toMatch(/function (daysUntilDue|formatDueDate)\(/);
-		expect(dashboard).not.toContain('new Date(dateStr');
-		expect(bodyOf(dashboard, 'dueText')).toContain('daysUntilDue(');
+		// The dashboard's own counters, renamed so that they do not hide the helper:
+		// Active Tasks' and the sidebar's (card 2281, slice C2), and none anywhere else.
+		const everywhere = dashboardEverywhere();
+		const dashboard = sourceOf(DASHBOARD_SIDEBAR);
+		expect(everywhere).not.toMatch(/function (daysUntilDue|formatDueDate)\(/);
+		expect(everywhere).not.toContain('new Date(dateStr');
+		expect(bodyOf(sourceOf(DASHBOARD_ACTIVE_TASKS), 'dueText')).toContain('daysUntilDue(');
 		expect(bodyOf(dashboard, 'deadlineDays')).toContain('daysUntilDue(');
 		expect(dashboard).toContain('formatDueDate(dl.dueDate, ');
 		// Until the page has loaded, Upcoming Deadlines is chosen by the UTC day
@@ -1774,18 +1791,29 @@ describe('the server’s today is the reader’s (card 2258)', () => {
 	});
 
 	it('the dashboard counts the figures itself: the UTC day until it has loaded, then the viewer’s, kept current', () => {
-		const dashboard = sourceOf('src/routes/+page.svelte');
+		// The figures are counted in the sidebar, on the page's clock, which the
+		// page hands it and Active Tasks (card 2281, slice C2).
+		const page = sourceOf('src/routes/+page.svelte');
+		const dashboard = sourceOf(DASHBOARD_SIDEBAR);
 		expect(dashboard).toContain("dueFigures(a.dueCards, new Date(a.asOf), 'UTC', a.longOverdue)");
 		expect(dashboard).toContain('dueFigures(a.dueCards, clock, undefined, a.longOverdue)');
-		expect(dashboard).toContain('let clock = $state<Date | null>(null);');
+		expect(page).toContain('let clock = $state<Date | null>(null);');
+		// Each tag's text, from its name to its `/>`, whatever its props hold.
+		const tag = (name: string) => {
+			const at = page.indexOf(`<${name}`);
+			expect(at, name).toBeGreaterThan(-1);
+			return page.slice(at, page.indexOf('/>', at));
+		};
+		expect(tag('AnalyticsSidebar')).toMatch(/\s\{clock\}\s/);
+		expect(tag('ActiveTasksModal')).toMatch(/\s\{clock\}\s/);
 		// Set in the browser only, after mount, and again on each live refresh.
-		expect(dashboard).toMatch(/\$effect\(\(\) => \{\s*void data\.analytics;\s*clock = new Date\(\);\s*\}\);/);
+		expect(page).toMatch(/\$effect\(\(\) => \{\s*void data\.analytics;\s*clock = new Date\(\);\s*\}\);/);
 		// And on the board pages' tick, so a dashboard left open across midnight moves on.
-		expect(dashboard).toContain('clockInterval = setInterval(() => { clock = new Date(); }, 15000);');
-		expect(dashboard).toContain('if (clockInterval) clearInterval(clockInterval);');
+		expect(page).toContain('clockInterval = setInterval(() => { clock = new Date(); }, 15000);');
+		expect(page).toContain('if (clockInterval) clearInterval(clockInterval);');
 		// A deadline's words move on with the list.
 		expect(bodyOf(dashboard, 'deadlineDays')).toContain('void clock;');
-		expect(dashboard).not.toMatch(/\ba\.(overdue|dueSoon|upcomingDeadlines)\b/);
+		expect(dashboardEverywhere()).not.toMatch(/\ba\.(overdue|dueSoon|upcomingDeadlines)\b/);
 		for (const read of ['due.overdue', 'due.dueSoon', 'due.upcoming']) expect(dashboard, read).toContain(read);
 	});
 
@@ -1982,11 +2010,12 @@ describe('the goal page’s late tag and the dashboard’s Active Tasks move on 
 	});
 
 	it('the dashboard’s Active Tasks read their due words on its clock, under a name of their own', () => {
-		const dashboard = sourceOf('src/routes/+page.svelte');
+		// The window is its own component, on the page's clock (card 2281, slice C2).
+		const dashboard = sourceOf(DASHBOARD_ACTIVE_TASKS);
 		expect(bodyOf(dashboard, 'dueText')).toContain('void clock;');
 		expect(dashboard).toContain('{@const dueWords = dueText(card.dueDate)}');
 		// `due` is the page's due figures; the list's words shadowed it.
-		expect(dashboard).not.toContain('{@const due =');
+		expect(dashboardEverywhere()).not.toContain('{@const due =');
 	});
 });
 
