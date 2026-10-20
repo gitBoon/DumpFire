@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.50
+version: 1.51
 status: As-Built
 date: 2026-10-20
 tags:
@@ -3459,11 +3459,11 @@ Nothing is done to the database. The older image's card window on All Tasks, All
 |---|---|---|---|---|
 | 239 | 2292 | Immediately before the deploy, with your own (administrator's) API key, `GET /api/v1/me/stats`; write down `activeCards` and `avgCycleTimeDays` | Two figures, kept for check 243 | — |
 
-Check 245, in the next section, is also before the deploy: it makes the throwaway account T both sections use and saves the activity report's answers.
+Checks 245 to 247, in the next section, are also before the deploy: 245 makes the throwaway account T both sections use and saves the activity report's answers, and 246 and 247 read the webhooks on the host and then, as the owner decides, `PUT` (take over) or `DELETE` real webhooks on production. **Check 247 is a gate**: do not deploy until it returns no row.
 
 #### After the deploy
 
-Check 243 is the first step after the deploy. Then come checks 248 to 250 of the [next section](#the-activity-report-reads-only-boards-you-can-open), which need T on no board and change nothing, then 240 to 242, then 244, all on production in one sitting. **O** is your own account. **T** is the release's one throwaway ordinary account, made before the deploy for check 245 of the next section, and described there; its email address is in a mailbox O controls, so sharing and assigning mail T. T is torn down once, at the end of the next section's checks. As O, make a scratch board "Check 2292" with three open cards in To Do.
+Check 243 is the first step after the deploy. Then come checks 248 to 252 of the [next section](#webhooks-stop-when-their-setter-cannot-open-the-board-and-the-activity-report-reads-only-boards-you-can-open), which need T on no board and change nothing, then 240 to 242, then 244, then the next section's 253 to 258, all on production in one sitting. **O** is your own account. **T** is the release's one throwaway ordinary account, made before the deploy for check 245 of the next section, and described there; its email address is in a mailbox O controls, so sharing and assigning mail T. T is torn down once, at the end of the next section's checks. As O, make a scratch board "Check 2292" with three open cards in To Do.
 
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
@@ -3471,19 +3471,17 @@ Check 243 is the first step after the deploy. Then come checks 248 to 250 of the
 | 241 | 2292 | As O, take T off Check 2292 (Share Board, remove). With T's key, `GET /api/v1/me/stats` again; signed in as T, reload the dashboard, its Velocity window and My Tasks (**Active Tasks**) | `activeCards` **0**; `avgCycleTimeDays` **null**; Velocity's total **0**; the Active tile 0 and My Tasks empty; `recentActivity` has nothing of Check 2292; `cardsCompleted` and `streak` as in check 240 | Any of the three figures still counting Check 2292 |
 | 242 | 2292 | Signed in as T, compare the dashboard with `me/stats` | Active tile = `activeCards` = My Tasks' count (all 0); Velocity's total = Completed this week (both 0) | Two screens disagreeing |
 | 243 | 2292 | First, right after the deploy and before check 240: with O's key, `GET /api/v1/me/stats` | The two figures of check 239 (as an administrator O opens every board), unless one of your own assigned cards was completed, archived, assigned or unassigned in between | A figure changed with none of your own assigned cards changed |
-| 244 | 2292 | As O, delete the board Check 2292. T is kept, and torn down at the end of the next section's checks | The board gone | The board left |
+| 244 | 2292 | As O, delete the board Check 2292. T is kept, for the next section's checks 253 to 257, and torn down in its check 258 | The board gone, and T on no board again | The board left |
 
 #### Going back to the previous image
 
 Nothing is done to the database. The older image counts `activeCards`, `avgCycleTimeDays` and the Velocity window over every board again.
 
-### The Activity Report Reads Only Boards You Can Open
-
-<!-- Card 2325 renames this section "Webhooks Stop When Their Setter Cannot Open the Board, and the Activity Report Reads Only Boards You Can Open" (and the link to it from card 2292's section) when it adds its part. -->
+### Webhooks Stop When Their Setter Cannot Open the Board, and the Activity Report Reads Only Boards You Can Open
 
 **Card 2326.** No migration, no setting, no new route or field. `GET /api/v1/reports/activity` read every board, or every board named in `boardIds`, and dropped afterwards the cards of boards the caller could not open, counting those boards in `meta.boardsExcludedForAccess`. The count went up whenever something happened on such a board, and the window takes times to the second, so polling it told anyone with a key when boards they could not open were worked on; naming one in `boardIds` told them whether that board had activity. Now the report reads only the boards the caller can open, the count is always `0` (still in the answer, marked deprecated), and a board named in `boardIds` is checked first, as the burndown checks one. A milestone in the report is counted over its cards on boards the caller can open, as its burndown is: a card moved onto a board they could not open was counted, and moving `from` across its completion told them when it was completed. Every other figure is as it was for the boards the caller can open. See [What a List Gives](authentication-security.md#what-a-list-gives).
 
-<!-- Card 2325 (webhooks) adds its part of this lead paragraph here, in its own commit. -->
+**Card 2325.** No migration, no setting, no new route; one field added. Anyone who can edit a board can set up a webhook, which sends every event of the board it asks for (card titles, comment text, who did what) to an address they choose, and it kept doing so after they were taken off the board, taken out of the team the board is shared with, or the board was made private, and after an administrator who set one up was made an ordinary user. Only a password reset, an invite being used or deleting the account switched it off. Now, at each event, a webhook is sent only while the account that set it up (`webhooks.set_by`: who created it, or last set its address or secret, or switched it on) can open the board, as mail is sent only to assignees who can (card 2180). One whose setter cannot, **or that nobody is recorded as having set up**, is held: nothing is sent, nothing is written but one `WARN` an hour in the system log, and `active` stays as it was. The owner's and an administrator's answer for it carries `pausedBecause`, saying why and what to do, and `lastDelivery` says "Not sent: …". It sends again by itself when the setter can open the board again. See [Webhooks](notifications-email.md#webhooks) and [What a List Gives](authentication-security.md#what-a-list-gives).
 
 **Owner to know.**
 
@@ -3491,7 +3489,9 @@ Nothing is done to the database. The older image counts `activeCards`, `avgCycle
 - **`meta.boardsExcludedForAccess` is always `0`** (deprecated, still in the answer). Nothing in this repository reads it; a client outside it that does reads "no board left out", which is true.
 - **A milestone's counts in the report can fall for anyone but an administrator**: its cards on boards they cannot open are left out, as the milestone's burndown already leaves them out.
 
-<!-- Card 2325 adds its owner-to-know bullets here: a webhook whose setter cannot open its board is held; a webhook with no recorded setter is held, Query B the gate. -->
+- **A webhook whose setter can no longer open its board is held from the deploy on**: nothing is sent to it, `active` stays as it was, and the owner's or an administrator's answer says why in `pausedBecause`. It sends again by itself if that account is given the board back. To keep it without that, take it over: switch it off, then on with a new secret (which makes you its setter), and update the receiver with the new secret. The address was chosen by the account that lost the board, so delete the webhook unless you recognise it.
+- **A webhook nobody is recorded as having set up is held from the deploy on.** Setters have only been recorded since 2026-10-18/19 (migration 0056), so that is almost every webhook made before then. Query B (check 247) is the gate: every such webhook is taken over or deleted before the deploy, so that no integration anyone knows about stops. A restore of an older backup brings them back, held: run Query B again after any such restore.
+- **No screen shows a held webhook.** `pausedBecause` is in the API alone, and the `WARN` in the system log, which administrators read. A board's owner learns of a held webhook by reading the board's webhooks with their key. An on-screen view is card 2329.
 
 #### Before the deploy
 
@@ -3499,31 +3499,67 @@ Nothing is done to the database. The older image counts `activeCards`, `avgCycle
 
 Checks 245 and 248 ask for a fixed, closed window in the past, `?from=2026-09-01&to=2026-09-30`, so that work done in between cannot move a figure.
 
+Card 2325's checks after the deploy also use **S2**, a fresh private board O makes for them, holding only cards titled `2325-check-…`, and **the receiver, `<CATCHER>`**: an HTTPS address O chooses and controls, such as a request-catcher service O picks or a path on a server of O's, reachable from production and not inside the network (production refuses inside addresses). Never a third-party address chosen for you. Two paths are used, `<CATCHER>/o2325` and `<CATCHER>/t2325`. Every write is to S2, T or the two test webhooks; no real board's cards, members or webhooks are touched.
+
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
 | 245 | 2326 | Make T and T's key. **Immediately before the deploy**, with T's key `GET /api/v1/reports/activity?from=2026-09-01&to=2026-09-30`; with O's key the same. Save each whole answer to a file (`t-245.json`, `o-245.json`) | T's `meta.boardsExcludedForAccess` probably above 0 (the fault being fixed); O's `0` | — (a record, kept for check 248) |
+| 246 | 2325 | Query A, below. Take over each row you recognise now (off, then on with a new secret, the receiver updated); then run Query A again and write down the ids it still lists | The second table holds only the rows not taken over; they are held from the deploy on | A row taken over still listed (the takeover did not make you its setter) |
+| 247 | 2325 | Query B, below, **the gate**: every row taken over or deleted, then Query B run again | No row | Any row left: **do not deploy** |
 
-<!-- Card 2325 adds checks 246 (Query A) and 247 (Query B, the gate) here. -->
+**Query A: active webhooks whose setter cannot open the board today** (check 246). These are held from the deploy on, which is the fix. The output gives the board's name, its owner, the setter's username and the address's host only, never its path, which can carry a token. A `set_by` that names no account (possible after a restore) shows `setter` empty, and is listed too.
+
+```bash
+docker exec dumpfire node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+const rows = db.prepare('SELECT w.id, b.name AS board, o.username AS board_owner, w.set_by, u.username AS setter, w.url FROM webhooks w JOIN boards b ON b.id = w.board_id LEFT JOIN users o ON o.id = b.created_by LEFT JOIN users u ON u.id = w.set_by WHERE w.active = 1 AND w.set_by IS NOT NULL AND (u.id IS NULL OR (u.role NOT IN (@admin, @superadmin) AND (b.created_by IS NULL OR b.created_by <> u.id) AND b.is_public = 0 AND NOT EXISTS (SELECT 1 FROM board_members m WHERE m.board_id = w.board_id AND m.user_id = u.id) AND NOT EXISTS (SELECT 1 FROM board_teams bt JOIN team_members tm ON tm.team_id = bt.team_id WHERE bt.board_id = w.board_id AND tm.user_id = u.id))) ORDER BY w.id').all({ admin: 'admin', superadmin: 'superadmin' });
+console.table(rows.map(({ url, ...r }) => { let host; try { host = new URL(url).host; } catch { host = '(not a URL)'; } return { ...r, host }; }));
+db.close();
+"
+```
+
+An empty table is the hope. Each row stops sending at the deploy. **One you recognise can be taken over before the deploy, so that its integration never stops**: the board's owner or an administrator sends `PUT /api/v1/webhooks/{id}` `{"active": false}`, then `{"active": true, "secret": "<new>"}`, and updates the receiver with the new secret. That makes them its setter, so it is not held. One nobody recognises is left to be held, or deleted. Whoever takes it over answers for it: a reset of their account, or deleting it, switches it off. Prefer the board's owner where they have a key. A single `PUT {"secret": "<new>"}` also takes it over, with no gap while it is off. Off then on, with no secret change, takes over a receiver that does not check signatures.
+
+**Query B: active webhooks with no setter. A GATE** (check 247). Do not deploy until it returns no row. It gives the address in full, which you need in order to recognise it, so do not paste the output anywhere: a path can carry a token.
+
+```bash
+docker exec dumpfire node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+console.table(db.prepare('SELECT w.id, w.url, b.name AS board, o.username AS board_owner FROM webhooks w JOIN boards b ON b.id = w.board_id LEFT JOIN users o ON o.id = b.created_by WHERE w.active = 1 AND w.set_by IS NULL ORDER BY w.id').all());
+db.close();
+"
+```
+
+For every row, the board's owner or an administrator either takes it over (the same off, then on with a new secret, and the receiver updated) or deletes it (`DELETE /api/v1/webhooks/{id}`). Whoever takes it over answers for it: a reset of their account, or deleting it, switches it off. Prefer the board's owner where they have a key. A single `PUT {"secret": "<new>"}` also takes it over, with no gap while it is off. Off then on, with no secret change, takes over a receiver that does not check signatures. Then run Query B again: it must return no row. It is run once more after the deploy (check 251) and must still return no active row. Restoring a backup older than 2026-10-18/19 brings setter-less webhooks back, so after any such restore run Query B again and deal with each row the same way.
 
 #### After the deploy
 
-Checks 248 to 250 run straight after check 243 of card 2292's section, before its check 240. They are GETs, and change nothing.
+Checks 248 to 252 run straight after check 243 of card 2292's section, before its check 240. They are GETs and a read-only query, and change nothing; 251 and 252 come this early so that a real webhook held at the deploy is seen at once. Then card 2292's checks 240 to 242 and 244 run, which leave T on no board again, and then checks 253 to 257 below, with T. Check 258 tears down everything the release's checks made, T included, once, at the very end.
 
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
 | 248 | 2326 | The two GETs of check 245 again, the same window, each whole answer saved (`t-248.json`, `o-248.json`). Compare each with its file from check 245, with `meta.generatedAt` taken out of both | O's two identical. T's identical but for `meta.boardsExcludedForAccess`, now `0`, and the counts of a milestone with a card on a board T cannot open, which are now left out (the second fix), so a milestone may also drop from T's list. Either may differ if a card of that window was edited, completed or deleted in between, or a card joined or left a listed milestone | T's count is not 0, or anything else differs with no such change |
 | 249 | 2326 | With T's key, `GET /api/v1/reports/activity?boardIds=<any private board T is not on>`; then `?boardIds=999999` | `403` `{"message":"No access to board <id>"}`; then `404` `{"message":"Board 999999 not found"}` | `200` to either |
 | 250 | 2326 | With O's key, `GET /api/v1/reports/activity?boardIds=999999` | `404` `{"message":"Board 999999 not found"}` (the change for administrators) | `200` |
+| 251 | 2325 | Query B again (before the deploy, above) | No active row | Any row (a webhook made or restored since check 247) |
+| 252 | 2325 | Run Query A again; with O's key (an administrator's), `GET /api/v1/webhooks/<id>` for each row it lists | Each `active: true`, `pausedBecause` "The account that set this up can no longer open this board, so nothing is sent. …" | Any row with `pausedBecause` `null` (it is still sending) |
 
-<!-- Card 2325 adds checks 251 to 257 here, and moves the tear-down below into its check 258. -->
+Card 2292's checks 240 to 242 and 244 come here. Then, with T on no board:
 
-**Tear down**, once, at the very end of the release's checks (after card 2292's check 244): signed in as T, revoke T's key (My Account); as O, delete T (Admin, User Management). T is then no longer in the user pickers or on the request form. Delete the saved answers: they hold card titles.
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 253 | 2325 | As O, make S2 and share it with T as Editor. With T's key `POST /api/v1/boards/<S2>/webhooks` `{"url": "<CATCHER>/t2325"}`; with O's key the same with `<CATCHER>/o2325`. As O, raise a card `2325-check-1` on S2 | The receiver gets two `POST`s with `X-DumpFire-Event: card.created`, one on each path, each body's `data.detail` naming the card. The create's answers carry `pausedBecause: null` | Either missing (the check holds a setter who can open the board) |
+| 254 | 2325 | As O, take T off S2 (Share Board, remove). Raise `2325-check-2`. With O's key `GET /api/v1/boards/<S2>/webhooks`. With T's key, the same | The receiver gets only `/o2325`. O's answer: T's webhook `active: true`, `pausedBecause` "The account that set this up can no longer open this board, so nothing is sent. …", `lastDelivery.outcome` `not-sent`; O's own `pausedBecause: null`. T's GET `403` | Anything arrives on `/t2325`, or `pausedBecause` is missing or `null` on T's |
+| 255 | 2325 | As an administrator, open the system log (Admin) and look under `Webhooks` | One `WARN` `Webhook <id> on board <S2> not sent: the account that set it up (user <T>) can no longer open the board`, with no address in it; raising `2325-check-3` adds no second line | No line, a line per event, or an address in it |
+| 256 | 2325 | As O, share S2 with T again as **Viewer**. Raise `2325-check-4` | Both paths receive it; T's webhook's `pausedBecause` `null` in O's answer | `/t2325` still silent |
+| 257 | 2325 | As O, take T off S2 again. With O's key `PUT /api/v1/webhooks/<T's>` `{"active": false}`: the answer has `pausedBecause: null` (it is off). Then `{"active": true, "secret": "check-2325"}`. Raise `2325-check-5`. Save `/t2325`'s raw body, byte for byte as the receiver got it, to `body.json`, and run `node -e "console.log('sha256='+require('crypto').createHmac('sha256','check-2325').update(require('fs').readFileSync('body.json')).digest('hex'))"` | Both paths receive it (O is now the setter); the line printed equals `/t2325`'s `X-DumpFire-Signature` (in checks 253 to 256 that header was empty: neither webhook had a secret); `pausedBecause` `null` | `/t2325` silent, the second `PUT` refused, or the signature not the one printed |
+| 258 | both | **Tear down**, once, at the very end of the release's checks: with O's key `DELETE /api/v1/webhooks/<each of the two>`; as O delete S2; signed in as T, revoke T's key (My Account); as O, delete T (Admin, User Management). Clear or delete the receiver's two paths. Delete the saved answers of checks 245 and 248: they hold card titles | No webhook on S2 (gone with it); T no longer in the user pickers or on the request form | Anything left |
 
 #### Going back to the previous image
 
 Nothing is done to the database. The older image reads every board for the activity report again, counts the boards left out in `meta.boardsExcludedForAccess`, counts a milestone's cards on every board, and answers a named board the caller cannot open, or one that does not exist, `200`.
 
-<!-- Card 2325 adds its going-back paragraph here: held webhooks send again on the older image, so switch off or delete any that must not. -->
+The older image also sends to every active webhook, held ones included (a setter who lost the board, or none recorded), and answers no `pausedBecause`. So **before going back, switch off or delete any held webhook that must not send**: check 252's ids, and any webhook Query B or Query A lists then.
 
 ## Changing the Schema
 

@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.32
+version: 1.33
 status: As-Built
-date: 2026-10-19
+date: 2026-10-20
 tags:
   - database
   - schema
@@ -1213,8 +1213,12 @@ of about zero.
   board's owner or an administrator may do either). `endAccountAccess()` switches off the webhooks a taken-back account set
   (`active = 0`, `set_by` left as it is), and `deleteUser()` does before the key clears it.
   `presentWebhook()` leaves it out of every answer. Rows made before 0056, and those whose
-  setter was deleted, hold NULL: nothing fills them, since no record says who made them. A
-  sealed restore fills a webhook's secret only from the webhook here with the same id,
+  setter was deleted, hold NULL: nothing fills them, since no record says who made them.
+  **It is checked at each delivery** (card 2325): `deliver` sends a webhook only while the
+  account `set_by` names can open the board (`holdOf`, `canViewBoard`, with the role read
+  then), and **a NULL holds the webhook**, as does an account that cannot open the board or no
+  longer exists. A hold is worked out each time and never stored: `active` is not touched, and
+  nothing is written but an hourly log line. A sealed restore fills a webhook's secret only from the webhook here with the same id,
   board, address and setter (`fillSecretGaps()`), reading `set_by` as NULL on a database
   without the column. 0056 changes no row, so it declares nothing to the rehearsal.
 - **No secret is in a backup's copy** (card 2169): no `smtp_pass` row, every secret field of

@@ -12,6 +12,13 @@
  * What each webhook's last delivery came to is kept in memory (card 2178),
  * never in the database, and given to the board's owner and administrators as
  * `lastDelivery` in the webhook's answer. A restart forgets it.
+ *
+ * A webhook is sent only while the account that set it up can open its board
+ * (card 2325), as a mail is sent only to recipients who can (`whoCanOpen`).
+ * `deliver` asks first, at each event, so anything that sends goes through
+ * it; one whose setter cannot, or that nobody is recorded as having set up,
+ * is held: nothing is sent, nothing is written but an hourly WARN, and
+ * `active` is left as it is. The answer says why, as `pausedBecause`.
  */
 
 import http from 'node:http';
@@ -22,7 +29,7 @@ import { webhooks } from './db/schema';
 import { eq, and } from 'drizzle-orm';
 import { createHash, createHmac } from 'crypto';
 import { createLogger } from './logger';
-import { getBoardRole, type Actor } from './board-access';
+import { canViewBoard, getBoardRole, type Actor } from './board-access';
 import { onTheWire } from './v1-json';
 import { addressRefusal, guardedLookup } from './webhook-address';
 
@@ -61,6 +68,11 @@ export function canSeeWebhookSecret(user: Actor, boardId: number): boolean {
  * so the people told a webhook is failing are the people who may read and
  * change where it sends. Null until a delivery since the server started, and
  * after the address changes.
+ *
+ * `pausedBecause` (card 2325) goes with it: why a webhook that is on is held
+ * (`holdOf`), in one of two fixed sentences, or null. Null for one that is
+ * off, whoever set it. Worked out here, so it is there after a restart, when
+ * `lastDelivery` is null until the next event.
  */
 export function presentWebhook(hook: Webhook, reveal: boolean) {
 	const { secret, url, events, setBy: _setBy, ...rest } = hook;
@@ -68,8 +80,53 @@ export function presentWebhook(hook: Webhook, reveal: boolean) {
 		...rest,
 		events: JSON.parse(events || '[]') as string[],
 		hasSecret: secret !== '',
-		...(reveal ? { url, secret, lastDelivery: deliveryResultFor(hook) } : {})
+		...(reveal ? { url, secret, lastDelivery: deliveryResultFor(hook), pausedBecause: pausedBecause(hook) } : {})
 	};
+}
+
+// ─── Held while the setter cannot open the board (card 2325) ──────────────
+
+/** Why a webhook is held, or null to send it (card 2325). */
+export type Hold = 'no setter' | 'setter cannot open';
+
+/**
+ * The account that set the webhook up must still be able to open its board,
+ * as a mail's recipient must (whoCanOpen). A webhook nobody is recorded as
+ * having set up is held too: nobody answers for where it sends. Asked at each
+ * delivery, with the role read now, so an administrator made an ordinary user
+ * is held at the next event; `cache` is the dispatch's, so one event asks once
+ * per setter. It is keyed by board and setter, though every webhook of one
+ * event is on one board, so that a map shared across boards can never carry
+ * one board's answer to another.
+ */
+export function holdOf(hook: Webhook, cache: Map<string, boolean> = new Map()): Hold | null {
+	if (hook.setBy === null) return 'no setter';
+	const key = `${hook.boardId}:${hook.setBy}`;
+	let open = cache.get(key);
+	if (open === undefined) {
+		const setter = sqlite.prepare('SELECT id, role FROM users WHERE id = ?').get(hook.setBy) as Actor | undefined;
+		open = setter !== undefined && canViewBoard(setter, hook.boardId);
+		cache.set(key, open);
+	}
+	return open ? null : 'setter cannot open';
+}
+
+/** What `pausedBecause` says for each hold, word for word (the plan's decision 4). */
+const PAUSED_BECAUSE: Record<Hold, string> = {
+	'setter cannot open':
+		'The account that set this up can no longer open this board, so nothing is sent. The address was chosen by that account: ' +
+		'delete the webhook unless you recognise it; to keep it, switch it off and on, which makes you its setter, and set a new ' +
+		'secret and update the receiver.',
+	'no setter':
+		'Nobody is recorded as having set this up. Delete it unless you recognise the address; to keep it, switch it off and on, ' +
+		'which makes you its setter, and set a new secret.'
+};
+
+/** Why a webhook that is on is held, for its answer; null when it is off or is sent. */
+function pausedBecause(hook: Webhook): string | null {
+	if (!hook.active) return null;
+	const hold = holdOf(hook);
+	return hold === null ? null : PAUSED_BECAUSE[hold];
 }
 
 /** Supported webhook event types. */
@@ -176,7 +233,7 @@ const WARN_AGAIN_AFTER_MS = 60 * 60 * 1000;
 export const WARNINGS_REMEMBERED = 10_000;
 
 /** The kinds of WARN about one webhook, each held to its own hour. */
-type WarnKind = 'refused as written' | 'resolves inside' | 'redirect' | 'events not a list';
+type WarnKind = 'refused as written' | 'resolves inside' | 'redirect' | 'events not a list' | Hold;
 
 /**
  * Each webhook and kind of WARN written, with when and how many like it were
@@ -348,12 +405,15 @@ export function deliveryReason(err: { code?: unknown }, timeoutMs: number): stri
 }
 
 /** What a webhook refused before any request is recorded as, by why it was refused. */
-const NOT_SENT: Record<Refusal['kind'] | 'events', string> = {
+const NOT_SENT: Record<Refusal['kind'] | 'events' | Hold, string> = {
 	'not a URL': 'Not sent: the address is not an http or https address',
 	scheme: 'Not sent: the address is not an http or https address',
 	credentials: 'Not sent: the address carries a user name or password',
 	inside: 'Not sent: the address is inside the network',
-	events: 'Not sent: its events are not a list'
+	events: 'Not sent: its events are not a list',
+	// Held (card 2325).
+	'setter cannot open': 'Not sent: the account that set it up can no longer open this board',
+	'no setter': 'Not sent: nobody is recorded as having set it up'
 };
 
 const notSentResult = (why: keyof typeof NOT_SENT): Result => ({ outcome: 'not-sent', status: null, reason: NOT_SENT[why] });
@@ -407,6 +467,13 @@ export function activeWebhooksRefused(): { id: number; boardId: number; reason: 
 /**
  * Send one webhook its event, or say in the system log why it was not sent.
  *
+ * Held first, before the address is judged, when its setter cannot open the
+ * board or it has no setter (`holdOf`, card 2325): one WARN an hour, naming
+ * the webhook, its board and the setter's id, never the address; a not-sent
+ * result; nothing written; `active` untouched. Here, not in the dispatch, so
+ * that anything that sends is held by it. A check that throws throws before
+ * any request: in a dispatch, the webhook's own `try` logs it, unsent.
+ *
  * Refused before any request, with a WARN, when `refusalAsWritten` refuses
  * its address. Then the request is made
  * and ended here, at once, with no `await` before it, as `fetch` was: a test's
@@ -439,14 +506,17 @@ export function activeWebhooksRefused(): { id: number; boardId: number; reason: 
  * connect are counted. Tests shorten it.
  * `dispatch` is the event's (`dispatchWebhook` passes it, so that every
  * webhook of one event is recorded with the body's timestamp); called on its
- * own, a delivery is a dispatch of its own, made now.
+ * own, a delivery is a dispatch of its own, made now. So is `holds`, the
+ * dispatch's answer to whether each setter can open the board (card 2325);
+ * called on its own, a delivery asks afresh.
  */
 export function deliver(
 	hook: Webhook,
 	event: WebhookEvent,
 	body: string,
 	timeoutMs: number = DELIVERY_TIMEOUT_MS,
-	dispatch: Dispatch = nextDispatch(new Date().toISOString())
+	dispatch: Dispatch = nextDispatch(new Date().toISOString()),
+	holds: Map<string, boolean> = new Map()
 ): void {
 	const which = `Webhook ${hook.id} on board ${hook.boardId}`;
 	const notSent = (kind: WarnKind, reason: string) => warnHourly(hook.id, kind, `${which} not sent: ${reason}`);
@@ -463,6 +533,19 @@ export function deliver(
 		}
 		setTimeout(() => recordDelivery(hook, dispatch, event, result), after).unref?.();
 	};
+
+	// Held while nobody who can open the board answers for it (card 2325).
+	const hold = holdOf(hook, holds);
+	if (hold !== null) {
+		notSent(
+			hold,
+			hold === 'no setter'
+				? 'nobody is recorded as having set it up'
+				: `the account that set it up (user ${hook.setBy}) can no longer open the board`
+		);
+		record(notSentResult(hold));
+		return;
+	}
 
 	const refusal = refusedAsWritten(hook.url);
 	if (refusal !== null) {
@@ -568,6 +651,9 @@ export function deliver(
  * sent, and a WARN names it. Before, one `try` held the whole loop, and a row
  * holding `null` (which `PUT … events: null` once stored) ended it, so every
  * webhook after it on the board was sent nothing.
+ *
+ * One `holds` map for the event, passed to each `deliver` (card 2325): whether
+ * each setter can open the board is asked once per setter per event.
  */
 export function dispatchWebhook(
 	boardId: number,
@@ -604,6 +690,7 @@ export function dispatchWebhook(
 		return;
 	}
 
+	const holds = new Map<string, boolean>();
 	for (const hook of hooks) {
 		try {
 			// A list, or the webhook is not sent: an empty one is every event.
@@ -619,7 +706,7 @@ export function dispatchWebhook(
 			// An event it does not ask for is not an attempt: nothing is recorded.
 			if (events.length > 0 && !events.includes(event)) continue;
 
-			deliver(hook, event, body, DELIVERY_TIMEOUT_MS, dispatch);
+			deliver(hook, event, body, DELIVERY_TIMEOUT_MS, dispatch, holds);
 		} catch (err) {
 			log.error(`Webhook ${hook.id} on board ${hook.boardId} could not be sent`, err);
 		}

@@ -215,6 +215,11 @@ const spec = {
 			'A milestone in milestones counts totalCards, completedAtStart and completedAtEnd over its cards on boards the key\'s user can open, as its burndown does (an administrator\'s over every board): ' +
 			'a card moved onto a board they could not open was counted, so moving from across its completion told them the second it was completed. ' +
 			'Every other figure is as it was for the boards the key\'s user can open. ' +
+			'(81) a webhook is sent only while the account that set it up can open its board, asked at each event with that account\'s role as it is then, as a mail is sent only to assignees who can open the board: ' +
+			'one set up by an editor went on sending every event of the board to its address after they were taken off the board, or out of the team it is shared with, or the board was made private, and one an administrator set up went on after they were made an ordinary user. ' +
+			'A webhook whose setter cannot open the board, and one with no recorded setter (made before setters were recorded on 2026-10-18/19), is held: nothing is sent and active is left as it is; lastDelivery says "Not sent: the account that set it up can no longer open this board" or "Not sent: nobody is recorded as having set it up". ' +
+			'A webhook answered to the board\'s owner or an administrator, and the answer to the create, carry pausedBecause: null unless the webhook is on and held, then one of two sentences saying why and what to do. ' +
+			'A held webhook is sent again when its setter can open the board again; the board owner or an administrator takes one over by switching it off and then on, which makes them its setter, and sets a new secret, updating the receiver. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -624,7 +629,10 @@ const spec = {
 					'a name is judged again at each delivery by every address it resolves to, and a delivery to one that resolves inside is not made. Redirects are not followed, ' +
 					'and an address with a user name or password is refused. The server\'s operator may let named receivers inside the network be sent to. A board has at most 10 webhooks. ' +
 					'card.moved is every column change but a completion, told apart by data.action: card_moved, card_reopened (out of a Complete column), and card_moved_away and card_moved_in (to another board, each sent to its own board with its own entry, which names neither board); ' +
-					'a move into a Complete column sends card.completed instead (a move into another board\'s Complete column also sends each board its card.moved).',
+					'a move into a Complete column sends card.completed instead (a move into another board\'s Complete column also sends each board its card.moved). ' +
+					'Who it is sent for (since 2026-10-20): a webhook is sent only while the account that set it up, the one that created it or last set its url or secret or switched it on, can open the board, asked at each event with that account\'s role as it is then. ' +
+					'One whose setter cannot, or that has no recorded setter (one made before setters were recorded on 2026-10-18/19), is held: nothing is sent to it, active is left as it is, and pausedBecause says why. ' +
+					'One whose setter is given the board back is sent again with nothing else changed. To keep one without that, the board owner or an administrator takes it over: switches it off, then on, which makes them its setter, sets a new secret and updates the receiver.',
 				properties: {
 					id: { type: 'integer' },
 					boardId: { type: 'integer' },
@@ -662,18 +670,28 @@ const spec = {
 								description:
 									'delivered: the receiver answered 2xx. answered: it answered any other status, a redirect included, which is not followed. ' +
 									'no-answer: no status came: the name was not found, the certificate could not be checked, or the receiver could not be reached or did not answer in time. ' +
-									'not-sent: no request was made: the address is inside the network, carries a user name or password, or is not http or https, or the webhook\'s events are not a list.'
+									'not-sent: no request was made: the address is inside the network, carries a user name or password, or is not http or https, or the webhook\'s events are not a list, ' +
+									'or (since 2026-10-20) the webhook is held because the account that set it up can no longer open the board or nobody is recorded as having set it up.'
 							},
 							status: { type: ['integer', 'null'], description: 'The status the receiver answered; null when it answered none' },
 							reason: {
 								type: 'string',
 								description:
-									'One of a fixed set of sentences, e.g. "The receiver answered 500" or "Not sent: the address is inside the network". It never holds the address, its path or query, the secret, or an address a name resolved to. ' +
+									'One of a fixed set of sentences, e.g. "The receiver answered 500", "Not sent: the address is inside the network", "Not sent: the account that set it up can no longer open this board" or "Not sent: nobody is recorded as having set it up". It never holds the address, its path or query, the secret, or an address a name resolved to. ' +
 									'A closed port, a filtered one and a receiver that does not answer read alike: "The receiver could not be reached, or did not answer within 10 seconds", recorded no sooner than the 10 seconds after the delivery was given its connection, whenever it failed. ' +
 									'The 10 seconds count from that connection, not from a wait behind the 20 connections already open to one receiver. The system log, which administrators read, keeps the error itself.'
 							}
 						},
 						required: ['at', 'event', 'outcome', 'status', 'reason']
+					},
+					pausedBecause: {
+						type: ['string', 'null'],
+						description:
+							'Why the webhook is held, so that nothing is sent to it (since 2026-10-20). Present only when the caller is the board owner or an administrator, as the address is, and in the response to the request that created the webhook, where it is null: its creator is its setter and can open the board. ' +
+							'null unless the webhook is on (active) and held, so a webhook switched off is null whoever set it. Worked out when the answer is made, never stored, so it is there after a restart when lastDelivery is null. While held it is one of two sentences, word for word. ' +
+							'When the account that set it up can no longer open the board: "The account that set this up can no longer open this board, so nothing is sent. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it off and on, which makes you its setter, and set a new secret and update the receiver." ' +
+							'When nobody is recorded as having set it up: "Nobody is recorded as having set this up. Delete it unless you recognise the address; to keep it, switch it off and on, which makes you its setter, and set a new secret." ' +
+							'Sending active true for a webhook that is already on is no change and does not take it over.'
 					}
 				},
 				required: ['id', 'boardId', 'hasSecret', 'events', 'active', 'createdAt']

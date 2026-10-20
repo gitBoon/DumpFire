@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.46
+version: 1.47
 status: As-Built
 date: 2026-10-20
 tags:
@@ -158,7 +158,14 @@ For 📧 the first line is the server's message: "The invite was made, but its m
 
 A webhook or a report schedule that a request was still creating or changing when the reset went through is not written: the request is answered `401`, since the key or the session it came in with has gone. See [What Setting a Password Ends](authentication-security.md#what-setting-a-password-ends).
 
-**What a reset does not end.** A webhook nobody is recorded as having set up is left on: one registered before the update that brings migration 0056, and one whose setter's account was deleted. So is one somebody else set up or changed since. After taking an account back, look over once the webhooks with no setter on the boards it could edit, with `GET /api/v1/boards/{id}/webhooks`.
+**What a reset does not end.** A webhook nobody is recorded as having set up is left on by a reset: one registered before the update that brings migration 0056, and one whose setter's account was deleted. So is one somebody else set up or changed since. **Since card 2325, a webhook with no setter is held from the deploy on all the same**: nothing is sent to it at any event until the board's owner or an administrator takes it over, as below. Before that deploy, Query B in the release notes lists every one that is on, and each is taken over or deleted ([Deployment](deployment.md#webhooks-stop-when-their-setter-cannot-open-the-board-and-the-activity-report-reads-only-boards-you-can-open)); after restoring a backup older than 2026-10-18/19, run Query B again.
+
+**A held webhook** (card 2325). A webhook is sent only while the account that set it up can open the board, asked at each event with that account's role as it is then. One whose setter was taken off the board, taken out of the team it is shared with, lost it when it was made private, or was an administrator made an ordinary user, is held: nothing is sent, `active` stays as it was, and the system log has one `WARN` an hour under `Webhooks`, `Webhook <id> on board <board> not sent: the account that set it up (user <id>) can no longer open the board` (or `… not sent: nobody is recorded as having set it up`), never the address. It sends again by itself if that account is given the board back, as an editor or a viewer. No page shows it: the board's owner or an administrator reads why with their API key, in `pausedBecause` from `GET /api/v1/boards/{id}/webhooks` or `GET /api/v1/webhooks/{id}` (`null` unless the webhook is on and held), word for word:
+
+- a setter who can no longer open the board: "The account that set this up can no longer open this board, so nothing is sent. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it off and on, which makes you its setter, and set a new secret and update the receiver."
+- no recorded setter: "Nobody is recorded as having set this up. Delete it unless you recognise the address; to keep it, switch it off and on, which makes you its setter, and set a new secret."
+
+**Delete it unless you recognise the address** (`DELETE /api/v1/webhooks/{id}`): the address was chosen by the account that lost the board, or by nobody known. **To keep it, take it over**: `PUT /api/v1/webhooks/{id}` `{"active": false}`, then `{"active": true, "secret": "<new>"}`, then update the receiver with the new secret. Switching it on makes you its setter, so it is no longer held. The new secret matters because the former setter knows the old one and could forge deliveries to the receiver, which may be the company's own system. Sending `{"active": true}` to a webhook that is already on is no change and takes nothing over. Whoever takes it over answers for it: a reset of their account, or deleting it, switches it off. Prefer the board's owner where they have a key. A single `PUT {"secret": "<new>"}` also takes it over, with no gap while it is off. Off then on, with no secret change, takes over a receiver that does not check signatures.
 
 Whose account you can change, set a password for, send an invite to or delete depends on your role and theirs, and is the same for all four. An invite is on the list because its link sets the account's password:
 
