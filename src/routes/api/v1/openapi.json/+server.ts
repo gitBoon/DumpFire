@@ -208,6 +208,13 @@ const spec = {
 			'(79) GET /api/v1/me/stats counts activeCards and averages avgCycleTimeDays over the cards the key\'s user is assigned to on boards they can open now, the same boards the web application\'s dashboard and My Tasks count (an open card is still one with no completedAt here, where those two go by its column): ' +
 			'both counted every board, so a user taken off a board saw the two figures move as cards there were completed, archived or unassigned; ' +
 			'a user who can open no board is answered activeCards 0 and avgCycleTimeDays null. The shape is unchanged, and cardsCompleted and streak, which count the user\'s own completions, are as they were. ' +
+			'(80) GET /api/v1/reports/activity reads only the boards the key\'s user can open, and meta.boardsExcludedForAccess is always 0, still in every answer and marked deprecated: ' +
+			'it counted the boards with activity in the window that the key\'s user could not open, so polling a narrow window told them when a board they could not open was worked on, and naming one in boardIds whether it had activity. ' +
+			'A board named in boardIds is checked in the order given, as GET /api/v1/burndown checks one, administrators included: one that does not exist is 404 "Board 7 not found", and one the key\'s user cannot open is 403 "No access to board 7", ' +
+			'where both were answered 200; a saved list that holds a deleted board now fails. ' +
+			'A milestone in milestones counts totalCards, completedAtStart and completedAtEnd over its cards on boards the key\'s user can open, as its burndown does (an administrator\'s over every board): ' +
+			'a card moved onto a board they could not open was counted, so moving from across its completion told them the second it was completed. ' +
+			'Every other figure is as it was for the boards the key\'s user can open. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2048,7 +2055,8 @@ const spec = {
 						description:
 							'The milestones you can open, of the report\'s cards, in which more cards were complete at the end of the window than at its start ' +
 							'(card 2257: one you cannot open is left out). ' +
-							'Their counts are of every card in the milestone that is not archived, by its completion date.',
+							'Their counts are of every card in the milestone that is not archived and is on a board the key\'s user can open (every board, to an administrator), by its completion date. ' +
+							'Until 2026-10-20 a card on a board they could not open was counted, so moving from across its completion told them when it was completed (item 80).',
 						items: {
 							type: 'object',
 							properties: {
@@ -2083,7 +2091,13 @@ const spec = {
 								type: 'integer',
 								description: 'Cards in a Complete column that were not completed in the window. They are in the report as progressed.'
 							},
-							boardsExcludedForAccess: { type: 'integer', description: 'Boards with activity that were left out because the key\'s user cannot see them' }
+							boardsExcludedForAccess: {
+								type: 'integer',
+								deprecated: true,
+								description:
+									'Always 0. Until 2026-10-20 it counted the boards with activity in the window that the key\'s user could not open, which told them when those boards were worked on. ' +
+									'The report now reads only boards they can open, and refuses a named board they cannot open (403). Still in every answer (item 80).'
+							}
 						},
 						required: [
 							'generatedAt', 'completionBasis', 'attribution', 'closeReasonAssumedCount', 'missingSummaryCount',
@@ -6365,7 +6379,8 @@ const spec = {
 				description:
 					'Everything a management report of a period needs, in one answer: the cards that were completed, closed with nothing built, moved on, put on hold or raised in the window, ' +
 					'board by board, each with its reporting fields, and the milestones that moved. With no parameters it is the last 30 days, for everyone, on every board the key\'s user can see.\n\n' +
-					'A card is completed in the window by its own completion date, not by the activity log. Boards the key\'s user cannot see are left out, and `meta.boardsExcludedForAccess` says how many were. ' +
+					'A card is completed in the window by its own completion date, not by the activity log. Only the boards the key\'s user can open are read, and a board named in boardIds that they cannot open is refused: ' +
+					'until 2026-10-20 the others were read and left out, and `meta.boardsExcludedForAccess` said how many had activity, which told any reader when a board they could not open was worked on. It is always 0 now (item 80). ' +
 					'A report on one user holds the cards that user logged an action on or commented on in the window, raised, or is assigned to now. ' +
 					'A dependency added or removed is not counted as an action on a card, for the window or for a user: until 2026-10-14 the entries the API wrote for one were. ' +
 					'Anyone may ask for their own or for everyone\'s; a report on another user needs an administrator.',
@@ -6396,7 +6411,10 @@ const spec = {
 						name: 'boardIds',
 						in: 'query',
 						schema: { type: 'string' },
-						description: 'Comma-separated board ids, to report on those boards only. Left out, every board the key\'s user can see. Each is an id: one that is not is 400, where it was left out.'
+						description:
+							'Comma-separated board ids, to report on those boards only. Left out, every board the key\'s user can see. Each is an id: one that is not is 400, where it was left out. ' +
+							'Each is then checked in the order given, administrators included: one that does not exist is 404 `Board 7 not found`, and one the key\'s user cannot open is 403 `No access to board 7`, as GET /api/v1/burndown answers. ' +
+							'Until 2026-10-20 both were answered 200 with nothing of the board, so a saved list that holds a deleted board now fails (item 80).'
 					},
 					{
 						name: 'include',
@@ -6426,8 +6444,14 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'userId is another user, and the key\'s user is not an administrator',
+						description:
+							'userId is another user, and the key\'s user is not an administrator; or a board named in boardIds the key\'s user cannot open (`No access to board 7`). ' +
+							'Until 2026-10-20 such a board was answered 200 (item 80).',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only an admin can report on another user' } } }
+					},
+					'404': {
+						description: 'A board named in boardIds does not exist (`Board 7 not found`), whoever asks. Until 2026-10-20 it was answered 200 (item 80).',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board 7 not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }

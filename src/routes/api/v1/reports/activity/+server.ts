@@ -23,9 +23,12 @@ import type { RequestHandler } from './$types';
  *                        0 gives each card an empty `comments` list; a
  *                        negative number, or one that is not whole, is a 400.
  *
- * Boards the caller cannot view are excluded, and the count of them is reported
- * in `meta.boardsExcludedForAccess` rather than silently dropped — a report with
- * a hole in it should say so.
+ * Only the boards the caller can open are read (card 2326). A board named in
+ * `boardIds` that they cannot open is refused, `403 No access to board N`, and
+ * one that does not exist `404 Board N not found`, rather than left out of the
+ * report: a report with a hole in it should say so. The check is made inside
+ * `buildActivityReport`. `meta.boardsExcludedForAccess` is always 0: it counted
+ * the boards left out, which told the caller when those boards were worked on.
  */
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');

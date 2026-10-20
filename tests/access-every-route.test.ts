@@ -1445,7 +1445,9 @@ const TABLE: Record<string, Case | Case[]> = {
 	],
 	'GET /api/v1/reports/activity': [
 		signedIn(() => '/api/v1/reports/activity', { of: "the caller's own activity" }),
-		view((w) => `/api/v1/reports/activity?boardIds=${w.A.board.id}`, { of: 'one board', filtered: true }),
+		// Refused since card 2326: the report was answered with nothing of the
+		// board and a count that said it had activity.
+		view((w) => `/api/v1/reports/activity?boardIds=${w.A.board.id}`, { of: 'one board' }),
 		admin((w) => `/api/v1/reports/activity?userId=${w.editor.id}`, { of: "another user's activity" })
 	],
 
@@ -3795,6 +3797,145 @@ describe('what me/stats counts (card 2292)', () => {
 
 		const stats = await meStats(w.outsider);
 		expect([stats.activeCards, stats.avgCycleTimeDays, await velocity(w.outsider)]).toEqual([2, 4, 1]);
+	});
+});
+
+describe('what the activity report counts (card 2326)', () => {
+	type Json = any;
+
+	const report = (user: SessionUser, query = '') => api('GET', `/api/v1/reports/activity${query}`, { user });
+	/** The report, which must be answered. */
+	const answered = async (user: SessionUser, query = ''): Promise<Json> => {
+		const res = await report(user, query);
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		return res.body;
+	};
+	const cardIds = (body: Json): number[] => body.boards.flatMap((b: Json) => b.cards.map((c: Json) => c.id));
+	const boardIds = (body: Json): number[] => body.boards.map((b: Json) => b.boardId);
+
+	/** Activity on board A: a card raised there now. */
+	const raisedOnA = () => makeCard(w.A.cols['To Do'], { title: `${MARK} card raised for the report` });
+
+	it('counts `outsider` no board, after a card was raised on board A, and gives them nothing of it', async () => {
+		raisedOnA();
+		const body = await answered(w.outsider);
+		expect(body.meta.boardsExcludedForAccess).toBe(0);
+		expect(boardIds(body)).not.toContain(w.A.board.id);
+		expect(JSON.stringify(body)).not.toContain(MARK);
+	});
+
+	it('refuses `outsider` a report of board A, with the burndown\'s words', async () => {
+		const res = await report(w.outsider, `?boardIds=${w.A.board.id}`);
+		expect([res.status, res.body]).toEqual([403, { message: `No access to board ${w.A.board.id}` }]);
+	});
+
+	it('answers `outsider` 404 for a board that does not exist', async () => {
+		const res = await report(w.outsider, '?boardIds=999999');
+		expect([res.status, res.body]).toEqual([404, { message: 'Board 999999 not found' }]);
+	});
+
+	it('refuses a list of boards at the first one at fault, in the order given', async () => {
+		const mine = await report(w.outsider, `?boardIds=${w.B.board.id},${w.A.board.id}`);
+		expect([mine.status, mine.body]).toEqual([403, { message: `No access to board ${w.A.board.id}` }]);
+
+		const missingFirst = await report(w.outsider, `?boardIds=999999,${w.A.board.id}`);
+		expect([missingFirst.status, missingFirst.body]).toEqual([404, { message: 'Board 999999 not found' }]);
+
+		const refusedFirst = await report(w.outsider, `?boardIds=${w.A.board.id},999999`);
+		expect([refusedFirst.status, refusedFirst.body]).toEqual([403, { message: `No access to board ${w.A.board.id}` }]);
+	});
+
+	it('gives `editor`, naming board A, exactly its cards', async () => {
+		const body = await answered(w.editor, `?boardIds=${w.A.board.id}`);
+		expect(boardIds(body)).toEqual([w.A.board.id]);
+		expect(cardIds(body)).toEqual([w.A.card.id, w.A.other.id, w.A.loose.id]);
+	});
+
+	it('gives an administrator board A, named, with its new card, and counts no board left out', async () => {
+		const card = raisedOnA();
+		const body = await answered(w.admin, `?boardIds=${w.A.board.id}`);
+		expect(cardIds(body)).toContain(card.id);
+		expect(body.meta.boardsExcludedForAccess).toBe(0);
+	});
+
+	it('answers an administrator 404 for a board that does not exist', async () => {
+		const res = await report(w.admin, '?boardIds=999999');
+		expect([res.status, res.body]).toEqual([404, { message: 'Board 999999 not found' }]);
+	});
+
+	it('gives a former editor of board A, still assigned to its card, nothing of it in their report on themselves, and no count', async () => {
+		const former = makeUser({ username: 'former' });
+		addBoardMember(w.A.board, former, 'editor');
+		assignCard(w.A.card, former);
+		const removed = await api('DELETE', `/api/boards/${w.A.board.id}/share`, { user: w.owner, body: { type: 'user', targetId: former.id } });
+		expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+
+		const body = await answered(former, `?userId=${former.id}`);
+		expect(cardIds(body)).not.toContain(w.A.card.id);
+		expect(boardIds(body)).not.toContain(w.A.board.id);
+		expect(body.meta.boardsExcludedForAccess).toBe(0);
+	});
+
+	it('gives `outsider` the cards of a public board they are no member of', async () => {
+		const body = await answered(w.outsider);
+		expect(cardIds(body)).toContain(w.publicBoard.card.id);
+	});
+
+	it('answers a user who can open no board an empty report, and counts nothing left out', async () => {
+		// A database of its own: everyone signed in opens a public board, and the
+		// world's is left alone.
+		resetDb();
+		const boss = makeUser({ username: 'boss' });
+		const { cols } = makeBoard({ owner: boss, name: 'A private board' });
+		makeCard(cols['To Do'], { title: 'Raised today' });
+		const nowhere = makeUser({ username: 'nowhere' });
+
+		const body = await answered(nowhere);
+		expect(body.boards).toEqual([]);
+		expect(body.totals).toEqual({ completed: 0, closed: 0, progressed: 0, 'on hold': 0, created: 0, boards: 0, cards: 0 });
+		expect(body.meta.boardsExcludedForAccess).toBe(0);
+	});
+
+	it('counts `outsider` nothing in a one-second window around a card raised on board A, nor in one away from it', async () => {
+		const at = '2026-01-15 10:00:00';
+		makeCard(w.A.cols['To Do'], { title: `${MARK} card raised at a known moment`, createdAt: at, updatedAt: at });
+
+		const around = await answered(w.outsider, '?from=2026-01-15T10:00:00Z&to=2026-01-15T10:00:01Z');
+		const away = await answered(w.outsider, '?from=2026-01-15T09:00:00Z&to=2026-01-15T09:00:01Z');
+		expect([around.meta.boardsExcludedForAccess, away.meta.boardsExcludedForAccess]).toEqual([0, 0]);
+		expect(JSON.stringify([around, away])).not.toContain(MARK);
+	});
+
+	it('gives `editor` every board they can open, and every card on them, as before', async () => {
+		// Board A, as a member, and the public board; not board B, nor the
+		// owner's second board. Board A's archived card is left out. Each card
+		// was raised today in its board's first column and never moved.
+		const body = await answered(w.editor);
+		expect(boardIds(body)).toEqual([w.A.board.id, w.publicBoard.board.id]);
+		expect(cardIds(body)).toEqual([w.A.card.id, w.A.other.id, w.A.loose.id, w.publicBoard.card.id]);
+		expect(body.totals).toEqual({ completed: 0, closed: 0, progressed: 0, 'on hold': 0, created: 4, boards: 2, cards: 4 });
+	});
+
+	it("counts a milestone's progress over the cards on boards the reader can open, so moving `from` across a hidden card's completion changes nothing", async () => {
+		// A milestone of board A, which `viewer` may open, holding a1 on board A
+		// and h1 on a private board H they are not on (card 2129's case: a card
+		// moved off a board keeps its milestone). h1 completed on the 20th, a1
+		// on the 25th, so a1 is in both windows below.
+		const H = makeBoard({ owner: w.outsider, name: `${MARK_B} board H` });
+		const raised = '2026-09-01 09:00:00';
+		const a1 = makeCard(w.A.cols['Complete'], { title: 'a1', createdAt: raised, updatedAt: raised, completedAt: '2026-09-25 10:00:00' });
+		const h1 = makeCard(H.cols['Complete'], { title: `${MARK_B} h1`, createdAt: raised, updatedAt: raised, completedAt: '2026-09-20 10:00:00' });
+		const M = makeMilestone({ board: w.A.board, name: 'Goal of board A', createdBy: w.owner, cards: [a1, h1] });
+
+		const counts = async (from: string) => {
+			const body = await answered(w.viewer, `?from=${from}&to=2026-09-30`);
+			const m = body.milestones.find((x: Json) => x.id === M.id);
+			return m && { totalCards: m.totalCards, completedAtStart: m.completedAtStart, completedAtEnd: m.completedAtEnd };
+		};
+		const wide = await counts('2026-09-01');
+		const after = await counts('2026-09-20T10:00:01Z');
+		expect(wide).toEqual({ totalCards: 1, completedAtStart: 0, completedAtEnd: 1 });
+		expect(after).toEqual(wide);
 	});
 });
 

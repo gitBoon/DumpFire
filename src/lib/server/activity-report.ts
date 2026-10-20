@@ -28,8 +28,9 @@
  * than an obvious blank.
  */
 
+import { error } from '@sveltejs/kit';
 import { sqlite } from './db';
-import { canViewBoard } from './board-access';
+import { canViewBoard, getAccessibleBoardIds } from './board-access';
 import { milestoneIdsOpenTo } from './milestones';
 import { isCompleteColumnTitle, isHoldColumnTitle } from './card-completion';
 import { ACTIONS, readSource, storedActions } from './logActivity';
@@ -125,12 +126,20 @@ export interface ActivityReport {
 		 * complete" and "completed in this period" is stated rather than inferred.
 		 */
 		completedOutsideWindow: number;
+		/**
+		 * Always 0 since card 2326. It counted the boards with activity in the
+		 * window that the reader could not open, which told them when those
+		 * boards were worked on. Kept because the published schema requires it.
+		 */
 		boardsExcludedForAccess: number;
 	};
 }
 
 export interface ActivityReportOptions {
-	/** Who is asking. Boards they cannot view are excluded from the report. */
+	/**
+	 * Who is asking. Only the boards they can open are read (card 2326), and a
+	 * board named in `boardIds` they cannot open is refused.
+	 */
 	actor: SessionUser;
 	/** Whose activity to report on. Null reports on everyone. */
 	userId?: number | null;
@@ -219,6 +228,39 @@ const NOT_WORK_ON_THE_CARD = storedActions(ACTIONS.dependencyAdded, ACTIONS.depe
 	.join(', ');
 
 /**
+ * Ids written into a query as text, which is how every board list here is
+ * given to SQLite. Each must be a whole number: anything else is a fault in the
+ * caller and is thrown here, before it can reach the query (card 2326's review).
+ */
+function inlineIds(ids: number[]): string {
+	for (const id of ids) {
+		if (!Number.isSafeInteger(id)) throw new Error(`Not an id: ${JSON.stringify(id)}`);
+	}
+	return ids.join(',');
+}
+
+/**
+ * Each board named in `boardIds`, in the order given: `404 Board N not found`
+ * where there is no such board, `403 No access to board N` where the reader
+ * cannot open it. The burndown's words and order (`resolveScope`), for every
+ * caller, administrators included (card 2326). A named board the reader could
+ * not open was answered with an empty report and a count that said whether it
+ * had activity; dropping it without a word would be the hole in the report
+ * this endpoint was built to avoid.
+ */
+function requireReportBoards(actor: SessionUser, ids: number[]): void {
+	// Each once, in the order first named: the first at fault is the answer.
+	const unique = [...new Set(ids)];
+	const found = new Set(
+		(sqlite.prepare(`SELECT id FROM boards WHERE id IN (${inlineIds(unique)})`).all() as { id: number }[]).map((b) => b.id)
+	);
+	for (const id of unique) {
+		if (!found.has(id)) throw error(404, `Board ${id} not found`);
+		if (!canViewBoard(actor, id)) throw error(403, `No access to board ${id}`);
+	}
+}
+
+/**
  * Build the report.
  *
  * One query gathers every candidate card with its board, column, author,
@@ -237,6 +279,11 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 		includeComments = false,
 		commentLimit = 3
 	} = opts;
+
+	// A named board is checked before anything else is read (card 2326), so
+	// every caller of this function gets the check, not only the route.
+	const named = boardIds && boardIds.length > 0 ? [...new Set(boardIds.map((b) => Number(b)))] : null;
+	if (named) requireReportBoards(actor, named);
 
 	const fromBound = boundOf(from, 'lower');
 	const toBound = boundOf(to, 'upper');
@@ -284,12 +331,22 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 		)`
 		: '';
 
-	const boardFilter =
-		boardIds && boardIds.length > 0
-			? `AND col.board_id IN (${boardIds.map((b) => Number(b)).join(',')})`
-			: '';
+	// Only the boards the reader can open are read (card 2326). The rows of the
+	// others were read, dropped after the query and counted, and the count went
+	// up whenever one of those boards was worked on, to the second. `null` is an
+	// administrator, who opens every board: no filter for access. The ids are
+	// numbers, written into the query as the named boards always were.
+	const opens = getAccessibleBoardIds(actor);
+	let scope: number[] | null = named;
+	if (opens !== null) {
+		const open = new Set(opens);
+		scope = (named ?? opens).filter((id) => open.has(id));
+	}
+	const boardFilter = scope === null ? '' : `AND col.board_id IN (${inlineIds(scope)})`;
 
-	const rows = sqlite
+	// Nothing the reader can open: the empty report, with no query to run.
+	const nothingOpen = scope !== null && scope.length === 0;
+	const rows: CardRow[] = nothingOpen ? [] : (sqlite
 		.prepare(
 			`
 		SELECT
@@ -332,17 +389,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 		ORDER BY col.board_id, c.id
 	`
 		)
-		.all({ from: fromBound, to: toBound, userId }) as CardRow[];
-
-	// Access is filtered after the query rather than inside it: board visibility
-	// is a function, not a SQL predicate, and a report that silently included a
-	// board the reader cannot open would leak card titles.
-	const excludedBoards = new Set<number>();
-	const visible = rows.filter((r) => {
-		if (canViewBoard(actor, r.boardId)) return true;
-		excludedBoards.add(r.boardId);
-		return false;
-	});
+		.all({ from: fromBound, to: toBound, userId }) as CardRow[]);
 
 	// A card's milestone is named only to a reader who can open it (card
 	// 2257), by the rule the milestone's own page uses (`canViewMilestone`).
@@ -351,7 +398,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 	// The card's `milestoneId` is its own field and stays.
 	const openMilestones = milestoneIdsOpenTo(
 		actor,
-		visible.flatMap((r) => (r.milestoneId === null ? [] : [r.milestoneId]))
+		rows.flatMap((r) => (r.milestoneId === null ? [] : [r.milestoneId]))
 	);
 
 	const boardMap = new Map<number, ReportBoard>();
@@ -360,7 +407,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 	let missingSummaryCount = 0;
 	let completedOutsideWindow = 0;
 
-	for (const r of visible) {
+	for (const r of rows) {
 		const bucket = bucketOf(r, fromBound, toBound);
 
 		const completedInWindow =
@@ -444,14 +491,14 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 	);
 	totals.boards = boardList.length;
 
-	const cardIds = visible.map((r) => r.id);
+	const cardIds = rows.map((r) => r.id);
 
 	return {
 		period: { from: fromBound, to: toBound, days: daysBetween(fromBound, toBound) },
 		user: userId ? lookupUser(userId) : null,
 		totals,
 		boards: boardList,
-		milestones: milestonesInWindow(cardIds, fromBound, toBound, openMilestones),
+		milestones: milestonesInWindow(cardIds, fromBound, toBound, openMilestones, opens),
 		meta: {
 			generatedAt: new Date().toISOString(),
 			completionBasis: 'completedAt',
@@ -461,7 +508,9 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 			closeReasonAssumedCount,
 			missingSummaryCount,
 			completedOutsideWindow,
-			boardsExcludedForAccess: excludedBoards.size
+			// Always 0 since card 2326: no board the reader cannot open is read,
+			// so there is nothing left out to count.
+			boardsExcludedForAccess: 0
 		}
 	};
 }
@@ -525,12 +574,28 @@ function bucketOf(r: CardRow, from: string, to: string): ActivityBucket {
  * moved into a goal mid-window counts for the whole of it. Stated here rather
  * than quietly assumed.
  *
- * Only the milestones in `open`, the ones the reader may open (card 2257): the
- * list names each, with its totals across every board.
+ * Only the milestones in `open`, the ones the reader may open (card 2257), and
+ * each counted over its cards on the boards in `opens`, the ones the reader can
+ * open (`null`, an administrator: every board), as the milestone's burndown
+ * counts it. A card moved off a board keeps that board's milestone (card
+ * 2129's case), so a goal can hold a card of a board the reader cannot open:
+ * counted, moving `from` across its completion told them to the second when it
+ * was completed (card 2326's review).
  */
-function milestonesInWindow(cardIds: number[], from: string, to: string, open: Set<number>): ReportMilestone[] {
+function milestonesInWindow(
+	cardIds: number[],
+	from: string,
+	to: string,
+	open: Set<number>,
+	opens: number[] | null
+): ReportMilestone[] {
 	if (cardIds.length === 0) return [];
-	const ids = cardIds.map((n) => Number(n)).join(',');
+	const ids = inlineIds(cardIds.map((n) => Number(n)));
+	// `IN (NULL)` matches no board, for a reader who can open none.
+	const onOpenBoards =
+		opens === null
+			? ''
+			: `JOIN columns col ON col.id = c.column_id AND col.board_id IN (${opens.length ? inlineIds(opens) : 'NULL'})`;
 
 	const rows = sqlite
 		.prepare(
@@ -542,6 +607,7 @@ function milestonesInWindow(cardIds: number[], from: string, to: string, open: S
 			SUM(CASE WHEN c.completed_at IS NOT NULL AND c.completed_at <= @to   THEN 1 ELSE 0 END) AS completedAtEnd
 		FROM milestones m
 		JOIN cards c ON c.milestone_id = m.id AND c.archived_at IS NULL
+		${onOpenBoards}
 		WHERE m.id IN (SELECT DISTINCT milestone_id FROM cards
 		                WHERE id IN (${ids}) AND milestone_id IS NOT NULL)
 		GROUP BY m.id
