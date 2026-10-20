@@ -79,6 +79,7 @@ import {
 	uploadNotRead
 } from '$lib/api';
 import { mayManageAccount } from '$lib/account-rule';
+import { NO_ANSWER as ADMIN_NO_ANSWER, sent } from '$lib/admin/send';
 import * as bulkActions from '$lib/board/bulk-actions';
 import * as cardActions from '$lib/board/card-actions';
 import * as dndHandlers from '$lib/board/dnd-handlers';
@@ -748,16 +749,88 @@ function blocksAround(source: string, index: number): { condition: string; inEls
 	return stack;
 }
 
+// Card 2281, slice C1a: the admin page's backup half is in components of its
+// own under src/lib/components/admin, which the page draws. What was read
+// from the page is read from the file that now holds it, and what is said to
+// be gone is looked for in the page and in every one of them.
+const ADMIN_PAGE = 'src/routes/admin/+page.svelte';
+
+/** The components the admin page is split into. */
+function adminComponents(): string[] {
+	return (readdirSync(join(ROOT, 'src/lib/components/admin')) as string[])
+		.filter((name) => name.endsWith('.svelte'))
+		.map((name) => `src/lib/components/admin/${name}`);
+}
+
+/** The modules the admin page and its components share (`sent`, the formatters). */
+function adminModules(): string[] {
+	return (readdirSync(join(ROOT, 'src/lib/admin')) as string[]).filter((name) => name.endsWith('.ts')).map((name) => `src/lib/admin/${name}`);
+}
+
+/** The admin page and each of its components, with its source: the files with markup and a script. */
+function adminSvelteSources(): { file: string; source: string }[] {
+	return [ADMIN_PAGE, ...adminComponents()].map((file) => ({ file, source: readFileSync(join(ROOT, file), 'utf8') }));
+}
+
+/** The admin page, its components and the modules they share, with each one's source: everywhere a thing said to be gone could be. */
+function adminSources(): { file: string; source: string }[] {
+	return [...adminSvelteSources(), ...adminModules().map((file) => ({ file, source: readFileSync(join(ROOT, file), 'utf8') }))];
+}
+
+/**
+ * Whether an admin component is drawn for the superadmin only: each of its
+ * tags (the destination form has two), in the page or in the component that
+ * draws it, followed up to the page, is inside the page's `{#if isSuperadmin}`
+ * and not in its `{:else}`.
+ */
+function drawnForSuperadminOnly(component: string): boolean {
+	const name = component.slice(component.lastIndexOf('/') + 1, -'.svelte'.length);
+	const tags = adminSvelteSources().flatMap(({ file, source }) =>
+		[...source.matchAll(new RegExp(`<${name}[\\s/>]`, 'g'))].map((tag) => ({ file, at: tag.index! }))
+	);
+	expect(tags.length, `the tags of ${name}`).toBeGreaterThan(0);
+	return tags.every(({ file, at }) =>
+		file === ADMIN_PAGE
+			? blocksAround(readFileSync(join(ROOT, ADMIN_PAGE), 'utf8'), at).some((block) => block.condition === 'isSuperadmin' && !block.inElse)
+			: drawnForSuperadminOnly(file)
+	);
+}
+
 describe('the admin page, src/routes/admin/+page.svelte', () => {
-	const file = 'src/routes/admin/+page.svelte';
+	const file = ADMIN_PAGE;
 	const source = readFileSync(join(ROOT, file), 'utf8');
 	const page = scriptOf(file);
 	const markup = source.slice(source.indexOf('</script>'));
 	const from = source.indexOf('</script>');
+	// The export, the import and its dialog, and the scheduled backups (card 2281, slice C1a).
+	const RESTORE = 'src/lib/components/admin/BackupRestorePanel.svelte';
+	const SCHEDULED = 'src/lib/components/admin/ScheduledBackupsPanel.svelte';
+	const restore = scriptOf(RESTORE);
+	const restoreSource = readFileSync(join(ROOT, RESTORE), 'utf8');
+	const restoreMarkup = restoreSource.slice(restoreSource.indexOf('</script>'));
+	const scheduled = scriptOf(SCHEDULED);
+	const scheduledSource = readFileSync(join(ROOT, SCHEDULED), 'utf8');
+	const scheduledMarkup = scheduledSource.slice(scheduledSource.indexOf('</script>'));
+	/** The page, its components and their modules, where something said to be gone could be. */
+	const everywhere = adminSources()
+		.map((admin) => admin.source)
+		.join('\n');
 
-	/** Whether the one place `text` is in the markup is shown to the superadmin only. */
+	/**
+	 * Whether the one place `text` is in the markup, of the page or of one of
+	 * its components, is shown to the superadmin only: in the page, inside its
+	 * `{#if isSuperadmin}`; in a component, one the page draws there.
+	 */
 	const forSuperadminOnly = (text: string) => {
-		expect(markup.split(text), text).toHaveLength(2);
+		const holders = adminSources().filter((admin) => admin.source.includes(text));
+		expect(
+			holders.map((admin) => admin.file),
+			text
+		).toHaveLength(1);
+		const [holder] = holders;
+		const held = holder.source.slice(holder.source.indexOf('</script>'));
+		expect(held.split(text), text).toHaveLength(2);
+		if (holder.file !== ADMIN_PAGE) return drawnForSuperadminOnly(holder.file);
 		return blocksAround(source, from + markup.indexOf(text)).some((block) => block.condition === 'isSuperadmin' && !block.inElse);
 	};
 
@@ -787,6 +860,13 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		expect(forSuperadminOnly(text)).toBe(false);
 	});
 
+	// Card 2281, slice C1a: each panel and each part of one is drawn only
+	// where the page draws for the superadmin, every place it is drawn (the
+	// destination form is drawn twice, for an edit and for an add).
+	it.each(adminComponents())('draws %s for the superadmin and for nobody else', (component) => {
+		expect(drawnForSuperadminOnly(component)).toBe(true);
+	});
+
 	it('tells an administrator, in their place, whose they are and who that is', () => {
 		const line = 'belong to the superadmin, <strong>{superadminName}</strong>';
 		expect(markup.split(line)).toHaveLength(2);
@@ -800,29 +880,41 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	});
 
 	it('asks the server for none of it when it opens, unless it is the superadmin who opened it', () => {
-		// What is asked for as the page opens is asked in an `$effect`. Each of
-		// the three that fetch what is the superadmin's begins by leaving.
-		const LOADS = ['loadBackupConfig', 'loadAppUrl', 'loadSmtpConfig'];
-		const effects = page.statements.filter(
-			(statement) => ts.isExpressionStatement(statement) && statement.getText().startsWith('$effect(')
-		);
-		const loading = effects.filter((effect) => LOADS.some((load) => callsOf(effect, load).length > 0));
+		// What is asked for as the page opens is asked in an `$effect`. The
+		// mail settings in the page's, which begins by leaving; the backup
+		// settings and the App URL in their panels' own (card 2281, slice C1a),
+		// which the page draws for the superadmin alone.
+		const LOADS: [file: string, load: string][] = [
+			[SCHEDULED, 'loadBackupConfig'],
+			['src/lib/components/admin/AppUrlPanel.svelte', 'loadAppUrl'],
+			[ADMIN_PAGE, 'loadSmtpConfig']
+		];
+		const effectsOf = (tree: ts.SourceFile) =>
+			tree.statements.filter((statement) => ts.isExpressionStatement(statement) && statement.getText().startsWith('$effect('));
+		const bodyOf = (effect: ts.Statement) => ((((effect as ts.ExpressionStatement).expression as ts.CallExpression).arguments[0] as ts.ArrowFunction).body as ts.Block);
 
-		expect(LOADS.flatMap((load) => effects.flatMap((effect) => callsOf(effect, load)))).toHaveLength(3);
-		for (const effect of loading) {
-			const call = (effect as ts.ExpressionStatement).expression as ts.CallExpression;
-			const body = (call.arguments[0] as ts.ArrowFunction).body as ts.Block;
-			expect(body.statements[0].getText()).toBe('if (!isSuperadmin) return;');
+		// Each called once in all, in an effect, and none in the page's script but the mail settings.
+		expect(LOADS.flatMap(([, load]) => adminSvelteSources().flatMap((admin) => effectsOf(scriptOf(admin.file)).flatMap((effect) => callsOf(effect, load))))).toHaveLength(3);
+		for (const load of ['loadBackupConfig', 'loadAppUrl']) expect(callsOf(page, load), load).toEqual([]);
+		for (const [held, load] of LOADS) {
+			const tree = scriptOf(held);
+			const loading = effectsOf(tree).filter((effect) => callsOf(effect, load).length > 0);
+			expect(loading, load).toHaveLength(1);
+			if (held === ADMIN_PAGE) expect(bodyOf(loading[0]).statements[0].getText()).toBe('if (!isSuperadmin) return;');
+			else {
+				expect(bodyOf(loading[0]).statements.map((statement) => statement.getText())).toEqual([`${load}();`]);
+				expect(drawnForSuperadminOnly(held), held).toBe(true);
+			}
+			// And none of the three is called as the script runs, outside a function.
+			const atTheTop = tree.statements.filter((statement) => ts.isExpressionStatement(statement) && !effectsOf(tree).includes(statement));
+			expect(atTheTop.flatMap((statement) => callsOf(statement, load)), load).toEqual([]);
+			// Each fetches a route that is the superadmin's.
+			expect(functionNamed(tree, load).getText()).toMatch(/fetch\('\/api\/admin\/(smtp|backup)'\)/);
 		}
-		// And none of the three is called as the script runs, outside a function.
-		const atTheTop = page.statements.filter((statement) => ts.isExpressionStatement(statement) && !effects.includes(statement));
-		expect(LOADS.flatMap((load) => atTheTop.flatMap((statement) => callsOf(statement, load)))).toEqual([]);
-		// Each fetches a route that is the superadmin's.
-		for (const load of LOADS) expect(functionNamed(page, load).getText()).toMatch(/fetch\('\/api\/admin\/(smtp|backup)'\)/);
 	});
 
 	it('saves no file for an export that was refused, and shows the refusal as a failure', () => {
-		const exporting = functionNamed(page, 'exportDatabase');
+		const exporting = functionNamed(restore, 'exportDatabase');
 		const text = exporting.getText();
 
 		// The answer is looked at before it is read as the file.
@@ -831,7 +923,7 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		expect(refusal).toBeGreaterThan(-1);
 		expect(file).toBeGreaterThan(refusal);
 		// And what is done about it is to say so and stop.
-		expect(branches(page, 'exportDatabase', 'failureMessage')).toEqual(['failed']);
+		expect(branches(restore, 'exportDatabase', 'failureMessage')).toEqual(['failed']);
 		const [asked] = callsOf(exporting, 'failureMessage');
 		expect(branchOf(asked)).toBe('failed');
 		const stop = text.slice(refusal, file);
@@ -840,20 +932,20 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	});
 
 	it('says which of the four things went wrong with an import, and no longer blames the file for all of them', () => {
-		const importing = functionNamed(page, 'handleFileSelected');
+		const importing = functionNamed(restore, 'handleFileSelected');
 
 		for (const callee of ['uploadNotRead', 'uploadNoAnswer', 'uploadFailure']) {
 			expect(callsOf(importing, callee), callee).toHaveLength(1);
 		}
 		expect(callsOf(importing, 'res.json')).toEqual([]);
-		expect(source).not.toContain("'Invalid backup file'");
+		expect(everywhere).not.toContain("'Invalid backup file'");
 		// A proxy's refusal and DumpFire's own 413 are both handed to uploadFailure.
 		expect(importing.getText()).toContain('if (result === null || res.status === 413) {');
 		expect(finallyBlocks(importing).some((block) => block.includes('importing = false;'))).toBe(true);
 	});
 
 	it('says an import that failed in the report under the button, and not in a toast as well', () => {
-		const importing = functionNamed(page, 'handleFileSelected');
+		const importing = functionNamed(restore, 'handleFileSelected');
 		const failing = callsOf(importing, 'showToast').filter((call) => call.arguments[1]?.getText() === "'error'");
 
 		// Each failure the report shows is set with no toast beside it: the
@@ -871,33 +963,34 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 
 	it('offers no second removal of a backup destination while the first is being saved', () => {
 		// Two quick removals, the first refused, put the first's list back over the second's.
-		const button = markup.split('\n').filter((line) => line.includes('removeDestination(dest.name)'));
+		const button = everywhere.split('\n').filter((line) => line.includes('removeDestination(dest.name)'));
 		expect(button).toHaveLength(1);
+		expect(scheduledMarkup).toContain(button[0]);
 		expect(button[0]).toContain('disabled={backupSaving}');
 		// And the flag is up for the whole of the save a removal makes.
-		expect(callsOf(functionNamed(page, 'removeDestination'), 'saveBackupConfig')).toHaveLength(1);
-		const saving = functionNamed(page, 'saveBackupConfig');
+		expect(callsOf(functionNamed(scheduled, 'removeDestination'), 'saveBackupConfig')).toHaveLength(1);
+		const saving = functionNamed(scheduled, 'saveBackupConfig');
 		expect(saving.body!.statements[0].getText()).toBe('backupSaving = true;');
 		expect(finallyBlocks(saving)).toEqual(['{ backupSaving = false; }']);
 	});
 
 	it('knows a .db backup by the ending of its name in any case', () => {
-		const said = functionNamed(page, 'handleFileSelected').getText().replace(/\s+/g, ' ');
+		const said = functionNamed(restore, 'handleFileSelected').getText().replace(/\s+/g, ' ');
 
 		expect(said).toContain('const named = file.name.toLowerCase();');
 		expect(said).toContain("const isDbFile = named.endsWith('.db') || named.endsWith('.sqlite') || named.endsWith('.sqlite3');");
 	});
 
 	it('says in the import dialog that everybody is signed out, and that a backup with no superadmin is refused', () => {
-		const dialog = markup.slice(markup.indexOf('<h2>Import Database</h2>'));
+		const dialog = restoreMarkup.slice(restoreMarkup.indexOf('<h2>Import Database</h2>'));
 
 		expect(dialog).toContain('Everybody is signed out, you included: no session is restored, whatever the backup holds');
 		expect(dialog).toContain('A backup with users and no superadmin among them is refused.');
-		expect(source).not.toContain('unless the backup holds your current session');
+		expect(everywhere).not.toContain('unless the backup holds your current session');
 	});
 
 	it('says in the import dialog that a backup holds no secret, and no longer that the outside comes back exactly (card 2169)', () => {
-		const dialog = markup.slice(markup.indexOf('<h2>Import Database</h2>'));
+		const dialog = restoreMarkup.slice(restoreMarkup.indexOf('<h2>Import Database</h2>'));
 		const asItIs = dialog.slice(dialog.indexOf('<strong>Restore everything as it is</strong>'));
 		const said = /<span class="import-choice-desc">([^<]*)<\/span>/.exec(asItIs)?.[1];
 
@@ -907,11 +1000,11 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 				'the ones this server has for the same accounts are kept, and the result lists any to enter again; a ' +
 				'webhook that had a secret stays off until it is set.'
 		);
-		expect(source).not.toContain('come back exactly as the backup has them');
+		expect(everywhere).not.toContain('come back exactly as the backup has them');
 	});
 
 	it('shows what an import kept from this server and what is to enter again, each a line after the working copy’s (card 2169)', () => {
-		const js = ts.transpileModule(functionNamed(page, 'accountOf').getText(), {
+		const js = ts.transpileModule(functionNamed(restore, 'accountOf').getText(), {
 			compilerOptions: { target: ts.ScriptTarget.ES2022 }
 		}).outputText;
 		const accountOf = new Function('count', `${js}\nreturn accountOf;`)((n: number) => String(n)) as (
@@ -929,7 +1022,7 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		expect(quiet.secretsKept).toBeUndefined();
 		expect(quiet.secretsToEnter).toBeUndefined();
 
-		const report = markup.slice(markup.indexOf('{#if importReport}'));
+		const report = restoreMarkup.slice(restoreMarkup.indexOf('{#if importReport}'));
 		const lines = [
 			'{#if importReport.workingCopy}',
 			'{#if importReport.secretsKept}\n',
@@ -945,7 +1038,7 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	});
 
 	it('shows how many request links an import replaced, a line beside the files put back (card 2158, the review’s O1)', () => {
-		const js = ts.transpileModule(functionNamed(page, 'accountOf').getText(), {
+		const js = ts.transpileModule(functionNamed(restore, 'accountOf').getText(), {
 			compilerOptions: { target: ts.ScriptTarget.ES2022 }
 		}).outputText;
 		const accountOf = new Function('count', `${js}\nreturn accountOf;`)((n: number) => String(n)) as (
@@ -963,7 +1056,7 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		expect(accountOf({ restored: {}, requestLinksReplaced: 0 }).requestLinks).toBeUndefined();
 		expect(accountOf({ restored: {} }).requestLinks).toBeUndefined();
 
-		const report = markup.slice(markup.indexOf('{#if importReport}')).replace(/\r\n/g, '\n');
+		const report = restoreMarkup.slice(restoreMarkup.indexOf('{#if importReport}')).replace(/\r\n/g, '\n');
 		const lines = ['{#if importReport.putBack}', '{#if importReport.requestLinks}', '{#if importReport.workingCopy}'].map((line) =>
 			report.indexOf(line)
 		);
@@ -2274,8 +2367,12 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'addTeamMember', reads: 'failureMessage', done: ['addMemberUserId = null', "showToast('Member added')"] },
 		{ name: 'removeTeamMember', reads: 'deleteFailure', done: ["showToast('Member removed')"] }
 	],
-	'src/routes/admin/+page.svelte': [
-		{ name: 'saveAppUrl', reads: 'sent', done: ["showToast('App URL saved')"] },
+	// The admin page's backup half, in components of its own (card 2281, slice C1a).
+	'src/lib/components/admin/AppUrlPanel.svelte': [{ name: 'saveAppUrl', reads: 'sent', done: ["showToast('App URL saved')"] }],
+	// Its one write, the import, is held by the tests of its own above.
+	'src/lib/components/admin/BackupRestorePanel.svelte': [],
+	'src/lib/components/admin/GDriveConnectModal.svelte': [{ name: 'exchangeGDriveCode', reads: 'sent', done: ['await loadBackupConfig()'] }],
+	'src/lib/components/admin/ScheduledBackupsPanel.svelte': [
 		{ name: 'saveBackupConfig', reads: 'sent', done: ["showToast('Backup settings saved')"] },
 		// The card 2250 review's M3 and S3: once saved, the list is read again
 		// from the server, so that it holds the masked secrets and not one typed,
@@ -2301,8 +2398,9 @@ const WRITES: Record<string, Write[]> = {
 			putsBack: ['backupDestinations = was'],
 			done: ['await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx])']
 		},
-		{ name: 'runManualBackup', reads: 'sent', done: ['await loadBackupConfig()'] },
-		{ name: 'exchangeGDriveCode', reads: 'sent', done: ['await loadBackupConfig()'] },
+		{ name: 'runManualBackup', reads: 'sent', done: ['await loadBackupConfig()'] }
+	],
+	'src/routes/admin/+page.svelte': [
 		{ name: 'deleteBoard', reads: 'sent', done: ["showToast('Board deleted')"] },
 		{ name: 'clearBoardCards', reads: 'sent', done: ["showToast('All cards cleared from board')"] },
 		{ name: 'clearBoardCategories', reads: 'sent', done: ["showToast('All categories cleared from board')"] },
@@ -2426,7 +2524,7 @@ const WRITES: Record<string, Write[]> = {
 
 /** Writes in the files above that have tests of their own above, by file. */
 const TESTED_ABOVE: Record<string, string[]> = {
-	'src/routes/admin/+page.svelte': ['handleFileSelected'],
+	'src/lib/components/admin/BackupRestorePanel.svelte': ['handleFileSelected'],
 	'src/lib/components/card/CardAttachments.svelte': ['uploadFile']
 };
 
@@ -2470,6 +2568,23 @@ describe('every write of the seven pages of card 2109, of the label picker, and 
 				return found;
 			});
 		const sending = filesUnder('src/lib/components/card', '.svelte').filter(sends);
+		expect(sending.length).toBeGreaterThan(0);
+		expect(sending.filter((file) => !(file in WRITES))).toEqual([]);
+	});
+
+	// Card 2281, slice C1a: the same for the admin page's components.
+	it('has every component of the admin page that sends a write, src/lib/components/admin/', () => {
+		const sends = (file: string) =>
+			scriptOf(file).statements.some((statement) => {
+				let found = false;
+				const visit = (node: ts.Node) => {
+					if (ts.isCallExpression(node) && writeOf(node, writes)) found = true;
+					ts.forEachChild(node, visit);
+				};
+				visit(statement);
+				return found;
+			});
+		const sending = adminComponents().filter(sends);
 		expect(sending.length).toBeGreaterThan(0);
 		expect(sending.filter((file) => !(file in WRITES))).toEqual([]);
 	});
@@ -2563,7 +2678,13 @@ describe('no page throws away the answer to a write', () => {
 	// `board-actions.ts`, had no caller and went.
 	it('finds none', () => {
 		const writes = apiWrites();
-		const files = [...filesUnder('src/routes', '.svelte'), ...filesUnder('src/lib/components', '.svelte'), ...filesUnder('src/lib/board', '.ts')];
+		// With the admin page's modules (card 2281, slice C1a).
+		const files = [
+			...filesUnder('src/routes', '.svelte'),
+			...filesUnder('src/lib/components', '.svelte'),
+			...filesUnder('src/lib/board', '.ts'),
+			...filesUnder('src/lib/admin', '.ts')
+		];
 		const found = files.flatMap((file) => discardedIn(file, readFileSync(join(ROOT, file), 'utf8'), writes));
 
 		expect(found.sort()).toEqual([]);
@@ -2752,8 +2873,40 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			'src/lib/components/SubtaskModal.svelte',
 			'src/routes/account/+page.svelte'
 		];
-		if (ownLine.includes(file)) expect(checked).toEqual([]);
+		// The App URL panel says a refusal only through `sent`, which is held to it below (card 2281, slice C1a).
+		const throughSent = ['src/lib/components/admin/AppUrlPanel.svelte'];
+		if (ownLine.includes(file) || throughSent.includes(file)) expect(checked).toEqual([]);
 		else expect(checked.length).toBeGreaterThan(0);
+	});
+
+	// Card 2281, slice C1a: the admin page's `sent`, which says every refusal
+	// of the page and its panels that send through it, is a module of its own.
+	it('src/lib/admin/send.ts gives each failure that follows a request the navigation the request was started in', () => {
+		const file = 'src/lib/admin/send.ts';
+		const [{ tree }] = codeOf(file, readFileSync(join(ROOT, file), 'utf8'));
+		const sending = tree.statements.find((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === 'sent')!;
+		const failures = callsOf(sending, 'showToast').filter((call) => call.arguments[1]?.getText() === "'error'");
+
+		expect(failures).toHaveLength(2);
+		for (const call of failures) expect(call.arguments[2]?.getText(), call.getText()).toBe('started');
+		// Read as the request starts, before its first `await`.
+		expect(sending.body!.statements[0].getText()).toBe('const started = toasts.navigation();');
+	});
+
+	it('src/lib/admin/send.ts sent says the server’s words for a refusal, the fallback for one without words, and that it is not known for no answer', async () => {
+		const fallback = 'Failed to save App URL';
+		const refused = await sent(async () => Response.json({ message: 'Superadmin only' }, { status: 403 }), fallback);
+		const wordless = await sent(async () => new Response('<html><body>502 Bad Gateway</body></html>', { status: 502, headers: { 'content-type': 'text/html' } }), fallback);
+		const unanswered = await sent(async () => {
+			throw new TypeError('Failed to fetch');
+		}, fallback);
+		const done = await sent(async () => Response.json({ ok: true }), fallback);
+
+		// Null for each that was not done, so that the caller changes nothing; the answer for one that was.
+		expect([refused, wordless, unanswered]).toEqual([null, null, null]);
+		expect(done?.status).toBe(200);
+		expect(shown()).toEqual(['error: Superadmin only', `error: ${fallback}`, `error: ${ADMIN_NO_ANSWER}`]);
+		expect(ADMIN_NO_ANSWER).toBe('No answer from the server. It is not known whether this was done.');
 	});
 
 	it('is shown above every dialog, which a refusal is shown beside', () => {
@@ -2766,6 +2919,8 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			// Its sections' dropdowns and template dialogs (card 2280, slice B4).
 			...filesUnder('src/lib/components/card', '.svelte'),
 			'src/lib/components/ConfirmModal.svelte',
+			// The admin page's panels and their dialogs (card 2281, slice C1a).
+			...filesUnder('src/lib/components/admin', '.svelte'),
 			...Object.keys(WRITES).filter((file) => file.startsWith('src/routes/'))
 		]) {
 			for (const below of zIndexes(dialog)) expect(toast, dialog).toBeGreaterThan(below);
@@ -2787,10 +2942,31 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 		}
 	);
 
-	it.each(['src/routes/admin/+page.svelte', 'src/routes/teams/+page.svelte'])('%s keeps showToast, as one line that adds to the store', (file) => {
+	// Card 2281, slice C1a: and the admin page's panels show theirs through the page's.
+	it.each(adminComponents())('%s shows its toasts through the admin page’s shared one, and no toast of its own', (file) => {
+		const source = readFileSync(join(ROOT, file), 'utf8');
+
+		expect(source).not.toContain('<Toast');
+		expect(source).not.toContain('toast-notification');
+		expect(source).not.toMatch(/setTimeout\(\(\) => \(toast = ''\)/);
+	});
+
+	it.each(['src/routes/teams/+page.svelte'])('%s keeps showToast, as one line that adds to the store', (file) => {
 		const body = functionNamed(scriptOf(file), 'showToast').body!;
 
 		expect(body.statements.map((statement) => statement.getText())).toEqual(['toasts.add(msg, type, started);']);
+	});
+
+	// Card 2281, slice C1a: the admin page's is in src/lib/admin/send.ts, which the page and its panels import.
+	it('keeps the admin page’s showToast, as one line that adds to the store, in src/lib/admin/send.ts, and no other in the page or its panels', () => {
+		const send = ts.createSourceFile('send.ts', readFileSync(join(ROOT, 'src/lib/admin/send.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+
+		expect(functionNamed(send, 'showToast').body!.statements.map((statement) => statement.getText())).toEqual(['toasts.add(msg, type, started);']);
+		for (const { file, source } of adminSources().filter((admin) => admin.file !== 'src/lib/admin/send.ts')) {
+			const tree = file.endsWith('.svelte') ? scriptOf(file, source) : ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+			expect(tree.statements.some((statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === 'showToast'), file).toBe(false);
+			if (callsOf(tree, 'showToast').length > 0) expect(source, file).toMatch(/import \{[^}]*\bshowToast\b[^}]*\} from '\$lib\/admin\/send';/);
+		}
 	});
 
 	it('is never a dialog box: no alert, which would hold the page while a 401 sends it to the login page', () => {
@@ -2798,7 +2974,9 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			...filesUnder('src/routes', '.svelte'),
 			...filesUnder('src/routes', '.ts'),
 			...filesUnder('src/lib/components', '.svelte'),
-			...filesUnder('src/lib/board', '.ts')
+			...filesUnder('src/lib/board', '.ts'),
+			// The admin page's `sent` and formatters (card 2281, slice C1a).
+			...filesUnder('src/lib/admin', '.ts')
 		];
 		const alerting = files.filter((file) => /\balert\(/.test(readFileSync(join(ROOT, file), 'utf8')));
 
@@ -2814,6 +2992,15 @@ describe('a page whose session has ended, for the seven pages of card 2109', () 
 		// The one fetch the sign-out watch replaces (src/hooks.client.ts).
 		expect(script).not.toMatch(/(window|globalThis|self)\.fetch\b/);
 		// The watch sends the page to the login page; the page only says what failed.
+		expect(script).not.toMatch(/\b401\b/);
+		expect(script).not.toMatch(/['"`]\/login/);
+	});
+
+	// Card 2281, slice C1a: the admin page and its panels send through `sent`, which is a module of its own.
+	it.each(filesUnder('src/lib/admin', '.ts'))('%s sends through the global fetch, and does nothing of its own about a 401', (file) => {
+		const script = readFileSync(join(ROOT, file), 'utf8');
+
+		expect(script).not.toMatch(/(window|globalThis|self)\.fetch\b/);
 		expect(script).not.toMatch(/\b401\b/);
 		expect(script).not.toMatch(/['"`]\/login/);
 	});
@@ -4480,13 +4667,14 @@ describe('the admin page’s invite whose mail was not sent, src/routes/admin/+p
 	});
 });
 
-describe('the Google Drive Connect’s paste box, src/routes/admin/+page.svelte (card 2251)', () => {
-	const file = 'src/routes/admin/+page.svelte';
+// Card 2281, slice C1a: the box and its script moved from the admin page into a component of their own.
+describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriveConnectModal.svelte (card 2251)', () => {
+	const file = 'src/lib/components/admin/GDriveConnectModal.svelte';
 	const source = readFileSync(join(ROOT, file), 'utf8');
 	const tree = scriptOf(file);
-	// The page is CRLF in the working copy: lines are joined with \n to read the markup.
+	// Lines are joined with \n to read the markup, as for the CRLF page it came from.
 	const markup = source.slice(source.indexOf('</script>')).replace(/\r\n/g, '\n');
-	const box = markup.slice(markup.indexOf('<!-- Google Drive OAuth code entry -->'), markup.indexOf('<!-- Toast -->'));
+	const box = markup.slice(markup.indexOf('<!-- Google Drive OAuth code entry -->'));
 	const exchange = () => functionNamed(tree, 'exchangeGDriveCode');
 
 	/** Decision 5's words, and R12's for an address Google ended with an error. */
@@ -4553,12 +4741,14 @@ describe('the Google Drive Connect’s paste box, src/routes/admin/+page.svelte 
 	 * whose answers the test gives one at a time, window.open and the toast.
 	 * Cancel is what the box's Cancel button does. The exchange (✅ Connect)
 	 * is compiled with them, with `sent` a stand-in whose answers the test
-	 * gives in `posts`.
+	 * gives in `posts`. `loadBackupConfig` is the Scheduled Backups panel's,
+	 * handed to the box; connectGDriveOAuth is exported for the panel's 🔗
+	 * Connect, and run here without its `export` (card 2281, slice C1a).
 	 */
 	function connecting(opened: unknown = {}) {
 		const declared = (name: string) => tree.statements.some((s) => ts.isFunctionDeclaration(s) && s.name?.text === name);
 		const names = ['isGoogleConsent', 'connectGDriveOAuth', 'closeGDriveConnect', 'exchangeGDriveCode'].filter(declared);
-		const js = ts.transpileModule(names.map((name) => functionNamed(tree, name).getText()).join('\n'), {
+		const js = ts.transpileModule(names.map((name) => functionNamed(tree, name).getText().replace(/^export /, '')).join('\n'), {
 			compilerOptions: { target: ts.ScriptTarget.ES2022 }
 		}).outputText;
 		const answers: Array<(res: Response) => void> = [];
@@ -4834,15 +5024,28 @@ describe('the Google Drive Connect’s paste box, src/routes/admin/+page.svelte 
 	});
 });
 
-describe('the SFTP host key on the admin page, src/routes/admin/+page.svelte (card 2250)', () => {
-	const file = 'src/routes/admin/+page.svelte';
+// Card 2281, slice C1a: the Scheduled Backups panel, with the destinations'
+// script, and the add and edit forms are components of the admin page.
+describe('the SFTP host key on the admin page, src/lib/components/admin/ScheduledBackupsPanel.svelte and DestinationForm.svelte (card 2250)', () => {
+	const file = 'src/lib/components/admin/ScheduledBackupsPanel.svelte';
 	const source = readFileSync(join(ROOT, file), 'utf8');
 	const tree = scriptOf(file);
-	// The page is CRLF in the working copy: lines are joined with \n to read the markup.
-	const markup = source.slice(source.indexOf('</script>')).replace(/\r\n/g, '\n');
-	const row = markup.slice(markup.indexOf('{#each backupDestinations as dest'), markup.indexOf('<!-- Inline edit form -->'));
-	const editForm = markup.slice(markup.indexOf('<!-- Inline edit form -->'), markup.indexOf('<!-- Add Destination Form -->'));
-	const addForm = markup.slice(markup.indexOf('<!-- Add Destination Form -->'), markup.indexOf('<!-- Backup History -->'));
+	const panel = source.slice(source.indexOf('</script>'));
+	const formSource = readFileSync(join(ROOT, 'src/lib/components/admin/DestinationForm.svelte'), 'utf8');
+	const form = formSource.slice(formSource.indexOf('</script>'));
+	// The markup of the page and of every one of its components, where a box or a
+	// button could be; the page is CRLF in the working copy: lines are joined with \n.
+	const markup = adminSvelteSources()
+		.map((admin) => admin.source.slice(admin.source.indexOf('</script>')))
+		.join('\n')
+		.replace(/\r\n/g, '\n');
+	/** The page, its components and their modules whole, where something said to be gone could be. */
+	const everywhere = adminSources()
+		.map((admin) => admin.source)
+		.join('\n');
+	const row = panel.slice(panel.indexOf('{#each backupDestinations as dest'), panel.indexOf('<!-- Inline edit form -->'));
+	const editForm = form.slice(form.indexOf('<!-- Inline edit form -->'), form.indexOf('<!-- Add Destination Form -->'));
+	const addForm = form.slice(form.indexOf('<!-- Add Destination Form -->'));
 
 	/** R5's placeholder for the Host key box, in both forms. */
 	const PLACEHOLDER = 'Paste the line ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub prints, or leave it empty and press Test';
@@ -5170,7 +5373,7 @@ describe('the SFTP host key on the admin page, src/routes/admin/+page.svelte (ca
 		expect(testButton).not.toBeNull();
 		expect(testButton![1]).toBe('byName(testsInFlight, dest.name) !== undefined');
 		expect(testButton![2]).toBe("byName(testsInFlight, dest.name) !== undefined ? '⏳' : '🧪'");
-		expect(source).not.toContain('testingDest');
+		expect(everywhere).not.toContain('testingDest');
 		expect(tree.getText()).toContain('let testsInFlight = $state<Record<string, number>>({});');
 	});
 

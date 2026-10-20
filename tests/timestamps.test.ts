@@ -1354,12 +1354,12 @@ function bodyOf(source: string, name: string): string {
 	throw new Error(`function ${name} does not close`);
 }
 
-/** Every page and component, and the utilities they share. */
+/** Every page and component, and the utilities they share (the admin page's among them, card 2281). */
 function pageSources(): string[] {
 	const root = join(process.cwd(), 'src');
 	return (readdirSync(root, { recursive: true }) as string[])
 		.map((file) => file.split('\\').join('/'))
-		.filter((file) => file.endsWith('.svelte') || /^lib\/utils\/[^/]+\.ts$/.test(file))
+		.filter((file) => file.endsWith('.svelte') || /^lib\/(utils|admin)\/[^/]+\.ts$/.test(file))
 		.map((file) => `src/${file}`);
 }
 
@@ -1370,7 +1370,8 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 	const HELPERS: [file: string, name: string][] = [
 		['src/routes/+page.svelte', 'timeAgo'],
 		['src/routes/account/+page.svelte', 'formatDate'],
-		['src/routes/admin/+page.svelte', 'formatRelativeTime'],
+		// The admin page's backup history (card 2281, slice C1a: moved to a module of its own).
+		['src/lib/admin/format.ts', 'formatRelativeTime'],
 		['src/routes/archived/+page.svelte', 'formatArchiveDate'],
 		['src/routes/audit/+page.svelte', 'fmtTime'],
 		['src/routes/audit/+page.svelte', 'fmtDateTime'],

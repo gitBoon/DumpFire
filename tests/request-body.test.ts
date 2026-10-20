@@ -3495,7 +3495,9 @@ describe('the review fixes to card 2117’s slices 2 to 5 (version 1.7)', () => 
 		});
 
 		it('sends no retention for a box cleared, which bound null, where null is refused', () => {
-			expect(source('src/routes/admin/+page.svelte')).toContain('retention: backupRetention ?? undefined,');
+			// The Scheduled Backups panel, moved from the admin page (card 2281, slice C1a).
+			expect(source('src/lib/components/admin/ScheduledBackupsPanel.svelte')).toContain('retention: backupRetention ?? undefined,');
+			expect(source('src/routes/admin/+page.svelte')).not.toContain('backupRetention');
 		});
 
 		it('holds what the card window and the board’s menu make from a card’s title to the limits of what they make', () => {
