@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.69
+version: 1.70
 status: As-Built
 date: 2026-10-20
 tags:
@@ -1045,6 +1045,13 @@ new; these answers and fields are:
   already did, where it was `null` against the `Comment` schema, whose `userEmoji` is a
   required string. Only an account restored from an old backup, or changed directly in the
   database, has no emoji; no stored data changes (item 83).
+- **`PUT /comments/:commentId` with the comment's own text writes nothing** (card 2284), as
+  an update to a card that changes nothing writes nothing (card 2183). Text that is the
+  comment's own once both are trimmed keeps its `updatedAt`, logs no `api:comment_edited`
+  and sends no live update, and is answered `200` with the comment as it is stored, with its
+  author. It wrote the comment again with a new `updatedAt`, which the web application shows
+  as "(edited)", and recorded an edit nobody made. A caller who may not edit the comment is
+  still refused `403` first, whatever text it sends (item 84).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -3299,6 +3306,11 @@ Fetch a single comment (requires view access to the card's board).
 #### `PUT /api/v1/comments/:commentId`
 
 Edit a comment's text: `{ "content": "Replacement text" }`. Only the comment's author or an admin may edit, and the author only while they can still edit the board the comment is on, which is what posting a comment asks for: someone taken off a board, or left on it as a viewer, is answered `403` with `No edit access to this board` for a comment they wrote there. A viewer can still read it. Sets `updatedAt`, logs `api:comment_edited` to the activity feed and pushes a live board update. The comment is looked for and the caller checked before `content` is read, which is held to the rule of a new comment, `content must be at most 50000 characters` past it (card 2218; it was `Comment too long (max 50000 chars)`). The text is stored trimmed and otherwise as sent (no tag prefixing).
+
+Text that is the comment's own once both are trimmed changes nothing (card 2284): nothing is
+written, `updatedAt` is kept, no `api:comment_edited` is logged and no live update is sent,
+and the answer is `200` with the comment as it is stored, outer spaces and all. The caller is
+checked first, so one who may not edit the comment is refused `403` whatever text it sends.
 
 ### Webhooks
 

@@ -173,6 +173,12 @@ function requireOwnComment(
  * and the caller checked, as a new one's is, and stored trimmed; the text it
  * holds, sent back, is accepted as it is.
  *
+ * Text that is the comment's own once both are trimmed changes nothing: no
+ * write, no new `updatedAt` (which the window shows as "(edited)"), no entry
+ * and no live event, and the comment is answered as it is stored, its outer
+ * spaces kept (card 2284; card 2183's rule for cards). The guard is asked
+ * first, so a caller who may not edit it is refused whatever they send.
+ *
  * The answer is the row as written; v1 adds the author (its handler).
  */
 export function editComment(
@@ -193,6 +199,7 @@ export function editComment(
 		keep: comment.content,
 		says: { missing: 'Comment cannot be empty', empty: 'Comment cannot be empty' }
 	});
+	if (content.trim() === comment.content.trim()) return comment;
 
 	const row = db
 		.update(cardComments)

@@ -222,6 +222,8 @@ const spec = {
 			'A held webhook is sent again when its setter can open the board again; the board owner or an administrator takes one over by switching it off and then on, which makes them its setter, and sets a new secret, updating the receiver. ' +
 			'(82) GET /api/v1/cards/{cardId}/comments lists comments made in the same second the later first, by id, in a list that is still newest first: they came back in no set order, in practice the earlier first, so a request\'s discussion copied onto its card on accept, and several comments posted in a row, read upside down. ' +
 			'(83) the same list answers userEmoji "👤" for an author with no emoji, as POST there and GET and PUT /api/v1/comments/{commentId} do, where it was null against the Comment schema, whose userEmoji is a required string. ' +
+			'(84) PUT /api/v1/comments/{commentId} with text that is the comment\'s own once both are trimmed writes nothing, keeps updatedAt, logs no api:comment_edited and sends no live update, and answers 200 with the comment as it is stored (with its author, as before): ' +
+			'it wrote the comment again with a new updatedAt, which the web application shows as "(edited)", and recorded an edit nobody made. A caller who may not edit the comment is still refused 403 first. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -3640,7 +3642,7 @@ const spec = {
 			put: {
 				tags: ['Comments'],
 				summary: 'Edit a comment',
-				description: 'Replaces the comment text. Only the comment\'s author or an admin may edit, and the author only while they can still edit the board the comment is on, which is what posting a comment asks for: having written a comment is not access to its board, and an author who has been made a viewer can read it and not change it. Sets updatedAt, logs api:comment_edited to the activity feed and emits a live board update. The text is stored trimmed (no tag prefixing). The comment is looked for and access checked before the text is read.',
+				description: 'Replaces the comment text. Only the comment\'s author or an admin may edit, and the author only while they can still edit the board the comment is on, which is what posting a comment asks for: having written a comment is not access to its board, and an author who has been made a viewer can read it and not change it. Sets updatedAt, logs api:comment_edited to the activity feed and emits a live board update, unless the text is unchanged: text that is the comment\'s own once both are trimmed writes nothing, keeps updatedAt, logs nothing and sends no update, and is answered 200 with the comment as it is stored. The text is stored trimmed (no tag prefixing). The comment is looked for and access checked before the text is read, so a caller who may not edit it is refused whatever text they send.',
 				operationId: 'updateComment',
 				parameters: [{ name: 'commentId', in: 'path', required: true, schema: { type: 'integer', minimum: 1 }, description: 'Comment ID: a whole number of 1 or more. Anything else is 400 Invalid comment ID.' }],
 				requestBody: {

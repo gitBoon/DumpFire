@@ -1447,10 +1447,13 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 		expect(sourceOf('src/lib/components/dashboard/BoardsTable.svelte')).toContain('parseStamp(a.lastActivity)');
 	});
 
-	it('the card window writes an edited comment’s time in the stored form, as the server does', () => {
-		// In its Comments tab (card 2280, slice B4: CardComments.svelte).
+	it('the card window takes an edited comment’s time from the server’s answer, in the stored form it answers', () => {
+		// In its Comments tab (card 2280, slice B4: CardComments.svelte). It
+		// stamped its own time, `updatedAt: stamp()`, and so showed "(edited)"
+		// after a save the server did not write (card 2284).
 		const modal = sourceOf('src/lib/components/card/CardComments.svelte');
-		expect(modal).toContain('updatedAt: stamp()');
+		expect(modal).toContain('updatedAt: saved.updatedAt');
+		expect(modal).not.toContain('updatedAt: stamp()');
 		expect(modal).not.toContain('toISOString()');
 		expect(sourceOf('src/lib/components/CardModal.svelte')).not.toContain('toISOString()');
 	});
