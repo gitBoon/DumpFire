@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.50
+version: 1.51
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1187,6 +1187,17 @@ flowchart LR
 | All Tasks | 33 → 26 | 33 / 148 → 24 / 24 |
 | All To Do | 29 → 24 | 28 / 62 → 22 / 22 |
 | `GET /api/v1/reports/activity` | 15 → 8 | 18 / 133 → 9 / 9 |
+
+**The report's named boards, and the goal lists' read of the goals (card 2402).** The activity report checks the boards named in `boardIds` (`requireReportBoards`, `src/lib/server/activity-report.ts`) against the caller's boards, read once at the first named board that is there and then used for the report's query and its goal names, where it asked `canViewBoard` of each board in turn and read the caller's boards again after. The refusals are as they were: each board once, in the order first named, `404 Board N not found` where it is not there, `403 No access to board N` where the caller cannot open it, the first at fault answering; a list whose first board is not there is refused before the caller's boards are read. `listMilestones` and `milestonesForBoard` (`src/lib/server/milestones.ts`) read only the goals the caller may open: `goalsShownTo` is `milestonesOpenAmong`'s rule as a condition of the one read of `milestones` (a goal of one board where that board is the caller's; a goal across boards where none of its cards, archived ones included, is on a board that is not theirs, and it has a card, or it has none and they made it; no condition for an administrator), with the board asked for (in `touching` mode the goals with a card on the board, a subquery where it was a read of its own) and the status, in id order as the whole table was read. They read every goal and kept the caller's in memory. `canViewMilestone`, `milestonesOpenAmong` (still the rule of the goal names) and `goalsShownTo` are one rule written three times, and each says so. Every answer is unchanged, byte for byte; `tests/load-access-reads.test.ts` pins the report of boards A and B and of board P (their hashes taken before the change), holds the report with every board named to the same reads for one board as for twelve, holds the goal lists' one read to asking the rule for anyone but an administrator, and holds both lists to `canViewMilestone`'s answer for every caller, as before.
+
+| Page or endpoint | Reads, before → after (pinned scene) | One board / twelve, every board named (board member) |
+|---|---|---|
+| `GET /api/v1/reports/activity?boardIds=` A and B | owner 11 → 9; board member 6 → 5, team member 9 → 6 (refused at B); outsider 4 → 5 (refused at A: the caller's boards read, where `canViewBoard` read three statements) | 12 / 46 → 10 / 10 |
+| `GET /api/v1/reports/activity?boardIds=` P | 10 → 7 (team member 12 → 8) | |
+| `GET /api/milestones`, `GET /api/v1/milestones` | 8 → 7 (outsider 6 → 5) | 9 / 9 → 8 / 8 |
+| `GET /api/milestones?forBoard=` | 6 → 5 | 7 / 7 → 6 / 6 |
+| The plan page, for board A | 10 → 8 (an administrator 5 → 4) | |
+| The board page, the burndown page | one read fewer each | |
 
 ### All Tasks
 

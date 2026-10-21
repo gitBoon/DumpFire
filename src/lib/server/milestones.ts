@@ -16,7 +16,7 @@
 import { db } from './db';
 import { inTransaction } from './db/transaction';
 import { milestones, cards, columns, boards } from './db/schema';
-import { eq, and, isNull, inArray, ne } from 'drizzle-orm';
+import { eq, and, or, isNull, inArray, notInArray, exists, notExists, ne, type SQL } from 'drizzle-orm';
 import { canViewBoard, canEditBoard, type Actor } from './board-access';
 import { resolveAccessible } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
@@ -61,10 +61,11 @@ function isAdmin(user: Pick<SessionUser, 'role'>): boolean {
  * access to every board its cards live on — the summary carries card titles
  * from all of them, so partial access must not be enough. Asked of a signed-in
  * caller, and of each recipient of the plan-created mail (card 2152), so it
- * takes only who they are and their role. The two goal lists ask the same
- * rule of many goals at once (`milestonesOpenAmong`, card 2399), as do the
- * goal names on All Tasks, All To Do and the activity report (card 2400): a
- * change to one is a change to the other.
+ * takes only who they are and their role. The goal names on All Tasks, All
+ * To Do and the activity report ask the same rule of many goals at once
+ * (`milestonesOpenAmong`, card 2400), and the two goal lists ask it in the
+ * read of the goals (`goalsShownTo`, card 2402): a change to one is a change
+ * to the others.
  */
 export function canViewMilestone(user: Actor, milestone: MilestoneRow): boolean {
 	if (isAdmin(user)) return true;
@@ -81,6 +82,8 @@ export function canViewMilestone(user: Actor, milestone: MilestoneRow): boolean 
  * of each board in turn (card 2399). The two goal lists asked it of every goal,
  * up to four reads for a goal of one board and more for a goal across boards;
  * this reads the boards of every goal across boards at once, and nothing else.
+ * The goal lists ask it in SQL now (`goalsShownTo`, card 2402); the goal names
+ * of card 2400 ask it here.
  *
  * `canViewBoard` on a board is that board being in `open`: both are the boards
  * the caller made, their member rows, their teams' shares and the public
@@ -98,6 +101,35 @@ function milestonesOpenAmong(user: Actor, rows: MilestoneRow[], open: number[] |
 		if (boards.length === 0) return m.createdBy === user.id;
 		return boards.every((b) => opens.has(b));
 	});
+}
+
+/**
+ * `milestonesOpenAmong`'s rule as a condition on `milestones`, for a read of
+ * the goals that reads only those `user` may open (card 2402). The two goal
+ * lists read every goal and kept the caller's: a goal of one board where its
+ * board is in `open`; a goal across boards where none of its cards, archived
+ * ones included, is on a board outside `open`, and it has a card, or it has
+ * none and `user` made it. A goal's boards are its cards' through their
+ * columns, as `getMilestonesBoardIds` reads them. None for an administrator,
+ * who opens every goal; `open` null for anyone else opens no board.
+ */
+function goalsShownTo(user: Actor, open: number[] | null): SQL | undefined {
+	if (isAdmin(user)) return undefined;
+	const opens = open ?? [];
+	const cardOf = (where: SQL | undefined) =>
+		db
+			.select({ id: cards.id })
+			.from(cards)
+			.innerJoin(columns, eq(cards.columnId, columns.id))
+			.where(and(eq(cards.milestoneId, milestones.id), where));
+	return or(
+		inArray(milestones.boardId, opens),
+		and(
+			isNull(milestones.boardId),
+			notExists(cardOf(notInArray(columns.boardId, opens))),
+			or(exists(cardOf(undefined)), eq(milestones.createdBy, user.id))
+		)
+	);
 }
 
 /**
@@ -232,6 +264,11 @@ export type BoardFilterMode = 'scoped' | 'touching';
  * per milestone — the planning index lists every goal in the workspace.
  * `accessible`: the user's boards, when the caller has read them already in
  * the same request (card 2394, `resolveAccessible` in list-access.ts).
+ *
+ * Only the goals asked for that the user may open are read (card 2402): the
+ * board, the status and `goalsShownTo` are asked in the one read, which read
+ * every goal and kept these. In 'touching' mode the goals with a card on the
+ * board are a subquery of it, where they were a read of their own.
  */
 export function listMilestones(
 	user: SessionUser,
@@ -240,36 +277,34 @@ export function listMilestones(
 	mode: BoardFilterMode = 'scoped',
 	accessible?: number[] | null
 ): MilestoneListEntry[] {
-	const all = db.select().from(milestones).all();
-
-	// In 'touching' mode the board test needs the milestone's cards, which are
-	// only counted below — so do it in two stages rather than one filter.
-	const touchingIds =
-		boardId !== undefined && mode === 'touching'
-			? new Set(
-					db
-						.select({ milestoneId: cards.milestoneId })
-						.from(cards)
-						.innerJoin(columns, eq(cards.columnId, columns.id))
-						.where(and(eq(columns.boardId, boardId), isNull(cards.archivedAt)))
-						.all()
-						.map((r) => r.milestoneId)
-						.filter((id): id is number => id !== null)
-				)
-			: null;
-
-	const matchesBoard = (m: MilestoneRow) => {
-		if (boardId === undefined) return true;
-		if (m.boardId === boardId) return true;
-		return touchingIds !== null && touchingIds.has(m.id);
-	};
-
-	const asked = all.filter(matchesBoard).filter((m) => (status ? m.status === status : true));
-	if (asked.length === 0) return [];
 	// The caller's boards read once, for which goals they may open and which
-	// boards of each they are told (card 2399).
+	// boards of each they are told (card 2399), and so read first.
 	const open = resolveAccessible(user, accessible);
-	const filtered = milestonesOpenAmong(user, asked, open);
+
+	const onBoard =
+		boardId === undefined
+			? undefined
+			: mode === 'touching'
+				? or(
+						eq(milestones.boardId, boardId),
+						inArray(
+							milestones.id,
+							db
+								.select({ milestoneId: cards.milestoneId })
+								.from(cards)
+								.innerJoin(columns, eq(cards.columnId, columns.id))
+								.where(and(eq(columns.boardId, boardId), isNull(cards.archivedAt)))
+						)
+					)
+				: eq(milestones.boardId, boardId);
+
+	// In id order, as the whole table was read: the sort below keeps it for ties.
+	const filtered = db
+		.select()
+		.from(milestones)
+		.where(and(onBoard, status ? eq(milestones.status, status) : undefined, goalsShownTo(user, open)))
+		.orderBy(milestones.id)
+		.all();
 	if (filtered.length === 0) return [];
 
 	const ids = filtered.map((m) => m.id);
@@ -631,13 +666,15 @@ export function takeCardOutOfMilestone(
  */
 export function milestonesForBoard(user: SessionUser, boardId: number, accessible?: number[] | null): MilestoneRow[] {
 	const open = resolveAccessible(user, accessible);
-	const asked = db
+	// Only the goals of the board, or of none, that the user may open, read in
+	// id order as the whole table was (card 2402); each was checked against the
+	// boards just read after a read of every goal (card 2399).
+	return db
 		.select()
 		.from(milestones)
+		.where(and(or(isNull(milestones.boardId), eq(milestones.boardId, boardId)), goalsShownTo(user, open)))
+		.orderBy(milestones.id)
 		.all()
-		.filter((m) => m.boardId === null || m.boardId === boardId);
-	// Each goal checked against the boards just read (card 2399).
-	return milestonesOpenAmong(user, asked, open)
 		.sort((a, b) => (a.status === b.status ? a.name.localeCompare(b.name) : a.status === 'open' ? -1 : 1));
 }
 

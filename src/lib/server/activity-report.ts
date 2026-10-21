@@ -30,7 +30,7 @@
 
 import { error } from '@sveltejs/kit';
 import { sqlite } from './db';
-import { canViewBoard, getAccessibleBoardIds } from './board-access';
+import { getAccessibleBoardIds } from './board-access';
 import { milestoneIdsOpenTo } from './milestones';
 import { isCompleteColumnTitle, isHoldColumnTitle } from './card-completion';
 import { ACTIONS, readSource, storedActions } from './logActivity';
@@ -255,17 +255,33 @@ function inlineIds(ids: number[]): string {
  * not open was answered with an empty report and a count that said whether it
  * had activity; dropping it without a word would be the hole in the report
  * this endpoint was built to avoid.
+ *
+ * Each board is checked against the reader's boards, read once at the first
+ * board that is there and answered for the report to use (card 2402): it asked
+ * `canViewBoard` of each in turn, up to four reads a board, and then read the
+ * reader's boards anyway. A board there opens to the reader where it is in
+ * them, as `canViewBoard` answers; `null` is an administrator, who opens every
+ * board. A list whose first board is not there is refused before they are read.
  */
-function requireReportBoards(actor: SessionUser, ids: number[]): void {
+function requireReportBoards(actor: SessionUser, ids: number[]): number[] | null {
 	// Each once, in the order first named: the first at fault is the answer.
 	const unique = [...new Set(ids)];
 	const found = new Set(
 		(sqlite.prepare(`SELECT id FROM boards WHERE id IN (${inlineIds(unique)})`).all() as { id: number }[]).map((b) => b.id)
 	);
+	let opens: number[] | null | undefined;
+	let open: Set<number> | null = null;
 	for (const id of unique) {
 		if (!found.has(id)) throw error(404, `Board ${id} not found`);
-		if (!canViewBoard(actor, id)) throw error(403, `No access to board ${id}`);
+		if (opens === undefined) {
+			opens = getAccessibleBoardIds(actor);
+			open = opens === null ? null : new Set(opens);
+		}
+		if (open !== null && !open.has(id)) throw error(403, `No access to board ${id}`);
 	}
+	// The loop has read them unless `ids` was empty, which no caller sends; read
+	// here then, and never taken as every board.
+	return opens === undefined ? getAccessibleBoardIds(actor) : opens;
 }
 
 /**
@@ -289,9 +305,11 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 	} = opts;
 
 	// A named board is checked before anything else is read (card 2326), so
-	// every caller of this function gets the check, not only the route.
+	// every caller of this function gets the check, not only the route. The
+	// check reads the reader's boards, and they are used below (card 2402);
+	// with no board named they are read there.
 	const named = boardIds && boardIds.length > 0 ? [...new Set(boardIds.map((b) => Number(b)))] : null;
-	if (named) requireReportBoards(actor, named);
+	const checked = named ? requireReportBoards(actor, named) : undefined;
 
 	const fromBound = boundOf(from, 'lower');
 	const toBound = boundOf(to, 'upper');
@@ -344,8 +362,9 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 	// others were read, dropped after the query and counted, and the count went
 	// up whenever one of those boards was worked on, to the second. `null` is an
 	// administrator, who opens every board: no filter for access. The ids are
-	// numbers, written into the query as the named boards always were.
-	const opens = getAccessibleBoardIds(actor);
+	// numbers, written into the query as the named boards always were. Read
+	// once: where boards were named, the check above read them.
+	const opens = checked === undefined ? getAccessibleBoardIds(actor) : checked;
 	let scope: number[] | null = named;
 	if (opens !== null) {
 		const open = new Set(opens);

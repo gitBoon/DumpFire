@@ -52,16 +52,28 @@
  * beside each; asked the three in the count test of one board against twelve;
  * and added the tests that the plan page reads only the caller's boards, and
  * none for a caller with none. Its plan is `docs/planning/cards-2400-2401.md`.
+ *
+ * Card 2402 added the activity report of boards named to the cases, its hashes
+ * taken on the old code before its change; lowered the ceilings of the report
+ * of boards named, of the goal lists and of every page that lists goals, with
+ * the count before beside each; asked the report with every board named in the
+ * count test of one board against twelve; and added the test that the goal
+ * lists read only the goals their caller may open. In its review the test of
+ * the goal lists against `canViewMilestone` asks `listMilestones` of every
+ * board, status and mode against the old pipeline, and a test holds the rule's
+ * two copies (`milestonesOpenAmong`, `goalsShownTo`) to the same goals. Its
+ * plan is `docs/planning/card-2402.md`.
  */
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq, inArray } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { activityLog, boardCategories, boards, cardLabels, categories, milestones } from '$lib/server/db/schema';
+import { activityLog, boardCategories, boards, cardLabels, cards, categories, columns, milestones } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { cardCategoriesFor, categoryRule, hiddenOpenCountsFor } from '$lib/server/list-access';
 import { boardsOpenTo, getBlockedStateForCards, getBoardBlockedState } from '$lib/server/planning';
-import { canViewMilestone, listMilestones, milestonesForBoard } from '$lib/server/milestones';
+import { canViewMilestone, listMilestones, milestoneIdsOpenTo, milestonesForBoard } from '$lib/server/milestones';
+import type { BoardFilterMode } from '$lib/server/milestones';
 import { getBurndown, parseBurndownQuery } from '$lib/server/burndown';
 import type { BurndownResult } from '$lib/burndown';
 import { pageLoad } from './helpers/actions';
@@ -267,7 +279,13 @@ const CASES: Record<string, (s: ReturnType<typeof scene>) => { path: string; ask
 	'GET /api/milestones?forBoard=A': (s) => ({ path: `/api/milestones?forBoard=${s.A.board.id}`, ask: get }),
 	'GET /api/v1/milestones': () => ({ path: '/api/v1/milestones', ask: get }),
 	// Card 2400: the activity report, which names the cards' goals, pinned on the old code.
-	'GET /api/v1/reports/activity': () => ({ path: `/api/v1/reports/activity?${RANGE}`, ask: get })
+	'GET /api/v1/reports/activity': () => ({ path: `/api/v1/reports/activity?${RANGE}`, ask: get }),
+	// Card 2402: the activity report of boards named, pinned on the old code.
+	'GET /api/v1/reports/activity, boards A and B': (s) => ({
+		path: `/api/v1/reports/activity?boardIds=${s.A.board.id},${s.B.board.id}&${RANGE}`,
+		ask: get
+	}),
+	'GET /api/v1/reports/activity, board P': (s) => ({ path: `/api/v1/reports/activity?boardIds=${s.P.board.id}&${RANGE}`, ask: get })
 };
 
 type Pin = { reads: number; access: number; hash: string };
@@ -310,60 +328,60 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		outsider: { reads: 11, access: 1, hash: '953480566ec10ee5' } // 15 → 11, 2 → 1
 	},
 	'the board page, A': {
-		owner: { reads: 38, access: 1, hash: '6e2c6b94862710ba' }, // 57 → 41, 5 → 1; 41 → 38 (card 2399)
-		member: { reads: 41, access: 1, hash: '3bb4ada1f3bf1636' }, // 64 → 48, 5 → 1; 48 → 41 (card 2399)
-		mate: { reads: 41, access: 1, hash: '21f7abfe356d85db' }, // 73 → 53, 5 → 1; 53 → 41 (card 2399)
+		owner: { reads: 37, access: 1, hash: '6e2c6b94862710ba' }, // 57 → 41, 5 → 1; 41 → 38 (card 2399); 38 → 37 (card 2402)
+		member: { reads: 40, access: 1, hash: '3bb4ada1f3bf1636' }, // 64 → 48, 5 → 1; 48 → 41 (card 2399); 41 → 40 (card 2402)
+		mate: { reads: 40, access: 1, hash: '21f7abfe356d85db' }, // 73 → 53, 5 → 1; 53 → 41 (card 2399); 41 → 40 (card 2402)
 		admin: { reads: 30, access: 0, hash: '611439da66886fc0' }, // 30 → 30, 0 → 0
 		outsider: { reads: 3, access: 0, hash: '586b0bf8447edc8a' } // 3 → 3, 0 → 0 (refused)
 	},
 	'the board page, P': {
-		owner: { reads: 36, access: 1, hash: '37911a01434d731b' }, // 54 → 38, 5 → 1; 38 → 36 (card 2399)
-		member: { reads: 36, access: 1, hash: 'cb7f9902bc0d5674' }, // 57 → 41, 5 → 1; 41 → 36 (card 2399)
-		mate: { reads: 39, access: 1, hash: 'cb7f9902bc0d5674' }, // 67 → 47, 5 → 1; 47 → 39 (card 2399)
+		owner: { reads: 35, access: 1, hash: '37911a01434d731b' }, // 54 → 38, 5 → 1; 38 → 36 (card 2399); 36 → 35 (card 2402)
+		member: { reads: 35, access: 1, hash: 'cb7f9902bc0d5674' }, // 57 → 41, 5 → 1; 41 → 36 (card 2399); 36 → 35 (card 2402)
+		mate: { reads: 38, access: 1, hash: 'cb7f9902bc0d5674' }, // 67 → 47, 5 → 1; 47 → 39 (card 2399); 39 → 38 (card 2402)
 		admin: { reads: 28, access: 0, hash: 'a3a4b6f18c16b122' }, // 28 → 28, 0 → 0
-		outsider: { reads: 36, access: 1, hash: 'ca4c328d66bbdac3' } // 55 → 39, 5 → 1; 39 → 36 (card 2399)
+		outsider: { reads: 35, access: 1, hash: 'ca4c328d66bbdac3' } // 55 → 39, 5 → 1; 39 → 36 (card 2399); 36 → 35 (card 2402)
 	},
 	'GET /api/boards/A/contents': {
-		owner: { reads: 38, access: 1, hash: 'ce5a00e1deba5a9a' }, // 57 → 41, 5 → 1; 41 → 38 (card 2399)
-		member: { reads: 41, access: 1, hash: 'a628abfa9e18a832' }, // 64 → 48, 5 → 1; 48 → 41 (card 2399)
-		mate: { reads: 41, access: 1, hash: '65ff7c8aafd7c532' }, // 73 → 53, 5 → 1; 53 → 41 (card 2399)
+		owner: { reads: 37, access: 1, hash: 'ce5a00e1deba5a9a' }, // 57 → 41, 5 → 1; 41 → 38 (card 2399); 38 → 37 (card 2402)
+		member: { reads: 40, access: 1, hash: 'a628abfa9e18a832' }, // 64 → 48, 5 → 1; 48 → 41 (card 2399); 41 → 40 (card 2402)
+		mate: { reads: 40, access: 1, hash: '65ff7c8aafd7c532' }, // 73 → 53, 5 → 1; 53 → 41 (card 2399); 41 → 40 (card 2402)
 		admin: { reads: 30, access: 0, hash: '65ef0d7c48f5fa2a' }, // 30 → 30, 0 → 0
 		outsider: { reads: 3, access: 0, hash: '98f0381065d0fdf3' } // 3 → 3, 0 → 0 (refused)
 	},
 	'the burndown page, every board': {
-		owner: { reads: 17, access: 1, hash: '86821bd5625857d5' }, // 29 → 21, 3 → 1; re-pinned; 21 → 17 (card 2399)
-		member: { reads: 17, access: 1, hash: 'a472007cbd031b96' }, // 35 → 27, 3 → 1; re-pinned; 27 → 17 (card 2399)
-		mate: { reads: 18, access: 1, hash: 'c0fdc2ea2ed27155' }, // 44 → 34, 3 → 1; re-pinned; 34 → 18 (card 2399)
+		owner: { reads: 16, access: 1, hash: '86821bd5625857d5' }, // 29 → 21, 3 → 1; re-pinned; 21 → 17 (card 2399); 17 → 16 (card 2402)
+		member: { reads: 16, access: 1, hash: 'a472007cbd031b96' }, // 35 → 27, 3 → 1; re-pinned; 27 → 17 (card 2399); 17 → 16 (card 2402)
+		mate: { reads: 17, access: 1, hash: 'c0fdc2ea2ed27155' }, // 44 → 34, 3 → 1; re-pinned; 34 → 18 (card 2399); 18 → 17 (card 2402)
 		admin: { reads: 12, access: 0, hash: 'b726d35818142127' }, // 12 → 12, 0 → 0; re-pinned
-		outsider: { reads: 13, access: 1, hash: '49e0fd550eed6152' } // 26 → 22, 2 → 1; 22 → 13 (card 2399)
+		outsider: { reads: 12, access: 1, hash: '49e0fd550eed6152' } // 26 → 22, 2 → 1; 22 → 13 (card 2399); 13 → 12 (card 2402)
 	},
 	'the burndown page, by grouping': {
-		owner: { reads: 21, access: 1, hash: 'c1759475d05220b0' }, // 37 → 25, 4 → 1; re-pinned; 25 → 21 (card 2399)
-		member: { reads: 21, access: 1, hash: '063393c21438c551' }, // 43 → 31, 4 → 1; re-pinned; 31 → 21 (card 2399)
-		mate: { reads: 22, access: 1, hash: '4ca7a2a62594b200' }, // 53 → 38, 4 → 1; re-pinned; 38 → 22 (card 2399)
+		owner: { reads: 20, access: 1, hash: 'c1759475d05220b0' }, // 37 → 25, 4 → 1; re-pinned; 25 → 21 (card 2399); 21 → 20 (card 2402)
+		member: { reads: 20, access: 1, hash: '063393c21438c551' }, // 43 → 31, 4 → 1; re-pinned; 31 → 21 (card 2399); 21 → 20 (card 2402)
+		mate: { reads: 21, access: 1, hash: '4ca7a2a62594b200' }, // 53 → 38, 4 → 1; re-pinned; 38 → 22 (card 2399); 22 → 21 (card 2402)
 		admin: { reads: 15, access: 0, hash: '0b60451ce1609ee8' }, // 15 → 15, 0 → 0; re-pinned
-		outsider: { reads: 10, access: 1, hash: 'a67e228271d95c0a' } // 23 → 19, 2 → 1 (refused in the page); 19 → 10 (card 2399)
+		outsider: { reads: 9, access: 1, hash: 'a67e228271d95c0a' } // 23 → 19, 2 → 1 (refused in the page); 19 → 10 (card 2399); 10 → 9 (card 2402)
 	},
 	'the burndown page, a goal across boards': {
-		owner: { reads: 22, access: 1, hash: '88738a2ff1c93e27' }, // 34 → 26, 3 → 1; re-pinned; 26 → 22 (card 2399)
-		member: { reads: 17, access: 1, hash: 'e244bd069fc1bce6' }, // 31 → 27, 2 → 1 (refused in the page); re-pinned; 27 → 17 (card 2399)
-		mate: { reads: 21, access: 1, hash: '49d71ada95f45d18' }, // 42 → 37, 2 → 1 (refused in the page); re-pinned; 37 → 21 (card 2399)
+		owner: { reads: 21, access: 1, hash: '88738a2ff1c93e27' }, // 34 → 26, 3 → 1; re-pinned; 26 → 22 (card 2399); 22 → 21 (card 2402)
+		member: { reads: 16, access: 1, hash: 'e244bd069fc1bce6' }, // 31 → 27, 2 → 1 (refused in the page); re-pinned; 27 → 17 (card 2399); 17 → 16 (card 2402)
+		mate: { reads: 20, access: 1, hash: '49d71ada95f45d18' }, // 42 → 37, 2 → 1 (refused in the page); re-pinned; 37 → 21 (card 2399); 21 → 20 (card 2402)
 		admin: { reads: 13, access: 0, hash: '6610a45dab3fb08e' }, // 13 → 13, 0 → 0; re-pinned
-		outsider: { reads: 13, access: 1, hash: 'f86a5cc151b8126e' } // 22 → 22, 1 → 1 (refused in the page); 22 → 13 (card 2399)
+		outsider: { reads: 12, access: 1, hash: 'f86a5cc151b8126e' } // 22 → 22, 1 → 1 (refused in the page); 22 → 13 (card 2399); 13 → 12 (card 2402)
 	},
 	'the burndown page, a goal and a grouping': {
-		owner: { reads: 21, access: 1, hash: '6603660dd9f2af3f' }, // 37 → 25, 4 → 1; re-pinned; 25 → 21 (card 2399)
-		member: { reads: 22, access: 1, hash: '6cf605b316f87b87' }, // 44 → 32, 4 → 1; re-pinned; 32 → 22 (card 2399)
-		mate: { reads: 25, access: 1, hash: '6cb09d6acd3673a1' }, // 56 → 41, 4 → 1; re-pinned; 41 → 25 (card 2399)
+		owner: { reads: 20, access: 1, hash: '6603660dd9f2af3f' }, // 37 → 25, 4 → 1; re-pinned; 25 → 21 (card 2399); 21 → 20 (card 2402)
+		member: { reads: 21, access: 1, hash: '6cf605b316f87b87' }, // 44 → 32, 4 → 1; re-pinned; 32 → 22 (card 2399); 22 → 21 (card 2402)
+		mate: { reads: 24, access: 1, hash: '6cb09d6acd3673a1' }, // 56 → 41, 4 → 1; re-pinned; 41 → 25 (card 2399); 25 → 24 (card 2402)
 		admin: { reads: 14, access: 0, hash: '774710e566173182' }, // 14 → 14, 0 → 0; re-pinned
-		outsider: { reads: 10, access: 1, hash: 'a67e228271d95c0a' } // 23 → 19, 2 → 1 (refused in the page); 19 → 10 (card 2399)
+		outsider: { reads: 9, access: 1, hash: 'a67e228271d95c0a' } // 23 → 19, 2 → 1 (refused in the page); 19 → 10 (card 2399); 10 → 9 (card 2402)
 	},
 	'the burndown page, board A': {
-		owner: { reads: 20, access: 1, hash: '6cd8a1b3d771d616' }, // 28 → 24, 2 → 1; re-pinned; 24 → 20 (card 2399)
-		member: { reads: 21, access: 1, hash: '1e435f82025c184d' }, // 35 → 31, 2 → 1; re-pinned; 31 → 21 (card 2399)
-		mate: { reads: 24, access: 1, hash: '29d40b7088105674' }, // 45 → 40, 2 → 1; re-pinned; 40 → 24 (card 2399)
+		owner: { reads: 19, access: 1, hash: '6cd8a1b3d771d616' }, // 28 → 24, 2 → 1; re-pinned; 24 → 20 (card 2399); 20 → 19 (card 2402)
+		member: { reads: 20, access: 1, hash: '1e435f82025c184d' }, // 35 → 31, 2 → 1; re-pinned; 31 → 21 (card 2399); 21 → 20 (card 2402)
+		mate: { reads: 23, access: 1, hash: '29d40b7088105674' }, // 45 → 40, 2 → 1; re-pinned; 40 → 24 (card 2399); 24 → 23 (card 2402)
 		admin: { reads: 14, access: 0, hash: '3c5bae1a9671b3ff' }, // 14 → 14, 0 → 0; re-pinned
-		outsider: { reads: 12, access: 1, hash: 'e3abe29e283cbb9f' } // 21 → 21, 1 → 1 (refused in the page); 21 → 12 (card 2399)
+		outsider: { reads: 11, access: 1, hash: 'e3abe29e283cbb9f' } // 21 → 21, 1 → 1 (refused in the page); 21 → 12 (card 2399); 12 → 11 (card 2402)
 	},
 	'GET /api/v1/burndown, every board': {
 		owner: { reads: 6, access: 1, hash: '39527b9bb6d60a51' }, // 6 → 6, 1 → 1; re-pinned
@@ -403,39 +421,39 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		outsider: { reads: 7, access: 1, hash: '232261ebf5179d21' } // 7 → 7, 1 → 1
 	},
 	'the plan page': {
-		owner: { reads: 9, access: 1, hash: '8c861387660d3899' }, // 17 → 9, 2 → 1
-		member: { reads: 9, access: 1, hash: '26710fd3de8c26ad' }, // 23 → 9, 2 → 1
-		mate: { reads: 10, access: 1, hash: '3ad1acafa5cd18fd' }, // 31 → 10, 2 → 1
+		owner: { reads: 8, access: 1, hash: '8c861387660d3899' }, // 17 → 9, 2 → 1; 9 → 8 (card 2402)
+		member: { reads: 8, access: 1, hash: '26710fd3de8c26ad' }, // 23 → 9, 2 → 1; 9 → 8 (card 2402)
+		mate: { reads: 9, access: 1, hash: '3ad1acafa5cd18fd' }, // 31 → 10, 2 → 1; 10 → 9 (card 2402)
 		admin: { reads: 4, access: 0, hash: '03e31c29391c990a' }, // 4 → 4, 0 → 0
-		outsider: { reads: 7, access: 1, hash: '1b842c919d4d908a' } // 16 → 7, 1 → 1
+		outsider: { reads: 6, access: 1, hash: '1b842c919d4d908a' } // 16 → 7, 1 → 1; 7 → 6 (card 2402)
 	},
 	'the plan page, board A': {
-		owner: { reads: 10, access: 1, hash: '3930b267caaf3a89' }, // 17 → 10, 2 → 1
-		member: { reads: 10, access: 1, hash: 'e51fc4230f66ad69' }, // 21 → 10, 2 → 1
-		mate: { reads: 11, access: 1, hash: '5a759ebc839f3193' }, // 28 → 11, 2 → 1
-		admin: { reads: 5, access: 0, hash: '4e97a3e18ffc71b5' }, // 5 → 5, 0 → 0
-		outsider: { reads: 7, access: 1, hash: '1b842c919d4d908a' } // 16 → 7, 1 → 1 (A is not theirs: every goal)
+		owner: { reads: 8, access: 1, hash: '3930b267caaf3a89' }, // 17 → 10, 2 → 1; 10 → 8 (card 2402)
+		member: { reads: 8, access: 1, hash: 'e51fc4230f66ad69' }, // 21 → 10, 2 → 1; 10 → 8 (card 2402)
+		mate: { reads: 9, access: 1, hash: '5a759ebc839f3193' }, // 28 → 11, 2 → 1; 11 → 9 (card 2402)
+		admin: { reads: 4, access: 0, hash: '4e97a3e18ffc71b5' }, // 5 → 5, 0 → 0; 5 → 4 (card 2402)
+		outsider: { reads: 6, access: 1, hash: '1b842c919d4d908a' } // 16 → 7, 1 → 1 (A is not theirs: every goal); 7 → 6 (card 2402)
 	},
 	'GET /api/milestones': {
-		owner: { reads: 8, access: 1, hash: '37d49fa5d169122f' }, // 12 → 8, 1 → 1
-		member: { reads: 8, access: 1, hash: '8d61a0bf38d8f8b1' }, // 18 → 8, 1 → 1
-		mate: { reads: 9, access: 1, hash: '8d61a0bf38d8f8b1' }, // 25 → 9, 1 → 1
+		owner: { reads: 7, access: 1, hash: '37d49fa5d169122f' }, // 12 → 8, 1 → 1; 8 → 7 (card 2402)
+		member: { reads: 7, access: 1, hash: '8d61a0bf38d8f8b1' }, // 18 → 8, 1 → 1; 8 → 7 (card 2402)
+		mate: { reads: 8, access: 1, hash: '8d61a0bf38d8f8b1' }, // 25 → 9, 1 → 1; 9 → 8 (card 2402)
 		admin: { reads: 3, access: 0, hash: '37d49fa5d169122f' }, // 3 → 3, 0 → 0
-		outsider: { reads: 6, access: 1, hash: 'c004716dc0076b81' } // 11 → 6, 0 → 1 (no goal of theirs: read once, not per goal)
+		outsider: { reads: 5, access: 1, hash: 'c004716dc0076b81' } // 11 → 6, 0 → 1 (no goal of theirs: read once, not per goal); 6 → 5 (card 2402)
 	},
 	'GET /api/milestones?forBoard=A': {
-		owner: { reads: 6, access: 1, hash: 'f42ce666ce834254' }, // 9 → 6, 1 → 1
-		member: { reads: 6, access: 1, hash: 'e65ae81f2d77d6ea' }, // 13 → 6, 1 → 1
-		mate: { reads: 7, access: 1, hash: 'e65ae81f2d77d6ea' }, // 19 → 7, 1 → 1
+		owner: { reads: 5, access: 1, hash: 'f42ce666ce834254' }, // 9 → 6, 1 → 1; 6 → 5 (card 2402)
+		member: { reads: 5, access: 1, hash: 'e65ae81f2d77d6ea' }, // 13 → 6, 1 → 1; 6 → 5 (card 2402)
+		mate: { reads: 6, access: 1, hash: 'e65ae81f2d77d6ea' }, // 19 → 7, 1 → 1; 7 → 6 (card 2402)
 		admin: { reads: 1, access: 0, hash: 'f42ce666ce834254' }, // 1 → 1, 0 → 0
-		outsider: { reads: 6, access: 1, hash: 'c004716dc0076b81' } // 9 → 6, 1 → 1
+		outsider: { reads: 5, access: 1, hash: 'c004716dc0076b81' } // 9 → 6, 1 → 1; 6 → 5 (card 2402)
 	},
 	'GET /api/v1/milestones': {
-		owner: { reads: 8, access: 1, hash: '503ceeff82ccf68f' }, // 12 → 8, 1 → 1
-		member: { reads: 8, access: 1, hash: '36855e5a13503afc' }, // 18 → 8, 1 → 1
-		mate: { reads: 9, access: 1, hash: '36855e5a13503afc' }, // 25 → 9, 1 → 1
+		owner: { reads: 7, access: 1, hash: '503ceeff82ccf68f' }, // 12 → 8, 1 → 1; 8 → 7 (card 2402)
+		member: { reads: 7, access: 1, hash: '36855e5a13503afc' }, // 18 → 8, 1 → 1; 8 → 7 (card 2402)
+		mate: { reads: 8, access: 1, hash: '36855e5a13503afc' }, // 25 → 9, 1 → 1; 9 → 8 (card 2402)
 		admin: { reads: 3, access: 0, hash: '503ceeff82ccf68f' }, // 3 → 3, 0 → 0
-		outsider: { reads: 6, access: 1, hash: 'c004716dc0076b81' } // 11 → 6, 0 → 1 (no goal of theirs: read once, not per goal)
+		outsider: { reads: 5, access: 1, hash: 'c004716dc0076b81' } // 11 → 6, 0 → 1 (no goal of theirs: read once, not per goal); 6 → 5 (card 2402)
 	},
 	// Card 2400's case: every hash taken on the old code (5b002fc), before the
 	// change, and unchanged by it.
@@ -445,6 +463,24 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		mate: { reads: 9, access: 1, hash: '7b5404422e012058' }, // 21 → 9, 1 → 1
 		admin: { reads: 3, access: 0, hash: 'fdad46fb0456c6ce' }, // 3 → 3, 0 → 0
 		outsider: { reads: 6, access: 1, hash: '9c1e6df8a2b31e3b' } // 6 → 6, 1 → 1 (no goal on P: none asked)
+	},
+	// Card 2402's cases: every hash taken on the old code (7d01342), before the
+	// change, and unchanged by it. A refusal reads the caller's boards now,
+	// where it asked `canViewBoard` of each board: one read more for the
+	// outsider, refused at the first board, who is in no team.
+	'GET /api/v1/reports/activity, boards A and B': {
+		owner: { reads: 9, access: 1, hash: '84f5275424a7a2c6' }, // 11 → 9, 1 → 1
+		member: { reads: 5, access: 1, hash: 'ff52aca65a01e538' }, // 6 → 5, 0 → 1 (refused at B)
+		mate: { reads: 6, access: 1, hash: 'ff52aca65a01e538' }, // 9 → 6, 0 → 1 (refused at B)
+		admin: { reads: 4, access: 0, hash: '84f5275424a7a2c6' }, // 4 → 4, 0 → 0
+		outsider: { reads: 5, access: 1, hash: '52302279c87a3572' } // 4 → 5, 0 → 1 (refused at A)
+	},
+	'GET /api/v1/reports/activity, board P': {
+		owner: { reads: 7, access: 1, hash: '9c1e6df8a2b31e3b' }, // 10 → 7, 1 → 1
+		member: { reads: 7, access: 1, hash: '9c1e6df8a2b31e3b' }, // 10 → 7, 1 → 1
+		mate: { reads: 8, access: 1, hash: '9c1e6df8a2b31e3b' }, // 12 → 8, 1 → 1
+		admin: { reads: 3, access: 0, hash: '9c1e6df8a2b31e3b' }, // 3 → 3, 0 → 0
+		outsider: { reads: 7, access: 1, hash: '9c1e6df8a2b31e3b' } // 10 → 7, 1 → 1
 	}
 };
 
@@ -624,13 +660,13 @@ describe('the inbox and the goal lists read as much for one board or goal as for
 		makeMilestone({ board: hidden.board, name: 'Goal on Hidden', createdBy: owner, cards: [makeCard(hidden.cols['To Do'])] });
 		makeMilestone({ name: 'Goal across Hidden', createdBy: owner, cards: [makeCard(hidden.cols['To Do']), makeCard(made[0].cols['To Do'])] });
 		makeMilestone({ name: 'Goal of nothing', createdBy: member });
-		return { member, owner, first: made[0].board, firstMade: made[0], hidden };
+		return { member, owner, first: made[0].board, firstMade: made[0], hidden, boardIds: made.map((b) => b.board.id) };
 	}
 
 	/** What each asks, by the member, in a scene of `n` boards: its reads and what it answers. */
 	async function readsFor(n: number) {
 		resetDb();
-		const { member, first } = boardsAndGoals(n);
+		const { member, first, boardIds } = boardsAndGoals(n);
 		const asked = {
 			'the inbox': () => load('/inbox', member),
 			'the plan page': () => load('/plan', member),
@@ -640,7 +676,9 @@ describe('the inbox and the goal lists read as much for one board or goal as for
 			// Card 2400: the goal names on the cards listed.
 			'All Tasks': () => load('/all', member),
 			'All To Do': () => load('/todo', member),
-			'GET /api/v1/reports/activity': () => get('/api/v1/reports/activity', member)
+			'GET /api/v1/reports/activity': () => get('/api/v1/reports/activity', member),
+			// Card 2402: every one of the member's boards named, each checked.
+			'GET /api/v1/reports/activity?boardIds=': () => get(`/api/v1/reports/activity?boardIds=${boardIds.join(',')}`, member)
 		};
 		const reads: Record<string, number> = {};
 		const answers: Record<string, unknown> = {};
@@ -684,14 +722,74 @@ describe('the inbox and the goal lists read as much for one board or goal as for
 	 * a public board, which everyone opens; and a goal across an open board and a
 	 * hidden one, whose only card on the hidden one is archived, which only those
 	 * who open both boards open (an archived card counts, as
-	 * `getMilestoneBoardIds` reads it). Each caller's list is held to
-	 * `canViewMilestone`'s answer, and by name to who opens which of the three,
-	 * so the two cannot agree by both listing nothing.
+	 * `getMilestoneBoardIds` reads it).
+	 */
+	type Made = ReturnType<typeof makeBoard>;
+	const NOTHING = 'Goal of nothing, the owner’s';
+	const PUBLIC = 'Goal on a public board';
+	const ARCHIVED = 'Goal across, archived on hidden';
+	const EDGES = [ARCHIVED, NOTHING, PUBLIC];
+	const edges = (owner: SessionUser, open: Made, hidden: Made, isPublic: Made) => {
+		makeMilestone({ name: NOTHING, createdBy: owner });
+		makeMilestone({ board: isPublic.board, name: PUBLIC, createdBy: owner, cards: [makeCard(isPublic.cols['To Do'])] });
+		makeMilestone({
+			name: ARCHIVED,
+			createdBy: owner,
+			cards: [makeCard(open.cols['To Do']), makeCard(hidden.cols['To Do'], { archivedAt: '2026-01-04 00:00:00' })]
+		});
+	};
+
+	/**
+	 * Each caller's lists are held to `canViewMilestone`'s answer, and by name to
+	 * who opens which of the three goals above, so the two cannot agree by both
+	 * listing nothing. `listMilestones` is also asked of every board (none, each
+	 * board, and one that is not there), every status and both modes, and held
+	 * to what it answered before card 2402, worked out here as it did then: the
+	 * whole table in id order, the board (or the goals with a card on it, archived
+	 * ones aside, in 'touching' mode), the status, `canViewMilestone` of each
+	 * goal, and its sort, in that order (card 2402's review). Its answer is not
+	 * sorted again here, so the order is held too: a third of the goals are
+	 * closed and half are given one target date, so that some tie on status and
+	 * date and are listed in the order they were read.
 	 */
 	it('lists exactly the goals `canViewMilestone` opens, for every kind of caller, in both scenes', () => {
 		const ids = (rows: { id: number }[]) => rows.map((m) => m.id).sort((a, b) => a - b);
+		const STATUSES = [undefined, 'open', 'closed', ''];
+		const MODES: BoardFilterMode[] = ['scoped', 'touching'];
+		const MISSING = 999_999;
+		const vary = () => {
+			const every = db.select({ id: milestones.id }).from(milestones).orderBy(milestones.id).all();
+			every.forEach(({ id }, i) =>
+				db
+					.update(milestones)
+					.set({ status: i % 3 === 0 ? 'closed' : 'open', targetDate: i % 2 === 0 ? '2027-01-01' : null })
+					.where(eq(milestones.id, id))
+					.run()
+			);
+		};
 		const check = (users: SessionUser[], boardIds: number[]) => {
-			const every = db.select().from(milestones).all();
+			const every = db.select().from(milestones).orderBy(milestones.id).all();
+			const placed = db
+				.select({ milestoneId: cards.milestoneId, boardId: columns.boardId, archivedAt: cards.archivedAt })
+				.from(cards)
+				.innerJoin(columns, eq(cards.columnId, columns.id))
+				.all();
+			/** `listMilestones`' answer before card 2402, its goals by id. */
+			const before = (user: SessionUser, boardId: number | undefined, status: string | undefined, mode: BoardFilterMode) => {
+				const touching = new Set(placed.filter((c) => c.boardId === boardId && c.archivedAt === null).map((c) => c.milestoneId));
+				return every
+					.filter((m) => boardId === undefined || m.boardId === boardId || (mode === 'touching' && touching.has(m.id)))
+					.filter((m) => (status ? m.status === status : true))
+					.filter((m) => canViewMilestone(user, m))
+					.sort((a, b) => {
+						if (a.status !== b.status) return a.status === 'open' ? -1 : 1;
+						if (a.targetDate && b.targetDate) return a.targetDate.localeCompare(b.targetDate);
+						if (a.targetDate) return -1;
+						if (b.targetDate) return 1;
+						return b.id - a.id;
+					})
+					.map((m) => m.id);
+			};
 			for (const user of users) {
 				expect(ids(listMilestones(user)), user.username).toEqual(ids(every.filter((m) => canViewMilestone(user, m))));
 				for (const boardId of boardIds) {
@@ -700,21 +798,17 @@ describe('the inbox and the goal lists read as much for one board or goal as for
 						ids(asked.filter((m) => canViewMilestone(user, m)))
 					);
 				}
+				for (const boardId of [undefined, ...boardIds, MISSING]) {
+					for (const status of STATUSES) {
+						for (const mode of MODES) {
+							expect(
+								listMilestones(user, boardId, status, mode).map((m) => m.id),
+								`${user.username}, board ${boardId}, status ${JSON.stringify(status)}, ${mode}`
+							).toEqual(before(user, boardId, status, mode));
+						}
+					}
+				}
 			}
-		};
-		type Made = ReturnType<typeof makeBoard>;
-		const NOTHING = 'Goal of nothing, the owner’s';
-		const PUBLIC = 'Goal on a public board';
-		const ARCHIVED = 'Goal across, archived on hidden';
-		const EDGES = [ARCHIVED, NOTHING, PUBLIC];
-		const edges = (owner: SessionUser, open: Made, hidden: Made, isPublic: Made) => {
-			makeMilestone({ name: NOTHING, createdBy: owner });
-			makeMilestone({ board: isPublic.board, name: PUBLIC, createdBy: owner, cards: [makeCard(isPublic.cols['To Do'])] });
-			makeMilestone({
-				name: ARCHIVED,
-				createdBy: owner,
-				cards: [makeCard(open.cols['To Do']), makeCard(hidden.cols['To Do'], { archivedAt: '2026-01-04 00:00:00' })]
-			});
 		};
 		/** Which of the three goals each caller is listed, by name. */
 		const opened = (users: SessionUser[]) =>
@@ -730,6 +824,7 @@ describe('the inbox and the goal lists read as much for one board or goal as for
 
 		const s = scene();
 		edges(s.callers.owner, s.A, s.B, s.P);
+		vary();
 		check(Object.values(s.callers), [s.A.board.id, s.B.board.id, s.P.board.id]);
 		expect(opened(Object.values(s.callers))).toEqual({ owner: EDGES, member: [PUBLIC], mate: [PUBLIC], admin: EDGES, outsider: [PUBLIC] });
 
@@ -737,8 +832,34 @@ describe('the inbox and the goal lists read as much for one board or goal as for
 		const { member, owner, firstMade, hidden } = boardsAndGoals(3);
 		const outsider = makeUser({ username: 'outsider' });
 		edges(owner, firstMade, hidden, makeBoard({ owner: makeUser({ username: 'stranger' }), name: 'Public', isPublic: true }));
+		vary();
 		check([member, owner, outsider], db.select().from(boards).all().map((b) => b.id));
 		expect(opened([member, owner, outsider])).toEqual({ member: [PUBLIC], owner: EDGES, outsider: [PUBLIC] });
+	});
+
+	// Card 2402's review: the rule is written twice, in memory for the goal
+	// names (`milestonesOpenAmong`, through `milestoneIdsOpenTo`) and in SQL for
+	// the goal lists (`goalsShownTo`). Asked of every goal, for every caller of
+	// both scenes, the two open the same goals.
+	it('the goal names and the goal lists open the same goals, for every kind of caller, in both scenes', () => {
+		const same = (users: SessionUser[]) => {
+			const every = db.select({ id: milestones.id }).from(milestones).all().map((m) => m.id);
+			for (const user of users) {
+				const listed = listMilestones(user).map((m) => m.id);
+				expect(listed.length, user.username).toBeGreaterThan(0);
+				expect([...milestoneIdsOpenTo(user, every)].sort((a, b) => a - b), user.username).toEqual(listed.sort((a, b) => a - b));
+			}
+		};
+
+		const s = scene();
+		edges(s.callers.owner, s.A, s.B, s.P);
+		same(Object.values(s.callers));
+
+		resetDb();
+		const { member, owner, firstMade, hidden } = boardsAndGoals(3);
+		const outsider = makeUser({ username: 'outsider' });
+		edges(owner, firstMade, hidden, makeBoard({ owner: makeUser({ username: 'stranger' }), name: 'Public', isPublic: true }));
+		same([member, owner, outsider]);
 	});
 
 	it('All Tasks reads only the boards its caller can open, and every board for an administrator', async () => {
@@ -754,6 +875,44 @@ describe('the inbox and the goal lists read as much for one board or goal as for
 		};
 		for (const kind of ['owner', 'member', 'mate', 'outsider'] as const) expect(await wholeTable(s.callers[kind]), kind).toBe(0);
 		expect(await wholeTable(s.callers.admin)).toBe(1);
+	});
+
+	// Card 2402: the two goal lists read every goal, and kept the caller's in
+	// memory. Which they read now is held to `canViewMilestone` by the test
+	// above; this holds that the one read of them asks it, for anyone but an
+	// administrator, whose read of every goal is the whole table.
+	it('the goal lists read only the goals their caller may open, and every one for an administrator', async () => {
+		const s = scene();
+		/** The SQL of each read of `milestones` that `ask` makes. */
+		const goalReads = async (ask: () => Promise<unknown>) => {
+			const budget = readBudget(100_000);
+			try {
+				await ask();
+			} finally {
+				budget.restore();
+			}
+			return budget.sources.filter((source) => /from "milestones"/.test(source));
+		};
+		// `goalsShownTo` is the one part of a read that names who made a goal.
+		const RULE = /"milestones"\."created_by" = \?/;
+		for (const kind of KINDS) {
+			const user = s.callers[kind];
+			const asked = {
+				'GET /api/milestones': () => get('/api/milestones', user),
+				'GET /api/milestones?forBoard=P': () => get(`/api/milestones?forBoard=${s.P.board.id}`, user),
+				'GET /api/v1/milestones?status=open': () => get('/api/v1/milestones?status=open', user),
+				'the plan page, board A': () => load(`/plan?board=${s.A.board.id}`, user),
+				'the board page, P': () => load(`/board/${s.P.board.id}`, user)
+			};
+			for (const [name, ask] of Object.entries(asked)) {
+				const reads = await goalReads(ask);
+				expect(reads, `${name}, for the ${kind}`).toHaveLength(1);
+				if (kind === 'admin') expect(reads[0], name).not.toMatch(RULE);
+				else expect(reads[0], `${name}, for the ${kind}`).toMatch(RULE);
+			}
+		}
+		const [every] = await goalReads(() => get('/api/milestones', s.callers.admin));
+		expect(every.trim()).toMatch(/from "milestones" order by "milestones"\."id"$/);
 	});
 
 	// Card 2400: the plan page read every top-level board, and kept the
