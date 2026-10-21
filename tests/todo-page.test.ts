@@ -719,9 +719,13 @@ describe('the page, src/routes/todo/+page.svelte, read from its source (test 15)
 		// Opened when the page is, closed when it goes. What each update said,
 		// and each gap, tells the open card window whether its comments
 		// changed (card 2282): `connectLiveRefresh`'s calls of `onEvent` are
-		// held in `tests/card-window-comments.svelte.test.ts`.
-		expect(script).toMatch(/onMount\(\(\) => \{\s*closeLive = connectLiveRefresh\(\(\) => invalidateAll\(\), \(event\) => \{\s*if \(commentsChanged\(event, cardWindow\.cardId\)\) commentsTold\+\+;\s*\}\);/);
+		// held in `tests/card-window-comments.svelte.test.ts`. And its files
+		// (card 2337), as `attachmentsChanged` says.
+		expect(script).toMatch(
+			/onMount\(\(\) => \{\s*closeLive = connectLiveRefresh\(\(\) => invalidateAll\(\), \(event\) => \{\s*if \(commentsChanged\(event, cardWindow\.cardId\)\) commentsTold\+\+;\s*if \(attachmentsChanged\(event, cardWindow\.cardId\)\) attachmentsTold\+\+;\s*\}\);/
+		);
 		expect(source).toMatch(/<CardModal\b(?:(?!\/>)[\s\S])*\{commentsTold\}(?:(?!\/>)[\s\S])*\/>/);
+		expect(source).toMatch(/<CardModal\b(?:(?!\/>)[\s\S])*\{attachmentsTold\}(?:(?!\/>)[\s\S])*\/>/);
 		expect(script).toMatch(/onDestroy\(\(\) => \{\s*closeLive\?\.\(\);/);
 	});
 

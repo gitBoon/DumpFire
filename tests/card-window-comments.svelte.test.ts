@@ -45,7 +45,8 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import type * as Svelte from 'svelte';
 import type { CardType } from '$lib/types';
 import type { CommentItem } from '$lib/components/card/CardComments.svelte';
-import { commentsChanged } from '$lib/board/sse';
+import type { AttachmentItem } from '$lib/components/card/CardAttachments.svelte';
+import { attachmentsChanged, commentsChanged } from '$lib/board/sse';
 
 // The comment list asks the page who is signed in: the comment's author, unless a case says
 // otherwise before it draws (an administrator, card 2338).
@@ -724,6 +725,180 @@ describe('the card window re-reads its comments when told (card 2282, tests 14 t
 		await pass(1000);
 
 		expect(commentReads()).toBe(1);
+	});
+});
+
+// ─── The window following its card's files (card 2337) ──────────────────────
+
+describe('which events tell a card window of its files (card 2337, test 18)', () => {
+	it.each([
+		['this card’s attachment event', { type: 'attachment', cardId: 7 }, true],
+		['another card’s attachment event', { type: 'attachment', cardId: 8 }, false],
+		['a comment event on this card', { type: 'comment', cardId: 7 }, false],
+		['a reconnect or a return to the tab, which may have missed one', null, true],
+		['no event at all, read as a gap rather than thrown on', undefined, true]
+	] as const)('%s', (_what, event, told) => {
+		expect(attachmentsChanged(event, 7)).toBe(told);
+	});
+});
+
+describe('the card window re-reads its files when told, once it has read them (card 2337, tests 19 and 20)', () => {
+	/** Each read of the card's files, answered when the case says, in the order they were sent. */
+	let reads: ((list: AttachmentItem[]) => void)[] = [];
+	/** Each upload, answered when the case says with the file as saved. */
+	let uploads: ((made: AttachmentItem) => void)[] = [];
+	let requests: string[] = [];
+
+	const file = (id: number, originalName: string): AttachmentItem => ({
+		id, cardId: 7, filename: `${id}-${originalName}`, originalName, mimeType: 'text/plain', sizeBytes: 10, uploadedBy: 1, createdAt: '2026-10-21 09:00:00'
+	});
+
+	beforeEach(() => {
+		reads = [];
+		uploads = [];
+		requests = [];
+		vi.stubGlobal(
+			'fetch',
+			vi.fn((url: string, init?: RequestInit) => {
+				const method = init?.method ?? 'GET';
+				requests.push(`${method} ${url}`);
+				if (url === '/api/cards/7/attachments' && method === 'GET') return new Promise((resolve) => reads.push((list) => resolve(respond(list))));
+				if (url === '/api/cards/7/attachments' && method === 'POST') return new Promise((resolve) => uploads.push((made) => resolve(respond(made))));
+				if (url.includes('/dependencies')) return Promise.resolve(respond({ blockedBy: [], blocks: [] }));
+				if (url.includes('/tokens')) return Promise.resolve(respond(null));
+				return Promise.resolve(respond([]));
+			})
+		);
+		Element.prototype.scrollIntoView = () => {};
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	async function pass(ms = 0) {
+		await vi.advanceTimersByTimeAsync(ms);
+		for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+	}
+
+	/** Mounts the window on card 7, its props `$state` as a page's are; with its Files tab opened and its first read answered with `first`, if given. */
+	async function drawWindow(first: AttachmentItem[] | null) {
+		const props = $state({ card: opened, categories: [], labels: [], boardId: 1, boardUsers: [], onSave: () => {}, onClose: () => {}, attachmentsTold: 0 });
+		const target = document.createElement('div');
+		document.body.appendChild(target);
+		drawn = { component: mount(CardModal, { target, props: props as never }), target };
+		await pass();
+		if (first) {
+			[...target.querySelectorAll<HTMLButtonElement>('.tab')].find((tab) => tab.textContent!.includes('Files'))!.click();
+			flushSync();
+			expect(reads).toHaveLength(1);
+			reads[0](first);
+			await pass();
+		}
+		return { props, target };
+	}
+
+	function told(props: { attachmentsTold: number }) {
+		props.attachmentsTold++;
+		flushSync();
+	}
+
+	/** Chooses `chosen` in the Files tab's file box, as the browser does. */
+	function choose(target: HTMLElement, chosen: File) {
+		const input = target.querySelector<HTMLInputElement>('.upload-input')!;
+		Object.defineProperty(input, 'files', { value: [chosen], configurable: true });
+		input.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+	}
+
+	const fileReads = () => requests.filter((what) => what === 'GET /api/cards/7/attachments').length;
+	const shownFiles = (target: HTMLElement) => [...target.querySelectorAll('.attachment-name')].map((name) => name.textContent!.trim());
+	const filesBadge = (target: HTMLElement) =>
+		[...target.querySelectorAll('.tab')].find((tab) => tab.textContent!.includes('Files'))!.querySelector('.tab-badge')?.textContent ?? null;
+	const loadingFiles = (target: HTMLElement) => target.querySelector('.comments-loading')?.textContent === 'Loading attachments...';
+
+	it('reads its files again once, quietly, for three raises within 250 ms, showing the new file and the count; a window whose Files tab was never opened reads none (test 19)', async () => {
+		const { props, target } = await drawWindow([file(1, 'plan.txt')]);
+		expect(shownFiles(target)).toEqual(['plan.txt']);
+
+		told(props);
+		await pass(100);
+		told(props);
+		await pass(100);
+		told(props);
+		await pass(50);
+		expect(fileReads()).toBe(2);
+		expect(loadingFiles(target)).toBe(false);
+		reads[1]([file(1, 'plan.txt'), file(2, 'notes.txt')]);
+		await pass(1000);
+
+		expect(shownFiles(target)).toEqual(['plan.txt', 'notes.txt']);
+		expect(filesBadge(target)).toBe('2');
+		expect(fileReads()).toBe(2);
+
+		// A window that has not read its files reads them when its tab is opened.
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		drawn = null;
+		requests = [];
+		const unread = await drawWindow(null);
+		told(unread.props);
+		await pass(1000);
+		expect(fileReads()).toBe(0);
+	});
+
+	// The card 2337 review: a change told while the tab's first read was out was dropped,
+	// the window waiting for a read to have been answered before it would re-read.
+	it('reads its files again when told while the Files tab’s first read is out, and shows the newer answer when the first comes back stale (test 19)', async () => {
+		const { props, target } = await drawWindow(null);
+		[...target.querySelectorAll<HTMLButtonElement>('.tab')].find((tab) => tab.textContent!.includes('Files'))!.click();
+		flushSync();
+		expect(fileReads()).toBe(1);
+
+		told(props);
+		await pass(250);
+		expect(fileReads()).toBe(2);
+		reads[0]([file(1, 'plan.txt')]);
+		await pass();
+		reads[1]([file(1, 'plan.txt'), file(2, 'notes.txt')]);
+		await pass();
+
+		expect(shownFiles(target)).toEqual(['plan.txt', 'notes.txt']);
+		expect(filesBadge(target)).toBe('2');
+		expect(loadingFiles(target)).toBe(false);
+	});
+
+	it('takes no answer of a re-read sent before an upload made in the window, and shows a file once when a re-read brought it before the upload’s answer (test 20)', async () => {
+		const { props, target } = await drawWindow([file(1, 'plan.txt')]);
+
+		// A re-read out; an upload made and answered; then the re-read answers with the files as they were.
+		told(props);
+		await pass(250);
+		expect(fileReads()).toBe(2);
+		choose(target, new File(['hello'], 'notes.txt', { type: 'text/plain' }));
+		await pass();
+		uploads[0](file(2, 'notes.txt'));
+		await pass();
+		expect(shownFiles(target)).toEqual(['plan.txt', 'notes.txt']);
+		reads[1]([file(1, 'plan.txt')]);
+		await pass();
+		expect(shownFiles(target)).toEqual(['plan.txt', 'notes.txt']);
+
+		// Another upload, whose answer comes after a re-read already brought its file.
+		choose(target, new File(['more'], 'more.txt', { type: 'text/plain' }));
+		await pass();
+		told(props);
+		await pass(250);
+		expect(fileReads()).toBe(3);
+		reads[2]([file(1, 'plan.txt'), file(2, 'notes.txt'), file(3, 'more.txt')]);
+		await pass();
+		uploads[1](file(3, 'more.txt'));
+		await pass();
+
+		expect(shownFiles(target)).toEqual(['plan.txt', 'notes.txt', 'more.txt']);
+		expect(filesBadge(target)).toBe('3');
 	});
 });
 

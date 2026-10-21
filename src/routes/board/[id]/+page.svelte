@@ -57,7 +57,7 @@
 	import * as dndHandlers from '$lib/board/dnd-handlers';
 	import * as bulkOps from '$lib/board/bulk-actions';
 	import { loadXp as fetchXpData } from '$lib/board/xp-utils';
-	import { commentsChanged, connectSSE } from '$lib/board/sse';
+	import { attachmentsChanged, commentsChanged, connectSSE } from '$lib/board/sse';
 	import { BoardState, type WriteWords } from '$lib/board/board-state.svelte';
 	import { CARD_GONE, CardWindow, type CardWindowSave } from '$lib/board/card-window.svelte';
 	import { copyColumns, insertColumn, moveCards, patchCard, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
@@ -1420,6 +1420,8 @@
 	let cleanupSSE: (() => void) | null = null;
 	/** How often the stream has said the open card's comments may have changed: the card window's `commentsTold`. */
 	let commentsTold = $state(0);
+	/** The same for the open card's files: the card window's `attachmentsTold` (card 2337). */
+	let attachmentsTold = $state(0);
 
 	// The live stream is this page's, opened as it mounts and closed as it is
 	// destroyed. `./+layout.svelte` makes the page afresh for each board, so a
@@ -1430,7 +1432,8 @@
 	// its refusal; any other change, a reconnect or a return to the tab, after
 	// the burst and once nothing holds it (card 2280, slice B2a). A change to
 	// the open card's comments, a reconnect or a return to the tab also tells
-	// the card window to read its comments again (card 2282).
+	// the card window to read its comments again (card 2282), and one to its
+	// files, or the same gaps, its files (card 2337).
 	onMount(() => {
 		refreshXp();
 		tickInterval = setInterval(() => { tick++; }, 15000);
@@ -1438,6 +1441,7 @@
 			cleanupSSE = connectSSE(data.board.id, {
 				onUpdate: (event) => {
 					if (commentsChanged(event, cardWindow.cardId)) commentsTold++;
+					if (attachmentsChanged(event, cardWindow.cardId)) attachmentsTold++;
 					if (event?.type === 'access') boardState.accessChanged();
 					else boardState.refresh();
 				},
@@ -1734,6 +1738,7 @@
 		notice={cardWindow.gone ? CARD_GONE : ''}
 		edits={cardWindow.edits}
 		{commentsTold}
+		{attachmentsTold}
 		availableBoards={boardState.linkableBoards.map(b => ({ id: b.id, name: b.name, emoji: b.emoji || '📋' }))}
 		milestones={boardState.milestones}
 	/>

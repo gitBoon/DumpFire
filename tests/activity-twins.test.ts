@@ -2428,6 +2428,21 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/v1/comments/[commentId]/+server.ts DELETE': [
 		{ service: 'deleteComment', args: [code('caller'), { commentId: code('commentId') }, null, { source: 'api' }] }
 	],
+	// Card 2337: the card window's files, which `/api/v1` does not serve, so no twin.
+	'src/routes/api/cards/[id]/attachments/+server.ts POST': [
+		{
+			service: 'attachFile',
+			args: [
+				code('caller'),
+				{ cardId: code('cardId') },
+				{ filename: code('filename'), originalName: code('file.name'), mimeType: code("file.type || 'application/octet-stream'"), sizeBytes: code('file.size') },
+				{ source: 'ui' }
+			]
+		}
+	],
+	'src/routes/api/cards/[id]/attachments/[attachmentId]/+server.ts DELETE': [
+		{ service: 'deleteAttachment', args: [code('caller'), { attachmentId: code('attachmentId') }, null, { source: 'ui' }] }
+	],
 	'src/routes/api/labels/+server.ts PUT': [{ service: 'toggleCardLabel', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
 	'src/routes/api/v1/cards/[cardId]/labels/+server.ts POST': [
 		{ service: 'addCardLabel', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'api' }] }

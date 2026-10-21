@@ -265,6 +265,8 @@ const spec = {
 			'(96) GET /api/v1/milestones/{milestoneId} lists the milestone\'s archived cards in `archivedCards`, by card id, withheld as `cards` are, each with `archivedAt` (null when withheld); ' +
 			'`cards` still leaves them out. They are the cards that stop PATCH …/{milestoneId} giving the milestone to another board when no live card does, and the refusal names none of them, ' +
 			'where finding them meant asking each board for GET /api/v1/boards/{boardId}/cards?archived=true. ' +
+			'(97) GET /api/v1/audit-log and the activity reads can return `attachment_added` and `attachment_deleted`, written by the web application when a file ' +
+			'is attached to or deleted from a card; neither was recorded. No webhook is sent for either. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -313,7 +315,9 @@ const spec = {
 			'**Attachments** are not part of this API. In the web application an attachment opened by its address is shown in ' +
 			'the browser only if it is a PNG, JPEG, GIF, WebP or .txt file whose stored type and extension agree; every other ' +
 			'attachment, a PDF, an HTML or an SVG file among them, is a download. Every answer carries ' +
-			'Content-Security-Policy: sandbox and X-Content-Type-Options: nosniff.\n\n' +
+			'Content-Security-Policy: sandbox and X-Content-Type-Options: nosniff. GET /api/v1/audit-log and the activity reads can return ' +
+			'`attachment_added` and `attachment_deleted`, written by the web application when a file is attached to or deleted from a card; ' +
+			'neither was recorded before. No webhook is sent for either.\n\n' +
 			'**Three answers that are not JSON.** Each is made by SvelteKit before DumpFire\'s gate is given the request, so the gate ' +
 			'cannot answer them as it answers everything else. (1) A POST, PUT, PATCH or DELETE whose Content-Type is that of a form or text/plain, sent with no Origin header ' +
 			'matching the server, is answered 403 in plain text, with one exception: when the request\'s Accept header is exactly ' +

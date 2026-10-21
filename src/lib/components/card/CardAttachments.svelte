@@ -8,7 +8,9 @@
   were. The files themselves are the window's, bound here: the window reads
   them when the tab is opened on none (its tab shows their count), and this
   asks it to read them again when a delete is refused. Uploads and deletes
-  are sent from here, each answer read.
+  are sent from here, each answer read. Once it has read them, the window
+  reads them again, quietly, when its page is told another person's upload
+  or delete (card 2337); each shown here tells the window (`onWritten`).
 -->
 <script module lang="ts">
 	export type AttachmentItem = {
@@ -27,7 +29,8 @@
 		attachments = $bindable(),
 		loadingAttachments,
 		loadAttachments,
-		windowError = $bindable()
+		windowError = $bindable(),
+		onWritten
 	}: {
 		card: CardType | null;
 		activeTab: 'details' | 'comments' | 'attachments';
@@ -36,6 +39,12 @@
 		/** The window's: reads the card's files again. */
 		loadAttachments: () => Promise<void>;
 		windowError: string;
+		/**
+		 * Called as an upload's file or a delete made here is shown: the window
+		 * then takes no answer of a re-read sent before it, which holds the
+		 * files as they were (card 2337, as card 2282 for comments).
+		 */
+		onWritten?: () => void;
 	} = $props();
 
 	let uploading = $state(false);
@@ -98,7 +107,10 @@
 		const created = res.ok ? await answerBody(res.clone()) : null;
 		if (created === null) return uploadFailure(res, what);
 
-		attachments = [...attachments, created as AttachmentItem];
+		// A live re-read may have brought it first (card 2337): shown once.
+		const made = created as AttachmentItem;
+		attachments = [...attachments.filter(a => a.id !== made.id), made];
+		onWritten?.();
 		return null;
 	}
 
@@ -115,6 +127,7 @@
 			return;
 		}
 		attachments = attachments.filter(a => a.id !== id);
+		onWritten?.();
 	}
 
 	function formatFileSize(bytes: number): string {

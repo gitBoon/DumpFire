@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.32
+version: 1.33
 status: As-Built
-date: 2026-10-20
+date: 2026-10-21
 tags:
   - notifications
   - email
@@ -994,6 +994,7 @@ flowchart LR
 |-------|---------|---------|
 | `update` | `{type: 'card'}` | Card updated, moved, archived, restored or deleted. A creation carries `action: 'created'`, `cardTitle`, `userName` and `userEmoji`, an accepted request's card among them (card 2108). Someone assigned to a card (also when they already were) or taken off it, on a page or through the API (card 2143). Also sent, beside the comment event below, to the board of a card an "Unblocked" notice is written on. Not an archive of a card already archived, on a page or through the API, which writes and sends nothing (card 2285). A change of position within a column, by a drag, the v1 move or `PUT /api/cards/{id}`, carries `action: 'reorder'`, `userName` and `userEmoji` (the card update sent a bare `{type: 'card'}` for it until card 2288) |
 | `update` | `{type: 'comment', cardId}` | A comment added or edited on the card, on a page or through the API, sent last, once the comment, its entry and its mail are queued (card 2282; an edit sent `{type: 'card'}` until then); a comment deleted, on a page or through `DELETE /api/v1/comments/{id}`, once the row is gone and its `comment_deleted` entry written (card 2283; a delete sent nothing), so a window open on the card loses it; and an "Unblocked" notice written on the card, which is a comment. Not a comment saved with its text unchanged, which sends nothing (card 2284). Every page re-reads on it as on any update; a card window open on that card (the board page, All Tasks, All To Do) also reads its comments again, 250 ms on so a burst is one read, without "Loading comments..." and keeping a comment being edited, so another person's comment shows without reopening the card. The window does the same after a reconnect or a return to the tab, which may have missed one. The plan page's window, which has no stream, does not |
+| `update` | `{type: 'attachment', cardId}` | A file attached to the card or deleted from it in the card window's Files tab, once the row and its `attachment_added` or `attachment_deleted` entry are committed (card 2337; neither sent anything, nor was recorded). Every page re-reads on it as on any update; a card window open on that card (the board page, All Tasks, All To Do) whose files it has already read (its Files tab opened once) reads them again, 250 ms on so a burst is one read, without "Loading attachments...", so another person's new file shows, or a deleted one goes, without reopening the card; the tab's count follows. It does the same after a reconnect or a return to the tab. A window that has not read its files reads them when its Files tab is opened, as before. Not sent through `/api/v1`, which serves no attachments; the plan page's window does not follow |
 | `update` | `{type: 'column'}` | Column added, renamed, reordered, deleted |
 | `update` | `{type: 'board'}` | The board updated: renamed, its emoji or dashboard grouping changed, or made public or private, on a page or through the API (card 2143); or put under a card or taken out from under one, which only a page can do (`PUT /api/boards/{id}` with `parentCardId`: `PUT /api/v1/boards/{id}` reads no `parentCardId`). Sent once to the board, and once to each board whose card it joined or left. A request that sent no field sends nothing |
 | `update` | `{type: 'label'}` | A label of the board made, renamed, recoloured or deleted, or put on or taken off one of its cards: on a page (`POST`, `PATCH`, `PUT` and `DELETE /api/labels`), or through the API (`POST /api/v1/boards/{id}/labels`, `PUT` and `DELETE /api/v1/labels/{id}`, `POST` and `DELETE /api/v1/cards/{id}/labels`) |
@@ -1637,7 +1638,9 @@ No other entry sends one. A comment edited (`comment_edited`) or deleted (`comme
 recorded since card 2283) sends no webhook: an empty `events` list means every event, so a new
 `comment.deleted` would start reaching existing receivers unannounced (card 2283, decision 8).
 A receiver mirroring a card's comments learns of an edit or a delete only by reading the
-card's comments again. No subtask entry sends one either: an untick or an edit
+card's comments again. A file attached (`attachment_added`) or deleted (`attachment_deleted`),
+recorded since card 2337, sends none for the same reason, and a receiver could not fetch the
+file: attachments are not part of the API. No subtask entry sends one either: an untick or an edit
 (`subtask_updated`, recorded since card 2299) is no more a webhook event than a tick is. Nor
 does any goal entry (card 2289): `milestone_updated`, `milestone_closed`, `milestone_reopened`,
 `milestone_deleted`, `milestone_card_added` and `milestone_card_removed` have no event, for the

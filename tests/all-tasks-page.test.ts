@@ -250,6 +250,42 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		}
 	});
 
+	// Card 2337: and its files, once it has read them, for its card's
+	// attachment event and the same two gaps, each with its handler here.
+	it('tells the open card window to read its files again for its card’s attachment event, a reconnect and a return to the tab, and not for another card’s or a comment', async () => {
+		const target = draw();
+		cardNamed(target, 'Plan').click();
+		await settle();
+		buttonNamed(document.body, 'Files').click();
+		await settle();
+		const fileReads = () => asked('GET /api/cards/7/attachments').length;
+		expect(fileReads()).toBe(1);
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		try {
+			const afterTheWait = async () => {
+				await vi.advanceTimersByTimeAsync(300);
+				flushSync();
+				return fileReads();
+			};
+
+			streamSends('update', { type: 'attachment', cardId: 8 });
+			expect(await afterTheWait()).toBe(1);
+			streamSends('update', { type: 'comment', cardId: 7 });
+			expect(await afterTheWait()).toBe(1);
+			streamSends('update', { type: 'attachment', cardId: 7 });
+			expect(await afterTheWait()).toBe(2);
+			stream.reopened!();
+			flushSync();
+			expect(await afterTheWait()).toBe(3);
+			Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+			document.dispatchEvent(new Event('visibilitychange'));
+			flushSync();
+			expect(await afterTheWait()).toBe(4);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('opens the Move window from a card’s Move button, without its card window, and the move reaches its request', async () => {
 		const target = draw();
 		expect(target.querySelector('.move-modal')).toBeNull();

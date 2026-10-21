@@ -35,7 +35,7 @@
 	import { boardPathText, chosenBoardId, inBoardFilter } from '$lib/board-tree';
 	import { cardArchiveWarning } from '$lib/api';
 	import { connectLiveRefresh } from '$lib/live-refresh';
-	import { commentsChanged } from '$lib/board/sse';
+	import { attachmentsChanged, commentsChanged } from '$lib/board/sse';
 	import { drawnColour } from '$lib/colours';
 	import {
 		dropUnknownChoices,
@@ -227,10 +227,13 @@
 	 * which re-reads them (card 2282).
 	 */
 	let commentsTold = $state(0);
+	/** The same for the open card's files: the card window's `attachmentsTold` (card 2337). */
+	let attachmentsTold = $state(0);
 
 	onMount(() => {
 		closeLive = connectLiveRefresh(() => invalidateAll(), (event) => {
 			if (commentsChanged(event, cardWindow.cardId)) commentsTold++;
+			if (attachmentsChanged(event, cardWindow.cardId)) attachmentsTold++;
 		});
 		tickInterval = setInterval(() => { tick++; }, 60000);
 	});
@@ -655,6 +658,7 @@
 		onClose={() => cardWindow.close()}
 		edits={cardWindow.edits}
 		{commentsTold}
+		{attachmentsTold}
 	/>
 	{/key}
 {/if}
