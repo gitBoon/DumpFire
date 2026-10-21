@@ -540,6 +540,22 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		status: { internal: 200, v1: 200 },
 		sources: { internal: ['card_deleted ui', 'card.deleted ui'], v1: ['api:card_deleted api', 'card.deleted api'] }
 	},
+	// Card 2381: a card that leaves a goal because of another change writes a
+	// card taken out's entry on its board, which sends `milestone.card_removed`,
+	// the same in both trees (here, a column deleted and a move to another
+	// board below); each wrote and sent nothing for the goal.
+	{
+		row: 3,
+		what: 'deleting a card in a milestone for good',
+		build: () => goalScene(true),
+		internal: (s) => api('DELETE', `/api/cards/${s.first.id}?permanent=true`, { user: s.owner }),
+		v1: (s) => api('DELETE', `/api/v1/cards/${s.first.id}?permanent=true`, { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		sources: {
+			internal: ['card_deleted ui', 'milestone_card_removed ui', 'card.deleted ui', 'milestone.card_removed ui'],
+			v1: ['api:card_deleted api', 'api:milestone_card_removed api', 'card.deleted api', 'milestone.card_removed api']
+		}
+	},
 	{
 		row: 4,
 		what: 'moving a card to another column',
@@ -603,6 +619,19 @@ const SERVICE_TWINS: ServiceTwin[] = [
 				v1: [webhook, update]
 			};
 		})()
+	},
+	// Card 2381: out of its board's milestone, recorded on the board it left.
+	{
+		row: 4,
+		what: "moving a card to another board out of its board's milestone (the card update's columnId, against the v1 move)",
+		build: () => goalScene(true),
+		internal: (s) => api('PUT', `/api/cards/${s.first.id}`, { user: s.owner, body: { columnId: s.S.cols['To Do'].id } }),
+		v1: (s) => api('PUT', `/api/v1/cards/${s.first.id}/move`, { user: s.owner, body: { columnId: s.S.cols['To Do'].id } }),
+		status: { internal: 200, v1: 200 },
+		sources: {
+			internal: ['card_moved_away ui', 'milestone_card_removed ui', 'card_moved_in ui', 'card.moved ui', 'milestone.card_removed ui'],
+			v1: ['api:card_moved_away api', 'api:milestone_card_removed api', 'api:card_moved_in api', 'card.moved api', 'milestone.card_removed api']
+		}
 	},
 	{
 		row: 2,
@@ -984,22 +1013,38 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('DELETE', `/api/milestones/${launch()}`, { user: s.owner }),
 		v1: (s) => api('DELETE', `/api/v1/milestones/${launch()}`, { user: s.owner }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: ['milestone_deleted ui'], v1: ['api:milestone_deleted api'] },
+		// And the card released, on its board, as a card taken out, which sends
+		// `milestone.card_removed` (card 2381): it recorded and sent nothing.
+		sources: {
+			internal: ['milestone_deleted ui', 'milestone_card_removed ui', 'milestone.card_removed ui'],
+			v1: ['api:milestone_deleted api', 'api:milestone_card_removed api', 'milestone.card_removed api']
+		},
 		entries: (() => {
-			const entry = {
+			const entry = (cardId: number | null, action: string, detail: string) => ({
 				boardId: 1,
-				cardId: null,
+				cardId,
 				userId: 1,
-				action: 'milestone_deleted',
-				detail: 'Deleted milestone "Launch"; 1 card on this board released',
+				action,
+				detail,
 				userName: 'owner',
 				userEmoji: '👤',
 				source: undefined
-			};
-			return { internal: [entry], v1: [entry] };
+			});
+			const both = [
+				entry(null, 'milestone_deleted', 'Deleted milestone "Launch"; 1 card on this board released'),
+				entry(1, 'milestone_card_removed', 'Removed "First" from milestone "Launch" (milestone deleted)')
+			];
+			return { internal: both, v1: both };
 		})(),
 		told: (() => {
-			const told = [{ event: 'update', boardId: 1, data: { type: 'milestone' } }];
+			const told = [
+				{
+					webhook: 'milestone.card_removed',
+					boardId: 1,
+					data: { cardId: 1, action: 'milestone_card_removed', source: undefined, detail: 'Removed "First" from milestone "Launch" (milestone deleted)', user: 'owner' }
+				},
+				{ event: 'update', boardId: 1, data: { type: 'milestone' } }
+			];
 			return { internal: told, v1: told };
 		})()
 	},
@@ -1197,6 +1242,19 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		v1: (s) => api('DELETE', `/api/v1/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
 		status: { internal: 200, v1: 200 },
 		sources: { internal: ['column_deleted ui'], v1: ['api:column_deleted api'] }
+	},
+	// Card 2381: the card was in a milestone.
+	{
+		row: 27,
+		what: 'deleting a column, and the card in it, which was in a milestone',
+		build: () => goalScene(true),
+		internal: (s) => api('DELETE', `/api/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
+		v1: (s) => api('DELETE', `/api/v1/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		sources: {
+			internal: ['column_deleted ui', 'milestone_card_removed ui', 'milestone.card_removed ui'],
+			v1: ['api:column_deleted api', 'api:milestone_card_removed api', 'milestone.card_removed api']
+		}
 	},
 	{
 		row: 29,
@@ -3806,9 +3864,14 @@ describe('the details', () => {
 		expect(res.body).toEqual({ success: true, cardsReleased: 2 });
 		expect(goalEntries()).toEqual([
 			`${s.A.board.id}: api:milestone_deleted: Deleted milestone #${s.across.id}; 1 card on this board released`,
-			`${s.S.board.id}: api:milestone_deleted: Deleted milestone #${s.across.id}; 1 card on this board released`
+			`${s.S.board.id}: api:milestone_deleted: Deleted milestone #${s.across.id}; 1 card on this board released`,
+			// Then each card released, on its own board, named as that board's readers may know the goal (card 2381).
+			`${s.A.board.id}: api:milestone_card_removed: Removed "First" from milestone #${s.across.id} (milestone deleted)`,
+			`${s.S.board.id}: api:milestone_card_removed: Removed "On S" from milestone #${s.across.id} (milestone deleted)`
 		]);
+		// The card on A sends A's webhook its `milestone.card_removed`; S has none.
 		expect(told).toEqual([
+			'webhook milestone.card_removed',
 			`event update {"type":"milestone"} on board ${s.A.board.id}`,
 			`event update {"type":"milestone"} on board ${s.S.board.id}`
 		]);

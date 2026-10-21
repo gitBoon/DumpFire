@@ -37,7 +37,8 @@
  * when something was written. A change that changes nothing writes, records
  * and tells nothing. A card put in or taken out sends `milestone.card_added`
  * or `milestone.card_removed` to its board's webhooks (card 2343); no change
- * to the goal itself sends a webhook.
+ * to the goal itself sends a webhook, but each card a delete releases sends
+ * `milestone.card_removed` (card 2381).
  */
 
 import { error } from '@sveltejs/kit';
@@ -52,6 +53,7 @@ import {
 	deleteMilestone,
 	goalAsNamedOn,
 	goalBoards,
+	logCardLeftGoal,
 	MilestoneError,
 	requireMilestone,
 	requireMilestoneBoard,
@@ -347,7 +349,10 @@ export function changeMilestone(caller: SessionUser | null, at: { milestoneId: n
  *
  * Recorded on each of the goal's boards (card 2289), with the count of that
  * board's cards released, and each of them told, with every board a released
- * card is on: open boards drop the goal's chip.
+ * card is on: open boards drop the goal's chip. Then each card released is
+ * recorded on its own board, `milestone_card_removed` `… (milestone deleted)`,
+ * which sends `milestone.card_removed` there (card 2381): a receiver mirroring
+ * the goal's cards learnt of none of them.
  */
 export function deleteMilestoneFor(
 	caller: SessionUser | null,
@@ -358,7 +363,7 @@ export function deleteMilestoneFor(
 	inWrite();
 	try {
 		const user = requireUser(caller);
-		const { released, milestone, boards, releasedOn } = deleteMilestone(user, at.milestoneId);
+		const { released, milestone, boards, releasedOn, releasedCards } = deleteMilestone(user, at.milestoneId);
 		for (const boardId of boards) {
 			const count = releasedOn.get(boardId) ?? 0;
 			logActivity({
@@ -369,6 +374,7 @@ export function deleteMilestoneFor(
 				...actorOf(user)
 			});
 		}
+		for (const card of releasedCards) logCardLeftGoal(user, opts.source, card, milestone, 'milestone deleted');
 		for (const boardId of new Set([...boards, ...releasedOn.keys()])) emit(boardId, 'update', { type: 'milestone' });
 		return { released };
 	} catch (e) {

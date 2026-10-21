@@ -170,7 +170,10 @@ export function readSource(row: { action: string; source?: string | null }): Act
  *
  * A card put in a goal or taken out sends `milestone.card_added` or
  * `milestone.card_removed` (card 2343), from its entry on the card's board,
- * whichever route did it: `logCardInOrOut` writes them all. A card moved from
+ * whichever route did it: `logCardInOrOut` writes them all, and
+ * `logCardLeftGoal` the `milestone_card_removed` of a card that left a goal by
+ * another change (card 2381): moved to another board, its goal deleted, or
+ * deleted itself, on a board that is still there. A card moved from
  * one goal to another is one `milestone.card_added` naming the goal it left.
  * Through `PUT /api/v1/cards/{cardId}` it writes the goal's entry, not
  * `card_updated`: goal membership sends no `card.updated` on any route. No

@@ -297,12 +297,13 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
  * /api/v1/boards/:boardId`): every sub-board at every depth goes with it, and
  * what else goes is in `deletes.ts`. Only owners and administrators may; a
  * board that is not there is 404 to everyone, before who is asking is looked
- * at (card 2211). There is no body.
+ * at (card 2211). There is no body. A card elsewhere released from one of its
+ * goals is recorded as this tree's (card 2381).
  */
 export function deleteBoardFor(caller: SessionUser | null, at: { boardId: number }, body: null, opts: ServiceOptions): void {
 	inWrite();
 	const user = requireUser(caller);
 	requireBoardOwner(user, at.boardId, 'Only board owners and admins can delete boards');
 
-	if (!deleteBoard(at.boardId, user)) throw error(404, 'Board not found');
+	if (!deleteBoard(at.boardId, user, opts.source)) throw error(404, 'Board not found');
 }

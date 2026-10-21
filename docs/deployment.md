@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.81
+version: 1.82
 status: As-Built
 date: 2026-10-21
 tags:
@@ -4110,6 +4110,37 @@ On production, as **O**, your administrator account, with O's API key (My Accoun
 #### Going back to the previous image
 
 Nothing is done to the database. The older image sends no webhook for a card put in a goal or taken out, and refuses a webhook created or changed with `milestone.card_added` or `milestone.card_removed` in its events (`400`); a webhook already saved with either keeps it and is sent neither. On a plan page it does not read the plan again after a refused, unanswered or late window change, and its delete confirmation does not name the teams an account alone owns (the delete is still refused).
+
+### One Reader for Both Audit Logs, a Webhook for Every Card That Leaves a Goal, and the Card Window's Dependency Read When the Network Drops
+
+**Cards 2294, 2381 and 2382.** No migration, no setting, no route added. One `/api/v1` change: `milestone.card_removed` is sent in more cases, OpenAPI change item 103 under version 1.2.0 (the version is unchanged); `GET /api/v1/audit-log` answers exactly as before. The plan is `docs/planning/cards-2294-2381-2382.md`.
+
+- **2294.** The Audit page's log (`GET /api/audit`) and the API's (`GET /api/v1/audit-log`) were two copies of one query that had drifted apart. Both now read the log through one function. The page's route reads a page's board names in one query, where it asked once per board; takes `cardId`; refuses a bad id in the API's words (`Invalid board ID`, where it said `Invalid boardId`); and answers `rawAction`, `source`, `total` and `hasMore` as the API does. The page shows what it showed.
+- **2381.** A card that left a goal because of something else (moved to another board, its goal deleted, or deleted itself, alone, with its column, by an administrator's **Clear Cards** or by **Purge All**) recorded nothing for the goal and told no webhook. Each now writes `milestone_card_removed` on the card's board, with why in brackets, and sends `milestone.card_removed`. A card deleted together with its own board still sends nothing: the board's webhooks go with it.
+- **2382.** When the card window could not read a card's dependencies (no network, a proxy's page, a refusal), it said nothing and the browser logged an error. It now says so above the lists and keeps the links it was showing.
+
+**Owner to know.** **Every webhook whose events list is empty (sent every event) starts receiving `milestone.card_removed` for these cases from this deploy**: one delivery per card, so an administrator's **Clear Cards** on a board of 400 cards in goals sends 400, and **Purge All** one per purged card that was in a goal. A receiver that cannot take them should be given the list of events it wants (`PUT /api/v1/webhooks/{id}` with `events`). A script that reads `/api/audit` with a bad id reads `Invalid board ID` (or `Invalid user ID`) where it read `Invalid boardId` (or `Invalid userId`).
+
+#### After the deploy
+
+On production, as **O**, your administrator account, signed in, with O's API key (My Account). Nothing here completes a card, purges archived cards, or changes a real board, card, goal or webhook receiver. **The receiver, `<CATCHER>`**: an HTTPS address you control that shows each request it gets with its headers and body, the one of card 2343's checks will do; never a third-party address chosen for you. **Scratch things:** on the dashboard two boards, "TEST 2381 - delete me" and "TEST 2381 other - delete me"; note each id (the number in its address, `/board/<id>`), called `<A>` and `<B>`. With O's key: `GET /api/v1/boards/<A>/columns` and `GET /api/v1/boards/<B>/columns`, and note each board's To Do column id (`<A-todo>`, `<B-todo>`); `POST /api/v1/boards/<A>/columns` with `{"title": "TEST 2381 col - delete me"}`, note its `id` (`<col>`); `POST /api/v1/boards/<A>/cards` four times, with `{"columnId": <A-todo>, "title": "TEST 2381 one - delete me"}`, then `two` and `three` likewise, and `{"columnId": <col>, "title": "TEST 2381 four - delete me"}`, noting each card's `id`; `POST /api/v1/milestones` with `{"name": "TEST 2381 - delete me", "boardId": <A>}`, note its `id` (`<goal>`), and `POST /api/v1/milestones/<goal>/cards` four times, with `{"cardId": <one>}`, then `<two>`, `<three>` and `<four>` (one at a time: the bulk attach to an empty goal mails every other administrator "Plan created"); then `POST /api/v1/boards/<A>/webhooks` with `{"url": "<CATCHER>/2381"}` (no events: every event), and note its `id`. Before each of checks 402 to 405, clear what the receiver shows, so that what each check sends is all it shows.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 399 | 2294 | With O's key, `GET /api/v1/audit-log?boardId=<A>&limit=2`; in the browser, signed in as O, open `/api/audit?boardId=<A>&limit=2` | Both answer the same two `id`s in `data`, newest first, and the same `pagination` (`"limit": 2`, `"count": 2`, the same `"total"`, `"hasMore": true`, `"defaultLimit": 100`, `"maxLimit": 500`); each row of both has `rawAction`, `source` and `"boardName": "TEST 2381 - delete me"`; the `/api/audit` rows' `action` begins `api:` (`api:milestone_card_added`), the v1 rows' does not | `/api/audit`'s `pagination` has no `total` or `hasMore`, or its rows have no `rawAction` |
+| 400 | 2294 | In the browser, signed in as O, open `/api/audit?boardId=2.5`, then `/api/audit?cardId=<one>` | The first: an error page showing 400 and "Invalid board ID" (a page, not JSON: only `/api/v1/` answers a browser in JSON); the second lists only entries whose `cardId` is `<one>` | The first says "Invalid boardId", or the second lists entries of other cards |
+| 401 | 2294 | The dashboard's **More** menu, **Audit & Logs**; the **Audit Log** tab; **Board** "TEST 2381 - delete me", **Action** `api:*`; **Apply** | Rows of that board only, each action shown with `api:` in front, among them `api:card_created` and `api:milestone_card_added` | A row whose action has no `api:`, such as `board_created` (the board was made on the dashboard) |
+| 402 | 2381 | With O's key, `PUT /api/v1/cards/<one>/move` with `{"columnId": <B-todo>}` | `200` with `"milestoneId": null`; `<CATCHER>/2381` gets a `card.moved` and one `POST` with `X-DumpFire-Event: milestone.card_removed`, `"boardId"` `<A>`, `data.cardId` `<one>`, `data.source` `api` and `data.detail` `Removed "TEST 2381 one - delete me" from milestone "TEST 2381 - delete me" (moved to another board)` | No `milestone.card_removed` |
+| 403 | 2381 | With O's key, `DELETE /api/v1/cards/<two>?permanent=true` | `200`; `<CATCHER>/2381` gets a `card.deleted` and a `milestone.card_removed`, each with `data.cardId` `<two>`, the second's `data.detail` `Removed "TEST 2381 two - delete me" from milestone "TEST 2381 - delete me" (card deleted)` | Only the `card.deleted` |
+| 404 | 2381 | With O's key, `DELETE /api/v1/columns/<col>` | `200`; `<CATCHER>/2381` gets one `milestone.card_removed`, `data.cardId` `<four>`, `data.detail` `Removed "TEST 2381 four - delete me" from milestone "TEST 2381 - delete me" (card deleted)`, and no `card.deleted` | Nothing arrives |
+| 405 | 2381 | With O's key, `DELETE /api/v1/milestones/<goal>` | `200` `{"success":true,"cardsReleased":1}`; `<CATCHER>/2381` gets one `milestone.card_removed`, `data.cardId` `<three>`, `data.detail` `Removed "TEST 2381 three - delete me" from milestone "TEST 2381 - delete me" (milestone deleted)` | Nothing arrives |
+| 406 | 2382 | Open the board TEST 2381 - delete me; in the browser's developer tools, the network panel's throttling list, choose **Offline**; click "TEST 2381 three - delete me" to open its window; press **More options**; then choose **No throttling** again and press ✕ at the window's top right | Above **Blocked by**, "No answer from the server. The dependencies could not be loaded."; "Loading…" is not shown under **Blocked by** | Nothing is said, or "Loading…" stays |
+
+**Afterwards.** With O's key `DELETE /api/v1/webhooks/<the id>`. On the dashboard delete the boards "TEST 2381 - delete me" and "TEST 2381 other - delete me" (card one is on the second). Clear or delete the receiver's path `/2381`: it holds card titles.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image sends no `milestone.card_removed` for a card that leaves a goal because of a move to another board, a goal deleted or a delete, and writes no entry for it (entries written meanwhile stay, and read as a card taken out). Its `/api/audit` reads board names one by one, ignores `cardId`, refuses a bad id as `Invalid boardId`, and answers no `rawAction`, `total` or `hasMore`. Its card window says nothing when the dependencies cannot be read.
 
 ## Changing the Schema
 

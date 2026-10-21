@@ -64,6 +64,7 @@ import { stamp } from '$lib/timestamps';
 import { getCompletionBlocker } from './card-completion';
 import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
+import { logCardLeftGoal } from './milestones';
 import { notifyCardMoved, notifyRequesterProgress } from './notifications';
 import { announceUnblocked, recordUnblocked, withholdNoticesNaming, withholdUnblockNotices, type UnblockedWork } from './planning';
 import { moveTooDeep, tooDeepToMove, wouldLoopAny } from './sub-boards';
@@ -254,6 +255,8 @@ function moveCard(request: MoveRequest): CardMove {
 	const xpAwarded = completion?.xp ?? 0;
 
 	let leftMilestone: CardMove['leftMilestone'] = null;
+	/** The goal the card leaves, as its entry names it (card 2381). */
+	let leftGoalRow: { id: number; name: string; boardId: number | null } | null = null;
 	const update: Partial<typeof cards.$inferInsert> = {
 		columnId: toColumn.id,
 		position,
@@ -319,6 +322,7 @@ function moveCard(request: MoveRequest): CardMove {
 			if (goal && goal.boardId !== null && goal.boardId !== toColumn.boardId) {
 				update.milestoneId = null;
 				leftMilestone = { id: goal.id, name: goal.name, ofSourceBoard: goal.boardId === fromColumn.boardId };
+				leftGoalRow = goal;
 			}
 		}
 
@@ -364,6 +368,13 @@ function moveCard(request: MoveRequest): CardMove {
 			action: ACTIONS.cardMovedAway,
 			detail: `"${before.title}" moved to another board (${route})${leftGoal}`
 		});
+		// And the goal's own entry for it, on the board it left, the one it
+		// was on while it was in the goal, where the goal's webhooks are (card
+		// 2381): `milestone.card_removed`, which a receiver mirroring the goal
+		// listens for. It sent only `card.moved`, with the words above.
+		if (leftGoalRow) {
+			logCardLeftGoal(actor, source, { boardId: fromColumn.boardId, cardId, title: before.title }, leftGoalRow, 'moved to another board');
+		}
 		logActivity({
 			...who,
 			boardId: toColumn.boardId,

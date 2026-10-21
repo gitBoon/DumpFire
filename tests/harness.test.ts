@@ -64,6 +64,7 @@ const TEST_FILES = [
 	'atomic-moves.test.ts',
 	'atomic-requests.test.ts',
 	'atomic-v1.test.ts',
+	'audit-log.test.ts',
 	'backups.test.ts',
 	'body-limits.test.ts',
 	'board-contents.test.ts',

@@ -2259,8 +2259,9 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 		expect(db.select().from(tokenUsage).all()).toEqual([]);
 		expect(db.select().from(cardComments).all()).toEqual([]);
 		// An archive is `card_archived`, which fires none, and a comment deleted
-		// is `comment_deleted`, which fires none either (card 2283).
-		expect(sent.webhooks.map((w) => w.event)).toEqual(['card.deleted']);
+		// is `comment_deleted`, which fires none either (card 2283). The milestone
+		// deleted releases its two cards, each `milestone.card_removed` (card 2381).
+		expect(sent.webhooks.map((w) => w.event)).toEqual(['milestone.card_removed', 'milestone.card_removed', 'card.deleted']);
 	});
 
 	it("decides with the account as it is now: an administrator's key, the administrator lowered to user meanwhile, is refused as a user is, and nothing written", async () => {

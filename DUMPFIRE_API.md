@@ -370,6 +370,7 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. One oper
 - **A board's columns at one position come the older first** (card 2372). `GET /boards/:boardId`, `GET /boards/:boardId/columns` and `POST /boards` list a board's columns in order of position, ties by column id, as `GET /boards/:boardId/cards` already went through them. Two columns at one position (a column made with a chosen `position`, or a reorder that sent one twice) came in no set order, and `POST /boards` answered its columns in no stated order. The board page, All Tasks, the inbox, the CSV exports and the reports order them the same way.
 - **Nobody is mailed about assigning themselves** (card 2286). `POST /cards/:cardId/assignees` with the key's own user as `userId` mailed them `Assigned: <card>` about what they had just done; it no longer does. They are assigned, and the `api:assignee_added` entry and the live update are written, as before, and anyone else assigned is mailed as before. The web application's routes that assign do the same: `POST /api/cards/{id}/assignees` (the card window, and each person picked on a new card) and accepting a task request onto yourself, which still mails the requester (item 100).
 - **Two webhook events are new: `milestone.card_added` and `milestone.card_removed`** (card 2343, item 102). A card put in a milestone or taken out, by `POST` or `DELETE /milestones/:milestoneId/cards`, the bulk pair (one delivery for each card), `milestoneId` on `PUT /cards/:cardId` or the web application's milestone picker and plan page, is sent to the webhooks of the card's board once committed, with the body every event has (`data.action` `milestone_card_added` or `milestone_card_removed`, `data.detail` the entry's words). A card moved between milestones is one `milestone.card_added` naming the one it left. **A webhook with an empty `events` list is sent every event, so one made before this release starts receiving both**: give it the list of events you want to receive neither. Both can be named in `events`. A change to the milestone itself still sends nothing. See [Webhooks](#webhooks).
+- **A card that leaves a milestone because of another change logs `api:milestone_card_removed` and sends `milestone.card_removed`** (card 2381, item 103), on and to the card's board, with a card taken out's words and why in brackets: moved to another board out of its milestone by `PUT /cards/:cardId/move` (on the board it left, `… (moved to another board)`; an older milestone of neither board named `milestone #<id>`); each card `DELETE /milestones/:milestoneId` releases (`… (milestone deleted)`); a card in a milestone deleted for good, alone (beside its `card.deleted`), with its column, or by an administrator's clear or purge (`… (card deleted)`, `data.cardId` the deleted card's id, the entry's `cardId` null); and a card on another board released from a milestone of a deleted board or sub-board (`… (milestone deleted with its board)`). Each logged and sent nothing for the milestone. A card deleted with its own board still sends nothing: the board's webhooks go with it. **A webhook with an empty `events` list receives these from this release.** See [Webhooks](#webhooks).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but reach the keys every caller uses:
 
@@ -603,10 +604,13 @@ What each delete records:
 |---|---|---|
 | Archive | `card_archived`, with the card's id, only when the card was not already archived (since 2026-10-14) | None |
 | Restore (`PUT /cards/:cardId` with `archivedAt: null`) | `card_restored`, with the card's id and title, only when the card was archived (since 2026-10-14) | None |
-| Card, permanent | `card_deleted`, with a null `cardId`: the card is gone | One `card.deleted`, carrying the id of the card asked for. Cards on sub-boards under it go with it and get no `card.deleted` of their own |
-| Column | One `column_deleted` on its board, naming the column and how many cards went with it | None, for the column or for any card in it |
-| Board | None: the board's log is deleted with it | None |
+| Card, permanent | `card_deleted`, with a null `cardId`: the card is gone; and, for a card in a milestone, `milestone_card_removed` after it (since 2026-10-21) | One `card.deleted`, carrying the id of the card asked for, and one `milestone.card_removed` for a card in a milestone (since 2026-10-21). Cards on sub-boards under it go with it and get no `card.deleted` of their own |
+| Column | One `column_deleted` on its board, naming the column and how many cards went with it; and `milestone_card_removed` for each card that was in a milestone (since 2026-10-21) | None for the column, and no `card.deleted`; one `milestone.card_removed` for each card that was in a milestone (since 2026-10-21) |
+| Board | None on the board: its log is deleted with it. A card on another board released from one of its milestones writes `milestone_card_removed` on its own board (since 2026-10-21) | None from the board, whose webhooks go with it; `milestone.card_removed` to the board of each card released elsewhere (since 2026-10-21) |
+| Milestone | `milestone_deleted` on each of its boards, then `milestone_card_removed` for each card released (since 2026-10-21) | One `milestone.card_removed` for each card released (since 2026-10-21) |
 | Subtask (`DELETE /subtasks/:subtaskId`) | `subtask_deleted`, on its card, naming the subtask (since 2026-10-14: there was none) | None |
+
+The milestone entries and events are card 2381's: see [Webhooks](#webhooks).
 
 `GET /api/v1/audit-log?action=column_deleted` finds column deletes whether they were made in
 the web UI or through the API.
@@ -1028,6 +1032,10 @@ and the board's webhook receivers get one `card.deleted`:
 `data.cardId` is the id of the card that was deleted. The activity entry for the delete has
 a null `cardId`, because the card it would point to is gone.
 
+A card in a milestone also logs `api:milestone_card_removed` after it, `Removed "<title>" from
+milestone "<name>" (card deleted)`, and sends `milestone.card_removed` with the same
+`data.cardId` (card 2381, since 2026-10-21).
+
 See [What a Delete Removes](#what-a-delete-removes) for columns and boards.
 
 ---
@@ -1114,7 +1122,7 @@ This endpoint moves a card to another column, on the same board or a different o
 - **Into a Complete/Done column** — `completedAt` is stamped, `firstCompletedAt` is set if it was not already, XP is awarded the first time the card is ever completed, a celebration event fires and `card_completed` is logged. Returns **409** while the card has open subtasks or sub-boards; an archived card on a sub-board is not counted (card 2205).
 - **Out of a Complete/Done column** — `completedAt` is cleared and `card_reopened` is logged. `firstCompletedAt` is kept, which is why completing the card again earns no XP.
 - **Out of an On Hold column** — a move from a column titled On Hold, Hold, Blocked, Parked or Waiting to one that is not clears the card's `onHoldNote` to `''`, in the same write as the move: a note is the reason a card is paused. The note stays on a move into such a column, between two of them, and between two working columns. Nothing beside the move's own entry is logged for it. Until 2026-10-14 only a drag on the board page cleared the note (card 2208).
-- **To another board** — the source board's labels are removed from the card, and so is a category that belongs to another board (a category with no board stays), and so is a milestone that belongs to a board other than the one it arrives on: the answer has `milestoneId: null` and names the milestone it left as `leftMilestone` (`{ "id", "name" }`, otherwise `null`) (card 2155). A milestone across boards keeps the card. `card_moved_away` and `card_moved_in` are logged, one on each board, and neither names the other board (card 2181): `"<title>" moved to another board (<from column> → <to column>)` on the board it left and `"<title>" moved from another board (<from column> → <to column>)` on the board it arrived on. Each entry is read by everyone who can open its board, and some of them cannot open the other. `card_moved_away` ends ` and out of milestone "<name>"` when the move took the card out of one of that board's milestones. The card's "Unblocked" comments that name work of the board it left by its title are rewritten to name it by its number, or as "a subtask on another board", with `updatedAt` unchanged (card 2256; see [Unblock Behaviour](#unblock-behaviour)), and so are other cards' notices naming it or one of its subtasks, on every card not on the board it arrives on (card 2261).
+- **To another board** — the source board's labels are removed from the card, and so is a category that belongs to another board (a category with no board stays), and so is a milestone that belongs to a board other than the one it arrives on: the answer has `milestoneId: null` and names the milestone it left as `leftMilestone` (`{ "id", "name" }`, otherwise `null`) (card 2155). A milestone across boards keeps the card. `card_moved_away` and `card_moved_in` are logged, one on each board, and neither names the other board (card 2181): `"<title>" moved to another board (<from column> → <to column>)` on the board it left and `"<title>" moved from another board (<from column> → <to column>)` on the board it arrived on. Each entry is read by everyone who can open its board, and some of them cannot open the other. `card_moved_away` ends ` and out of milestone "<name>"` when the move took the card out of one of that board's milestones. Whenever the move took it out of a milestone, `milestone_card_removed` is logged after it on the same board, `Removed "<title>" from milestone "<name>" (moved to another board)` (an older milestone of neither board named `milestone #<id>`), which sends that board's webhooks `milestone.card_removed` (card 2381, since 2026-10-21). The card's "Unblocked" comments that name work of the board it left by its title are rewritten to name it by its number, or as "a subtask on another board", with `updatedAt` unchanged (card 2256; see [Unblock Behaviour](#unblock-behaviour)), and so are other cards' notices naming it or one of its subtasks, on every card not on the board it arrives on (card 2261).
 - **Onto one of its own sub-boards** — a card's sub-boards go with it, so a move onto one, or onto a board beneath one at any depth, is refused with **409** and nothing moves: `Card "<title>" cannot go onto "<board>", which hangs beneath it`. The sub-boards would hang beneath themselves, a loop with no top that is on no dashboard (card 2141). It is asked only of a move to another board, before the check for open subtasks and sub-boards, and an archived card in the chain counts. A move of the card such a loop already hangs from, made before this check, onto a board outside the loop is allowed, and is how the loop is put right.
 - **Where its sub-boards would be too deep** — sub-boards nest at most 20 levels below a board that is not a sub-board, so a move to another board that would carry the card's sub-boards deeper than that, and deeper than they are now, is refused with **409** and nothing moves: `Card "<title>" cannot go onto "<board>": its sub-boards would then be nested more than 20 levels deep.` (card 2172). Asked after the loop check above. A card with no sub-board is never refused, and a move that lifts a tree already too deep is allowed.
 - **Mail** — a move that completes the card mails its assignees who can open the board it is now on `Card moved: <title> → <column>`, each as their own "Card moved" setting says, as every move made in the web application does. A move through the API that does not complete the card mails nobody: a script works a board all day, and a mail for each move would bury the people on it. Whoever made the move is never mailed about it, so a key that moves its own user's card to Complete does not mail that user. Until 2026-10-14 no move through the API mailed an assignee.
@@ -1675,8 +1683,11 @@ stays on or leaves, by its name after on a board it joins, and as `milestone #<i
 across boards, since a reader of one of its boards may not be able to open it (card 2257). A
 rename on its own board reads `Updated milestone "Old name": name`. Each of those boards is sent
 a live update (`{ type: 'milestone' }`), and a delete every board of a card it released, so an
-open board drops the goal's chip. No webhook is sent, for the goal or for a card a delete
-releases (card 2343 sends one only for a card put in or taken out).
+open board drops the goal's chip. No webhook is sent for the goal. A delete then logs
+`api:milestone_card_removed` for each card it releases, on the card's board, with its id,
+`Removed "First" from milestone "Launch" (milestone deleted)`, and each sends
+`milestone.card_removed` to that board's webhooks (card 2381, since 2026-10-21; see
+[Webhooks](#webhooks)).
 
 A `PATCH` whose every field is as stored writes nothing, logs nothing and sends no live update,
 and answers `200` with the milestone as it is; `{}` is still `400` `No valid fields to update`,
@@ -2397,13 +2408,29 @@ every event has; `data.action` is `milestone_card_added` or `milestone_card_remo
 `data.detail` the entry's words, `Added "Plan" to milestone "Launch"`, a milestone across boards
 named `milestone #<id>`. A card moved from one milestone to another sends one
 `milestone.card_added` naming the one it left (`… (from milestone "Pilot")`) and no
-`milestone.card_removed`. A milestone deleted, and a card moved to another board out of its
-board's milestone, send neither. Nor do cards deleted with a board, a column, an
-administrator's clear of a board's cards or a purge of archived cards, which send no `card.deleted` either, or cards on
-sub-boards deleted with their parent card, which get no `card.deleted` of their own. **A webhook with an empty `events` list receives both from
+`milestone.card_removed`. **A webhook with an empty `events` list receives both from
 2026-10-21**: list the events you want to receive neither. Goal membership sends no
 `card.updated` on any route (card 2289), and a milestone changed, closed, reopened or deleted
-sends no webhook.
+sends no webhook of its own.
+
+**A card that leaves a milestone because of another change** sends `milestone.card_removed`
+too (card 2381, since 2026-10-21), one delivery for each card, to the webhooks of the card's
+board, `data.detail` a card taken out's words with why in brackets:
+
+| What happened | `data.detail` ends | Board | `data.cardId` |
+|---|---|---|---|
+| `PUT /cards/:cardId/move` (or the web application) to another board, out of its milestone (an older milestone of neither board named `milestone #<id>`) | `(moved to another board)` | The board it left, beside its `card.moved` | The card |
+| `DELETE /milestones/:milestoneId`, for each card it releases | `(milestone deleted)` | Each card's own | The card |
+| A card in a milestone deleted for good (`DELETE /cards/:cardId?permanent=true`, beside its `card.deleted`), with its column (`DELETE /columns/:columnId`), or by an administrator's clear of a board's cards or purge of archived cards | `(card deleted)` | Its board | The deleted card's id (the entry is stored with a null `cardId`) |
+| A card on another board released from a milestone of a board deleted by `DELETE /boards/:boardId`, or of a sub-board deleted with its parent card | `(milestone deleted with its board)`, the milestone named `milestone #<id>` | Its own board | The card |
+
+Each sent nothing for the milestone before, and the column delete, the clear and the purge send
+no `card.deleted`. A card deleted with its own board (the board deleted, or a sub-board under a
+deleted card) still sends nothing: the board's webhooks are deleted with it. **A webhook with an
+empty `events` list receives these from 2026-10-21**; a clear of a board of 400 milestone cards
+sends 400. For a card deleted for good, `card.deleted` and `milestone.card_removed` are separate
+deliveries and may arrive in either order: treat a `milestone.card_removed` for a card you do not
+know, or have already deleted, as harmless.
 
 | Route | Does | Needs | Answers |
 |-------|------|-------|---------|

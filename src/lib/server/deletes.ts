@@ -28,6 +28,10 @@
  * except for five columns that name a user with no `ON DELETE` action, which
  * are cleared first. The webhooks they set are switched off before they go.
  *
+ * A card that leaves a goal in a delete, deleted or released, is recorded on
+ * its board as a card taken out of it, which sends `milestone.card_removed`,
+ * while that board is still there (card 2381): see `recordLeftGoals`.
+ *
  * Every function here opens its own `inTransaction`. A route calls it inside
  * the one in which it read the row and checked the caller, and that makes
  * this a savepoint of it. None of them checks access: that is the route's.
@@ -46,6 +50,7 @@ import { namingIds } from './auth';
 import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
 import { createLogger } from './logger';
+import { logCardLeftGoal } from './milestones';
 import { moveToTrash, type UploadFile } from './uploads';
 import { stamp } from '$lib/timestamps';
 
@@ -141,9 +146,23 @@ function deepestFirst(rows: { id: number; parent: number | null }[]): number[] {
 }
 
 /**
+ * A card that leaves a goal in a delete (card 2381): one deleted (`gone`), or
+ * one left in place and released from a goal of a deleted board. Its board
+ * and the goal as they were before the delete.
+ */
+type LeftGoal = {
+	cardId: number;
+	title: string;
+	boardId: number;
+	gone: boolean;
+	goal: { id: number; name: string; boardId: number | null };
+};
+
+/**
  * Delete everything under `scope`, and then whatever `removeRow` deletes.
- * Returns what went, the number of cards asked for, the files to move, and
- * the ids of the sub-boards deleted, lowest first, whose pages are to be told.
+ * Returns what went, the number of cards asked for, the files to move, the
+ * ids of the sub-boards deleted, lowest first, whose pages are to be told,
+ * and the cards that left a goal (`recordLeftGoals`).
  *
  * Everything is read before anything is deleted: once a row is gone, the
  * rows the cascade took with it cannot be asked about.
@@ -151,7 +170,7 @@ function deepestFirst(rows: { id: number; parent: number | null }[]): number[] {
 function removeUnder(
 	scope: Scope,
 	removeRow: () => void
-): { removed: Removed; asked: number; files: UploadFile[]; subBoardIds: number[] } {
+): { removed: Removed; asked: number; files: UploadFile[]; subBoardIds: number[]; leftGoals: LeftGoal[] } {
 	const cte = under(scope);
 	const params = scope.board === undefined ? scope.params : [...scope.params, scope.board];
 	// Every write below starts with the same long WITH clause. The comment at
@@ -184,6 +203,49 @@ function removeUnder(
 			WHERE card_id IN (SELECT id FROM doomed_cards) ORDER BY id`
 		)
 		.all(...params) as UploadFile[];
+
+	// Every card in a goal that is deleted, and every card left in place in a
+	// goal of a board that is deleted, which the update below releases: each
+	// leaves its goal (card 2381). Which of them is recorded is decided once
+	// the delete is done, by whether its board is still there.
+	//
+	// Two selects, each found by an index: the cards deleted by their ids, and
+	// the cards in a goal of a board deleted by `idx_cards_milestone`. Asked as
+	// one `WHERE` with an `OR` across the two, no index answered it, and every
+	// card in the database was read inside the delete (card 2381's review). A
+	// card in both is one row: `UNION` keeps it once, its two rows being alike.
+	const leftGoalColumns = `c.id AS cardId, c.title AS title, col.board_id AS boardId,
+					c.id IN (SELECT id FROM doomed_cards) AS gone,
+					m.id AS goalId, m.name AS goalName, m.board_id AS goalBoardId
+				FROM cards c
+				JOIN columns col ON col.id = c.column_id
+				JOIN milestones m ON m.id = c.milestone_id`;
+	const leftGoals = (
+		sqlite
+			.prepare(
+				`${cte} SELECT ${leftGoalColumns}
+				WHERE c.id IN (SELECT id FROM doomed_cards)
+				UNION
+				SELECT ${leftGoalColumns}
+				WHERE c.milestone_id IN (SELECT id FROM milestones WHERE board_id IN (SELECT id FROM doomed_boards))
+				ORDER BY cardId`
+			)
+			.all(...params) as {
+			cardId: number;
+			title: string;
+			boardId: number;
+			gone: number;
+			goalId: number;
+			goalName: string;
+			goalBoardId: number | null;
+		}[]
+	).map((row) => ({
+		cardId: row.cardId,
+		title: row.title,
+		boardId: row.boardId,
+		gone: row.gone === 1,
+		goal: { id: row.goalId, name: row.goalName, boardId: row.goalBoardId }
+	}));
 
 	// Type and id are matched together: card 7 and subtask 7 are different
 	// work. By subquery, because a board can hold more cards than a statement
@@ -244,12 +306,35 @@ function removeUnder(
 		},
 		asked: counts.asked,
 		files,
-		subBoardIds: [...subBoards].sort((a, b) => a - b)
+		subBoardIds: [...subBoards].sort((a, b) => a - b),
+		leftGoals
 	};
 }
 
 const boardExists = (boardId: number): boolean =>
 	sqlite.prepare('SELECT 1 FROM boards WHERE id = ?').get(boardId) !== undefined;
+
+/**
+ * One `milestone_card_removed` entry for each card that left a goal in a
+ * delete, on its board, which sends `milestone.card_removed` there once the
+ * delete commits (card 2381): `… (card deleted)` for a card deleted, with no
+ * card id, and `… (milestone deleted with its board)` for one left in place
+ * and released from a goal of a deleted board. A card deleted with a column,
+ * by a clear, by a purge or alone sent no goal event, and one released none.
+ *
+ * Only on a board that is still there. A card deleted with its board (the
+ * board deleted, a sub-board beneath a deleted card, a board in a loop) gets
+ * none: the board's log and its webhooks are deleted in the same transaction,
+ * so the entry would go with them and nothing is left to send it.
+ */
+function recordLeftGoals(leftGoals: readonly LeftGoal[], actor: DeleteActor, source: ActivitySource): void {
+	const stays = new Map<number, boolean>();
+	for (const card of leftGoals) {
+		if (!stays.has(card.boardId)) stays.set(card.boardId, boardExists(card.boardId));
+		if (!stays.get(card.boardId)) continue;
+		logCardLeftGoal(actor, source, card, card.goal, card.gone ? 'card deleted' : 'milestone deleted with its board');
+	}
+}
 
 /**
  * Tell the open pages of each board, once, that it was deleted or emptied,
@@ -373,7 +458,9 @@ function cardAndBoard(cardId: number): { title: string; boardId: number } | null
  *
  * One `card_deleted` entry is written on the card's board. It is stored with
  * no card id, because the card it would refer to is gone; the `card.deleted`
- * webhook it queues carries the id.
+ * webhook it queues carries the id. A card in a goal also writes
+ * `milestone_card_removed` there, after it (card 2381, `recordLeftGoals`), as
+ * does a card elsewhere released from a goal of a sub-board that went.
  *
  * Each sub-board that went with it is told it was deleted (R7). The route
  * tells the card's board.
@@ -387,7 +474,7 @@ export function deleteCard(
 		const card = cardAndBoard(cardId);
 		if (!card) return null;
 
-		const { removed, files, subBoardIds } = removeUnder(
+		const { removed, files, subBoardIds, leftGoals } = removeUnder(
 			{ seed: 'SELECT id FROM cards WHERE id = ?', params: [cardId] },
 			() => {
 				sqlite.prepare('DELETE FROM cards WHERE id = ?').run(cardId);
@@ -416,6 +503,7 @@ export function deleteCard(
 				)
 			);
 		}
+		recordLeftGoals(leftGoals, actor, source);
 		tell(subBoardIds, { type: 'board', action: 'deleted' });
 		trashAfterCommit(files);
 		return { ...card, removed };
@@ -427,7 +515,9 @@ export function deleteCard(
  * column.
  *
  * One `column_deleted` entry is written on its board, naming the column and
- * how many cards went with it. No entry and no webhook for each card.
+ * how many cards went with it. No entry and no webhook for each card, but
+ * for each card that was in a goal: `milestone_card_removed`, after it (card
+ * 2381, `recordLeftGoals`).
  *
  * If the board went too, because a card in the column had been moved onto a
  * sub-board under itself, there is no board to write the entry on, and one
@@ -447,7 +537,7 @@ export function deleteColumn(
 			| undefined;
 		if (!column) return null;
 
-		const { removed, asked, files, subBoardIds } = removeUnder(
+		const { removed, asked, files, subBoardIds, leftGoals } = removeUnder(
 			{ seed: 'SELECT id FROM cards WHERE column_id = ?', params: [columnId] },
 			() => {
 				sqlite.prepare('DELETE FROM columns WHERE id = ?').run(columnId);
@@ -479,6 +569,7 @@ export function deleteColumn(
 				)
 			);
 		}
+		recordLeftGoals(leftGoals, actor, source);
 		tell(subBoardIds, { type: 'board', action: 'deleted' });
 		trashAfterCommit(files);
 		return { ...column, removed };
@@ -494,6 +585,11 @@ export function deleteColumn(
  * are deleted with it, and a card elsewhere that carries one has none: they
  * stayed, as categories of no board, which are everybody's.
  *
+ * Each card released elsewhere writes `milestone_card_removed` on its own
+ * board, `… (milestone deleted with its board)`, recorded as `source` (card
+ * 2381, `recordLeftGoals`). The board's own cards write none: their entries
+ * would go with the board, and so do its webhooks.
+ *
  * No activity entry: it would be deleted with the board. One line goes to
  * the system log once the delete is committed, naming the board, who deleted
  * it and what went. The logger holds a line written inside a transaction and
@@ -506,7 +602,11 @@ export function deleteColumn(
  * `sub_board_deleted` instead: a sub-board of it was deleted, and its page
  * re-reads.
  */
-export function deleteBoard(boardId: number, actor: DeleteActor): { name: string; removed: Removed } | null {
+export function deleteBoard(
+	boardId: number,
+	actor: DeleteActor,
+	source: ActivitySource = 'ui'
+): { name: string; removed: Removed } | null {
 	return inTransaction(() => {
 		const board = sqlite.prepare('SELECT name FROM boards WHERE id = ?').get(boardId) as
 			| { name: string }
@@ -523,7 +623,7 @@ export function deleteBoard(boardId: number, actor: DeleteActor): { name: string
 			)
 			.get(boardId) as { boardId: number } | undefined;
 
-		const { removed, files, subBoardIds } = removeUnder(
+		const { removed, files, subBoardIds, leftGoals } = removeUnder(
 			{
 				seed: 'SELECT c.id FROM cards c JOIN columns col ON col.id = c.column_id WHERE col.board_id = ?',
 				params: [boardId],
@@ -533,6 +633,7 @@ export function deleteBoard(boardId: number, actor: DeleteActor): { name: string
 				sqlite.prepare('DELETE FROM boards WHERE id = ?').run(boardId);
 			}
 		);
+		recordLeftGoals(leftGoals, actor, source);
 
 		afterCommit(() =>
 			log.info(
@@ -567,8 +668,10 @@ function countByBoard(seed: string, params: number[]): { boardId: number; name: 
  * archived; `removed` counts what was on their sub-boards as well.
  *
  * One `cards_purged` entry on each board that had any, with the count. No
- * entry and no webhook for each card. Each of those boards, and each
- * sub-board that went with an archived card, is told.
+ * entry and no webhook for each card, but for each that was in a goal:
+ * `milestone_card_removed`, after the boards' entries (card 2381,
+ * `recordLeftGoals`). Each of those boards, and each sub-board that went with
+ * an archived card, is told.
  *
  * A board that held archived cards and went with the purge, being beneath
  * one of the cards purged, has no board to write its entry on. On a loop
@@ -583,7 +686,7 @@ export function purgeArchivedCards(actor: DeleteActor): { purged: number; remove
 		const seed = 'SELECT id FROM cards WHERE archived_at IS NOT NULL';
 		const boards = countByBoard(seed, []);
 
-		const { removed, asked, files, subBoardIds } = removeUnder({ seed, params: [] }, () => {
+		const { removed, asked, files, subBoardIds, leftGoals } = removeUnder({ seed, params: [] }, () => {
 			sqlite.prepare('DELETE FROM cards WHERE archived_at IS NOT NULL').run();
 		});
 
@@ -605,6 +708,7 @@ export function purgeArchivedCards(actor: DeleteActor): { purged: number; remove
 			});
 			told.push(board.boardId);
 		}
+		recordLeftGoals(leftGoals, actor, 'ui');
 		if (gone.length > 0) {
 			const named = gone.map((board) => `board ${board.boardId} "${board.name}", which held ${board.cards}`).join('; ');
 			afterCommit(() =>
@@ -633,8 +737,10 @@ export function purgeArchivedCards(actor: DeleteActor): { purged: number; remove
  * `cleared` is how many cards the board held; `removed` counts what was on
  * their sub-boards as well.
  *
- * One `cards_cleared` entry on the board, with the count, if it held any.
- * The board and each sub-board that went with its cards are told.
+ * One `cards_cleared` entry on the board, with the count, if it held any, and
+ * after it `milestone_card_removed` for each card that was in a goal (card
+ * 2381, `recordLeftGoals`). The board and each sub-board that went with its
+ * cards are told.
  *
  * On a loop the board is not left: it is beneath one of its own cards, which
  * is among those cleared, and it goes with that card. There is then no board
@@ -646,7 +752,7 @@ export function clearBoardCards(boardId: number, actor: DeleteActor): { cleared:
 	return inTransaction(() => {
 		// Read now: on a loop the board goes with its cards.
 		const board = sqlite.prepare('SELECT name FROM boards WHERE id = ?').get(boardId) as { name: string } | undefined;
-		const { removed, asked, files, subBoardIds } = removeUnder(
+		const { removed, asked, files, subBoardIds, leftGoals } = removeUnder(
 			{
 				seed: 'SELECT c.id FROM cards c JOIN columns col ON col.id = c.column_id WHERE col.board_id = ?',
 				params: [boardId]
@@ -683,6 +789,7 @@ export function clearBoardCards(boardId: number, actor: DeleteActor): { cleared:
 				{ type: 'card', action: 'cleared' }
 			);
 		}
+		recordLeftGoals(leftGoals, actor, 'ui');
 		trashAfterCommit(files);
 		return { cleared: asked, removed };
 	});

@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.60
+version: 1.61
 status: As-Built
 date: 2026-10-21
 tags:
@@ -885,7 +885,7 @@ The board's activity panel and the All Tasks activity panel name each action in 
 | `dependency_added`, `dependency_removed`, `dependencies_bulk_added` | Added dependency, Removed dependency, Added dependencies. A batch through `POST /api/v1/dependencies/bulk` writes one `dependency_added` per link it creates, on the board of the card that waits, naming that card (card 2291); `dependencies_bulk_added`, one entry with no card for the whole batch, was written by older versions only, and keeps its label for those rows |
 | `board_created`, `board_updated`, `milestone_created` | Created board, Updated board, Created milestone |
 | `milestone_updated`, `milestone_closed`, `milestone_reopened`, `milestone_deleted` | Updated milestone, Closed milestone, Reopened milestone, Deleted milestone (card 2289). No card; on the milestone's board, or for one across boards on each board holding its cards, and on a change of board on the boards before and after. `Updated milestone "Launch": name, targetDate` names the fields changed (name, description, targetDate, boardId), not their values; a rename reads by the old name. `Deleted milestone "Launch"; 2 cards on this board released`. A milestone across boards is named `milestone #<id>`, since a reader of one of its boards may not be able to open it; on a board a milestone joins, it is named as it is after the change |
-| `milestone_card_added`, `milestone_card_removed` | Added card to milestone, Removed card from milestone (card 2289). On the card's board, with its id: `Added "First" to milestone "Launch"`. A card moved from one milestone to another writes one `milestone_card_added` ending `(from milestone "Pilot")`, and **no `milestone_card_removed` for the milestone it left**. Written by every route: the card window's picker, the plan page, the API's single and bulk routes and `milestoneId` on the API's card update (which named `milestoneId` in `card_updated` until card 2289). Not counted as work on the card by the activity report. A card deleted for good, a board deleted, a card moved to another board (whose move entry says so) and an import write no milestone entry |
+| `milestone_card_added`, `milestone_card_removed` | Added card to milestone, Removed card from milestone (card 2289). On the card's board, with its id: `Added "First" to milestone "Launch"`. A card moved from one milestone to another writes one `milestone_card_added` ending `(from milestone "Pilot")`, and **no `milestone_card_removed` for the milestone it left**. Written by every route: the card window's picker, the plan page, the API's single and bulk routes and `milestoneId` on the API's card update (which named `milestoneId` in `card_updated` until card 2289). Not counted as work on the card by the activity report. A card that leaves a milestone because of another change writes `milestone_card_removed` on its board, with why in brackets (card 2381): `… (moved to another board)` on the board it left, `… (milestone deleted)` for each card a milestone delete releases, `… (card deleted)` for a card deleted for good alone, with its column, by **Clear Cards** or by Purge Archived Cards' **Purge All** (with no card id: the card is gone), and `… (milestone deleted with its board)` for a card elsewhere released by a board's delete. A card deleted with its own board writes none, its board's log going with it, and an import writes no milestone entry |
 
 All Tasks marks an action done through the API with its **API** badge; the board's panel does not, and the Audit page's **Source** filter tells them apart. A name with no label, which only an entry older than these names can have, reads as the name in words with a capital first letter, never with `api:`: `time_logged` reads "Time logged". Until 2026-10-15 the board's panel showed the stored name with each word capitalised ("Card Moved In"), and All Tasks had a table of its own that knew 25 names and showed the rest with spaces for underscores and any `api:` left on, so a completion through the API read "api:card completed".
 
@@ -905,7 +905,9 @@ newest first. Administrators only. The Audit Log's filters apply together (card 
 
 So Action `card_completed` with Source All shows every completion, with Source API those
 made through the API, and with Source Web application those made on a page. The page asks
-`GET /api/audit`, which answers a `source` other than `ui` or `api` with `400`.
+`GET /api/audit`, which answers a `source` other than `ui` or `api` with `400`. It reads the
+log through the same code as the API's `GET /api/v1/audit-log` (card 2294), so the two find
+the same entries; the page shows each action as it is stored, `api:` and all.
 
 **From** and **To** are whole days, in UTC: from today to today shows today's entries, the
 last minute's included (card 2095). Every time on the page, in both tabs, is the stored time,

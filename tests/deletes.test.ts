@@ -16,7 +16,7 @@
  */
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -884,7 +884,9 @@ describe('deleting a board', () => {
 				}
 			});
 
-			expect(run.effects.map(name)).toEqual(['event update', 'event update', 'event update']);
+			// The card on B released from A's milestone is recorded on B, which
+			// sends B's webhook `milestone.card_removed` (card 2381).
+			expect(run.effects.map(name)).toEqual(['webhook milestone.card_removed', 'event update', 'event update', 'event update']);
 		}
 	);
 
@@ -892,7 +894,14 @@ describe('deleting a board', () => {
 		process.env.LOG_LEVEL = 'INFO';
 		const w = withNamed();
 
-		await api('DELETE', `/api/boards/${w.A.board.id}`, { user: w.owner });
+		// B's webhook is sent the release of its card from A's milestone (card 2381).
+		const sent = effects();
+		try {
+			await api('DELETE', `/api/boards/${w.A.board.id}`, { user: w.owner });
+			await sent.settle();
+		} finally {
+			sent.restore();
+		}
 
 		const lines = sqlite
 			.prepare("SELECT level, message, user_id AS userId FROM system_logs WHERE context = 'DELETE'")
@@ -950,6 +959,68 @@ describe('deleting a board', () => {
 		}
 		expect(diffSnapshots(w.before, snapshotDb())).toEqual([]);
 		expectFiles(w.before, NOTHING);
+	});
+});
+
+describe('the read of the cards that leave a goal in a delete (card 2381)', () => {
+	/** The plan of every read of those cards made while `run` ran, each `?` bound to `value`. */
+	function plansOfLeftGoals(run: () => unknown, value: number): string[][] {
+		const prepared: string[] = [];
+		const prepare = sqlite.prepare.bind(sqlite);
+		const spy = vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
+			prepared.push(source);
+			return prepare(source);
+		}) as typeof sqlite.prepare);
+		try {
+			run();
+		} finally {
+			spy.mockRestore();
+		}
+		// With no statistics, a plan does not depend on the values bound.
+		return prepared
+			.filter((source) => source.includes('AS goalId'))
+			.map((source) =>
+				(
+					sqlite
+						.prepare(`EXPLAIN QUERY PLAN ${source}`)
+						.all(...Array.from({ length: (source.match(/\?/g) ?? []).length }, () => value)) as { detail: string }[]
+				).map((row) => row.detail)
+			);
+	}
+
+	// It was one select whose `WHERE` asked for a card deleted OR a goal of a
+	// board deleted, which no index answers: SQLite read every card in the
+	// database, inside the delete's write transaction (card 2381's review).
+	// Asked as two selects, each half is looked up by an index.
+	it.each([
+		{ what: 'a card', run: (w: World) => deleteCard(w.doomed.id, w.owner, 'ui'), value: (w: World) => w.doomed.id },
+		{
+			what: 'a column',
+			run: (w: World) => deleteColumn(w.A.cols['To Do'].id, w.owner, 'ui'),
+			value: (w: World) => w.A.cols['To Do'].id
+		},
+		{ what: 'a board', run: (w: World) => deleteBoard(w.A.board.id, w.owner), value: (w: World) => w.A.board.id },
+		{ what: "a board's cards", run: (w: World) => clearBoardCards(w.A.board.id, w.owner), value: (w: World) => w.A.board.id }
+	])('deleting $what, finds them by index and reads no card it does not need', async ({ run, value }) => {
+		const w = world();
+		makeMilestone({ board: w.A.board, name: 'Goal of A', cards: [w.doomed, w.neighbour, w.outside] });
+		makeMilestone({ board: w.B.board, name: 'Goal of B', cards: [w.other] });
+
+		// The delete's `milestone.card_removed` deliveries are recorded, not sent.
+		const sent = effects();
+		let plans: string[][];
+		try {
+			plans = plansOfLeftGoals(() => run(w), value(w));
+			await sent.settle();
+		} finally {
+			sent.restore();
+		}
+		expect(plans).toHaveLength(1);
+		const [plan] = plans;
+		expect(plan.filter((line) => /^SCAN (c|cards)\b/.test(line)), plan.join('\n')).toEqual([]);
+		// The cards deleted by their ids, and the cards in a goal of a board deleted by the goal.
+		expect(plan).toContain('SEARCH c USING INTEGER PRIMARY KEY (rowid=?)');
+		expect(plan).toContain('SEARCH c USING INDEX idx_cards_milestone (milestone_id=?)');
 	});
 });
 
@@ -1059,8 +1130,15 @@ describe('deleting a milestone', () => {
 			}
 		});
 
-		// The release, the delete, and its entry on the milestone's board (card 2289).
-		expect(shape(run.writes)).toEqual(['update cards set', 'delete from milestones', 'insert into activity_log']);
+		// The release, the delete, and its entry on the milestone's board (card
+		// 2289); then an entry for each card released, on its board (card 2381).
+		expect(shape(run.writes)).toEqual([
+			'update cards set',
+			'delete from milestones',
+			'insert into activity_log',
+			'insert into activity_log',
+			'insert into activity_log'
+		]);
 	});
 });
 

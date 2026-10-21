@@ -651,16 +651,45 @@
 	let milestoneId = $state<number | null>(card?.milestoneId ?? null);
 	let milestoneSaving = $state(false);
 
+	/**
+	 * Read the card's links, as the window opens and after a write that could
+	 * not hand them back. A read that fails keeps the links shown and says so
+	 * above them (card 2382), in the words the other panels' reads use: no
+	 * answer, an answer that is not the two lists, or a refusal. It was
+	 * try/finally with an unguarded parse, so each of those rejected out of
+	 * it, unhandled, and the section said nothing. A message already shown, a
+	 * refused removal's, is kept, and this one follows it.
+	 */
 	async function loadDependencies() {
 		if (!card) return;
 		depsLoading = true;
+		const unread = (words: string) => {
+			depError = depError ? `${depError} ${words}` : words;
+		};
 		try {
-			const res = await fetch(`/api/cards/${card.id}/dependencies`);
-			if (res.ok) {
-				const data = await res.json();
-				blockedBy = data.blockedBy;
-				blocks = data.blocks;
+			let res: Response;
+			try {
+				res = await fetch(`/api/cards/${card.id}/dependencies`);
+			} catch {
+				unread('No answer from the server. The dependencies could not be loaded.');
+				return;
 			}
+			if (!res.ok) {
+				unread(await failureMessage(res, 'The dependencies could not be loaded.'));
+				return;
+			}
+			let data: { blockedBy?: unknown; blocks?: unknown } | null = null;
+			try {
+				data = await res.json();
+			} catch {
+				// Not JSON: a proxy's page, say.
+			}
+			if (!data || !Array.isArray(data.blockedBy) || !Array.isArray(data.blocks)) {
+				unread("The server's answer could not be read. The dependencies could not be loaded.");
+				return;
+			}
+			blockedBy = data.blockedBy as DependencyRefType[];
+			blocks = data.blocks as DependencyRefType[];
 		} finally {
 			depsLoading = false;
 		}

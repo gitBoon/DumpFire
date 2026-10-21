@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.89
+version: 1.90
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1247,6 +1247,18 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   release starts receiving both**: give it the list of events wanted to receive neither. Both
   can be named in `events`. A change to the milestone itself still sends nothing. See
   [Webhooks](#webhooks).
+- **A card that leaves a milestone because of another change logs `api:milestone_card_removed`
+  and sends `milestone.card_removed`** (card 2381, item 103), on and to the card's board, with
+  a card taken out's words and why in brackets: moved to another board out of its milestone
+  (on the board it left, `… (moved to another board)`; an older milestone of neither board
+  named `milestone #<id>`); each card a milestone delete
+  releases (`… (milestone deleted)`); a card in a milestone deleted for good, alone (beside its
+  `card.deleted`), with its column, or by an administrator's clear or purge (`… (card
+  deleted)`, `data.cardId` the deleted card's id, the entry's `cardId` null); and a card on
+  another board released from a milestone of a deleted board or sub-board (`… (milestone
+  deleted with its board)`). Each logged and sent nothing for the milestone. A card deleted
+  with its own board still sends nothing: the board's webhooks go with it. **A webhook with an
+  empty `events` list receives these from this release.** See [Webhooks](#webhooks).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -1664,8 +1676,9 @@ API:
     board page says that a column's rename was refused, in the server's words, and keeps
     the old title (card 2134); it showed the new title until the next load.
 - **Every id in the path or the query string of those routes is read as an id**: `1.5`,
-  `abc`, `0` and `1e3` are `400` `Invalid <thing> ID`, or `Invalid boardId` and
-  `Invalid userId` on `GET /api/audit`. That is `DELETE /api/account/api-keys/{id}`, where
+  `abc`, `0` and `1e3` are `400` `Invalid <thing> ID` (on `GET /api/audit` they were
+  `Invalid boardId` and `Invalid userId` until card 2294 gave it `GET /audit-log`'s words,
+  `Invalid board ID`, `Invalid user ID` and `Invalid card ID`). That is `DELETE /api/account/api-keys/{id}`, where
   `1.5` and `0` were looked for; both `POST /api/admin/boards/{id}/...`;
   `DELETE /api/report-schedules/{id}`; every method under `/api/requests/{id}`, with its
   confirmation and messages; `DELETE /api/teams/{id}` and
@@ -2145,6 +2158,18 @@ API:
   every character but letters, digits, `-` and `_` made `_`. It put the board's name in the
   header as it was, `<name>-export.csv`, so a name with an emoji or another character
   outside Latin-1 was a `500` and a double quote cut the file name short.
+- **`GET /api/audit`, the Audit page's log, is read by the same code as `GET /audit-log`**
+  (card 2294): `queryAuditLog` in `src/lib/server/audit-log.ts`. The two had come apart in
+  seven ways, each now settled. `GET /audit-log` answers exactly as it did. `GET /api/audit`
+  now takes `cardId`; refuses an id in `GET /audit-log`'s words, `Invalid board ID`,
+  `Invalid user ID` and `Invalid card ID`, where it said `Invalid boardId` and
+  `Invalid userId`; gives each row `rawAction` (the stored spelling) and a `source` of `ui` or
+  `api` read as `GET /audit-log` reads it (older rows answered `null`); answers
+  `GET /audit-log`'s `pagination`, with `total`, `hasMore`, `defaultLimit` and `maxLimit`; and
+  reads the board names of a page in one query, where it asked once for each board. Its rows
+  keep `action` as stored (`api:card_moved`), which the page shows, and an `api:` in front of
+  its action filter still means done through the API, where `GET /audit-log`, whose actions
+  are canonical, reads it as a spelling. Its times stay in the stored form.
 
 ### Changes on 2026-10-13
 
@@ -2281,10 +2306,15 @@ What a delete records:
 |--------|-----------------------------------|---------|
 | Archive | `card_archived`, only when the card was not already archived (since 2026-10-14) | None |
 | Restore (`PUT /api/v1/cards/:cardId` with `archivedAt: null`) | `card_restored`, with the card's title, only when the card was archived (since 2026-10-14) | None |
-| Card, permanent | `card_deleted`, with `cardId` null because the card is gone | `card.deleted`, once, for the card asked for. Cards on sub-boards under it go with it and get no `card.deleted` of their own |
-| Column | `column_deleted`, once for the column. Its detail names the column and how many cards went with it | None, for the column or for any of its cards |
-| Board | None. The board's own log is deleted with it | None |
+| Card, permanent | `card_deleted`, with `cardId` null because the card is gone; then `milestone_card_removed` for a card in a milestone (since 2026-10-21) | `card.deleted`, once, for the card asked for, and `milestone.card_removed` for a card in a milestone (since 2026-10-21). Cards on sub-boards under it go with it and get no `card.deleted` of their own |
+| Column | `column_deleted`, once for the column. Its detail names the column and how many cards went with it. Then `milestone_card_removed` for each card that was in a milestone (since 2026-10-21) | None for the column, and no `card.deleted`; `milestone.card_removed` for each card that was in a milestone (since 2026-10-21) |
+| Board | None on the board: its own log is deleted with it. A card on another board released from one of its milestones writes `milestone_card_removed` on its own board (since 2026-10-21) | None from the board, whose webhooks go with it; `milestone.card_removed` to the board of each card released elsewhere (since 2026-10-21) |
+| Milestone | `milestone_deleted` on each of its boards, then `milestone_card_removed` for each card it released (since 2026-10-21) | `milestone.card_removed` for each card it released (since 2026-10-21) |
 | Subtask | `subtask_deleted`, on its card, naming the subtask (since 2026-10-14: there was none) | None |
+
+The milestone entries and events are card 2381's (see [Webhooks](#webhooks)): a card that leaves
+a milestone because of another change is recorded as a card taken out, on its board, while that
+board is still there.
 
 In `GET /api/v1/audit-log`, `action=column_deleted` finds column deletes made in the web UI
 and through the API alike.
@@ -2491,6 +2521,20 @@ Entries come newest first, and by id within a second, newest first, so paging wi
 
 `pagination` carries `total` and `hasMore` — check it, because a full default
 page of 100 used to be indistinguishable from a complete result.
+
+The web application's `GET /api/audit` reads the log through the same code (card 2294), and
+answers as this does, but for its actions, which it gives as stored (`api:card_moved`), an
+`api:` in front of its action filter meaning done through the API, and its times, in the
+stored form.
+
+```mermaid
+flowchart LR
+    P["Audit page"] --> I["GET /api/audit"]
+    X["integration"] --> V["GET /api/v1/audit-log"]
+    I -->|"readAuditParams<br/>canonical: false"| Q["queryAuditLog"]
+    V -->|"readAuditParams<br/>canonical: true"| Q
+    Q --> L[("activity_log, then<br/>one boards read and a COUNT")]
+```
 
 ### `GET /api/v1/cards/:cardId/board-history`
 
@@ -3687,11 +3731,36 @@ put in a milestone or taken out, by every route and page that does it (the singl
 milestone operations, one delivery for each card, `milestoneId` on `PUT /cards/:cardId`, and
 the web application's picker and plan page), sent to the webhooks of the card's board with the
 entry's words in `data.detail`. A card moved between milestones is one `milestone.card_added`
-naming the one it left; a milestone deleted, a card moved to another board out of its board's
-milestone, and a change to a milestone itself send neither. Nor do cards deleted with a board,
-a column, an administrator's clear of a board's cards or a purge of archived cards, which send no `card.deleted` either,
-or cards on sub-boards deleted with their parent card, which get no `card.deleted` of their
-own. **A webhook with an empty `events` list receives both from 2026-10-21.**
+naming the one it left; a change to a milestone itself sends neither. **A webhook with an empty
+`events` list receives both from 2026-10-21.**
+
+A card that leaves a milestone because of another change sends `milestone.card_removed` too
+(card 2381, since 2026-10-21), one delivery a card, to the card's board, `data.detail` a card
+taken out's words with why in brackets:
+
+| What happened | `data.detail` ends | Board | `data.cardId` |
+|---|---|---|---|
+| Moved to another board out of its milestone (`PUT /cards/:cardId/move`, or the web application; an older milestone of neither board named `milestone #<id>`) | `(moved to another board)` | The board it left, beside its `card.moved` | The card |
+| Its milestone deleted | `(milestone deleted)` | Its own | The card |
+| Deleted for good alone (beside its `card.deleted`), with its column, or by an administrator's clear of a board's cards or purge of archived cards | `(card deleted)` | Its own | The deleted card's id; the entry's `cardId` is null |
+| On another board, released from a milestone of a deleted board or of a sub-board deleted with its parent card | `(milestone deleted with its board)`, the milestone named `milestone #<id>` | Its own | The card |
+
+A card deleted with its own board (the board deleted, or a sub-board under a deleted card)
+sends nothing: the board's log and webhooks are deleted with it. For a card deleted for good,
+`card.deleted` and `milestone.card_removed` are separate deliveries and may arrive in either
+order: a receiver treats a `milestone.card_removed` for a card it does not know, or has already
+deleted, as harmless.
+
+```mermaid
+flowchart LR
+    M["moved to another board"] --> L
+    G["milestone deleted"] --> L
+    D["card deleted: alone, column,<br/>clear, purge"] --> L
+    R["released: its milestone's<br/>board deleted"] --> L
+    L["logCardLeftGoal:<br/>milestone_card_removed"] --> Q{"card's board<br/>still there?"}
+    Q -->|"yes"| S["afterCommit:<br/>milestone.card_removed"]
+    Q -->|"no: gone with it"| N["nothing written or sent"]
+```
 
 `card.moved` is every column change but a completion: a move within the board (`data.action`
 `card_moved`), a card moved out of a Complete column (`card_reopened`), and a move to another

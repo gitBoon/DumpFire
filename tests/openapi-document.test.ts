@@ -389,10 +389,18 @@ function reading(file: string, name: string, known: Known = {}): Reading {
  * Operations whose query parameters are read somewhere the reading above
  * cannot follow, as `'METHOD /path': { where they are read, and why }`.
  *
- * One entry. An entry is not a pass: the names are read from the function it
+ * Two entries. An entry is not a pass: the names are read from the function it
  * points at, and compared with the document like any other.
  */
 const QUERY_READ_ELSEWHERE: Record<string, { file: string; fn: string; params: string; why: string }> = {
+	'GET /api/v1/audit-log': {
+		file: 'src/lib/server/audit-log.ts',
+		fn: 'readAuditParams',
+		params: 'search',
+		why:
+			'The handler hands url.searchParams whole to readAuditParams, the reader it shares with the web ' +
+			"application's GET /api/audit (card 2294), which reads each name with search.get()."
+	},
 	'GET /api/v1/burndown': {
 		file: 'src/lib/server/burndown.ts',
 		fn: 'parseBurndownQuery',
