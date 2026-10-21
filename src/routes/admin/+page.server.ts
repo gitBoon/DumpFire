@@ -5,7 +5,7 @@ import { mayManageAccount } from '$lib/account-rule';
 import { db } from '$lib/server/db';
 import { getDbPath } from '$lib/server/db';
 import { defaultOutside } from '$lib/server/db/restore';
-import { boards, columns, cards, subtasks, categories, users, teams, teamMembers } from '$lib/server/db/schema';
+import { boards, columns, cards, categories, users, teams, teamMembers } from '$lib/server/db/schema';
 import { count, eq, sql } from 'drizzle-orm';
 import { statSync } from 'node:fs';
 
@@ -17,24 +17,29 @@ export const load: PageServerLoad = async ({ locals }) => {
 	if (!locals.user) throw redirect(303, '/login');
 	if (!isAdmin(locals.user)) throw redirect(303, '/');
 
-	// Board stats
+	// Board stats: each board's columns, cards (archived ones too) and
+	// categories, counted for every board at once (card 2297). They were three
+	// queries a board, and every write on this page reads it all again. A
+	// board with none is in no group, and counts 0; the shared categories'
+	// group, with no board, matches none.
 	const allBoards = db.select().from(boards).all();
-	const stats = allBoards.map((board) => {
-		const colCount = db.select({ count: count() }).from(columns).where(eq(columns.boardId, board.id)).get();
-		const cardCount = db
-			.select({ count: count() })
+	const byBoard = (rows: { boardId: number | null; count: number }[]) => new Map(rows.map((row) => [row.boardId, row.count]));
+	const columnCounts = byBoard(db.select({ boardId: columns.boardId, count: count() }).from(columns).groupBy(columns.boardId).all());
+	const cardCounts = byBoard(
+		db
+			.select({ boardId: columns.boardId, count: count() })
 			.from(cards)
 			.innerJoin(columns, eq(cards.columnId, columns.id))
-			.where(eq(columns.boardId, board.id))
-			.get();
-		const catCount = db.select({ count: count() }).from(categories).where(eq(categories.boardId, board.id)).get();
-		return {
-			...board,
-			columnCount: colCount?.count || 0,
-			cardCount: cardCount?.count || 0,
-			categoryCount: catCount?.count || 0
-		};
-	});
+			.groupBy(columns.boardId)
+			.all()
+	);
+	const categoryCounts = byBoard(db.select({ boardId: categories.boardId, count: count() }).from(categories).groupBy(categories.boardId).all());
+	const stats = allBoards.map((board) => ({
+		...board,
+		columnCount: columnCounts.get(board.id) || 0,
+		cardCount: cardCounts.get(board.id) || 0,
+		categoryCount: categoryCounts.get(board.id) || 0
+	}));
 
 	// All users, each with how many API keys they hold, how many webhooks they
 	// set that are on, and how many of their report schedules are on. A reset
@@ -76,21 +81,28 @@ export const load: PageServerLoad = async ({ locals }) => {
 			};
 		});
 
-	// All teams with member counts
+	// All teams with their members, every team's in one query (card 2297: it
+	// was one a team). Each team's are in the order of their ids, as the read
+	// of one team gave them (by the key on team and user).
 	const allTeams = db.select().from(teams).all();
-	const teamsWithMembers = allTeams.map(team => {
-		const members = db.select({
-			userId: teamMembers.userId,
-			role: teamMembers.role,
-			username: users.username,
-			emoji: users.emoji
-		})
-		.from(teamMembers)
-		.innerJoin(users, eq(teamMembers.userId, users.id))
-		.where(eq(teamMembers.teamId, team.id))
-		.all();
-		return { ...team, members };
-	});
+	const allMembers = db.select({
+		teamId: teamMembers.teamId,
+		userId: teamMembers.userId,
+		role: teamMembers.role,
+		username: users.username,
+		emoji: users.emoji
+	})
+	.from(teamMembers)
+	.innerJoin(users, eq(teamMembers.userId, users.id))
+	.orderBy(teamMembers.teamId, teamMembers.userId)
+	.all();
+	const membersByTeam = new Map<number, Omit<(typeof allMembers)[number], 'teamId'>[]>();
+	for (const { teamId, ...member } of allMembers) {
+		const list = membersByTeam.get(teamId) ?? [];
+		list.push(member);
+		membersByTeam.set(teamId, list);
+	}
+	const teamsWithMembers = allTeams.map(team => ({ ...team, members: membersByTeam.get(team.id) ?? [] }));
 
 	// Database size (main file + WAL + SHM — SQLite WAL mode splits data across all three)
 	let dbSizeBytes = 0;
