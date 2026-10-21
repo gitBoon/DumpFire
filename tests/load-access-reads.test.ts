@@ -63,6 +63,9 @@
  * board, status and mode against the old pipeline, and a test holds the rule's
  * two copies (`milestonesOpenAmong`, `goalsShownTo`) to the same goals. Its
  * plan is `docs/planning/card-2402.md`.
+ *
+ * Card 2403 added the test that the plan page shows every goal for a `?board=`
+ * that is no board id. Its plan is `docs/planning/card-2403.md`.
  */
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -948,5 +951,26 @@ describe('the inbox and the goal lists read as much for one board or goal as for
 		expect(page.data.boards).toEqual([]);
 		expect(page.data.milestones).toEqual([]);
 		expect(budget.sources.filter((source) => /"boards"\."parent_card_id" is null/.test(source))).toEqual([]);
+	});
+
+	// Card 2403: `?board=` was read with `Number`, so `2.5`, `0` and `-1` passed
+	// for an administrator, who can open any board, and the page filtered by a
+	// board that cannot exist: no goal, and no word why. A value that is no
+	// board id is no filter now, as a board the caller cannot open always was.
+	it('the plan page shows every goal for a board value that is no board id, as for a board its caller cannot open', async () => {
+		const s = scene();
+		for (const kind of KINDS) {
+			const user = s.callers[kind];
+			const unfiltered = await load('/plan', user);
+			if (unfiltered.type !== 'data') throw new Error(`refused: ${unfiltered.type}`);
+			// The administrator, whom the fault was seen by, has goals to lose.
+			if (kind === 'admin') expect(unfiltered.data.milestones.length).toBeGreaterThan(0);
+			for (const board of ['2.5', 'abc', '0', '-1']) {
+				expect(await load(`/plan?board=${board}`, user), `?board=${board}, for the ${kind}`).toEqual(unfiltered);
+			}
+		}
+		// A whole id of a board the caller cannot open, as before.
+		const member = s.callers.member;
+		expect(await load(`/plan?board=${s.B.board.id}`, member)).toEqual(await load('/plan', member));
 	});
 });
