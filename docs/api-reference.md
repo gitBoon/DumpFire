@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.85
+version: 1.86
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1219,6 +1219,14 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   comments; each copy now has the time its message was sent as its `createdAt` and
   `updatedAt`, as `GET /cards/:cardId/comments` and the reports read it, where every copy had
   the time of the accept. Comments copied before keep their times (item 99).
+- **Nobody is mailed about assigning themselves** (card 2286). `POST /cards/:cardId/assignees`
+  with the key's own user as `userId` mailed them `Assigned: <card>` about what they had just
+  done; it no longer does. They are assigned, and the `api:assignee_added` entry and the live
+  update are written, as before, and anyone else assigned is mailed as before. The web
+  application's routes that assign do the same: `POST /api/cards/{id}/assignees` (the card
+  window, and each person picked on a new card) and accepting a task request onto yourself,
+  which still mails the requester (item 100). See
+  [`POST /api/v1/cards/:cardId/assignees`](#post-apiv1cardscardidassignees).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2875,7 +2883,9 @@ does: `403` with `No access to this card's board` otherwise.
 Assign a user: `{ "userId": 2 }`. The card is looked for and the caller checked first, then
 `userId` is read: a whole number of 1 or more, `400` `userId must be an id` otherwise. A
 user who does not exist is `404` `User not found`, and one who cannot open the card's board
-`400` `User does not have access to this board`.
+`400` `User does not have access to this board`. The user assigned is mailed
+`Assigned: <card>`, as their settings allow, unless they are the key's own user: nobody is
+mailed about assigning themselves (card 2286).
 
 #### `DELETE /api/v1/cards/:cardId/assignees`
 

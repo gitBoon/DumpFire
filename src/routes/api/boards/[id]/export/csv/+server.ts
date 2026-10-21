@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { boards, columns, cards, categories, labels, cardLabels, cardAssignees, users, subtasks } from '$lib/server/db/schema';
-import { eq, and, isNull, inArray, asc } from 'drizzle-orm';
+import { eq, and, isNull, inArray, asc, getTableColumns } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
 import { pathId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
@@ -49,10 +49,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		});
 	}
 
-	// Get all active cards, by position, ties by id (card 2347)
-	const allCards = db.select().from(cards)
+	// Get all active cards, column by column in the board's order, and within
+	// a column by position, ties by id (cards 2347 and 2368). By the card's
+	// position alone the rows of every column were mixed together.
+	const allCards = db.select(getTableColumns(cards)).from(cards)
+		.innerJoin(columns, eq(cards.columnId, columns.id))
 		.where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt)))
-		.orderBy(...CARD_ORDER)
+		.orderBy(asc(columns.position), asc(columns.id), ...CARD_ORDER)
 		.all();
 
 	const cardIds = allCards.map(c => c.id);

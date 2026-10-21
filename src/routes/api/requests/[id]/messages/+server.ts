@@ -50,9 +50,12 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 		'Access denied'
 	);
 
+	// In the order they were sent: by id within one second (card 2367), as the
+	// copy onto the card orders them. By the time alone, two of one second came
+	// in whatever order SQLite read them.
 	const messages = db.select().from(requestMessages)
 		.where(eq(requestMessages.requestId, requestId))
-		.orderBy(asc(requestMessages.createdAt))
+		.orderBy(asc(requestMessages.createdAt), asc(requestMessages.id))
 		.all();
 
 	return json(messages);

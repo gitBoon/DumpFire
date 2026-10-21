@@ -367,6 +367,7 @@ The OpenAPI document's version went from `1.1.0` to `1.2.0` with these. One oper
 - **`GET /audit-log` and the activity reads can return `attachment_added` and `attachment_deleted`** (card 2337). A file attached to a card in the web application logs `attachment_added`, `Attached "<file name>" to "<card>"`, and one deleted logs `attachment_deleted`, `Deleted the file "<file name>" from "<card>"`, the file named as its uploader named it, by whoever did it, with `source` `ui`; neither was recorded. Attachments are not part of this API, so neither is ever written with `api:`. **No webhook is sent for either**: there is no `attachment.*` event, and a receiver could not fetch the file (item 97).
 - **`PUT /columns/:columnId`, `/labels/:labelId`, `/categories/:categoryId` and `/board-categories/:categoryId` write only the fields whose value changes** (card 2359), as `PUT /boards/:boardId` does since card 2345. A body whose every field is as the row holds it (a name or title that trims to the stored one included) is answered `200` with the row as it is: nothing is written, and the board's open pages are not told to re-read, where every field sent was written and the board of a column, a label or a category told. None of these writes logs an entry or sends a webhook, as before. `{}` is still `400` `No valid fields to update`, and a request that would be refused is still refused first: a column that holds a card, renamed into or out of Complete or Done, is still `409`. The web application's `PUT /api/columns/{id}`, `PATCH /api/labels`, `PUT /api/categories/{id}` and `PUT /api/board-categories/{id}` write and tell the same way, though each keeps its own answer to an empty body (`PATCH /api/labels` answers `{}` with `400` `Send name or color to change`) (item 98).
 - **A comment copied from a request's discussion keeps its message's time** (card 2340). Accepting a request in the web application copies its discussion onto the new card as comments; each copy now has the time its message was sent as its `createdAt` and `updatedAt`, as `GET /cards/:cardId/comments` and the reports read it, where every copy had the time of the accept. Comments copied before keep the times they have (item 99).
+- **Nobody is mailed about assigning themselves** (card 2286). `POST /cards/:cardId/assignees` with the key's own user as `userId` mailed them `Assigned: <card>` about what they had just done; it no longer does. They are assigned, and the `api:assignee_added` entry and the live update are written, as before, and anyone else assigned is mailed as before. The web application's routes that assign do the same: `POST /api/cards/{id}/assignees` (the card window, and each person picked on a new card) and accepting a task request onto yourself, which still mails the requester (item 100).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but reach the keys every caller uses:
 
@@ -1064,7 +1065,9 @@ POST /api/v1/cards/:cardId/assignees
 The card is looked for and the caller checked first (`404`, then `403`), then `userId` is
 read. A user who does not exist is `404` `User not found`, and one who cannot open the
 card's board `400` `User does not have access to this board`. Assigning someone already
-assigned is answered `200` with `User already assigned`.
+assigned is answered `200` with `User already assigned`. The user assigned is mailed
+`Assigned: <card>`, as their settings allow, unless they are the key's own user: nobody is
+mailed about assigning themselves.
 
 ---
 

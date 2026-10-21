@@ -678,6 +678,33 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		expect(navigation.invalidateAll).not.toHaveBeenCalled();
 		// And the button is pressed again once it is done.
 		expect(target.querySelector<HTMLButtonElement>('#load-more-completed')!.disabled).toBe(false);
+		expect(target.querySelector('#completed-capped')).toBeNull();
+	});
+
+	// Card 2366: the load gives at most 500 completed cards, and kept saying
+	// there were more past that, so Load more stayed and loaded nothing. At the
+	// cap the load says there is nothing more to load, and the page says how
+	// many it shows in place of the button.
+	it('at the 500 cap, with more completed, says how many it shows in place of Load more (card 2366)', () => {
+		const done = [card(31, 'Shipped', { bucket: 'Complete', columnId: 22, columnTitle: 'Complete', boardId: 4, boardName: 'Mobile' })];
+		const target = draw({
+			buckets: [{ title: 'To Do', cards: [] }, { title: 'Complete', cards: done }],
+			hasMoreCompleted: false,
+			totalCompletedCount: 501,
+			completedLimit: 500
+		});
+
+		const complete = [...target.querySelectorAll('.column')].find((c) => c.querySelector('.column-title')!.textContent === 'Complete')!;
+		expect(complete.querySelector('#load-more-completed')).toBeNull();
+		expect(complete.querySelector('#completed-capped')!.textContent!.trim()).toBe('Showing the latest 500 of 501 completed cards');
+		expect(complete.querySelector('.column-count')!.textContent!.trim()).toBe('1 of 501');
+	});
+
+	it('with every completed card shown, neither Load more nor the line (card 2366)', () => {
+		const target = draw({ hasMoreCompleted: false, totalCompletedCount: 0, completedLimit: 50 });
+
+		expect(target.querySelector('#load-more-completed')).toBeNull();
+		expect(target.querySelector('#completed-capped')).toBeNull();
 	});
 });
 

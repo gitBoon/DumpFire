@@ -34,6 +34,7 @@ import {
 	activityLog,
 	boardCategories,
 	boards,
+	cardAssignees,
 	cardComments,
 	cardLabels,
 	cards,
@@ -3438,6 +3439,83 @@ describe('nothing changed, nothing recorded', () => {
 		expectUnchanged(before);
 		expect(told).toEqual([]);
 	});
+
+	// Card 2369: the column reorder wrote every column it was sent and told
+	// the board to re-read, even when none moved (a column dropped where it
+	// was, or the whole order sent after one moved). It is the page's route
+	// alone: the documented API has no reorder (a column's position is set
+	// through PUT /api/v1/columns/{columnId}, held above).
+	describe('the column reorder (card 2369)', () => {
+		/** Board A's columns, each at the position it holds, `moved` laid over them by title. */
+		const order = (s: Scene, moved: Record<string, number | string> = {}) =>
+			Object.entries(s.A.cols).map(([title, column]) => ({
+				id: column.id,
+				position: title in moved ? moved[title] : db.select().from(columns).where(eq(columns.id, column.id)).get()!.position
+			}));
+		const reorder = (s: Scene, updates: unknown[], user: SessionUser = s.owner) =>
+			heldSaved(() => api('PUT', '/api/columns/reorder', { user, body: { updates } }));
+		const positionOf = (id: number) => db.select().from(columns).where(eq(columns.id, id)).get()!.position;
+
+		it('every column sent at its own place writes and tells nothing, and answers as before', async () => {
+			const s = boardScene();
+			const before = snapshotDb();
+
+			const { res, writes, told } = await reorder(s, order(s));
+
+			expect([res.status, res.body]).toEqual([200, { success: true }]);
+			expect(writes).toEqual([]);
+			expectUnchanged(before);
+			expect(told).toEqual([]);
+		});
+
+		it('two columns swapped, the rest sent as held, writes the two and tells the board once', async () => {
+			const s = boardScene();
+			const [todo, hold] = [positionOf(s.A.cols['To Do'].id), positionOf(s.A.cols['On Hold'].id)];
+
+			const { res, writes, told } = await reorder(s, order(s, { 'To Do': hold, 'On Hold': todo }));
+
+			expect(res.status).toBe(200);
+			expect(writes).toHaveLength(2);
+			for (const write of writes) expect(write).toMatch(/^update "columns" set "position" = \? where /);
+			expect([positionOf(s.A.cols['To Do'].id), positionOf(s.A.cols['On Hold'].id)]).toEqual([hold, todo]);
+			expect(told).toEqual(['event update {"type":"column"} on board 1']);
+		});
+
+		it('a column named twice ends at its last position, as before, and is written only if that moves it', async () => {
+			const s = boardScene();
+			const todo = s.A.cols['To Do'].id;
+			const at = positionOf(todo);
+
+			const back = await reorder(s, [{ id: todo, position: 9 }, { id: todo, position: at }]);
+			expect(back.res.status).toBe(200);
+			expect(back.writes).toEqual([]);
+			expect(back.told).toEqual([]);
+			expect(positionOf(todo)).toBe(at);
+
+			const away = await reorder(s, [{ id: todo, position: at }, { id: todo, position: 9 }]);
+			expect(away.writes).toHaveLength(1);
+			expect(away.told).toEqual(['event update {"type":"column"} on board 1']);
+			expect(positionOf(todo)).toBe(9);
+		});
+
+		it('is refused as before when it would be, before it finds nothing to write', async () => {
+			const s = boardScene();
+			const before = snapshotDb();
+
+			// A viewer of the board, every column sent at its own place.
+			const viewer = await reorder(s, order(s), s.viewer);
+			// A position that is not a number, the other columns as held.
+			const bad = await reorder(s, order(s, { 'On Hold': 'top' }));
+
+			expect(viewer.res.status).toBe(403);
+			expect([bad.res.status, bad.res.body]).toEqual([400, { message: 'updates[1].position must be a number' }]);
+			for (const run of [viewer, bad]) {
+				expect(run.writes).toEqual([]);
+				expect(run.told).toEqual([]);
+			}
+			expectUnchanged(before);
+		});
+	});
 });
 
 describe('the details', () => {
@@ -3857,6 +3935,72 @@ describe('accepting a request with an assignee', () => {
 				source: 'ui'
 			}
 		]);
+	});
+});
+
+// ─── Nobody is mailed about assigning themselves (card 2286) ────────────────
+//
+// Every route that assigns mailed the assignee "You've been assigned", the
+// person who had just done it included. They are not mailed now, as nobody
+// is mailed about a move they made themselves (card 2134); the row, the entry
+// and the live update are as for anyone else, and someone else assigned is
+// mailed as before (the pairs above).
+
+describe('nobody is mailed about assigning themselves (card 2286)', () => {
+	it.each([
+		['the internal route', '/api/cards', 'assignee_added', 'ui'],
+		['the v1 route', '/api/v1/cards', 'api:assignee_added', 'api']
+	])('assigning yourself through %s assigns and records you, tells the board, and mails nobody', async (_tree, base, action, source) => {
+		const s = scene();
+		const sent = effects();
+		try {
+			const res = await api('POST', `${base}/${s.first.id}/assignees`, { user: s.owner, body: { userId: s.owner.id } });
+			await sent.settle();
+
+			expect(res.status).toBe(200);
+			expect(db.select().from(cardAssignees).all()).toEqual([{ cardId: s.first.id, userId: s.owner.id }]);
+			expect(entries()).toMatchObject([{ action, cardId: s.first.id, userId: s.owner.id, detail: 'Assigned owner to "First"', source }]);
+			expect(sent.all.map(name)).toEqual(['event update {"type":"card"} on board 1']);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it('accepting a request onto yourself makes and records the card and the assignment, and mails only the requester', async () => {
+		const s = scene();
+		const request = db
+			.insert(taskRequests)
+			.values({
+				targetType: 'user',
+				targetId: s.owner.id,
+				requesterName: 'Rita',
+				requesterEmail: 'rita@example.test',
+				title: 'Please add an export',
+				accessToken: 'a'.repeat(64)
+			})
+			.returning()
+			.get();
+
+		const sent = effects();
+		let res: ApiResult;
+		try {
+			res = await api('PATCH', `/api/requests/${request.id}`, {
+				user: s.owner,
+				body: { action: 'accept', boardId: s.A.board.id, columnId: s.A.cols['To Do'].id, assigneeId: s.owner.id }
+			});
+			await sent.settle();
+		} finally {
+			sent.restore();
+		}
+
+		expect(res.status).toBe(200);
+		const card = res.body.resolvedCardId;
+		expect(db.select().from(cardAssignees).all()).toEqual([{ cardId: card, userId: s.owner.id }]);
+		expect(entries().map((e) => [e.action, e.detail])).toEqual([
+			['card_created', 'Please add an export'],
+			['assignee_added', 'Assigned owner to "Please add an export"']
+		]);
+		expect(sent.emails.map((e) => `${e.to}: ${e.subject}`)).toEqual(['rita@example.test: Request accepted: Please add an export']);
 	});
 });
 

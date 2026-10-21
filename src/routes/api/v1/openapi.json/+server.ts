@@ -272,6 +272,8 @@ const spec = {
 			'where every field sent was written and the board of a column, a label or a category told to re-read. {} is still 400, and a request that would be refused is still refused first. ' +
 			'(99) A comment copied onto a card from a request\'s discussion, as the web application accepts the request, has the time its message was sent as its createdAt and its updatedAt, ' +
 			'as GET /api/v1/cards/{cardId}/comments and the reports read it, where every copy had the time of the accept. ' +
+			'(100) POST /api/v1/cards/{cardId}/assignees mails nobody who assigns themselves (the key\'s user given as userId), who was mailed "Assigned: <card>" about what they had just done. ' +
+			'They are assigned, and the api:assignee_added entry and the live update written, as before, and anyone else assigned is mailed as before. The web application\'s routes that assign do the same. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -3355,7 +3357,8 @@ const spec = {
 				tags: ['Assignees'],
 				summary: 'Assign a user',
 				description:
-					'Assigns a user to the card, who is then notified by email. The user must themselves have access to the card\'s board. ' +
+					'Assigns a user to the card, who is then notified by email, unless they are the key\'s user: nobody is mailed about assigning themselves (until 2026-10-14 they were). ' +
+					'The user must themselves have access to the card\'s board. ' +
 					'Assigning a user who is already assigned assigns nobody and notifies nobody, and is answered 200 all the same; the message says which happened.',
 				operationId: 'assignUser',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],

@@ -20,6 +20,9 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { and, eq } from 'drizzle-orm';
+import { db } from '$lib/server/db';
+import { boards, columns } from '$lib/server/db/schema';
 import { api } from './helpers/api';
 import { pageLoad } from './helpers/actions';
 import { makeBoard, makeCard, makeUser, resetDb } from './helpers/fixtures';
@@ -93,14 +96,34 @@ describe('every reader that lists cards by their place orders them by position, 
 		expect(titles(res.body)).toEqual(['FIRST-A4', 'TIE-A2', 'TIE-A5', 'TIE-A3']);
 	});
 
-	it('both CSV exports, whose rows run across columns and boards', async () => {
+	// Card 2368: both exports ordered their rows by the card's position across
+	// every column (and the all-boards one across every board), so a board's
+	// columns came mixed together. Now board by board in the order the boards
+	// were made, column by column in the board's order, then CARD_ORDER.
+	it('both CSV exports, board by board, column by column, then by position and id', async () => {
 		const board = await api('GET', `/api/boards/${boardA}/export/csv`, { user: owner });
 		expect(board.status).toBe(200);
-		expect(named(String(board.body))).toEqual(['FIRST-A4', 'TIE-A2', 'TIE-A3', 'TIE-A5']);
+		expect(named(String(board.body))).toEqual(['FIRST-A4', 'TIE-A2', 'TIE-A5', 'TIE-A3']);
 
 		const every = await api('GET', '/api/cards/export/csv', { user: owner });
 		expect(every.status).toBe(200);
-		expect(named(String(every.body))).toEqual(['FIRST-A4', 'TIE-B1', 'TIE-A2', 'TIE-A3', 'TIE-A5']);
+		expect(named(String(every.body))).toEqual(['FIRST-A4', 'TIE-A2', 'TIE-A5', 'TIE-A3', 'TIE-B1']);
+	});
+
+	it('both CSV exports follow the place of each column, not its id, and the age of each board, not its name (card 2368)', async () => {
+		// In Progress moved before To Do on board A, and board A renamed to sort after B.
+		db.update(columns).set({ position: -1 }).where(and(eq(columns.boardId, boardA), eq(columns.title, 'In Progress'))).run();
+		db.update(boards).set({ name: 'Z' }).where(eq(boards.id, boardA)).run();
+
+		const board = await api('GET', `/api/boards/${boardA}/export/csv`, { user: owner });
+		expect(named(String(board.body))).toEqual(['TIE-A3', 'FIRST-A4', 'TIE-A2', 'TIE-A5']);
+		const every = await api('GET', '/api/cards/export/csv', { user: owner });
+		expect(named(String(every.body))).toEqual(['TIE-A3', 'FIRST-A4', 'TIE-A2', 'TIE-A5', 'TIE-B1']);
+
+		// Two columns at one place: the older column first.
+		db.update(columns).set({ position: 0 }).where(and(eq(columns.boardId, boardA), eq(columns.title, 'In Progress'))).run();
+		const tied = await api('GET', `/api/boards/${boardA}/export/csv`, { user: owner });
+		expect(named(String(tied.body))).toEqual(['FIRST-A4', 'TIE-A2', 'TIE-A5', 'TIE-A3']);
 	});
 
 	it('each reader orders by CARD_ORDER, and none by position alone', () => {
