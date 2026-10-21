@@ -325,6 +325,14 @@
 	// load only below that (card 2366): at the cap, with more completed, the
 	// bucket says how many it shows in place of the button.
 	const completedCapped = $derived(!data.hasMoreCompleted && data.totalCompletedCount > data.completedLimit);
+	/**
+	 * Whether a search, the board filter or Hide blocked is on. Show More then
+	 * says no number (card 2370): it counted the loaded cards they hide as
+	 * still to come, and how many older completed cards match is the server's
+	 * to know, not the page's. With none on, every loaded card is shown and
+	 * the number is right.
+	 */
+	const filtering = $derived(searchQuery.trim() !== '' || String(boardFilter) !== 'all' || hideBlocked);
 
 	/**
 	 * Fifty more completed cards (card 2300). The limit is in the address, and
@@ -463,6 +471,8 @@
 							<button class="load-more-btn" onclick={loadMoreCompleted} disabled={loadingMore} id="load-more-completed">
 								{#if loadingMore}
 									<span class="spinner"></span> Loading…
+								{:else if filtering}
+									Show More
 								{:else}
 									Show More ({data.totalCompletedCount - filteredCards.length} remaining)
 								{/if}

@@ -28,6 +28,12 @@
  * `ConfirmModal`, and the Import Database dialog and the Connect box hold
  * the focus through `$lib/dialog-focus`; each is mounted here and its focus,
  * Tab and Escape driven.
+ *
+ * Card 2365: the invite link's dialog and the reset's notice hold the focus
+ * too, and Manage Categories (in `tests/dashboard.test.ts`). Card 2355: a
+ * member's role changed in place on the teams panel, and the Teams page
+ * (`src/routes/teams/+page.svelte`, not an admin panel, mounted here beside
+ * the panel that does the same) with its role when adding.
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -44,6 +50,8 @@ import DangerZonePanel from '$lib/components/admin/DangerZonePanel.svelte';
 import AdminPage from '../src/routes/admin/+page.svelte';
 import BackupRestorePanel from '$lib/components/admin/BackupRestorePanel.svelte';
 import ArchivedPage from '../src/routes/archived/+page.svelte';
+import TeamsPage from '../src/routes/teams/+page.svelte';
+import { toasts } from '$lib/stores/toast';
 
 // The page's data is read again after a write; here it is only counted. The
 // page's Toast listens for navigations, which there are none of here.
@@ -65,6 +73,10 @@ vi.mock('svelte', async () => {
 // The browser's `mount`, loaded by its path: a bare 'svelte' gives the server's (see the XP bars' file).
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
 const { flushSync, mount, unmount }: typeof Svelte = await import(/* @vite-ignore */ clientEntry);
+// The proxy SvelteKit puts a page's props in, so that a new `data` is drawn as a re-read is (the plan page's file does the same).
+// Named through a variable: the package declares no types for its internal entry.
+const internalEntry = 'svelte/internal/client';
+const { proxy } = (await import(/* @vite-ignore */ internalEntry)) as { proxy: <T>(value: T) => T };
 
 /** Each request the panel sent, as `METHOD url`, with its body read as JSON where it had one. */
 let sent: { what: string; body: unknown }[] = [];
@@ -501,8 +513,11 @@ describe('the users panel, mounted', () => {
 		expect(link.value).toEqual({
 			url: 'http://localhost/invite/t1',
 			username: 'carol',
-			message: 'User carol was made, but the invite mail could not be sent: no mail server.'
+			message: 'User carol was made, but the invite mail could not be sent: no mail server.',
+			// Where the focus goes back to after Done (card 2365's review).
+			returnTo: buttonNamed(target, '+ Add User')
 		});
+		expect((link.value as { returnTo: unknown }).returnTo).toBe(buttonNamed(target, '+ Add User'));
 		expect(loadMailStatus).toHaveBeenCalledTimes(1);
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 	});
@@ -622,6 +637,291 @@ describe('the teams panel, mounted', () => {
 		choose(people, '1');
 
 		expect(role().value).toBe('member');
+	});
+
+	// Card 2355: no page changed the role of someone already in a team; the route always did.
+	it('changes a member’s role in place, marking the picker busy while it is out, and shows the stored role again when it is refused (card 2355)', async () => {
+		const withMembers = {
+			...pageData,
+			teams: [{ id: 7, name: 'Ops', emoji: '🏢', members: [{ userId: 2, role: 'member', username: 'bob', emoji: '🙂' }] }]
+		};
+		const release: (() => void)[] = [];
+		let refusing = false;
+		answer = (what) =>
+			what === 'POST /api/teams/7/members/2'
+				? new Promise<Response>((resolve) =>
+						release.push(() => resolve(refusing ? Response.json({ message: 'Forbidden' }, { status: 403 }) : Response.json({ success: true, action: 'updated' })))
+					)
+				: undefined;
+		const target = draw(TeamsPanel, { data: withMembers, confirm: vi.fn() });
+		const picker = target.querySelector<HTMLSelectElement>('.team-member select')!;
+		expect(picker.getAttribute('aria-label')).toBe("bob's role in this team");
+		expect([...picker.options].map((option) => option.value)).toEqual(['member', 'owner']);
+		expect(picker.value).toBe('member');
+
+		picker.value = 'owner';
+		picker.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+		expect(picker.getAttribute('aria-busy')).toBe('true');
+		release.shift()!();
+		await settle();
+		expect(asked('POST /api/teams/7/members/2').map((request) => request.body)).toEqual([{ userId: 2, role: 'owner' }]);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(picker.hasAttribute('aria-busy')).toBe(false);
+
+		// Refused: the data still says member, and so does the picker.
+		refusing = true;
+		picker.value = 'owner';
+		picker.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+		release.shift()!();
+		await settle();
+		expect(asked('POST /api/teams/7/members/2')).toHaveLength(2);
+		expect(picker.value).toBe('member');
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('the Teams page, mounted (card 2355)', () => {
+	const owner = { id: 1, username: 'chief', email: 'chief@example.com', emoji: '👑', role: 'user' };
+	const teamsData = (currentUser: { id: number; role: string } = owner) => ({
+		currentUser,
+		users: [
+			{ id: 1, username: 'chief', emoji: '👑' },
+			{ id: 2, username: 'bob', emoji: '🙂' },
+			{ id: 3, username: 'carol', emoji: '🌷' }
+		],
+		teams: [
+			{
+				id: 7,
+				name: 'Ops',
+				emoji: '🏢',
+				members: [
+					{ userId: 1, role: 'owner', username: 'chief', emoji: '👑' },
+					{ userId: 2, role: 'member', username: 'bob', emoji: '🙂' }
+				]
+			}
+		]
+	});
+	const rolePicker = (target: HTMLElement, name: string) =>
+		[...target.querySelectorAll<HTMLSelectElement>('.team-member-item select')].find((select) => select.getAttribute('aria-label') === `${name}'s role in this team`);
+	const choose = (box: HTMLSelectElement, value: string) => {
+		box.value = value;
+		box.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+	};
+	const toastsSaid = () => [...document.querySelectorAll('.toast-msg')].map((toast) => toast.textContent!.trim());
+
+	afterEach(() => {
+		let shown: { id: number }[] = [];
+		toasts.subscribe((list) => (shown = list))();
+		for (const toast of shown) toasts.dismiss(toast.id);
+	});
+
+	it('sends the role chosen beside Add, Member until another is chosen and again after each add', async () => {
+		answer = (what) => (what === 'POST /api/teams/7/members/3' ? Response.json({ success: true, action: 'added' }, { status: 201 }) : undefined);
+		const target = draw(TeamsPage, { data: teamsData() });
+		const addRole = () => target.querySelector<HTMLSelectElement>('select[title="Their role in this team"]');
+		expect(addRole()).toBeNull();
+
+		const people = target.querySelector<HTMLSelectElement>('.add-member-section select')!;
+		choose(people, '3');
+		expect([...addRole()!.options].map((option) => [option.value, option.textContent])).toEqual([
+			['member', 'Member'],
+			['owner', 'Owner']
+		]);
+		expect(addRole()!.value).toBe('member');
+		choose(addRole()!, 'owner');
+		buttonNamed(target, 'Add').click();
+		await settle();
+
+		expect(asked('POST /api/teams/7/members/3').map((request) => request.body)).toEqual([{ userId: 3, role: 'owner' }]);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(toastsSaid()).toContain('Member added');
+		choose(people, '3');
+		expect(addRole()!.value).toBe('member');
+	});
+
+	it('changes a member’s role in place, says so and reads the page again; a refusal says why and shows the stored role again', async () => {
+		let refusing = false;
+		answer = (what) =>
+			what === 'POST /api/teams/7/members/2'
+				? refusing
+					? Response.json({ message: 'Forbidden' }, { status: 403 })
+					: Response.json({ success: true, action: 'updated' })
+				: undefined;
+		const target = draw(TeamsPage, { data: teamsData() });
+		const picker = rolePicker(target, 'bob')!;
+		expect(picker.value).toBe('member');
+
+		choose(picker, 'owner');
+		await settle();
+		expect(asked('POST /api/teams/7/members/2').map((request) => request.body)).toEqual([{ userId: 2, role: 'owner' }]);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(toastsSaid()).toContain('Role changed');
+
+		refusing = true;
+		choose(picker, 'owner');
+		await settle();
+		expect(asked('POST /api/teams/7/members/2')).toHaveLength(2);
+		expect(picker.value).toBe('member');
+		expect(toastsSaid()).toContain('Forbidden');
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	it('shows the role as a badge on your own row, and to a member who does not run the team on every row', () => {
+		const target = draw(TeamsPage, { data: teamsData() });
+		expect(rolePicker(target, 'chief')).toBeUndefined();
+		expect(rolePicker(target, 'bob')).toBeDefined();
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		drawn = null;
+
+		const asMember = draw(TeamsPage, { data: teamsData({ id: 2, role: 'user' }) });
+		expect(asMember.querySelectorAll('.team-member-item select')).toHaveLength(0);
+		expect([...asMember.querySelectorAll('.member-role-badge')].map((badge) => badge.textContent)).toEqual(['owner', 'member']);
+		expect(asMember.querySelector('.add-member-section')).toBeNull();
+	});
+
+	it('shows a role stored before roles were checked as itself', () => {
+		const data = teamsData();
+		data.teams[0].members[1].role = 'lead';
+		const target = draw(TeamsPage, { data });
+		const picker = rolePicker(target, 'bob')!;
+		expect([...picker.options].map((option) => option.value)).toEqual(['lead', 'member', 'owner']);
+		expect(picker.value).toBe('lead');
+	});
+});
+
+// The card 2355 review, on both team pages: the rows were drawn without a key and a change held its
+// row's picker and member from when it was sent, so a refusal could put a role on another row; one
+// slot said whose change was out; the picker was turned off while out (which drops the keyboard's
+// focus in a browser; jsdom keeps it, so that is argued, not shown); and a member removed meanwhile,
+// whom the route adds again (201 "added"), was said as "Role changed".
+describe.each([
+	['the teams panel', TeamsPanel],
+	['the Teams page', TeamsPage]
+])('a member’s role changed in place on %s (the card 2355 review)', (_, component) => {
+	const BOB = { userId: 2, role: 'member', username: 'bob', emoji: '🙂' };
+	const CAROL = { userId: 3, role: 'owner', username: 'carol', emoji: '🌷' };
+	/** The page's data with team 7 holding `members`; the superadmin may manage every row on both pages. */
+	const teamWith = (...members: (typeof BOB)[]) => ({
+		...pageData,
+		users: [...pageData.users, { id: 3, username: 'carol', email: 'carol@example.com', emoji: '🌷', role: 'user' }],
+		teams: [{ id: 7, name: 'Ops', emoji: '🏢', members }]
+	});
+	const picker = (target: HTMLElement, name: string) => target.querySelector<HTMLSelectElement>(`select[aria-label="${name}'s role in this team"]`);
+	const choose = (box: HTMLSelectElement, value: string) => {
+		box.value = value;
+		box.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+	};
+	const busy = (box: HTMLSelectElement) => box.getAttribute('aria-busy');
+	const toastsSaid = () => {
+		let shown: { message: string }[] = [];
+		toasts.subscribe((list) => (shown = list))();
+		return shown.map((toast) => toast.message);
+	};
+	/** Each role change, held until the case answers it. */
+	let holds: Record<string, ((response: Response) => void)[]> = {};
+	const holdChanges = () => {
+		holds = {};
+		answer = (what) => (what.startsWith('POST /api/teams/7/members/') ? new Promise<Response>((resolve) => (holds[what] ??= []).push(resolve)) : undefined);
+	};
+	const answerChange = (userId: number, response: Response) => holds[`POST /api/teams/7/members/${userId}`].shift()!(response);
+	const refused = () => Response.json({ message: 'Forbidden' }, { status: 403 });
+	const updated = () => Response.json({ success: true, action: 'updated' });
+
+	/** Mounts it with its props in a Svelte proxy, as SvelteKit hands them: setting `data` is a re-read. */
+	function drawLive(data: unknown) {
+		const props = proxy({ data, confirm: vi.fn() });
+		const target = document.createElement('div');
+		document.body.appendChild(target);
+		drawn = { component: mount(component as never, { target, props: props as never }), target };
+		flushSync();
+		return { target, props };
+	}
+
+	afterEach(() => {
+		let shown: { id: number }[] = [];
+		toasts.subscribe((list) => (shown = list))();
+		for (const toast of shown) toasts.dismiss(toast.id);
+	});
+
+	it('says that a member removed meanwhile has been added again with the role chosen, not "Role changed"', async () => {
+		answer = (what) => (what === 'POST /api/teams/7/members/2' ? Response.json({ success: true, action: 'added' }, { status: 201 }) : undefined);
+		const { target } = drawLive(teamWith(BOB));
+		choose(picker(target, 'bob')!, 'owner');
+		await settle();
+
+		expect(asked('POST /api/teams/7/members/2').map((request) => request.body)).toEqual([{ userId: 2, role: 'owner' }]);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(toastsSaid()).toEqual(['bob was no longer in the team and has been added again as Owner']);
+	});
+
+	it('puts a refused change back on its own member’s row when the rows have moved meanwhile', async () => {
+		holdChanges();
+		const { target, props } = drawLive(teamWith(BOB, CAROL));
+		choose(picker(target, 'bob')!, 'owner');
+		// Read again while it is out, with the rows the other way round.
+		props.data = teamWith(CAROL, BOB);
+		flushSync();
+		answerChange(2, refused());
+		await settle();
+
+		expect(picker(target, 'carol')!.value).toBe('owner');
+		expect(picker(target, 'bob')!.value).toBe('member');
+	});
+
+	it('puts back the role the page’s data gives the member when the refusal comes, not the one held when it was sent', async () => {
+		holdChanges();
+		const { target, props } = drawLive(teamWith(BOB, CAROL));
+		choose(picker(target, 'carol')!, 'member');
+		// Read again while it is out: carol's role was made 'lead' elsewhere (a role from before roles were checked will do).
+		props.data = teamWith(BOB, { ...CAROL, role: 'lead' });
+		flushSync();
+		answerChange(3, refused());
+		await settle();
+
+		expect(picker(target, 'carol')!.value).toBe('lead');
+	});
+
+	it('marks the picker busy while its change is out rather than turning it off, and sends no second change for that member meanwhile', async () => {
+		holdChanges();
+		const { target } = drawLive(teamWith(BOB));
+		const bobs = picker(target, 'bob')!;
+		choose(bobs, 'owner');
+		expect(bobs.disabled).toBe(false);
+		expect(busy(bobs)).toBe('true');
+
+		choose(bobs, 'member');
+		expect(bobs.value).toBe('owner');
+		expect(asked('POST /api/teams/7/members/2')).toHaveLength(1);
+
+		answerChange(2, updated());
+		await settle();
+		expect(busy(bobs)).toBeNull();
+		expect(asked('POST /api/teams/7/members/2').map((request) => request.body)).toEqual([{ userId: 2, role: 'owner' }]);
+	});
+
+	it('keeps each of two changes out at once busy until its own answer', async () => {
+		holdChanges();
+		const { target } = drawLive(teamWith(BOB, CAROL));
+		choose(picker(target, 'bob')!, 'owner');
+		choose(picker(target, 'carol')!, 'member');
+		expect(busy(picker(target, 'bob')!)).toBe('true');
+		expect(busy(picker(target, 'carol')!)).toBe('true');
+
+		answerChange(2, updated());
+		await settle();
+		expect(busy(picker(target, 'bob')!)).toBeNull();
+		expect(busy(picker(target, 'carol')!)).toBe('true');
+
+		answerChange(3, updated());
+		await settle();
+		expect(busy(picker(target, 'carol')!)).toBeNull();
+		expect(asked('POST /api/teams/7/members/2')).toHaveLength(1);
+		expect(asked('POST /api/teams/7/members/3')).toHaveLength(1);
 	});
 });
 
@@ -825,6 +1125,120 @@ describe('the admin page, mounted with its panels', () => {
 		buttonNamed(target, 'Close').click();
 		flushSync();
 		expect(target.querySelector('[role="alertdialog"]')).toBeNull();
+	});
+
+	// Card 2365: the invite link's dialog let Tab walk the page behind it.
+	it('keeps Tab in the invite link’s dialog, Copy first, and closes it on Done alone, never on Escape (card 2365)', async () => {
+		answer = (what) =>
+			what === 'POST /api/users/2/invite'
+				? Response.json({ mailSent: false, message: 'The invite mail could not be sent.', inviteUrl: 'http://localhost/invite/t2' })
+				: undefined;
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+		inviteButton(target).click();
+		await settle();
+
+		const dialog = document.querySelector<HTMLElement>('[role="alertdialog"][aria-label="The invite mail was not sent"]')!;
+		const copy = buttonNamed(dialog, '📋 Copy');
+		const done = buttonNamed(dialog, 'Done');
+		expect(document.activeElement).toBe(copy);
+		done.focus();
+		expect(tab()).toBe(true);
+		expect(document.activeElement).toBe(copy);
+		expect(tab(true)).toBe(true);
+		expect(document.activeElement).toBe(done);
+		// From the page behind, back to Copy.
+		buttonNamed(target, 'Vacuum').focus();
+		expect(tab()).toBe(true);
+		expect(document.activeElement).toBe(copy);
+
+		escape();
+		expect(headings(target)).toContain('📧 The invite mail was not sent');
+		done.click();
+		flushSync();
+		expect(headings(target)).not.toContain('📧 The invite mail was not sent');
+	});
+
+	// Card 2365's review: the dialog opens once its answer comes, by when the pressed Create is gone and
+	// 📧 is off, so the focus it gave back after Done was nothing's. jsdom keeps the focus on a button turned
+	// off, so the 📧 half passes without the change too: argued, not shown, for 📧; shown for Create.
+	it('gives the focus back after the invite link’s Done to + Add User for Create, and to the row’s 📧 for 📧 (card 2365’s review)', async () => {
+		answer = (what) =>
+			what === 'POST /api/users'
+				? Response.json({ username: 'carol', mailSent: false, mailProblem: 'no mail server', inviteUrl: 'http://localhost/invite/t1' })
+				: what === 'POST /api/users/2/invite'
+					? Response.json({ mailSent: false, message: 'The invite mail could not be sent.', inviteUrl: 'http://localhost/invite/t2' })
+					: undefined;
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+		const dialog = () => document.querySelector<HTMLElement>('[role="alertdialog"][aria-label="The invite mail was not sent"]');
+
+		const addUser = buttonNamed(target, '+ Add User');
+		addUser.focus();
+		addUser.click();
+		flushSync();
+		type(target.querySelector<HTMLInputElement>('input[placeholder="Username"]')!, 'carol');
+		type(target.querySelector<HTMLInputElement>('input[placeholder="Email"]')!, 'carol@example.com');
+		const create = buttonNamed(target, 'Create');
+		create.focus();
+		create.click();
+		await settle();
+		expect(document.activeElement).toBe(buttonNamed(dialog()!, '📋 Copy'));
+		buttonNamed(dialog()!, 'Done').click();
+		flushSync();
+		await settle();
+		expect(dialog()).toBeNull();
+		expect(document.activeElement).toBe(addUser);
+
+		const mail = inviteButton(target);
+		mail.focus();
+		mail.click();
+		await settle();
+		expect(document.activeElement).toBe(buttonNamed(dialog()!, '📋 Copy'));
+		buttonNamed(dialog()!, 'Done').click();
+		flushSync();
+		await settle();
+		expect(document.activeElement).toBe(mail);
+	});
+
+	// Card 2365: the reset's notice took no focus, and Tab walked the page behind it.
+	it('gives a refused reset’s notice’s Close the focus, keeps Tab on it, and closes it on Escape (card 2365)', async () => {
+		answer = (what) =>
+			what === 'POST /api/admin/reset' ? Response.json({ message: 'The reset failed and nothing was cleared: disk full' }, { status: 500 }) : undefined;
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+		buttonNamed(target, 'Reset Everything').click();
+		flushSync();
+		buttonNamed(document.querySelector<HTMLElement>('.confirm-modal')!, 'Confirm').click();
+		await settle();
+
+		const notice = document.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Reset failed"]')!;
+		const close = buttonNamed(notice, 'Close');
+		expect(document.activeElement).toBe(close);
+		expect(tab()).toBe(true);
+		expect(document.activeElement).toBe(close);
+		buttonNamed(target, 'Vacuum').focus();
+		expect(tab()).toBe(true);
+		expect(document.activeElement).toBe(close);
+
+		escape();
+		expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+	});
+
+	it('gives a done reset’s notice’s Continue to set-up the focus, and does not close it on Escape (card 2365)', async () => {
+		answer = (what) =>
+			what === 'POST /api/admin/reset' ? Response.json({ redirect: '/setup', trash: { failed: ['uploads/1/a.txt'] } }) : undefined;
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+		buttonNamed(target, 'Reset Everything').click();
+		flushSync();
+		buttonNamed(document.querySelector<HTMLElement>('.confirm-modal')!, 'Confirm').click();
+		await settle();
+
+		const notice = document.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Reset done"]')!;
+		expect(document.activeElement).toBe(buttonNamed(notice, 'Continue to set-up'));
+		escape();
+		expect(document.querySelector('[role="alertdialog"][aria-label="Reset done"]')).not.toBeNull();
 	});
 
 	// Card 2362: the page's confirm was its own, with no focus and no Escape.

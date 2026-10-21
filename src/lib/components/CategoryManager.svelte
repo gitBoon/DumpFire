@@ -4,8 +4,43 @@
 	import { drawnColour } from '$lib/colours';
 	import { deleteFailure, failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import { keepTab, takeFocus } from '$lib/dialog-focus';
+	import { tick } from 'svelte';
 
 	let { categories, onClose }: { categories: { id: number; name: string; color: string }[]; onClose: () => void } = $props();
+
+	let windowBox: HTMLDivElement;
+	let createInput: HTMLInputElement;
+
+	// The window holds the keyboard as the app's dialogs do (card 2365: the
+	// focus stayed on the button behind it, Tab walked the page, and Escape did
+	// nothing). The name box under Create New takes the focus as it opens, and
+	// the focus goes back to Manage Categories as it closes.
+	$effect(() => takeFocus(createInput));
+
+	/**
+	 * Escape closes the window, as × does, but not while a change is out (what
+	 * the server says of it would be said to nobody). With a category's edit
+	 * open, Escape cancels the edit alone, and the focus goes back to that
+	 * row's ✎ (card 2365's review: it closed the window and lost the edit);
+	 * the next Escape closes the window. Tab and Shift+Tab stay in it. While
+	 * the delete's confirm is up the keys are the confirm's alone: this
+	 * listener is put on the window first, so it runs before the confirm's,
+	 * and sees the confirm still up even for the Escape that closes it.
+	 */
+	function handleKeydown(e: KeyboardEvent) {
+		if (deleting) return;
+		if (e.key === 'Escape' && !loading) {
+			if (editingId !== null) {
+				const id = editingId;
+				editingId = null;
+				tick().then(() => windowBox?.querySelector<HTMLElement>(`[data-category-id="${id}"] button[title="Edit category"]`)?.focus());
+				return;
+			}
+			onClose();
+		}
+		keepTab(e, windowBox, createInput);
+	}
 
 	let newName = $state('');
 	let newColor = $state('#6366f1');
@@ -126,12 +161,14 @@
 	}
 </script>
 
-<div class="modal-overlay" role="dialog" aria-modal="true">
+<svelte:window onkeydown={handleKeydown} />
+
+<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Manage Categories">
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-content cat-mgr" onclick={(e) => e.stopPropagation()} role="document">
+	<div class="modal-content cat-mgr" onclick={(e) => e.stopPropagation()} role="document" bind:this={windowBox}>
 		<header class="mgr-header">
 			<h2>Manage Categories</h2>
-			<button class="close-btn" onclick={onClose}>×</button>
+			<button class="close-btn" onclick={onClose} aria-label="Close">×</button>
 		</header>
 
 		{#if error}
@@ -144,7 +181,7 @@
 			{/if}
 
 			{#each categories as cat (cat.id)}
-				<div class="cat-row" class:is-editing={editingId === cat.id}>
+				<div class="cat-row" class:is-editing={editingId === cat.id} data-category-id={cat.id}>
 					{#if editingId === cat.id}
 						<div class="edit-mode">
 							<label class="color-picker-wrap">
@@ -182,7 +219,7 @@
 					<input type="color" bind:value={newColor} class="color-native" title="Pick color" />
 					<div class="color-swatch custom" style="background: {drawnColour(newColor)}">🎨</div>
 				</label>
-				<input type="text" placeholder="Category name..." bind:value={newName} class="create-input" onkeydown={(e) => e.key === 'Enter' && createCategory()} />
+				<input type="text" placeholder="Category name..." bind:value={newName} class="create-input" onkeydown={(e) => e.key === 'Enter' && createCategory()} bind:this={createInput} />
 				<button class="btn-primary" onclick={createCategory} disabled={loading || !newName.trim()}>Add</button>
 			</div>
 			<div class="quick-colors">

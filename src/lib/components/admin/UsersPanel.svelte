@@ -34,9 +34,20 @@
 		confirm: (title: string, message: string, action: () => Promise<void>) => void;
 		/** The mail panel's own read of what mail has done, which the page draws for the superadmin. */
 		loadMailStatus: () => void;
-		/** The page's: the link of an invite whose mail was not sent, which its dialog shows. */
-		inviteLink: { url: string; username: string; message: string } | null;
+		/**
+		 * The page's: the link of an invite whose mail was not sent, which its
+		 * dialog shows, and the control the focus goes back to after Done (card
+		 * 2365's review: + Add User for Create, or the row's 📧).
+		 */
+		inviteLink: { url: string; username: string; message: string; returnTo?: HTMLElement } | null;
 	} = $props();
+
+	/**
+	 * + Add User: where the focus goes back to once an invite link from Create
+	 * is dismissed. Create itself is off while the invite is out and gone with
+	 * the form once it is answered, so the dialog found the focus on nothing.
+	 */
+	let addUserButton = $state<HTMLButtonElement>();
 
 	/** The password dialog, opened by 🔑. */
 	let resetDialog = $state<ReturnType<typeof ResetPasswordDialog>>();
@@ -102,7 +113,7 @@
 			if (result?.mailSent === false) {
 				const said = `User ${made} was made, but the invite mail could not be sent: ${result.mailProblem}.`;
 				if (typeof result.inviteUrl === 'string') {
-					inviteLink = { url: result.inviteUrl, username: made, message: said };
+					inviteLink = { url: result.inviteUrl, username: made, message: said, returnTo: addUserButton };
 				} else {
 					showToast(`${said} Send a new invite with 📧 once mail works.`, 'error', started);
 				}
@@ -171,7 +182,7 @@
 	 * only for an answer that says `mailSent: true`. Either way the mail panel
 	 * is read again, for the superadmin, so it shows this mail.
 	 */
-	async function resendInvite(userId: number) {
+	async function resendInvite(userId: number, control?: HTMLElement) {
 		if (inviteInFlight !== null || inviteLink !== null) return;
 		const started = toasts.navigation();
 		inviteInFlight = userId;
@@ -183,7 +194,7 @@
 			if (result?.mailSent === false) {
 				if (typeof result.inviteUrl === 'string') {
 					const username = data.users.find((u) => u.id === userId)?.username ?? 'this user';
-					inviteLink = { url: result.inviteUrl, username, message: said };
+					inviteLink = { url: result.inviteUrl, username, message: said, returnTo: control };
 				} else {
 					showToast(said || 'The invite was made, but its mail could not be sent.', 'error', started);
 				}
@@ -207,7 +218,7 @@
 <section class="admin-card glass fade-in-up" style="animation-delay: 200ms">
 	<div class="section-header">
 		<h2>👥 User Management</h2>
-		<button class="btn-primary btn-sm" onclick={() => (showCreateUser = true)}>+ Add User</button>
+		<button class="btn-primary btn-sm" onclick={() => (showCreateUser = true)} bind:this={addUserButton}>+ Add User</button>
 	</div>
 	<p class="section-desc">Each row shows only what you may do to that account. Only the superadmin changes an administrator's account, and nobody else changes the superadmin's: those rows show 🔒. On your own row there is only 🔑, to change your password.</p>
 
@@ -258,7 +269,7 @@
 						{/if}
 						<button class="btn-ghost btn-sm" onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>
 						{#if u.id !== data.currentUser.id}
-							<button class="btn-ghost btn-sm" onclick={() => resendInvite(u.id)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? '…' : '📧'}</button>
+							<button class="btn-ghost btn-sm" onclick={(e) => resendInvite(u.id, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? '…' : '📧'}</button>
 							<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete User', userDeleteWarning(u.username), () => deleteUser(u.id))} title="Delete user">🗑️</button>
 						{/if}
 					{:else}

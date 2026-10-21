@@ -33,14 +33,23 @@ function tabStops(dialog: HTMLElement): HTMLElement[] {
 /**
  * Focuses `first` as a dialog opens, and gives back what to run as it closes:
  * the focus handed back to what had it before, on the rules above.
+ *
+ * `returnTo`, where it is given, names where the focus goes back to instead,
+ * asked as the dialog closes: for a dialog opened by something other than a
+ * press on a control still in the page (the invite link's, opened once an
+ * answer comes, by which time the pressed control is off or gone and the
+ * focus is on nothing). When it names nothing, or something no longer in
+ * the page, the focus goes back to what had it, as without it.
  */
-export function takeFocus(first: HTMLElement): () => void {
+export function takeFocus(first: HTMLElement, returnTo?: () => HTMLElement | null | undefined): () => void {
 	const opener = document.activeElement;
 	first.focus();
 	return () => {
 		setTimeout(() => {
-			if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected && document.activeElement === document.body) {
-				opener.focus();
+			const named = returnTo?.();
+			const back = named?.isConnected ? named : opener;
+			if (back instanceof HTMLElement && back !== document.body && back.isConnected && document.activeElement === document.body) {
+				back.focus();
 			}
 		}, 0);
 	};
@@ -70,23 +79,27 @@ export function keepTab(e: KeyboardEvent, dialog: HTMLElement, first: HTMLElemen
 	}
 }
 
+/** What `holdFocus` is given: see below. */
+type HoldOptions = { first: string; onEscape?: () => void; returnTo?: () => HTMLElement | null | undefined };
+
 /**
  * The same hold as a Svelte action, for a dialog drawn inside an `{#if}`:
  * `use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: close }}` on the
  * dialog's box. `first` is a selector for the button inside it that takes
- * the focus; Escape, pressed anywhere while it is up, runs `onEscape`.
+ * the focus; Escape, pressed anywhere while it is up, runs `onEscape`;
+ * `returnTo` is `takeFocus`'s, asked as the dialog closes.
  */
-export function holdFocus(node: HTMLElement, options: { first: string; onEscape?: () => void }) {
+export function holdFocus(node: HTMLElement, options: HoldOptions) {
 	let current = options;
 	const first = () => node.querySelector<HTMLElement>(current.first) ?? node;
-	const handBack = takeFocus(first());
+	const handBack = takeFocus(first(), () => current.returnTo?.());
 	const keys = (e: KeyboardEvent) => {
 		if (e.key === 'Escape') current.onEscape?.();
 		keepTab(e, node, first());
 	};
 	window.addEventListener('keydown', keys);
 	return {
-		update(next: { first: string; onEscape?: () => void }) {
+		update(next: HoldOptions) {
 			current = next;
 		},
 		destroy() {

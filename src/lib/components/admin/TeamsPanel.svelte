@@ -9,6 +9,7 @@
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
 	import { invalidateAll } from '$app/navigation';
+	import { answerBody } from '$lib/api';
 	import { sent, showToast } from '$lib/admin/send';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 
@@ -85,6 +86,76 @@
 		showToast('Member added');
 	}
 
+	/**
+	 * The members whose role change is out, as `team:user` (one person can be
+	 * in two teams), each with the role it sent. Two changes out at once each
+	 * keep their own (the card 2355 review: one slot, cleared by the first
+	 * answer). A picker whose change is out is marked busy rather than turned
+	 * off: turning off the control that has the focus drops the keyboard's
+	 * focus to the page.
+	 */
+	let changingRole = $state(new Map<string, string>());
+
+	function markChanging(key: string, role: string | null) {
+		const next = new Map(changingRole);
+		if (role === null) next.delete(key);
+		else next.set(key, role);
+		changingRole = next;
+	}
+
+	/** The role the page's data gives this member now: the data can have been read again since a change was sent. */
+	function storedRole(teamId: number, userId: number): string | undefined {
+		return data.teams.find((t) => t.id === teamId)?.members.find((m) => m.userId === userId)?.role;
+	}
+
+	const ROLE_NAMES: Record<string, string> = { member: 'Member', owner: 'Owner' };
+
+	/**
+	 * Changes the role of someone already in the team, in place (card 2355: no
+	 * page could; it took a remove and an add). The members route sets the
+	 * role of a member it already has. Refused or not answered, the picker
+	 * shows the role the page's data gives them, read then (the card 2355
+	 * review: the role held from when it was sent could land on another row).
+	 * A member removed meanwhile is added again by the route, and that is
+	 * said rather than "Role changed". While one is out, another choice on the
+	 * same picker is not sent, and it shows the role sent.
+	 */
+	async function changeRole(teamId: number, member: { userId: number; username: string }, picker: HTMLSelectElement) {
+		const key = `${teamId}:${member.userId}`;
+		const out = changingRole.get(key);
+		if (out !== undefined) {
+			picker.value = out;
+			return;
+		}
+		const role = picker.value;
+		if (role === storedRole(teamId, member.userId)) return;
+		markChanging(key, role);
+		try {
+			const res = await sent(
+				() =>
+					fetch(`/api/teams/${teamId}/members/${member.userId}`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ userId: member.userId, role })
+					}),
+				'Failed to change the role'
+			);
+			if (!res) {
+				picker.value = storedRole(teamId, member.userId) ?? picker.value;
+				return;
+			}
+			const result = await answerBody(res);
+			await invalidateAll();
+			showToast(
+				result?.action === 'added'
+					? `${member.username} was no longer in the team and has been added again as ${ROLE_NAMES[role] ?? role}`
+					: 'Role changed'
+			);
+		} finally {
+			markChanging(key, null);
+		}
+	}
+
 	async function removeTeamMember(teamId: number, userId: number) {
 		// It used to say "Member removed" whatever the answer.
 		if (!(await sent(() => fetch(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE' }), 'Failed to remove member'))) return;
@@ -124,10 +195,23 @@
 						<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete Team', `Delete team "${team.name}"?`, () => deleteTeam(team.id))} title="Delete team">🗑️</button>
 					</div>
 					<div class="team-members">
-						{#each team.members as member}
+						{#each team.members as member (member.userId)}
 							<div class="team-member">
 								<span>{member.emoji} {member.username}</span>
-								<span class="member-role">{member.role}</span>
+								<!-- The role, changed in place (card 2355). A role stored before roles were checked is shown as itself. Busy, not off, while its change is out: off, it would drop the focus. -->
+								<select
+									class="member-role"
+									value={member.role}
+									aria-busy={changingRole.has(`${team.id}:${member.userId}`) ? 'true' : undefined}
+									onchange={(e) => changeRole(team.id, member, e.currentTarget)}
+									aria-label="{member.username}'s role in this team"
+								>
+									{#if member.role !== 'member' && member.role !== 'owner'}
+										<option value={member.role}>{member.role}</option>
+									{/if}
+									<option value="member">Member</option>
+									<option value="owner">Owner</option>
+								</select>
 								<button class="btn-ghost btn-xs" onclick={() => removeTeamMember(team.id, member.userId)} title="Remove from team">✕</button>
 							</div>
 						{:else}
@@ -182,7 +266,13 @@
 		padding: var(--space-xs) 0; font-size: 0.82rem;
 	}
 	.team-member span:first-child { flex: 1; }
-	.member-role { font-size: 0.65rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; }
+	/* The role, a picker since card 2355: as small as the label it was. */
+	.member-role {
+		font-size: 0.7rem; color: var(--text-secondary); font-weight: 600; font-family: var(--font-family);
+		padding: 1px var(--space-xs); border-radius: var(--radius-sm);
+		border: 1px solid var(--glass-border); background: var(--bg-elevated);
+	}
+	.member-role:focus { border-color: var(--accent-indigo); outline: none; }
 
 	.add-member-row {
 		display: flex; gap: var(--space-sm); align-items: center;

@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.56
+version: 1.57
 status: As-Built
 date: 2026-10-21
 tags:
@@ -49,7 +49,7 @@ flowchart LR
 
 Every action on this page that asks first (Clear Cards, Clear Categories, Delete Board, Delete User, Delete Team, Remove Destination, Purge Archived Cards, Vacuum Database, Reset All XP, Reset Everything), and the Archived page's Delete Permanently and Purge All, asks in the app's confirm dialog, the one the boards, All Tasks and the Teams page use (card 2362, 2026-10-21; each page had a dialog of its own before). As it opens, **Cancel** has the keyboard's focus, so Enter straight after cancels; **Tab** and **Shift+Tab** stay in the dialog; **Escape** cancels; and as it closes the focus goes back to the button that opened it. To confirm by keyboard, press Tab, then Enter. A click on the dark overlay around it does nothing.
 
-The **Import Database** dialog and Google Drive's **Connect** box keep their own look and behave the same way: Cancel has the focus, Tab stays in them (in the import, through the chosen way to restore, Cancel and Confirm), and Escape is Cancel. The invite link's dialog and the reset's notice have one button and no way out but it, and are unchanged.
+The **Import Database** dialog and Google Drive's **Connect** box keep their own look and behave the same way: Cancel has the focus, Tab stays in them (in the import, through the chosen way to restore, Cancel and Confirm), and Escape is Cancel. The invite link's dialog and the reset's notice have one button and no way out but it. As each opens its button has the focus (the invite link's **📋 Copy**), and Tab and Shift+Tab stay in it (card 2365, 2026-10-21; Tab walked the page behind them, and the reset's notice took no focus). The invite link's dialog does not close on Escape: the link is shown once, and only **Done** lets it go. After Done the focus goes to **+ Add User** when the link came from Create, or to the row's 📧 when it came from there (Create itself has gone with its form by then). The reset's notice closes on Escape when its button is **Close** (a reset that failed and changed nothing); after a reset that was done its one way out is **Continue to set-up**, and Escape does nothing.
 
 ```mermaid
 stateDiagram-v2
@@ -253,7 +253,8 @@ You cannot delete your own account or the superadmin. Only the superadmin can de
 1. Go to the **Teams** page from the dashboard, or to **Admin → Team Management** (**+ Add Team**)
 2. Click **Create Team**
 3. Name the team and choose an emoji. You are made its owner
-4. Add members. The Teams page adds each as a **Member**. On **Admin → Team Management**, choose the person under **Add member…**, then their role, **Member** or **Owner**, beside **Add** (card 2309; until 2026-10-20 it added every member as Member)
+4. Add members. On the Teams page or **Admin → Team Management**, choose the person under **Add member…**, then their role, **Member** or **Owner**, beside **Add**; it starts at Member (card 2309 on the admin page; card 2355, 2026-10-21, on the Teams page, which added every member as Member)
+5. Change a member's role with the picker on their row, **Member** or **Owner**. It is saved as it is chosen, and "Role changed" says so; a change that is refused or gets no answer is said, and the picker shows the role they have again (card 2355, 2026-10-21; no page could change it). While a change is on its way the picker stays where it is, with the keyboard's focus, and is marked busy; another choice on it meanwhile is not sent, and it goes back to the role being saved (changes on two members' rows at once are each saved). If the person was taken out of the team meanwhile (by someone else, or on another page), the change puts them back in with the role chosen, and it says "*name* was no longer in the team and has been added again as *Member* (or *Owner*)" rather than "Role changed" On the Teams page the picker is on the rows an owner (or an administrator) may manage, and not on your own row, as ✕ is not; on the admin page it is on every row
 
 ### Team Owners and Members
 
@@ -263,12 +264,12 @@ A team's role says who may run the team; it gives no access to boards. The acces
 |---|:---:|:---:|
 | Delete the team | ✅ | ❌ |
 | Rename the team (through the API alone, `PUT /api/teams/{id}`: no page offers it) | ✅ | ❌ |
-| Add and remove members | ✅ | ❌ |
+| Add and remove members, and change their role | ✅ | ❌ |
 | Open the boards shared with the team | ✅ | ✅ |
 
 **What an owner's adding gives.** An owner can add any account to the team, and each person added at once has the team's role, editor or viewer, on every board shared with the team, and the team's requests in their inbox. A board's owner has no say: the board was shared with the team, and whoever the team's owners add has it. Make someone a team's owner only if you would share every one of its boards with whoever they choose.
 
-An administrator may do all of it on every team without being in it. Whoever creates a team is its owner, so a team made on the admin page is owned by the administrator who made it; to let someone else run it, add them as **Owner**. No page changes the role of someone already in the team: remove them (✕) and add them again with the other role.
+An administrator may do all of it on every team without being in it. Whoever creates a team is its owner, so a team made on the admin page is owned by the administrator who made it; to let someone else run it, add them as **Owner**, or change their role to Owner on their row. The server lets an owner make any owner a member, so a team can be left with no owner; an administrator can then make someone its owner again.
 
 ```mermaid
 flowchart LR
@@ -750,6 +751,8 @@ Organise boards into categories for the dashboard sidebar:
 Categories appear as collapsible groups in the dashboard sidebar.
 
 The dashboard's **Manage Categories** window says a change it could not make under its header, in the server's words or as "No answer from the server. The category may not have been created." (saved, deleted), and keeps what was typed (card 2358, 2026-10-21; it said nothing, and a change with no answer left the window's buttons dead). Deleting a category asks first in the app's confirm dialog, "Delete Category", naming it.
+
+From the keyboard (card 2365, 2026-10-21; it took no focus, Tab walked the page behind it, and Escape did nothing): as the window opens the name box under **Create New** has the focus; Tab and Shift+Tab stay in the window; **Escape** closes it, as × does, except while a change is on its way, so that what the server says of it is not lost; with a category's edit open, Escape cancels that edit alone, and the focus goes back to its ✎ (the next Escape closes the window); and as it closes the focus goes back to **🏷️ Manage Categories**. While the delete's confirm is up, Escape closes the confirm alone.
 
 ---
 

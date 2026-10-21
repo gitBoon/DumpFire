@@ -22,6 +22,7 @@
 	import InviteLinkDialog from '$lib/components/admin/InviteLinkDialog.svelte';
 	import TeamsPanel from '$lib/components/admin/TeamsPanel.svelte';
 	import DangerZonePanel from '$lib/components/admin/DangerZonePanel.svelte';
+	import { holdFocus } from '$lib/dialog-focus';
 
 	let { data }: { data: PageData } = $props();
 
@@ -66,7 +67,7 @@
 	 * whoever opens it sets the account's password. It lives here alone, never
 	 * in a toast, the address, history or storage, and is cleared on Done.
 	 */
-	let inviteLink = $state<{ url: string; username: string; message: string } | null>(null);
+	let inviteLink = $state<{ url: string; username: string; message: string; returnTo?: HTMLElement } | null>(null);
 
 	/** The mail panel, whose read of what mail has done the users panel asks for after an invite. */
 	let smtpPanel = $state<ReturnType<typeof SmtpPanel>>();
@@ -138,10 +139,12 @@
 	/>
 {/if}
 
-<!-- What a reset has to say: that it failed, or what it could not move. No way out of it but its one button. -->
+<!-- What a reset has to say: that it failed, or what it could not move. No way out of it but its one button.
+     Its button has the focus as it opens and Tab stays in it (card 2365: it took no focus). Escape is Close, after a refused reset;
+     after one that was done the way out is Continue to set-up alone, and Escape does nothing. -->
 {#if resetNotice}
 	<div class="modal-overlay" role="alertdialog" aria-modal="true" aria-label={resetNotice.title}>
-		<div class="modal-content confirm-modal" role="document" style="max-width: 520px">
+		<div class="modal-content confirm-modal" role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions button', onEscape: resetNotice.redirect ? undefined : () => (resetNotice = null) }}>
 			<h2>{resetNotice.title}</h2>
 			<p style={resetNotice.problems.length > 0 ? 'margin-bottom: var(--space-sm)' : undefined}>{resetNotice.message}</p>
 			{#if resetNotice.problems.length > 0}

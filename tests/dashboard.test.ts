@@ -669,6 +669,107 @@ describe('Manage Categories says a refusal or no answer, and asks before a delet
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 	});
 
+	// Card 2365: the window took no focus, had no name, let Tab walk the page behind and answered no Escape.
+	describe('from the keyboard (card 2365)', () => {
+		/** A Tab (or Shift+Tab) pressed where the focus is, bubbling as a real one does; gives back whether its default was taken. */
+		function tab(shiftKey = false): boolean {
+			const key = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+			(document.activeElement ?? document.body).dispatchEvent(key);
+			flushSync();
+			return key.defaultPrevented;
+		}
+		function escape() {
+			window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			flushSync();
+		}
+		async function openFromItsButton() {
+			const target = draw();
+			await settle();
+			const opener = buttonNamed(target, '🏷️ Manage Categories');
+			opener.focus();
+			opener.click();
+			flushSync();
+			return { target, opener, manager: target.querySelector<HTMLElement>('.cat-mgr')! };
+		}
+
+		it('is named, gives its name box the focus, keeps Tab in it, closes on Escape and gives the focus back', async () => {
+			const { target, opener, manager } = await openFromItsButton();
+			expect(document.querySelector('[role="dialog"][aria-label="Manage Categories"]')).not.toBeNull();
+			expect(manager.querySelector('.close-btn')!.getAttribute('aria-label')).toBe('Close');
+			const nameBox = manager.querySelector<HTMLInputElement>('.create-input')!;
+			expect(document.activeElement).toBe(nameBox);
+
+			// From its last stop round to its first (×), and back with Shift.
+			const stops = [...manager.querySelectorAll<HTMLElement>('button, input')].filter((el) => !(el as HTMLButtonElement).disabled);
+			stops.at(-1)!.focus();
+			expect(tab()).toBe(true);
+			expect(document.activeElement).toBe(stops[0]);
+			expect(tab(true)).toBe(true);
+			expect(document.activeElement).toBe(stops.at(-1));
+			// From the page behind, back to the name box.
+			opener.focus();
+			expect(tab()).toBe(true);
+			expect(document.activeElement).toBe(nameBox);
+
+			escape();
+			expect(target.querySelector('.cat-mgr')).toBeNull();
+			await settle();
+			expect(document.activeElement).toBe(opener);
+		});
+
+		it('stays open on Escape while a change is out, and closes on Escape once it is answered', async () => {
+			let release!: () => void;
+			answer = (what) =>
+				what === 'POST /api/board-categories' ? new Promise<Response>((resolve) => (release = () => resolve(Response.json({ message: 'Category name taken' }, { status: 400 })))) : undefined;
+			const { target, manager } = await openFromItsButton();
+			type(manager.querySelector<HTMLInputElement>('.create-input')!, 'Ops');
+			buttonNamed(manager, 'Add').click();
+			await settle();
+			escape();
+			expect(target.querySelector('.cat-mgr')).not.toBeNull();
+
+			release();
+			await settle();
+			expect(said(manager)).toBe('Category name taken');
+			escape();
+			expect(target.querySelector('.cat-mgr')).toBeNull();
+		});
+
+		// Card 2365's review: Escape with a category's edit open closed the whole window, and the edit with it.
+		it('cancels an open edit on Escape, giving the focus back to its row’s ✎, and closes the window on the next Escape', async () => {
+			const { target, manager } = await openFromItsButton();
+			manager.querySelector<HTMLButtonElement>('button[title="Edit category"]')!.click();
+			flushSync();
+			type(manager.querySelector<HTMLInputElement>('.edit-input')!, 'Customers');
+
+			escape();
+			expect(target.querySelector('.cat-mgr')).not.toBeNull();
+			expect(manager.querySelector('.edit-input')).toBeNull();
+			await settle();
+			expect(document.activeElement).toBe(manager.querySelector('button[title="Edit category"]'));
+			expect(asked('PUT /api/board-categories/2')).toHaveLength(0);
+
+			escape();
+			expect(target.querySelector('.cat-mgr')).toBeNull();
+		});
+
+		it('leaves the delete’s confirm the keys while it is up: Escape closes the confirm alone, and Tab stays in it', async () => {
+			const { target, manager } = await openFromItsButton();
+			manager.querySelector<HTMLButtonElement>('button[title="Delete category"]')!.click();
+			flushSync();
+			const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+			const cancel = buttonNamed(dialog, 'Cancel');
+			expect(document.activeElement).toBe(cancel);
+			expect(tab()).toBe(false);
+			expect(document.activeElement).toBe(cancel);
+
+			escape();
+			expect(document.querySelector('.confirm-modal')).toBeNull();
+			expect(target.querySelector('.cat-mgr')).not.toBeNull();
+			expect(asked('DELETE /api/board-categories/2')).toHaveLength(0);
+		});
+	});
+
 	// The card 2358 review: a dialog opened while another change was out had a dead Delete.
 	it('holds a category’s delete off while another change is on its way', async () => {
 		let release!: () => void;

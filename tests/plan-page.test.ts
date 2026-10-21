@@ -579,6 +579,89 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 		expect($<HTMLInputElement>('.name-input')?.value).toBe('Launch v2');
 	});
 
+	// Card 2363: the box saved on Enter and on blur with nothing kept while the first was out.
+	it('sends a rename once when Enter is followed by a click away while it is out (card 2363)', async () => {
+		let answer!: () => void;
+		answerPatch = () => new Promise<Response>((resolve) => (answer = () => resolve(json({ id: 4 }))));
+		await draw();
+		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		flushSync();
+		const box = $<HTMLInputElement>('.name-input')!;
+		type(box, 'Launch v2');
+		box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		box.dispatchEvent(new FocusEvent('blur'));
+		await settle();
+		expect(patches()).toEqual([{ name: 'Launch v2' }]);
+
+		answer();
+		await settle();
+		expect(patches()).toEqual([{ name: 'Launch v2' }]);
+		expect($('.name-input')).toBeNull();
+	});
+
+	it('sends nothing more on the blur after a refused rename, and Enter sends it again (card 2363)', async () => {
+		answerPatch = () => json({ message: 'Viewers cannot change goals' }, 403);
+		await draw();
+		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		flushSync();
+		const box = $<HTMLInputElement>('.name-input')!;
+		type(box, 'Launch v2');
+		box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await settle();
+		box.dispatchEvent(new FocusEvent('blur'));
+		await settle();
+		expect(patches()).toEqual([{ name: 'Launch v2' }]);
+		expect($<HTMLInputElement>('.name-input')?.value).toBe('Launch v2');
+
+		box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await settle();
+		expect(patches()).toEqual([{ name: 'Launch v2' }, { name: 'Launch v2' }]);
+		// A name typed after it is sent by the blur.
+		type(box, 'Launch v3');
+		box.dispatchEvent(new FocusEvent('blur'));
+		await settle();
+		expect(patches()).toEqual([{ name: 'Launch v2' }, { name: 'Launch v2' }, { name: 'Launch v3' }]);
+	});
+
+	// Card 2363's review: a name typed while a rename was out was lost when the box closed on its answer.
+	it('keeps the box open with a name typed while a rename was out, sending it only on Enter (card 2363’s review)', async () => {
+		let answer!: () => void;
+		answerPatch = () => new Promise<Response>((resolve) => (answer = () => resolve(json({ id: 4 }))));
+		await draw();
+		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		flushSync();
+		const box = $<HTMLInputElement>('.name-input')!;
+		type(box, 'Launch v2');
+		box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await settle();
+		type(box, 'Launch v3');
+
+		answer();
+		await settle();
+		expect(patches()).toEqual([{ name: 'Launch v2' }]);
+		expect($<HTMLInputElement>('.name-input')?.value).toBe('Launch v3');
+
+		answerPatch = () => json({ id: 4 });
+		box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await settle();
+		expect(patches()).toEqual([{ name: 'Launch v2' }, { name: 'Launch v3' }]);
+		expect($('.name-input')).toBeNull();
+	});
+
+	// Card 2363's build: a blur after the box was closed (a browser may blur a focused box as it is removed) saved what Escape had thrown away.
+	it('sends nothing for a blur that comes once Escape has closed the box (card 2363)', async () => {
+		await draw();
+		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		flushSync();
+		const box = $<HTMLInputElement>('.name-input')!;
+		type(box, 'Launch v2');
+		box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		box.dispatchEvent(new FocusEvent('blur'));
+		await settle();
+		expect(patches()).toEqual([]);
+		expect($('.name-input')).toBeNull();
+	});
+
 	it('closes the goal from the header, holding Close while the change is out', async () => {
 		let answer!: () => void;
 		answerPatch = () => new Promise<Response>((resolve) => (answer = () => resolve(json({ id: 4 }))));
