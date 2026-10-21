@@ -152,3 +152,110 @@ describe('every reader that lists cards by their place orders them by position, 
 		expect(own).toEqual([]);
 	});
 });
+
+// Card 2372: a board's columns were read by position alone, so two at one
+// position came in whatever order SQLite read them. SQLite reads them in id
+// order (the board's index holds them so), so the behaviour cases are the
+// contract and the source check is what holds the tie.
+describe('every reader that lists a board’s columns orders them by position, then id (card 2372)', () => {
+	let owner: ReturnType<typeof makeUser>;
+	let boardId = 0;
+
+	/** Columns made First, Second, Third; Third moved to the front, Second tied with First at 0. */
+	beforeEach(() => {
+		owner = makeUser();
+		const made = makeBoard({ owner, name: 'Cols', columns: ['First', 'Second', 'Third'] });
+		boardId = made.board.id;
+		db.update(columns).set({ position: -1 }).where(eq(columns.id, made.cols.Third.id)).run();
+		db.update(columns).set({ position: 0 }).where(eq(columns.id, made.cols.Second.id)).run();
+		makeCard(made.cols.Second, { title: 'IN-SECOND' });
+		makeCard(made.cols.First, { title: 'IN-FIRST' });
+	});
+
+	const ORDER = ['Third', 'First', 'Second'];
+	const titled = (list: { title: string }[]) => list.map((c) => c.title);
+
+	it('the board page (and GET /api/boards/{id}/contents)', async () => {
+		const load = await pageLoad(`/board/${boardId}`, { user: owner });
+		expect(titled((load as { data: { columns: { title: string }[] } }).data.columns)).toEqual(ORDER);
+	});
+
+	it('GET /api/v1/boards/{boardId}, GET /api/v1/boards/{boardId}/columns and the internal picker', async () => {
+		const board = await api('GET', `/api/v1/boards/${boardId}`, { user: owner });
+		expect(titled(board.body.columns)).toEqual(ORDER);
+		const cols = await api('GET', `/api/v1/boards/${boardId}/columns`, { user: owner });
+		expect(titled(cols.body)).toEqual(ORDER);
+		const picker = await api('GET', `/api/boards/${boardId}/cards`, { user: owner });
+		expect(titled(picker.body.columns)).toEqual(ORDER);
+	});
+
+	it('the board’s CSV export and the v1 card listing, column by column', async () => {
+		const csv = String((await api('GET', `/api/boards/${boardId}/export/csv`, { user: owner })).body);
+		expect(csv.indexOf('IN-FIRST')).toBeLessThan(csv.indexOf('IN-SECOND'));
+		const listed = await api('GET', `/api/v1/boards/${boardId}/cards`, { user: owner });
+		expect(titled(listed.body)).toEqual(['IN-FIRST', 'IN-SECOND']);
+	});
+
+	// The card 2372 review: the graph's board expansion read the columns with no order at all, so it
+	// gave them in id order, not the board's (shown failing on the old code: First, Second, Third).
+	it('the graph’s board expansion, GET /api/graph?boardId=', async () => {
+		const res = await api('GET', `/api/graph?boardId=${boardId}`, { user: owner });
+		expect(res.status).toBe(200);
+		const shown = (res.body.nodes as { type: string; label: string }[]).filter((node) => node.type === 'column').map((node) => node.label);
+		expect(shown).toEqual(ORDER);
+	});
+
+	it('POST /api/v1/boards answers the columns it made in their order', async () => {
+		const res = await api('POST', '/api/v1/boards', { user: owner, body: { name: 'New' } });
+		expect(res.status).toBe(201);
+		const positions = (res.body.columns as { position: number }[]).map((c) => c.position);
+		expect(positions).toEqual([...positions].sort((a, b) => a - b));
+	});
+
+	it('each reader orders by COLUMN_ORDER, and no file under src orders columns by position alone', () => {
+		expect(source('src/lib/server/card-order.ts')).toContain('export const COLUMN_ORDER = [asc(columns.position), asc(columns.id)] as const;');
+		for (const file of [
+			'src/lib/server/board-contents.ts',
+			'src/lib/server/cross-board-cards.ts',
+			'src/lib/server/snapshots.ts',
+			'src/routes/api/boards/[id]/cards/+server.ts',
+			'src/routes/api/boards/[id]/cfd/+server.ts',
+			'src/routes/api/boards/[id]/export/csv/+server.ts',
+			'src/routes/api/cards/export/csv/+server.ts',
+			// The graph's board expansion (the card 2372 review: it had no order at all).
+			'src/routes/api/graph/+server.ts',
+			'src/routes/api/v1/boards/+server.ts',
+			'src/routes/api/v1/boards/[boardId]/+server.ts',
+			'src/routes/api/v1/boards/[boardId]/columns/+server.ts',
+			'src/routes/api/v1/boards/[boardId]/cards/+server.ts',
+			'src/routes/inbox/+page.server.ts'
+		]) {
+			const text = source(file);
+			expect(text, file).toMatch(/import \{[^}]*\bCOLUMN_ORDER\b[^}]*\} from '(\$lib\/server|\.)\/card-order'/);
+			expect(text, file).toContain('...COLUMN_ORDER');
+		}
+		// `columns.ts` orders the read it takes only the largest position from: the order cannot matter there.
+		const own = (readdirSync(join(process.cwd(), 'src'), { recursive: true }) as string[])
+			.map((file) => file.replace(/\\/g, '/'))
+			.filter((file) => /\.(ts|svelte)$/.test(file) && !['lib/server/card-order.ts', 'lib/server/columns.ts'].includes(file))
+			.filter((file) => source(`src/${file}`).includes('asc(columns.position)'));
+		expect(own).toEqual([]);
+		// The two sorts in code tie by id too.
+		expect(source('src/lib/server/reports.ts')).toContain('.sort((a, b) => a.position - b.position || a.id - b.id)');
+		expect(source('src/routes/all/+page.server.ts')).toContain('boardCols.sort((a, b) => a.position - b.position || a.id - b.id);');
+	});
+});
+
+// Card 2371: with no columns the export put the board's raw name in
+// Content-Disposition, so a name past Latin-1 was a 500 (a header is bytes)
+// and a double quote ended the file name early.
+describe('the board’s CSV export names its file safely when the board has no columns (card 2371)', () => {
+	it('answers 200 with the header row, named as a full board’s file is', async () => {
+		const owner = makeUser();
+		const { board } = makeBoard({ owner, name: 'Q3 "launch" 🚀', columns: [] });
+		const res = await api('GET', `/api/boards/${board.id}/export/csv`, { user: owner });
+		expect(res.status).toBe(200);
+		expect(String(res.body)).toBe('Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks\n');
+		expect(res.headers.get('content-disposition')).toBe(`attachment; filename="Q3__launch____-${new Date().toISOString().slice(0, 10)}.csv"`);
+	});
+});

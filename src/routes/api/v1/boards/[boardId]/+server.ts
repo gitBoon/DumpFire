@@ -1,11 +1,12 @@
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { columns } from '$lib/server/db/schema';
-import { eq, asc } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { deleteBoardFor, updateBoard } from '$lib/server/boards';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
+import { COLUMN_ORDER } from '$lib/server/card-order';
 import type { RequestHandler } from './$types';
 
 /**
@@ -22,7 +23,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const cols = db.select()
 		.from(columns)
 		.where(eq(columns.boardId, boardId))
-		.orderBy(asc(columns.position))
+		.orderBy(...COLUMN_ORDER)
 		.all();
 
 	return json({ ...board, columns: cols });

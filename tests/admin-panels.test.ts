@@ -640,7 +640,8 @@ describe('the teams panel, mounted', () => {
 	});
 
 	// Card 2355: no page changed the role of someone already in a team; the route always did.
-	it('changes a member’s role in place, marking the picker busy while it is out, and shows the stored role again when it is refused (card 2355)', async () => {
+	// Card 2376: choosing saved at once, so arrowing through a closed picker saved each role passed; Change saves now.
+	it('changes a member’s role in place with Change, marking the picker busy while it is out, and shows the stored role again when it is refused (cards 2355 and 2376)', async () => {
 		const withMembers = {
 			...pageData,
 			teams: [{ id: 7, name: 'Ops', emoji: '🏢', members: [{ userId: 2, role: 'member', username: 'bob', emoji: '🙂' }] }]
@@ -658,21 +659,36 @@ describe('the teams panel, mounted', () => {
 		expect(picker.getAttribute('aria-label')).toBe("bob's role in this team");
 		expect([...picker.options].map((option) => option.value)).toEqual(['member', 'owner']);
 		expect(picker.value).toBe('member');
+		const change = target.querySelector<HTMLButtonElement>('button[aria-label="Change bob\'s team role"]')!;
+		expect(change.textContent).toBe('Change');
+		expect(change.getAttribute('aria-disabled')).toBe('true');
+		const status = () => target.querySelector('[role="status"]')!.textContent;
 
+		// Choosing sends nothing; Change does.
 		picker.value = 'owner';
 		picker.dispatchEvent(new Event('change', { bubbles: true }));
 		flushSync();
+		await settle();
+		expect(asked('POST /api/teams/7/members/2')).toHaveLength(0);
+		expect(change.hasAttribute('aria-disabled')).toBe(false);
+		change.click();
+		flushSync();
 		expect(picker.getAttribute('aria-busy')).toBe('true');
+		expect(change.getAttribute('aria-disabled')).toBe('true');
+		expect(status()).toBe("Saving bob's role…");
 		release.shift()!();
 		await settle();
 		expect(asked('POST /api/teams/7/members/2').map((request) => request.body)).toEqual([{ userId: 2, role: 'owner' }]);
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 		expect(picker.hasAttribute('aria-busy')).toBe(false);
+		expect(status()).toBe('');
 
 		// Refused: the data still says member, and so does the picker.
 		refusing = true;
 		picker.value = 'owner';
 		picker.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+		change.click();
 		flushSync();
 		release.shift()!();
 		await settle();
@@ -742,7 +758,7 @@ describe('the Teams page, mounted (card 2355)', () => {
 		expect(addRole()!.value).toBe('member');
 	});
 
-	it('changes a member’s role in place, says so and reads the page again; a refusal says why and shows the stored role again', async () => {
+	it('changes a member’s role in place with Change, says so and reads the page again; a refusal says why and shows the stored role again', async () => {
 		let refusing = false;
 		answer = (what) =>
 			what === 'POST /api/teams/7/members/2'
@@ -752,9 +768,23 @@ describe('the Teams page, mounted (card 2355)', () => {
 				: undefined;
 		const target = draw(TeamsPage, { data: teamsData() });
 		const picker = rolePicker(target, 'bob')!;
+		const change = target.querySelector<HTMLButtonElement>('button[aria-label="Change bob\'s team role"]')!;
 		expect(picker.value).toBe('member');
+		// None on your own row, as there is no picker.
+		expect(target.querySelector('button[aria-label="Change chief\'s team role"]')).toBeNull();
+
+		// Card 2376: choosing sends nothing, and choosing their own role again leaves Change dimmed.
+		choose(picker, 'owner');
+		choose(picker, 'member');
+		await settle();
+		expect(asked('POST /api/teams/7/members/2')).toHaveLength(0);
+		expect(change.getAttribute('aria-disabled')).toBe('true');
+		change.click();
+		await settle();
+		expect(asked('POST /api/teams/7/members/2')).toHaveLength(0);
 
 		choose(picker, 'owner');
+		change.click();
 		await settle();
 		expect(asked('POST /api/teams/7/members/2').map((request) => request.body)).toEqual([{ userId: 2, role: 'owner' }]);
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
@@ -762,6 +792,7 @@ describe('the Teams page, mounted (card 2355)', () => {
 
 		refusing = true;
 		choose(picker, 'owner');
+		change.click();
 		await settle();
 		expect(asked('POST /api/teams/7/members/2')).toHaveLength(2);
 		expect(picker.value).toBe('member');
@@ -801,7 +832,7 @@ describe('the Teams page, mounted (card 2355)', () => {
 describe.each([
 	['the teams panel', TeamsPanel],
 	['the Teams page', TeamsPage]
-])('a member’s role changed in place on %s (the card 2355 review)', (_, component) => {
+])('a member’s role changed in place on %s (the card 2355 review; with Change since card 2376)', (_, component) => {
 	const BOB = { userId: 2, role: 'member', username: 'bob', emoji: '🙂' };
 	const CAROL = { userId: 3, role: 'owner', username: 'carol', emoji: '🌷' };
 	/** The page's data with team 7 holding `members`; the superadmin may manage every row on both pages. */
@@ -817,6 +848,14 @@ describe.each([
 		flushSync();
 	};
 	const busy = (box: HTMLSelectElement) => box.getAttribute('aria-busy');
+	/** The row's Change (card 2376), which saves the role chosen. */
+	const changeButton = (target: HTMLElement, name: string) => target.querySelector<HTMLButtonElement>(`button[aria-label="Change ${name}'s team role"]`)!;
+	/** Chooses a role in the row's picker and presses its Change. */
+	const changeTo = (target: HTMLElement, name: string, value: string) => {
+		choose(picker(target, name)!, value);
+		changeButton(target, name).click();
+		flushSync();
+	};
 	const toastsSaid = () => {
 		let shown: { message: string }[] = [];
 		toasts.subscribe((list) => (shown = list))();
@@ -851,7 +890,7 @@ describe.each([
 	it('says that a member removed meanwhile has been added again with the role chosen, not "Role changed"', async () => {
 		answer = (what) => (what === 'POST /api/teams/7/members/2' ? Response.json({ success: true, action: 'added' }, { status: 201 }) : undefined);
 		const { target } = drawLive(teamWith(BOB));
-		choose(picker(target, 'bob')!, 'owner');
+		changeTo(target, 'bob', 'owner');
 		await settle();
 
 		expect(asked('POST /api/teams/7/members/2').map((request) => request.body)).toEqual([{ userId: 2, role: 'owner' }]);
@@ -862,7 +901,7 @@ describe.each([
 	it('puts a refused change back on its own member’s row when the rows have moved meanwhile', async () => {
 		holdChanges();
 		const { target, props } = drawLive(teamWith(BOB, CAROL));
-		choose(picker(target, 'bob')!, 'owner');
+		changeTo(target, 'bob', 'owner');
 		// Read again while it is out, with the rows the other way round.
 		props.data = teamWith(CAROL, BOB);
 		flushSync();
@@ -876,7 +915,7 @@ describe.each([
 	it('puts back the role the page’s data gives the member when the refusal comes, not the one held when it was sent', async () => {
 		holdChanges();
 		const { target, props } = drawLive(teamWith(BOB, CAROL));
-		choose(picker(target, 'carol')!, 'member');
+		changeTo(target, 'carol', 'member');
 		// Read again while it is out: carol's role was made 'lead' elsewhere (a role from before roles were checked will do).
 		props.data = teamWith(BOB, { ...CAROL, role: 'lead' });
 		flushSync();
@@ -890,12 +929,17 @@ describe.each([
 		holdChanges();
 		const { target } = drawLive(teamWith(BOB));
 		const bobs = picker(target, 'bob')!;
-		choose(bobs, 'owner');
+		changeTo(target, 'bob', 'owner');
 		expect(bobs.disabled).toBe(false);
 		expect(busy(bobs)).toBe('true');
+		expect(changeButton(target, 'bob').disabled).toBe(false);
+		expect(changeButton(target, 'bob').getAttribute('aria-disabled')).toBe('true');
 
-		choose(bobs, 'member');
+		// Another choice goes back to the role being saved, and a second Change sends nothing.
+		changeTo(target, 'bob', 'member');
 		expect(bobs.value).toBe('owner');
+		changeButton(target, 'bob').click();
+		await settle();
 		expect(asked('POST /api/teams/7/members/2')).toHaveLength(1);
 
 		answerChange(2, updated());
@@ -904,11 +948,89 @@ describe.each([
 		expect(asked('POST /api/teams/7/members/2').map((request) => request.body)).toEqual([{ userId: 2, role: 'owner' }]);
 	});
 
+	// Card 2374: Add had no guard, so a double click sent the add twice and said "Member added" twice.
+	it('sends one add for a double click on Add, marking Add busy rather than off while it is out (card 2374)', async () => {
+		holdChanges();
+		const { target } = drawLive(teamWith(BOB));
+		const people = [...target.querySelectorAll('select')].find((select) => select.options[0]?.textContent === 'Add member...')!;
+		choose(people, '3');
+		const add = buttonNamed(target, 'Add');
+		add.click();
+		add.click();
+		flushSync();
+		expect(asked('POST /api/teams/7/members/3')).toHaveLength(1);
+		expect(add.getAttribute('aria-busy')).toBe('true');
+		expect(add.disabled).toBe(false);
+
+		answerChange(3, Response.json({ success: true, action: 'added' }, { status: 201 }));
+		await settle();
+		expect(asked('POST /api/teams/7/members/3')).toHaveLength(1);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(toastsSaid()).toEqual(['Member added']);
+	});
+
+	// The card 2376 review: a role chosen and not saved was kept until Change or a refusal, so with Owner
+	// chosen for bob, bob removed and added back as Member, his picker read Owner and Change was live.
+	it('drops a role chosen and not saved once a re-read finds the member gone, or already holding it', () => {
+		const { target, props } = drawLive(teamWith(BOB));
+		choose(picker(target, 'bob')!, 'owner');
+		expect(changeButton(target, 'bob').hasAttribute('aria-disabled')).toBe(false);
+
+		// Removed elsewhere, then added back as Member.
+		props.data = teamWith();
+		flushSync();
+		props.data = teamWith(BOB);
+		flushSync();
+		expect(picker(target, 'bob')!.value).toBe('member');
+		expect(changeButton(target, 'bob').getAttribute('aria-disabled')).toBe('true');
+
+		// Made Owner elsewhere, then Member again.
+		choose(picker(target, 'bob')!, 'owner');
+		props.data = teamWith({ ...BOB, role: 'owner' });
+		flushSync();
+		props.data = teamWith(BOB);
+		flushSync();
+		expect(picker(target, 'bob')!.value).toBe('member');
+		expect(changeButton(target, 'bob').getAttribute('aria-disabled')).toBe('true');
+		expect(sent.filter((request) => request.what.startsWith('POST'))).toEqual([]);
+	});
+
+	it('forgets a role chosen and not saved for a member it removes', async () => {
+		answer = (what) => (what === 'DELETE /api/teams/7/members/2' ? Response.json({ success: true }) : undefined);
+		const { target, props } = drawLive(teamWith(BOB));
+		choose(picker(target, 'bob')!, 'owner');
+		target.querySelector<HTMLButtonElement>('button[title="Remove from team"]')!.click();
+		await settle();
+		expect(asked('DELETE /api/teams/7/members/2')).toHaveLength(1);
+
+		// Added back as Member, with no re-read between (the stand-in's invalidateAll reads nothing).
+		props.data = teamWith(BOB);
+		flushSync();
+		expect(picker(target, 'bob')!.value).toBe('member');
+		expect(changeButton(target, 'bob').getAttribute('aria-disabled')).toBe('true');
+	});
+
+	// The card 2374 review: an Add for someone already in the team (added meanwhile elsewhere) is answered
+	// 200 "updated" with their role set, and both pages said "Member added".
+	it('says that someone already in the team had their role set, rather than "Member added"', async () => {
+		answer = (what) => (what === 'POST /api/teams/7/members/3' ? Response.json({ success: true, action: 'updated' }) : undefined);
+		const { target } = drawLive(teamWith(BOB));
+		const people = [...target.querySelectorAll('select')].find((select) => select.options[0]?.textContent === 'Add member...')!;
+		choose(people, '3');
+		choose(target.querySelector<HTMLSelectElement>('select[title="Their role in this team"]')!, 'owner');
+		buttonNamed(target, 'Add').click();
+		await settle();
+
+		expect(asked('POST /api/teams/7/members/3').map((request) => request.body)).toEqual([{ userId: 3, role: 'owner' }]);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(toastsSaid()).toEqual(['carol was already in the team; role set to Owner']);
+	});
+
 	it('keeps each of two changes out at once busy until its own answer', async () => {
 		holdChanges();
 		const { target } = drawLive(teamWith(BOB, CAROL));
-		choose(picker(target, 'bob')!, 'owner');
-		choose(picker(target, 'carol')!, 'member');
+		changeTo(target, 'bob', 'owner');
+		changeTo(target, 'carol', 'member');
 		expect(busy(picker(target, 'bob')!)).toBe('true');
 		expect(busy(picker(target, 'carol')!)).toBe('true');
 
@@ -922,6 +1044,135 @@ describe.each([
 		expect(busy(picker(target, 'carol')!)).toBeNull();
 		expect(asked('POST /api/teams/7/members/2')).toHaveLength(1);
 		expect(asked('POST /api/teams/7/members/3')).toHaveLength(1);
+	});
+});
+
+// Card 2376: the admin users panel's role picker saved as it was chosen, so arrowing through it on
+// Windows saved each role passed (Admin included), and a second choice was sent while the first was out.
+describe('an account’s role on the users panel, saved with Change (card 2376)', () => {
+	const choose = (box: HTMLSelectElement, value: string) => {
+		box.value = value;
+		box.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+	};
+
+	afterEach(() => {
+		let shown: { id: number }[] = [];
+		toasts.subscribe((list) => (shown = list))();
+		for (const toast of shown) toasts.dismiss(toast.id);
+	});
+
+	it('sends nothing as roles are chosen, saves once with Change, says it is saving, and shows the stored role again when refused', async () => {
+		const release: ((response: Response) => void)[] = [];
+		answer = (what) => (what === 'PUT /api/users/2' ? new Promise<Response>((resolve) => release.push(resolve)) : undefined);
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+		const picker = target.querySelector<HTMLSelectElement>('select[aria-label="bob\'s role"]')!;
+		const change = target.querySelector<HTMLButtonElement>('button[aria-label="Change bob\'s role"]')!;
+		const status = () => target.querySelector('[role="status"]')!.textContent;
+		expect(picker.value).toBe('user');
+		expect(change.textContent!.trim()).toBe('Change');
+		expect(change.getAttribute('aria-disabled')).toBe('true');
+		// Not on your own row.
+		expect(target.querySelector('button[aria-label="Change chief\'s role"]')).toBeNull();
+
+		// Down, up and down again, as arrowing through a closed picker does on Windows: nothing sent.
+		choose(picker, 'admin');
+		choose(picker, 'user');
+		choose(picker, 'admin');
+		await settle();
+		expect(asked('PUT /api/users/2')).toHaveLength(0);
+		expect(change.hasAttribute('aria-disabled')).toBe(false);
+
+		// Change twice while the first is out: one request.
+		change.click();
+		change.click();
+		flushSync();
+		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'admin' }]);
+		expect(picker.getAttribute('aria-busy')).toBe('true');
+		expect(change.getAttribute('aria-disabled')).toBe('true');
+		expect(status()).toBe("Saving bob's role…");
+		release.shift()!(Response.json({ success: true, invitesEnded: 0 }));
+		await settle();
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(picker.hasAttribute('aria-busy')).toBe(false);
+		expect(status()).toBe('');
+
+		// Refused: the data still says user, and so does the picker.
+		choose(picker, 'admin');
+		change.click();
+		flushSync();
+		release.shift()!(Response.json({ message: 'Only the superadmin can make an administrator' }, { status: 403 }));
+		await settle();
+		expect(asked('PUT /api/users/2')).toHaveLength(2);
+		expect(picker.value).toBe('user');
+		expect(change.getAttribute('aria-disabled')).toBe('true');
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	/** Mounts the panel with its props in a Svelte proxy, as the page hands them on: setting `data` is a re-read. */
+	function drawLive(data: unknown) {
+		const props = proxy({ data, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+		const target = document.createElement('div');
+		document.body.appendChild(target);
+		drawn = { component: mount(UsersPanel as never, { target, props: props as never }), target };
+		flushSync();
+		return { target, props };
+	}
+	const rolePicker = (target: HTMLElement) => target.querySelector<HTMLSelectElement>('select[aria-label="bob\'s role"]');
+	const changeButton = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('button[aria-label="Change bob\'s role"]')!;
+
+	// The card 2376 review: a role chosen and not saved outlived the account's row, as on the team pages.
+	it('drops a role chosen and not saved once a re-read finds the account gone, or already holding it, and once the panel deletes it', async () => {
+		const { target, props } = drawLive(pageData);
+		choose(rolePicker(target)!, 'admin');
+		props.data = { ...pageData, users: [pageData.users[0]] };
+		flushSync();
+		props.data = pageData;
+		flushSync();
+		expect(rolePicker(target)!.value).toBe('user');
+		expect(changeButton(target).getAttribute('aria-disabled')).toBe('true');
+
+		choose(rolePicker(target)!, 'admin');
+		props.data = { ...pageData, users: [pageData.users[0], { ...bob, role: 'admin' }] };
+		flushSync();
+		props.data = pageData;
+		flushSync();
+		expect(rolePicker(target)!.value).toBe('user');
+		expect(changeButton(target).getAttribute('aria-disabled')).toBe('true');
+
+		// Deleted here, and the same id read again with no re-read between (the stand-in's invalidateAll reads nothing).
+		answer = (what) => (what === 'DELETE /api/users/2' ? Response.json({ success: true }) : undefined);
+		choose(rolePicker(target)!, 'admin');
+		const confirm = props.confirm as unknown as ReturnType<typeof vi.fn>;
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await confirm.mock.calls[0][2]();
+		await settle();
+		expect(asked('DELETE /api/users/2')).toHaveLength(1);
+		props.data = { ...pageData };
+		flushSync();
+		expect(rolePicker(target)!.value).toBe('user');
+		expect(asked('PUT /api/users/2')).toHaveLength(0);
+	});
+
+	// The card 2376 review: an administrator who is not the superadmin may give only User, so the picker had
+	// one option and every row a Change that could never do anything. The role is the badge alone for them.
+	it('draws no role picker and no Change for an administrator who is not the superadmin, whose only choice is User', () => {
+		const ada = { id: 3, username: 'ada', email: 'ada@example.com', emoji: '🛠️', role: 'admin' };
+		const target = draw(UsersPanel, {
+			data: { ...pageData, currentUser: ada, users: [...pageData.users, { ...ada, apiKeys: null, webhooks: null, reportSchedules: null }] },
+			isSuperadmin: false,
+			confirm: vi.fn(),
+			loadMailStatus: vi.fn(),
+			inviteLink: null
+		});
+		const bobsRow = [...target.querySelectorAll('.user-row')].find((row) => row.textContent!.includes('bob@example.com'))!;
+		expect(bobsRow.querySelector('select')).toBeNull();
+		expect(bobsRow.querySelector('button[aria-label="Change bob\'s role"]')).toBeNull();
+		expect(bobsRow.querySelector('.role-badge')!.textContent).toBe('user');
+		// What they may do to bob's account is still there.
+		expect(bobsRow.querySelector('button[title="Reset password"]')).not.toBeNull();
+		expect(bobsRow.querySelector('button[title="Delete user"]')).not.toBeNull();
+		expect(target.querySelector('[role="status"]')).not.toBeNull();
 	});
 });
 

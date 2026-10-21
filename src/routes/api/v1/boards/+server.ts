@@ -7,6 +7,7 @@ import { createBoard, listBoardsFor } from '$lib/server/boards';
 import { requireUser } from '$lib/server/route-guards';
 import { readBody } from '$lib/server/request-body';
 import { writeAs } from '$lib/server/write-as';
+import { COLUMN_ORDER } from '$lib/server/card-order';
 import type { RequestHandler } from './$types';
 
 /** GET /api/v1/boards — List all boards accessible to the API key's user (`listBoardsFor`, card 2012). */
@@ -53,8 +54,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const created = writeAs(locals, (caller) => {
 		const board = createBoard(caller, {}, body, { source: 'api', allowCategory: true });
 
-		// Return the board with its columns
-		const boardColumns = db.select().from(columns).where(eq(columns.boardId, board.id)).all();
+		// Return the board with its columns, in the board's order (card 2372)
+		const boardColumns = db.select().from(columns).where(eq(columns.boardId, board.id)).orderBy(...COLUMN_ORDER).all();
 
 		return { ...board, columns: boardColumns };
 	});

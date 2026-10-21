@@ -735,6 +735,32 @@ describe('Manage Categories says a refusal or no answer, and asks before a delet
 			expect(target.querySelector('.cat-mgr')).toBeNull();
 		});
 
+		// Card 2375: × closed the window while a change was out, and its answer was said to nobody.
+		it('stays open on × while a change is out, × marked aria-disabled meanwhile, and closes on × once it is answered', async () => {
+			let release!: () => void;
+			answer = (what) =>
+				what === 'POST /api/board-categories' ? new Promise<Response>((resolve) => (release = () => resolve(Response.json({ message: 'Category name taken' }, { status: 400 })))) : undefined;
+			const { target, manager } = await openFromItsButton();
+			const close = manager.querySelector<HTMLButtonElement>('.close-btn')!;
+			expect(close.hasAttribute('aria-disabled')).toBe(false);
+			type(manager.querySelector<HTMLInputElement>('.create-input')!, 'Ops');
+			buttonNamed(manager, 'Add').click();
+			await settle();
+			expect(close.getAttribute('aria-disabled')).toBe('true');
+			expect(close.disabled).toBe(false);
+			close.click();
+			flushSync();
+			expect(target.querySelector('.cat-mgr')).not.toBeNull();
+
+			release();
+			await settle();
+			expect(said(manager)).toBe('Category name taken');
+			expect(close.hasAttribute('aria-disabled')).toBe(false);
+			close.click();
+			flushSync();
+			expect(target.querySelector('.cat-mgr')).toBeNull();
+		});
+
 		// Card 2365's review: Escape with a category's edit open closed the whole window, and the edit with it.
 		it('cancels an open edit on Escape, giving the focus back to its row’s ✎, and closes the window on the next Escape', async () => {
 			const { target, manager } = await openFromItsButton();

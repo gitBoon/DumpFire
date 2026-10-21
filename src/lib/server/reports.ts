@@ -226,20 +226,21 @@ function getColumnMap(boardIds: number[]): Map<number, ColumnInfo> {
 		.where(inArray(columns.boardId, boardIds))
 		.all();
 	const map = new Map<number, ColumnInfo>();
-	const byBoard = new Map<number, { position: number; info: ColumnInfo }[]>();
+	const byBoard = new Map<number, { id: number; position: number; info: ColumnInfo }[]>();
 	for (const col of allCols) {
 		const info: ColumnInfo = { title: col.title, boardId: col.boardId, status: classifyColumnTitle(col.title) };
 		map.set(col.id, info);
 		if (!byBoard.has(col.boardId)) byBoard.set(col.boardId, []);
-		byBoard.get(col.boardId)!.push({ position: col.position, info });
+		byBoard.get(col.boardId)!.push({ id: col.id, position: col.position, info });
 	}
 	// A board with no recognisable To Do column (e.g. "Backlog" renamed to
-	// "Queue") still has one: its left-most column that isn't Done.
+	// "Queue") still has one: its left-most column that isn't Done, of two
+	// at one place the older (card 2372's column order).
 	for (const cols of byBoard.values()) {
 		if (cols.some(c => c.info.status === 'todo')) continue;
 		const first = cols
 			.slice()
-			.sort((a, b) => a.position - b.position)
+			.sort((a, b) => a.position - b.position || a.id - b.id)
 			.find(c => c.info.status !== 'completed');
 		if (first) first.info.status = 'todo';
 	}

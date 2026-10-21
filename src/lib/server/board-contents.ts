@@ -17,7 +17,7 @@
  */
 import { db } from './db';
 import { boards, columns, cards, subtasks, cardLabels, labels, boardMembers, boardTeams, users, cardAssignees, teamMembers, taskRequests, type Board } from './db/schema';
-import { eq, asc, inArray, isNull, and } from 'drizzle-orm';
+import { eq, inArray, isNull, and } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
 import { roleOnBoard, type Actor } from './board-access';
 import { getBoardBlockedState, WITHHELD_BOARD_NAME } from './planning';
@@ -27,7 +27,7 @@ import { linkableBoards, MAX_SUB_BOARD_DEPTH } from './sub-boards';
 import { cardCategoriesFor, hiddenOpenCountsFor, subBoardsFor } from './list-access';
 import { subBoardProgress } from './card-completion';
 import { SUBTASK_ORDER } from './subtask-order';
-import { CARD_ORDER } from './card-order';
+import { CARD_ORDER, COLUMN_ORDER } from './card-order';
 import type { SessionUser } from './auth';
 
 /** One board above this one, as the page's breadcrumbs show it. */
@@ -121,7 +121,7 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 		.select()
 		.from(columns)
 		.where(eq(columns.boardId, boardId))
-		.orderBy(asc(columns.position))
+		.orderBy(...COLUMN_ORDER)
 		.all();
 
 	const columnIds = boardColumns.map((c) => c.id);

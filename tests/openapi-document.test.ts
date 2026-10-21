@@ -2704,6 +2704,11 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(changes).toContain('(100) POST /api/v1/cards/{cardId}/assignees mails nobody who assigns themselves');
 		expect(changes.indexOf('(100)')).toBeGreaterThan(changes.indexOf('(99)'));
 		expect(spec.paths['/api/v1/cards/{cardId}/assignees'].post.description).toContain('nobody is mailed about assigning themselves');
+		// Card 2372: a board's columns at one position, the older first.
+		expect(changes).toContain("(101) GET /api/v1/boards/{boardId}, GET /api/v1/boards/{boardId}/columns and POST /api/v1/boards list a board's columns in order of position, ties by column id");
+		expect(changes.indexOf('(101)')).toBeGreaterThan(changes.indexOf('(100)'));
+		expect(spec.paths['/api/v1/boards/{boardId}/columns'].get.description).toContain('ties by column id');
+		expect(spec.paths['/api/v1/boards/{boardId}'].get.description).toContain('ties by column id');
 	});
 
 	// ─── What is said in words, and can be tried ─────────────────────────────

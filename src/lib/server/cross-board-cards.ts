@@ -21,7 +21,7 @@
  */
 import { db } from '$lib/server/db';
 import { boards, columns, cards, subtasks, labels, cardLabels, cardAssignees, users, taskRequests } from '$lib/server/db/schema';
-import { asc, inArray, isNull, and } from 'drizzle-orm';
+import { inArray, isNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds, type Actor } from '$lib/server/board-access';
 import { boardCategoriesFor, cardCategoriesFor } from '$lib/server/list-access';
 import { getBlockedStateForCards } from '$lib/server/planning';
@@ -29,7 +29,7 @@ import { milestoneNamesForCards } from '$lib/server/milestones';
 import { boardAncestry } from '$lib/server/board-tree';
 import { placeBoards } from '$lib/board-tree';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
-import { CARD_ORDER } from '$lib/server/card-order';
+import { CARD_ORDER, COLUMN_ORDER } from '$lib/server/card-order';
 
 type ColumnRow = typeof columns.$inferSelect;
 
@@ -57,7 +57,7 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 
 	const accessibleBoardIds = allBoards.map(b => b.id);
 	const allColumns = accessibleBoardIds.length > 0
-		? db.select().from(columns).where(inArray(columns.boardId, accessibleBoardIds)).orderBy(asc(columns.position)).all()
+		? db.select().from(columns).where(inArray(columns.boardId, accessibleBoardIds)).orderBy(...COLUMN_ORDER).all()
 		: [];
 
 	// The columns whose cards are read: every one, or those the page asked for.
