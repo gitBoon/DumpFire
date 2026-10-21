@@ -29,8 +29,8 @@ import { subBoardProgress } from './card-completion';
  * `accessible`, on `recentActivityFor`, `boardCategoryRule`,
  * `boardCategoriesFor` and `subBoardsFor`: the caller's
  * `getAccessibleBoardIds(user)`, when whoever calls has read it already in
- * the same request (card 2393). Left out, each reads it for itself, as every
- * caller but the dashboard does. The dashboard read it four times a load, four
+ * the same request (card 2393). Left out, each reads it for itself, as the
+ * routes that call one helper do. The dashboard read it four times a load, four
  * reads each (five for a caller in a team), and reads it once now. It must be
  * that function's answer for the same user, read in the same request: passed
  * anything else, a list would answer for someone else's boards.
@@ -41,8 +41,18 @@ import { subBoardProgress } from './card-completion';
  * left out, so a `null` passed by mistake answers what a left-out argument
  * would, never every board. The role is on the caller, so telling them apart
  * reads nothing, and an administrator's `null` is used as it is.
+ *
+ * Card 2394 gave the same argument, resolved here, to `categoryRule`,
+ * `cardCategoriesFor` and `hiddenOpenCountsFor` below; to `boardsOpenTo`,
+ * `getBlockedStateForCards` and `getBoardBlockedState` (planning.ts); to
+ * `milestonesForBoard` and `listMilestones` (milestones.ts); and to
+ * `getBurndown` (burndown.ts). All Tasks, All To Do, Reports,
+ * `GET /api/v1/me/stats`, the board page and the burndown page each read it
+ * two to five times a request, and read it once now. Each helper reads it
+ * where it read it before, after any early answer, so a caller that leaves
+ * it out reads what it did.
  */
-function resolveAccessible(user: Actor, accessible: number[] | null | undefined): number[] | null {
+export function resolveAccessible(user: Actor, accessible: number[] | null | undefined): number[] | null {
 	if (accessible === undefined || (accessible === null && !isAdmin(user))) return getAccessibleBoardIds(user);
 	return accessible;
 }
@@ -216,8 +226,8 @@ export type ListedCategory = Category & { carried?: true };
  * one. Every board's was listed to every signed-in caller, as a "shared
  * vocabulary", which described the picker, not a need.
  */
-export function categoryRule(user: Actor): (category: Pick<Category, 'boardId'>) => boolean {
-	const open = getAccessibleBoardIds(user);
+export function categoryRule(user: Actor, accessible?: number[] | null): (category: Pick<Category, 'boardId'>) => boolean {
+	const open = resolveAccessible(user, accessible);
 	if (open === null) return () => true;
 	const opens = new Set(open);
 	return (category) => category.boardId === null || opens.has(category.boardId);
@@ -234,8 +244,12 @@ export function categoryRule(user: Actor): (category: Pick<Category, 'boardId'>)
  * card's and no other's: the card dialog offers only the card's board's and
  * the shared ones, and a copy takes no other (`categoryToCopy`).
  */
-export function cardCategoriesFor(user: Actor, shown: { categoryId: number | null }[] = []): ListedCategory[] {
-	const listed = categoryRule(user);
+export function cardCategoriesFor(
+	user: Actor,
+	shown: { categoryId: number | null }[] = [],
+	accessible?: number[] | null
+): ListedCategory[] {
+	const listed = categoryRule(user, accessible);
 	const carried = new Set(shown.map((card) => card.categoryId).filter((id) => id !== null));
 	const all = db.select().from(categories).orderBy(asc(categories.name)).all();
 	return all.flatMap((category) => {
@@ -286,10 +300,10 @@ export function subBoardsFor(user: Actor, parentCardIds?: number[], accessible?:
  * one (card 2205). The board page asks this before a drop onto Complete, so
  * that it does not show the card as done and then have it refused.
  */
-export function hiddenOpenCountsFor(user: Actor, parentCardIds: number[]): Map<number, number> {
+export function hiddenOpenCountsFor(user: Actor, parentCardIds: number[], accessible?: number[] | null): Map<number, number> {
 	const counts = new Map<number, number>();
 	if (parentCardIds.length === 0) return counts;
-	const open = getAccessibleBoardIds(user);
+	const open = resolveAccessible(user, accessible);
 	if (open === null) return counts;
 
 	const hidden = db

@@ -17,7 +17,8 @@ import { db } from './db';
 import { inTransaction } from './db/transaction';
 import { milestones, cards, columns, boards } from './db/schema';
 import { eq, and, isNull, inArray, ne } from 'drizzle-orm';
-import { canViewBoard, canEditBoard, getAccessibleBoardIds, type Actor } from './board-access';
+import { canViewBoard, canEditBoard, type Actor } from './board-access';
+import { resolveAccessible } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { changedFields } from './card-changes';
 import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
@@ -201,12 +202,15 @@ export type BoardFilterMode = 'scoped' | 'touching';
  *
  * Counts are done in two queries over all the milestones at once rather than
  * per milestone — the planning index lists every goal in the workspace.
+ * `accessible`: the user's boards, when the caller has read them already in
+ * the same request (card 2394, `resolveAccessible` in list-access.ts).
  */
 export function listMilestones(
 	user: SessionUser,
 	boardId?: number,
 	status?: string,
-	mode: BoardFilterMode = 'scoped'
+	mode: BoardFilterMode = 'scoped',
+	accessible?: number[] | null
 ): MilestoneListEntry[] {
 	const all = db.select().from(milestones).all();
 
@@ -239,7 +243,7 @@ export function listMilestones(
 	if (filtered.length === 0) return [];
 
 	const ids = filtered.map((m) => m.id);
-	const opens = boardsOpenTo(user);
+	const opens = boardsOpenTo(user, accessible);
 	const memberRows = db
 		.select({ milestoneId: cards.milestoneId, columnTitle: columns.title, boardId: columns.boardId })
 		.from(cards)
@@ -590,15 +594,19 @@ export function takeCardOutOfMilestone(
 	});
 }
 
-/** Milestones a user may attach a card on this board to. */
-export function milestonesForBoard(user: SessionUser, boardId: number): MilestoneRow[] {
-	const accessible = getAccessibleBoardIds(user);
+/**
+ * Milestones a user may attach a card on this board to. `accessible`: the
+ * user's boards, when the caller has read them already in the same request
+ * (card 2394, `resolveAccessible` in list-access.ts).
+ */
+export function milestonesForBoard(user: SessionUser, boardId: number, accessible?: number[] | null): MilestoneRow[] {
+	const open = resolveAccessible(user, accessible);
 	return db
 		.select()
 		.from(milestones)
 		.all()
 		.filter((m) => m.boardId === null || m.boardId === boardId)
-		.filter((m) => accessible === null || m.boardId === null || accessible.includes(m.boardId))
+		.filter((m) => open === null || m.boardId === null || open.includes(m.boardId))
 		.filter((m) => canViewMilestone(user, m))
 		.sort((a, b) => (a.status === b.status ? a.name.localeCompare(b.name) : a.status === 'open' ? -1 : 1));
 }

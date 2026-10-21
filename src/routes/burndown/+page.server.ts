@@ -28,10 +28,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	}
 	params.set('options', 'true');
 
+	// The boards the caller can open, read once and handed to the chart and
+	// the list of milestones, each of which read it again for itself: up to
+	// four times a load (card 2394). The load awaits nothing, so it is the same
+	// answer each would have read.
+	const accessible = getAccessibleBoardIds(user);
+
 	let result: BurndownResult | null = null;
 	let problem: { status: number; message: string } | null = null;
 	try {
-		result = getBurndown(user, parseBurndownQuery(params, user));
+		result = getBurndown(user, parseBurndownQuery(params, user), accessible);
 	} catch (e) {
 		// Shown in the page rather than as an error screen: the controls stay
 		// usable, so a bad link can be corrected from where it landed.
@@ -39,7 +45,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		else throw e;
 	}
 
-	const accessible = getAccessibleBoardIds(user);
 	const boards = (
 		sqlite
 			.prepare('SELECT id, name, emoji, category_id AS categoryId, parent_card_id AS parentCardId FROM boards ORDER BY name COLLATE NOCASE')
@@ -58,7 +63,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		}[]
 	).filter((c) => withBoards.has(c.id));
 
-	const milestones = listMilestones(user).map((m) => ({
+	const milestones = listMilestones(user, undefined, undefined, undefined, accessible).map((m) => ({
 		id: m.id,
 		name: m.name,
 		status: m.status,

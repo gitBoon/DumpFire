@@ -19,7 +19,7 @@ import { db } from './db';
 import { boards, columns, cards, subtasks, cardLabels, labels, boardMembers, boardTeams, users, cardAssignees, teamMembers, taskRequests, type Board } from './db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
-import { roleOnBoard, type Actor } from './board-access';
+import { getAccessibleBoardIds, roleOnBoard, type Actor } from './board-access';
 import { getBoardBlockedState, WITHHELD_BOARD_NAME } from './planning';
 import { getCardTokenTotals, getBoardTokenTotals } from './tokens';
 import { milestonesForBoard } from './milestones';
@@ -115,6 +115,14 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 	const canEdit = userBoardRole === 'admin' || userBoardRole === 'owner' || userBoardRole === 'editor';
 	const canManage = userBoardRole === 'admin' || userBoardRole === 'owner';
 
+	// The boards the caller can open, read once and handed to the sub-boards,
+	// the hidden open counts, the card categories, the blockers and the
+	// milestones below, each of which read it for itself: five times a load,
+	// two for a board with no cards (card 2394). Read after the access check,
+	// so a refusal reads no more than it did; nothing between the reads and
+	// this one awaits, so it is the same answer.
+	const accessible = getAccessibleBoardIds(user);
+
 	const breadcrumbs = breadcrumbsFor(user, board);
 
 	const boardColumns = db
@@ -161,7 +169,7 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 
 	// Get sub-board info for cards that have sub-boards: those the caller can
 	// open (card 2130). One they were never given is not on its card.
-	const subBoards = subBoardsFor(user, cardIds);
+	const subBoards = subBoardsFor(user, cardIds, accessible);
 
 	// Build a map of cardId -> sub-boards (supports multiple per card), each
 	// with its progress as the completion check counts it: archived cards left
@@ -180,7 +188,7 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 	// And how many cards are open on the sub-boards the caller cannot open, by
 	// card, with no name: the server refuses to complete the card while there
 	// are any, and the page asks before a drop onto Complete (card 2130's review).
-	const hiddenOpen = hiddenOpenCountsFor(user, cardIds);
+	const hiddenOpen = hiddenOpenCountsFor(user, cardIds, accessible);
 
 	// Get card assignees
 	const allAssignees = cardIds.length > 0
@@ -235,7 +243,7 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 	// The categories of the boards the caller can open and the shared ones, and
 	// any other a card here carries, marked `carried` (card 2128): every
 	// board's was sent to the browser.
-	const boardCategories = cardCategoriesFor(user, allCards);
+	const boardCategories = cardCategoriesFor(user, allCards, accessible);
 
 	const boardLabels = db
 		.select()
@@ -289,7 +297,7 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 	// Open blockers for every card on the board in one pass, so the "Blocked"
 	// chip costs one query for the board rather than one request per card face.
 	// A blocker on a board the caller cannot open is withheld (card 2129).
-	const blockedState = getBoardBlockedState(boardId, user);
+	const blockedState = getBoardBlockedState(boardId, user, accessible);
 
 	// Cost per card, one query for the board rather than one per card face.
 	// Cards absent from the map have nothing recorded, which the face renders as
@@ -319,7 +327,7 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 		blockedState,
 		cardTokens,
 		boardTokenSummary,
-		milestones: milestonesForBoard(user, boardId)
+		milestones: milestonesForBoard(user, boardId, accessible)
 	};
 }
 

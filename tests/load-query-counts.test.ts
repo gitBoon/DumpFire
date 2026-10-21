@@ -23,7 +23,8 @@
  * one for the owner and the outsider when the dashboard stopped reading its
  * caller's cards' columns twice, and by 12 for every caller but the
  * administrator (15 for the mate) when it stopped reading the boards its
- * caller can open four times (card 2393).
+ * caller can open four times (card 2393), and by one for every caller when it
+ * stopped reading their teams twice (card 2394).
  *
  * What each load answers is pinned as the old load answered it: the cases
  * below were run on the old code before the change and passed there, but for
@@ -419,8 +420,14 @@ describe('the dashboard’s load (card 2298)', () => {
  * fifth for the mate's team's boards. The load reads them once now and hands
  * them on. They were 36, 34, 37 and 35; the administrator, for whom nothing is
  * read, stays at 17.
+ *
+ * Every caller, the administrator too, is one fewer again (card 2394): the
+ * teams the caller is in were read for the pending requests with the query
+ * `getAccessibleBoardIds` had just run, and come from that read now
+ * (`getAccessibleBoardsAndTeams`). The administrator's were read and not used.
+ * They were 24, 22, 22, 17 and 23.
  */
-const MOST_READS: Record<string, number> = { owner: 24, member: 22, mate: 22, admin: 17, outsider: 23 };
+const MOST_READS: Record<string, number> = { owner: 23, member: 21, mate: 21, admin: 16, outsider: 22 };
 
 /** The keys of the answer, of each board in it and of its analytics, in order, the same for every caller. */
 const KEYED = {

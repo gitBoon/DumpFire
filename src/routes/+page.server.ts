@@ -1,7 +1,7 @@
 import { db } from '$lib/server/db';
-import { boards, columns, cards, cardAssignees, taskRequests, teamMembers, users, boardFavourites, subtasks, type Board } from '$lib/server/db/schema';
+import { boards, columns, cards, cardAssignees, taskRequests, users, boardFavourites, subtasks, type Board } from '$lib/server/db/schema';
 import { count, desc, eq, inArray, isNull, and, or, sql } from 'drizzle-orm';
-import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { getAccessibleBoardsAndTeams } from '$lib/server/board-access';
 import { boardCategoriesFor, recentActivityFor, subBoardsFor } from '$lib/server/list-access';
 import { subBoardProgress } from '$lib/server/card-completion';
 import { completionPercent } from '$lib/progress';
@@ -19,7 +19,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// each of which read it again for itself: four reads each time, five for a
 	// caller in a team (card 2393). The load awaits nothing, so no other
 	// request runs between those reads and this one: it is the same answer.
-	const accessibleIds = getAccessibleBoardIds(user);
+	// The teams the caller is in come from the same read, for the pending
+	// requests below, which read them again (card 2394); null for an
+	// administrator, for whom neither is read.
+	const { boardIds: accessibleIds, teamIds } = getAccessibleBoardsAndTeams(user);
 
 	let allBoards: Board[];
 	if (accessibleIds === null) {
@@ -339,12 +342,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// open (card 2126). A board they were taken off went on showing here.
 	const recentActivity = recentActivityFor(user, 10, accessibleIds);
 
-	// Pending inbox requests
-	const userTeamRows = db.select({ teamId: teamMembers.teamId })
-		.from(teamMembers)
-		.where(eq(teamMembers.userId, user.id))
-		.all();
-	const userTeamIds = userTeamRows.map(r => r.teamId);
+	// Pending inbox requests. An administrator is counted every one, and has
+	// no teams read.
+	const userTeamIds = teamIds ?? [];
 
 	// The pending ones the caller is to answer: every one for an administrator,
 	// else those to them or to a team of theirs. Counted where they are: the

@@ -43,7 +43,9 @@ export type CrossBoardOptions = {
 };
 
 export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}) {
-	// Get board IDs this user can access (null = admin, sees all)
+	// Get board IDs this user can access (null = admin, sees all). Read once
+	// and handed to the card categories, the groupings and the blockers below,
+	// each of which read it again for itself: four times a load (card 2394).
 	const accessibleIds = getAccessibleBoardIds(user);
 
 	let allBoards: (typeof boards.$inferSelect)[];
@@ -87,7 +89,7 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 
 	// The categories of the boards the caller can open and the shared ones, and
 	// any other a card here carries, marked `carried` (card 2128).
-	const allCategories = cardCategoriesFor(user, allCards);
+	const allCategories = cardCategoriesFor(user, allCards, accessibleIds);
 
 	// Get request origins for cards created from accepted task requests, by the
 	// requester's name and not their address, which no screen reads (card 2128's review).
@@ -112,7 +114,7 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 
 	// The groupings the caller is listed (card 2128), and a lookup map. Every
 	// board here is one they can open, so its grouping is among them.
-	const allBoardCategories = boardCategoriesFor(user);
+	const allBoardCategories = boardCategoriesFor(user, accessibleIds);
 	const boardCatMap = new Map(allBoardCategories.map(bc => [bc.id, bc]));
 
 	const boardMap = new Map<number, { name: string; emoji: string; categoryId: number | null }>();
@@ -159,7 +161,7 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 	// cards, so a per-card lookup is not an option: these take the ids already
 	// loaded. A blocker on a board the caller cannot open is withheld (card 2129),
 	// and a milestone the caller cannot open is not named (card 2257).
-	const blockedState = getBlockedStateForCards(cardIds, user);
+	const blockedState = getBlockedStateForCards(cardIds, user, accessibleIds);
 	const milestoneNames = milestoneNamesForCards(user, cardIds);
 
 	return {

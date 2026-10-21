@@ -122,6 +122,11 @@ export type ReadBudget = {
 	 * call: code that caught the error and went on would otherwise pass.
 	 */
 	readonly spent: boolean;
+	/**
+	 * The SQL of each read counted, in order: which reads a page made, as
+	 * well as how many (card 2394 counts its access reads from these).
+	 */
+	readonly sources: readonly string[];
 	/** Put back everything that was wrapped. Call it in a `finally`. */
 	restore(): void;
 };
@@ -174,6 +179,7 @@ export function readBudget(limit: number): ReadBudget {
 	const counted = ['get', 'all', 'iterate'] as const;
 	let count = 0;
 	let spent = false;
+	const sources: string[] = [];
 
 	connection.prepare = function (...args: unknown[]) {
 		const stmt = realPrepare.apply(sqlite, args) as Statement & { iterate: (...args: unknown[]) => unknown };
@@ -182,6 +188,7 @@ export function readBudget(limit: number): ReadBudget {
 			const real = stmt[method];
 			stmt[method] = function (...params: unknown[]) {
 				count += 1;
+				sources.push(stmt.source);
 				if (count > limit) {
 					spent = true;
 					throw new ReadBudgetSpent(limit);
@@ -200,6 +207,7 @@ export function readBudget(limit: number): ReadBudget {
 		get spent() {
 			return spent;
 		},
+		sources,
 		restore() {
 			delete (connection as unknown as Record<string, unknown>).prepare;
 			for (const stmt of wrapped) {
