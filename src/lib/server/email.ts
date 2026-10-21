@@ -80,6 +80,11 @@ export function getSmtpConfig(): SmtpConfig | null {
 	const host = getSetting('smtp_host');
 	if (!host) return null;
 
+	return smtpSettingsWith(host);
+}
+
+/** The mail settings with `host`, each other one read with the default a mail uses. */
+function smtpSettingsWith(host: string): SmtpConfig {
 	return {
 		host,
 		port: Number(getSetting('smtp_port') || '587'),
@@ -89,6 +94,16 @@ export function getSmtpConfig(): SmtpConfig | null {
 		fromAddress: getSetting('smtp_from_address') || '',
 		fromName: getSetting('smtp_from_name') || 'DumpFire'
 	};
+}
+
+/**
+ * The mail settings as a mail reads them, a host set or not, and the App URL
+ * as a link reads it, empty for none (card 2396). A save of the mail settings
+ * reads them before and after it writes, and logs each that differs: a row
+ * written with the value a mail already used is no change.
+ */
+export function mailSettingsAsRead(): SmtpConfig & { appUrl: string } {
+	return { ...smtpSettingsWith(getSetting('smtp_host') || ''), appUrl: getAppUrl() || '' };
 }
 
 /**

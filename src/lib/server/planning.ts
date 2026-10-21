@@ -1139,6 +1139,29 @@ export function getMilestoneBoardIds(milestoneId: number): number[] {
 	return [...new Set(rows.map((r) => r.boardId))];
 }
 
+/**
+ * `getMilestoneBoardIds` for many milestones in one read (card 2399): each
+ * milestone's boards, archived cards' included, by its id. A milestone with
+ * no card has no entry.
+ */
+export function getMilestonesBoardIds(milestoneIds: number[]): Map<number, number[]> {
+	const found = new Map<number, Set<number>>();
+	if (milestoneIds.length === 0) return new Map();
+	const rows = db
+		.select({ milestoneId: cards.milestoneId, boardId: columns.boardId })
+		.from(cards)
+		.innerJoin(columns, eq(cards.columnId, columns.id))
+		.where(inArray(cards.milestoneId, milestoneIds))
+		.all();
+	for (const { milestoneId, boardId } of rows) {
+		if (milestoneId === null) continue;
+		const boards = found.get(milestoneId) ?? new Set<number>();
+		boards.add(boardId);
+		found.set(milestoneId, boards);
+	}
+	return new Map([...found].map(([id, boards]) => [id, [...boards]]));
+}
+
 // ─── Unblock hook ────────────────────────────────────────────────────────────
 
 export interface UnblockedWork {

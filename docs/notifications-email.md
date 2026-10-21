@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.38
+version: 1.39
 status: As-Built
 date: 2026-10-21
 tags:
@@ -109,9 +109,10 @@ administrator or the superadmin (`GET`, `PUT` and `POST /api/admin/smtp` ask `re
 they were the superadmin's alone until card 2395, 2026-10-21, at the owner's request).
 Whoever sets the mail server sees every mail the app sends, invite links and password-reset
 links included, the superadmin's among them, and the App URL, saved by the same route,
-decides where every link in a mail points. Nobody records who saved them: they stay in force
-when that account is demoted or deleted (docs/authentication-security.md, "The Mail and
-Backup Settings: Every Administrator's").
+decides where every link in a mail points. The settings do not record who saved them: they
+stay in force when that account is demoted or deleted (docs/authentication-security.md, "The
+Mail and Backup Settings: Every Administrator's"). The system log does, since card 2396: see
+[Who Changed the Mail Settings](#who-changed-the-mail-settings).
 
 | Setting Key | Type | Default | Description |
 |------------|------|---------|-------------|
@@ -165,6 +166,53 @@ are written: a save of `{ "host": "smtp.evil.example" }` sent the stored passwor
 next mail. A save that changes the way out writes, once committed, one `WARN` line under
 `SMTP`: `Mail is now sent without a checked, encrypted connection (set by <username>)`, or
 `with`.
+
+### Who Changed the Mail Settings
+
+Card 2396. Every `PUT /api/admin/smtp` that changes a mail setting or the App URL writes, once
+committed, one line under `SMTP`, filed under the saving account (`user_id`, the chip on the
+Audit page) and naming it:
+
+> `Mail settings changed: host from "smtp.example.com" to "smtp.other.com"; port from 587 to
+> 465; user changed; password changed (set by "chief")`
+
+```mermaid
+flowchart TD
+    Put["PUT /api/admin/smtp"] --> Before["mailSettingsAsRead():<br/>the settings as a mail reads them"]
+    Before --> Checks{"every check passes?"}
+    Checks -- "no: 400 or 403" --> None1["rolled back,<br/>no line"]
+    Checks -- yes --> Save["saveSmtpConfig, setAppUrl"]
+    Save --> After["mailSettingsAsRead() again"]
+    After --> Diff{"any setting differs?"}
+    Diff -- no --> None2["no line<br/>(card 2183's rule)"]
+    Diff -- yes --> Commit["committed"]
+    Commit --> Line["one WARN line under SMTP"]
+    Line --> WayOut["then the way out's own WARN,<br/>where it changed"]
+```
+
+- **What is compared.** `mailSettingsAsRead()` in `email.ts` reads the settings as a mail
+  does, with `getSmtpConfig`'s defaults (port 587, From Name `DumpFire`, empty text for the
+  rest), whether a host is set or not, and the App URL as `getAppUrl()` answers it (`http://`
+  added to one stored without a scheme, the `APP_URL` environment variable where none is
+  stored), empty for none. The route reads it inside the save's transaction before and after
+  it writes, and the fields that differ (`Object.is`) are the change. A row written with the
+  value a mail already used, such as the panel saved as it was filled, is no change and writes
+  no line.
+- **The line.** The fields in the panel's order: `host`, `port`, `allowInsecure`, `user`,
+  the password, `fromAddress`, `fromName`, `appUrl`, joined by `; `, each as `<field> from
+  <old> to <new>`, text in quotation marks with each `\` and `"` escaped (`quotedName`, as
+  the backup settings' line quotes a destination's name), a number or `true`/`false` as it is;
+  then `(set by "<username>")`, the name quoted the same way. The user name is `user
+  changed` and the password `password changed`, typed anew or emptied, and never a value:
+  some mail providers take the API token as both the user name and the password. The meta is
+  `{ "changes": [ { "field", "from", "to" } ] }`, the user name's and the password's entries
+  `{ "field": "user" }` and `{ "field": "pass" }` alone.
+- **Its level.** Always a `WARN` (card 2396's review): a change of the sender or the password
+  matters as much as one of the host, and an `INFO` is not kept at `LOG_LEVEL=WARN`. The way
+  out keeps its own `WARN` line, written after this one.
+- **When it is written.** After `writeAs` returns, so after the commit: a save refused (the
+  password needed again, a field of the wrong type, `{}`, a caller no longer an administrator)
+  or one that fails writes none. Backup saves write no audit entry, and nor does this.
 
 ### Connection Handling
 

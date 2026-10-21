@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.88
+version: 1.89
 status: As-Built
 date: 2026-10-21
 tags:
@@ -4343,6 +4343,42 @@ An administrator made a user while a save, Run Now, Test, Connect or Send Test i
 #### Going back to the previous image
 
 Nothing is done to the database. The older image refuses an administrator the mail, App URL and backup settings again (`403` `This belongs to the superadmin. …`) and shows them the 🔒 section in their place. Whatever an administrator saved stays saved, and is used as it is.
+
+### Mail Setting Changes Are Logged; the Inbox and the Goal Lists Read Less
+
+**Cards 2396 and 2399.** No migration, no setting, no index, no route added, and nothing in `/api/v1` changes (the OpenAPI document is unchanged). The plan is `docs/planning/cards-2396-2399.md`.
+
+- **2396.** A save of 📧 Email / SMTP or of the App URL recorded nothing about who made it, except a change of "Allow mail without a checked, encrypted connection". Every save that changes a mail setting or the App URL now writes one line under `SMTP` in the system log, filed under the account that saved it and naming it, with each setting's old and new value; the mail user name and password are only ever named, `user changed` and `password changed`, never written. A save that changes nothing, or is refused, writes none.
+- **2399.** The inbox read each board's columns with a query of its own; the goal lists (the Planning page, a board's goals, a card's goal picker and the burndown page's) checked each goal's boards one goal at a time; All Tasks and All To Do read every board and kept the person's. Each now reads the same number of queries however many boards and goals there are, and All Tasks reads only the person's boards. What every page shows is the same.
+
+**Owner to know.** Each mail settings or App URL change is now a line on the Audit page under `SMTP` with the chip of who made it, always a `WARN`, so it is kept whether `LOG_LEVEL` is `INFO` or `WARN`. In an image that has card 2395 as well, its owner-to-know line "a mail settings change writes no line" no longer holds. Changes made before this image are not in the log.
+
+#### Before the deploy
+
+On production, on the older image, as **O**, your administrator account, signed in. Nothing here writes anything. Note:
+
+- In **Admin**, under 📧 Email / SMTP, the From Name exactly as shown.
+- Open `/plan` (**Planning**), press **All**, and note the figure beside it and each row's `#<id>` with its progress, `<done>/<total>` or `no cards`.
+
+#### After the deploy
+
+On production, as **O**, signed in. Open the **Audit** page in a second tab on its **Live Console**, Context **All**, and leave it open: checks 440 to 442 read it there. Checks 440 and 441 change the From Name and put it back; mail sent in between carries the changed name. Check 442 saves the mail settings again as they are, which writes back the values mail already uses. Nothing else here writes anything; the App URL is not saved, as saving it unchanged can store the `APP_URL` environment variable as the setting (card 2401). Where 📧 Email / SMTP has no SMTP Host, **Save SMTP** cannot be pressed: skip 440 to 442.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 440 | 2396 | In **Admin**, under 📧 Email / SMTP, add ` 2396` to the end of the From Name and press **Save SMTP** | The panel says `SMTP settings saved!`; the Live Console shows a row `WARN` `[SMTP]` `Mail settings changed: fromName from "<the From Name noted>" to "<the From Name noted> 2396" (set by "<O's username>")`, with O's chip and `changes=[{"field":"fromName","from":"<the From Name noted>","to":"<the From Name noted> 2396"}]` (a `"` or `\` in the name, or in O's username, shows as `\"` or `\\` in the message). The row is a `WARN`, so it is shown whether `LOG_LEVEL` is `INFO` or `WARN` | No such row; the row an `INFO`, or naming or chipped with another account; another setting named in it. The older image writes no row |
+| 441 | 2396 | Take ` 2396` off the end of the From Name, so that it is the one noted, and press **Save SMTP** | `SMTP settings saved!`; a row `WARN` `[SMTP]` `Mail settings changed: fromName from "<the From Name noted> 2396" to "<the From Name noted>" (set by "<O's username>")`, with O's chip; the From Name reads as noted after a reload of **Admin** | No row, or the row an `INFO`, or the From Name not back as noted |
+| 442 | 2396 | Press **Save SMTP** again, changing nothing | `SMTP settings saved!`; no new `Mail settings changed` row on the Live Console | A `Mail settings changed` row for the save |
+| 443 | 2399 | Open `/plan` (**Planning**) and press **All** | The figure beside **All**, and each row's `#<id>` and progress, are the ones noted before the deploy | A row missing or added, or a progress differing, with no goal or card changed in between (the **Audit** page lists what was written since the note) |
+| 444 | 2399 | Open `/inbox` (**📥 Inbox**). If a request shows **✅ Accept**, press it, choose any board under **Board**, open **Column**, then press **Cancel** (otherwise skip this check) | **Board** lists every board, by name; **Column** lists that board's columns in the order its board page shows them left to right, after `Select a column...`; Cancel closes the window and the request still shows **✅ Accept** | A board missing, a column missing or out of order, or the request accepted |
+
+A saved mail password, a host, a port or a user name changed, and a refused save, are not arranged on production: each would change where mail goes, or need the password typed. The suite covers them (`tests/mail-settings.test.ts`). The goal lists, the inbox and All Tasks for a person who is not an administrator, and their counts for one board against many, are covered by `tests/load-access-reads.test.ts`; an administrator's goal lists and All Tasks read as before.
+
+**Afterwards.** In 📧 Email / SMTP, check the From Name is the one noted; 441 put it back.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image writes no line for a mail settings or App URL save, but for the "Allow mail without a checked, encrypted connection" box, and the lines this image wrote stay in the log until its retention removes them. Its inbox, goal lists and All Tasks read as many queries as before, and show the same.
 
 ## Changing the Schema
 

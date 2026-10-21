@@ -21,7 +21,7 @@
  */
 import { db } from '$lib/server/db';
 import { boards, columns, cards, subtasks, labels, cardLabels, cardAssignees, users, taskRequests } from '$lib/server/db/schema';
-import { inArray, isNull, and } from 'drizzle-orm';
+import { asc, inArray, isNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds, type Actor } from '$lib/server/board-access';
 import { boardCategoriesFor, cardCategoriesFor } from '$lib/server/list-access';
 import { getBlockedStateForCards } from '$lib/server/planning';
@@ -54,7 +54,10 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 	} else if (accessibleIds.length === 0) {
 		allBoards = [];
 	} else {
-		allBoards = db.select().from(boards).all().filter(b => accessibleIds.includes(b.id));
+		// Only the caller's, in the order of their ids, as the table gave them
+		// (card 2399): the whole table was read, and each board looked for in
+		// the list.
+		allBoards = db.select().from(boards).where(inArray(boards.id, accessibleIds)).orderBy(asc(boards.id)).all();
 	}
 
 	const accessibleBoardIds = allBoards.map(b => b.id);

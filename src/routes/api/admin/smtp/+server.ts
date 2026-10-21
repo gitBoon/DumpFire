@@ -1,10 +1,11 @@
 import { json, error } from '@sveltejs/kit';
-import { SECRET_MASK, keepMailPassword, readMailHere, trimHost } from '$lib/server/backup-secrets';
+import { SECRET_MASK, keepMailPassword, quotedName as quoted, readMailHere, trimHost } from '$lib/server/backup-secrets';
 import {
 	MailNotSent,
 	TLS_FAULT_HINT,
 	asSentence,
 	getSmtpConfig,
+	mailSettingsAsRead,
 	mailStatus,
 	saveSmtpConfig,
 	sendTestEmail,
@@ -26,6 +27,45 @@ const log = createLogger('SMTP');
 // either can read an invite or a password reset meant for somebody else, the
 // superadmin's included, and either sets a password. The stored password is
 // still never answered, and is kept only for the server it was saved for.
+
+/** The settings a save is logged by (card 2396), in the order its line names them. */
+const MAIL_FIELDS = ['host', 'port', 'allowInsecure', 'user', 'pass', 'fromAddress', 'fromName', 'appUrl'] as const;
+
+/**
+ * Logged by name alone, never with a value (card 2396's review): the password,
+ * and the user name, which some mail providers take as the API token for both.
+ */
+const NAMED_ALONE: readonly string[] = ['user', 'pass'];
+
+/** One setting a save changed: its values, or for the password and the user name none. */
+type MailChange = { field: (typeof MAIL_FIELDS)[number]; from?: string | number | boolean; to?: string | number | boolean };
+
+/**
+ * What a save changed in the mail settings and the App URL (card 2396), each
+ * as a mail reads it (`mailSettingsAsRead`), so a save that changes nothing
+ * finds nothing (card 2183's rule). The password and the user name by name
+ * alone.
+ */
+function mailChanges(before: ReturnType<typeof mailSettingsAsRead>, after: ReturnType<typeof mailSettingsAsRead>): MailChange[] {
+	return MAIL_FIELDS.filter((field) => !Object.is(before[field], after[field])).map((field) =>
+		NAMED_ALONE.includes(field) ? { field } : { field, from: before[field], to: after[field] }
+	);
+}
+
+/**
+ * The line a save writes for what it changed (card 2396), in the style of the
+ * backup settings' (card 2270): each setting by its name with its values,
+ * text in quotation marks with each `\` and `"` escaped, the user name as
+ * `user changed` and the password as `password changed`, never a value; then
+ * who saved it, quoted as the values are.
+ */
+function mailChangeLine(changes: MailChange[], setBy: string): string {
+	const value = (v: unknown) => (typeof v === 'string' ? quoted(v) : String(v));
+	const parts = changes.map((c) =>
+		c.field === 'pass' ? 'password changed' : c.field === 'user' ? 'user changed' : `${c.field} from ${value(c.from)} to ${value(c.to)}`
+	);
+	return `Mail settings changed: ${parts.join('; ')} (set by ${quoted(setBy)})`;
+}
 
 /**
  * GET — Return current SMTP config (password masked). `allowInsecure` is the
@@ -91,6 +131,14 @@ export const GET: RequestHandler = async ({ locals }) => {
  *
  * A body with none of them is `400 No valid fields to update`, as the backup
  * settings answer one: `{}` was answered 200 and saved nothing.
+ *
+ * A save that changes any of them, as a mail reads them, is one line under
+ * SMTP once it is committed, filed under the account that saved it and naming
+ * it (card 2396): `Mail settings changed: host from "a" to "b"; password
+ * changed (set by "chief")`, each setting with its values but the user name
+ * and the password, which are named alone. Always a WARN, so that it is kept
+ * at every LOG_LEVEL that keeps any (card 2396's review). A save that changes
+ * nothing, is refused or fails writes none. The way out's own WARN follows it.
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
 	requireAdmin(locals.user);
@@ -101,9 +149,10 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 	// against, are read in the same one. It asks first whether the session is
 	// still open and whether its account is still an administrator (cards 2253
 	// and 2395).
-	const { wayOutChangedTo, setBy } = writeAs(locals, (caller) => {
-		// Named for the line below; `user` here is the mail server's.
-		const { username: setBy } = requireAdmin(caller);
+	const { wayOutChangedTo, setBy, setById, changes } = writeAs(locals, (caller) => {
+		// Named for the lines below; `user` here is the mail server's.
+		const { username: setBy, id: setById } = requireAdmin(caller);
+		const before = mailSettingsAsRead();
 		const existing = getSmtpConfig();
 		const here = readMailHere();
 		const config: Partial<SmtpConfig> = {};
@@ -145,8 +194,19 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 
 		// A way out saved other than it was: missing is off.
 		const wasOn = here.smtp_allow_insecure === 'true';
-		return { wayOutChangedTo: allowInsecure !== undefined && allowInsecure !== wasOn ? allowInsecure : null, setBy };
+		return {
+			wayOutChangedTo: allowInsecure !== undefined && allowInsecure !== wasOn ? allowInsecure : null,
+			setBy,
+			setById,
+			changes: mailChanges(before, mailSettingsAsRead())
+		};
 	});
+
+	// Every save that changes a setting, filed under who saved it (card 2396):
+	// since card 2395 any administrator can point mail at a server of their
+	// own, which sees every mail sent. Once it is saved, as below, and before
+	// the way out's own line.
+	if (changes.length > 0) log.warn(mailChangeLine(changes, setBy), { changes }, { userId: setById });
 
 	// Said once it is saved, so that a save undone is never logged (card 2189,
 	// decision 14): who lowered the protection of the mail, or raised it again.
