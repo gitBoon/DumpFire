@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.69
+version: 1.70
 status: As-Built
 date: 2026-10-21
 tags:
@@ -3775,11 +3775,14 @@ Nothing is done to the database. The older image can open the add and the edit f
 
 **Card 2327.** No migration, no setting, no route or field; the internal `GET /api/cards/search` only, which the card window's dependency picker and the plan page's **+ Add cards** use. It read the first 60 title matches of every board, then dropped those on boards the caller cannot open, and cut the rest to 25: on a server with many private boards, a short or common search found few or none of an ordinary user's own cards. Now the boards the caller can open, "not archived", the card left out and the card's column being there are all asked in the query, before the limit; subtasks the same, in one read where it was three queries each. Results come in id order, as before. Administrators open every board and see no change. See [What a List Gives](authentication-security.md#what-a-list-gives).
 
+**Card 2346.** No migration, no setting, no route; one field added to one answer. Giving a goal to a board (`PATCH /api/v1/milestones/{id}` with `boardId`) counts its archived cards, and the refusal names no card, but `GET /api/v1/milestones/{id}` listed only the cards that are not archived, so a caller had to look through every board's archived cards to find the one in the way. Now that read lists them in `archivedCards`, by card id, each as a `cards` item with `archivedAt`, withheld exactly as `cards` are (an archived card on a board the caller cannot open is its id alone, with `archivedAt` null). `cards`, the refusal's words and the web application's `GET /api/milestones/{id}` are unchanged. No page changes a goal's board, so no page changes. See [Critical-Path Planning](critical-path-planning.md).
+
 **Owner to know.**
 
 - **`DELETE /api/v1/board-categories/{id}` now takes its boards out of the grouping**, where the document said they kept its id (item 94 of the OpenAPI note). The page's confirm already promised it ("Boards using it will become uncategorised").
 - **`PUT /api/v1/boards/{id}` sending values the board holds no longer logs `api:board_updated`** (item 95), and an entry names only the fields that changed. A client that read the audit log for a board update it made will find none when nothing changed.
 - **An ordinary user's pickers find their own matches** that matches on boards they cannot open used to push out, and an answer's length no longer says anything about other boards.
+- **`GET /api/v1/milestones/{id}` gains `archivedCards`** (item 96): additive, so a client that counts or walks `cards` sees no change. The wrapper's `get-milestone` prints the answer whole, so the new field shows there.
 - **The boards check 321 lists are cleared at the first start**: each loses an id that names nothing. Each is already shown under Uncategorised, so no page changes; the API answers `categoryId: null` for them afterwards. One `WARN` line names them by id.
 
 #### Before the deploy
@@ -3810,7 +3813,7 @@ A rehearsal (check 0c) on a copy of production, if one is run, gives the same co
 
 #### After the deploy
 
-**O** is your own (administrator) account and API key. Nothing here touches a real board's grouping or a real board. Card 2345's checks use a scratch board of O's, "TEST 2345 - delete me", made on the dashboard for them and deleted after check 329.
+**O** is your own (administrator) account and API key. Nothing here touches a real board's grouping or a real board. Card 2345's checks use a scratch board of O's, "TEST 2345 - delete me", made on the dashboard for them and deleted after check 329. Card 2346's use two more of O's, "TEST 2346 X - delete me" and "TEST 2346 Y - delete me", made on the dashboard with one card each, T1 on X and T2 on Y, and a scratch goal; check 331 deletes all three. Nothing of these checks touches a real goal.
 
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
@@ -3821,12 +3824,15 @@ A rehearsal (check 0c) on a copy of production, if one is run, gives the same co
 | 327 | 2327 | As O, plan page **+ Add cards** on any goal, type `TEST` | Results as before (an administrator opens every board) | Fewer than before |
 | 328 | 2345 | As O with your key, `GET /api/v1/boards/<TEST 2345 board>`, then `PUT` the same `name`, `emoji`, `categoryId` and `isPublic` back; open the board's **Activity Log** | `200`; `updatedAt` as in the `GET`; no new "Updated board" entry | A new entry, or `updatedAt` moved |
 | 329 | 2345 | `PUT` `{"name": "TEST 2345 - delete me 2", "emoji": <its own>}`; open the **Activity Log** again. Then delete the board | One entry "Updated board … (fields: name)" | `emoji` named too |
+| 330 | 2346 | As O with your key, `POST /api/v1/milestones` `{"name": "TEST 2346 goal - delete me"}` (no board); `POST /api/v1/milestones/<goal>/cards` `{"cardId": <T1>}`, then `{"cardId": <T2>}`; archive T2 (`DELETE /api/v1/cards/<T2>`); `GET /api/v1/milestones/<goal>` | `cards` holds T1 only; `archivedCards` holds T2 with its title, board Y, `withheld: false` and an ISO `archivedAt` | No `archivedCards`, or T2 in `cards` |
+| 331 | 2346 | `PATCH /api/v1/milestones/<goal>` `{"boardId": <X>}`; then `DELETE /api/v1/milestones/<goal>/cards` `{"cardId": <T2>}`; then the `PATCH` again; then `GET /api/v1/milestones/<goal>` | `400` "Some cards in this milestone are not on that board (archived cards count too). …", the usual words; `200`; `200`; `boardId` X and `archivedCards` `[]`. Then `DELETE /api/v1/milestones/<goal>`, and delete boards X and Y on the dashboard (T2 goes with Y) | The second `PATCH` refused, or the refusal's words changed |
+| 332 | all | `GET /api/v1/openapi.json` | `info.version` `1.2.0`; the 2026-10-14 note holds items 94 to 96; `MilestoneDetail` lists and requires `archivedCards`; `deleteBoardCategory`'s description says the boards are taken out | A version change, or an item missing |
 
-**Afterwards.** Signed in as T, delete TEST 2327; as O, delete T if T was made for these checks.
+**Afterwards.** Signed in as T, delete TEST 2327; as O, delete T if T was made for these checks. Check that nothing named "TEST 2293", "TEST 2327", "TEST 2345" or "TEST 2346" is left on the dashboard, and that no goal "TEST 2346 goal - delete me" is left on the plan page.
 
 #### Going back to the previous image
 
-The boards cleared stay cleared; the older image reads `null` as unfiled, as it always has. The older image leaves boards pointing at a deleted grouping again, and a restore on it commits boards filed under a grouping it could not copy. It also writes and records a board save that changes nothing again, naming every field sent, and hides the caller's own search matches behind other boards' again.
+The boards cleared stay cleared; the older image reads `null` as unfiled, as it always has. The older image leaves boards pointing at a deleted grouping again, and a restore on it commits boards filed under a grouping it could not copy. It also writes and records a board save that changes nothing again, naming every field sent, hides the caller's own search matches behind other boards' again, and answers a goal's read without `archivedCards`; a client that reads that field gets none, and finds a goal's archived cards by `GET /api/v1/boards/{boardId}/cards?archived=true` as before. Nothing stored changes either way.
 
 ## Changing the Schema
 

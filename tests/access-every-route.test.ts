@@ -146,7 +146,7 @@ import { sendAround, type HeldCredential } from './helpers/held-body';
 import { watchReads } from './helpers/reads';
 import { diffSnapshots, expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 import { loadKeys, pageLoad } from './helpers/actions';
-import { stamp } from '$lib/timestamps';
+import { stamp, toIso } from '$lib/timestamps';
 
 // The first request through the harness starts SvelteKit's server for this file,
 // which takes two or three seconds alone and more under the whole suite's load;
@@ -4941,5 +4941,126 @@ describe('giving a milestone to another board (card 2179)', () => {
 			expect(res.body.message).toBe('No edit access to that board');
 			expectUnchanged(before);
 		});
+	});
+});
+
+// ─── A goal's archived cards, in its read (card 2346) ───────────────────────
+
+describe("a goal's archived cards, in its read (card 2346)", () => {
+	/** An answer as it is read: its shape is what is being tested. */
+	type Json = any;
+	type Caller = Exclude<Who, 'nobody'>;
+
+	/** `GET /api/v1/milestones/{milestoneId}`, as `who` is answered it. */
+	const read = async (id: number, who: Caller): Promise<Json> => {
+		const res = await api('GET', `/api/v1/milestones/${id}`, { user: w[who] });
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		return res.body;
+	};
+
+	/**
+	 * An archived card in the milestone, written straight to the table: no
+	 * route puts an archived card in a milestone, and archiving one keeps the
+	 * milestone it is in.
+	 */
+	const archivedInto = (milestoneId: number, card: Card) => db.update(cards).set({ milestoneId }).where(eq(cards.id, card.id)).run();
+
+	/** A card in the To Do column of `side`'s board, as the read lists it. */
+	const inToDo = (card: Card, side: Side) => ({
+		id: card.id,
+		title: card.title,
+		priority: card.priority,
+		columnId: side.cols['To Do'].id,
+		columnTitle: 'To Do',
+		boardId: side.board.id,
+		withheld: false
+	});
+
+	/** When the card was archived, in ISO, as v1 writes every moment. */
+	const archivedAt = (card: Card) => toIso(db.select({ at: cards.archivedAt }).from(cards).where(eq(cards.id, card.id)).get()!.at);
+
+	it("lists a board's goal's archived card in archivedCards, with when it was archived, and leaves it out of cards", async () => {
+		archivedInto(w.A.milestone.id, w.A.archived);
+
+		const goal = await read(w.A.milestone.id, 'viewer');
+
+		expect(goal.cards).toEqual([inToDo(w.A.card, w.A)]);
+		expect(goal.archivedCards).toEqual([{ ...inToDo(w.A.archived, w.A), archivedAt: archivedAt(w.A.archived) }]);
+		expect(goal.archivedCards[0].archivedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+	});
+
+	it('lists a goal across boards its archived cards of every board, by card id, to a caller who opens them all; anyone else is refused the goal', async () => {
+		const goal = makeMilestone({ name: `${MARK} goal of both`, createdBy: w.both, cards: [w.B.archived, w.A.loose, w.A.archived] });
+		const expected = {
+			cards: [inToDo(w.A.loose, w.A)],
+			archivedCards: [
+				{ ...inToDo(w.A.archived, w.A), archivedAt: archivedAt(w.A.archived) },
+				{ ...inToDo(w.B.archived, w.B), archivedAt: archivedAt(w.B.archived) }
+			]
+		};
+
+		for (const who of ['both', 'admin'] as const) {
+			const answered = await read(goal.id, who);
+			expect({ cards: answered.cards, archivedCards: answered.archivedCards }, who).toEqual(expected);
+		}
+		// Whoever reads a goal across boards opens every board its cards are on,
+		// archived ones included, so nothing in it is ever withheld (decision 12).
+		expect((await api('GET', `/api/v1/milestones/${goal.id}`, { user: w.viewer })).status).toBe(403);
+	});
+
+	it("lists an archived card moved onto a board the reader cannot open withheld, with no archivedAt, and by its board to one who can open it", async () => {
+		// The stray row, the one way a withheld item can arise: board A's goal
+		// holding an archived card that is on board B. Written straight to the
+		// table, as the moved card above is.
+		archivedInto(w.A.milestone.id, w.A.archived);
+		db.update(cards).set({ columnId: w.B.cols['To Do'].id }).where(eq(cards.id, w.A.archived.id)).run();
+
+		const hidden = await read(w.A.milestone.id, 'viewer');
+		expect(hidden.cards).toEqual([inToDo(w.A.card, w.A)]);
+		expect(hidden.archivedCards).toEqual([
+			{ id: w.A.archived.id, title: WITHHELD_CARD_TITLE, priority: null, columnId: null, columnTitle: '', boardId: null, withheld: true, archivedAt: null }
+		]);
+		expect(JSON.stringify(hidden)).not.toContain(w.A.archived.title);
+
+		const opensB = await read(w.A.milestone.id, 'editsA');
+		expect(opensB.archivedCards).toEqual([{ ...inToDo(w.A.archived, w.B), archivedAt: archivedAt(w.A.archived) }]);
+	});
+
+	it('answers archivedCards empty for a goal with no archived card', async () => {
+		expect((await read(w.A.milestone.id, 'viewer')).archivedCards).toEqual([]);
+		expect((await read(w.goal.id, 'owner')).archivedCards).toEqual([]);
+	});
+
+	it('names the archived cards that stop a goal going to a board: once each is taken out, the goal goes', async () => {
+		const goal = makeMilestone({ name: `${MARK} goal of both`, createdBy: w.both, cards: [w.A.loose, w.B.archived] });
+		const path = `/api/v1/milestones/${goal.id}`;
+
+		const refused = await api('PATCH', path, { user: w.both, body: { boardId: w.A.board.id } });
+		expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+		expect(refused.body.message).toMatch(/^Some cards in this milestone are not on that board \(archived cards count too\)\./);
+
+		const { archivedCards } = await read(goal.id, 'both');
+		expect(archivedCards.map((card: Json) => card.id)).toEqual([w.B.archived.id]);
+		for (const card of archivedCards) {
+			const out = await api('DELETE', `${path}/cards`, { user: w.both, body: { cardId: card.id } });
+			expect(out.status, JSON.stringify(out.body)).toBe(200);
+		}
+
+		const given = await api('PATCH', path, { user: w.both, body: { boardId: w.A.board.id } });
+		expect(given.status, JSON.stringify(given.body)).toBe(200);
+		expect(db.select({ boardId: milestones.boardId }).from(milestones).where(eq(milestones.id, goal.id)).get()?.boardId).toBe(w.A.board.id);
+		const after = await read(goal.id, 'both');
+		expect({ cards: after.cards, archivedCards: after.archivedCards }).toEqual({ cards: [inToDo(w.A.loose, w.A)], archivedCards: [] });
+	});
+
+	it("leaves the page tree's read of one goal as it was: neither cards nor archivedCards", async () => {
+		archivedInto(w.A.milestone.id, w.A.archived);
+
+		const res = await api('GET', `/api/milestones/${w.A.milestone.id}`, { user: w.viewer });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body.id).toBe(w.A.milestone.id);
+		expect(res.body).not.toHaveProperty('cards');
+		expect(res.body).not.toHaveProperty('archivedCards');
 	});
 });

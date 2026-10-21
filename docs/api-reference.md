@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.82
+version: 1.83
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1184,6 +1184,15 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   still `403`. The web application's `PUT /api/boards/{id}` is the same, and its `{}`, still
   `200`, no longer writes the row (item 95). See
   [`PUT /api/v1/boards/:boardId`](#put-apiv1boardsboardid).
+- **`GET /milestones/:milestoneId` lists the milestone's archived cards in
+  `archivedCards`** (card 2346). Giving a milestone to a board counts its archived cards, and
+  the refusal names none of them, but the read listed only the cards that are not archived,
+  so finding the one in the way meant `GET /boards/:boardId/cards?archived=true` on each
+  board. `archivedCards` lists them by card id, each a `cards` item with `archivedAt`; a card
+  on a board the key's user cannot open, which a card moved off the milestone's board can
+  be, is withheld as in `cards`, with `archivedAt` `null`. `cards` is unchanged, and the web
+  application's `GET /api/milestones/{id}` answers neither, as before (item 96). See
+  [`PATCH /api/v1/milestones/:milestoneId`](#patch-apiv1milestonesmilestoneid).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2907,9 +2916,11 @@ cards included, is on that board (card 2179): the board is looked for (`404`
 `Board not found`), the caller must be able to edit it (`403`
 `No edit access to that board`), and a card of the milestone on another board is `400`
 `Some cards in this milestone are not on that board (archived cards count too). Take those cards out of it first, or make the milestone cross-board instead; only its creator or an administrator can change a cross-board milestone afterwards.` A refusal changes
-nothing and names no card and no board; `GET /api/v1/boards/:boardId/cards?archived=true`
-lists archived cards with their `milestoneId`. `boardId: null`, a goal across boards, is
-always accepted, and the milestone's own board sent back is no change.
+nothing and names no card and no board; `GET /api/v1/milestones/:milestoneId` lists the
+milestone's archived cards in `archivedCards` (card 2346): take each out with
+`DELETE /api/v1/milestones/:milestoneId/cards` and the change goes through. `boardId: null`,
+a goal across boards, is always accepted, and the milestone's own board sent back is no
+change.
 
 ```mermaid
 flowchart TD
