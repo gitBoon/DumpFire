@@ -17,6 +17,10 @@
  *     it sent the delete at once, and a deleted comment cannot be got back
  *     (card 2338). An administrator deleting someone else's comment is told
  *     whose it is and that the Activity Log records it.
+ *   - A post takes its text and empties the box as it goes, so what is typed
+ *     while it is out is kept, and goes once: Post Comment is off and
+ *     Ctrl+Enter sends nothing until it is answered. A refused or unanswered
+ *     post puts its text back in front of what was typed since (card 2342).
  *
  * And the window following its card's comments live (card 2282), the whole
  * `CardModal` mounted: a page that is told of the card's comments, or has
@@ -33,7 +37,7 @@
  * (decision 12, test 8; decisions 1 and 2 with section 8's rulings 1 to 5,
  * tests 13 to 22), and for the delete's confirm
  * `docs/planning/cards-2337-2338-2341-2342-2353-card-window.md` (decisions 5
- * and 7, tests 8 to 10).
+ * and 7, tests 8 to 10) and the post (decision 9, tests 12 to 14).
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -226,6 +230,101 @@ describe('deleting a comment asks first (card 2338)', () => {
 
 		expect(confirmShown(target)!.message).toBe("bob's comment will be deleted for everyone on the card, and the Activity Log will record that you deleted it. This cannot be undone.");
 		expect(fetched).not.toHaveBeenCalled();
+	});
+});
+
+describe('posting a comment keeps what is typed and posts once (card 2342)', () => {
+	/** The post's answer, held until the case gives it: a Response, or an Error for no answer. */
+	let answerPost: (given: Response | Error) => void;
+	let sentBodies: string[] = [];
+
+	beforeEach(() => {
+		sentBodies = [];
+		vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+			sentBodies.push(JSON.parse(String(init!.body)).content);
+			return new Promise<Response>((resolve, reject) => {
+				answerPost = (given) => (given instanceof Error ? reject(given) : resolve(given));
+			});
+		}));
+		// jsdom lays nothing out: a window's message box is brought into view.
+		Element.prototype.scrollIntoView = () => {};
+	});
+
+	const madeAnswer = (content: string) =>
+		new Response(JSON.stringify({ ...written, id: 9, content, createdAt: '2026-10-21 09:00:00', updatedAt: '2026-10-21 09:00:00' }), { status: 201 });
+	const newBox = (target: HTMLElement) => target.querySelector<HTMLTextAreaElement>('.comment-input')!;
+	function typeInto(box: HTMLTextAreaElement, text: string) {
+		box.value = text;
+		box.dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+	}
+	function ctrlEnter(box: HTMLTextAreaElement) {
+		box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }));
+		flushSync();
+	}
+
+	it('empties the box as the post goes, and keeps what is typed while it is out once it is answered (test 12)', async () => {
+		const onWritten = vi.fn();
+		const { props, target } = draw([written], onWritten);
+		typeInto(newBox(target), '  Hello  ');
+		button(target, 'Post Comment').click();
+		flushSync();
+		expect(newBox(target).value).toBe('');
+		expect(sentBodies).toEqual(['Hello']);
+
+		typeInto(newBox(target), 'And more');
+		answerPost(madeAnswer('Hello'));
+		await settle();
+
+		expect(newBox(target).value).toBe('And more');
+		expect(props.comments.map((c) => c.content)).toEqual(['Hello', 'As it was']);
+		expect(onWritten).toHaveBeenCalledTimes(1);
+		expect(props.windowError).toBe('');
+	});
+
+	it('sends one post while one is out: Post Comment is off, and a second click and Ctrl+Enter twice send nothing and leave the box (test 13)', async () => {
+		const { props, target } = draw();
+		typeInto(newBox(target), 'Hello');
+		const post = button(target, 'Post Comment');
+		post.click();
+		flushSync();
+		typeInto(newBox(target), 'Typed meanwhile');
+		expect(post.disabled).toBe(true);
+
+		post.click();
+		ctrlEnter(newBox(target));
+		ctrlEnter(newBox(target));
+		flushSync();
+		expect(sentBodies).toEqual(['Hello']);
+		expect(newBox(target).value).toBe('Typed meanwhile');
+
+		answerPost(madeAnswer('Hello'));
+		await settle();
+		expect(sentBodies).toEqual(['Hello']);
+		expect(props.comments.map((c) => c.content)).toEqual(['Hello', 'As it was']);
+		expect(post.disabled).toBe(false);
+	});
+
+	it.each([
+		['refused', () => new Response(JSON.stringify({ message: 'Comment too long' }), { status: 400 }), 'Comment too long', 'And more', 'Hello\n\nAnd more'],
+		['not answered', () => new Error('offline'), 'No answer from the server. It is not known whether that was saved.', 'And more', 'Hello\n\nAnd more'],
+		['refused, with nothing typed since', () => new Response(JSON.stringify({ message: 'Comment too long' }), { status: 400 }), 'Comment too long', '', 'Hello']
+	] as const)('a post %s says so and puts its text back in front of anything typed since (test 14)', async (_what, given, said, typed, box) => {
+		const onWritten = vi.fn();
+		const { props, target } = draw([written], onWritten);
+		typeInto(newBox(target), 'Hello');
+		button(target, 'Post Comment').click();
+		flushSync();
+		if (typed) typeInto(newBox(target), typed);
+
+		answerPost(given());
+		await settle();
+
+		expect(props.windowError).toBe(said);
+		expect(newBox(target).value).toBe(box);
+		expect(button(target, 'Post Comment').disabled).toBe(false);
+		expect(props.comments).toEqual([written]);
+		expect(onWritten).not.toHaveBeenCalled();
 	});
 });
 

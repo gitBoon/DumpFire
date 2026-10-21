@@ -2593,7 +2593,8 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'saveMilestone', reads: 'failureMessage', putsBack: ['putBack()'], done: ['milestoneId = next'] }
 	],
 	'src/lib/components/card/CardComments.svelte': [
-		{ name: 'postComment', reads: 'failureMessage', done: ["newComment = ''"] },
+		// Card 2342: the box is emptied as the post goes, and a refusal puts the text back.
+		{ name: 'postComment', reads: 'failureMessage', putsBack: ['putBack(text)'], done: ['comments = [created, ...comments.filter(c => c.id !== created.id)]'] },
 		{ name: 'deleteComment', reads: 'deleteFailure', done: ['comments = comments.filter(c => c.id !== commentId)'] },
 		{ name: 'saveEditComment', reads: 'failureMessage', done: ['editingCommentId = null'] }
 	],
