@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
 /**
  * The card window's keys (card 2280, slice B5c of card 2012's part B),
- * mounted with Svelte's client runtime, as `tests/xp-leaderboard.svelte.test.ts`
- * is: this file alone takes jsdom, by the comment above.
+ * mounted with the client's `mount`, as `tests/xp-leaderboard.svelte.test.ts`
+ * is: this file alone takes jsdom, by the comment above. The window's own
+ * `import … from 'svelte'` is given the client's runtime too, by the
+ * `vi.mock('svelte')` below, as `tests/card-window-comments.svelte.test.ts`
+ * does: without it the window gets the server's, whose `onMount` never runs
+ * and whose `untrack` tracks, so the window's opening reads of its comments
+ * and dependencies were never made here (card 2341).
  *
  *   - The window's footer says Ctrl+Enter saves, and nothing did: its
  *     `handleKeydown` answered Escape only. Ctrl+Enter (or Cmd+Enter) now
@@ -30,6 +35,13 @@ import type { CardType } from '$lib/types';
 vi.mock('$app/stores', () => {
 	const value = { data: { user: { id: 1, username: 'alice', role: 'user' } } };
 	return { page: { subscribe: (run: (v: typeof value) => void) => { run(value); return () => {}; } } };
+});
+// A bare 'svelte' gives the server's runtime, whose `onMount` never runs: the window reads its
+// comments and dependencies as it mounts only with the client's, by its path (as All Tasks' file does).
+vi.mock('svelte', async () => {
+	const { join } = await import('node:path');
+	const { pathToFileURL } = await import('node:url');
+	return await import(/* @vite-ignore */ pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href);
 });
 
 const CardModal = (await import('$lib/components/CardModal.svelte')).default;
@@ -105,9 +117,14 @@ async function draw(extra: Record<string, unknown> = {}): Promise<HTMLElement> {
 	return target;
 }
 
-/** Lets the stubbed requests answer and the window draw what they gave. */
+/**
+ * Lets the stubbed requests answer and the window draw what they gave: five
+ * microtasks and then a macrotask turn, as the comments file's `settle` has,
+ * since five microtasks alone are only just enough for a read and its write.
+ */
 async function settle() {
 	for (let i = 0; i < 5; i++) await Promise.resolve();
+	await new Promise((resolve) => setTimeout(resolve, 0));
 	flushSync();
 }
 
@@ -130,6 +147,24 @@ function type(el: Element | null, text: string) {
 	el!.dispatchEvent(new Event('input', { bubbles: true }));
 	flushSync();
 }
+
+describe('the card window’s start-up code runs here (card 2341)', () => {
+	// The window reads its comments and its dependencies in its `onMount`, which
+	// runs only with the client's runtime (the `vi.mock('svelte')` above). Every
+	// case below opens the window this way, so its opening reads are part of each.
+	it('reads a saved card’s comments and dependencies as it opens, and a New Task window reads neither', async () => {
+		await draw();
+		expect(sent).toContain('GET /api/cards/7/comments');
+		expect(sent).toContain('GET /api/cards/7/dependencies');
+
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		drawn = null;
+		sent = [];
+		await draw({ card: null });
+		expect(sent.filter((r) => r.includes('/comments') || r.includes('/dependencies'))).toEqual([]);
+	});
+});
 
 describe('Ctrl+Enter in the card window (card 2280, slice B5c)', () => {
 	it('saves the window, once, from the title box and from a box with no key handler of its own', async () => {

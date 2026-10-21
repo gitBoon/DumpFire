@@ -3,9 +3,12 @@
  * The card window following its card (card 2280, slice B5d of card 2012's
  * part B), mounted with Svelte's client runtime, as
  * `tests/card-window-keys.svelte.test.ts` is, so that its follow `$effect`
- * is run by Svelte itself. Named `.svelte.test.ts` so that its props can be
- * `$state`, as the board page's are: the window's card is handed afresh as
- * each read of the board draws it.
+ * is run by Svelte itself. The window's own `import … from 'svelte'` is given
+ * the client's runtime by the `vi.mock('svelte')` below, as in the keys file:
+ * without it the window gets the server's, whose `onMount` never runs and
+ * whose `untrack` tracks (card 2341). Named `.svelte.test.ts` so that its
+ * props can be `$state`, as the board page's are: the window's card is handed
+ * afresh as each read of the board draws it.
  *
  *   - On the board page (given the controller's `edits`), each typed field
  *     the user has not touched shows the card's value as the card changes;
@@ -27,6 +30,13 @@ import type { CardType } from '$lib/types';
 vi.mock('$app/stores', () => {
 	const value = { data: { user: { id: 1, username: 'alice', role: 'user' } } };
 	return { page: { subscribe: (run: (v: typeof value) => void) => { run(value); return () => {}; } } };
+});
+// A bare 'svelte' gives the server's runtime, whose `onMount` never runs: the window reads its
+// comments and dependencies as it mounts only with the client's, by its path (as All Tasks' file does).
+vi.mock('svelte', async () => {
+	const { join } = await import('node:path');
+	const { pathToFileURL } = await import('node:url');
+	return await import(/* @vite-ignore */ pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href);
 });
 
 const CardModal = (await import('$lib/components/CardModal.svelte')).default;
@@ -80,6 +90,17 @@ function type(el: HTMLInputElement | HTMLTextAreaElement, text: string) {
 	el.dispatchEvent(new Event('input', { bubbles: true }));
 	flushSync();
 }
+
+describe('the card window’s start-up code runs here (card 2341)', () => {
+	// The window reads its comments and its dependencies in its `onMount`, which
+	// runs only with the client's runtime (the `vi.mock('svelte')` above).
+	it('reads the card’s comments and dependencies as it opens', () => {
+		draw(new WindowEdits());
+		const urls = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
+		expect(urls).toContain('/api/cards/7/comments');
+		expect(urls).toContain('/api/cards/7/dependencies');
+	});
+});
 
 describe('the card window follows its card where nothing was typed (card 2280, slice B5d)', () => {
 	it('on the board page shows the card’s new values in the fields not touched, and keeps a title typed in', () => {
