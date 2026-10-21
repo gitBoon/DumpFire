@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.87
+version: 1.88
 status: As-Built
 date: 2026-10-21
 tags:
@@ -2103,14 +2103,30 @@ API:
   in the OpenAPI document; a script reads a board with `GET /api/v1/boards/:boardId` and
   `GET /api/v1/boards/:boardId/cards`.
 - **A team keeps at least one owner** (card 2373). `POST /api/teams/{id}/members/{userId}`
-  that would make the team's last owner anything but an owner (a body with no `role` sets
-  `member`), and `DELETE /api/teams/{id}/members/{userId}` of the last owner, are `409`
+  that would make the team's last owner anything but an owner, and
+  `DELETE /api/teams/{id}/members/{userId}` of the last owner, are `409`
   `A team needs at least one owner. Make someone else an owner first, or delete the team.`,
   with nothing changed, for an administrator too. Either could leave a team that only an
   administrator could run. With another owner, or for a member of a team that already has
   no owner, they answer as before. A caller who may not manage the team is `403` first, as
   before, and is not told whether it has another owner. No `/api/v1` operation changes: v1
   has no team routes.
+- **A team member sent with no `role` keeps the role they hold** (card 2378),
+  `POST /api/teams/{id}/members/{userId}`. A body with no `role` set someone already in the
+  team to `member`, so an owner sent `{}` was made a member wherever the team had another
+  owner (and the last owner was refused `409`). Now it keeps their role; someone not yet in
+  the team is added as `member`, `201`, as before. An existing member sent no role, or the
+  role they hold, is answered `200 { success: true, action: "updated" }`, as a change is, and
+  nothing is written (card 2183's rule). Both team pages always send a role.
+- **An account that is the only owner of a team is not deleted** (card 2377),
+  `DELETE /api/users/{id}`: `409`
+  `This account is the only owner of: Alpha, Beta. Make someone else an owner or delete those teams first.`
+  (`… delete that team first.` for one), naming each team in name order, with nothing
+  changed. The delete took the account's team memberships with it, so each team it alone
+  owned was left with no owner. A team it owns with another owner, or is only a member of,
+  does not stop it. Who may delete the account is asked first, as before (`403`, `400` for
+  yourself, `404`), so a caller who may not is not told its teams. No `/api/v1` operation
+  changes: v1 deletes no user.
 - **The board's CSV export names the file of a board with no columns as it names any
   other** (card 2371), `GET /api/boards/{id}/export/csv`: `<name>-<YYYY-MM-DD>.csv` with
   every character but letters, digits, `-` and `_` made `_`. It put the board's name in the

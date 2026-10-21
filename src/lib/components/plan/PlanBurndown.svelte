@@ -116,9 +116,10 @@
 
 	/**
 	 * What the burndown is drawn from: the goal, its target date, its cards and
-	 * which are done. Closing the card window re-reads the plan, saved or not,
-	 * which makes a new summary even when nothing changed; a string that is
-	 * equal is not a change, so the burndown is fetched again (and dimmed) only
+	 * which are done. Closing the card window re-reads the plan after any write
+	 * the plan draws (card 2324), a subtask ticked among them, which makes a new
+	 * summary even when none of this changed; a string that is equal is not a
+	 * change, so the burndown is fetched again (and dimmed) only
 	 * when the work it charts did change (card 2221).
 	 */
 	const burndownSource = $derived(burndownKey(milestone, nodes));

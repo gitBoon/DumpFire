@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.58
+version: 1.59
 status: As-Built
 date: 2026-10-21
 tags:
@@ -244,6 +244,8 @@ The delete is all or nothing. If it fails, the user and everything of theirs is 
 
 You cannot delete your own account or the superadmin. Only the superadmin can delete an administrator.
 
+**An account that is the only owner of a team is not deleted** (card 2377, 2026-10-21). The delete takes the account out of every team, so each team it alone owned was left with no owner, run by administrators alone; a team keeps at least one owner ([Team Owners and Members](#team-owners-and-members)). The delete is refused, nothing is changed, and the toast names the teams, in name order: "This account is the only owner of: Alpha, Beta. Make someone else an owner or delete those teams first." ("… delete that team first" for one). Make another member of each an owner (**Admin → Team Management**, their row's picker, **Change**), or delete the team, then delete the account. A team the account owns with someone else, or is only a member of, does not stop the delete. The confirmation does not say so beforehand; the refusal comes after **Confirm**.
+
 ---
 
 ## Team Management
@@ -269,7 +271,7 @@ A team's role says who may run the team; it gives no access to boards. The acces
 
 **What an owner's adding gives.** An owner can add any account to the team, and each person added at once has the team's role, editor or viewer, on every board shared with the team, and the team's requests in their inbox. A board's owner has no say: the board was shared with the team, and whoever the team's owners add has it. Make someone a team's owner only if you would share every one of its boards with whoever they choose.
 
-An administrator may do all of it on every team without being in it. Whoever creates a team is its owner, so a team made on the admin page is owned by the administrator who made it; to let someone else run it, add them as **Owner**, or change their role to Owner on their row. **A team keeps at least one owner** (card 2373, 2026-10-21). Making the last owner a member, or removing them, is refused for everyone, administrators included: "A team needs at least one owner. Make someone else an owner first, or delete the team." Make another member an owner first, then change or remove the first; or delete the team. There is no "leave team": a member asks an owner to remove them. A team left with no owner from before this rule, or because its only owner's account was deleted (deleting an account takes it out of every team, see [Deleting a User](#deleting-a-user)), is run by administrators until one of them makes someone its owner again.
+An administrator may do all of it on every team without being in it. Whoever creates a team is its owner, so a team made on the admin page is owned by the administrator who made it; to let someone else run it, add them as **Owner**, or change their role to Owner on their row. **A team keeps at least one owner** (card 2373, 2026-10-21). Making the last owner a member, or removing them, is refused for everyone, administrators included: "A team needs at least one owner. Make someone else an owner first, or delete the team." Make another member an owner first, then change or remove the first; or delete the team. There is no "leave team": a member asks an owner to remove them. Deleting an account takes it out of every team, so an account that is a team's only owner cannot be deleted until someone else is made an owner or the team is deleted (card 2377, 2026-10-21; see [Deleting a User](#deleting-a-user)). A team left with no owner from before these rules (including by deleting its only owner's account before 21 October 2026) is run by administrators until one of them makes someone its owner again.
 
 ```mermaid
 flowchart LR

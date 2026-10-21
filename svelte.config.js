@@ -11,9 +11,10 @@ const suppressedWarnings = new Set([
 	'a11y_no_noninteractive_element_interactions',
 	'a11y_no_noninteractive_element_to_interactive_role',
 	'a11y_no_static_element_interactions',
-	'css_unused_selector',
 	'state_referenced_locally'
 ]);
+// Not css_unused_selector: a rule that matches nothing is reported, by
+// `npm run check` and the build, so a dead one is seen (card 2357).
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {

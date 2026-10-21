@@ -8,6 +8,9 @@
  * with a plain message, before anything is written; administrators are held
  * to it too. With another owner, or for a member of a team that already has
  * no owner, the change goes through as before.
+ *
+ * And a member sent with no `role` keeps the role they hold (card 2378): it
+ * set `member`, demoting an owner of a team with another owner.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
@@ -103,12 +106,12 @@ describe('a change that leaves an owner goes through as before', () => {
 		expect(roleOf(s.team.id, s.owner.id)).toBeUndefined();
 	});
 
-	it('the last owner sent back as owner changes nothing and is answered as before; a body with no role, which sets member, is refused', async () => {
+	it('the last owner sent back as owner, or sent no role, changes nothing and is answered as before', async () => {
 		const s = scene();
 		expect((await api('POST', `/api/teams/${s.team.id}/members/${s.owner.id}`, { user: s.owner, body: { role: 'owner' } })).status).toBe(200);
-		// No role is `member` for someone already in the team, as for someone added.
+		// No role keeps the role they hold (card 2378): it set `member`, which card 2373 then refused.
 		const none = await api('POST', `/api/teams/${s.team.id}/members/${s.owner.id}`, { user: s.owner, body: {} });
-		expect(none.status).toBe(409);
+		expect(none.status).toBe(200);
 		expect(roleOf(s.team.id, s.owner.id)).toBe('owner');
 	});
 
@@ -136,5 +139,29 @@ describe('a change that leaves an owner goes through as before', () => {
 		const s = scene();
 		const stranger = makeUser();
 		expect((await api('DELETE', `/api/teams/${s.team.id}/members/${stranger.id}`, { user: s.owner })).status).toBe(200);
+	});
+});
+
+// Card 2378: a body with no `role` set an existing member's role to `member`, so an owner
+// sent `{}` was quietly made a member wherever the team had another owner.
+describe('a member sent with no role keeps the role they hold (card 2378)', () => {
+	it('an owner of a team with a second owner, sent no role, is still its owner, answered `updated`, with nothing written', async () => {
+		const s = scene();
+		db.update(teamMembers).set({ role: 'owner' }).where(and(eq(teamMembers.teamId, s.team.id), eq(teamMembers.userId, s.member.id))).run();
+		const before = snapshotDb();
+		const res = await api('POST', `/api/teams/${s.team.id}/members/${s.owner.id}`, { user: s.member, body: {} });
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ success: true, action: 'updated' });
+		expectUnchanged(before);
+		expect(roleOf(s.team.id, s.owner.id)).toBe('owner');
+	});
+
+	it('someone not yet in the team, sent no role, is added as a member', async () => {
+		const s = scene();
+		const other = makeUser();
+		const res = await api('POST', `/api/teams/${s.team.id}/members/${other.id}`, { user: s.owner, body: {} });
+		expect(res.status).toBe(201);
+		expect(res.body).toEqual({ success: true, action: 'added' });
+		expect(roleOf(s.team.id, other.id)).toBe('member');
 	});
 });

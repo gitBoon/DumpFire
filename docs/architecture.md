@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.39
+version: 1.40
 status: As-Built
-date: 2026-10-20
+date: 2026-10-21
 tags:
   - architecture
   - sveltekit
@@ -984,7 +984,7 @@ The page (2,002 lines, CRLF) keeps its script whole: every `$state`, every write
 | `ActivityPanel.svelte`, `ArchivePanel.svelte` | The Activity Log's and Archived Cards' bodies |
 | `SidePanel.svelte` | The frame both panels share: heading, close button, scrolling body |
 
-Four rules that style a component's element from the page's element are `:global` under the page's element (`.kanban-column:hover :global(.column-actions)`, `.kanban-card:hover :global(.drag-handle)`, `.kanban-card.card-pinned :global(.new-badge)`, `.wip-warning :global(.column-top-bar)`). Svelte scopes such a rule out of the child silently, and `npm run check` does not say so, since `svelte.config.js` filters `css_unused_selector`.
+Four rules that style a component's element from the page's element are `:global` under the page's element (`.kanban-column:hover :global(.column-actions)`, `.kanban-card:hover :global(.drag-handle)`, `.kanban-card.card-pinned :global(.new-badge)`, `.wip-warning :global(.column-top-bar)`). Without `:global` Svelte would scope such a rule to the page's own markup, where it matches nothing. `npm run check` does not flag the four because they are `:global`: the part under `:global` is never judged against the page's markup, so `css_unused_selector` never applies to it (not because of `svelte.config.js`, which no longer filters that warning, card 2357).
 
 The card window, `src/lib/components/CardModal.svelte` (1,273 lines, CRLF), keeps its props, every typed field's `$state` initialiser and `save()`, the header, the title, the tabs, the On Hold box, the labels, the footer and `handleKeydown`, and with them everything that must outlast a section being hidden (a section inside `{#if}` is destroyed when it hides, so state of its own would be lost on a switch of tab). Its sections are under `src/lib/components/card/`, each handed the window's state as props and `bind:`:
 
@@ -1238,7 +1238,7 @@ sequenceDiagram
     alt nothing changed
         W->>W: close, nothing sent
         W-->>P: ok, told empty
-        Note over P: nothing said. The plan page re-reads as its window closes
+        Note over P: nothing said, nothing read again (the plan page too, card 2324)
     else fields changed
         W->>A: writeCard(card, the changed fields, send, words)
         A->>A: patchCard - shown on the page's list at once, the undo kept
@@ -1260,8 +1260,9 @@ sequenceDiagram
     end
 ```
 
-- **Each page's handlers.** All Tasks and All To Do lost their own `saveCard` and `deleteCard`: `saveFromWindow` and `archiveFromWindow` call `cardWindow.save` and `cardWindow.archive` and say what comes back, in the board page's words. Archive asks first with `cardArchiveWarning` in the page's confirm, and the controller takes the card off the page and closes the window only once the server has archived it; a refused archive keeps the window. The plan page's `saveCardFromPlan` saves the same way; its window has no Archive, as before. On success it closes the window (whose `closeCard` re-reads the plan) only when the window is still on the card saved, or shut; a save answered after its window was closed and another opened re-reads the plan alone and leaves the new window as it is.
-- **What did not change.** The toasts on success, `invalidateAll()` after a save or an archive, the plan page's re-read on every close (the window's own writes, a subtask ticked or a dependency added, tell the plan page nothing, so it cannot tell a close after one from a close after nothing), the window's own fifteen writes, and each page's people for the window, read from `GET /api/cards/{id}/context` (All Tasks and All To Do through `loadBoardUsers`, the plan page with the card's context).
+- **Each page's handlers.** All Tasks and All To Do lost their own `saveCard` and `deleteCard`: `saveFromWindow` and `archiveFromWindow` call `cardWindow.save` and `cardWindow.archive` and say what comes back, in the board page's words. Archive asks first with `cardArchiveWarning` in the page's confirm, and the controller takes the card off the page and closes the window only once the server has archived it; a refused archive keeps the window. The plan page's `saveCardFromPlan` saves the same way; its window has no Archive, as before. On success it closes the window (whose `closeCard` re-reads the plan, the save having marked the window as one that wrote) only when the window is still on the card saved, or shut; a save answered after its window was closed and another opened re-reads the plan alone and leaves the new window as it is.
+- **What did not change.** The toasts on success, `invalidateAll()` after a save or an archive, the window's own fifteen writes, and each page's people for the window, read from `GET /api/cards/{id}/context` (All Tasks and All To Do through `loadBoardUsers`, the plan page with the card's context).
+- **The plan page re-reads only after a change it draws** (card 2324, 2026-10-21; it re-read on every close). `CardModal` takes an optional `onWrote`, which `CardSubtasks` (a tick), the subtask window (added, edited, deleted, through `handleSubtaskSaved` and `handleSubtaskDeleted`) and `CardDependencies` (a link added or removed, the milestone) call once their write is answered as done. The plan page gives it and keeps `wrote`, cleared as a window opens and set by `onWrote` and by a save that told something; `closeCard` calls `invalidateAll()` only when it is set. An assignee, the cover, labels, a comment or a file are not drawn on a plan and call nothing. The board page, All Tasks and All To Do give no `onWrote`.
 
 ## Work Kept Off the Server's Thread
 

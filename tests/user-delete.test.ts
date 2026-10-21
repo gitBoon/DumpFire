@@ -10,11 +10,14 @@
  *
  * There is one test for each of the five, with that reference alone, so that
  * a column left out of the list fails by name.
+ *
+ * An account that is the only owner of a team is not deleted (card 2377): the
+ * delete is refused, 409, naming the teams.
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import {
 	apiKeys,
@@ -29,6 +32,7 @@ import {
 	reportSchedules,
 	sessions,
 	taskRequests,
+	teamMembers,
 	users,
 	userXp,
 	workDependencies,
@@ -47,6 +51,7 @@ import {
 	makeComment,
 	makeDependency,
 	makeMilestone,
+	makeTeam,
 	makeUser,
 	makeWebhook,
 	resetDb,
@@ -455,5 +460,72 @@ describe('DELETE /api/users/:id, refused', () => {
 
 		expect(res.status).toBe(200);
 		expect(userRow(s.admin.id)).toBeUndefined();
+	});
+});
+
+// Card 2377: the delete takes the account's team rows with it (the key cascades), so a team
+// it was the only owner of was left with no owner, the one way round card 2373's rule.
+describe('DELETE /api/users/:id, for the only owner of a team (card 2377)', () => {
+	/** A team named `name` of `people`, the first `owners` of them its owners. */
+	const team = (name: string, people: SessionUser[], owners = 1) => {
+		const made = makeTeam(people, name);
+		for (const person of people.slice(0, owners)) {
+			db.update(teamMembers).set({ role: 'owner' }).where(and(eq(teamMembers.teamId, made.id), eq(teamMembers.userId, person.id))).run();
+		}
+		return made;
+	};
+
+	it('is refused, 409, naming each team they alone own in name order, with nothing changed', async () => {
+		const s = scene();
+		team('Beta', [s.leaver, s.owner]);
+		team('Alpha', [s.leaver]);
+		// A team with an owner of its own, which the leaver is only a member of, is not named.
+		team('Gamma', [s.owner, s.leaver]);
+		const before = snapshotDb();
+
+		const res = await remove(s);
+
+		expect(res.status).toBe(409);
+		expect(res.body.message).toBe('This account is the only owner of: Alpha, Beta. Make someone else an owner or delete those teams first.');
+		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
+	});
+
+	it('names one team as that team', async () => {
+		const s = scene();
+		team('Solo', [s.leaver]);
+
+		const res = await remove(s);
+
+		expect(res.status).toBe(409);
+		expect(res.body.message).toBe('This account is the only owner of: Solo. Make someone else an owner or delete that team first.');
+		expect(userRow(s.leaver.id)).toBeDefined();
+	});
+
+	it('goes ahead for an owner of a team with another owner, and a member of another; the team keeps its other owner', async () => {
+		const s = scene();
+		const shared = team('Shared', [s.leaver, s.owner], 2);
+		team('Theirs', [s.owner, s.leaver]);
+
+		const res = await remove(s);
+
+		expect(res.status).toBe(200);
+		expect(userRow(s.leaver.id)).toBeUndefined();
+		expect(db.select({ userId: teamMembers.userId, role: teamMembers.role }).from(teamMembers).where(eq(teamMembers.teamId, shared.id)).all()).toEqual([
+			{ userId: s.owner.id, role: 'owner' }
+		]);
+	});
+
+	// Who may delete the account is asked first, so a caller who may not is not told what teams it owns. A contract: it was so.
+	it('answers someone who may not delete the account as before, 403, not 409', async () => {
+		const s = scene();
+		const otherAdmin = makeUser({ username: 'admin2', role: 'admin' });
+		team('Alpha', [s.leaver]);
+		team('Admins', [otherAdmin]);
+
+		expect((await remove(s, s.owner)).status).toBe(403);
+		const res = await api('DELETE', `/api/users/${otherAdmin.id}`, { user: s.admin });
+		expect(res.status).toBe(403);
+		expect(res.body.message).toBe('Only superadmin can delete admin users');
+		expect(userRow(s.leaver.id)).toBeDefined();
 	});
 });

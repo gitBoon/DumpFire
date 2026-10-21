@@ -46,7 +46,8 @@
 		openEditSubtask,
 		openNewPendingSubtask,
 		openEditPendingSubtask,
-		removePendingSubtask
+		removePendingSubtask,
+		onWrote
 	}: {
 		card: CardType | null;
 		boardId: number;
@@ -62,6 +63,8 @@
 		openNewPendingSubtask: () => void;
 		openEditPendingSubtask: (ps: PendingSubtask) => void;
 		removePendingSubtask: (id: number) => void;
+		/** The window's `onWrote`, called once a tick is saved (card 2324). */
+		onWrote?: () => void;
 	} = $props();
 
 	/** What a change that got no answer says: it may or may not have been made. */
@@ -86,6 +89,7 @@
 		}
 		subtask.completed = !subtask.completed;
 		cardSubtasks = [...cardSubtasks];
+		onWrote?.();
 	}
 
 	const completedCount = $derived(cardSubtasks.filter((st) => st.completed).length);

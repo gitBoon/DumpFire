@@ -33,6 +33,7 @@ function keepAnOwner(teamId: number, member: { userId: number; role: string } | 
 /**
  * POST — Add a member to a team, or change a member's role (admin or team owner).
  * A change that would leave the team with no owner is refused, 409 (card 2373).
+ * A `role` left out keeps an existing member's role (card 2378).
  *
  * The member is the user in the path. The body's `userId` used to be the one
  * added, whatever the path said; the pages send both, the same. Sent and
@@ -59,18 +60,25 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			.from(teamMembers)
 			.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
 			.get();
-		// A role stored before roles were checked is kept when it is sent back.
-		const role = readChoice(body, 'role', { from: TEAM_ROLES, keep: existing?.role }) ?? 'member';
+		// A role stored before roles were checked is kept when it is sent back,
+		// and a role left out keeps the member's own (card 2378: it made an
+		// owner a member). Someone not yet in the team is added as a member.
+		const role = readChoice(body, 'role', { from: TEAM_ROLES, keep: existing?.role }) ?? existing?.role ?? 'member';
 
 		const member = db.select({ id: users.id }).from(users).where(eq(users.id, userId)).get();
 		if (!member) throw error(404, 'User not found');
 		keepAnOwner(teamId, existing, role);
 
 		if (existing) {
-			db.update(teamMembers)
-				.set({ role })
-				.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
-				.run();
+			// Card 2183's rule: the role they hold, sent again or left out,
+			// writes nothing, and is answered as a change is (the pages read
+			// `updated` as "already in the team").
+			if (existing.role !== role) {
+				db.update(teamMembers)
+					.set({ role })
+					.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
+					.run();
+			}
 			return 'updated' as const;
 		}
 

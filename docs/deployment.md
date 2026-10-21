@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.79
+version: 1.80
 status: As-Built
 date: 2026-10-21
 tags:
@@ -4049,6 +4049,37 @@ On production, as **O**, your administrator account, on Windows in Chrome or Fir
 #### Going back to the previous image
 
 Nothing is done to the database: a role saved under the new image stays as it was set. The older image answers `500` for the export of an empty board whose name has an emoji, lists columns tied at one position in no set order, lets a team's last owner be made a member or removed, sends a second add on a double click, closes Manage Categories on × while a change is out, and saves a role as soon as it is chosen in a picker.
+
+### The Plan Re-Read Only After a Change, Unused CSS Reported, a Team's Only Owner Kept on Account Delete, and a Missing Role Kept
+
+**Cards 2324, 2357, 2377 and 2378.** No migration, no setting, no route added. Two web-application routes answer differently (cards 2377 and 2378); no `/api/v1` operation changes, and the OpenAPI document is as it was (version 1.2.0). The plan is `docs/planning/cards-2324-2357-2377-2378.md`.
+
+- **2324.** Closing a card window on a plan page read the whole plan again every time, for a window only looked at too. Now it reads it again only when the window changed something the plan draws: a save that changed the card, a subtask ticked, added, edited or deleted, a dependency added or removed, or the card's milestone. An assignee, the cover, labels, a comment or a file changed in the window do not re-read it (the plan draws none of them).
+- **2357.** The build's check for style rules that match nothing was switched off for the whole app; it is on again, and the one dead rule it found (on the request form page) is gone. Nothing on any page looks different.
+- **2377.** Deleting an account that was the only owner of a team left that team with no owner, run by administrators alone. Now it is refused, nothing changed: "This account is the only owner of: *the teams*. Make someone else an owner or delete those teams first." ("… that team first" for one).
+- **2378.** `POST /api/teams/{id}/members/{userId}` with no `role` set someone already in the team to Member, quietly demoting an owner (the pages always send a role, so only a script could). Now a role left out keeps theirs; someone new is still added as Member.
+
+**Owner to know.** **An account that alone owns a team cannot be deleted** until another member is made an owner of each such team (**Admin → Team Management**, their row's picker, **Change**) or the team is deleted; the toast after **Confirm** names the teams. See [Admin Operations Guide](admin-guide.md#deleting-a-user). **On a plan page**, closing a card window you only looked at no longer reloads the plan.
+
+#### After the deploy
+
+On production, as **O**, your administrator account, with the browser's developer tools' network panel open (filter it to `__data.json` for checks 385 to 388; that is the plan's re-read). Nothing here completes a card or changes a real account, team or board. **Scratch things:** a board on the dashboard, "TEST 2324 - delete me", with its standard columns; in its To Do a card "TEST 2324 card - delete me" (in its window: Subtasks **Add**, title "TEST 2324 step", **Add Subtask**); on **/plan**, **New milestone**, name "TEST 2324 - delete me", board TEST 2324, **Create**; back in the card's window, **More options**, the **Milestone** picker, choose "TEST 2324 - delete me"; then open the goal's plan page (**/plan**, its row). For 389 to 391: in **Admin → User Management**, **+ Add User**, username "TEST 2377 - delete me", email `test2377@example.invalid`, a password (so no invite is mailed), role User, **Create**; in **Admin → Team Management**, **+ Add Team**, "TEST 2377 - delete me", **Create** (O is its owner); under it **Add member...**, choose TEST 2377 - delete me, the role picker beside it **Owner**, **Add**; then on O's own row choose **Member** and press **Change** (TEST 2377 - delete me is now its only owner).
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 385 | 2324 | On the plan page, in the work table, click "TEST 2324 card - delete me"; when its window is open press ✕ at its top right | The window closes and no `__data.json` request appears | A `__data.json` request as the window closes |
+| 386 | 2324 | Open the card the same way and press **Save Changes** without changing anything | The window closes, no toast, and neither a `PUT` to `/api/cards/…` (with the filter cleared) nor a `__data.json` request appears | A `__data.json` request |
+| 387 | 2324 | Open the card again; click the tick box beside "TEST 2324 step"; then press ✕ | No `__data.json` request as it is ticked (the tick's own `PUT` to `/api/subtasks/…` shows with the filter cleared); one `__data.json` request as the window closes; the Progress panel's "open subtasks / all" then reads 0/1 | No `__data.json` request after the close, or the tile still 1/1 |
+| 388 | 2324 | Open the card again; add " renamed" to the end of its title; press **Save Changes** | The toast "Card updated"; one `__data.json` request; the work table shows "TEST 2324 card - delete me renamed" | No `__data.json` request, or the old title in the table |
+| 389 | 2377 | **Admin → User Management**, on TEST 2377 - delete me's row press 🗑️, then **Confirm** in the dialog | The toast "This account is the only owner of: TEST 2377 - delete me. Make someone else an owner or delete that team first."; the account's row stays | "User deleted", or the row gone |
+| 390 | 2377 | **Admin → Team Management**, the scratch team: on O's row choose **Owner** and press **Change** (note the request's address in the network panel, `/api/teams/<team id>/members/<O's id>`, for 391); then in User Management press 🗑️ on TEST 2377 - delete me's row and **Confirm** | "Role changed"; then "User deleted" and the row goes; the scratch team lists O alone, as Owner | A refusal naming the team |
+| 391 | 2378 | On the admin page, in the developer tools' console, run `fetch('/api/teams/<team id>/members/<O's id>', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then((r) => r.json()).then(console.log)` with the two ids from 390; then reload the page | The console shows `{success: true, action: 'updated'}`; after the reload O's picker in the scratch team reads **Owner** | `A team needs at least one owner…` in the console (the older image read no role as Member) |
+
+**Afterwards.** Delete the board "TEST 2324 - delete me" on the dashboard; its goal "TEST 2324 - delete me" belongs to the board and goes with it. In **Admin → Team Management** delete the team "TEST 2377 - delete me" (its 🗑️, then **Confirm**). If check 390 failed and TEST 2377 - delete me is still there, make O an owner of the scratch team, delete the team, then delete the account.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image reads a plan again on every close of a card window, suppresses the unused-style check, deletes an account that alone owns a team (leaving the team with no owner), and reads a member sent with no role as Member.
 
 ## Changing the Schema
 

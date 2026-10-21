@@ -1,5 +1,5 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import { deleteUser } from '$lib/server/deletes';
 import { users, type User } from '$lib/server/db/schema';
@@ -138,7 +138,31 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	return json(answer);
 };
 
-/** DELETE — Delete a user (admin only). */
+/**
+ * The names of the teams `userId` is the only owner of, in name order: an
+ * owner row of theirs, and no other owner in the team (card 2377).
+ */
+function soleOwnerOf(userId: number): string[] {
+	return (
+		sqlite
+			.prepare(
+				`SELECT t.name FROM teams t
+				JOIN team_members m ON m.team_id = t.id AND m.user_id = ? AND m.role = 'owner'
+				WHERE NOT EXISTS (SELECT 1 FROM team_members o WHERE o.team_id = t.id AND o.role = 'owner' AND o.user_id <> ?)
+				ORDER BY t.name, t.id`
+			)
+			.all(userId, userId) as { name: string }[]
+	).map((row) => row.name);
+}
+
+/**
+ * DELETE — Delete a user (admin only).
+ *
+ * An account that is the only owner of a team is refused, 409, naming the
+ * teams (card 2377): the delete takes its team rows with it, which left each
+ * such team with no owner, the one way round card 2373's rule. Asked after
+ * the checks of who may delete it, so nobody who may not learns its teams.
+ */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	requireAdmin(locals.user);
 
@@ -162,6 +186,13 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 			superadmin: 'Cannot delete superadmin account',
 			admin: 'Only superadmin can delete admin users'
 		});
+
+		// A team keeps an owner (card 2373), before anything is written.
+		const owned = soleOwnerOf(userId);
+		if (owned.length > 0) {
+			const those = owned.length === 1 ? 'that team' : 'those teams';
+			throw error(409, `This account is the only owner of: ${owned.join(', ')}. Make someone else an owner or delete ${those} first.`);
+		}
 
 		// What named the user with no key to clear it is cleared first; the
 		// delete used to fail on it. See $lib/server/deletes.ts.

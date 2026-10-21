@@ -401,8 +401,9 @@ export function afterExpandAll(s: OpenCards, rows: TableRow[], filtering: boolea
 /**
  * What the plan page's burndown is drawn from, as one string: the milestone,
  * its target date, and each of its cards with its board and whether it is
- * done. Closing the card window re-reads the plan, saved or not, and the
- * summary is then a new object even when nothing changed; the page fetches
+ * done. Closing the card window re-reads the plan after any write the plan
+ * draws (card 2324), a subtask ticked among them, and the summary is then a
+ * new object even when none of this changed; the page fetches
  * the burndown again only when this string changes. A subtask ticked, or a
  * card moved between two open columns, leaves it as it was, as it leaves the
  * burndown.
