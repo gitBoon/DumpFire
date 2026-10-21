@@ -29,6 +29,7 @@ import { milestoneNamesForCards } from '$lib/server/milestones';
 import { boardAncestry } from '$lib/server/board-tree';
 import { placeBoards } from '$lib/board-tree';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
+import { CARD_ORDER } from '$lib/server/card-order';
 
 type ColumnRow = typeof columns.$inferSelect;
 
@@ -62,8 +63,10 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 	// The columns whose cards are read: every one, or those the page asked for.
 	const { inColumn } = options;
 	const columnIds = (inColumn ? allColumns.filter(inColumn) : allColumns).map(c => c.id);
+	// By position, ties by id (card 2347): a page's bucket takes in a column of
+	// every board, and a tie came by the column it was in.
 	const allCards = columnIds.length > 0
-		? db.select().from(cards).where(and(inArray(cards.columnId, columnIds), isNull(cards.archivedAt))).orderBy(asc(cards.position)).all()
+		? db.select().from(cards).where(and(inArray(cards.columnId, columnIds), isNull(cards.archivedAt))).orderBy(...CARD_ORDER).all()
 		: [];
 
 	const cardIds = allCards.map(c => c.id);

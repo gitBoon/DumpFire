@@ -303,6 +303,31 @@ describe('PATCH /api/requests/:id, accept', () => {
 		expect((listed.body as { content: string }[]).map((row) => row.content)).toEqual(inOrder.slice().reverse());
 	});
 
+	// Card 2340: each copy was stamped with the time of the accept, so a
+	// discussion of a week read on the card as written in one second, after
+	// it was over. Each keeps its message's own time, as written and as last
+	// changed, so the card window shows no "(edited)" on it.
+	it('keeps each message’s own time on its copy, and the copy reads as never edited', async () => {
+		const s = scene();
+
+		const res = await recording(() => accept(s));
+		expect(res.status).toBe(200);
+
+		const copies = db
+			.select({ content: cardComments.content, createdAt: cardComments.createdAt, updatedAt: cardComments.updatedAt })
+			.from(cardComments)
+			.orderBy(cardComments.id)
+			.all();
+		expect(copies).toEqual([
+			{ content: '**🛡️ owner (from request discussion):**\nWhich columns?', createdAt: '2026-10-01 09:00:00', updatedAt: '2026-10-01 09:00:00' },
+			{ content: '**👤 Rita (from request discussion):**\nAll of them', createdAt: '2026-10-01 10:00:00', updatedAt: '2026-10-01 10:00:00' }
+		]);
+
+		// The card window's list, newest first, by those times.
+		const listed = await api('GET', `/api/cards/${res.body.resolvedCardId}/comments`, { user: s.owner });
+		expect((listed.body as { createdAt: string }[]).map((row) => row.createdAt)).toEqual(['2026-10-01 10:00:00', '2026-10-01 09:00:00']);
+	});
+
 	it('reads the request, and checks it is still waiting, inside the transaction that accepts it', async () => {
 		const s = scene();
 		const reads = watchReads('task_requests');

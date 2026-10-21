@@ -12,15 +12,21 @@ import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 
-/** GET — download/serve a file */
+/**
+ * GET — download/serve a file. It has to be on the card the path names: one
+ * that is not is answered as one that is not there (card 2361), before any
+ * question of access, as a comment is. The card in the path was never read,
+ * so a file was served under the address of any card.
+ */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
+	const cardId = pathId(params.id, 'card');
 	const attachmentId = pathId(params.attachmentId, 'attachment');
 	const attachment = db.select().from(cardAttachments)
 		.where(eq(cardAttachments.id, attachmentId))
 		.get();
-	if (!attachment) throw error(404, 'Attachment not found');
+	if (!attachment || attachment.cardId !== cardId) throw error(404, 'Attachment not found');
 
 	// The board is the one the attachment's own card is on. A card that could
 	// not be resolved used to skip the check instead of failing it.
@@ -47,10 +53,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	});
 };
 
-/** DELETE — remove an attachment */
+/** DELETE — remove an attachment, on the card the path names (404 otherwise, card 2361). */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	requireUser(locals.user);
 
+	const cardId = pathId(params.id, 'card');
 	const attachmentId = pathId(params.attachmentId, 'attachment');
 
 	// The row in a transaction, with the check that the caller may remove it,
@@ -60,7 +67,7 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// transaction asks first whether the session is still open, and who its
 	// account is now (card 2253).
 	writeAs(locals, (caller) => {
-		const attachment = deleteAttachment(caller, { attachmentId }, null, { source: 'ui' });
+		const attachment = deleteAttachment(caller, { cardId, attachmentId }, null, { source: 'ui' });
 		trashAfterCommit([{ cardId: attachment.cardId, filename: attachment.filename }]);
 	});
 

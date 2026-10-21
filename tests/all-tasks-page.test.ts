@@ -154,10 +154,11 @@ afterEach(() => {
 	for (const toast of shown) toasts.dismiss(toast.id);
 });
 
-function draw() {
+/** Draws the page with the load above, `over` laid over it. */
+function draw(over: Record<string, unknown> = {}) {
 	const target = document.createElement('div');
 	document.body.appendChild(target);
-	drawn = { component: mount(AllTasksPage as never, { target, props: { data: data() } as never }), target };
+	drawn = { component: mount(AllTasksPage as never, { target, props: { data: { ...data(), ...over } } as never }), target };
 	flushSync();
 	return target;
 }
@@ -652,6 +653,31 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	// Card 2300: Load more wrote the address with the browser's own
+	// `history.replaceState({}, …)`, which threw away SvelteKit's state in the
+	// history entry, and then re-read the page, which SvelteKit does at the
+	// address it holds, not the browser's: the load got the old limit, and the
+	// list stayed as it was. Now it is a navigation in place of this entry,
+	// which runs the load at the new address and keeps the state.
+	it('loads 50 more completed cards with a navigation in place of this history entry, never the browser’s history (card 2300)', async () => {
+		navigation.goto.mockClear();
+		const browsers = vi.spyOn(window.history, 'replaceState');
+		const target = draw({ hasMoreCompleted: true, totalCompletedCount: 120, completedLimit: 50 });
+
+		target.querySelector<HTMLButtonElement>('#load-more-completed')!.click();
+		await settle();
+
+		expect(navigation.goto).toHaveBeenCalledTimes(1);
+		const [to, how] = navigation.goto.mock.calls[0] as unknown as [URL, Record<string, unknown>];
+		expect(new URL(String(to)).searchParams.get('completedLimit')).toBe('100');
+		expect(how).toEqual({ replaceState: true, keepFocus: true, noScroll: true });
+		expect(browsers).not.toHaveBeenCalled();
+		// The navigation runs the load: nothing is re-read on top of it.
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+		// And the button is pressed again once it is done.
+		expect(target.querySelector<HTMLButtonElement>('#load-more-completed')!.disabled).toBe(false);
 	});
 });
 

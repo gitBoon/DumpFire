@@ -29,6 +29,7 @@ import { asc, eq } from 'drizzle-orm';
 import { db } from './db';
 import { columns, type Column } from './db/schema';
 import type { SessionUser } from './auth';
+import { changedFields } from './card-changes';
 import { completionRoleRefusal } from './card-completion';
 import { deleteColumn } from './deletes';
 import { emit } from './events';
@@ -135,8 +136,9 @@ export function createColumn(caller: SessionUser | null, at: { boardId?: number 
  *
  * A title that would make the column a Complete column, or stop it being
  * one, is `409` while the column holds any card, archived ones included, and
- * nothing is written (card 2134): see `completionRoleRefusal`. The answer is
- * the row.
+ * nothing is written (card 2134): see `completionRoleRefusal`. Only the fields
+ * whose value changes are written, and the board told; a save that changes
+ * nothing writes and tells nothing (card 2359). The answer is the row.
  */
 export function updateColumn(caller: SessionUser | null, at: { columnId: number }, body: RequestBody, opts: ServiceOptions): Column {
 	inWrite();
@@ -163,11 +165,19 @@ export function updateColumn(caller: SessionUser | null, at: { columnId: number 
 
 	if (Object.keys(updates).length === 0) throw error(400, 'No valid fields to update');
 
-	const row = db.update(columns).set(updates).where(eq(columns.id, at.columnId)).returning().get();
-	// Decided on the title as stored. A refusal throws, and the write goes
-	// with the transaction.
-	const refusal = completionRoleRefusal(column, row.title);
+	// Decided on the title as it will be stored, before anything is written,
+	// so that the comparison below comes after every refusal (card 2359). It
+	// was decided after the write, which the refusal rolled back.
+	const refusal = completionRoleRefusal(column, updates.title ?? column.title);
 	if (refusal) throw error(409, refusal);
+
+	// Card 2183's rule (card 2359): only the fields whose value changes are
+	// written, compared as they will be written with the column as read in
+	// this transaction. A save that changes nothing writes and tells nothing,
+	// and answers the column as it is. No column change records an entry.
+	const changed = changedFields(column, updates);
+	if (Object.keys(changed).length === 0) return column;
+	const row = db.update(columns).set(changed).where(eq(columns.id, at.columnId)).returning().get();
 	emit(boardId, 'update', { type: 'column' });
 	return row;
 }

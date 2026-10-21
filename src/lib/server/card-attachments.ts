@@ -108,21 +108,23 @@ export function attachFile(caller: SessionUser | null, at: { cardId: number }, f
 /**
  * Delete a file's row (`DELETE /api/cards/:id/attachments/:attachmentId`),
  * with its entry `Deleted the file "<file>" from "<card>"` and the live
- * event. The attachment is looked for (404) and the caller asked for edit
- * access to its own card (403). Its uploader is not named: the upload's own
- * entry says who attached it. The row deleted is handed back, for the route
- * to move its file to the trash once this is committed.
+ * event. The attachment is looked for on the card the path names, `at.cardId`
+ * (404 for one that is not there or is on another card, card 2361: the card in
+ * the path was never read), and the caller asked for edit access to that card
+ * (403). Its uploader is not named: the upload's own entry says who attached
+ * it. The row deleted is handed back, for the route to move its file to the
+ * trash once this is committed.
  */
 export function deleteAttachment(
 	caller: SessionUser | null,
-	at: { attachmentId: number },
+	at: { cardId: number; attachmentId: number },
 	body: null,
 	opts: ServiceOptions
 ): CardAttachment {
 	inWrite();
 	const user = requireUser(caller);
 	const attachment = db.select().from(cardAttachments).where(eq(cardAttachments.id, at.attachmentId)).get();
-	if (!attachment) throw error(404, 'Attachment not found');
+	if (!attachment || attachment.cardId !== at.cardId) throw error(404, 'Attachment not found');
 	const { card, boardId } = requireCard(user, attachment.cardId, 'edit', opts.says);
 
 	db.delete(cardAttachments).where(eq(cardAttachments.id, at.attachmentId)).run();

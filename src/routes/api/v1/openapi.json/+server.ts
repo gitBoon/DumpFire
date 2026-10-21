@@ -267,6 +267,11 @@ const spec = {
 			'where finding them meant asking each board for GET /api/v1/boards/{boardId}/cards?archived=true. ' +
 			'(97) GET /api/v1/audit-log and the activity reads can return `attachment_added` and `attachment_deleted`, written by the web application when a file ' +
 			'is attached to or deleted from a card; neither was recorded. No webhook is sent for either. ' +
+			'(98) PUT /api/v1/columns/{columnId}, PUT /api/v1/labels/{labelId}, PUT /api/v1/categories/{categoryId} and PUT /api/v1/board-categories/{categoryId} write only the fields whose value changes: ' +
+			'a body whose every field is as the row holds it (a name or title that trims to the stored one included) answers 200 with the row as it is, writes nothing and tells no open page, ' +
+			'where every field sent was written and the board of a column, a label or a category told to re-read. {} is still 400, and a request that would be refused is still refused first. ' +
+			'(99) A comment copied onto a card from a request\'s discussion, as the web application accepts the request, has the time its message was sent as its createdAt and its updatedAt, ' +
+			'as GET /api/v1/cards/{cardId}/comments and the reports read it, where every copy had the time of the accept. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2772,6 +2777,9 @@ const spec = {
 			put: {
 				tags: ['Columns'],
 				summary: 'Update a column',
+				description:
+					'Changes the fields sent. Only the fields whose value changes are written, and the board\'s open pages told: a body whose every field is as the column holds it ' +
+					'(a title that trims to the stored one included) answers 200 with the column as it is, writing nothing. A request that would be refused is still refused first (item 98).',
 				operationId: 'updateColumn',
 				parameters: [{ $ref: '#/components/parameters/columnId' }],
 				requestBody: {
@@ -3966,6 +3974,9 @@ const spec = {
 			put: {
 				tags: ['Labels'],
 				summary: 'Update a label',
+				description:
+					'Changes the name or the colour. Only the fields whose value changes are written, and the board\'s open pages told: a body whose every field is as the label holds it ' +
+					'(a name that trims to the stored one included) answers 200 with the label as it is, writing nothing. A request that would be refused is still refused first (item 98).',
 				operationId: 'updateLabel',
 				parameters: [{ $ref: '#/components/parameters/labelId' }],
 				requestBody: {
@@ -4852,7 +4863,9 @@ const spec = {
 				tags: ['Categories'],
 				summary: 'Update a category',
 				description:
-					'Changes the name or the colour. Needs edit access to the board the category belongs to; a category that belongs to no board can be changed only by an administrator.',
+					'Changes the name or the colour. Needs edit access to the board the category belongs to; a category that belongs to no board can be changed only by an administrator. ' +
+					'Only the fields whose value changes are written, and the board\'s open pages told: a body whose every field is as the category holds it ' +
+					'(a name that trims to the stored one included) answers 200 with the category as it is, writing nothing (item 98).',
 				operationId: 'updateCategory',
 				parameters: [{ $ref: '#/components/parameters/categoryId' }],
 				requestBody: {
@@ -5027,7 +5040,9 @@ const spec = {
 				tags: ['Board Categories'],
 				summary: 'Update a board category',
 				description:
-					'Changes the name or the colour. A board category changes how every board filed under it is shown, so the key\'s user must be able to edit each of those boards. One with no boards under it may be changed by anyone.',
+					'Changes the name or the colour. A board category changes how every board filed under it is shown, so the key\'s user must be able to edit each of those boards. One with no boards under it may be changed by anyone. ' +
+					'Only the fields whose value changes are written: a body whose every field is as the board category holds it ' +
+					'(a name that trims to the stored one included) answers 200 with it as it is, writing nothing (item 98).',
 				operationId: 'updateBoardCategory',
 				parameters: [{ $ref: '#/components/parameters/categoryId' }],
 				requestBody: {

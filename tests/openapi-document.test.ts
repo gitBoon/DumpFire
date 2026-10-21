@@ -2691,6 +2691,15 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(changes).toContain('(97) GET /api/v1/audit-log and the activity reads can return `attachment_added` and `attachment_deleted`');
 		expect(changes.indexOf('(97)')).toBeGreaterThan(changes.indexOf('(96)'));
 		expect(spec.info.description).toContain('`attachment_added` and `attachment_deleted`, written by the web application when a file is attached to or deleted from a card');
+		// Card 2359: a column, label, category or grouping save that changes nothing writes nothing.
+		expect(changes).toContain('(98) PUT /api/v1/columns/{columnId}, PUT /api/v1/labels/{labelId}, PUT /api/v1/categories/{categoryId} and PUT /api/v1/board-categories/{categoryId} write only the fields whose value changes');
+		expect(changes.indexOf('(98)')).toBeGreaterThan(changes.indexOf('(97)'));
+		for (const path of ['/api/v1/columns/{columnId}', '/api/v1/labels/{labelId}', '/api/v1/categories/{categoryId}', '/api/v1/board-categories/{categoryId}']) {
+			expect(spec.paths[path].put.description, path).toContain('Only the fields whose value changes are written');
+		}
+		// Card 2340: a comment copied from a request's discussion keeps its message's time.
+		expect(changes).toContain("(99) A comment copied onto a card from a request's discussion");
+		expect(changes.indexOf('(99)')).toBeGreaterThan(changes.indexOf('(98)'));
 	});
 
 	// ─── What is said in words, and can be tried ─────────────────────────────

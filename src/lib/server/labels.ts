@@ -25,6 +25,7 @@ import { eq } from 'drizzle-orm';
 import { db } from './db';
 import { labels, type Label } from './db/schema';
 import type { SessionUser } from './auth';
+import { changedFields } from './card-changes';
 import { emit } from './events';
 import { readColour, readId, readText, type RequestBody } from './request-body';
 import { requireBoard, requireLabel, requireUser } from './route-guards';
@@ -111,7 +112,9 @@ export type UpdateLabelOptions = {
  * the fields are read (400), in the transaction that writes them; a `boardId`
  * in the body is ignored. Someone taken off the board while the body was
  * arriving is refused, and a label deleted meanwhile is 404. A body that
- * names neither field is a 400. The answer is the row.
+ * names neither field is a 400. Only the fields whose value changes are
+ * written, and the board told; a save that changes nothing writes and tells
+ * nothing (card 2359). The answer is the row.
  */
 export function updateLabel(caller: SessionUser | null, at: { labelId?: number }, body: RequestBody, opts: ServiceOptions & UpdateLabelOptions): Label {
 	inWrite();
@@ -124,7 +127,12 @@ export function updateLabel(caller: SessionUser | null, at: { labelId?: number }
 		throw error(400, opts.sendNameOrColor ? 'Send name or color to change' : 'No valid fields to update');
 	}
 
-	const row = db.update(labels).set(changes).where(eq(labels.id, labelId)).returning().get();
+	// Card 2183's rule (card 2359), after every refusal: a name and colour as
+	// the label holds them write and tell nothing, and the label is answered
+	// as it is; otherwise only what changes is written.
+	const changed = changedFields(label, changes);
+	if (Object.keys(changed).length === 0) return label;
+	const row = db.update(labels).set(changed).where(eq(labels.id, labelId)).returning().get();
 	emit(boardId, 'update', { type: 'label' });
 	return row;
 }

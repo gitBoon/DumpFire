@@ -38,6 +38,8 @@ import {
 	cardLabels,
 	cards,
 	categories,
+	columns,
+	labels,
 	milestones,
 	subtasks,
 	taskRequests,
@@ -53,6 +55,7 @@ import { boardEvent, commentsChanged } from '$lib/board/sse';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type RecordedEffect } from './helpers/effects';
+import { failingWrite } from './helpers/failing-write';
 import {
 	addBoardMember,
 	assignCard,
@@ -2441,7 +2444,7 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		}
 	],
 	'src/routes/api/cards/[id]/attachments/[attachmentId]/+server.ts DELETE': [
-		{ service: 'deleteAttachment', args: [code('caller'), { attachmentId: code('attachmentId') }, null, { source: 'ui' }] }
+		{ service: 'deleteAttachment', args: [code('caller'), { cardId: code('cardId'), attachmentId: code('attachmentId') }, null, { source: 'ui' }] }
 	],
 	'src/routes/api/labels/+server.ts PUT': [{ service: 'toggleCardLabel', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
 	'src/routes/api/v1/cards/[cardId]/labels/+server.ts POST': [
@@ -3276,6 +3279,162 @@ describe('nothing changed, nothing recorded', () => {
 		const { res, told } = await boardSaved(s.owner, '/api/v1/boards', {});
 
 		expect([res.status, res.body]).toEqual([400, { message: 'No valid fields to update' }]);
+		expectUnchanged(before);
+		expect(told).toEqual([]);
+	});
+
+	// Card 2359: card 2183's rule for a column, a label, a card category and a
+	// dashboard grouping. None of their tables has a timestamp and none of their
+	// changes records an entry, so a save that sent the values held left no
+	// trace in the rows; but it was written, and the column's, the label's and
+	// the category's board was told to re-read on every open page. The writes
+	// are counted here, as statements.
+	type HeldTwin = {
+		what: string;
+		/** The row as stored, read after the scene is built. */
+		row: () => Record<string, unknown>;
+		/** Its table, as a write names it. */
+		table: string;
+		/** The request, sending `fields` over the row's own. */
+		send: (s: Scene, fields: Record<string, unknown>) => Promise<ApiResult>;
+		/** What a real change tells: the board's event, or nothing for a grouping. */
+		tells: string[];
+	};
+	const onHold = () => db.select().from(columns).where(eq(columns.title, 'On Hold')).get()!;
+	const columnBody = (fields: Record<string, unknown>) => {
+		const c = onHold();
+		return { title: c.title, color: c.color, position: c.position, wipLimit: c.wipLimit, showAddCard: c.showAddCard, ...fields };
+	};
+	const label = () => db.select().from(labels).where(eq(labels.id, 1)).get()!;
+	const category = () => db.select().from(categories).where(eq(categories.id, 1)).get()!;
+	const grouping = () => db.select().from(boardCategories).where(eq(boardCategories.id, 1)).get()!;
+	const HELD: [string, HeldTwin][] = (
+		[
+			{
+				what: 'a column, through the internal route',
+				row: onHold,
+				table: 'columns',
+				send: (s, fields) => api('PUT', `/api/columns/${onHold().id}`, { user: s.owner, body: columnBody(fields) }),
+				tells: ['event update {"type":"column"} on board 1']
+			},
+			{
+				what: 'a column, through the v1 route',
+				row: onHold,
+				table: 'columns',
+				send: (s, fields) => api('PUT', `/api/v1/columns/${onHold().id}`, { user: s.owner, body: columnBody(fields) }),
+				tells: ['event update {"type":"column"} on board 1']
+			},
+			{
+				what: 'a label, through the internal route',
+				row: label,
+				table: 'labels',
+				send: (s, fields) => api('PATCH', '/api/labels', { user: s.owner, body: { id: 1, name: label().name, color: label().color, ...fields } }),
+				tells: ['event update {"type":"label"} on board 1']
+			},
+			{
+				what: 'a label, through the v1 route',
+				row: label,
+				table: 'labels',
+				send: (s, fields) => api('PUT', '/api/v1/labels/1', { user: s.owner, body: { name: label().name, color: label().color, ...fields } }),
+				tells: ['event update {"type":"label"} on board 1']
+			},
+			{
+				what: 'a card category, through the internal route',
+				row: category,
+				table: 'categories',
+				send: (s, fields) => api('PUT', '/api/categories/1', { user: s.owner, body: { name: category().name, color: category().color, ...fields } }),
+				tells: ['event update {"type":"category"} on board 1']
+			},
+			{
+				what: 'a card category, through the v1 route',
+				row: category,
+				table: 'categories',
+				send: (s, fields) => api('PUT', '/api/v1/categories/1', { user: s.owner, body: { name: category().name, color: category().color, ...fields } }),
+				tells: ['event update {"type":"category"} on board 1']
+			},
+			{
+				what: 'a dashboard grouping, through the internal route',
+				row: grouping,
+				table: 'board_categories',
+				send: (s, fields) => api('PUT', '/api/board-categories/1', { user: s.owner, body: { name: grouping().name, color: grouping().color, ...fields } }),
+				tells: []
+			},
+			{
+				what: 'a dashboard grouping, through the v1 route',
+				row: grouping,
+				table: 'board_categories',
+				send: (s, fields) => api('PUT', '/api/v1/board-categories/1', { user: s.owner, body: { name: grouping().name, color: grouping().color, ...fields } }),
+				tells: []
+			}
+		] satisfies HeldTwin[]
+	).map((twin) => [twin.what, twin]);
+
+	/** Make one request with its writes counted and its effects recorded. */
+	async function heldSaved(request: () => Promise<ApiResult>) {
+		const writes = failingWrite();
+		const sent = effects();
+		try {
+			const res = await request();
+			await sent.settle();
+			return { res, writes: [...writes.writes], told: sent.all.map(name) };
+		} finally {
+			sent.restore();
+			writes.restore();
+		}
+	}
+
+	it.each(HELD)('%s, sent its own fields, writes and tells nothing, and answers the row as it is', async (_what, twin) => {
+		const s = boardScene();
+		const before = snapshotDb();
+		const held = twin.row();
+
+		const { res, writes, told } = await heldSaved(() => twin.send(s, {}));
+
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual(held);
+		expect(writes).toEqual([]);
+		expectUnchanged(before);
+		expect(told).toEqual([]);
+	});
+
+	it.each(HELD)('%s, sent its name or title with outer spaces, is unchanged', async (_what, twin) => {
+		const s = boardScene();
+		const held = twin.row();
+		const named = twin.table === 'columns' ? { title: `  ${held.title} ` } : { name: `  ${held.name} ` };
+
+		const { res, writes, told } = await heldSaved(() => twin.send(s, named));
+
+		expect(res.status).toBe(200);
+		expect(writes).toEqual([]);
+		expect(told).toEqual([]);
+	});
+
+	it.each(HELD)('%s, recoloured with its other fields sent as held, writes the colour alone and tells as before', async (_what, twin) => {
+		const s = boardScene();
+
+		const { res, writes, told } = await heldSaved(() => twin.send(s, { color: '#0a0b0c' }));
+
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ ...twin.row(), color: '#0a0b0c' });
+		expect(writes).toHaveLength(1);
+		expect(writes[0]).toMatch(new RegExp(`^update "${twin.table}" set "color" = \\? where `));
+		expect(told).toEqual(twin.tells);
+	});
+
+	// A contract, which held before card 2359: the check for no change comes
+	// after every refusal. A column holding a card renamed to Complete is still
+	// 409, and now nothing is written before it is refused.
+	it.each([
+		['the internal route', '/api/columns'],
+		['the v1 route', '/api/v1/columns']
+	])('a column holding a card, renamed Complete through %s, is still refused 409', async (_tree, base) => {
+		const s = boardScene();
+		const before = snapshotDb();
+
+		const { res, writes, told } = await heldSaved(() => api('PUT', `${base}/${s.A.cols['To Do'].id}`, { user: s.owner, body: { title: 'Complete' } }));
+
+		expect(res.status).toBe(409);
+		expect(writes).toEqual([]);
 		expectUnchanged(before);
 		expect(told).toEqual([]);
 	});

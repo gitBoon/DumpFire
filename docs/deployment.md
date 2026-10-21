@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.75
+version: 1.76
 status: As-Built
 date: 2026-10-21
 tags:
@@ -3917,6 +3917,38 @@ On production, as **O**, your administrator account (also the superadmin for che
 #### Going back to the previous image
 
 Nothing is done to the database. The older image can open an overtaken card or show an older burndown again, empties the picker and the name box whatever came back, lets the Activity Log pulse every row after a failed first read, says nothing in Manage Categories for a refused change and asks its delete with the browser's confirm, deletes a file on one click, and draws the admin page's and the Archived page's own confirms, and the import and Connect dialogs, without focus or Escape again.
+
+### Small Server Fixes: Load More, Copied Comment Times, One Card Order, Unchanged Saves and Attachment Addresses
+
+**Cards 2300, 2340, 2347, 2359 and 2361.** No migration, no setting, no route added; one new server module, `src/lib/server/card-order.ts`. Existing rows are not changed. The plan is `docs/planning/cards-2300-2340-2347-2359-2361-server.md`.
+
+- **2300.** All Tasks' **Load more** under Complete wrote the address with the browser's own history call and re-read the page at the address SvelteKit still held, so the load got the old limit and the list never grew. It is now a navigation in place of the history entry, which loads 50 more and keeps SvelteKit's state.
+- **2340.** Accepting a request copies its discussion onto the new card as comments; each copy was stamped with the time of the accept. Each now keeps the time its message was sent, and shows no "(edited)". Cards accepted before keep their times.
+- **2347.** Cards at the same position came in no set order where a list runs across columns: All Tasks' and All To Do's buckets and both CSV exports. Every card list now orders by position, then by the order the cards were made. The board page, the sub-board picker and the API's card list already did.
+- **2359.** Saving a column, a label, a card category or a dashboard grouping with the values it holds (the board page's column menu, the label picker, the category manager, Manage Categories, or the API sending a row back whole) still wrote it and told every open page of the board to re-read. Now it writes and tells nothing; a real change writes only what changed, as boards do since card 2345.
+- **2361.** A file's address names its card, `/api/cards/<card>/attachments/<file>`, but the card was never read: the file was served, or deleted, under the address of any card the caller could reach. A file not on the card named is now `404 Attachment not found`. The card window builds the right address, so nothing changes on screen.
+
+**Owner to know.** **Load more on All Tasks now loads more**: the Complete bucket grows by 50 each press, to 500 at most (the cap was already there; past it the button stays and does nothing, a fault noted in the plan and not fixed). Because each press is now a page navigation, it also clears an error message that is showing, and when a new version has been deployed since the page was opened it reloads the page in full (losing the search, filters and sorts), as To Do's and the burndown's controls already do.
+
+#### After the deploy
+
+On production, as **O**, your administrator account, with the browser's developer tools' network panel and an API key of O's. Nothing here completes a real card or touches a real board, label or file. **Scratch things:** on the dashboard a board "TEST 2359 - delete me", then a board "TEST 2347 - delete me" (in that order), each with no other members; on TEST 2359, cards S1 and S2 in To Do, a small text file attached to S1 (Files tab), and a label "TEST label".
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 354 | 2300 | Only if All Tasks shows **Load more** under Complete: count the completed cards shown, press it | 50 more (or the rest) appear; the address ends `?completedLimit=100`; reload the page: the address keeps `?completedLimit=100` and the longer list stays | The count unchanged |
+| 355 | 2340 | As check 318, signed in as a second account in a private window, send O a request "TEST 2340 - delete me" from the request form. As O, in the Inbox, open its **Discuss** and send "first note". Wait two minutes, then accept it into TEST 2359's To Do and open the new card's **Comments** | The copied comment ("first note") shows the time it was sent, two minutes or more ago, with no "(edited)" | "just now" on it |
+| 356 | 2347 | With O's key, `POST /api/v1/boards/<TEST 2347 id>/cards` with `{"title":"TEST 2347 B","columnId":<its To Do id>}`, then the same on TEST 2359 with "TEST 2347 A" and its To Do (no position: both at 0). Download the all-boards export, `/api/cards/export/csv` | "TEST 2347 B" (made first) is on a row above "TEST 2347 A" | A above B |
+| 357 | 2359 | Open TEST 2359 in one tab, its network panel open, and keep that tab in front throughout (bringing a board tab to the front makes it re-read, so switching tabs would show a false read). From a terminal with curl and O's key, read its columns (`GET /api/v1/boards/<id>`); clear the network panel just before each send. Send `PUT /api/v1/columns/<its On Hold id>` with that column's own `title`, `color` and `position`; wait five seconds; send it again with `"color":"#0a0b0c"` | The first answers 200 with the column, and the tab reads nothing; after the second, one `contents` read in the tab and the column's colour changes | A `contents` read after the first |
+| 358 | 2359 | The same, from the terminal with the tab in front, with `PUT /api/v1/labels/<TEST label id>` (its id from `GET /api/v1/boards/<id>/labels`) and `{"name":"TEST label"}` | 200 and no read in the tab | A read |
+| 359 | 2361 | In S1's Files tab, copy the file's link (its id is the last number). In the address bar open `/api/cards/<S2 id>/attachments/<file id>`, then `/api/cards/<S1 id>/attachments/<file id>` | The first: a 404 error page saying "Attachment not found"; the second: the file | The file under S2 |
+| 360 | 2361 | In the console on TEST 2359's page: `fetch('/api/cards/<S2 id>/attachments/<file id>', { method: 'DELETE' }).then((r) => r.status)` | `404`; the file still listed in S1's Files tab | `200`, or the file gone |
+
+**Afterwards.** Delete both scratch boards on the dashboard (S1, S2, the file, the label, the two TEST 2347 cards and the accepted TEST 2340 card go with them). Deleting the board leaves the request itself, so "TEST 2340 - delete me" stays in the Inbox: as O, in the console, `fetch('/api/requests/<its id>', { method: 'DELETE' }).then((r) => r.status)` (`200`; administrators only). Delete the second account if it was made for these checks.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image's Load more does nothing again; a request accepted under it stamps its copied comments with the accept (those copied under the new one keep their times); ties across columns come by column again in All Tasks, All To Do and the exports; an unchanged column, label, category or grouping save is written and told again; and a file is served or deleted under any card's address again.
 
 ## Changing the Schema
 
