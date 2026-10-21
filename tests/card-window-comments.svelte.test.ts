@@ -13,6 +13,10 @@
  *   - A save that changes the text takes the comment's text and `updatedAt`
  *     from the server's answer, not from what was typed and the browser's
  *     clock.
+ *   - Delete asks first, in the app's confirm dialog drawn inside the tab:
+ *     it sent the delete at once, and a deleted comment cannot be got back
+ *     (card 2338). An administrator deleting someone else's comment is told
+ *     whose it is and that the Activity Log records it.
  *
  * And the window following its card's comments live (card 2282), the whole
  * `CardModal` mounted: a page that is told of the card's comments, or has
@@ -27,7 +31,9 @@
  *
  * The plan is `docs/planning/cards-2282-2283-2284-2301-2302-comments.md`
  * (decision 12, test 8; decisions 1 and 2 with section 8's rulings 1 to 5,
- * tests 13 to 22).
+ * tests 13 to 22), and for the delete's confirm
+ * `docs/planning/cards-2337-2338-2341-2342-2353-card-window.md` (decisions 5
+ * and 7, tests 8 to 10).
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -37,9 +43,11 @@ import type { CardType } from '$lib/types';
 import type { CommentItem } from '$lib/components/card/CardComments.svelte';
 import { commentsChanged } from '$lib/board/sse';
 
-// The comment list asks the page who is signed in: the comment's author.
+// The comment list asks the page who is signed in: the comment's author, unless a case says
+// otherwise before it draws (an administrator, card 2338).
+const signedIn = vi.hoisted(() => ({ user: { id: 1, username: 'alice', role: 'user' } }));
 vi.mock('$app/stores', () => {
-	const value = { data: { user: { id: 1, username: 'alice', role: 'user' } } };
+	const value = { data: signedIn };
 	return { page: { subscribe: (run: (v: typeof value) => void) => { run(value); return () => {}; } } };
 });
 // A bare 'svelte' gives the server's runtime, whose `onMount` never runs: the window reads its
@@ -78,6 +86,7 @@ let fetched: Mock<(url: string, init?: RequestInit) => Promise<Response>>;
 let answer: unknown = null;
 
 beforeEach(() => {
+	signedIn.user = { id: 1, username: 'alice', role: 'user' };
 	answer = null;
 	fetched = vi.fn(async () => ({ ok: true, status: 200, json: async () => answer }) as Response);
 	vi.stubGlobal('fetch', fetched);
@@ -100,9 +109,9 @@ const written: CommentItem = {
 	createdAt: '2026-10-01 09:00:00', updatedAt: '2026-10-01 09:00:00', username: 'alice', userEmoji: '👤'
 };
 
-/** Mounts the tab on `written`, its props `$state`, and gives them back to read. */
-function draw() {
-	const props = $state({ card, activeTab: 'comments' as const, boardUsers: [], comments: [written], loadingComments: false, windowError: '' });
+/** Mounts the tab on `written` (or the comments given), its props `$state`, and gives them back to read. */
+function draw(list: CommentItem[] = [written], onWritten?: () => void) {
+	const props = $state({ card, activeTab: 'comments' as const, boardUsers: [], comments: list, loadingComments: false, windowError: '', onWritten });
 	const target = document.createElement('div');
 	document.body.appendChild(target);
 	drawn = { component: mount(CardComments, { target, props: props as never }), target };
@@ -157,6 +166,66 @@ describe('saving an edited comment (card 2284)', () => {
 		expect(props.comments).toEqual([{ ...written, content: 'As it is now', updatedAt: '2026-10-02 10:00:00' }]);
 		expect(target.querySelector('.comment-edited')).not.toBeNull();
 		expect(editBox(target)).toBeNull();
+	});
+});
+
+/** The tab's own confirm, when it is open: its title, its message and its two buttons. */
+function confirmShown(target: HTMLElement) {
+	const dialog = target.querySelector<HTMLElement>('.confirm-modal');
+	if (!dialog) return null;
+	return {
+		title: dialog.querySelector('h3')!.textContent!.trim(),
+		message: dialog.querySelector('.confirm-message')!.textContent!.trim(),
+		cancel: button(dialog, 'Cancel'),
+		confirm: button(dialog, 'Delete')
+	};
+}
+
+describe('deleting a comment asks first (card 2338)', () => {
+	it('Delete opens "Delete Comment" and sends nothing; Cancel closes it, the comment kept and nothing sent (test 8)', () => {
+		const { props, target } = draw();
+		button(target, 'Delete').click();
+		flushSync();
+
+		const asked = confirmShown(target);
+		expect(asked).not.toBeNull();
+		expect(asked!.title).toBe('Delete Comment');
+		expect(asked!.message).toBe('This comment will be deleted for everyone on the card. This cannot be undone.');
+		expect(fetched).not.toHaveBeenCalled();
+
+		asked!.cancel.click();
+		flushSync();
+		expect(confirmShown(target)).toBeNull();
+		expect(props.comments).toEqual([written]);
+		expect(target.querySelector('.comment-content')?.textContent).toContain('As it was');
+		expect(fetched).not.toHaveBeenCalled();
+	});
+
+	it('the dialog’s Delete sends one delete, takes the comment out, closes the dialog and tells the window once (test 9)', async () => {
+		const onWritten = vi.fn();
+		const { props, target } = draw([written], onWritten);
+		answer = { success: true };
+		button(target, 'Delete').click();
+		flushSync();
+		confirmShown(target)!.confirm.click();
+		await settle();
+
+		expect(fetched.mock.calls.map(([url, init]) => `${init?.method ?? 'GET'} ${url}`)).toEqual(['DELETE /api/cards/7/comments/3']);
+		expect(props.comments).toEqual([]);
+		expect(confirmShown(target)).toBeNull();
+		expect(onWritten).toHaveBeenCalledTimes(1);
+		expect(props.windowError).toBe('');
+	});
+
+	it('names the author and the Activity Log to an administrator deleting someone else’s comment (test 10)', () => {
+		signedIn.user = { id: 5, username: 'root', role: 'admin' };
+		const bobs: CommentItem = { ...written, id: 4, userId: 2, username: 'bob', content: 'Bob was here' };
+		const { target } = draw([bobs]);
+		button(target, 'Delete').click();
+		flushSync();
+
+		expect(confirmShown(target)!.message).toBe("bob's comment will be deleted for everyone on the card, and the Activity Log will record that you deleted it. This cannot be undone.");
+		expect(fetched).not.toHaveBeenCalled();
 	});
 });
 
@@ -455,6 +524,9 @@ describe('the card window re-reads its comments when told (card 2282, tests 14 t
 			const { props, target } = await drawWindow([comment(2, 'Second'), comment(1, 'First')]);
 			await reReadOut(props);
 			inThread(target, 'Delete').click();
+			flushSync();
+			// The delete asks first (card 2338): its dialog's Delete sends it.
+			button(target.querySelector<HTMLElement>('.confirm-modal')!, 'Delete').click();
 			await pass();
 			expect(requests).toContain('DELETE /api/cards/7/comments/2');
 			expect(shown(target)).toEqual(['First']);

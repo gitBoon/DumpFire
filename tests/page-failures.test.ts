@@ -460,16 +460,18 @@ describe('the card window’s own messages and Escape, src/lib/components/CardMo
 
 	it('leaves Escape to a confirmation the page opened over it, which takes it as Cancel, and closes on Escape otherwise', () => {
 		// All Tasks' "Archive Card" and the board page's: Escape cancelled the
-		// confirmation and closed the window under it as well.
+		// confirmation and closed the window under it as well. Since card 2338
+		// any confirmation, a comment's Delete inside the window too
+		// (tests/card-window-keys.svelte.test.ts runs that one).
 		const handler = functionNamed(modal, 'handleKeydown').getText().replace(/\s+/g, ' ');
-		const leaves = 'if (confirming && !overlay?.contains(confirming)) return;';
+		const leaves = 'if (confirming) return;';
 		expect(handler).toContain("const confirming = document.querySelector('.confirm-modal');");
 		expect(handler).toContain(leaves);
 		expect(handler.indexOf(leaves)).toBeLessThan(handler.indexOf('onClose();'));
 		// Escape, and Ctrl+Enter, which saves (card 2280, slice B5c: tests/card-window-keys.svelte.test.ts).
 		expect(handler).toContain("if (e.key !== 'Escape' && !saveKey) return;");
 		// With the box that has the focus told to the follow (card 2280, the B5d review).
-		expect(source).toContain('aria-label="Card editor" bind:this={overlay} onfocusin={(e) => (focusedField = boxField(e.target))} onfocusout={() => (focusedField = null)}>');
+		expect(source).toContain('aria-label="Card editor" onfocusin={(e) => (focusedField = boxField(e.target))} onfocusout={() => (focusedField = null)}>');
 
 		// What it looks for is the confirmation those pages open, which answers Escape itself.
 		const confirmation = readFileSync(join(ROOT, 'src/lib/components/ConfirmModal.svelte'), 'utf8');
