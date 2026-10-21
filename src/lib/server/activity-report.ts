@@ -404,10 +404,12 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 	// 2257), by the rule the milestone's own page uses (`canViewMilestone`).
 	// Someone who can open one board of a goal across boards is refused the
 	// goal, and was given its name here on every card of it they could see.
-	// The card's `milestoneId` is its own field and stays.
+	// The card's `milestoneId` is its own field and stays. Each goal is checked
+	// against the reader's boards read above (card 2400), not one by one.
 	const openMilestones = milestoneIdsOpenTo(
 		actor,
-		rows.flatMap((r) => (r.milestoneId === null ? [] : [r.milestoneId]))
+		rows.flatMap((r) => (r.milestoneId === null ? [] : [r.milestoneId])),
+		opens
 	);
 
 	const boardMap = new Map<number, ReportBoard>();

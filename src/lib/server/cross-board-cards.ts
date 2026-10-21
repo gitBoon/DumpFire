@@ -163,9 +163,10 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 	// These pages span every accessible board and can run to thousands of
 	// cards, so a per-card lookup is not an option: these take the ids already
 	// loaded. A blocker on a board the caller cannot open is withheld (card 2129),
-	// and a milestone the caller cannot open is not named (card 2257).
+	// and a milestone the caller cannot open is not named (card 2257), each
+	// goal checked against the boards read above (card 2400).
 	const blockedState = getBlockedStateForCards(cardIds, user, accessibleIds);
-	const milestoneNames = milestoneNamesForCards(user, cardIds);
+	const milestoneNames = milestoneNamesForCards(user, cardIds, accessibleIds);
 
 	return {
 		// What a page reads of each board and no more: not its parent card,

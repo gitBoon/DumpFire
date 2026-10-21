@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.89
+version: 1.90
 status: As-Built
 date: 2026-10-21
 tags:
@@ -4379,6 +4379,44 @@ A saved mail password, a host, a port or a user name changed, and a refused save
 #### Going back to the previous image
 
 Nothing is done to the database. The older image writes no line for a mail settings or App URL save, but for the "Allow mail without a checked, encrypted connection" box, and the lines this image wrote stay in the log until its retention removes them. Its inbox, goal lists and All Tasks read as many queries as before, and show the same.
+
+### Goal Names and the Plan Page Read Less; Saving the App URL Unchanged Stores Nothing
+
+**Cards 2400 and 2401.** No migration, no setting, no index, no route added, and nothing in `/api/v1` changes (the OpenAPI document is unchanged; `GET /api/admin/smtp` gains two fields, `appUrlFrom` and `appUrlEnvSet`). The plan is `docs/planning/cards-2400-2401.md`.
+
+- **2400.** The goal names on All Tasks, All To Do and the activity report (`GET /api/v1/reports/activity`) were checked one goal at a time, and the Planning page read every board and kept the person's. Each now reads the same number of queries however many goals there are, and the Planning page reads only the person's boards. What every page shows is the same.
+- **2401.** 🌐 Application Settings showed the App URL in effect, which is the server's `APP_URL` environment variable where none is saved, and **Save** stored it: from then a change of `APP_URL` was ignored. Where no SMTP Host was set the panel showed no App URL at all, and **Save** cleared a saved one. The panel now says under the field where the App URL comes from, and **Save** stores it only when it differs from the one in effect. Clearing the field and saving goes back to `APP_URL`, or to `ORIGIN` where `APP_URL` is not set, and the line says which. **Save** waits until the App URL has been read, and a page that could not read it says so.
+
+**Owner to know.** It is now safe to press **Save** under 🌐 Application Settings without changing anything: nothing is stored. Card 2396's check 442 left the App URL out for this reason; this section's check 448 saves it. An App URL that an earlier unchanged save copied from `APP_URL` is still saved, and the panel now says `Saved here, …` for it: to let `APP_URL` apply again, clear the field and press **Save**.
+
+#### Before the deploy
+
+On production, on the older image, as **O**, your administrator account, signed in. Nothing here writes anything. Note:
+
+- In **Admin**, under 🌐 Application Settings, the Application URL exactly as shown (or that it is empty).
+- Open `/todo` (All To Do), open the milestone picker (it shows `Any milestone`; in a narrow window press **Filters** first), and note each `🎯` goal it lists after `Any milestone` and `No milestone`, in order.
+- Open `/plan` (**Planning**), press **New milestone**, open the board picker beside the name box (it shows `Cross-board`), and note each board it lists after `Cross-board`, in order; then press **Cancel**.
+
+#### After the deploy
+
+On production, as **O**, signed in. Open the **Audit** page in a second tab on its **Live Console**, Context **All**, and leave it open for 448. Nothing here writes anything but 448's save, which stores nothing.
+
+Checks 445 and 446 are smoke checks only. O is an administrator, whose goal names and Planning page read as before, so they show the two pages still answer as they did; they do not exercise 2400's narrowing, which only a person who is not an administrator reaches (the suite covers it: see below the table).
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 445 | 2400 | Open `/todo` (All To Do) and open the milestone picker (`Any milestone`; in a narrow window press **Filters** first) | After `Any milestone` and `No milestone`, the `🎯` goals noted before the deploy, in the same order | A goal missing or added, with no card's goal changed and no card entering or leaving To Do in between (the **Audit** page lists what was written since the note) |
+| 446 | 2400 | Open `/plan` (**Planning**), press **New milestone** and open the board picker beside the name box; then press **Cancel** | `Cross-board`, then the boards noted before the deploy, in the same order; **Cancel** closes the form and no goal is added | A board missing or added, with no board made, deleted or shared with O in between |
+| 447 | 2401 | In **Admin**, look under 🌐 Application Settings; then open `/api/admin/smtp` in the address bar | The Application URL is the one noted. With the field not empty, one line under it: `From the server's configuration (APP_URL). Saving it unchanged leaves it there, so a later change of APP_URL still applies.` or, for one saved, `Saved here, ahead of the server's configuration (APP_URL). Clear it and save to use the server's configuration (APP_URL) again.` (or, where the server sets no `APP_URL`, `Saved here; the server's configuration sets no APP_URL. Clear it and save to use ORIGIN, the server's own address.`); with it empty, no such line and the amber `⚠️ No App URL set. …`. **Save** is not greyed out. The answer holds `"appUrl"` as noted, `"appUrlFrom"`: `"environment"` for the first line, `"setting"` for either saved line, `"none"` for an empty field, and `"appUrlEnvSet"`: `true` for the first line and the `(APP_URL) again` one, `false` for the `ORIGIN` one. Note which | The Application URL differing from the note; no line under a field that is not empty; `"appUrlFrom"` or `"appUrlEnvSet"` missing or not matching the line; `The page could not read the App URL settings` shown |
+| 448 | 2401 | Back in **Admin**, under 🌐 Application Settings, press **Save** without changing anything; then reload **Admin**, and open `/api/admin/smtp` again | The toast `App URL saved`; after the reload the Application URL and the line under it are as in 447; the answer's `"appUrl"`, `"appUrlFrom"` and `"appUrlEnvSet"` are as in 447; no new `Mail settings changed` row on the Live Console | `"appUrlFrom"` now `"setting"` where 447 said `"environment"` (the fault this card fixes: see Afterwards to undo it); the Application URL changed; a `Mail settings changed` row |
+
+A person who is not an administrator is where 2400 reads less; an administrator's goal names and Planning page read as before. Their answers, and the counts for one goal against many, are covered by `tests/load-access-reads.test.ts`, which pins the activity report too. An App URL saved with no SMTP Host set, and one cleared back to `APP_URL`, are not arranged on production: each changes where mailed links point. The suite covers them (`tests/mail-settings.test.ts`, `tests/admin-panels.test.ts`).
+
+**Afterwards.** Nothing to put back. Should 448 have turned `"environment"` into `"setting"`, clear the Application URL, press **Save**, and check `/api/admin/smtp` answers `"appUrlFrom":"environment"` again.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image answers no `appUrlFrom`, shows no line under the App URL (the field still shows the App URL in effect), and its **Save** stores whatever the field holds, `APP_URL`'s included: do not press it unchanged on the older image. Its All Tasks, All To Do, activity report and Planning page read as many queries as before, and show the same.
 
 ## Changing the Schema
 

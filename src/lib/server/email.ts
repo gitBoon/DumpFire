@@ -141,18 +141,61 @@ export function smtpPasswordMissing(): boolean {
 // ─── App URL ─────────────────────────────────────────────────────────────────
 
 /**
+ * An App URL as a link reads it: trimmed, with no trailing slash, and
+ * `http://` added to one with no scheme; empty text for none. What
+ * `getAppUrl()` makes of the setting or `APP_URL`, and what a save compares
+ * (card 2401). The scheme in any case, as an address reads it and as a save
+ * accepts it: `HTTPS://Host` was read as `http://HTTPS://Host` (card 2401's
+ * review).
+ */
+export function appUrlAsRead(value: string): string {
+	const url = value.trim().replace(/\/+$/, '');
+	return url && !/^https?:\/\//i.test(url) ? `http://${url}` : url;
+}
+
+/**
  * Get the configured app URL (no trailing slash): the App URL setting, or
  * failing that the `APP_URL` environment variable.
  */
 export function getAppUrl(): string | null {
-	let url = (getSetting('app_url') || process.env.APP_URL || '').trim().replace(/\/+$/, '') || null;
-	if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
-		url = `http://${url}`;
-	}
-	return url;
+	return appUrlAsRead(getSetting('app_url') || process.env.APP_URL || '') || null;
 }
 
-/** Save the app URL setting. */
+/**
+ * Where the App URL `getAppUrl()` answers comes from (card 2401): the
+ * setting, which wins whenever a row holds any text; `APP_URL`, where no row
+ * does (an empty row is none); or neither. A row of spaces alone is `none`,
+ * as `getAppUrl()` answers null for it. The admin panel says which, so that
+ * an App URL from the environment is not taken for one saved.
+ */
+export function appUrlFrom(): 'setting' | 'environment' | 'none' {
+	const stored = getSetting('app_url');
+	if (stored) return appUrlAsRead(stored) ? 'setting' : 'none';
+	return appUrlEnvSet() ? 'environment' : 'none';
+}
+
+/**
+ * Whether `APP_URL` holds an App URL, as a link reads it (card 2401's review),
+ * so that the panel can say what clearing a saved one goes back to: `APP_URL`,
+ * or `ORIGIN` where it is not set. Its value is answered whenever it is in
+ * effect, so this says nothing new.
+ */
+export function appUrlEnvSet(): boolean {
+	return appUrlAsRead(process.env.APP_URL || '') !== '';
+}
+
+/**
+ * Whether the App URL setting holds text that reads as none, such as a row of
+ * spaces alone saved before card 2117's rule (card 2401's review). Such a row
+ * still hides `APP_URL`, so an empty save writes over it although the App URL
+ * in effect reads the same.
+ */
+export function appUrlRowReadsAsNone(): boolean {
+	const stored = getSetting('app_url');
+	return !!stored && !appUrlAsRead(stored);
+}
+
+/** Save the app URL setting. Empty text is none: `APP_URL` then applies again. */
 export function setAppUrl(url: string): void {
 	// Strip trailing slash
 	setSetting('app_url', url.replace(/\/+$/, ''));

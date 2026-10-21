@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.39
+version: 1.40
 status: As-Built
 date: 2026-10-21
 tags:
@@ -213,6 +213,65 @@ flowchart TD
 - **When it is written.** After `writeAs` returns, so after the commit: a save refused (the
   password needed again, a field of the wrong type, `{}`, a caller no longer an administrator)
   or one that fails writes none. Backup saves write no audit entry, and nor does this.
+
+### Where the App URL Comes From
+
+Card 2401. Every link in a mail begins with the App URL that `getAppUrl()` in `email.ts`
+answers: the `app_url` setting, or where no row holds any text, the `APP_URL` environment
+variable (then `ORIGIN`, in `linkBaseUrl`, which is not the App URL). `GET /api/admin/smtp`
+answered it as `appUrl`, the App URL panel filled its field with it and **Save** sent it back,
+and the PUT stored whatever it was sent: an App URL from `APP_URL` became the setting, and a
+later change of `APP_URL` no longer applied. Where no mail host was set the GET answered no
+App URL at all, so the panel showed an empty field and its Save stored an empty App URL over a
+saved one.
+
+```mermaid
+flowchart TD
+    Get["GET /api/admin/smtp<br/>(with a mail host or without)"] --> Answer["appUrl: getAppUrl() or ''<br/>appUrlFrom: appUrlFrom()<br/>appUrlEnvSet: appUrlEnvSet()"]
+    Answer --> Panel["AppUrlPanel: the field,<br/>and a line saying where it comes from"]
+    Panel --> Put["PUT { appUrl }"]
+    Put --> Read["appUrlAsRead(sent)<br/>against before.appUrl (card 2396's read)"]
+    Read -- same --> Nothing["nothing stored:<br/>APP_URL still applies"]
+    Read -- differs or the row reads as none --> Store["setAppUrl(sent)<br/>('' is none: APP_URL applies again)"]
+    Store --> Again["the panel reads the GET again"]
+    Nothing --> Again
+```
+
+- **`appUrlFrom`**, in both GET answers beside `appUrl`: `setting` (a row with text in it,
+  which wins), `environment` (no row, or an empty one, and `APP_URL` set) or `none`. A row of
+  spaces alone is `none`, as `getAppUrl()` answers null for it. `appUrlFrom()` and
+  `getAppUrl()` read through the one `appUrlAsRead` (trimmed, trailing slashes off, `http://`
+  added to text with no `http://` or `https://` scheme in any case, empty for none: the review
+  made the scheme check case-insensitive, as `HTTPS://Host` was read as `http://HTTPS://Host`).
+- **`appUrlEnvSet`**, in both GET answers (the review): whether `APP_URL` holds an App URL as a
+  link reads it (`appUrlEnvSet()`), so that the panel says what clearing a saved App URL goes
+  back to. Its value is already answered whenever it is in effect, so nothing new is revealed.
+- **The save.** The PUT stores the App URL only when `appUrlAsRead(sent)` differs from the App
+  URL in effect, `mailSettingsAsRead().appUrl` read before the write in the same transaction.
+  An unchanged save, a trailing slash or a missing `http://` included, stores nothing and is
+  still `200`. A value typed that equals `APP_URL` while another is stored is a change, and is
+  stored as typed. Empty text where one is stored is stored, and an empty row is none, so
+  `APP_URL` applies again: that is the way back to the environment's App URL. Empty text where
+  `APP_URL` is in effect writes an empty row, which changes nothing. A stored row that reads as none
+  (spaces alone, from before card 2117's rule) still hides `APP_URL`, so the review has any
+  save, an empty one included, write over it (`appUrlRowReadsAsNone()`).
+- **The panel.** For `environment`: `From the server's configuration (APP_URL). Saving it
+  unchanged leaves it there, so a later change of APP_URL still applies.`; for `setting`
+  where `APP_URL` is set: `Saved here, ahead of the server's configuration (APP_URL). Clear it
+  and save to use the server's configuration (APP_URL) again.`; for `setting` where it is not:
+  `Saved here; the server's configuration sets no APP_URL. Clear it and save to use ORIGIN, the
+  server's own address.`; for `none`, the amber `No App URL set` warning, shown while the field
+  is empty once the App URL has been read. The source line speaks of the App URL read, so it is
+  hidden while the field holds anything else. **Save** stays off until a GET has answered
+  (`appUrlFrom` not null): an empty field saved before the answer would clear a stored App URL.
+  A GET that fails, or cannot reach the server, leaves Save off and says `The page could not
+  read the App URL settings: reload the page before saving.` After a save it reads the GET
+  again.
+- **The line.** Card 2396's line compares the App URL as a link reads it before and after, so a
+  save that stores nothing writes none. Clearing a saved App URL writes a line only when the
+  App URL in effect changes: `appUrl from "<saved>" to "<APP_URL>"` where `APP_URL` is set and
+  differs from it, none where the saved value equals `APP_URL` (the row goes, the App URL in
+  effect reads the same), and `appUrl from "<saved>" to ""` where `APP_URL` is not set.
 
 ### Connection Handling
 

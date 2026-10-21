@@ -45,6 +45,13 @@
  * added the tests at the end, which hold the inbox and the goal lists to the
  * same reads for one board and goal as for twelve, and All Tasks to reading
  * only the caller's boards. Its plan is `docs/planning/cards-2396-2399.md`.
+ *
+ * Card 2400 added the activity report to the cases, its hashes taken on the
+ * old code before its change; lowered the ceilings of All Tasks, All To Do and
+ * the report, whose goal names were asked goal by goal, with the count before
+ * beside each; asked the three in the count test of one board against twelve;
+ * and added the tests that the plan page reads only the caller's boards, and
+ * none for a caller with none. Its plan is `docs/planning/cards-2400-2401.md`.
  */
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -258,7 +265,9 @@ const CASES: Record<string, (s: ReturnType<typeof scene>) => { path: string; ask
 	'the plan page, board A': (s) => ({ path: `/plan?board=${s.A.board.id}`, ask: load }),
 	'GET /api/milestones': () => ({ path: '/api/milestones', ask: get }),
 	'GET /api/milestones?forBoard=A': (s) => ({ path: `/api/milestones?forBoard=${s.A.board.id}`, ask: get }),
-	'GET /api/v1/milestones': () => ({ path: '/api/v1/milestones', ask: get })
+	'GET /api/v1/milestones': () => ({ path: '/api/v1/milestones', ask: get }),
+	// Card 2400: the activity report, which names the cards' goals, pinned on the old code.
+	'GET /api/v1/reports/activity': () => ({ path: `/api/v1/reports/activity?${RANGE}`, ask: get })
 };
 
 type Pin = { reads: number; access: number; hash: string };
@@ -273,16 +282,16 @@ type Pin = { reads: number; access: number; hash: string };
  */
 const PINS: Record<string, Record<Kind, Pin>> = {
 	'All Tasks': {
-		owner: { reads: 30, access: 1, hash: '178b6f6f36cbe091' }, // 42 → 30, 4 → 1; re-pinned
-		member: { reads: 33, access: 1, hash: 'a3045380deccb41f' }, // 45 → 33, 4 → 1; re-pinned
-		mate: { reads: 39, access: 1, hash: '0a5b0e94f8e29024' }, // 54 → 39, 4 → 1; re-pinned
+		owner: { reads: 26, access: 1, hash: '178b6f6f36cbe091' }, // 42 → 30, 4 → 1; re-pinned; 30 → 26 (card 2400)
+		member: { reads: 26, access: 1, hash: 'a3045380deccb41f' }, // 45 → 33, 4 → 1; re-pinned; 33 → 26 (card 2400)
+		mate: { reads: 27, access: 1, hash: '0a5b0e94f8e29024' }, // 54 → 39, 4 → 1; re-pinned; 39 → 27 (card 2400)
 		admin: { reads: 20, access: 0, hash: '178b6f6f36cbe091' }, // 20 → 20, 0 → 0; re-pinned
 		outsider: { reads: 24, access: 1, hash: '637e189ab5942b84' } // 36 → 24, 4 → 1
 	},
 	'All To Do': {
-		owner: { reads: 27, access: 1, hash: '36f706500bb64b30' }, // 38 → 26, 4 → 1; re-pinned, 27 with B's card in A's goal
-		member: { reads: 29, access: 1, hash: '5a9cc817475ba3a1' }, // 41 → 29, 4 → 1; re-pinned
-		mate: { reads: 33, access: 1, hash: '9d0265bf38972861' }, // 48 → 33, 4 → 1; re-pinned
+		owner: { reads: 24, access: 1, hash: '36f706500bb64b30' }, // 38 → 26, 4 → 1; re-pinned, 27 with B's card in A's goal; 27 → 24 (card 2400)
+		member: { reads: 24, access: 1, hash: '5a9cc817475ba3a1' }, // 41 → 29, 4 → 1; re-pinned; 29 → 24 (card 2400)
+		mate: { reads: 25, access: 1, hash: '9d0265bf38972861' }, // 48 → 33, 4 → 1; re-pinned; 33 → 25 (card 2400)
 		admin: { reads: 18, access: 0, hash: '36f706500bb64b30' }, // 18 → 18, 0 → 0; re-pinned
 		outsider: { reads: 22, access: 1, hash: '26d10535915f23f3' } // 34 → 22, 4 → 1
 	},
@@ -427,6 +436,15 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		mate: { reads: 9, access: 1, hash: '36855e5a13503afc' }, // 25 → 9, 1 → 1
 		admin: { reads: 3, access: 0, hash: '503ceeff82ccf68f' }, // 3 → 3, 0 → 0
 		outsider: { reads: 6, access: 1, hash: 'c004716dc0076b81' } // 11 → 6, 0 → 1 (no goal of theirs: read once, not per goal)
+	},
+	// Card 2400's case: every hash taken on the old code (5b002fc), before the
+	// change, and unchanged by it.
+	'GET /api/v1/reports/activity': {
+		owner: { reads: 8, access: 1, hash: 'fdad46fb0456c6ce' }, // 12 → 8, 1 → 1
+		member: { reads: 8, access: 1, hash: 'a219fe69a2ffbe26' }, // 15 → 8, 1 → 1
+		mate: { reads: 9, access: 1, hash: '7b5404422e012058' }, // 21 → 9, 1 → 1
+		admin: { reads: 3, access: 0, hash: 'fdad46fb0456c6ce' }, // 3 → 3, 0 → 0
+		outsider: { reads: 6, access: 1, hash: '9c1e6df8a2b31e3b' } // 6 → 6, 1 → 1 (no goal on P: none asked)
 	}
 };
 
@@ -618,7 +636,11 @@ describe('the inbox and the goal lists read as much for one board or goal as for
 			'the plan page': () => load('/plan', member),
 			'GET /api/milestones': () => get('/api/milestones', member),
 			'GET /api/milestones?forBoard=': () => get(`/api/milestones?forBoard=${first.id}`, member),
-			'GET /api/v1/milestones': () => get('/api/v1/milestones', member)
+			'GET /api/v1/milestones': () => get('/api/v1/milestones', member),
+			// Card 2400: the goal names on the cards listed.
+			'All Tasks': () => load('/all', member),
+			'All To Do': () => load('/todo', member),
+			'GET /api/v1/reports/activity': () => get('/api/v1/reports/activity', member)
 		};
 		const reads: Record<string, number> = {};
 		const answers: Record<string, unknown> = {};
@@ -732,5 +754,40 @@ describe('the inbox and the goal lists read as much for one board or goal as for
 		};
 		for (const kind of ['owner', 'member', 'mate', 'outsider'] as const) expect(await wholeTable(s.callers[kind]), kind).toBe(0);
 		expect(await wholeTable(s.callers.admin)).toBe(1);
+	});
+
+	// Card 2400: the plan page read every top-level board, and kept the
+	// caller's in memory, as All Tasks did.
+	it('the plan page reads only the top-level boards its caller can open, and every one for an administrator', async () => {
+		const s = scene();
+		const everyTopBoard = async (user: SessionUser) => {
+			const budget = readBudget(100_000);
+			try {
+				await load('/plan', user);
+			} finally {
+				budget.restore();
+			}
+			return budget.sources.filter((source) => /from "boards" where "boards"\."parent_card_id" is null$/.test(source.trim())).length;
+		};
+		for (const kind of ['owner', 'member', 'mate', 'outsider'] as const) expect(await everyTopBoard(s.callers[kind]), kind).toBe(0);
+		expect(await everyTopBoard(s.callers.admin)).toBe(1);
+	});
+
+	it('the plan page offers a caller who can open no board none, and reads no board for them', async () => {
+		const owner = makeUser({ username: 'owner' });
+		makeBoard({ owner, name: 'Private' });
+		const nobody = makeUser({ username: 'nobody' });
+
+		const budget = readBudget(100_000);
+		let page;
+		try {
+			page = await load('/plan', nobody);
+		} finally {
+			budget.restore();
+		}
+		if (page.type !== 'data') throw new Error(`refused: ${page.type}`);
+		expect(page.data.boards).toEqual([]);
+		expect(page.data.milestones).toEqual([]);
+		expect(budget.sources.filter((source) => /"boards"\."parent_card_id" is null/.test(source))).toEqual([]);
 	});
 });

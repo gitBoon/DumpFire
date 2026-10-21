@@ -122,7 +122,7 @@ beforeEach(() => {
 			if (url === '/api/admin/backup' && method === 'PUT') return Response.json({ ok: true });
 			if (url === '/api/admin/backup' && method === 'POST') return Response.json({ results: [{ status: 'success' }] });
 			if (url.startsWith('/api/admin/backup/gdrive/auth')) return Response.json({ authUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=s1' });
-			if (url === '/api/admin/smtp') return Response.json({ appUrl: 'https://kanban.example.com' });
+			if (url === '/api/admin/smtp') return Response.json({ appUrl: 'https://kanban.example.com', appUrlFrom: 'setting', appUrlEnvSet: false });
 			return Response.json({ message: 'Not found' }, { status: 404 });
 		})
 	);
@@ -461,6 +461,102 @@ describe('the App URL panel, mounted', () => {
 
 		expect(sent.map((request) => request.what)).toEqual(['GET /api/admin/smtp']);
 		expect(target.querySelector<HTMLInputElement>('input[type="url"]')!.value).toBe('https://kanban.example.com');
+	});
+
+	// Card 2401: an App URL from APP_URL was shown as if it were saved.
+	// Its review: what clearing a saved App URL goes back to, APP_URL or ORIGIN, is said by whether APP_URL is set.
+	const FROM = {
+		environment: "From the server's configuration (APP_URL). Saving it unchanged leaves it there, so a later change of APP_URL still applies.",
+		setting: "Saved here, ahead of the server's configuration (APP_URL). Clear it and save to use the server's configuration (APP_URL) again.",
+		settingNoEnv: "Saved here; the server's configuration sets no APP_URL. Clear it and save to use ORIGIN, the server's own address."
+	};
+	const UNREAD = '⚠️ The page could not read the App URL settings: reload the page before saving.';
+
+	it.each([
+		['environment', true, 'https://env.example.com', FROM.environment, false],
+		['setting', true, 'https://saved.example.com', FROM.setting, false],
+		['setting', false, 'https://saved.example.com', FROM.settingNoEnv, false],
+		['none', false, '', null, true]
+	] as const)('says under the field where the App URL comes from: %s, APP_URL set %s (card 2401)', async (appUrlFrom, appUrlEnvSet, appUrl, line, warned) => {
+		answer = (what) => (what === 'GET /api/admin/smtp' ? Response.json({ configured: false, appUrl, appUrlFrom, appUrlEnvSet }) : undefined);
+		const target = draw(AppUrlPanel);
+		await settle();
+
+		expect(target.querySelector<HTMLInputElement>('input[type="url"]')!.value).toBe(appUrl);
+		expect(target.querySelector('.app-url-from')?.textContent?.trim() ?? null).toBe(line);
+		expect(target.textContent!.includes('No App URL set.')).toBe(warned);
+		expect(target.querySelector('.app-url-unread')).toBeNull();
+		expect(buttonNamed(target, 'Save').disabled).toBe(false);
+	});
+
+	it('hides where the App URL comes from while the field holds another, and shows it again once it holds the one read (card 2401 review)', async () => {
+		answer = (what) =>
+			what === 'GET /api/admin/smtp' ? Response.json({ configured: false, appUrl: 'https://env.example.com', appUrlFrom: 'environment', appUrlEnvSet: true }) : undefined;
+		const target = draw(AppUrlPanel);
+		await settle();
+		const field = target.querySelector<HTMLInputElement>('input[type="url"]')!;
+
+		type(field, 'https://typed.example.com');
+		expect(target.querySelector('.app-url-from')).toBeNull();
+		type(field, 'https://env.example.com');
+		expect(target.querySelector('.app-url-from')?.textContent?.trim()).toBe(FROM.environment);
+	});
+
+	// Its review: Save before the GET's answer sent the empty field, which cleared a stored App URL.
+	it('keeps Save off until the App URL is read, and off with the reason where it could not be (card 2401 review)', async () => {
+		const get = held(() => Response.json({ message: 'Server error' }, { status: 500 }));
+		answer = (what) => (what === 'GET /api/admin/smtp' ? get.answered : undefined);
+		const target = draw(AppUrlPanel);
+		await settle();
+
+		// On its way: nothing to save from, and nothing said yet.
+		expect(buttonNamed(target, 'Save').disabled).toBe(true);
+		expect(target.querySelector('.app-url-unread')).toBeNull();
+		expect(target.textContent!.includes('No App URL set.')).toBe(false);
+
+		get.release();
+		await settle();
+		expect(buttonNamed(target, 'Save').disabled).toBe(true);
+		expect(target.querySelector('.app-url-unread')?.textContent?.trim()).toBe(UNREAD);
+		expect(target.textContent!.includes('No App URL set.')).toBe(false);
+		buttonNamed(target, 'Save').click();
+		await settle();
+		expect(asked('PUT /api/admin/smtp')).toEqual([]);
+	});
+
+	it('keeps Save off with the reason where the server cannot be reached (card 2401 review)', async () => {
+		answer = (what) => (what === 'GET /api/admin/smtp' ? Promise.reject(new TypeError('Failed to fetch')) : undefined);
+		const target = draw(AppUrlPanel);
+		await settle();
+
+		expect(buttonNamed(target, 'Save').disabled).toBe(true);
+		expect(target.querySelector('.app-url-unread')?.textContent?.trim()).toBe(UNREAD);
+	});
+
+	it('sends the field as it stands on Save, then reads the App URL again and shows where it now comes from (card 2401)', async () => {
+		let reads = 0;
+		answer = (what) => {
+			if (what === 'PUT /api/admin/smtp') return Response.json({ success: true });
+			if (what !== 'GET /api/admin/smtp') return undefined;
+			reads++;
+			return Response.json(
+				reads === 1
+					? { configured: true, appUrl: 'https://saved.example.com', appUrlFrom: 'setting' }
+					: { configured: true, appUrl: 'https://env.example.com', appUrlFrom: 'environment' }
+			);
+		};
+		const target = draw(AppUrlPanel);
+		await settle();
+		const field = target.querySelector<HTMLInputElement>('input[type="url"]')!;
+
+		type(field, '');
+		buttonNamed(target, 'Save').click();
+		await settle();
+
+		expect(sent.map((request) => request.what)).toEqual(['GET /api/admin/smtp', 'PUT /api/admin/smtp', 'GET /api/admin/smtp']);
+		expect(asked('PUT /api/admin/smtp')[0].body).toEqual({ appUrl: '' });
+		expect(field.value).toBe('https://env.example.com');
+		expect(target.querySelector('.app-url-from')?.textContent?.trim()).toBe(FROM.environment);
 	});
 });
 
