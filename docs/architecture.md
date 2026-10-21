@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.43
+version: 1.44
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1118,7 +1118,7 @@ The page keeps its props, `connectLiveRefresh(() => invalidateAll())`, `deleteBo
 
 The page has no `:global` rule. The progress bar's rules are copied from `BoardsTable.svelte` into `AnalyticsSidebar.svelte`, since a `.dashboard :global(...)` rule in the page would outrank the table's `.fill-all`; the spinner's, with its keyframes, into `ActiveTasksModal.svelte`, which is drawn outside `.dashboard`.
 
-**The load** (`src/routes/+page.server.ts`) makes the same number of reads however many boards, sub-board levels and assignee rows the caller sees (card 2298). The boards it reads are the top-level boards the caller can open and the sub-boards they can open (`subBoardsFor`, card 2130); their columns and their cards, archived ones too, are read once, and the board rows, the All Tasks walk and the leaderboard take what each needs from them in memory. What was read whole and filtered here is counted in SQL over the same scope: the subtasks of the open cards on the boards walked, the caller's pending requests (every one for an administrator, else those to them or a team of theirs), the leaderboard's assignee rows on the top-level boards with each card's column title, in the order the rows were made, and the names of those people alone; the token totals are asked for those boards, not every board. A board's cards are taken column by column, each column's by id, and the assignee rows by `rowid`, as the old reads gave them, so a board's sub-boards and a tie on the leaderboard come out in the same order. The page still reads it all again 250 ms after a burst of live events (`connectLiveRefresh`), and an assignee's archived card still counts on the leaderboard, as it always has. `tests/load-query-counts.test.ts` holds both loads' counts steady between a small installation and a large one, and pins what they answer.
+**The load** (`src/routes/+page.server.ts`) makes the same number of reads however many boards, sub-board levels and assignee rows the caller sees (card 2298). The boards it reads are the top-level boards the caller can open and the sub-boards they can open (`subBoardsFor`, card 2130); their columns and their cards, archived ones too, are read once, and the board rows and the All Tasks walk take what each needs from them in memory; the leaderboard has its own single query. What was read whole and filtered here is counted in SQL over the same scope: the subtasks of the open cards on the boards walked, the caller's pending requests (every one for an administrator, else those to them or a team of theirs), the leaderboard's assignee rows of the cards that are not archived on the top-level boards (card 2391; archived ones were scored too, as done or active, where every other figure on the page leaves them out), with each card's column title, in the order the rows were made, and the names of those people alone; the token totals are asked for those boards, not every board. A board's cards are taken column by column, each column's by id, and the assignee rows by `rowid`, as the old reads gave them, so a board's sub-boards and a tie on the leaderboard come out in the same order. The page still reads it all again 250 ms after a burst of live events (`connectLiveRefresh`). `tests/load-query-counts.test.ts` holds both loads' counts steady between a small installation and a large one, and pins what they answer.
 
 ```mermaid
 flowchart LR

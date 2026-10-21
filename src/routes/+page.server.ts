@@ -423,18 +423,21 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	// ─── Team Leaderboard (top assignees on YOUR boards) ────────────────
 	// Only count cards on boards the user has access to: the top-level boards
-	// shown, every card on them, archived ones too. Each assignee row comes
-	// with its card's column's title, in one query (card 2298): the whole table
-	// was read and filtered here, and each row's card and column read after,
-	// two queries a row. In the order the rows were made, as the table was
-	// read, since that order breaks a tie on the board.
+	// shown, and their cards that are not archived, as every other figure on
+	// this page counts them (card 2391): an archived card scored here, as done
+	// or active, and someone whose every card was archived stayed on the board.
+	// Each assignee row comes with its card's column's title, in one query
+	// (card 2298): the whole table was read and filtered here, and each row's
+	// card and column read after, two queries a row. In the order the rows
+	// were made, as the table was read, since that order breaks a tie on the
+	// board.
 	const myBoardIds = allBoards.map(b => b.id);
 	const scopedAssigneeRows = myBoardIds.length > 0
 		? db.select({ userId: cardAssignees.userId, columnTitle: columns.title })
 			.from(cardAssignees)
 			.innerJoin(cards, eq(cardAssignees.cardId, cards.id))
 			.innerJoin(columns, eq(cards.columnId, columns.id))
-			.where(inArray(columns.boardId, myBoardIds))
+			.where(and(inArray(columns.boardId, myBoardIds), isNull(cards.archivedAt)))
 			.orderBy(sql`${cardAssignees}.rowid`)
 			.all()
 		: [];

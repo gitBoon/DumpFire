@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.86
+version: 1.87
 status: As-Built
 date: 2026-10-21
 tags:
@@ -4260,7 +4260,7 @@ On production, as **O**, signed in, with the browser's developer tools open (Net
 |---|---|---|---|---|
 | 426 | 2297 | Open **Admin**; read 📊 Database Overview | The figures over **Boards**, **Columns**, **Cards**, **Categories**, **Users** and **Teams** are the ones noted before the deploy | A figure differs and nothing was written in between |
 | 427 | 2297 | On the same page, under 📋 Board Management, find the three boards noted; under 🏢 Team Management, the team noted | Each board's `ID: <id> · <n> cols · <n> cards · <n> cats` line is the one noted; the team's members are the ones noted, in the same order | A line or a member differs, or the order of the members has changed, with nothing written in between |
-| 428 | 2298 | Open the dashboard | The All Tasks row's `<n> cards · <n> tasks`, its tokens and its cost, the `<n> inbox pending` line, and the Team Leaderboard's names in order with their `✓` and `⚡` figures, are the ones noted before the deploy | Any differs with nothing written in between |
+| 428 | 2298 | Open the dashboard | The All Tasks row's `<n> cards · <n> tasks`, its tokens and its cost, the `<n> inbox pending` line, and the Team Leaderboard's names in order with their `✓` and `⚡` figures, are the ones noted before the deploy | Any differs with nothing written in between. In an image that has card 2391 as well, a Team Leaderboard figure lower than noted, or a name gone, is not a fault here: read the leaderboard by check 431 instead |
 | 429 | 2389 | On the board TEST 2389 - delete me, clear the network panel; right-click the card TEST 2389 card - delete me and choose **📋 Duplicate** | In the network panel, one `POST` to `/api/cards`, answered `201`, whose request payload holds `subtasks` with the titles `TEST 2389 one` and `TEST 2389 two`, in that order; no `POST` to `/api/subtasks`; the toast `Duplicated "TEST 2389 card - delete me"` | A `POST` to `/api/subtasks`, or the payload without `subtasks` |
 | 430 | 2389 | Open the card TEST 2389 card - delete me (Copy) | Under Subtasks, `TEST 2389 one` and then `TEST 2389 two`, neither ticked | Either is missing, or one is ticked |
 
@@ -4271,6 +4271,36 @@ A Duplicate refused part way cannot be arranged by hand on production: every sub
 #### Going back to the previous image
 
 Nothing is done to the database. The older image's admin page and dashboard read as many queries as before, and show the same figures. Its Duplicate sends each subtask in a request of its own after the copy again, so a subtask refused part way leaves a copy with the ones before it.
+
+### The Dashboard's Team Leaderboard Leaves Out Archived Cards
+
+**Card 2391.** No migration, no setting, no index, no route added, and no API change (the OpenAPI document is unchanged). The plan is `docs/planning/card-2391.md`.
+
+- **2391.** The dashboard's Team Leaderboard counted every card assigned on the top-level boards shown, archived ones included, as done (`✓`) or active (`⚡`), where every other figure on the dashboard leaves archived cards out. It now counts only the cards that are not archived. The dashboard reads the same number of queries as before.
+
+**Owner to know.** The Team Leaderboard's figures fall on production. A person's `<n>✓` is lower by the archived cards they are assigned in a Complete or Done column, and their `<n>⚡` by those in any other column, on the top-level boards the viewer can open. Someone whose every assigned card there is archived is no longer listed, so the top five and their order can change, and the panel is not shown at all when no open assigned card is left. A card restored from Archived Cards counts again.
+
+#### Before the deploy
+
+On production, on the older image, as **O**, your administrator account, signed in. Nothing here writes anything. Note, as near to the deploy as you can, the dashboard's Team Leaderboard: its names, in order, with each one's `✓` and `⚡` figures (the same note as card 2298's, when the two ship in one image).
+
+#### After the deploy
+
+On production, as **O**, signed in, with O's API key (My Account). Check 431 reads the page and writes nothing: a figure that has moved because a card was assigned, moved, archived or restored in between is not a fault (the **Audit** page lists what was written since the note). **Scratch things**, for 432 and 433, and only if O's name is among the Team Leaderboard's names in 431 (if it is not, skip 432 and 433; the suite covers them, `tests/load-query-counts.test.ts`): on the dashboard a board "TEST 2391 - delete me"; note its id (the number in its address, `/board/<id>`), `<S>`. With O's key: `GET /api/v1/me`, note the answer's `id`, `<O>`; `GET /api/v1/boards/<S>/columns`, note the To Do column's id `<todo>`; `POST /api/v1/boards/<S>/cards` with `{"columnId": <todo>, "title": "TEST 2391 card - delete me"}`, note the answer's `id`, `<C>`; and `POST /api/v1/cards/<C>/assignees` with `{"userId": <O>}`, answered `{"success":true,"message":"User assigned"}`.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 431 | 2391 | Open the dashboard; read the Team Leaderboard | Each name noted before the deploy that is still listed has a `✓` figure and a `⚡` figure each equal to the one noted or lower; a name noted may be gone or in another place, and a name not noted may be listed where one has gone or fallen | A `✓` or `⚡` figure higher than the one noted, with nothing written in between |
+| 432 | 2391 | Reload the dashboard; read O's row on the Team Leaderboard | O's `⚡` figure is one more than in 431; O's `✓` figure is the same | O's `⚡` is not one more than in 431, with nothing else assigned to O in between |
+| 433 | 2391 | With O's key, `DELETE /api/v1/cards/<C>` (this archives the card); reload the dashboard | The answer is `200` `{"success":true}`; O's `⚡` figure is the one read in 431 again, one less than in 432; O's `✓` figure is the same | O's `⚡` is still the figure read in 432. The older image keeps it there |
+
+An archived card in a Complete column, and a person whose every card is archived, are not arranged on production: the first would complete a card and the second would need a person with nothing else assigned. The suite covers both (`tests/load-query-counts.test.ts`).
+
+**Afterwards.** On the dashboard delete the board "TEST 2391 - delete me"; the archived card TEST 2391 card - delete me goes with it.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image's Team Leaderboard counts archived cards again, as done or active by their column, and lists people whose every assigned card is archived.
 
 ## Changing the Schema
 
