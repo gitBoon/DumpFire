@@ -18,6 +18,10 @@
  * which counts every read statement run while it is installed. The counts are
  * compared between a small installation and a large one, so the test does not
  * pin a number that any later read would change, only that it does not grow.
+ * Each load has a ceiling as well: the admin page's handful, and the
+ * dashboard's for each caller in the pinned scene (`MOST_READS`), lowered by
+ * one for the owner and the outsider when the dashboard stopped reading its
+ * caller's cards' columns twice.
  *
  * What each load answers is pinned as the old load answered it: the cases
  * below were run on the old code before the change and passed there, but for
@@ -327,8 +331,9 @@ describe('the dashboard’s load (card 2298)', () => {
 
 	it.each(['owner', 'member', 'mate', 'admin', 'outsider'] as const)('answers the %s what it did', async (kind) => {
 		const callers = pinnedScene();
-		const { data } = await loadCounted('/', callers[kind]);
+		const { data, reads } = await loadCounted('/', callers[kind]);
 		expect(shown(data)).toEqual(PINNED[kind]);
+		expect(reads).toBeLessThanOrEqual(MOST_READS[kind]);
 	});
 
 	/**
@@ -361,6 +366,18 @@ describe('the dashboard’s load (card 2298)', () => {
 		expect(archived.reads).toBe(open.reads);
 	});
 });
+
+/**
+ * The most reads the dashboard makes for each caller in `pinnedScene`, set
+ * on purpose as the load makes them now: a read added to the load is a change
+ * made here as well, and a read saved leaves the test passing. The owner and
+ * the outsider are each one fewer than they were: the columns their assigned
+ * cards are in were read twice with the same query, once for which are done
+ * and once for which are on hold, and are read once now (card 2392). They
+ * were 37 and 36. The member, the mate and the
+ * administrator are assigned no card, so neither read was made for them.
+ */
+const MOST_READS: Record<string, number> = { owner: 36, member: 34, mate: 37, admin: 17, outsider: 35 };
 
 /** The keys of the answer, of each board in it and of its analytics, in order, the same for every caller. */
 const KEYED = {
