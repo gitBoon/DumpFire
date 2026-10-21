@@ -20,11 +20,13 @@
  * pin a number that any later read would change, only that it does not grow.
  *
  * What each load answers is pinned as the old load answered it: the cases
- * below were run on the old code before the change and passed there. The key
- * order is pinned too (`JSON.stringify`), since the page is handed the object
- * as it is.
+ * below were run on the old code before the change and passed there, but for
+ * the one leaderboard figure card 2391 changed on purpose (see `PINNED`). The
+ * key order is pinned too (`JSON.stringify`), since the page is handed the
+ * object as it is.
  *
- * The plan is `docs/planning/cards-2297-2298-2389.md`.
+ * The plan is `docs/planning/cards-2297-2298-2389.md`; card 2391's is
+ * `docs/planning/card-2391.md`.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
@@ -328,6 +330,36 @@ describe('the dashboard’s load (card 2298)', () => {
 		const { data } = await loadCounted('/', callers[kind]);
 		expect(shown(data)).toEqual(PINNED[kind]);
 	});
+
+	/**
+	 * The leaderboard leaves archived cards out, as every other figure on the
+	 * page does (card 2391). Cy's one card is archived in Complete, so she is
+	 * not on the board at all; Dee's are one archived in Complete and one open
+	 * in To Do, so she has none done. The old load counted both archived
+	 * cards, and answered the two scenes alike: `cy: 1 done, 0 active` and
+	 * `dee: 1 done, 1 active`. Archiving them reads nothing more.
+	 */
+	it('leaves archived cards off the leaderboard, with the same number of reads (card 2391)', async () => {
+		function scene(archivedAt: string | null): SessionUser {
+			resetDb();
+			const owner = makeUser({ username: 'owner' });
+			const cy = makeUser({ username: 'cy' });
+			const dee = makeUser({ username: 'dee' });
+			const { cols } = makeBoard({ owner, name: 'L' });
+			assignCard(makeCard(cols['Complete'], { archivedAt }), cy);
+			assignCard(makeCard(cols['Complete'], { archivedAt }), dee);
+			assignCard(makeCard(cols['To Do']), dee);
+			return owner;
+		}
+		const board = (data: any) => data.analytics.teamLeaderboard.map((u: any) => `${u.emoji} ${u.username}: ${u.completed} done, ${u.active} active`);
+
+		const open = await loadCounted('/', scene(null));
+		expect(board(open.data)).toEqual(['👤 cy: 1 done, 0 active', '👤 dee: 1 done, 1 active']);
+
+		const archived = await loadCounted('/', scene('2026-01-04 00:00:00'));
+		expect(board(archived.data)).toEqual(['👤 dee: 0 done, 1 active']);
+		expect(archived.reads).toBe(open.reads);
+	});
 });
 
 /** The keys of the answer, of each board in it and of its analytics, in order, the same for every caller. */
@@ -344,8 +376,11 @@ const KEYED = {
  * What the old load answered each caller in `pinnedScene`, run on the old
  * code. A's sub-boards are listed by their cards' columns (To Do first), not
  * by the cards' ids; Bob comes before Ann on a tie, his row having been made
- * first; Ann's archived card counts as active on the leaderboard, as it
- * always has (a fault noted in the plan, not changed here).
+ * first. One figure is changed on purpose since: Ann's archived card counted
+ * as active on the leaderboard (`ann: 1 done, 1 active`), and is left out now
+ * that the leaderboard counts open cards only (card 2391), so the owner, the
+ * member, the mate and the administrator are each shown `ann: 1 done, 0
+ * active`, in the same place.
  */
 const PINNED: Record<string, unknown> = {
 	owner: {
@@ -361,7 +396,7 @@ const PINNED: Record<string, unknown> = {
 		],
 		allTasksTotals: { cards: 11, completedCards: 4, subtasks: 4, tasks: 15, tokenTotal: 1500, costUsd: 0.0315, unpricedTokens: 0 },
 		pendingRequests: 1,
-		teamLeaderboard: ['👤 bob: 1 done, 1 active', '👤 ann: 1 done, 1 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
+		teamLeaderboard: ['👤 bob: 1 done, 1 active', '👤 ann: 1 done, 0 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
 		totalSubBoards: 3,
 		totalBoards: 3,
 		boardHealth: ['B 1/2', 'A 1/3', 'P 0/1'],
@@ -375,7 +410,7 @@ const PINNED: Record<string, unknown> = {
 		],
 		allTasksTotals: { cards: 5, completedCards: 2, subtasks: 3, tasks: 8, tokenTotal: 500, costUsd: 0.010499999999999999, unpricedTokens: 0 },
 		pendingRequests: 0,
-		teamLeaderboard: ['👤 ann: 1 done, 1 active', '👤 bob: 0 done, 1 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
+		teamLeaderboard: ['👤 ann: 1 done, 0 active', '👤 bob: 0 done, 1 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
 		totalSubBoards: 1,
 		totalBoards: 2,
 		boardHealth: ['A 1/3', 'P 0/1'],
@@ -386,7 +421,7 @@ const PINNED: Record<string, unknown> = {
 		boards: [['P: 1 cards, 0 done, last 2026-01-03 00:00:00, tokens null'], ['A: 3 cards, 1 done, last 2026-01-09 00:00:00, tokens 500']],
 		allTasksTotals: { cards: 4, completedCards: 1, subtasks: 3, tasks: 7, tokenTotal: 500, costUsd: 0.010499999999999999, unpricedTokens: 0 },
 		pendingRequests: 1,
-		teamLeaderboard: ['👤 ann: 1 done, 1 active', '👤 bob: 0 done, 1 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
+		teamLeaderboard: ['👤 ann: 1 done, 0 active', '👤 bob: 0 done, 1 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
 		totalSubBoards: 0,
 		totalBoards: 2,
 		boardHealth: ['A 1/3', 'P 0/1'],
@@ -405,7 +440,7 @@ const PINNED: Record<string, unknown> = {
 		],
 		allTasksTotals: { cards: 11, completedCards: 4, subtasks: 4, tasks: 15, tokenTotal: 1500, costUsd: 0.0315, unpricedTokens: 0 },
 		pendingRequests: 3,
-		teamLeaderboard: ['👤 bob: 1 done, 1 active', '👤 ann: 1 done, 1 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
+		teamLeaderboard: ['👤 bob: 1 done, 1 active', '👤 ann: 1 done, 0 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
 		totalSubBoards: 3,
 		totalBoards: 3,
 		boardHealth: ['B 1/2', 'A 1/3', 'P 0/1'],
