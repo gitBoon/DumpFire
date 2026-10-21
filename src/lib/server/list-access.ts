@@ -50,7 +50,9 @@ import { subBoardProgress } from './card-completion';
  * `GET /api/v1/me/stats`, the board page and the burndown page each read it
  * two to five times a request, and read it once now. Each helper reads it
  * where it read it before, after any early answer, so a caller that leaves
- * it out reads what it did.
+ * it out reads what it did; `listMilestones` aside, which reads it first since
+ * card 2402, as it narrows the read of the goals, where a list that matched no
+ * goal on the board or with the status asked read nothing more.
  */
 export function resolveAccessible(user: Actor, accessible: number[] | null | undefined): number[] | null {
 	if (accessible === undefined || (accessible === null && !isAdmin(user))) return getAccessibleBoardIds(user);
