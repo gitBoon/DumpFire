@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.33
+version: 1.34
 status: As-Built
-date: 2026-10-20
+date: 2026-10-21
 tags:
   - database
   - schema
@@ -82,7 +82,7 @@ erDiagram
         text name
         text emoji
         int parent_card_id FK
-        int category_id FK
+        int category_id "no foreign key"
         bool is_public
         int created_by FK
         text created_at
@@ -371,7 +371,7 @@ erDiagram
     boards ||--o{ daily_snapshots : "snapshot"
     boards ||--o{ webhooks : "fires"
     boards ||--o{ card_templates : "templates"
-    board_categories ||--o{ boards : "groups"
+    board_categories |o..o{ boards : "groups (no foreign key)"
     teams ||--o{ board_teams : "access"
 
     columns ||--o{ cards : "contains"
@@ -1281,6 +1281,24 @@ of about zero.
   then how many more; a restore of a backup that brings one writes the same line at once,
   as `[WARN] [IMPORT]`. See
   [Admin Operations Guide](admin-guide.md#a-board-beneath-one-of-its-own-cards)
+- **`boards.category_id` is a reference with no foreign key** (card 2293). It names the
+  dashboard grouping (`board_categories`) the board is filed under, or is NULL for none, and
+  nothing in the database holds it to a row that is there: the ER diagram above draws it
+  without `FK`, where it was drawn as one. The application keeps it true in three places.
+  Deleting a grouping (`deleteBoardGrouping`) sets it to NULL on every board filed under
+  it, sub-boards included, in the same transaction, leaving `updated_at` as it is. The
+  start-up backfill sets it to NULL on any board whose grouping is not there
+  (`BOARDS_LEAVE_DELETED_GROUPINGS` in `migrate.ts`; see
+  [Migrations and Schema Reconciliation](#migrations-and-schema-reconciliation)), so the
+  boards that deletes before card 2293 left pointing at nothing were cleared at the first
+  start after its deploy. And a restore treats it as a foreign key: a restore that could
+  not copy a grouping some board points at is refused, as for a real one, and one whose
+  backup itself holds such a board is committed with a note and cleared by the backfill.
+  Every page already showed a board under a grouping that is gone as uncategorised;
+  before card 2293 the API answered the dead id, and a grouping later given the same id
+  (which a restore onto another server can do) would have had the board filed under it.
+  A foreign key was not added: `boards` is one of the six reconciled tables, so it would
+  need a migration and a rebuild of `boards` at every database's next start
 - **Soft delete** uses the `archived_at` column — a non-null value means the card is archived
 - **XP system** uses a separate `user_xp` table keyed by username for historical tracking
 - **Settings** is a simple key-value store for SMTP config, app URL, etc.
@@ -1344,7 +1362,7 @@ is in [Deployment](deployment.md#start-up-sequence). This section is how it work
 | 2. Convert a `card_dependencies` table still in its original shape | Yes, if the conversion fails |
 | 3. Apply each file not yet recorded, one transaction per file | Yes, on the first failure |
 | 4. Rebuild any of the six reconciled tables that is not in the model's shape | Only if foreign keys cannot be switched back on |
-| 5. Repeat three backfills (`runBackfills`, one transaction): `first_completed_at` of migration `0050` and `access_token` of `0051` for rows that lack them, and `0057`'s statement, which takes a card out of a milestone that belongs to another board (card 2179) | Yes, if they fail: the halt's stage reads `backfilling cards.first_completed_at, task_requests.access_token and cards.milestone_id` |
+| 5. Repeat four backfills (`runBackfills`, one transaction): `first_completed_at` of migration `0050` and `access_token` of `0051` for rows that lack them, `0057`'s statement, which takes a card out of a milestone that belongs to another board (card 2179), and the statement that takes a board out of a grouping that no longer exists (card 2293) | Yes, if they fail: the halt's stage reads `backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id and boards.category_id` |
 | 6. Bring every timestamp to the stored form (`normaliseTimestamps`, card 2095), unless the database records a migration this build has no file for | No: a failure is rolled back, logged at `ERROR`, and tried again at the next start |
 | 7. Compare the whole database with the model and report differences | No |
 
@@ -1367,6 +1385,22 @@ all its cards are there (card 2179). So it finds cards only after a restore of a
 backup or a return from an older image, and a count at any other start means some write
 still makes such a card. `migrate.ts` exports the statement as
 `CARDS_LEAVE_OTHER_BOARDS_MILESTONES`, and a test holds it to 0057's text.
+
+The fourth (card 2293) has no migration file of its own: it is the one-off as well as the
+repair, since it runs at the first start of the image that brings it. It sets
+`boards.category_id` to NULL on every board whose grouping is not there
+(`BOARDS_LEAVE_DELETED_GROUPINGS`, which has no foreign key to lean on; see
+[Key Schema Notes](#key-schema-notes)), leaving `updated_at` and every other column as they
+are, and logs `Took <n> board(s) out of a grouping that no longer exists: board <id>
+(grouping <id>), …` at `WARN`, naming the first 50 boards by id (`; and <n> more` after
+them), read by the statement's own `WHERE` just before it runs (`BOARDS_LEAVING_DELETED_GROUPINGS`).
+A restore names the same in its "Filled in". Deleting a grouping clears its boards, so a
+count at a start that follows no restore and no return from an older image means some write
+still leaves such a board. The restore asks the same `WHERE` (`BOARDS_UNDER_DELETED_GROUPINGS`)
+before it commits, as for a foreign key, so the backfill never clears a board because a
+restore could not copy its grouping. It keeps every row, moves no id counter and makes no
+foreign-key violation, so the rehearsal has nothing to note for it and nothing is declared
+for it in `tests/rehearsal/one-offs.ts`.
 
 A migration file may hold a one-off change to stored data as well as structure, as 0053
 ends every session once, 0054 every invite not yet used, and 0055 gives every task request

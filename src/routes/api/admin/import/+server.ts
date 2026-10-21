@@ -49,7 +49,7 @@ import { isHttpError, json } from '@sveltejs/kit';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import { sqlite } from '$lib/server/db';
 import { convertedList, totalConverted } from '$lib/server/db/timestamps';
-import { releasedCardsList } from '$lib/server/db/migrate';
+import { releasedCardsList, unfiledBoardsList } from '$lib/server/db/migrate';
 import {
 	NO_SUPERADMIN_IN_BACKUP,
 	RestoreError,
@@ -275,6 +275,13 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 					? [
 							`${result.backfilled.releasedFromMilestones} card(s) taken out of a milestone of another board ` +
 								`(${releasedCardsList(result.backfilled)})`
+						]
+					: []),
+				// The same for boards filed under a grouping that is not there (card 2293).
+				...(result.backfilled.unfiledBoards > 0
+					? [
+							`${result.backfilled.unfiledBoards} board(s) taken out of a grouping that no longer exists ` +
+								`(${unfiledBoardsList(result.backfilled)})`
 						]
 					: []),
 				...result.defaulted.map(

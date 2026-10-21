@@ -15,7 +15,7 @@ import type Database from 'better-sqlite3';
 import { dev } from '$app/environment';
 import { schedulerSetting } from '../schedulers';
 import { putBackFromTrash, type UploadFile } from '../uploads';
-import { defaultsForNull, orDefault, runBackfills, type Backfill } from './migrate';
+import { BOARDS_UNDER_DELETED_GROUPINGS, defaultsForNull, orDefault, runBackfills, type Backfill } from './migrate';
 import { normaliseTimestamps, unreadableList, type TimestampNormalisation } from './timestamps';
 import { KNOWN_BROWSER_SECRET_KEY } from '../known-browsers';
 import { REQUEST_FORM_SECRET_KEY } from '../request-tokens';
@@ -236,9 +236,23 @@ function nameOf(row: Record<string, unknown>, keyColumns: readonly string[], ind
 /** Rows of one table that refer to rows of another which are not there. */
 type Stranded = { table: string; parent: string; rows: (number | null)[] };
 
+/** The columns of `table` in `database`: none when there is no such table. */
+const columnNamesOf = (database: Database.Database, table: string): string[] =>
+	(database.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[]).map((column) => column.name);
+
 /**
  * Every row in `live` that refers, through a foreign key, to a row that is not
  * there (`PRAGMA foreign_key_check`), sorted by whose doing that is.
+ *
+ * And one reference with no foreign key, asked as if it had one (card 2293):
+ * a board filed under a dashboard grouping that is not there
+ * (`boards.category_id`). The pragma cannot see it, and the backfill after the
+ * commit clears it, so a grouping this restore could not copy would otherwise
+ * have its boards unfiled without a word. It is sorted board by board, by the
+ * grouping each names, which the pragma cannot do: fatal when that grouping is
+ * one the backup holds and this restore did not copy (`groupingsLeftOut`), and
+ * as it was otherwise, however many other groupings were left out (the review
+ * of card 2293).
  *
  * `fatal`: the row it wants is in a table that this restore left something out
  * of. Committing would make an orphan of it.
@@ -248,7 +262,8 @@ type Stranded = { table: string; parent: string; rows: (number | null)[] };
  */
 function strandedBy(
 	live: Database.Database,
-	leftOut: ReadonlyMap<string, string[]>
+	leftOut: ReadonlyMap<string, string[]>,
+	groupingsLeftOut: ReadonlySet<number>
 ): { fatal: Stranded[]; asItWas: Stranded[] } {
 	const groups = new Map<string, Stranded>();
 	for (const violation of live.pragma('foreign_key_check') as {
@@ -264,15 +279,41 @@ function strandedBy(
 
 	const fatal: Stranded[] = [];
 	const asItWas: Stranded[] = [];
-	// By name, so that what is said about them does not depend on the order
-	// SQLite happened to check the tables in.
-	const byName = [...groups.values()].sort(
-		(a, b) => a.table.localeCompare(b.table) || a.parent.localeCompare(b.parent)
-	);
-	for (const group of byName) {
+	for (const group of groups.values()) {
 		(leftOut.has(group.parent.toLowerCase()) ? fatal : asItWas).push(group);
 	}
-	return { fatal, asItWas };
+	if (columnNamesOf(live, 'boards').includes('category_id') && columnNamesOf(live, 'board_categories').includes('id')) {
+		const unfiled = live.prepare(BOARDS_UNDER_DELETED_GROUPINGS).all() as { id: number; groupingId: number }[];
+		const lost = unfiled.filter((board) => groupingsLeftOut.has(Number(board.groupingId)));
+		const own = unfiled.filter((board) => !groupingsLeftOut.has(Number(board.groupingId)));
+		const of = (boards: typeof unfiled): Stranded => ({ table: 'boards', parent: 'board_categories', rows: boards.map((b) => b.id) });
+		if (lost.length > 0) fatal.push(of(lost));
+		if (own.length > 0) asItWas.push(of(own));
+	}
+
+	// By name, so that what is said about them does not depend on the order
+	// SQLite happened to check the tables in.
+	const byName = (a: Stranded, b: Stranded) => a.table.localeCompare(b.table) || a.parent.localeCompare(b.parent);
+	return { fatal: fatal.sort(byName), asItWas: asItWas.sort(byName) };
+}
+
+/**
+ * The ids of the backup's dashboard groupings that are not in `live` after the
+ * copy: the rows of `board_categories` this restore could not copy. Empty when
+ * either database has no such table. Read from the table's storage, as every
+ * other read of the backup is.
+ */
+function groupingsNotCopied(live: Database.Database, backup: Database.Database): Set<number> {
+	if (!columnNamesOf(backup, 'board_categories').includes('id') || !columnNamesOf(live, 'board_categories').includes('id')) {
+		return new Set();
+	}
+	const copied = new Set(
+		(live.prepare('SELECT id FROM board_categories').all() as { id: number }[]).map((row) => Number(row.id))
+	);
+	const held = (backup.prepare(fromTableStorage(backup, 'board_categories')).all() as { id: unknown }[])
+		.map((row) => Number(row.id))
+		.filter((id) => Number.isInteger(id));
+	return new Set(held.filter((id) => !copied.has(id)));
 }
 
 /**
@@ -882,7 +923,7 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 			// Nothing is committed that leaves a row pointing at a row this
 			// restore left out. Foreign keys are off, so nothing has objected
 			// until now; this is where it is asked.
-			const stranded = strandedBy(live, leftOut);
+			const stranded = strandedBy(live, leftOut, groupingsNotCopied(live, backup));
 			if (stranded.fatal.length > 0) {
 				const parents = [...new Set(stranded.fatal.map((group) => group.parent.toLowerCase()))];
 				const notCopied = parents.flatMap((parent) => leftOut.get(parent) ?? []);
@@ -894,9 +935,14 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 				);
 			}
 			for (const group of stranded.asItWas) {
+				// A board's grouping is sorted board by board (strandedBy), so its
+				// table can have lost other rows: then only the ones referred to were not.
+				const notLeftOut = leftOut.has(group.parent.toLowerCase())
+					? `The backup holds no row of ${group.parent} they refer to`
+					: `No row of ${group.parent} was left out by this restore`;
 				errors.push(
 					`${group.table}: ${group.rows.length} row(s) refer to a row of ${group.parent} that is not there ` +
-						`(rowid ${some(group.rows.map(String), 5, ', ')}). No row of ${group.parent} was left out by this restore` +
+						`(rowid ${some(group.rows.map(String), 5, ', ')}). ${notLeftOut}` +
 						(tables.includes(group.table)
 							? ', so the backup holds them that way'
 							: `; ${group.table} is not a table a restore replaces, and its rows are the ones it had before`)
@@ -994,7 +1040,14 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 
 	// The restore is committed. A failure from here on is something to report
 	// about a restore that succeeded, not a failed restore.
-	let backfilled: Backfill = { firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] };
+	let backfilled: Backfill = {
+		firstCompletedAt: 0,
+		accessTokens: 0,
+		releasedFromMilestones: 0,
+		released: [],
+		unfiledBoards: 0,
+		unfiled: []
+	};
 	try {
 		backfilled = runBackfills(live);
 	} catch (e) {

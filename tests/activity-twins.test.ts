@@ -69,7 +69,7 @@ import {
 	resetDb,
 	type BoardFixture
 } from './helpers/fixtures';
-import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
+import { diffSnapshots, expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 
 beforeEach(resetDb);
 
@@ -3435,6 +3435,83 @@ describe('the details', () => {
 			`event update {"type":"milestone"} on board ${s.A.board.id}`,
 			`event update {"type":"milestone"} on board ${s.S.board.id}`
 		]);
+	});
+});
+
+describe('deleting a dashboard grouping takes its boards out of it (card 2293)', () => {
+	const TREES = [
+		['the internal route', '/api/board-categories'],
+		['the v1 route', '/api/v1/board-categories']
+	] as const;
+
+	/** As `boardScene`, with a second grouping, Partners (id 2), that board S is filed under. */
+	function twoGroupings(): Scene {
+		const s = boardScene();
+		db.insert(boardCategories).values({ name: 'Partners', color: '#123456' }).run();
+		db.update(boards).set({ categoryId: 2 }).where(eq(boards.id, s.S.board.id)).run();
+		return s;
+	}
+
+	/** Board S's grouping, which deleting Clients must leave alone. */
+	const groupingOfS = (s: Scene) => db.select({ categoryId: boards.categoryId }).from(boards).where(eq(boards.id, s.S.board.id)).get()!.categoryId;
+
+	/** Delete a grouping with its effects recorded, and say what changed in the database and what was told. */
+	async function deleted(user: SessionUser, path: string) {
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const res = await api('DELETE', path, { user });
+			await sent.settle();
+			return { res, changed: diffSnapshots(before, snapshotDb()), told: sent.all.map(name) };
+		} finally {
+			sent.restore();
+		}
+	}
+
+	it.each(TREES)('through %s, a board filed under it is unfiled, and nothing else changes', async (_tree, base) => {
+		const s = twoGroupings();
+
+		const { res, changed, told } = await deleted(s.owner, `${base}/1`);
+
+		expect([res.status, res.body]).toEqual([200, { success: true }]);
+		// The grouping gone, and board A's category_id cleared: its updated_at as
+		// it was, no entry and nothing told, as no grouping write records or tells.
+		// Partners and board S, filed under it, are not in the list: untouched.
+		expect(changed).toEqual([
+			'board_categories: row 1 was removed ({"id":1,"name":"Clients","color":"#6366f1"})',
+			`boards: row ${s.A.board.id} changed (category_id: 1 became null)`
+		]);
+		expect(groupingOfS(s)).toBe(2);
+		expect(told).toEqual([]);
+	});
+
+	it.each(TREES)('through %s, a sub-board filed under it is unfiled too', async (_tree, base) => {
+		const s = twoGroupings();
+		const sub = makeBoard({ owner: s.owner, name: 'Sub', parentCardId: s.first.id }).board;
+		db.update(boards).set({ categoryId: 1 }).where(eq(boards.id, sub.id)).run();
+
+		const { res, changed } = await deleted(s.owner, `${base}/1`);
+
+		expect(res.status).toBe(200);
+		expect(changed).toEqual([
+			'board_categories: row 1 was removed ({"id":1,"name":"Clients","color":"#6366f1"})',
+			`boards: row ${s.A.board.id} changed (category_id: 1 became null)`,
+			`boards: row ${sub.id} changed (category_id: 1 became null)`
+		]);
+		expect(groupingOfS(s)).toBe(2);
+	});
+
+	it.each(TREES)('through %s, one holding a board the caller cannot edit is refused, and every board keeps its grouping', async (_tree, base) => {
+		const s = boardScene();
+		const stranger = makeUser({ username: 'stranger' });
+		const theirs = makeBoard({ owner: stranger, name: 'Theirs' }).board;
+		db.update(boards).set({ categoryId: 1 }).where(eq(boards.id, theirs.id)).run();
+
+		const { res, changed, told } = await deleted(s.owner, `${base}/1`);
+
+		expect([res.status, res.body]).toEqual([403, { message: 'This category groups boards you cannot edit' }]);
+		expect(changed).toEqual([]);
+		expect(told).toEqual([]);
 	});
 });
 

@@ -24,6 +24,8 @@ import { sqlite } from '$lib/server/db';
 import { printable } from '$lib/server/logger';
 import { EXPECTED_SCHEMA } from '$lib/server/db/expected-schema';
 import {
+	BOARDS_LEAVE_DELETED_GROUPINGS,
+	BOARDS_LEAVING_DELETED_GROUPINGS,
 	CARDS_LEAVE_OTHER_BOARDS_MILESTONES,
 	MigrationError,
 	RECONCILED_TABLES,
@@ -1093,7 +1095,7 @@ describe('the backfills, repeated at every start', () => {
 		const { error } = halted({ database, migrationsDir: REAL_MIGRATIONS });
 
 		expect(error.message).toBe(
-			'Migrations halted (backfilling cards.first_completed_at, task_requests.access_token and cards.milestone_id): ' +
+			'Migrations halted (backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id and boards.category_id): ' +
 				`first completion is frozen. No migration was committed earlier in this start. ${WHAT_NEXT}`
 		);
 		// As it says: the card is as it was before the step that failed.
@@ -1150,7 +1152,9 @@ describe('the backfills, repeated at every start', () => {
 				{ cardId: 1, milestoneId: 1 },
 				{ cardId: 3, milestoneId: 1 },
 				{ cardId: 5, milestoneId: 3 }
-			]
+			],
+			unfiledBoards: 0,
+			unfiled: []
 		});
 
 		expect(milestonesOf().map((card) => [card.id, card.milestone_id])).toEqual([
@@ -1165,7 +1169,14 @@ describe('the backfills, repeated at every start', () => {
 		]);
 		// Nobody edited the cards.
 		expect(milestonesOf().map((card) => card.updated_at)).toEqual(Array(8).fill(STAMP));
-		expect(runBackfills(database)).toEqual({ firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] });
+		expect(runBackfills(database)).toEqual({
+			firstCompletedAt: 0,
+			accessTokens: 0,
+			releasedFromMilestones: 0,
+			released: [],
+			unfiledBoards: 0,
+			unfiled: []
+		});
 	});
 
 	it('names the cards it takes out at a start, the first 50 by card and milestone, in its WARN line (review of card 2179)', () => {
@@ -1195,6 +1206,95 @@ describe('the backfills, repeated at every start', () => {
 			`[WARN] [DB] Took 54 card(s) out of a milestone that belongs to another board: ${named.join(', ')}; and 4 more`
 		]);
 		expect(database.prepare('SELECT COUNT(*) AS n FROM cards WHERE milestone_id IS NOT NULL').get()).toEqual({ n: 0 });
+	});
+
+	it('takes out of its grouping every board filed under one that no longer exists, and nothing else, once (card 2293)', () => {
+		const STAMP = '2026-10-01 09:00:00';
+		const database = memoryDb();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		// Board 1 is filed under a grouping that exists, board 2 under grouping 7,
+		// deleted as `deleteBoardGrouping` deleted one before this card, and board
+		// 3 under none. `boards.category_id` has no foreign key.
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x');
+			INSERT INTO board_categories (id, name) VALUES (1, 'Clients'), (7, 'Deleted');
+			INSERT INTO boards (id, name, created_by, category_id, created_at, updated_at) VALUES
+				(1, 'Filed', 1, 1, '${STAMP}', '${STAMP}'),
+				(2, 'Under a grouping gone', 1, 7, '${STAMP}', '${STAMP}'),
+				(3, 'In none', 1, NULL, '${STAMP}', '${STAMP}');
+			DELETE FROM board_categories WHERE id = 7;
+		`);
+		const groupingsOf = () =>
+			database.prepare('SELECT id, category_id, updated_at FROM boards ORDER BY id').all() as {
+				id: number;
+				category_id: number | null;
+				updated_at: string;
+			}[];
+
+		expect(runBackfills(database)).toEqual({
+			firstCompletedAt: 0,
+			accessTokens: 0,
+			releasedFromMilestones: 0,
+			released: [],
+			unfiledBoards: 1,
+			unfiled: [{ boardId: 2, groupingId: 7 }]
+		});
+
+		expect(groupingsOf().map((board) => [board.id, board.category_id])).toEqual([
+			[1, 1],
+			[2, null],
+			[3, null]
+		]);
+		// Nobody edited the boards.
+		expect(groupingsOf().map((board) => board.updated_at)).toEqual(Array(3).fill(STAMP));
+		expect(runBackfills(database)).toEqual({
+			firstCompletedAt: 0,
+			accessTokens: 0,
+			releasedFromMilestones: 0,
+			released: [],
+			unfiledBoards: 0,
+			unfiled: []
+		});
+	});
+
+	it("names the boards it takes out by the statement's own WHERE, so the two cannot drift (card 2293)", () => {
+		const words = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+		expect(words(BOARDS_LEAVE_DELETED_GROUPINGS)).toBe(
+			'UPDATE `boards` SET `category_id` = NULL WHERE `category_id` IS NOT NULL ' +
+				'AND NOT EXISTS (SELECT 1 FROM `board_categories` WHERE `id` = `boards`.`category_id`);'
+		);
+		// From the first WHERE, the outer one, to the statement's end without its `;`.
+		const where = BOARDS_LEAVE_DELETED_GROUPINGS.slice(BOARDS_LEAVE_DELETED_GROUPINGS.indexOf('WHERE'), -1);
+		expect(where.startsWith('WHERE `category_id` IS NOT NULL')).toBe(true);
+		expect(BOARDS_LEAVING_DELETED_GROUPINGS).toBe(
+			'SELECT `id` AS boardId, `category_id` AS groupingId FROM `boards`\n' + where + '\nORDER BY `id` LIMIT 50'
+		);
+	});
+
+	it('names the boards it takes out at a start, the first 50 by board and grouping, in its WARN line (card 2293)', () => {
+		const database = memoryDb();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		// Boards 1 to 52 are filed under grouping 7, which is gone; board 53 under grouping 1, which is not.
+		const gone = Array.from({ length: 52 }, (_, i) => `(${i + 1}, 'Gone', 7)`).join(', ');
+		database.exec(`
+			INSERT INTO board_categories (id, name) VALUES (1, 'Clients');
+			INSERT INTO boards (id, name, category_id) VALUES ${gone}, (53, 'Filed', 1);
+		`);
+		process.env.LOG_LEVEL = 'WARN';
+		const lines: string[] = [];
+		vi.spyOn(console, 'warn').mockImplementation((line) => {
+			lines.push(String(line).replace(/^\[[^\]]+\] /, ''));
+		});
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		const named = Array.from({ length: 50 }, (_, i) => `board ${i + 1} (grouping 7)`);
+		expect(report.backfilled.unfiledBoards).toBe(52);
+		expect(report.backfilled.unfiled).toHaveLength(50);
+		expect(lines.filter((line) => line.includes('grouping that no longer exists'))).toEqual([
+			`[WARN] [DB] Took 52 board(s) out of a grouping that no longer exists: ${named.join(', ')}; and 2 more`
+		]);
+		expect(database.prepare('SELECT COUNT(*) AS n FROM boards WHERE category_id IS NOT NULL').get()).toEqual({ n: 1 });
 	});
 });
 
@@ -3426,7 +3526,7 @@ describe('the start-up schema check', () => {
 			leftAlone: [],
 			detachedSubBoards: [],
 			reconciliationSkipped: null,
-			backfilled: { firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] },
+			backfilled: { firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [], unfiledBoards: 0, unfiled: [] },
 			timestamps: { converted: {}, unreadable: {}, failed: null },
 			schemaDifferences: [],
 			missingFromDisk: []
@@ -3966,7 +4066,14 @@ describe('restoring a backup taken before the latest migrations', () => {
 
 		// The links are given inside the restore, as every request's is at every
 		// restore (card 2158), so the backfill after it has none to give.
-		expect(result.backfilled).toEqual({ firstCompletedAt: 2, accessTokens: 0, releasedFromMilestones: 0, released: [] });
+		expect(result.backfilled).toEqual({
+			firstCompletedAt: 2,
+			accessTokens: 0,
+			releasedFromMilestones: 0,
+			released: [],
+			unfiledBoards: 0,
+			unfiled: []
+		});
 		expect(result.requestLinksReplaced).toBe(2);
 		expect(live.prepare('SELECT id, first_completed_at FROM cards ORDER BY id').all()).toEqual([
 			{ id: 1, first_completed_at: '2026-09-01 10:00:00' },
@@ -4002,6 +4109,101 @@ describe('restoring a backup taken before the latest migrations', () => {
 		]);
 	});
 
+	it('restores a board the backup holds under a grouping it does not hold, says so, and takes it out of the grouping (card 2293)', () => {
+		// Board A is filed under grouping 1, which the backup holds; board B under
+		// grouping 9, which it does not. Every grouping row was copied, so B's is
+		// the backup's own state, reported as a stranded row of a real foreign key
+		// is, and the backfill after the commit clears it.
+		const { live, backup } = liveAndBackup();
+		backup.exec(`
+			INSERT INTO board_categories (id, name) VALUES (1, 'Clients');
+			UPDATE boards SET category_id = 1 WHERE id = 1;
+			UPDATE boards SET category_id = 9 WHERE id = 2;
+		`);
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([
+			'boards: 1 row(s) refer to a row of board_categories that is not there (rowid 2). No row of board_categories ' +
+				'was left out by this restore, so the backup holds them that way'
+		]);
+		expect(result.backfilled.unfiledBoards).toBe(1);
+		expect(result.backfilled.unfiled).toEqual([{ boardId: 2, groupingId: 9 }]);
+		expect(live.prepare('SELECT id, category_id FROM boards ORDER BY id').all()).toEqual([
+			{ id: 1, category_id: 1 },
+			{ id: 2, category_id: null },
+			{ id: 3, category_id: null }
+		]);
+		expect(foreignKeysOn(live)).toBe(true);
+	});
+
+	it('rolls the restore back rather than commit boards filed under a grouping it could not copy, as for a foreign key (card 2293)', () => {
+		// Grouping 2 has no name, and `board_categories.name` is NOT NULL with no
+		// default, so its row cannot be copied. Board B is filed under it. With
+		// no foreign key on `boards.category_id` the restore committed, and the
+		// backfill would then have taken B out of a grouping the backup holds.
+		const { live, backup } = liveAndBackup();
+		backup.exec(`
+			CREATE TABLE board_categories_loose AS SELECT * FROM board_categories;
+			DROP TABLE board_categories;
+			ALTER TABLE board_categories_loose RENAME TO board_categories;
+			INSERT INTO board_categories (id, name, color) VALUES (1, 'Clients', '#6366f1'), (2, NULL, '#6366f1');
+			UPDATE boards SET category_id = 1 WHERE id = 1;
+			UPDATE boards SET category_id = 2 WHERE id = 2;
+		`);
+		const before = live.serialize();
+
+		let thrown: unknown;
+		try {
+			restoreFromBackup(live, backup);
+		} catch (error) {
+			thrown = error;
+		}
+
+		expect(thrown).toBeInstanceOf(RestoreError);
+		const error = thrown as RestoreError;
+		expect(error.committed).toBe(false);
+		expect(error.message).toBe(
+			'The restore failed and nothing was changed: rows that other rows depend on could not be copied ' +
+				'(board_categories row (id 2): NOT NULL constraint failed: board_categories.name), ' +
+				'and 1 row(s) of boards refer to a row of board_categories that would not be there'
+		);
+		expect(Buffer.compare(live.serialize(), before)).toBe(0);
+		expect(foreignKeysOn(live)).toBe(true);
+		expect(live.inTransaction).toBe(false);
+	});
+
+	it('commits a board under a grouping the backup never held, though another grouping could not be copied, and takes it out (review of card 2293)', () => {
+		// Grouping 3 has no name and cannot be copied; no board is filed under
+		// it. Board B is filed under grouping 9, which the backup does not hold
+		// at all: the backup's own state, not this restore's doing. Sorting the
+		// boards by table alone refused the whole restore.
+		const { live, backup } = liveAndBackup();
+		backup.exec(`
+			CREATE TABLE board_categories_loose AS SELECT * FROM board_categories;
+			DROP TABLE board_categories;
+			ALTER TABLE board_categories_loose RENAME TO board_categories;
+			INSERT INTO board_categories (id, name, color) VALUES (1, 'Clients', '#6366f1'), (3, NULL, '#6366f1');
+			UPDATE boards SET category_id = 1 WHERE id = 1;
+			UPDATE boards SET category_id = 9 WHERE id = 2;
+		`);
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([
+			'board_categories row (id 3): NOT NULL constraint failed: board_categories.name',
+			'boards: 1 row(s) refer to a row of board_categories that is not there (rowid 2). The backup holds no row of ' +
+				'board_categories they refer to, so the backup holds them that way'
+		]);
+		expect(result.backfilled.unfiled).toEqual([{ boardId: 2, groupingId: 9 }]);
+		expect(live.prepare('SELECT id, category_id FROM boards ORDER BY id').all()).toEqual([
+			{ id: 1, category_id: 1 },
+			{ id: 2, category_id: null },
+			{ id: 3, category_id: null }
+		]);
+		expect(foreignKeysOn(live)).toBe(true);
+	});
+
 	it('does not stop the next start', () => {
 		// With the backup's record in place of its own, the runner would find
 		// 0050 and 0051 unrecorded, run them against columns that already exist,
@@ -4015,7 +4217,14 @@ describe('restoring a backup taken before the latest migrations', () => {
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.rebuilt).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(report.backfilled).toEqual({ firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] });
+		expect(report.backfilled).toEqual({
+			firstCompletedAt: 0,
+			accessTokens: 0,
+			releasedFromMilestones: 0,
+			released: [],
+			unfiledBoards: 0,
+			unfiled: []
+		});
 	});
 
 	it('will not start inside a transaction, where foreign keys cannot be switched off', () => {
@@ -4214,7 +4423,14 @@ describe('restoring a backup taken before the latest migrations', () => {
 		// The rows are in and committed. Saying "the restore failed" would send
 		// someone to restore again over a database that has just been restored.
 		expect(result.errors).toEqual(['Backfill after the restore: first completion is frozen']);
-		expect(result.backfilled).toEqual({ firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] });
+		expect(result.backfilled).toEqual({
+			firstCompletedAt: 0,
+			accessTokens: 0,
+			releasedFromMilestones: 0,
+			released: [],
+			unfiledBoards: 0,
+			unfiled: []
+		});
 		expect(result.restored['cards']).toBe(5);
 		expect(live.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
 		expect(foreignKeysOn(live)).toBe(true);
@@ -4488,6 +4704,22 @@ describe('restoring a backup taken before the latest migrations', () => {
 				'Filled in: first_completed_at on 2 card(s), access_token on 0 request(s), ' +
 					'1 card(s) taken out of a milestone of another board (card 3 left milestone 1), the default (0)'
 			);
+		});
+
+		it('names in its Filled in the boards it took out of a grouping that is not there (card 2293)', async () => {
+			const { backup } = liveAndBackup();
+			// Board B (2) is filed under grouping 9, which the backup does not hold.
+			backup.exec('UPDATE boards SET category_id = 9 WHERE id = 2');
+			process.env.LOG_LEVEL = 'INFO';
+
+			const { response, logged } = await upload(backup);
+
+			expect(response.status).toBe(200);
+			expect(logged.join('\n')).toContain(
+				'Filled in: first_completed_at on 2 card(s), access_token on 0 request(s), ' +
+					'1 board(s) taken out of a grouping that no longer exists (board 2 (grouping 9)), the default (0)'
+			);
+			expect(sqlite.prepare('SELECT category_id FROM boards WHERE id = 2').get()).toEqual({ category_id: null });
 		});
 
 		it('refuses a backup that would leave cards on a column it could not copy, and changes nothing', async () => {

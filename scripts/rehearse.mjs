@@ -112,12 +112,19 @@ function print(found) {
 		console.log(
 			`Filled in: first_completed_at on ${first.backfilled.firstCompletedAt} card(s), ` +
 				`access_token on ${first.backfilled.accessTokens} request(s), ` +
-				`${first.backfilled.releasedFromMilestones} card(s) taken out of a milestone of another board`
+				`${first.backfilled.releasedFromMilestones} card(s) taken out of a milestone of another board, ` +
+				`${first.backfilled.unfiledBoards} board(s) taken out of a grouping that no longer exists`
 		);
 		// Which, the first 50 by card and milestone, as the start's WARN line names them.
 		if (first.backfilled.released.length > 0) {
 			const more = first.backfilled.releasedFromMilestones - first.backfilled.released.length;
 			const named = first.backfilled.released.map((r) => `card ${r.cardId} left milestone ${r.milestoneId}`).join(', ');
+			console.log(`    ${named}${more > 0 ? `; and ${more} more` : ''}`);
+		}
+		// And the boards, the first 50 by board and the grouping each named (card 2293).
+		if (first.backfilled.unfiled.length > 0) {
+			const more = first.backfilled.unfiledBoards - first.backfilled.unfiled.length;
+			const named = first.backfilled.unfiled.map((u) => `board ${u.boardId} (grouping ${u.groupingId})`).join(', ');
 			console.log(`    ${named}${more > 0 ? `; and ${more} more` : ''}`);
 		}
 
