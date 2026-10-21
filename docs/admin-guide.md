@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.55
+version: 1.56
 status: As-Built
 date: 2026-10-21
 tags:
@@ -43,6 +43,23 @@ flowchart LR
     Admin -->|"superadmin only"| Backups["Scheduled Backups"]
     Admin -->|"superadmin only"| SMTP["Email / SMTP"]
     Admin -->|"superadmin only"| Reset["Reset Everything"]
+```
+
+### The Admin Page's Dialogs and the Keyboard
+
+Every action on this page that asks first (Clear Cards, Clear Categories, Delete Board, Delete User, Delete Team, Remove Destination, Purge Archived Cards, Vacuum Database, Reset All XP, Reset Everything), and the Archived page's Delete Permanently and Purge All, asks in the app's confirm dialog, the one the boards, All Tasks and the Teams page use (card 2362, 2026-10-21; each page had a dialog of its own before). As it opens, **Cancel** has the keyboard's focus, so Enter straight after cancels; **Tab** and **Shift+Tab** stay in the dialog; **Escape** cancels; and as it closes the focus goes back to the button that opened it. To confirm by keyboard, press Tab, then Enter. A click on the dark overlay around it does nothing.
+
+The **Import Database** dialog and Google Drive's **Connect** box keep their own look and behave the same way: Cancel has the focus, Tab stays in them (in the import, through the chosen way to restore, Cancel and Confirm), and Escape is Cancel. The invite link's dialog and the reset's notice have one button and no way out but it, and are unchanged.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open: a button that asks first
+    Open: Dialog open, focus on Cancel
+    Open --> Open: Tab / Shift+Tab, round its own buttons
+    Open --> Closed: Cancel, or Escape
+    Open --> Done: Tab to the confirm button, Enter
+    Closed --> [*]: focus back on the button, nothing done
+    Done --> [*]: the action runs
 ```
 
 ## Who May Do What
@@ -636,6 +653,8 @@ Pages open on what a delete takes are told once it is done, and read their board
 
 ## Attachments
 
+Deleting a file from a card's **Files** tab asks first, in the app's confirm dialog, "Delete File", naming it (card 2360, 2026-10-21; it went on one click).
+
 ### Where the files are
 
 Attachment files are on the server's disk, in the `uploads` folder beside the database, and are in no backup that DumpFire makes. Backing that folder up is described in [Deployment](deployment.md#attachment-files).
@@ -729,6 +748,8 @@ Organise boards into categories for the dashboard sidebar:
 3. Assign boards to categories
 
 Categories appear as collapsible groups in the dashboard sidebar.
+
+The dashboard's **Manage Categories** window says a change it could not make under its header, in the server's words or as "No answer from the server. The category may not have been created." (saved, deleted), and keeps what was typed (card 2358, 2026-10-21; it said nothing, and a change with no answer left the window's buttons dead). Deleting a category asks first in the app's confirm dialog, "Delete Category", naming it.
 
 ---
 

@@ -472,7 +472,8 @@ describe('the plan page’s card window, opened and saved in turn (card 2281, sl
 		chainCard(7).click();
 		chainCard(8).click();
 		await settle();
-		expect(titleBox()?.value).toBe('Plan');
+		// The first card, overtaken by the second before its context came, opens nothing (card 2350).
+		expect(titleBox()).toBeNull();
 
 		answerSecond();
 		await settle();

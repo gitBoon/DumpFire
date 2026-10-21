@@ -29,8 +29,8 @@
 		milestone: PageData['summary']['milestone'];
 		/** The page's: true while a change to the goal is being saved. */
 		busy: boolean;
-		/** The page's one PATCH path for every change to the goal. */
-		mutate: (body: Record<string, unknown>) => Promise<void>;
+		/** The page's one PATCH path for every change to the goal: true once it is saved. */
+		mutate: (body: Record<string, unknown>) => Promise<boolean>;
 		/** The page's: whether the card picker is open. */
 		picking: boolean;
 	} = $props();
@@ -78,14 +78,14 @@
 		return (daysUntilDue(milestone.targetDate) ?? 0) < 0;
 	});
 
+	/** A rename refused or not answered keeps the box open with what was typed, to try again or Escape (card 2351). */
 	async function saveName() {
 		const name = nameDraft.trim();
 		if (!name || name === milestone.name) {
 			editingName = false;
 			return;
 		}
-		await mutate({ name });
-		editingName = false;
+		if (await mutate({ name })) editingName = false;
 	}
 
 	async function toggleStatus() {

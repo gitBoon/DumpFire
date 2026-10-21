@@ -574,3 +574,119 @@ describe('the dashboard, mounted with its parts', () => {
 		expect(dueWords()).toBe('📅 Today');
 	});
 });
+
+// Card 2358: each of the window's writes acted only on an answer that was ok; a refusal said nothing,
+// no answer was an unhandled rejection that left every button dead, and the delete asked with the browser's confirm().
+describe('Manage Categories says a refusal or no answer, and asks before a delete in the app’s dialog (card 2358)', () => {
+	async function openManager() {
+		const target = draw();
+		await settle();
+		buttonNamed(target, '🏷️ Manage Categories').click();
+		flushSync();
+		return target.querySelector<HTMLElement>('.cat-mgr')!;
+	}
+	const said = (manager: HTMLElement) => manager.querySelector('[role="alert"]')?.textContent?.trim() ?? null;
+
+	it.each([
+		['is refused', () => Response.json({ message: 'Category name must be 200 characters or fewer' }, { status: 400 }), 'Category name must be 200 characters or fewer'],
+		[
+			'gets no answer',
+			() => {
+				throw new TypeError('Failed to fetch');
+			},
+			'No answer from the server. The category may not have been created.'
+		]
+	])('says so when making one %s, keeps the name typed, and Add works again', async (_, give, words) => {
+		let failing = true;
+		answer = (what) => (what === 'POST /api/board-categories' && failing ? give() : undefined);
+		const manager = await openManager();
+		const box = manager.querySelector<HTMLInputElement>('.create-input')!;
+		type(box, 'Ops');
+		buttonNamed(manager, 'Add').click();
+		await settle();
+		expect(said(manager)).toBe(words);
+		expect(box.value).toBe('Ops');
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+
+		failing = false;
+		expect(buttonNamed(manager, 'Add').disabled).toBe(false);
+		buttonNamed(manager, 'Add').click();
+		await settle();
+		expect(asked('POST /api/board-categories')).toHaveLength(2);
+		expect(said(manager)).toBeNull();
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	it('says so when a rename is refused, and keeps the edit box open with what was typed', async () => {
+		answer = (what) => (what === 'PUT /api/board-categories/2' ? Response.json({ message: 'You can only change your own categories' }, { status: 403 }) : undefined);
+		const manager = await openManager();
+		manager.querySelector<HTMLButtonElement>('button[title="Edit category"]')!.click();
+		flushSync();
+		type(manager.querySelector<HTMLInputElement>('.edit-input')!, 'Customers');
+		buttonNamed(manager, 'Save').click();
+		await settle();
+		expect(asked('PUT /api/board-categories/2')).toHaveLength(1);
+		expect(said(manager)).toBe('You can only change your own categories');
+		expect(manager.querySelector<HTMLInputElement>('.edit-input')?.value).toBe('Customers');
+	});
+
+	it('asks in the app’s confirm dialog before a delete, not the browser’s; Cancel sends nothing; a refused delete says so, and one done reads the page again', async () => {
+		const browserConfirm = vi.fn(() => true);
+		vi.stubGlobal('confirm', browserConfirm);
+		let refusing = true;
+		answer = (what) =>
+			what === 'DELETE /api/board-categories/2' ? (refusing ? Response.json({ message: 'Category not found' }, { status: 404 }) : Response.json({ success: true })) : undefined;
+		const manager = await openManager();
+		const deleteButton = () => manager.querySelector<HTMLButtonElement>('button[title="Delete category"]')!;
+		const dialog = () => document.querySelector<HTMLElement>('.confirm-modal');
+
+		deleteButton().click();
+		await settle();
+		expect(browserConfirm).not.toHaveBeenCalled();
+		expect(asked('DELETE /api/board-categories/2')).toHaveLength(0);
+		expect(dialog()!.querySelector('h3')!.textContent).toBe('Delete Category');
+		expect(dialog()!.querySelector('.confirm-message')!.textContent).toBe('"Clients" will be deleted. Boards using it will become uncategorised.');
+		buttonNamed(dialog()!, 'Cancel').click();
+		flushSync();
+		expect(dialog()).toBeNull();
+		expect(asked('DELETE /api/board-categories/2')).toHaveLength(0);
+
+		deleteButton().click();
+		flushSync();
+		buttonNamed(dialog()!, 'Delete').click();
+		await settle();
+		expect(dialog()).toBeNull();
+		expect(asked('DELETE /api/board-categories/2')).toHaveLength(1);
+		expect(said(manager)).toBe('Category not found');
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+
+		refusing = false;
+		deleteButton().click();
+		flushSync();
+		buttonNamed(dialog()!, 'Delete').click();
+		await settle();
+		expect(said(manager)).toBeNull();
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	// The card 2358 review: a dialog opened while another change was out had a dead Delete.
+	it('holds a category’s delete off while another change is on its way', async () => {
+		let release!: () => void;
+		answer = (what) =>
+			what === 'POST /api/board-categories' ? new Promise<Response>((resolve) => (release = () => resolve(Response.json({ id: 9, name: 'Ops', color: '#6366f1' })))) : undefined;
+		const manager = await openManager();
+		const deleteButton = () => manager.querySelector<HTMLButtonElement>('button[title="Delete category"]')!;
+		expect(deleteButton().disabled).toBe(false);
+		type(manager.querySelector<HTMLInputElement>('.create-input')!, 'Ops');
+		buttonNamed(manager, 'Add').click();
+		await settle();
+		expect(deleteButton().disabled).toBe(true);
+		deleteButton().click();
+		flushSync();
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+
+		release();
+		await settle();
+		expect(deleteButton().disabled).toBe(false);
+	});
+});

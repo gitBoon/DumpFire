@@ -70,7 +70,6 @@
 		appearance: none; background: none; border: none; font: inherit;
 		padding: 0; text-align: left; cursor: pointer; color: inherit;
 	}
-	.chain-card:hover { background: var(--bg-elevated); }
 
 	/*
 	 * The panel's frame, copied into each block of the plan page (card 2281,

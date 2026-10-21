@@ -21,6 +21,8 @@
  *     while it is out is kept, and goes once: Post Comment is off and
  *     Ctrl+Enter sends nothing until it is answered. A refused or unanswered
  *     post puts its text back in front of what was typed since (card 2342).
+ *   - A file's delete in the Files tab (`CardAttachments.svelte`) asks first
+ *     in the same dialog: it went at once on one click (card 2360).
  *
  * And the window following its card's comments live (card 2282), the whole
  * `CardModal` mounted: a page that is told of the card's comments, or has
@@ -77,6 +79,7 @@ vi.mock('$lib/live-stream', () => ({
 }));
 
 const CardComments = (await import('$lib/components/card/CardComments.svelte')).default;
+const CardAttachments = (await import('$lib/components/card/CardAttachments.svelte')).default;
 const CardModal = (await import('$lib/components/CardModal.svelte')).default;
 const { connectLiveRefresh } = await import('$lib/live-refresh');
 
@@ -739,6 +742,65 @@ describe('which events tell a card window of its files (card 2337, test 18)', ()
 		['no event at all, read as a gap rather than thrown on', undefined, true]
 	] as const)('%s', (_what, event, told) => {
 		expect(attachmentsChanged(event, 7)).toBe(told);
+	});
+});
+
+// Card 2360: a file's delete button sent the delete on one click, as a comment's did before card 2338.
+describe('deleting a file asks first (card 2360)', () => {
+	const plan: AttachmentItem = {
+		id: 4, cardId: 7, filename: '4-plan.txt', originalName: 'plan.txt', mimeType: 'text/plain', sizeBytes: 10, uploadedBy: 1, createdAt: '2026-10-21 09:00:00'
+	};
+
+	/** Mounts the Files tab on `plan`, its props `$state`, as the window binds them. */
+	function drawFiles(onWritten?: () => void) {
+		const props = $state({ card, activeTab: 'attachments' as const, attachments: [plan], loadingAttachments: false, loadAttachments: async () => {}, windowError: '', onWritten });
+		const target = document.createElement('div');
+		document.body.appendChild(target);
+		drawn = { component: mount(CardAttachments, { target, props: props as never }), target };
+		flushSync();
+		return { props, target };
+	}
+	const deletes = () => fetched.mock.calls.filter(([, init]) => init?.method === 'DELETE').map(([url]) => url);
+	const deleteButton = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('.attachment-delete')!;
+
+	it('opens "Delete File" naming the file and sends nothing; the dialog’s Delete sends one delete, takes the file out and tells the window once', async () => {
+		const onWritten = vi.fn();
+		const { props, target } = drawFiles(onWritten);
+		answer = { success: true };
+		deleteButton(target).click();
+		flushSync();
+
+		const dialog = target.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog.querySelector('h3')!.textContent!.trim()).toBe('Delete File');
+		expect(dialog.querySelector('.confirm-message')!.textContent!.trim()).toBe('"plan.txt" will be deleted from the card for everyone. This cannot be undone.');
+		expect(deletes()).toEqual([]);
+
+		button(dialog, 'Delete').click();
+		await settle();
+		expect(deletes()).toEqual(['/api/cards/7/attachments/4']);
+		expect(target.querySelector('.confirm-modal')).toBeNull();
+		expect(props.attachments).toEqual([]);
+		expect(onWritten).toHaveBeenCalledTimes(1);
+	});
+
+	it('sends nothing when the dialog is cancelled, by Cancel or by Escape, and keeps the file', async () => {
+		const { props, target } = drawFiles();
+		deleteButton(target).click();
+		flushSync();
+		button(target.querySelector<HTMLElement>('.confirm-modal')!, 'Cancel').click();
+		flushSync();
+		expect(target.querySelector('.confirm-modal')).toBeNull();
+
+		deleteButton(target).click();
+		flushSync();
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		flushSync();
+		expect(target.querySelector('.confirm-modal')).toBeNull();
+
+		await settle();
+		expect(deletes()).toEqual([]);
+		expect(props.attachments).toEqual([plan]);
+		expect([...target.querySelectorAll('.attachment-name')].map((name) => name.textContent)).toEqual(['plan.txt']);
 	});
 });
 

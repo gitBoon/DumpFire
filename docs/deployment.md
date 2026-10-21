@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.74
+version: 1.75
 status: As-Built
 date: 2026-10-21
 tags:
@@ -3876,6 +3876,47 @@ On production, as **O**, your administrator account. Nothing here touches a real
 #### Going back to the previous image
 
 Nothing is done to the database. The older image's confirm dialog leaves the focus on the button behind it again, lets Tab walk the page behind, gives nothing back when it closes, and does not tie its message to it. Its card window deletes a comment on one click again, can post a comment twice, and loses what is typed while a post is out. It records no attachment entries and sends no attachment event, and leaves those written in place, readable, the label falling back to the raw action name; a second person's Files tab no longer follows.
+
+### Small UI Fixes: the Plan Page's Reads and Typing, All Tasks' Pulse, Manage Categories, a File's Delete and the Admin Confirms
+
+**Cards 2350, 2351, 2352, 2356, 2358, 2360 and 2362.** No migration, no setting, no route; pages' code only, and one new client module, `src/lib/dialog-focus.ts`. The plan is `docs/planning/cards-2350-2351-2352-2356-2358-2360-2362-ui.md`.
+
+- **2350.** On a plan page, two cards opened quickly opened whichever card's read answered last, the first if it was slower; and two burndown reads close together showed whichever answered last, the first to answer ending "Loading the burndown…" while the other was out. Now only the latest read is used: one overtaken opens nothing and says nothing.
+- **2351.** A card added from **+ Add cards**, or a rename of the goal, that was refused or got no answer emptied the box anyway. Now what was typed stays (the search and its results; the name box open with the new name) until the change is saved; the failure is said as before.
+- **2352.** Two hover rules written twice in the plan page's work table and critical path are written once. Nothing changes on screen.
+- **2356.** All Tasks' Activity Log: when its first read failed, the next read marked every item as new and the whole list pulsed for 30 seconds. Now a failed read changes nothing that was seen. The 30-second pulse timers end with the page.
+- **2358.** The dashboard's **Manage Categories** said nothing when making, renaming or deleting a grouping was refused, and a change that got no answer left every button of the window dead until it was closed. Now the window says the server's words, or "No answer from the server. The category may not have been created." (saved, deleted), under its header, and what was typed stays.
+- **2360.** A file's delete in the card window's Files tab sent the delete on one click.
+- **2362.** The admin page's confirm (Clear Cards, Clear Categories, Delete Board, Delete User, Delete Team, Remove Destination, Purge Archived Cards, Vacuum Database, Reset All XP, Reset Everything) and the Archived page's (Delete Permanently, Purge All) were dialogs of their own: the focus stayed on the button behind, Tab walked the page, Enter pressed the button behind again, and Escape did nothing. Both are now the app's confirm dialog (card 2353's rules). The Import Database dialog and Google Drive's Connect box keep their own look and get the same behaviour: Cancel takes the focus, Tab stays in the dialog, Escape is Cancel, and the focus goes back to the button that opened it. The invite link's dialog and the reset's notice, which have one button and no way out but it, are unchanged.
+
+**Owner to know.**
+
+- **Deleting a grouping in Manage Categories, and a file in the card window, asks in the app's dialog**: "Delete Category" (where the browser's own confirm asked) and "Delete File", each naming what goes. Deleting a file now takes a second click.
+- **The admin page's and the Archived page's confirms look like the rest of the app's** (centred, with the warning icon). **Enter straight after one opens cancels it**, as everywhere since card 2353: confirm by keyboard with Tab, then Enter. A click on the Archived page's dark overlay no longer cancels (no other confirm does); Cancel or Escape does. See [Admin Operations Guide](admin-guide.md#the-admin-pages-dialogs-and-the-keyboard).
+
+#### After the deploy
+
+On production, as **O**, your administrator account (also the superadmin for check 352), with the browser's developer tools' network panel, except check 351, which is **Local**: a local instance of this build started with `DB_PATH` set to a scratch file, never production's database, as check 219. Nothing here completes a card, touches a real goal, grouping, file or board, or imports anything, and no confirm dialog's **Confirm** is pressed: Enter is never pressed on Confirm. **Scratch things:** on the dashboard a board "TEST 2350 - delete me" with no other members and no webhooks, and in its To Do three cards S1, S2 and S3; on **Plan**, **New milestone** "TEST 2350 goal - delete me" on that board, S1 and S2 added with **+ Add cards** one at a time (S3 left out); a small text file attached to S1 (Files tab).
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 343 | 2350 | A smoke check only: under even throttling the two reads answer in the order sent, so it cannot tell the new image from the old (the jsdom cases hold the out-of-order answer). On the scratch goal's plan page, network panel **Slow 3G**: click S1's title in **The work**, then at once S2's; **No throttling** | The card window opens on S2 and stays on S2; no toast | It ends on S1 |
+| 344 | 2351 | **+ Add cards**, type `S3` and wait for the results; set **Offline** and click S3's result; **No throttling** | "No answer from the server. It is not known whether that change was saved." above the blocks and in a toast; `S3` still in the box and the results still listed. Then press **Done**, and reload: S3 not in the goal | The box emptied |
+| 345 | 2351 | **Offline**; double-click the goal's name, type "TEST 2350 goal 2" and press Enter; set **No throttling** in the network panel; click back into the name box, then press Escape | The no-answer words, and the name box still open with "TEST 2350 goal 2". Moving the focus to the developer tools saves the box again on its blur (card 2363), so a second no-answer toast is expected. Escape closes the box; after a reload the goal's name is unchanged | The box closed at once, or the goal's name changed |
+| 346 | 2356 | **All Tasks**: first reload it with the Activity Log shut (so the log's first read is the one made below); **Offline**, **More → 📋 Activity Log**; **No throttling**, then its Refresh | "No answer from the server. The activity could not be loaded."; after Refresh the list, no row pulsing (an indigo bar at its left) | Every row pulsing |
+| 347 | 2358 | Dashboard, **🏷️ Manage Categories**: **Offline**, type "TEST 2358 - delete me" under Create New and press **Add**; **No throttling**, press **Add** again | "No answer from the server. The category may not have been created." under the window's header, the name still typed; the second Add makes the grouping and the line goes | Nothing said, or Add dead |
+| 348 | 2358 | Its 🗑️ (on the row's hover): **Cancel**; again and **Delete** | The app's dialog "Delete Category", `"TEST 2358 - delete me" will be deleted. Boards using it will become uncategorised.` (not the browser's); Cancel keeps it; Delete removes it | The browser's confirm, or one click deletes |
+| 349 | 2360 | Open S1, **Files**, the file's delete; press Escape; again and **Delete** | "Delete File" naming the file, focus on Cancel; Escape closes the dialog only (the card window stays open); Delete removes the file | One click deletes, or Escape closes the window |
+| 350 | 2362 | Admin, **Board Management**, the row of "TEST 2350 - delete me": its **Delete** button; press Tab, Tab, then Escape. Never press Enter while **Confirm** has the focus: nothing here is confirmed | The centred dialog "Delete Board", a focus ring on **Cancel**; Tab to **Confirm**, Tab again back to Cancel; Escape closes it, the board still listed, the focus back on its Delete | No focus, Tab reaches the page, or Escape ignored |
+| 351 | 2362 | **Local**, as the local instance's superadmin (never on production): Admin, **Import Database**; Tab three times, then Escape. Never press Enter while **Confirm** has the focus | Focus on **Cancel**; Tab goes to **Confirm**, then to the chosen way to restore, then back to Cancel; Escape closes it and no file picker opens; the focus back on Import | No focus, or Escape ignored |
+| 352 | 2362 | Only if a Google Drive destination is listed under Scheduled Backups: its **🔗 Connect**; close Google's window without signing in; in DumpFire press Escape | The Connect box with the focus on Cancel; Escape closes it; nothing saved | Escape ignored |
+| 353 | 2362 | Only if any card is archived: the **Archived** page, a card's **🗑️ Delete**; press Escape | "Delete Permanently" in the app's dialog, focus on Cancel; Escape closes it, the card still listed | Escape ignored |
+
+**Afterwards.** With your API key, `DELETE /api/v1/milestones/<TEST 2350 goal id>` (its id is in the plan page's address); delete the board "TEST 2350 - delete me" on the dashboard (S1, S2, S3 and the file go with it); check that no grouping "TEST 2358" is left in Manage Categories.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image can open an overtaken card or show an older burndown again, empties the picker and the name box whatever came back, lets the Activity Log pulse every row after a failed first read, says nothing in Manage Categories for a refused change and asks its delete with the browser's confirm, deletes a file on one click, and draws the admin page's and the Archived page's own confirms, and the import and Connect dialogs, without focus or Escape again.
 
 ## Changing the Schema
 

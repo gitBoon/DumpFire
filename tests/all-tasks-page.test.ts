@@ -21,10 +21,11 @@
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type * as Svelte from 'svelte';
 
 import AllTasksPage from '../src/routes/all/+page.svelte';
+import TasksActivityPanel from '$lib/components/tasks/TasksActivityPanel.svelte';
 import { toasts } from '$lib/stores/toast';
 
 // The page's data is read again after a write; here it is only counted.
@@ -467,6 +468,31 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		});
 	});
 
+	// Card 2356: what was seen was seeded by the first read sent, so when it failed every item of the next read pulsed as new.
+	it('marks nothing new in the Activity Log on the first read answered after a failed one, and what comes after that as new', async () => {
+		let failing = true;
+		answer = (what) => {
+			if (what === 'GET /api/activity' && failing) throw new TypeError('Failed to fetch');
+			return undefined;
+		};
+		const target = draw();
+		fromMoreMenu(target, '📋 Activity Log');
+		await settle();
+		expect(target.querySelector('.activity-panel [role="alert"]')).not.toBeNull();
+
+		failing = false;
+		const refresh = () => target.querySelector<HTMLButtonElement>('.activity-panel button[title="Refresh"]')!.click();
+		refresh();
+		await settle();
+		expect(target.querySelectorAll('.activity-panel .activity-item')).toHaveLength(1);
+		expect(target.querySelector('.activity-new')).toBeNull();
+
+		activity = [{ id: 2, action: 'card_moved', userName: 'eve', userEmoji: '🦊', detail: 'Plan', boardName: 'Website', createdAt: '2026-10-20 09:05:00' }, ...activity];
+		refresh();
+		await settle();
+		expect([...target.querySelectorAll('.activity-panel .activity-item')].map((item) => item.classList.contains('activity-new'))).toEqual([true, false]);
+	});
+
 	it('closes the header’s More menu on a click anywhere on the page', () => {
 		const target = draw();
 		buttonNamed(target, 'More').click();
@@ -626,5 +652,58 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+// Card 2356: each read that found new items started a 30-second timer to end their pulse, which nothing ended.
+describe('the Activity Log’s pulse timers, the panel mounted alone (card 2356)', () => {
+	const later = { id: 2, action: 'card_moved', userName: 'eve', userEmoji: '🦊', detail: 'Plan', boardName: 'Website', createdAt: '2026-10-20 09:05:00' };
+
+	/** Mounts the panel open, on fake timers made before it, and reads its list once as it first opens. */
+	async function drawPanel() {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		const target = document.createElement('div');
+		document.body.appendChild(target);
+		const panel = mount(TasksActivityPanel, { target, props: { activityOpen: true } }) as unknown as { fetchActivity: (initial?: boolean) => Promise<void> };
+		flushSync();
+		let mounted = true;
+		const leave = () => {
+			if (!mounted) return;
+			mounted = false;
+			unmount(panel as never);
+			target.remove();
+		};
+		// Left, then the real timers back, however the case ends: a failed assertion leaves no pulse pending.
+		onTestFinished(() => {
+			leave();
+			vi.useRealTimers();
+		});
+		await panel.fetchActivity(true);
+		flushSync();
+		return { panel, target, leave };
+	}
+
+	it('ends the pulse timer of a read that found a new item as the panel goes', async () => {
+		const { panel, target, leave } = await drawPanel();
+		expect(vi.getTimerCount()).toBe(0);
+		activity = [later, ...activity];
+		await panel.fetchActivity();
+		flushSync();
+		expect(target.querySelectorAll('.activity-new')).toHaveLength(1);
+		expect(vi.getTimerCount()).toBe(1);
+
+		leave();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it('starts no pulse timer for a read answered after the panel has gone', async () => {
+		const { panel, leave } = await drawPanel();
+		let release!: () => void;
+		vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => (release = () => resolve(json([later, ...activity]))))));
+		const reading = panel.fetchActivity();
+		leave();
+		release();
+		await reading;
+		expect(vi.getTimerCount()).toBe(0);
 	});
 });

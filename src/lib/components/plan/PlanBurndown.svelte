@@ -45,31 +45,38 @@
 	 * chart already drawn stays, marked as no longer current (card 2322: no
 	 * answer left "Loading the burndown…" for good, and a failed re-read left
 	 * the earlier chart as if it were the goal's now).
+	 *
+	 * Only the latest read is shown, and only it ends the loading: one
+	 * overtaken by a later read is dropped whatever it answers (card 2350:
+	 * an older read answering last replaced the newer chart, and the first to
+	 * answer put the loading back while the second was still out).
 	 */
+	let burndownSeq = 0;
+
 	async function loadBurndown(id: number) {
+		const seq = ++burndownSeq;
 		burndownLoading = true;
+		let read: { burndown: BurndownResult } | null = null;
+		let error = '';
+		let res: Response | null = null;
 		try {
-			let res: Response;
-			try {
-				res = await fetch(`/api/burndown?milestoneId=${id}`);
-			} catch {
-				burndownError = 'No answer from the server. The burndown could not be loaded.';
-				return;
-			}
-			if (!res.ok) {
-				burndownError = await failureMessage(res, 'The burndown could not be loaded.');
-				return;
-			}
+			res = await fetch(`/api/burndown?milestoneId=${id}`);
+		} catch {
+			error = 'No answer from the server. The burndown could not be loaded.';
+		}
+		if (res && !res.ok) error = await failureMessage(res, 'The burndown could not be loaded.');
+		else if (res) {
 			// An answer that is not the burndown (a proxy's page) was an answer, not none.
 			try {
-				burndown = await res.json();
-				burndownError = '';
+				read = { burndown: await res.json() };
 			} catch {
-				burndownError = "The server's answer could not be read. The burndown could not be loaded.";
+				error = "The server's answer could not be read. The burndown could not be loaded.";
 			}
-		} finally {
-			burndownLoading = false;
 		}
+		if (seq !== burndownSeq) return;
+		if (read) burndown = read.burndown;
+		burndownError = error;
+		burndownLoading = false;
 	}
 
 	/** The words of a failed read, ending in a full stop unless they end in one of their own (or ? or !). */

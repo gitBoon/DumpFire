@@ -10,7 +10,8 @@
   asks it to read them again when a delete is refused. Uploads and deletes
   are sent from here, each answer read. Once it has read them, the window
   reads them again, quietly, when its page is told another person's upload
-  or delete (card 2337); each shown here tells the window (`onWritten`).
+  or delete (card 2337); each shown here tells the window (`onWritten`). A
+  delete asks first, in the app's confirm dialog drawn here (card 2360).
 -->
 <script module lang="ts">
 	export type AttachmentItem = {
@@ -22,6 +23,7 @@
 <script lang="ts">
 	import { answerBody, deleteFailure, uploadFailure, uploadNoAnswer, uploadNotRead } from '$lib/api';
 	import type { CardType } from '$lib/types';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	let {
 		card,
@@ -130,6 +132,22 @@
 		onWritten?.();
 	}
 
+	/**
+	 * The file whose delete was pressed, while its confirm is open: a delete
+	 * cannot be undone from any page, and it went at once on one click (card
+	 * 2360, as card 2338 for comments). The confirm is drawn here, inside the
+	 * window, which leaves Escape and Ctrl+Enter to it (CardModal's
+	 * `handleKeydown`).
+	 */
+	let deleting = $state<AttachmentItem | null>(null);
+
+	function confirmDelete() {
+		if (!deleting) return;
+		const id = deleting.id;
+		deleting = null;
+		deleteAttachment(id);
+	}
+
 	function formatFileSize(bytes: number): string {
 		if (bytes < 1024) return `${bytes} B`;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -214,12 +232,22 @@
 						<a href="/api/cards/{card.id}/attachments/{att.id}" class="attachment-name" target="_blank" download={att.originalName}>{att.originalName}</a>
 						<span class="attachment-meta">{formatFileSize(att.sizeBytes)}</span>
 					</div>
-					<button class="attachment-delete" onclick={() => deleteAttachment(att.id)} title="Delete">
+					<button class="attachment-delete" onclick={() => (deleting = att)} title="Delete">
 						<svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
 					</button>
 				</div>
 			{/each}
 		</div>
+	{/if}
+
+	{#if deleting}
+		<ConfirmModal
+			title="Delete File"
+			message={`"${deleting.originalName}" will be deleted from the card for everyone. This cannot be undone.`}
+			confirmText="Delete"
+			onConfirm={confirmDelete}
+			onCancel={() => (deleting = null)}
+		/>
 	{/if}
 </div>
 {/if}

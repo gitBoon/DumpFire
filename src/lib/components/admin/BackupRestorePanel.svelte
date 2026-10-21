@@ -13,6 +13,7 @@
 	import { answerBody, failureMessage, uploadFailure, uploadNoAnswer, uploadNotRead } from '$lib/api';
 	import { showToast } from '$lib/admin/send';
 	import { toasts } from '$lib/stores/toast';
+	import { holdFocus } from '$lib/dialog-focus';
 
 	/** This instance's default way to restore, from the page's load. */
 	let { importOutsideDefault }: { importOutsideDefault: 'keep' | 'off' } = $props();
@@ -407,12 +408,12 @@
 	<input type="file" accept=".db,.sqlite,.sqlite3" class="hidden-input" bind:this={fileInput} onchange={handleFileSelected} />
 </section>
 
-<!-- Import dialog: the warning, and which of the two ways to restore -->
+<!-- Import dialog: the warning, and which of the two ways to restore. Cancel takes the focus, Tab stays in it and Escape is Cancel (card 2362). -->
 {#if showImportDialog}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" role="dialog" aria-modal="true">
+	<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Import Database">
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px">
+		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: () => (showImportDialog = false) }}>
 			<h2>Import Database</h2>
 			<p style="margin-bottom: var(--space-md)">This will REPLACE ALL existing data with the backup — users, teams, boards, cards, comments, labels, task requests, and settings will all be overwritten. Everybody is signed out, you included: no session is restored, whatever the backup holds, so you will sign in again with an account the backup has. Invites that have not been used yet stop working. A backup with users and no superadmin among them is refused.</p>
 			<div class="import-choices" role="radiogroup" aria-label="How to restore the backup">

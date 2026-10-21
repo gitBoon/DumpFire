@@ -369,6 +369,29 @@ describe('the plan page opens its card window from each block (card 2281, slice 
 		expect(titleBox()).toBeNull();
 		expect($$('.toast-error .toast-msg').map(textOf)).toEqual([said]);
 	});
+
+	// Card 2350: whichever card's read answered last was opened, the one clicked first if it was slower.
+	it.each([
+		['its context', () => json({ card: cardRow(7, 'Plan'), boardId: 3, categories: [], labels: [], boardUsers: [], milestones: [] })],
+		['no answer', () => Promise.reject(new TypeError('Failed to fetch'))]
+	])('keeps the window on the card opened last when an earlier card’s read answers after it with %s, and says nothing of it (card 2350)', async (_, late) => {
+		let answerFirst!: () => void;
+		answerContext = (id) =>
+			id === 7
+				? new Promise<Response>((resolve, reject) => (answerFirst = () => Promise.resolve().then(late).then(resolve, reject)))
+				: json({ card: cardRow(id, TITLES[id]), boardId: 3, categories: [], labels: [], boardUsers: [], milestones: [] });
+		await draw();
+		click($('.work-table .title-link'));
+		click($$('.work-table .id-link')[1]);
+		await settle();
+		expect(titleBox()?.value).toBe('Ship');
+
+		answerFirst();
+		await settle();
+		expect(sent.map((s) => s.what)).toEqual(expect.arrayContaining(['GET /api/cards/7/context', 'GET /api/cards/8/context']));
+		expect(titleBox()?.value).toBe('Ship');
+		expect($$('.toast-error .toast-msg')).toEqual([]);
+	});
 });
 
 describe('the plan page’s card picker (card 2281, slice C3a-3)', () => {
@@ -503,6 +526,25 @@ describe('the plan page’s card picker (card 2281, slice C3a-3)', () => {
 		expect($$('.picker-result')).toEqual([]);
 		expect(pickerSays()).toEqual([]);
 	});
+
+	// Card 2351: the box and the results were cleared whether or not the card was added.
+	it.each([
+		['is refused', () => json({ message: 'That card is on a board you cannot change' }, 403)],
+		['gets no answer', () => Promise.reject(new TypeError('Failed to fetch'))]
+	])('keeps what was typed and the results when adding a card %s (card 2351)', async (_, answer) => {
+		answerPatch = answer;
+		await draw();
+		click($$('.hdr-btn.primary')[0]);
+		const box = $<HTMLInputElement>('.picker-input')!;
+		type(box, 'notes');
+		await vi.advanceTimersByTimeAsync(300);
+		await settle();
+		click($('.picker-result'));
+		await settle();
+		expect(patches()).toEqual([{ cardId: 21, attach: true }]);
+		expect(box.value).toBe('notes');
+		expect($$('.picker-result .card-title').map(textOf)).toEqual(['Write the notes']);
+	});
 });
 
 describe('the plan page’s changes to the goal go through its one PATCH path (card 2281, slice C3a-3)', () => {
@@ -517,6 +559,24 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 		await settle();
 		expect(patches()).toContainEqual({ name: 'Launch v2' });
 		expect(navigation.invalidateAll).toHaveBeenCalled();
+		expect($('.name-input')).toBeNull();
+	});
+
+	// Card 2351: the box closed whether or not the name was saved, and the next double-click started from the old name.
+	it.each([
+		['is refused', () => json({ message: 'Viewers cannot change goals' }, 403)],
+		['gets no answer', () => Promise.reject(new TypeError('Failed to fetch'))]
+	])('keeps the name box open with what was typed when a rename %s (card 2351)', async (_, answer) => {
+		answerPatch = answer;
+		await draw();
+		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		flushSync();
+		const box = $<HTMLInputElement>('.name-input')!;
+		type(box, 'Launch v2');
+		box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await settle();
+		expect(patches()).toEqual([{ name: 'Launch v2' }]);
+		expect($<HTMLInputElement>('.name-input')?.value).toBe('Launch v2');
 	});
 
 	it('closes the goal from the header, holding Close while the change is out', async () => {
@@ -729,6 +789,53 @@ describe('the plan page’s progress and burndown draw from its load (card 2281,
 		expect(burndownSays()).toEqual([]);
 		expect(textOf($('.bd-status'))).toBe('✓Done — nothing remaining');
 	});
+
+	/** Every read of the burndown from here on, each answered when the case says, in the order they were sent. */
+	function holdBurndownReads() {
+		const out: ((answer: Response) => void)[] = [];
+		answerBurndown = () => new Promise<Response>((resolve) => out.push(resolve));
+		return out;
+	}
+
+	// Card 2350: whichever read answered last was shown, the older one if it was slower.
+	it('keeps the latest read’s chart when an older read answers after it (card 2350)', async () => {
+		const props = await draw();
+		const out = holdBurndownReads();
+		props.data = planData({}, true);
+		await settle();
+		props.data = planData();
+		await settle();
+		expect(out).toHaveLength(2);
+
+		out[1](json(burndownDone));
+		await settle();
+		expect(burndownSays()).toEqual([]);
+		out[0](json({ message: 'The burndown is paused for maintenance' }, 503));
+		await settle();
+		expect(burndownSays()).toEqual([]);
+		expect(textOf($('.bd-status'))).toBe('✓Done — nothing remaining');
+	});
+
+	// Card 2350: and the first read to answer put Loading back while the latest was still out.
+	it('says Loading until the latest read answers when an older one answers first (card 2350)', async () => {
+		answerBurndown = () => Promise.reject(new TypeError('Failed to fetch'));
+		const props = await draw();
+		const out = holdBurndownReads();
+		props.data = planData({}, true);
+		await settle();
+		props.data = planData();
+		await settle();
+		expect(out).toHaveLength(2);
+
+		out[0](json(burndownDone));
+		await settle();
+		expect(burndownSays()).toEqual(['Loading the burndown…']);
+		expect($('.bd-status')).toBeNull();
+		out[1](json(burndownDone));
+		await settle();
+		expect(burndownSays()).toEqual([]);
+		expect(textOf($('.bd-status'))).toBe('✓Done — nothing remaining');
+	});
 });
 
 describe('the plan page draws its graph as HEAD’s page drew it (card 2281, slice C3a-3)', () => {
@@ -804,12 +911,25 @@ describe('the plan page draws its graph as HEAD’s page drew it (card 2281, sli
 		['WorkTable.svelte', '.blocked-group'],
 		['WorkTable.svelte', '.col-id a']
 	])('keeps no rule in %s for markup it no longer draws: %s (card 2323)', (name, selector) => {
-		const selectors = cssOf(name)
-			.replace(/\/\*[\s\S]*?\*\//g, '')
-			.split('}')
-			.flatMap((rule) => (rule.includes('{') ? rule.slice(0, rule.lastIndexOf('{')).split(',') : []))
-			.map((s) => s.replace(/:where\(\.svelte-[\w-]+\)|\.svelte-[\w-]+/g, '').replace(/\s+/g, ' ').trim());
+		const selectors = selectorsOf(name);
 		expect(selectors.length).toBeGreaterThan(10);
 		expect(selectors.filter((s) => s === selector || s.startsWith(`${selector}:`))).toEqual([]);
 	});
+
+	// Card 2352: written twice, the same each time; the one beside the element's own style is kept.
+	it.each([
+		['WorkTable.svelte', '.blocker:hover'],
+		['CriticalPathPanel.svelte', '.chain-card:hover']
+	])('writes the rule in %s for %s once (card 2352)', (name, selector) => {
+		expect(selectorsOf(name).filter((s) => s === selector)).toEqual([selector]);
+	});
 });
+
+/** Every selector of a plan component's compiled CSS, its scoping class taken off. */
+function selectorsOf(name: string): string[] {
+	return cssOf(name)
+		.replace(/\/\*[\s\S]*?\*\//g, '')
+		.split('}')
+		.flatMap((rule) => (rule.includes('{') ? rule.slice(0, rule.lastIndexOf('{')).split(',') : []))
+		.map((s) => s.replace(/:where\(\.svelte-[\w-]+\)|\.svelte-[\w-]+/g, '').replace(/\s+/g, ' ').trim());
+}

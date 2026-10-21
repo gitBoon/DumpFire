@@ -12,6 +12,7 @@
   page's panels area, where it was.
 -->
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { browser } from '$app/environment';
 	import { parseUTC } from '$lib/utils/date-utils';
 	import { activityLabel } from '$lib/utils/activity-labels';
@@ -26,6 +27,21 @@
 	let activityError = $state('');
 	let knownActivityIds = new Set<number>();
 	let newActivityIds = $state(new Set<number>());
+	/**
+	 * Whether a read has been answered: what was seen is seeded by the first
+	 * one that is, not the first one sent. A first read that failed seeded
+	 * nothing, and the next took every item as new (card 2356).
+	 */
+	let seeded = false;
+	/** Each pulse's 30-second timer, ended with the panel, after which a read answered starts none (card 2356: they outlived it). */
+	const pulseTimers = new Set<ReturnType<typeof setTimeout>>();
+	let gone = false;
+
+	onDestroy(() => {
+		gone = true;
+		for (const timer of pulseTimers) clearTimeout(timer);
+		pulseTimers.clear();
+	});
 
 	export function toggleActivity() {
 		activityOpen = !activityOpen;
@@ -60,10 +76,11 @@
 				return;
 			}
 			activityError = '';
-			if (initial) {
-				// First load — seed known IDs, nothing is "new"
+			if (initial || !seeded) {
+				// First load answered — seed known IDs, nothing is "new"
 				knownActivityIds = new Set(items.map((i: any) => i.id));
 				newActivityIds = new Set();
+				seeded = true;
 			} else {
 				// Subsequent loads — detect new items
 				const freshIds = new Set<number>();
@@ -73,12 +90,14 @@
 						knownActivityIds.add(item.id);
 					}
 				}
-				if (freshIds.size > 0) {
+				if (freshIds.size > 0 && !gone) {
 					newActivityIds = new Set([...newActivityIds, ...freshIds]);
 					// Clear the pulse after 30 seconds
-					setTimeout(() => {
+					const timer = setTimeout(() => {
+						pulseTimers.delete(timer);
 						newActivityIds = new Set([...newActivityIds].filter(id => !freshIds.has(id)));
 					}, 30000);
+					pulseTimers.add(timer);
 				}
 			}
 			activityItems = items;

@@ -52,8 +52,8 @@
 		milestoneId: number;
 		/** Opens the page's card window on a card, or on the card a subtask belongs to. */
 		openCard: (ref: { kind?: string; id: number; parentCardId?: number; withheld?: boolean }) => void;
-		/** The page's one PATCH path for every change to the goal. */
-		mutate: (body: Record<string, unknown>) => Promise<void>;
+		/** The page's one PATCH path for every change to the goal: true once it is saved. */
+		mutate: (body: Record<string, unknown>) => Promise<boolean>;
 	} = $props();
 
 	// ─── The work table ──────────────────────────────────────────────────────
@@ -407,7 +407,6 @@
 		font-variant-numeric: tabular-nums;
 	}
 	.id-link:hover { color: var(--accent-indigo); }
-	.blocker:hover { background: var(--bg-elevated); }
 
 	/*
 	 * The panel's frame, copied into each block of the plan page (card 2281,
