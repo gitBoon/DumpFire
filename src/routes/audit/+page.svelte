@@ -168,7 +168,12 @@
 			// whole of that day, to its last second in UTC (card 2095).
 			if (fTo) params.set('to', fTo);
 			params.set('limit', String(AUDIT_PAGE));
-			params.set('offset', String(reset ? 0 : auditRows.length));
+			// Load more asks for the entries older than the last row shown (card
+			// 2387). It asked from `offset` = the rows shown, so each entry written
+			// since the first page pushed the next one down a place, and it began
+			// with a row already shown.
+			const last = reset ? undefined : auditRows.at(-1);
+			if (last) params.set('before', `${last.createdAt},${last.id}`);
 
 			const res = await fetch(`/api/audit?${params}`);
 			// A refusal (a `from` after its `to`, card 2262) is said in the

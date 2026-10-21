@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.36
+version: 1.37
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1644,12 +1644,26 @@ owner and an administrator, from the same rule and to the same people as `paused
 - **Held now.** The same answer carries `heldWebhooks`, how many are on and held, whatever held
   them, webhooks with no setter included. Above 0, the window says so above the list, with
   where to read why (`GET /api/v1/boards/{id}/webhooks`). The list is read again after each
-  share added, changed or removed, so a removal's count shows at once; the public switch does
-  not read it again (card 2385).
+  share added, changed or removed, and after the public switch (card 2385), so a change's
+  count shows at once. Only the latest read of the list is shown: an older one answering last
+  does not put back the list from before a later change.
+- **Before making a board private (card 2385).** The same answer carries
+  `privateStopsWebhooks`: on a public board, how many webhooks sent now would be held once it
+  is private, that is those whose setter opens the board only because it is public (no share,
+  no shared team, not its creator, not an administrator); 0 on a private board.
+  `webhookShareNotes` asks `roleOnBoard` with the board handed in as private
+  (`{ ...board, isPublic: false }`), in the same per-setter pass: `roleOnBoard` takes
+  `isPublic` from the board it is given, so no new `without` shape was needed. The switch,
+  going to private while it is above 0, asks first in the app's confirm, **Make Private**:
+  "Making this board private stops 1 webhook set up by an account that can open it only
+  because it is public: nothing is sent to it until that account can open the board again, or
+  someone takes it over." (plural: "… set up by accounts that … until those accounts …"),
+  **Make Private** or **Cancel**. Going public, or a count of 0, switches at once.
 
-Anyone else is answered neither key. Nothing is stored: both counts are worked out at the read,
-as `pausedBecause` is. A hold caused elsewhere (a team's members changed, a role changed, the
-board made private) is not warned of before; the count says so the next time the window opens.
+Anyone else is answered none of the three keys. Nothing is stored: every count is worked out at
+the read, as `pausedBecause` is. A hold caused elsewhere (a team's members changed, a role
+changed, the board made private through `PUT /api/v1/boards/{boardId}`) is not warned of
+before; the count says so the next time the window opens.
 
 ```mermaid
 sequenceDiagram
@@ -1662,12 +1676,17 @@ sequenceDiagram
     R->>N: owner or admin only
     N->>N: holdOf(each webhook that is on)
     N->>N: roleOnBoard(setter, board, without share)
-    N-->>R: held, byMember, byTeam
-    R-->>W: members[].stopsWebhooks, teams[].stopsWebhooks, heldWebhooks
+    N->>N: roleOnBoard(setter, board read as private)
+    N-->>R: held, byMember, byTeam, privateStops
+    R-->>W: members[].stopsWebhooks, teams[].stopsWebhooks, heldWebhooks, privateStopsWebhooks
     O->>W: ✕ on a share with stopsWebhooks > 0
     W-->>O: Remove Access: "Removing … stops N webhooks …"
     O->>W: Remove
     W->>R: DELETE, then read the list again
+    O->>W: the switch, on a public board with privateStopsWebhooks > 0
+    W-->>O: Make Private: "Making this board private stops N webhooks …"
+    O->>W: Make Private
+    W->>R: PATCH isPublic false, then read the list again
 ```
 
 ### Events and Payload

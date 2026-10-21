@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.40
+version: 1.41
 status: As-Built
 date: 2026-10-21
 tags:
@@ -214,6 +214,8 @@ Share boards with specific permissions:
 The share window lists every user and every team by name, so a board can be shared with anyone. Email addresses are shown only where you may see them: an administrator sees everyone's, and the board's owner sees those of the people the board is already shared with.
 
 The share window also tells the board's owner and an administrator about the board's webhooks (card 2329). A webhook is sent only while the person who set it up can open the board, so removing them, or a team they are in, can stop it. ✕ on such a person or team asks first: "Removing Sam stops 1 webhook they set up on this board: nothing is sent to it until they can open the board again, or someone takes it over.", with **Remove** and **Cancel**; ✕ on anyone else removes them at once. Above the list, the window says how many of the board's webhooks send nothing now, whatever stopped them (a person taken out of a team, the board made private, an administrator made an ordinary user, a webhook with no recorded setter), and where to read why: `GET /api/v1/boards/{id}/webhooks` with an API key, whose `pausedBecause` says why each is held and how to take it over. Editors and viewers see neither.
+
+Making a public board private can stop webhooks too: those set up by someone who can open the board only because it is public (card 2385). The switch then asks first: "Making this board private stops 1 webhook set up by an account that can open it only because it is public: nothing is sent to it until that account can open the board again, or someone takes it over.", with **Make Private** and **Cancel**. Otherwise it switches at once, as before. After the switch, as after any share added, changed or removed, the window reads its list again, so the count of webhooks that send nothing is up to date at once.
 
 ### Assignees
 

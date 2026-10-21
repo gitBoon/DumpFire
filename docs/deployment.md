@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.83
+version: 1.84
 status: As-Built
 date: 2026-10-21
 tags:
@@ -4173,6 +4173,39 @@ Exactly 100 entries on one filter, the case card 2383 is about, is not arranged 
 #### Going back to the previous image
 
 Nothing is done to the database. The older image's Share window removes anyone at once and shows no line about held webhooks, and `GET /api/boards/{id}/share` answers no `stopsWebhooks` or `heldWebhooks`. Its Audit page offers **Load more** after a page of exactly 100. Its card window's dependency search says nothing when it fails, and its reads of a card's links can put back older links.
+
+### Making a Board Private Warns Before It Stops Webhooks, the Card Window's Search Timer, and the Audit Log's Cursor
+
+**Cards 2385, 2386 and 2387.** No migration, no setting, no index and no route added. One `/api/v1` change, additive: `GET /api/v1/audit-log` takes an optional `before` (OpenAPI change item 104; `info.version` stays 1.2.0). One internal answer gains a key: `GET /api/boards/{id}/share` gives the board's owner and an administrator `privateStopsWebhooks`. The plan is `docs/planning/cards-2385-2386-2387.md`.
+
+- **2385.** Making a public board private holds every webhook whose setter could open it only because it was public, and the Share window said nothing. The switch now asks first when it would stop any, saying how many (**Make Private** or **Cancel**), and the window reads its list again after the switch, so the line about held webhooks follows at once. The window also reads its list once on opening, where it read it twice.
+- **2386.** A dependency search typed in the card window within a quarter of a second of closing it was still sent. It is no longer sent once the window closes or its card changes.
+- **2387.** The Audit page's **Load more** asked for the next page by counting the rows shown, so an entry written meanwhile made the next page begin with a row already shown. It now asks for the entries older than the last row shown. Integrations can page `GET /api/v1/audit-log` the same way with `before`; `offset` works as it did.
+
+**Owner to know.** In the Share window, the switch from public to private now opens a **Make Private** confirmation when it would stop a webhook; otherwise it switches at once, as before.
+
+#### After the deploy
+
+On production, as **O**, your administrator account, signed in, with O's API key (My Account) and the browser's developer tools open. Nothing here makes a real board private, removes a real board member, or touches a real webhook or receiver. **The receiver, `<CATCHER>`**: an HTTPS address you control that shows each request it gets, as for card 2329's checks; never a third-party address chosen for you. **Scratch things:** on the dashboard a board "TEST 2385 - delete me"; note its id (the number in its address, `/board/<id>`), `<S>`. In **Admin → User Management**, **+ Add User**, username "TEST 2385 - delete me", email `test2385@example.invalid`, a password (so no invite is mailed), role User, **Create**. In a private window sign in as that account, open **My Account**, **Generate Key**, and note the key, `<K>`; close the private window. As O, on board TEST 2385, **More**, **Share Board**: in the user list choose TEST 2385 - delete me, the role ✏️ Editor, **Share**; **Close**. With `<K>`: `POST /api/v1/boards/<S>/webhooks` with `{"url": "<CATCHER>/2385"}`, `201`; note its `id`. With O's key: `GET /api/v1/boards/<S>/columns`, note the To Do column's id `<todo>`, and three times `POST /api/v1/boards/<S>/cards` with `{"columnId": <todo>, "title": "TEST 2385 card - delete me"}`.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 414 | 2385 | On the board TEST 2385 - delete me, **More**, **Share Board**; press the switch beside "Private Board" (its title reads "Make public") | It reads "Public Board" at once, with no dialog; no line saying webhooks on this board send nothing | A dialog, or such a line |
+| 415 | 2385 | In the same window press ✕ on TEST 2385 - delete me's row (its title reads "Remove access") | The person is removed at once, with no dialog (they can still open the public board); still no line about webhooks | A **Remove Access** dialog, or a line about webhooks |
+| 416 | 2385 | Press the switch (its title reads "Make private"); read the dialog; press **Cancel** | A dialog **Make Private** reading "Making this board private stops 1 webhook set up by an account that can open it only because it is public: nothing is sent to it until that account can open the board again, or someone takes it over.", with **Cancel** and **Make Private**; after **Cancel** the dialog closes and the window still reads "Public Board" | The board is made private at once, with no dialog |
+| 417 | 2385 | Press the switch again, then **Make Private**; do not close the window | The window reads "Private Board" and, without being opened again, shows above the switch: "⚠️ 1 webhook on this board sends nothing: the account that set each up can no longer open the board, or nobody is recorded as setting it up. Read the board's webhooks with your API key (GET /api/v1/boards/<S>/webhooks) to see why each is held, and delete it or take it over." | No line until the window is opened again |
+| 418 | 2385 | Press the switch once more (its title reads "Make public"); in the network panel, count the requests to `/api/boards/<S>/share` since the press | "Public Board" at once, with no dialog, and the line about webhooks gone; one `PATCH` and one `GET` to `/api/boards/<S>/share` | A dialog, the line stays, or no `GET` after the `PATCH` |
+| 419 | 2387 | With O's key, `GET /api/v1/audit-log?boardId=<S>&limit=2`; note the second entry's `createdAt` and `id`, and `pagination.total`, `<T>`. Then `GET /api/v1/audit-log?boardId=<S>&limit=2&before=<that createdAt>%2C<that id>` | Every entry of the second answer has a lower `id` than the noted one, and none has an `id` from the first answer; its `pagination.total` is `<T>` minus 2 | An entry of the first answer comes again, or `400` |
+| 420 | 2387 | With O's key, `GET /api/v1/audit-log?before=2026-10-21` | `400` `{"message":"before must be an entry's createdAt and id, as 2026-10-21T09:00:00Z,1234"}` | `200` |
+| 421 | 2387 | The dashboard's **More** menu, **Audit & Logs**; the **Audit Log** tab; with no filter chosen, **Apply**. If **Load more** is shown under the rows, press it, and in the network panel read the last request to `/api/audit` | That request's address has `before=` (the last row's time and id) and no `offset=`; the row that was last before the press is not shown a second time | `offset=` in the address. With no **Load more** shown (fewer than 100 entries in all), this check is passed over |
+
+Card 2386 is not checked by hand: closing the window within a quarter of a second of typing cannot be done reliably. The suite covers it (`tests/card-window-follow.svelte.test.ts`).
+
+**Afterwards.** With O's key `DELETE /api/v1/webhooks/<the id>`. On the dashboard delete the board "TEST 2385 - delete me". In **Admin → User Management** delete TEST 2385 - delete me (🗑️, **Confirm**); its API key goes with it. Clear or delete the receiver's path `/2385`.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image's Share window makes a board private at once with no word of webhooks and does not read its list again afterwards, and `GET /api/boards/{id}/share` answers no `privateStopsWebhooks`. Its card window sends a search typed just before it closed. Its `/api/audit` and `/api/v1/audit-log` ignore `before` and answer the first page (an integration that came to rely on `before` would loop on the first page: check none has before going back), and its Audit page's **Load more** asks by `offset` again.
 
 ## Changing the Schema
 

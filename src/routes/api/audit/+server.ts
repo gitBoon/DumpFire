@@ -11,7 +11,11 @@ import type { RequestHandler } from './$types';
  * filters are listed and the seven ways the two had come apart are settled.
  * Filters: ?boardId=N &action=string (suffix * for prefix match) &source=ui|api
  *          &userId=N &cardId=N &from=ISO &to=ISO &limit=N (default 100, max
- *          500) &offset=N
+ *          500) &offset=N &before=<createdAt>,<id>
+ *
+ * The page's Load more sends `before`, the last row it shows (card 2387):
+ * by `offset`, an entry written between two pages pushed the next page down
+ * a place, and it began with a row already shown.
  *
  * A row is v1's with `action` as stored (`api:card_moved`), which the page
  * shows, its `api:` drawing the API chip; `rawAction` is the same, and

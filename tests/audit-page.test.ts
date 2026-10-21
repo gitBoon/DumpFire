@@ -13,6 +13,11 @@
  * 2294). The page's failures, read from the source, are in
  * `tests/page-failures.test.ts`. The plan is
  * `docs/planning/cards-2329-2383-2384.md`.
+ *
+ * Load more asks for the entries before the last row shown, by its
+ * `createdAt` and `id` (card 2387, `docs/planning/cards-2385-2386-2387.md`):
+ * by `offset`, an entry written between pages repeated a row. That the
+ * routes answer the cursor is in `tests/audit-log.test.ts`.
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -35,7 +40,7 @@ const { flushSync, mount, unmount }: typeof Svelte = await import(/* @vite-ignor
 let drawn: { component: ReturnType<typeof mount>; target: HTMLElement } | null = null;
 /** Each `/api/audit` request sent, by its query. */
 let asked: URLSearchParams[] = [];
-/** How the next read of the log is answered: rows from `offset`, and whether more follow. */
+/** How the next read of the log is answered: how many rows, numbered on from the cursor's id, and whether more follow. */
 let pages: { count: number; hasMore: boolean }[] = [];
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -67,9 +72,11 @@ beforeEach(() => {
 			if (!url.startsWith('/api/audit?')) return json([]);
 			const query = new URLSearchParams(url.slice('/api/audit?'.length));
 			asked.push(query);
-			const offset = Number(query.get('offset'));
+			// Ids go on from the cursor's, so that no two rows drawn share one.
+			const before = query.get('before');
+			const from = before ? Number(before.split(',')[1]) + 1 : 1;
 			const page = pages.shift() ?? { count: 0, hasMore: false };
-			return json({ data: rows(offset + 1, page.count), pagination: { limit: 100, offset, count: page.count, hasMore: page.hasMore } });
+			return json({ data: rows(from, page.count), pagination: { limit: 100, offset: 0, count: page.count, hasMore: page.hasMore } });
 		})
 	);
 });
@@ -114,7 +121,7 @@ describe('Load more on the Audit page reads hasMore (card 2383)', () => {
 		expect(loadMore(target)).toBeUndefined();
 	});
 
-	it('a page with more after it offers Load more, which reads from 100 on and goes once the answer says nothing follows', async () => {
+	it('a page with more after it offers Load more, which reads the next page and goes once the answer says nothing follows', async () => {
 		pages = [
 			{ count: 100, hasMore: true },
 			{ count: 100, hasMore: false }
@@ -124,7 +131,32 @@ describe('Load more on the Audit page reads hasMore (card 2383)', () => {
 
 		loadMore(target)!.click();
 		await settle();
-		expect(asked.map((q) => q.get('offset'))).toEqual(['0', '100']);
+		expect(asked).toHaveLength(2);
 		expect(loadMore(target)).toBeUndefined();
+	});
+});
+
+// Card 2387: Load more asked from `offset` = the rows shown, so each entry written since
+// the first page pushed the next page down a place, and it began with a row already shown.
+describe('Load more on the Audit page asks for the entries before the last row shown (card 2387)', () => {
+	it('sends the last row’s createdAt and id as before, and no offset; a new Apply sends no cursor', async () => {
+		pages = [
+			{ count: 100, hasMore: true },
+			{ count: 3, hasMore: false },
+			{ count: 2, hasMore: false }
+		];
+		const target = await openAuditLog();
+		loadMore(target)!.click();
+		await settle();
+
+		expect(asked.map((q) => [q.get('before'), q.get('offset')])).toEqual([
+			[null, null],
+			['2026-10-21 09:00:00,100', null]
+		]);
+		expect(target.querySelectorAll('.at-row')).toHaveLength(103);
+
+		[...target.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === 'Apply')!.click();
+		await settle();
+		expect(asked[2].get('before')).toBeNull();
 	});
 });

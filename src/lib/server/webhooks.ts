@@ -137,6 +137,8 @@ export type WebhookShareNotes = {
 	byMember: Map<number, number>;
 	/** For each team the board is shared with, by team id: the same. */
 	byTeam: Map<number, number>;
+	/** On a public board, the webhooks sent now that making it private would hold (card 2385); 0 on a private one. */
+	privateStops: number;
 };
 
 /**
@@ -153,16 +155,20 @@ export type WebhookShareNotes = {
  * shared with only those they are in are asked of, since taking away a team
  * they are not in leaves their way in as it is (they can open the board, or
  * the webhook would be held).
+ *
+ * The switch to private is asked the same way (card 2385): `roleOnBoard`
+ * reads `isPublic` from the board it is handed, so the board handed in as
+ * private is the board without its public way in, every other as it is.
  */
 export function webhookShareNotes(board: Pick<Board, 'id' | 'createdBy' | 'isPublic'>): WebhookShareNotes {
-	const notes: WebhookShareNotes = { held: 0, byMember: new Map(), byTeam: new Map() };
+	const notes: WebhookShareNotes = { held: 0, byMember: new Map(), byTeam: new Map(), privateStops: 0 };
 	const hooks = db.select().from(webhooks).where(and(eq(webhooks.boardId, board.id), eq(webhooks.active, true))).all();
 	if (hooks.length === 0) return notes;
 	const sharedTeams = db.select({ teamId: boardTeams.teamId }).from(boardTeams).where(eq(boardTeams.boardId, board.id)).all();
 	const add = (counts: Map<number, number>, id: number) => counts.set(id, (counts.get(id) ?? 0) + 1);
 	const cache = new Map<string, boolean>();
-	/** For each setter: whether their member row's removal holds their webhooks, and which shared teams' do. */
-	const stopsBy = new Map<number, { member: boolean; teams: number[] }>();
+	/** For each setter: whether their member row's removal holds their webhooks, which shared teams' do, and whether making the board private does. */
+	const stopsBy = new Map<number, { member: boolean; teams: number[]; private: boolean }>();
 	for (const hook of hooks) {
 		if (holdOf(hook, cache) !== null) {
 			notes.held++;
@@ -180,12 +186,14 @@ export function webhookShareNotes(board: Pick<Board, 'id' | 'createdBy' | 'isPub
 				member: roleOnBoard(setter, board, { userId: setterId }) === null,
 				teams: sharedTeams
 					.filter(({ teamId }) => theirTeams.has(teamId) && roleOnBoard(setter, board, { teamId }) === null)
-					.map(({ teamId }) => teamId)
+					.map(({ teamId }) => teamId),
+				private: !!board.isPublic && roleOnBoard(setter, { ...board, isPublic: false }) === null
 			};
 			stopsBy.set(setterId, stops);
 		}
 		if (stops.member) add(notes.byMember, setterId);
 		for (const teamId of stops.teams) add(notes.byTeam, teamId);
+		if (stops.private) notes.privateStops++;
 	}
 	return notes;
 }

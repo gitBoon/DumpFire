@@ -2641,7 +2641,7 @@ const WRITES: Record<string, Write[]> = {
 	// the reader is looking (its decision 11, held below), and puts back what
 	// it changed first (decision 12).
 	'src/lib/components/ShareModal.svelte': [
-		{ name: 'togglePublic', reads: 'failureMessage', done: ['isPublic = !isPublic'] },
+		{ name: 'togglePublic', reads: 'failureMessage', done: ['isPublic = !isPublic', 'await loadData()'] },
 		{ name: 'shareWithUser', reads: 'failureMessage', done: ['selectedUserId = null', 'await loadData()'] },
 		{ name: 'shareWithTeam', reads: 'failureMessage', done: ['selectedTeamId = null', 'await loadData()'] },
 		{ name: 'updateRole', reads: 'failureMessage', putsBack: ['putBack()'], done: ['await loadData()'] },
@@ -4332,11 +4332,15 @@ describe('the share and subtask windows, the dashboard and the account page say 
 		const share = svelteFile('src/lib/components/ShareModal.svelte');
 		const WRITING = ['togglePublic', 'shareWithUser', 'shareWithTeam', 'updateRole', 'removeAccess'];
 
-		for (const name of ['loadData', ...WRITING.filter((write) => write !== 'removeAccess')]) {
+		for (const name of WRITING.filter((write) => write !== 'removeAccess')) {
 			const asked = callsOf(functionNamed(share.tree, name), 'failureMessage');
 			expect(asked.length, name).toBeGreaterThan(0);
 			expect(asked.map(givenTo), name).toEqual(asked.map(() => 'error'));
 		}
+		// A read's failure is said only if the read is still the latest (card 2385): kept, then given to the line.
+		const load = functionNamed(share.tree, 'loadData');
+		expect(callsOf(load, 'failureMessage').map(givenTo)).toEqual(['failure']);
+		expect(statementsOf(load, 'error = failure')).toHaveLength(1);
 		// A removal's words are deleteFailure's.
 		expect(statementsOf(functionNamed(share.tree, 'removeAccess'), 'error = failure')).toHaveLength(1);
 		// Cleared before each write asks, so a success leaves no failure behind it.
@@ -5839,7 +5843,8 @@ describe('the Audit Log says why an answer failed, src/routes/audit/+page.svelte
 
 	const REVERSED = () => answered(400, { message: '`from` is after `to`' });
 	// A full page of two says more follows, as the route's `hasMore` would here; Load more reads it (card 2383).
-	const PAGE = (...ids: number[]) => () => answered(200, { data: ids.map((id) => ({ id })), pagination: { hasMore: ids.length === 2 } });
+	const PAGE = (...ids: number[]) => () =>
+		answered(200, { data: ids.map((id) => ({ id, createdAt: '2026-10-21 09:00:00' })), pagination: { hasMore: ids.length === 2 } });
 
 	it('shows no earlier answer under a refused Apply, says the server’s words, and clears them on the next answer that works', async () => {
 		let next: () => Response = PAGE(1, 2);
@@ -5866,7 +5871,9 @@ describe('the Audit Log says why an answer failed, src/routes/audit/+page.svelte
 		next = () => answered(503, { message: 'Service Unavailable' });
 		await page.loadAudit(false);
 		expect(page.state).toEqual({ rows: [1, 2], loading: false, exhausted: false, error: 'Service Unavailable' });
-		expect(page.asked.at(-1)).toContain('offset=2');
+		// Asked from the last row shown, by its time and id (card 2387), not by an offset.
+		const query = new URLSearchParams(page.asked.at(-1)!.split('?')[1]);
+		expect([query.get('before'), query.get('offset')]).toEqual(['2026-10-21 09:00:00,2', null]);
 	});
 
 	it('says when no answer came, and stops saying "Loading…", for Apply and for Load more', async () => {

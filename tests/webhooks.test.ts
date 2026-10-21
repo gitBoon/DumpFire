@@ -2745,6 +2745,7 @@ describe("the share list tells the board's owner which webhooks a removal stops 
 		members: { userId: number; stopsWebhooks?: number }[];
 		teams: { teamId: number; stopsWebhooks?: number }[];
 		heldWebhooks?: number;
+		privateStopsWebhooks?: number;
 	};
 
 	/** Owner O's board, shared with an editor and a viewer as members; an administrator on nothing. */
@@ -2899,5 +2900,50 @@ describe("the share list tells the board's owner which webhooks a removal stops 
 		expect(after.notes.byMember.get(s.editor.id)).toBe(2);
 		expect([...after.notes.byTeam.values()]).toEqual([]);
 		expect(after.notes.held).toBe(0);
+	});
+
+	// Card 2385: the switch to private gave no warning, though it holds every webhook whose
+	// setter opens the board only because it is public.
+	it('8. privateStopsWebhooks counts, on a public board, the webhooks whose setter opens it only because it is public; making it private holds exactly those', async () => {
+		const s = scene({ isPublic: true });
+		const outsider = makeUser({ username: 'outsider' });
+		const teamOnly = makeUser({ username: 'teamonly' });
+		shareBoardWithTeam(s.board, makeTeam([teamOnly]), 'viewer');
+		makeWebhook(s.board, { setBy: outsider });
+		makeWebhook(s.board, { setBy: outsider });
+		makeWebhook(s.board, { setBy: outsider, active: false });
+		makeWebhook(s.board, { setBy: s.editor });
+		makeWebhook(s.board, { setBy: teamOnly });
+		makeWebhook(s.board, { setBy: s.admin });
+		makeWebhook(s.board); // the owner's own
+		makeWebhook(s.board, { setBy: null });
+
+		const before = await shareList(s, s.owner);
+		expect([before.privateStopsWebhooks, before.heldWebhooks]).toEqual([2, 1]);
+		// Nobody's removal stops the outsider's: they are no share.
+		expect(before.members.map((m) => m.stopsWebhooks)).toEqual([0, 0]);
+
+		const visibility = (isPublic: boolean) => api('PATCH', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { isPublic } });
+		expect((await visibility(false)).status).toBe(200);
+		const after = await shareList(s, s.owner);
+		expect([after.privateStopsWebhooks, after.heldWebhooks]).toEqual([0, 3]);
+
+		expect((await visibility(true)).status).toBe(200);
+		const again = await shareList(s, s.owner);
+		expect([again.privateStopsWebhooks, again.heldWebhooks]).toEqual([2, 1]);
+	});
+
+	it('9. privateStopsWebhooks is 0 on a private board, and goes to the owner and an administrator alone', async () => {
+		const s = scene({ isPublic: true });
+		const outsider = makeUser({ username: 'outsider' });
+		makeWebhook(s.board, { setBy: outsider });
+		makeWebhook(s.board, { setBy: s.editor });
+		for (const user of [s.owner, s.admin]) expect((await shareList(s, user)).privateStopsWebhooks, user.username).toBe(1);
+		for (const user of [s.editor, s.viewer, outsider]) expect(await shareList(s, user), user.username).not.toHaveProperty('privateStopsWebhooks');
+
+		// Private, the editor's webhook still sent: nothing left for the switch to stop.
+		expect((await api('PATCH', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { isPublic: false } })).status).toBe(200);
+		const shut = await shareList(s, s.owner);
+		expect([shut.privateStopsWebhooks, shut.heldWebhooks]).toEqual([0, 1]);
 	});
 });

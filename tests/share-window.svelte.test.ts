@@ -14,8 +14,14 @@
  *     (`heldWebhooks`), whatever stopped them, and says nothing at 0 or when
  *     the list gives no count (anyone but the owner and an administrator).
  *
+ *   - The switch to private asks first in the same way when it would stop
+ *     webhooks whose setters open the board only because it is public
+ *     (`privateStopsWebhooks`, card 2385), and the list is read again after
+ *     either switch; only the latest read of the list is shown.
+ *
  * What the list answers, and to whom, is in `tests/webhooks.test.ts`. The
- * plan is `docs/planning/cards-2329-2383-2384.md`.
+ * plans are `docs/planning/cards-2329-2383-2384.md` and
+ * `docs/planning/cards-2385-2386-2387.md`.
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -33,7 +39,7 @@ let drawn: { component: ReturnType<typeof mount>; target: HTMLElement } | null =
 /** Each request sent, as `METHOD url`, with its body read as JSON where it had one. */
 let sent: { what: string; body: unknown }[] = [];
 /** What the list answers: the window reads it as it opens and after each change. */
-let list: { members: Row[]; teams: Row[]; isPublic: boolean; heldWebhooks?: number };
+let list: { members: Row[]; teams: Row[]; isPublic: boolean; heldWebhooks?: number; privateStopsWebhooks?: number };
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -47,6 +53,7 @@ beforeEach(() => {
 			sent.push({ what: `${method} ${url}`, body: init?.body ? JSON.parse(String(init.body)) : undefined });
 			if (url === '/api/boards/3/share' && method === 'GET') return json(list);
 			if (url === '/api/boards/3/share' && method === 'DELETE') return json({ success: true });
+			if (url === '/api/boards/3/share' && method === 'PATCH') return json({ success: true });
 			return json([]);
 		})
 	);
@@ -241,5 +248,147 @@ describe('the Share window says how many of the board’s webhooks send nothing 
 		list.members = [member(5, 'sam', 0)];
 		await open();
 		expect(document.querySelector('.share-held')).toBeNull();
+	});
+});
+
+// Card 2385: the switch to private sent its change at once, with no word of the webhooks it
+// stops, and the list was not read again, so the held count stayed as before the switch.
+describe('the switch to private asks first when it stops webhooks, and the list is read again (card 2385)', () => {
+	const privateDialog = () => document.querySelector<HTMLElement>('[role="dialog"][aria-label="Make Private"]');
+	const patches = () => sent.filter((r) => r.what === 'PATCH /api/boards/3/share').map((r) => r.body);
+	const listReads = () => sent.filter((r) => r.what === 'GET /api/boards/3/share').length;
+	const theSwitch = () => document.querySelector<HTMLButtonElement>('.toggle-switch')!;
+	const said = () => document.querySelector('.share-held')?.textContent?.replace(/\s+/g, ' ').trim();
+
+	it('says how many, sends nothing on Cancel, and on Make Private sends the switch and reads the list again', async () => {
+		list = { members: [], teams: [], isPublic: true, heldWebhooks: 0, privateStopsWebhooks: 2 };
+		await open();
+
+		theSwitch().click();
+		flushSync();
+		expect(privateDialog()!.querySelector('.confirm-message')!.textContent).toBe(
+			'Making this board private stops 2 webhooks set up by accounts that can open it only because it is public: nothing is sent to them until those accounts can open the board again, or someone takes them over.'
+		);
+		button(privateDialog()!, 'Cancel').click();
+		await settle();
+		expect([privateDialog(), patches(), listReads()]).toEqual([null, [], 1]);
+
+		theSwitch().click();
+		flushSync();
+		list = { members: [], teams: [], isPublic: false, heldWebhooks: 2, privateStopsWebhooks: 0 };
+		button(privateDialog()!, 'Make Private').click();
+		await settle();
+		expect(patches()).toEqual([{ isPublic: false }]);
+		expect(listReads()).toBe(2);
+		expect(privateDialog()).toBeNull();
+		expect(drawn!.target.textContent).toContain('Private Board');
+		expect(said()).toMatch(/^⚠️ 2 webhooks on this board send nothing:/);
+	});
+
+	it('one, in the singular', async () => {
+		list = { members: [], teams: [], isPublic: true, privateStopsWebhooks: 1 };
+		await open();
+
+		theSwitch().click();
+		flushSync();
+		expect(privateDialog()!.querySelector('.confirm-message')!.textContent).toBe(
+			'Making this board private stops 1 webhook set up by an account that can open it only because it is public: nothing is sent to it until that account can open the board again, or someone takes it over.'
+		);
+	});
+
+	it('with none to stop, no count, or going public, switches at once, and reads the list again after each', async () => {
+		// No count (anyone but the owner and an administrator is given none).
+		list = { members: [], teams: [], isPublic: true };
+		await open();
+		// The read after it answers a count, which the server never gives a private board: going public asks nothing even so.
+		list = { members: [], teams: [], isPublic: false, privateStopsWebhooks: 3 };
+		theSwitch().click();
+		await settle();
+		expect([privateDialog(), patches(), listReads()]).toEqual([null, [{ isPublic: false }], 2]);
+
+		list = { members: [], teams: [], isPublic: true, privateStopsWebhooks: 0 };
+		theSwitch().click();
+		await settle();
+		expect([privateDialog(), patches(), listReads()]).toEqual([null, [{ isPublic: false }, { isPublic: true }], 3]);
+
+		// Public again, with none to stop.
+		list = { members: [], teams: [], isPublic: false, privateStopsWebhooks: 0 };
+		theSwitch().click();
+		await settle();
+		expect([privateDialog(), patches(), listReads()]).toEqual([null, [{ isPublic: false }, { isPublic: true }, { isPublic: false }], 4]);
+	});
+
+	it('shows only the latest read of the list: an older read answering last does not put back its list', async () => {
+		list.members = [member(5, 'sam', 0), member(6, 'kim', 0)];
+		await open();
+		const reads: ((res: Response) => void)[] = [];
+		vi.mocked(fetch).mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+			const method = init?.method ?? 'GET';
+			sent.push({ what: `${method} ${url}`, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+			if (url === '/api/boards/3/share' && method === 'DELETE') return json({ success: true });
+			if (url === '/api/boards/3/share') return new Promise<Response>((answer) => reads.push(answer));
+			return json([]);
+		});
+
+		removeButton('sam').click();
+		await settle();
+		removeButton('kim').click();
+		await settle();
+		expect(reads).toHaveLength(2);
+
+		reads[1](json({ members: [], teams: [], isPublic: false }));
+		await settle();
+		reads[0](json({ members: [member(6, 'kim', 0)], teams: [], isPublic: false }));
+		await settle();
+		expect(document.querySelector('.share-item')).toBeNull();
+	});
+
+	// The review of card 2385: the switch was turned off (`disabled`) the moment Make Private
+	// sent the change, before the confirm handed the focus back to it a macrotask later; a
+	// button that is off takes no focus, so the focus stayed on the page and the read after
+	// the switch moved it to Close.
+	it('the focus goes back to the switch after Make Private, and stays on it with no confirm; a press while one is out sends nothing', async () => {
+		list = { members: [], teams: [], isPublic: true, privateStopsWebhooks: 1 };
+		await open();
+		let release!: () => void;
+		vi.mocked(fetch).mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+			const method = init?.method ?? 'GET';
+			sent.push({ what: `${method} ${url}`, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+			if (url === '/api/boards/3/share' && method === 'PATCH') {
+				await new Promise<void>((done) => (release = done));
+				return json({ success: true });
+			}
+			if (url === '/api/boards/3/share') return json(list);
+			return json([]);
+		});
+
+		theSwitch().focus();
+		theSwitch().click();
+		flushSync();
+		list = { members: [], teams: [], isPublic: false, heldWebhooks: 1, privateStopsWebhooks: 0 };
+		button(privateDialog()!, 'Make Private').click();
+		// The confirm's macrotask runs while the change is still out.
+		await settle();
+		expect(document.activeElement).toBe(theSwitch());
+		expect([theSwitch().disabled, theSwitch().getAttribute('aria-disabled'), theSwitch().getAttribute('aria-busy')]).toEqual([false, 'true', 'true']);
+		theSwitch().click();
+		await settle();
+		expect([patches(), privateDialog()]).toEqual([[{ isPublic: false }], null]);
+
+		release();
+		await settle();
+		expect(drawn!.target.textContent).toContain('Private Board');
+		expect(document.activeElement).toBe(theSwitch());
+		expect(theSwitch().hasAttribute('aria-disabled')).toBe(false);
+
+		// Back to public: no confirm, and the focus stays on the switch throughout.
+		list = { members: [], teams: [], isPublic: true, privateStopsWebhooks: 0 };
+		theSwitch().click();
+		await settle();
+		expect(document.activeElement).toBe(theSwitch());
+		release();
+		await settle();
+		expect(patches()).toEqual([{ isPublic: false }, { isPublic: true }]);
+		expect(document.activeElement).toBe(theSwitch());
 	});
 });

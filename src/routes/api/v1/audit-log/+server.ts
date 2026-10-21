@@ -30,6 +30,11 @@ import type { RequestHandler } from './$types';
  *                      rounded down and held between 1 and 500: -1 is 1, and
  *                      not every row, which is what SQLite gave for it.
  *   ?offset=N        — Pagination offset: rounded down, and 0 or more.
+ *   ?before=T,N      — The createdAt and id of the last entry held (card
+ *                      2387): the entries older than it, so one written
+ *                      between pages is not given twice. Optional; offset
+ *                      works as it did. With it, total and hasMore count
+ *                      from the cursor. Anything else is a 400.
  *
  * The three ids are read as an id in the path is read: `2.5` and `abc` are
  * `400 Invalid <thing> ID`, where they matched nothing, or a row they did not

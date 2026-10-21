@@ -15,7 +15,10 @@
 	 * So ✕ on a person or a team whose removal would stop webhooks asks first,
 	 * saying how many, and the window says how many of the board's webhooks
 	 * send nothing now, whatever stopped them. Both counts come with the list,
-	 * to the board's owner and an administrator only.
+	 * to the board's owner and an administrator only. The switch to private
+	 * asks first in the same way when it would stop webhooks whose setters
+	 * open the board only because it is public, from a third count the list
+	 * carries (card 2385), and the list is read again after either switch.
 	 */
 	import { deleteFailure, failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
@@ -48,8 +51,12 @@
 	let isPublic = $state(false);
 	/** How many of the board's webhooks are on and send nothing now (card 2329); 0 for anyone not told. */
 	let heldWebhooks = $state(0);
+	/** How many webhooks sent now making this public board private would stop (card 2385); 0 for anyone not told. */
+	let privateStopsWebhooks = $state(0);
 	/** The share whose removal stops webhooks, while its confirm is open. */
 	let asking = $state<{ type: 'user' | 'team'; targetId: number; name: string; stops: number } | null>(null);
+	/** How many webhooks the switch to private stops, while its confirm is open; null when it is not. */
+	let askingPrivate = $state<number | null>(null);
 	let loading = $state(true);
 	/** Why the last load or write failed, shown above the Close button; '' when nothing failed. */
 	let error = $state('');
@@ -68,18 +75,38 @@
 
 	/** The window's Close button, where the focus goes when a read after a change takes away the control that had it. */
 	let closeButton: HTMLButtonElement;
+	/** How many reads of the list have been sent: only the latest one's answer is shown (card 2385). */
+	let shareReads = 0;
+	/**
+	 * Whether a read has been shown: every read after it refreshes in place.
+	 * Not `$state`, and not `loading`: a read of `loading` here made the
+	 * effect that opens the window depend on it, so the window read the list
+	 * a second time as soon as the first answered (found by card 2385).
+	 */
+	let shownOnce = false;
 
 	/**
 	 * Read the list, as the window opens and after each share added, changed
-	 * or removed. Only the first read says "Loading..." (`loading` starts
-	 * true); a read after a change refreshes the lists in place. It used to
+	 * or removed, and after the public switch. Only the first read says
+	 * "Loading..." (`loading` starts true); a read after a change refreshes
+	 * the lists in place. It used to
 	 * swap the whole list for "Loading...", which took away the ✕ the confirm
 	 * hands the focus back to, and the focus fell to the page behind (the
 	 * review of card 2329). A read that takes away the control with the focus
 	 * (the removed row's ✕) moves the focus to Close.
+	 *
+	 * Each read has a number, and only the latest one's answer is shown (card
+	 * 2385): two changes in quick succession each read again, and the older
+	 * read answering last put back the list from before the second change.
+	 * What a read did get is still shown if part of it failed, as before.
 	 */
 	async function loadData() {
-		const refresh = !loading;
+		const refresh = shownOnce;
+		const read = ++shareReads;
+		let share: { members: ShareMember[]; teams: ShareTeam[]; isPublic?: boolean; heldWebhooks?: unknown; privateStopsWebhooks?: unknown } | null = null;
+		let users: AvailableUser[] | null = null;
+		let teams: AvailableTeam[] | null = null;
+		let failure = '';
 		try {
 			const [shareRes, usersRes, teamsRes] = await Promise.all([
 				fetch(`/api/boards/${boardId}/share`),
@@ -88,27 +115,35 @@
 			]);
 
 			if (shareRes.ok) {
-				const data = await shareRes.json();
-				members = data.members;
-				teamAccess = data.teams;
-				isPublic = data.isPublic ?? false;
-				heldWebhooks = typeof data.heldWebhooks === 'number' ? data.heldWebhooks : 0;
+				share = await shareRes.json();
 			} else {
 				// A board deleted in another tab is 404 here, and the lists would be empty with no word why.
-				error = await failureMessage(shareRes, 'The sharing settings could not be loaded.');
+				failure = await failureMessage(shareRes, 'The sharing settings could not be loaded.');
 			}
 
 			if (usersRes.ok) {
-				allUsers = await usersRes.json();
+				users = await usersRes.json();
 			}
 
 			if (teamsRes.ok) {
-				allTeams = await teamsRes.json();
+				teams = await teamsRes.json();
 			}
 		} catch {
-			error = 'No answer from the server. The sharing settings could not be loaded.';
+			failure = 'No answer from the server. The sharing settings could not be loaded.';
 		}
+		if (read !== shareReads) return;
+		if (share) {
+			members = share.members;
+			teamAccess = share.teams;
+			isPublic = share.isPublic ?? false;
+			heldWebhooks = typeof share.heldWebhooks === 'number' ? share.heldWebhooks : 0;
+			privateStopsWebhooks = typeof share.privateStopsWebhooks === 'number' ? share.privateStopsWebhooks : 0;
+		}
+		if (users) allUsers = users;
+		if (teams) allTeams = teams;
+		if (failure) error = failure;
 		loading = false;
+		shownOnce = true;
 		if (!refresh) return;
 		await tick();
 		const at = document.activeElement;
@@ -125,7 +160,43 @@
 		allTeams.filter(t => !teamAccess.some(ta => ta.teamId === t.id))
 	);
 
+	/**
+	 * The public switch: asks first when making the board private stops
+	 * webhooks (card 2385), and switches at once otherwise, as it always did.
+	 */
+	function pressPublicSwitch() {
+		if (togglingPublic) return;
+		if (isPublic && privateStopsWebhooks > 0) {
+			askingPrivate = privateStopsWebhooks;
+			return;
+		}
+		togglePublic();
+	}
+
+	/** What the confirm says: how many, and what brings a stopped webhook back. */
+	function privateMessage(stops: number): string {
+		return stops === 1
+			? 'Making this board private stops 1 webhook set up by an account that can open it only because it is public: nothing is sent to it until that account can open the board again, or someone takes it over.'
+			: `Making this board private stops ${stops} webhooks set up by accounts that can open it only because it is public: nothing is sent to them until those accounts can open the board again, or someone takes them over.`;
+	}
+
+	function confirmPrivate() {
+		askingPrivate = null;
+		togglePublic();
+	}
+
+	/**
+	 * Switch the board public or private, then read the list again: the held
+	 * count and every share's count change with it (card 2385), and were shown
+	 * as before the switch until the window was next opened.
+	 *
+	 * The switch is busy, not off, while the change is out (the review of
+	 * card 2385): off, it took no focus, so the focus Make Private's confirm
+	 * hands back to it a macrotask later fell to the page, and the read after
+	 * the switch moved it to Close. A press while one is out sends nothing.
+	 */
 	async function togglePublic() {
+		if (togglingPublic) return;
 		togglingPublic = true;
 		error = '';
 		try {
@@ -136,6 +207,7 @@
 			});
 			if (res.ok) {
 				isPublic = !isPublic;
+				await loadData();
 			} else {
 				error = await failureMessage(res, 'The board’s visibility was not changed.');
 			}
@@ -313,8 +385,9 @@
 					<button
 						class="toggle-switch"
 						class:active={isPublic}
-						onclick={togglePublic}
-						disabled={togglingPublic}
+						onclick={pressPublicSwitch}
+						aria-disabled={togglingPublic ? 'true' : undefined}
+						aria-busy={togglingPublic ? 'true' : undefined}
 						title={isPublic ? 'Make private' : 'Make public'}
 					>
 						<span class="toggle-knob"></span>
@@ -473,6 +546,16 @@
 	/>
 {/if}
 
+{#if askingPrivate !== null}
+	<ConfirmModal
+		title="Make Private"
+		message={privateMessage(askingPrivate)}
+		confirmText="Make Private"
+		onConfirm={confirmPrivate}
+		onCancel={() => (askingPrivate = null)}
+	/>
+{/if}
+
 <style>
 	.share-modal {
 		max-width: 640px;
@@ -586,7 +669,7 @@
 		background: var(--accent-indigo);
 	}
 
-	.toggle-switch:disabled {
+	.toggle-switch[aria-disabled='true'] {
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
