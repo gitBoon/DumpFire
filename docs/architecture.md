@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.49
+version: 1.50
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1084,7 +1084,7 @@ The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuper
 | Component (`src/lib/components/admin/`) | Drawn for | What it holds |
 |---|---|---|
 | `AdminOverview.svelte` | every administrator | Database Overview: the counts of boards, columns, cards, categories, users and teams, and the database's size |
-| `AppUrlPanel.svelte` | every administrator (the superadmin until card 2395) | The App URL; reads its own setting when drawn (its local `data`, which hid the page's, is `settings`) |
+| `AppUrlPanel.svelte` | every administrator (the superadmin until card 2395) | The App URL; reads its own setting when drawn (its local `data`, which hid the page's, is `settings`), says under the field where it comes from (`appUrlFrom`: saved, `APP_URL` or none; `appUrlEnvSet` says whether clearing a saved one goes back to `APP_URL` or to `ORIGIN`) and reads it again after a save (card 2401); Save waits for the read, and a failed read is said under the field (its review) |
 | `BackupRestorePanel.svelte` | the superadmin | Export, the import, its dialog and its report; `importOutsideDefault` |
 | `ScheduledBackupsPanel.svelte` | every administrator (the superadmin until card 2395) | The schedule, the destinations and their Test and Confirm, Run Now; reads its own settings when drawn; draws the two forms, the history and the Drive box |
 | `DestinationForm.svelte` | every administrator, within the scheduled backups panel | The add and edit forms kept verbatim behind `mode`, their fields bound from the panel so Edit and Add behave as before |
@@ -1179,6 +1179,14 @@ flowchart LR
     Kind -- "none: across boards" --> Touch["its cards' boards,<br/>one read for every<br/>such goal"]
     Touch --> Every["every one among<br/>the caller's boards,<br/>or no card and<br/>the caller made it"]
 ```
+
+**The goal names, and the plan page's boards (card 2400).** The names of the cards' goals on All Tasks and All To Do (`milestoneNamesForCards`) and on the activity report (`milestoneIdsOpenTo`) are checked by the same rule against the caller's boards (`milestonesOpenAmong`), where each goal was asked of `canViewMilestone` in turn. Both take the optional `accessible` of card 2394, resolved by `resolveAccessible`: `readCrossBoardCards` hands on the boards it read, `buildActivityReport` the boards it filters its query by, and the boards are read only once there is a goal to ask about. The plan page reads only the caller's top-level boards (`inArray`, in the order of their ids), every one for an administrator, and none for a caller with none, where it read every top-level board and kept the caller's in memory. Every answer is unchanged, byte for byte; `tests/load-access-reads.test.ts` pins the activity report with the rest (its hashes taken before the change) and holds All Tasks, All To Do and the report to the same reads for one board and goal as for twelve.
+
+| Page or endpoint | Reads, before → after (board member in the pinned scene) | One board and its goals / twelve (board member) |
+|---|---|---|
+| All Tasks | 33 → 26 | 33 / 148 → 24 / 24 |
+| All To Do | 29 → 24 | 28 / 62 → 22 / 22 |
+| `GET /api/v1/reports/activity` | 15 → 8 | 18 / 133 → 9 / 9 |
 
 ### All Tasks
 

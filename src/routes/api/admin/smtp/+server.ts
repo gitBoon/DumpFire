@@ -11,6 +11,10 @@ import {
 	sendTestEmail,
 	getAppUrl,
 	setAppUrl,
+	appUrlAsRead,
+	appUrlEnvSet,
+	appUrlFrom,
+	appUrlRowReadsAsNone,
 	type SmtpConfig
 } from '$lib/server/email';
 import { readBody, readBoolean, readEmail, readNumber, readText, readUrl } from '$lib/server/request-body';
@@ -78,13 +82,23 @@ function mailChangeLine(changes: MailChange[], setBy: string): string {
  * masked. An administrator's, as the rest of this answer is: the mail
  * server's words can name the mail host and its user name. Both answers are
  * `no-store`, so nothing on the way keeps them (the review-fix pass's item 7).
+ *
+ * `appUrl`, the App URL in effect as `getAppUrl()` answers it, and
+ * `appUrlFrom`, where it comes from: `setting`, `environment` (`APP_URL`) or
+ * `none` (card 2401). In both answers, with a mail host set or not: the App
+ * URL panel fills itself from this, and was given no App URL where no host was
+ * set, so its Save stored an empty one. `appUrlEnvSet`, whether `APP_URL` is
+ * set (card 2401's review), so that the panel says what clearing a saved App
+ * URL goes back to: its value is answered whenever it is in effect, so this
+ * reveals nothing new.
  */
 export const GET: RequestHandler = async ({ locals }) => {
 	requireAdmin(locals.user);
 
+	const appUrl = { appUrl: getAppUrl() || '', appUrlFrom: appUrlFrom(), appUrlEnvSet: appUrlEnvSet() };
 	const config = getSmtpConfig();
 	if (!config) {
-		return json({ configured: false, mailStatus: mailStatus() }, { headers: { 'Cache-Control': 'no-store' } });
+		return json({ configured: false, ...appUrl, mailStatus: mailStatus() }, { headers: { 'Cache-Control': 'no-store' } });
 	}
 
 	return json({
@@ -96,7 +110,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 		pass: config.pass ? SECRET_MASK : '',
 		fromAddress: config.fromAddress,
 		fromName: config.fromName,
-		appUrl: getAppUrl() || '',
+		...appUrl,
 		mailStatus: mailStatus()
 	}, { headers: { 'Cache-Control': 'no-store' } });
 };
@@ -127,7 +141,13 @@ export const GET: RequestHandler = async ({ locals }) => {
  *     fromAddress                 an email address
  *     appUrl                      an http or https address, or empty text. One
  *                                 written with no scheme is stored with
- *                                 `http://`, as getAppUrl() reads it
+ *                                 `http://`, as getAppUrl() reads it. Stored
+ *                                 only when, read so, it differs from the App
+ *                                 URL in effect (card 2401): an unchanged
+ *                                 save stores nothing, so one that came from
+ *                                 `APP_URL` stays the environment's. Also
+ *                                 stored over a row that reads as none, such
+ *                                 as one of spaces alone (its review)
  *
  * A body with none of them is `400 No valid fields to update`, as the backup
  * settings answer one: `{}` was answered 200 and saved nothing.
@@ -189,8 +209,14 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 
 		saveSmtpConfig(config);
 
-		// Save App URL separately
-		if (appUrl !== undefined) setAppUrl(appUrl);
+		// Saved only where, as a link reads it, it differs from the App URL in
+		// effect (card 2401). The panel sends back what the GET filled it with,
+		// which can be `APP_URL`'s: stored, that would win over any later change
+		// of `APP_URL`. Empty text where a setting is stored is stored, and is
+		// none, so `APP_URL` applies again; so is any where a stored row reads as
+		// none (a row of spaces alone), which still hides `APP_URL` (card 2401's
+		// review).
+		if (appUrl !== undefined && (appUrlAsRead(appUrl) !== before.appUrl || appUrlRowReadsAsNone())) setAppUrl(appUrl);
 
 		// A way out saved other than it was: missing is off.
 		const wasOn = here.smtp_allow_insecure === 'true';

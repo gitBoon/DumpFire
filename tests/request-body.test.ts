@@ -3635,7 +3635,9 @@ describe('the second fix pass to card 2117’s slices 2 to 5 (version 1.8)', () 
 
 		const typed = await api('PUT', '/api/admin/smtp', { user: w.chief, body: { appUrl: 'kanban.example.test' } });
 		expect(typed.status, JSON.stringify(typed.body)).toBe(200);
-		expect(setting('app_url')).toBe(read);
+		// The same App URL as a link reads it: nothing is stored (card 2401), and
+		// the row, as it was, reads the same.
+		expect(setting('app_url')).toBe('kanban.example.test');
 		expect(getAppUrl()).toBe(read);
 		expect((await api('PUT', '/api/admin/smtp', { user: w.chief, body: { appUrl: ' localhost:3000/ ' } })).status).toBe(200);
 		expect(setting('app_url')).toBe('http://localhost:3000');

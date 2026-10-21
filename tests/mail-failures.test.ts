@@ -391,7 +391,16 @@ describe('the mail panel’s record (M8 to M12)', () => {
 
 		db.delete(settings).where(eq(settings.key, 'smtp_host')).run();
 		const not = await panel();
-		expect(not.body).toEqual({ configured: false, mailStatus: { since: expect.any(String), sent: 0, failed: 0, lastSentAt: null, lastFailure: null } });
+		// The App URL stored and where it comes from are answered with no host too
+		// (card 2401): none was, and the App URL panel's Save stored an empty one.
+		expect(not.body).toEqual({
+			configured: false,
+			appUrl: 'https://kanban.example.test',
+			appUrlFrom: 'setting',
+			// Whether APP_URL is set (card 2401's review).
+			appUrlEnvSet: false,
+			mailStatus: { since: expect.any(String), sent: 0, failed: 0, lastSentAt: null, lastFailure: null }
+		});
 	});
 
 	it('counts a notification refused and keeps it as the last failure, then counts one sent beside it (M9)', async () => {

@@ -35,7 +35,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
 import { settings } from '$lib/server/db/schema';
-import { TLS_FAULT_HINT, sendEmail, sendEmailWithAttachment, sendTestEmail } from '$lib/server/email';
+import { TLS_FAULT_HINT, appUrlAsRead, sendEmail, sendEmailWithAttachment, sendTestEmail } from '$lib/server/email';
 import { eq } from 'drizzle-orm';
 import { api } from './helpers/api';
 import { makeUser, resetDb } from './helpers/fixtures';
@@ -305,6 +305,9 @@ describe('the way out on the SMTP route (test 17)', () => {
 			fromAddress: 'board@example.test',
 			fromName: 'The Board',
 			appUrl: '',
+			// Where the App URL comes from (card 2401), and whether APP_URL is set (its review).
+			appUrlFrom: 'none',
+			appUrlEnvSet: false,
 			// What mail has done since the server started (card 2196).
 			mailStatus: { since: expect.any(String), sent: 0, failed: 0, lastSentAt: null, lastFailure: null }
 		});
@@ -478,6 +481,169 @@ describe('the line a save of the mail settings writes (card 2396)', () => {
 		expect(refused.map((res) => res.status)).toEqual([400, 400, 400, 403]);
 		expect(stored()).toEqual(STORED);
 		expect(mailLines()).toEqual([]);
+	});
+});
+
+/**
+ * Card 2401. The GET answered the App URL in effect, which is the `APP_URL`
+ * environment variable where no App URL is stored, and the panel's Save sent
+ * it back and stored it: from then the setting won, and a later change of
+ * `APP_URL` no longer applied. With no mail host the GET answered no App URL,
+ * so the panel's Save stored an empty one over a stored one. Now both answers
+ * say where it comes from (`appUrlFrom`), and the PUT stores the App URL only
+ * when, as a link reads it, it differs from the one in effect. Saved empty,
+ * a stored one gives way to `APP_URL` again.
+ */
+describe('where the App URL comes from, and a save that leaves it as it is (card 2401)', () => {
+	const ENV = 'https://from-env.example.test';
+	let variable: string | undefined;
+	beforeEach(() => {
+		variable = process.env.APP_URL;
+		delete process.env.APP_URL;
+	});
+	afterEach(() => {
+		if (variable === undefined) delete process.env.APP_URL;
+		else process.env.APP_URL = variable;
+	});
+
+	const setRow = (value: string) => db.insert(settings).values({ key: 'app_url', value }).onConflictDoUpdate({ target: settings.key, set: { value } }).run();
+	const answered = async () => {
+		const res = await api('GET', '/api/admin/smtp', { user: chief });
+		expect(res.status).toBe(200);
+		return { appUrl: res.body.appUrl, appUrlFrom: res.body.appUrlFrom };
+	};
+
+	it('answers the App URL in effect and where it comes from, with a mail host set and without', async () => {
+		const sources: [string, () => void, { appUrl: string; appUrlFrom: string }][] = [
+			['nothing', () => {}, { appUrl: '', appUrlFrom: 'none' }],
+			['APP_URL', () => {
+				process.env.APP_URL = `${ENV}/`;
+			}, { appUrl: ENV, appUrlFrom: 'environment' }],
+			['an empty row and APP_URL', () => {
+				setRow('');
+				process.env.APP_URL = ENV;
+			}, { appUrl: ENV, appUrlFrom: 'environment' }],
+			['a row and APP_URL', () => {
+				setRow('saved.example.test');
+				process.env.APP_URL = ENV;
+			}, { appUrl: 'http://saved.example.test', appUrlFrom: 'setting' }],
+			['a row of spaces and APP_URL', () => {
+				setRow('   ');
+				process.env.APP_URL = ENV;
+			}, { appUrl: '', appUrlFrom: 'none' }]
+		];
+		for (const host of [true, false]) {
+			for (const [name, arrange, expected] of sources) {
+				db.delete(settings).where(eq(settings.key, 'app_url')).run();
+				delete process.env.APP_URL;
+				if (!host) db.delete(settings).where(eq(settings.key, 'smtp_host')).run();
+				arrange();
+				expect(await answered(), `${name}, ${host ? 'with' : 'without'} a mail host`).toEqual(expected);
+			}
+		}
+	});
+
+	it('stores nothing for the App URL from APP_URL saved as it is, so a later change of APP_URL applies', async () => {
+		process.env.APP_URL = ENV;
+		for (const body of [{ appUrl: ENV }, { appUrl: ` ${ENV}/ ` }, { ...PANEL, appUrl: ENV }]) {
+			const res = await save(body);
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(stored()).toEqual(STORED);
+		}
+
+		process.env.APP_URL = 'https://moved.example.test';
+		expect(await answered()).toEqual({ appUrl: 'https://moved.example.test', appUrlFrom: 'environment' });
+	});
+
+	it('rewrites nothing for a stored App URL saved as it is, and stores one typed over it, APP_URL’s included', async () => {
+		process.env.APP_URL = ENV;
+		// Stored with no scheme, before card 2117: read as `http://`.
+		setRow('saved.example.test');
+
+		expect((await save({ appUrl: 'http://saved.example.test/' })).status).toBe(200);
+		expect(stored().app_url).toBe('saved.example.test');
+
+		expect((await save({ appUrl: ENV })).status).toBe(200);
+		expect(stored().app_url).toBe(ENV);
+		expect(await answered()).toEqual({ appUrl: ENV, appUrlFrom: 'setting' });
+	});
+
+	it('gives way to APP_URL when the stored App URL is saved empty, and logs the change', async () => {
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		const quiet = [vi.spyOn(console, 'log').mockImplementation(() => {}), vi.spyOn(console, 'warn').mockImplementation(() => {})];
+		try {
+			process.env.APP_URL = ENV;
+			setRow('https://saved.example.test');
+
+			expect((await save({ appUrl: '' })).status).toBe(200);
+			expect(await answered()).toEqual({ appUrl: ENV, appUrlFrom: 'environment' });
+			const lines = sqlite.prepare("SELECT message FROM system_logs WHERE message LIKE 'Mail settings changed:%'").all() as { message: string }[];
+			expect(lines.map((line) => line.message)).toEqual([`Mail settings changed: appUrl from "https://saved.example.test" to "${ENV}" (set by "chief")`]);
+		} finally {
+			for (const spy of quiet) spy.mockRestore();
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+	});
+
+	// Its review: the panel says what clearing a saved App URL goes back to, APP_URL or ORIGIN.
+	it('answers whether APP_URL is set, with a mail host set and without, whatever is stored', async () => {
+		const sources: [string, () => void, boolean][] = [
+			['nothing', () => {}, false],
+			['APP_URL', () => {
+				process.env.APP_URL = ENV;
+			}, true],
+			['a row and APP_URL', () => {
+				setRow('https://saved.example.test');
+				process.env.APP_URL = ENV;
+			}, true],
+			['a row alone', () => {
+				setRow('https://saved.example.test');
+			}, false],
+			['APP_URL of spaces', () => {
+				process.env.APP_URL = '   ';
+			}, false]
+		];
+		for (const host of [true, false]) {
+			for (const [name, arrange, expected] of sources) {
+				db.delete(settings).where(eq(settings.key, 'app_url')).run();
+				delete process.env.APP_URL;
+				if (!host) db.delete(settings).where(eq(settings.key, 'smtp_host')).run();
+				arrange();
+				const res = await api('GET', '/api/admin/smtp', { user: chief });
+				expect(res.body.appUrlEnvSet, `${name}, ${host ? 'with' : 'without'} a mail host`).toBe(expected);
+			}
+		}
+	});
+
+	// Its review: `HTTPS://Host` was read as `http://HTTPS://Host`.
+	it('reads a scheme in capitals as a scheme, stored, saved or from APP_URL', async () => {
+		expect(appUrlAsRead('HTTPS://Kanban.example.test/')).toBe('HTTPS://Kanban.example.test');
+		expect(appUrlAsRead('Http://kanban.example.test')).toBe('Http://kanban.example.test');
+		expect(appUrlAsRead('kanban.example.test')).toBe('http://kanban.example.test');
+
+		setRow('HTTPS://Saved.example.test');
+		expect(await answered()).toEqual({ appUrl: 'HTTPS://Saved.example.test', appUrlFrom: 'setting' });
+
+		expect((await save({ appUrl: 'HTTPS://Typed.example.test/' })).status).toBe(200);
+		expect(stored().app_url).toBe('HTTPS://Typed.example.test');
+		expect(await answered()).toEqual({ appUrl: 'HTTPS://Typed.example.test', appUrlFrom: 'setting' });
+
+		db.delete(settings).where(eq(settings.key, 'app_url')).run();
+		process.env.APP_URL = 'HTTPS://Env.example.test';
+		expect(await answered()).toEqual({ appUrl: 'HTTPS://Env.example.test', appUrlFrom: 'environment' });
+	});
+
+	// Its review: a row of spaces alone reads as no App URL, yet hides APP_URL; an empty save matched it and stored nothing.
+	it('writes an empty save over a stored row that reads as none, so APP_URL applies again', async () => {
+		process.env.APP_URL = ENV;
+		setRow('   ');
+		expect(await answered()).toEqual({ appUrl: '', appUrlFrom: 'none' });
+
+		expect((await save({ appUrl: '' })).status).toBe(200);
+		expect(stored().app_url).toBe('');
+		expect(await answered()).toEqual({ appUrl: ENV, appUrlFrom: 'environment' });
 	});
 });
 

@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.65
+version: 1.66
 status: As-Built
 date: 2026-10-21
 tags:
@@ -320,6 +320,8 @@ longer be listed on a card.
 Email is required for notifications, invites, and report delivery. The mail settings are every administrator's since card 2395 (the superadmin's alone before): whoever sets the mail server sees every mail DumpFire sends, invite and password-reset links included. See [Who May Do What](#who-may-do-what).
 
 Every link in a mail begins with the **App URL**, which is set under **Application Settings** on the same page and is every administrator's too. With none set, links begin with the address the server was started with (`ORIGIN`). Nothing a request says is used, so a link cannot be pointed at another host by whoever sends the request. If the links in your mail begin with `http://localhost:3000`, set the App URL: see [Where a Mailed Link's Address Comes From](deployment.md#where-a-mailed-links-address-comes-from).
+
+**Where the App URL comes from** (card 2401). The App URL shown under Application Settings is the one in effect: one saved there, or failing that the server's `APP_URL` environment variable. The line under the field says which: `From the server's configuration (APP_URL). Saving it unchanged leaves it there, so a later change of APP_URL still applies.`, or, for one saved there, `Saved here, ahead of the server's configuration (APP_URL). Clear it and save to use the server's configuration (APP_URL) again.` where `APP_URL` is set and `Saved here; the server's configuration sets no APP_URL. Clear it and save to use ORIGIN, the server's own address.` where it is not. The line speaks of the App URL that was read, so it is hidden while the field holds anything else. With neither, the field is empty and the amber `No App URL set` warning shows. **Save** stays off until the App URL has been read; if the page could not read it, the panel says `The page could not read the App URL settings: reload the page before saving.` and Save stays off, since saving the empty field would clear a saved App URL. **Save** stores the App URL only when it differs from the one in effect (a trailing slash or a missing `http://` is no difference), so saving the panel unchanged stores nothing and an `APP_URL` change later still applies. Until card 2401 that save copied `APP_URL` into the settings, and a later change of `APP_URL` was ignored. To go back from a saved App URL to `APP_URL` (or, where `APP_URL` is not set, to `ORIGIN`), clear the field and press **Save**. The panel reads the App URL again after each save, so the field and its line show what is now in effect.
 
 ### Setup Steps
 

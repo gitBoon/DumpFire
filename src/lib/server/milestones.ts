@@ -62,8 +62,9 @@ function isAdmin(user: Pick<SessionUser, 'role'>): boolean {
  * from all of them, so partial access must not be enough. Asked of a signed-in
  * caller, and of each recipient of the plan-created mail (card 2152), so it
  * takes only who they are and their role. The two goal lists ask the same
- * rule of many goals at once (`milestonesOpenAmong`, card 2399): a change to
- * one is a change to the other.
+ * rule of many goals at once (`milestonesOpenAmong`, card 2399), as do the
+ * goal names on All Tasks, All To Do and the activity report (card 2400): a
+ * change to one is a change to the other.
  */
 export function canViewMilestone(user: Actor, milestone: MilestoneRow): boolean {
 	if (isAdmin(user)) return true;
@@ -640,23 +641,28 @@ export function milestonesForBoard(user: SessionUser, boardId: number, accessibl
 		.sort((a, b) => (a.status === b.status ? a.name.localeCompare(b.name) : a.status === 'open' ? -1 : 1));
 }
 
-/** The milestones of `ids` that `user` may open (`canViewMilestone`). */
-function milestonesOpenTo(user: Actor, ids: number[]): MilestoneRow[] {
+/**
+ * The milestones of `ids` that `user` may open: `canViewMilestone`'s rule,
+ * asked of the caller's boards (`milestonesOpenAmong`, card 2400). It was
+ * asked of each goal in turn, up to four reads for a goal of one board and
+ * more for a goal across boards. `accessible`: the caller's boards, when they
+ * have been read already in the same request (`resolveAccessible`), read
+ * here otherwise, and only once there is a goal to ask about.
+ */
+function milestonesOpenTo(user: Actor, ids: number[], accessible?: number[] | null): MilestoneRow[] {
 	if (ids.length === 0) return [];
-	return db
-		.select()
-		.from(milestones)
-		.where(inArray(milestones.id, ids))
-		.all()
-		.filter((m) => canViewMilestone(user, m));
+	const rows = db.select().from(milestones).where(inArray(milestones.id, ids)).all();
+	if (rows.length === 0) return [];
+	return milestonesOpenAmong(user, rows, resolveAccessible(user, accessible));
 }
 
 /**
  * Of these milestone ids, the ones `user` may open, for a reader that names a
  * card's milestone from its own query (the activity report, card 2257).
+ * `accessible`: see `milestonesOpenTo`.
  */
-export function milestoneIdsOpenTo(user: Actor, ids: Iterable<number>): Set<number> {
-	return new Set(milestonesOpenTo(user, [...new Set(ids)]).map((m) => m.id));
+export function milestoneIdsOpenTo(user: Actor, ids: Iterable<number>, accessible?: number[] | null): Set<number> {
+	return new Set(milestonesOpenTo(user, [...new Set(ids)], accessible).map((m) => m.id));
 }
 
 /**
@@ -667,9 +673,10 @@ export function milestoneIdsOpenTo(user: Actor, ids: Iterable<number>): Set<numb
  * can open one board of a goal across boards, and is refused the goal itself,
  * was given its name here on All Tasks and All To Do. The board page and the
  * card window read `milestonesForBoard`, which already asked; so does this
- * now. A page shows no chip for a milestone not named.
+ * now. A page shows no chip for a milestone not named. `accessible`: see
+ * `milestonesOpenTo`; All Tasks and All To Do hand on the boards they read.
  */
-export function milestoneNamesForCards(user: Actor, cardIds: number[]): Record<number, string> {
+export function milestoneNamesForCards(user: Actor, cardIds: number[], accessible?: number[] | null): Record<number, string> {
 	if (cardIds.length === 0) return {};
 
 	const ids = new Set<number>();
@@ -683,7 +690,7 @@ export function milestoneNamesForCards(user: Actor, cardIds: number[]): Record<n
 		}
 	}
 	const out: Record<number, string> = {};
-	for (const m of milestonesOpenTo(user, [...ids])) {
+	for (const m of milestonesOpenTo(user, [...ids], accessible)) {
 		out[m.id] = m.name;
 	}
 	return out;

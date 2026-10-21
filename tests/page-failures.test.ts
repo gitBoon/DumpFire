@@ -2526,7 +2526,8 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'removeTeamMember', reads: 'deleteFailure', done: ["showToast('Member removed')"] }
 	],
 	// The admin page's backup half, in components of its own (card 2281, slice C1a).
-	'src/lib/components/admin/AppUrlPanel.svelte': [{ name: 'saveAppUrl', reads: 'sent', done: ["showToast('App URL saved')"] }],
+	// Card 2401: read again once saved, to show the App URL now in effect and where it comes from.
+	'src/lib/components/admin/AppUrlPanel.svelte': [{ name: 'saveAppUrl', reads: 'sent', done: ["showToast('App URL saved')", 'await loadAppUrl()'] }],
 	// Its one write, the import, is held by the tests of its own above.
 	'src/lib/components/admin/BackupRestorePanel.svelte': [],
 	'src/lib/components/admin/GDriveConnectModal.svelte': [{ name: 'exchangeGDriveCode', reads: 'sent', done: ['await loadBackupConfig()'] }],
