@@ -34,6 +34,7 @@
 		milestoneSaving = $bindable(),
 		loadDependencies,
 		onPickerInput,
+		onClosePicker,
 		onListsWritten,
 		onWrote
 	}: {
@@ -57,6 +58,11 @@
 		loadDependencies: () => Promise<void>;
 		/** The window's: searches for what the picker has typed, debounced. */
 		onPickerInput: () => void;
+		/**
+		 * The window's: closes the picker, emptied, and drops any search still
+		 * waiting or out (card 2388). Every close here goes through it.
+		 */
+		onClosePicker: () => void;
 		/**
 		 * The window's, called when a link added or removed has set the lists
 		 * from its answer, so that a read of them sent before is not taken
@@ -97,9 +103,7 @@
 			// The link is saved whatever the answer's body says: one that is not
 			// the two lists still tells the plan, and the lists are read again.
 			const data = await readLists(res);
-			pickerMode = null;
-			pickerQuery = '';
-			pickerResults = [];
+			onClosePicker();
 			onWrote?.();
 			if (data) {
 				onListsWritten?.();
@@ -219,7 +223,8 @@
 
 	Escape in its search box closes the picker and goes no further: the key
 	went on to the window's handler, which closed the whole window and what
-	was typed in it (card 2280, slice B5c).
+	was typed in it (card 2280, slice B5c). Escape and ✕ close it through the
+	window's `onClosePicker`, which drops a search still waiting (card 2388).
 -->
 {#snippet depPicker(placeholder: string)}
 	<div class="dep-picker">
@@ -230,10 +235,10 @@
 			{placeholder}
 			bind:value={pickerQuery}
 			oninput={onPickerInput}
-			onkeydown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); pickerMode = null; pickerQuery = ''; pickerResults = []; } }}
+			onkeydown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onClosePicker(); } }}
 			autofocus
 		/>
-		<button class="dep-picker-cancel" title="Cancel" onclick={() => { pickerMode = null; pickerQuery = ''; pickerResults = []; }}>✕</button>
+		<button class="dep-picker-cancel" title="Cancel" onclick={onClosePicker}>✕</button>
 	</div>
 	<!-- A search that failed is said in place of "No cards match" (card 2384). A box emptied by closing is never "Searching…". -->
 	{#if pickerSearching && pickerQuery.trim()}
@@ -321,7 +326,8 @@
 		{#if pickerMode === 'blocked-by'}
 			{@render depPicker('Search the card this one waits on…')}
 		{:else}
-			<button class="btn-ghost dep-add-btn" onclick={() => { pickerMode = 'blocked-by'; pickerQuery = ''; pickerResults = []; depError = ''; }}>+ Add a blocker</button>
+			<!-- The other list's picker, if open, is closed first, and its search with it (card 2388). -->
+			<button class="btn-ghost dep-add-btn" onclick={() => { onClosePicker(); pickerMode = 'blocked-by'; depError = ''; }}>+ Add a blocker</button>
 		{/if}
 	</div>
 
@@ -349,7 +355,7 @@
 		{#if pickerMode === 'blocks'}
 			{@render depPicker('Search the card that waits on this one…')}
 		{:else}
-			<button class="btn-ghost dep-add-btn" onclick={() => { pickerMode = 'blocks'; pickerQuery = ''; pickerResults = []; depError = ''; }}>+ Add a card this blocks</button>
+			<button class="btn-ghost dep-add-btn" onclick={() => { onClosePicker(); pickerMode = 'blocks'; depError = ''; }}>+ Add a card this blocks</button>
 		{/if}
 	</div>
 </div>

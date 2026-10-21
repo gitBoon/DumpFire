@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { assignToCard, unassignFromCard } from '$lib/server/card-assignees';
+import { ASSIGN_PAGE_OPTIONS, assignToCard, unassignFromCard } from '$lib/server/card-assignees';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
@@ -8,7 +8,8 @@ import type { RequestHandler } from './$types';
 
 /**
  * This route's words for a caller who may not edit the card's board, which it
- * keeps (card 2012, R2): both handlers hand them to the service.
+ * keeps (card 2012, R2): both handlers hand them to the service, the POST in
+ * the service's `ASSIGN_PAGE_OPTIONS` (card 2296), whose words are these.
  */
 const NO_EDIT = 'No edit access';
 
@@ -36,8 +37,10 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 	const baseUrl = linkBaseUrl(url);
 
 	// The session is asked again, and who its account is now, in the
-	// transaction that assigns (card 2253).
-	writeAs(locals, (caller) => assignToCard(caller, { cardId }, body, { source: 'ui', baseUrl, says: NO_EDIT }));
+	// transaction that assigns (card 2253). The options are the service's
+	// constant, `{ source: 'ui', says: 'No edit access' }` (NO_EDIT's words),
+	// which a new card's assignees are written with too (card 2296).
+	writeAs(locals, (caller) => assignToCard(caller, { cardId }, body, { ...ASSIGN_PAGE_OPTIONS, baseUrl }));
 
 	return json({ success: true });
 };

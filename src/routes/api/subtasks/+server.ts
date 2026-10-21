@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import { requireUser } from '$lib/server/route-guards';
-import { createSubtask, listSubtasks } from '$lib/server/subtasks';
+import { CREATE_SUBTASK_PAGE_OPTIONS, createSubtask, listSubtasks } from '$lib/server/subtasks';
 import { readBody, readQueryId } from '$lib/server/request-body';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -43,7 +43,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// One transaction: the card is read, the caller checked and the position
 	// worked out in the one that creates the subtask and writes its entry. It
 	// asks first whether the session is still open, and who its account is now
-	// (card 2253). The card is named in the body, and read in there.
-	const subtask = writeAs(locals, (caller) => createSubtask(caller, {}, body, { source: 'ui', eventType: 'subtask' }));
+	// (card 2253). The card is named in the body, and read in there. The
+	// options are the service's constant, which a new card's subtasks are
+	// written with too (card 2296): `{ source: 'ui', eventType: 'subtask' }`.
+	const subtask = writeAs(locals, (caller) => createSubtask(caller, {}, body, CREATE_SUBTASK_PAGE_OPTIONS));
 	return json(subtask, { status: 201 });
 };

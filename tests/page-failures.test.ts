@@ -510,7 +510,10 @@ describe('the card window’s save and its template’s labels, src/lib/componen
 		const properties = (object as ts.ObjectLiteralExpression).properties;
 		expect(properties.map((property) => property.name?.getText() ?? property.getText())).not.toContain('colorTag');
 		const labelled = properties.find((property) => property.name?.getText() === 'pendingLabelIds');
-		expect(labelled?.getText().replace(/\s+/g, ' ')).toBe('pendingLabelIds: !card && templateLabels.length > 0 ? templateLabels : undefined');
+		// Only those still the board's (the card 2296 review): run in tests/card-window-keys.svelte.test.ts.
+		expect(labelled?.getText().replace(/\s+/g, ' ')).toBe(
+			'pendingLabelIds: !card && templateLabels.length > 0 ? templateLabels.filter((id) => labels.some((l) => l.id === id)) : undefined'
+		);
 
 		// Nor does the type of what it hands the page name one.
 		// (It hands back the page's promise, so that one save is out at a time: card 2280, slice B5c.)
@@ -610,44 +613,38 @@ describe('the board’s card window save reads every answer, src/lib/board/card-
 		expect(await cardActions.saveCard(card, null, 1, [], fields)).toEqual({ isNew: false, title: 'Held' });
 	});
 
-	it('names each pending subtask of a new card that was not made, sends the rest, and keeps the card', async () => {
-		const sent: string[] = [];
+	// Card 2296: a new card's pending subtasks and people go in its one
+	// request, and a refusal of any of them makes no card. Each was sent after
+	// the card, and the card was kept without the ones refused.
+	it('sends a new card’s pending subtasks and people in its one request, and gives back a refusal of any as the card’s', async () => {
+		const sent: { url: string; body: Record<string, unknown> }[] = [];
 		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
-			const title = JSON.parse(String(init.body)).title;
-			sent.push(`${init.method} ${url} ${title}`);
-			if (url === '/api/cards') return json(201, { id: 50 });
-			if (title === 'Two') return json(400, { message: 'A subtask title is at most 500 characters' });
-			if (title === 'Three') throw new TypeError('fetch failed');
-			return json(201, { id: 1 });
+			sent.push({ url, body: JSON.parse(String(init.body)) });
+			return json(400, { message: 'subtasks[1]: title must be at most 500 characters' });
 		});
-		const pendingSubtasks = ['One', 'Two', 'Three', 'Four'].map((title) => JSON.stringify({ title }));
-		const result = await cardActions.saveCard(null, 3, 1, [{ id: 3, cards: [] }] as unknown as ColumnType[], { ...fields, title: 'New', pendingSubtasks });
+		const pendingSubtasks = ['One', 'Two'].map((title) => JSON.stringify({ title }));
+		const result = await cardActions.saveCard(null, 3, 1, [{ id: 3, cards: [] }] as unknown as ColumnType[], {
+			...fields,
+			title: 'New',
+			pendingSubtasks,
+			pendingAssigneeIds: [1, 2]
+		});
 
-		expect(result).toMatchObject({
+		expect(result).toEqual({ isNew: false, title: 'New', failure: 'subtasks[1]: title must be at most 500 characters' });
+		expect(sent.map((request) => request.url)).toEqual(['/api/cards']);
+		expect(sent[0].body).toMatchObject({ subtasks: [{ title: 'One' }, { title: 'Two' }], assigneeIds: [1, 2] });
+		// A plain card's request is as it was: no empty lists.
+		sent.length = 0;
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			sent.push({ url, body: JSON.parse(String(init.body)) });
+			return json(201, { id: 50 });
+		});
+		expect(await cardActions.saveCard(null, 3, 1, [{ id: 3, cards: [] }] as unknown as ColumnType[], { ...fields, title: 'Plain' })).toEqual({
 			isNew: true,
-			cardId: 50,
-			subtaskFailures: [
-				{ title: 'Two', message: 'A subtask title is at most 500 characters' },
-				{ title: 'Three', message: 'No answer from the server, so it may be on the card after all.' }
-			]
+			title: 'Plain',
+			cardId: 50
 		});
-		expect(sent).toEqual(['POST /api/cards New', 'POST /api/subtasks One', 'POST /api/subtasks Two', 'POST /api/subtasks Three', 'POST /api/subtasks Four']);
-	});
-
-	it('assigns the people chosen for a new card one at a time, and gives back each not assigned with why', async () => {
-		const sent: string[] = [];
-		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
-			const { userId } = JSON.parse(String(init.body));
-			sent.push(`${init.method} ${url} ${userId}`);
-			if (userId === 2) return json(403, { message: 'That user cannot open this board' });
-			if (userId === 3) throw new TypeError('fetch failed');
-			return json(201, {});
-		});
-		expect(await cardActions.assignPending(50, [1, 2, 3])).toEqual([
-			{ userId: 2, message: 'That user cannot open this board' },
-			{ userId: 3, message: 'No answer from the server, so they may be assigned after all.' }
-		]);
-		expect(sent).toEqual(['POST /api/cards/50/assignees 1', 'POST /api/cards/50/assignees 2', 'POST /api/cards/50/assignees 3']);
+		for (const name of ['subtasks', 'labelIds', 'assigneeIds', 'subBoards']) expect(sent[0].body, name).not.toHaveProperty(name);
 	});
 });
 
@@ -727,10 +724,12 @@ describe('the card an address names, src/routes/board/[id]/+page.svelte (card 21
 		expect(type.type.getText()).toContain('pendingLabelIds?: number[]');
 	});
 
-	it('names a label deleted while the window was open as one that no longer exists, not by its number (the review)', () => {
+	// Card 2296: a label refused refuses the new card, in the server's words,
+	// which name the entry (`labelIds[1]: Label not found`); the controller
+	// names no label itself now, and never by its number.
+	it('names no refused label of a new card itself, nor by its number: the card is refused whole, in the server’s words', () => {
 		const said = controller().getText();
-		expect(said).toContain("const named = label ? `The template's label \"${label.name}\"` : 'A label of the template that no longer exists';");
-		expect(said).toContain('told.push({ message: `${named} was not put on "${title}". ${message}`, failed: true });');
+		expect(said).not.toContain('labelFailures');
 		expect(said).not.toContain('#${labelId}');
 	});
 
@@ -2601,7 +2600,8 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'toggleSubtask', reads: 'failureMessage', done: ['subtask.completed = !subtask.completed'] }
 	],
 	'src/lib/components/card/CardDependencies.svelte': [
-		{ name: 'addDependency', reads: 'failureMessage', done: ['pickerMode = null'] },
+		// The picker is closed through the window's `onClosePicker`, which drops a search still waiting (card 2388).
+		{ name: 'addDependency', reads: 'failureMessage', done: ['onClosePicker()'] },
 		// Its refusal reads the links again, held in the dependency list's own case above: so
 		// does a success whose body is not the lists (card 2379's review), so it is no putsBack.
 		{ name: 'removeDependency', reads: 'failureMessage', done: ['blocks = data.blocks'] },
@@ -3670,10 +3670,12 @@ describe('making a sub-board from the board page, src/lib/board/card-actions.ts 
 		expect(said).toContain("const made = await cardActions.createSubBoard(card.id, name || card.title); if ('message' in made) { toasts.add(made.message, 'error', started); return; } window.location.href = `/board/${made.id}`;");
 	});
 
-	// Card 2280, slice B2c: made by the card window's controller, which gives
-	// back what to say for each; the page says each failure as an error (the
-	// card 2164 describe above). Run in `tests/card-window.test.ts`.
-	it('is said by the new-card window for each sub-board refused, in the server’s words, and the card is kept', () => {
+	// Card 2296: the new-card window's sub-boards go in the card's one request
+	// (`subBoards`), and one refused, too deep among them, refuses the card,
+	// said in the server's words with the window kept open. The controller sent
+	// each after the card, and said each refusal with the card kept. Run in
+	// `tests/card-window.test.ts` and `tests/card-create-contents.test.ts`.
+	it('is made by the new-card window in the card’s one request, and each made is said', () => {
 		const tree = ts.createSourceFile('card-window.ts', readFileSync(join(ROOT, 'src/lib/board/card-window.svelte.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
 		let create: ts.MethodDeclaration | undefined;
 		const find = (node: ts.Node) => {
@@ -3681,16 +3683,13 @@ describe('making a sub-board from the board page, src/lib/board/card-actions.ts 
 			ts.forEachChild(node, find);
 		};
 		find(tree);
-		const asked = callsOf(create!, 'api.failureMessage');
 
-		expect(asked).toHaveLength(1);
-		expect(sideOf(asked[0])).toBe('failed');
+		expect(callsOf(create!, 'fetch')).toEqual([]);
+		expect(callsOf(create!, 'api.failureMessage')).toEqual([]);
 		const said = create!.getText().replace(/\s+/g, ' ');
-		expect(said).toContain(
-			"if (res.ok) told.push({ message: `Sub-board \"${name}\" created`, failed: false }); else told.push({ message: `Sub-board \"${name}\" was not made. ${await api.failureMessage(res, 'The server refused it.')}`, failed: true });"
-		);
-		// A request with no answer is said too, and the next name is still sent.
-		expect(said).toContain("} catch { told.push({ message: `No answer from the server. Sub-board \"${name}\" may not have been made.`, failed: true }); continue; }");
+		expect(said).toContain("for (const name of saved.pendingSubBoards ?? []) told.push({ message: `Sub-board \"${name}\" created`, failed: false });");
+		const actions = readFileSync(join(ROOT, 'src/lib/board/card-actions.ts'), 'utf8').replace(/\s+/g, ' ');
+		expect(actions).toContain('...(pendingSubBoards?.length ? { subBoards: pendingSubBoards.map((name) => ({ name })) } : {})');
 	});
 });
 
@@ -7423,7 +7422,10 @@ describe('the board page’s card window goes through its controller (card 2280,
 		const saving = functionNamed(board(), 'saveCard');
 		expect(callsOf(saving, 'cardWindow.save')).toHaveLength(1);
 		// Nothing sent, held or read by the page itself: the controller does each.
-		for (const callee of ['boardState.refresh', 'boardState.hold', 'cardActions.saveCard', 'cardActions.assignPending', 'fetch']) expect(callsOf(saving, callee), callee).toEqual([]);
+		for (const callee of ['boardState.refresh', 'boardState.hold', 'fetch']) expect(callsOf(saving, callee), callee).toEqual([]);
+		// Nor anything of the card actions: a new card's parts go in the controller's one request (card 2296),
+		// and `assignPending`, named here before it, is gone.
+		expect(flat(saving), 'cardActions').not.toMatch(/\bcardActions\./);
 
 		const run = async (result: unknown) => {
 			const said: unknown[][] = [];

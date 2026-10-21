@@ -9,8 +9,8 @@
  *   - A template saved from a labelled card stored the labels, and a card
  *     made from it got none. The New Task window keeps the template's labels
  *     that are labels of the board (`templateLabelIds` in `$lib/templates.ts`)
- *     and the board page puts them on the card once it is created, reading
- *     each answer (`saveCard` in `$lib/board/card-actions.ts`).
+ *     and the board page makes the card with them, in its one request since
+ *     card 2296 (`saveCard` in `$lib/board/card-actions.ts`).
  *   - A create that was refused, or got no answer, came back from `saveCard`
  *     as made, and the board page said "Created". It comes back as a
  *     `failure`, which the page says, and nothing more is sent.
@@ -85,7 +85,9 @@ const NEW_TASK = {
 	pendingSubtasks: [] as unknown[],
 	cardAssignees: [] as { id: number }[],
 	pendingSubBoardNames: [] as string[],
-	templateLabels: [] as number[]
+	templateLabels: [] as number[],
+	/** The board's labels, as the page hands them: a template's label no longer among them is not sent (the card 2296 review). */
+	labels: [] as { id: number }[]
 };
 
 /** The window's variables for a card it was opened on: each field filled from the card, as the window fills them. */
@@ -216,22 +218,21 @@ describe('the labels a template holds, templateLabelIds in src/lib/templates.ts 
 });
 
 describe('a card made from a template carries its labels (card 2163)', () => {
-	it('posts the card without them, then puts each on it, and the card has them', async () => {
+	// Card 2296: they go in the card's one request, `labelIds`, and the server
+	// puts each on in the card's transaction or makes nothing. They were each
+	// a `PUT /api/labels` after the card, and a refused one left the card without it.
+	it('posts the card with them in its one request, and the card has them', async () => {
 		const bug = makeLabel(A.board, 'Bug');
 		const urgent = makeLabel(A.board, 'Urgent');
 		const sent = replay();
 
-		const saved = windowSaves({ ...NEW_TASK, title: 'From a template', templateLabels: [urgent.id, bug.id] });
+		const saved = windowSaves({ ...NEW_TASK, title: 'From a template', templateLabels: [urgent.id, bug.id], labels: [bug, urgent] });
 		const result = await cardActions.saveCard(null, A.cols['To Do'].id, A.board.id, onThePage(A), saved);
 
-		// No pending subtask failed either (card 2280, slice B2b reads each subtask's answer).
-		expect(result).toEqual({ isNew: true, title: 'From a template', cardId: expect.any(Number), labelFailures: [], subtaskFailures: [] });
-		expect(sent.map((request) => `${request.method} ${request.url}`)).toEqual(['POST /api/cards', 'PUT /api/labels', 'PUT /api/labels']);
+		expect(result).toEqual({ isNew: true, title: 'From a template', cardId: expect.any(Number) });
+		expect(sent.map((request) => `${request.method} ${request.url}`)).toEqual(['POST /api/cards']);
 		expect(sent[0].body).not.toHaveProperty('pendingLabelIds');
-		expect(sent.slice(1).map((request) => request.body)).toEqual([
-			{ cardId: result.cardId, labelId: urgent.id, boardId: A.board.id },
-			{ cardId: result.cardId, labelId: bug.id, boardId: A.board.id }
-		]);
+		expect(sent[0].body.labelIds).toEqual([urgent.id, bug.id]);
 		expect(labelsOn(result.cardId!)).toEqual([bug.id, urgent.id].sort((a, b) => a - b));
 	});
 
@@ -248,46 +249,32 @@ describe('a card made from a template carries its labels (card 2163)', () => {
 		expect(sent.every((request) => !('pendingLabelIds' in request.body))).toBe(true);
 	});
 
-	it('keeps the card when a label is refused, and gives back the refusal in the server’s words', async () => {
+	it('makes no card when a label is refused, and gives back the refusal in the server’s words, naming the label', async () => {
 		const bug = makeLabel(A.board, 'Bug');
 		const gone = makeLabel(A.board, 'Urgent');
 		const elsewhere = makeLabel(makeBoard({ owner, name: 'B' }).board, 'Theirs');
 		// Deleted in another tab after the template was applied.
 		db.delete(labels).where(eq(labels.id, gone.id)).run();
-		replay();
+		const sent = replay();
 
-		const saved = windowSaves({ ...NEW_TASK, title: 'Kept', templateLabels: [gone.id, bug.id, elsewhere.id] });
-		const result = await cardActions.saveCard(null, A.cols['To Do'].id, A.board.id, onThePage(A), saved);
-
-		expect(result.labelFailures).toEqual([
-			{ labelId: gone.id, message: 'Label not found' },
-			{ labelId: elsewhere.id, message: 'That label belongs to a different board' }
-		]);
-		expect(cardRow(result.cardId!).title).toBe('Kept');
-		expect(labelsOn(result.cardId!)).toEqual([bug.id]);
-	});
-
-	it('says so when a label gets no answer, or an answer that is not DumpFire’s, and goes on to the next', async () => {
-		const first = makeLabel(A.board, 'First');
-		const second = makeLabel(A.board, 'Second');
-		const third = makeLabel(A.board, 'Third');
-		replay((request) => {
-			if (request.body.labelId === first.id) return 'no answer';
-			if (request.body.labelId === second.id) return new Response('<html>Bad gateway</html>', { status: 502 });
-			return undefined;
+		// The window has not heard of the delete yet: the board's labels it holds still have it.
+		const saved = windowSaves({ ...NEW_TASK, title: 'Not made', templateLabels: [bug.id, gone.id], labels: [bug, gone] });
+		expect(await cardActions.saveCard(null, A.cols['To Do'].id, A.board.id, onThePage(A), saved)).toEqual({
+			isNew: false,
+			title: 'Not made',
+			failure: 'labelIds[1]: Label not found'
 		});
+		const theirs = windowSaves({ ...NEW_TASK, title: 'Not made either', templateLabels: [elsewhere.id], labels: [elsewhere] });
+		expect((await cardActions.saveCard(null, A.cols['To Do'].id, A.board.id, onThePage(A), theirs)).failure).toBe(
+			'labelIds[0]: That label belongs to a different board'
+		);
 
-		const saved = windowSaves({ ...NEW_TASK, title: 'Partly', templateLabels: [first.id, second.id, third.id] });
-		const result = await cardActions.saveCard(null, A.cols['To Do'].id, A.board.id, onThePage(A), saved);
-
-		expect(result.labelFailures).toEqual([
-			{ labelId: first.id, message: 'No answer from the server, so it may be on the card after all.' },
-			{ labelId: second.id, message: 'It was refused.' }
-		]);
-		expect(labelsOn(result.cardId!)).toEqual([third.id]);
+		expect(sent.map((request) => `${request.method} ${request.url}`)).toEqual(['POST /api/cards', 'POST /api/cards']);
+		expect(db.select().from(cards).all()).toEqual([]);
+		expect(db.select().from(cardLabels).all()).toEqual([]);
 	});
 
-	it('sends each label once, since a second toggle would take it off', async () => {
+	it('sends each label once, since the server toggles each and a second toggle would take it off', async () => {
 		const bug = makeLabel(A.board, 'Bug');
 		const sent = replay();
 
@@ -296,7 +283,8 @@ describe('a card made from a template carries its labels (card 2163)', () => {
 			pendingLabelIds: [bug.id, bug.id]
 		});
 
-		expect(sent.filter((request) => request.url === '/api/labels')).toHaveLength(1);
+		expect(sent).toHaveLength(1);
+		expect(sent[0].body.labelIds).toEqual([bug.id]);
 		expect(labelsOn(result.cardId!)).toEqual([bug.id]);
 	});
 });
@@ -321,7 +309,9 @@ describe('a new card the server does not make (the review of cards 2147 and 2163
 		expect(await cardActions.saveCard(null, A.cols['To Do'].id, A.board.id, onThePage(A), windowSaves({ ...NEW_TASK, title: 'Lost' }))).toEqual({
 			isNew: false,
 			title: 'Lost',
-			failure: 'No answer from the server. The card may not have been created.'
+			failure: 'No answer from the server. The card may not have been created.',
+			// Unlike a refusal, the card may have been made (the card 2296 review).
+			noAnswer: true
 		});
 	});
 });
@@ -742,26 +732,16 @@ describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2
 		expect([cardRow(card.id).onHoldNote, cardRow(card.id).summary, cardRow(card.id).dueDate]).toEqual(['', null, null]);
 	});
 
-	it('names each subtask, assignee, label and sub-board of a new card that was refused, keeps the card, and reads the board once', async () => {
+	// Card 2296: one request, all or nothing. Each part was its own request
+	// after the card, each refusal named and the card kept without the part.
+	it('makes a new card with its subtasks, labels, assignees and sub-boards in one request, says each sub-board made, and reads the board once', async () => {
 		const { boardState, cardWindow } = standIn({
-			columns: [{ id: 3, boardId: 9, title: 'To Do', position: 0, color: '#888888', showAddCard: true, wipLimit: 0, cards: [] }] as unknown as ColumnType[],
-			labels: [{ id: 4, boardId: 9, name: 'Bug', color: '#ff0000' }] as BoardContentsData['labels'],
-			boardUsers: [
-				{ id: 1, username: 'owner', emoji: '👤' },
-				{ id: 2, username: 'editor', emoji: '🦊' }
-			] as BoardContentsData['boardUsers']
+			columns: [{ id: 3, boardId: 9, title: 'To Do', position: 0, color: '#888888', showAddCard: true, wipLimit: 0, cards: [] }] as unknown as ColumnType[]
 		});
-		const sent: string[] = [];
+		const sent: { what: string; body: Record<string, unknown> }[] = [];
 		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
-			const body = JSON.parse(String(init.body));
-			sent.push(`${init.method} ${url}`);
-			if (url === '/api/cards') return json(201, { id: 50 });
-			if (url === '/api/subtasks') return body.title === 'Two' ? json(400, { message: 'A subtask title is at most 500 characters' }) : json(201, { id: 1 });
-			if (url === '/api/labels') return json(400, { message: 'That label belongs to a different board' });
-			if (url === '/api/cards/50/assignees') return body.userId === 1 ? json(201, {}) : json(403, { message: 'That user cannot open this board' });
-			if (url === '/api/boards' && body.name === 'Lost') throw new TypeError('Failed to fetch');
-			if (url === '/api/boards') return body.name === 'Deep' ? json(409, { message: 'Sub-boards can be nested at most 20 levels deep.' }) : json(201, { id: 70 });
-			return json(500, {});
+			sent.push({ what: `${init.method} ${url}`, body: JSON.parse(String(init.body)) });
+			return url === '/api/cards' ? json(201, { id: 50 }) : json(500, {});
 		});
 		const refresh = vi.spyOn(boardState, 'refresh');
 		cardWindow.openNew(3);
@@ -769,44 +749,60 @@ describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2
 
 		const saved = await cardWindow.save({
 			...windowSaves({ ...NEW_TASK, title: 'New' }),
-			pendingSubtasks: ['One', 'Two'].map((title) => JSON.stringify({ title })),
-			// 4 is the board's; 8 was deleted while the window was open.
-			pendingLabelIds: [4, 8],
-			// 1 and 2 are the board's; 99 is no longer on it.
-			pendingAssigneeIds: [1, 2, 99],
-			pendingSubBoards: ['Plans', 'Deep', 'Lost']
+			pendingSubtasks: [JSON.stringify({ title: 'One' }), JSON.stringify({ title: 'Two', priority: 'high', colorTag: 'none', dueDate: '2026-11-02' })],
+			pendingLabelIds: [4, 8, 4],
+			pendingAssigneeIds: [1, 2],
+			pendingSubBoards: ['Plans', 'Deep']
 		});
 
 		expect(saved).toEqual({
 			ok: true,
 			told: [
 				{ message: 'Created "New"', failed: false },
-				{ message: 'The template\'s label "Bug" was not put on "New". That label belongs to a different board', failed: true },
-				{ message: 'A label of the template that no longer exists was not put on "New". That label belongs to a different board', failed: true },
-				{ message: 'Subtask "Two" was not added to "New". A subtask title is at most 500 characters', failed: true },
-				{ message: '"editor" was not assigned to "New". That user cannot open this board', failed: true },
-				{ message: 'Someone no longer on this board was not assigned to "New". That user cannot open this board', failed: true },
 				{ message: 'Sub-board "Plans" created', failed: false },
-				{ message: 'Sub-board "Deep" was not made. Sub-boards can be nested at most 20 levels deep.', failed: true },
-				{ message: 'No answer from the server. Sub-board "Lost" may not have been made.', failed: true }
+				{ message: 'Sub-board "Deep" created', failed: false }
 			]
 		});
-		expect(sent).toEqual([
-			'POST /api/cards',
-			'POST /api/subtasks',
-			'POST /api/subtasks',
-			'PUT /api/labels',
-			'PUT /api/labels',
-			'POST /api/cards/50/assignees',
-			'POST /api/cards/50/assignees',
-			'POST /api/cards/50/assignees',
-			'POST /api/boards',
-			'POST /api/boards',
-			'POST /api/boards'
-		]);
+		expect(sent.map((request) => request.what)).toEqual(['POST /api/cards']);
+		expect(sent[0].body).toMatchObject({
+			columnId: 3,
+			title: 'New',
+			subtasks: [
+				{ title: 'One', description: '', priority: 'medium', colorTag: '', dueDate: null },
+				{ title: 'Two', description: '', priority: 'high', colorTag: '', dueDate: '2026-11-02' }
+			],
+			labelIds: [4, 8],
+			assigneeIds: [1, 2],
+			subBoards: [{ name: 'Plans' }, { name: 'Deep' }]
+		});
+		// Nothing under the window's own names.
+		for (const name of ['pendingSubtasks', 'pendingLabelIds', 'pendingAssigneeIds', 'pendingSubBoards']) expect(sent[0].body, name).not.toHaveProperty(name);
 		// Closed, and the board read once for the new card, which is the reader's to draw.
 		expect(cardWindow.open).toBe(false);
 		expect(refresh).toHaveBeenCalledTimes(1);
+		expect(boardState.holds).toBe(0);
+	});
+
+	it('keeps the New Task window open with what was typed when the server refuses a part of the new card, says the part by its name, and sends nothing more', async () => {
+		const { boardState, cardWindow } = standIn({
+			columns: [{ id: 3, boardId: 9, title: 'To Do', position: 0, cards: [] }] as unknown as ColumnType[],
+			boardUsers: [{ id: 1, username: 'bob', emoji: '🦊' }] as BoardContentsData['boardUsers']
+		});
+		const asked = heldAnswers();
+		const refresh = vi.spyOn(boardState, 'refresh');
+		cardWindow.openNew(3);
+		const saving = cardWindow.save({
+			...windowSaves({ ...NEW_TASK, title: 'New' }),
+			pendingSubtasks: [JSON.stringify({ title: 'One' })],
+			pendingAssigneeIds: [1],
+			pendingSubBoards: ['Plans']
+		});
+		asked[0].answer(json(400, { message: 'assigneeIds[0]: User does not have access to this board' }));
+		// Named as the reader knows them, not by the list and place the server names (the card 2296 review).
+		expect(await saving).toEqual({ ok: false, failure: '"bob" could not be assigned: User does not have access to this board' });
+		expect(asked.map((a) => a.what)).toEqual(['POST /api/cards']);
+		expect([cardWindow.open, cardWindow.cardId, cardWindow.columnId]).toEqual([true, null, 3]);
+		expect(refresh).not.toHaveBeenCalled();
 		expect(boardState.holds).toBe(0);
 	});
 

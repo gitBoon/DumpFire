@@ -390,10 +390,10 @@
 	 * the user changed in the window (the others follow the board, slice
 	 * B5d, and are never sent back), shown on the board at once and taken
 	 * back alone if refused; a new card is made with its subtasks, labels,
-	 * assignees and sub-boards, and the board read once. A refusal, or no
-	 * answer, keeps the window open with what was typed, and the reason is
-	 * said; what was done, and each part of a new card that was not, is said
-	 * in the order the controller gives it.
+	 * assignees and sub-boards in one request, all or nothing (card 2296),
+	 * and the board read once. A refusal, or no answer, keeps the window open
+	 * with what was typed, and the reason is said; what was done is said in
+	 * the order the controller gives it.
 	 */
 	async function saveCard(cardData: CardWindowSave) {
 		const started = toasts.navigation();

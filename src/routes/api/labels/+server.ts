@@ -1,5 +1,5 @@
 import { json, error } from '@sveltejs/kit';
-import { toggleCardLabel } from '$lib/server/card-labels';
+import { TOGGLE_LABEL_PAGE_OPTIONS, toggleCardLabel } from '$lib/server/card-labels';
 import { createLabel, deleteLabel, labelsOfBoard, updateLabel } from '$lib/server/labels';
 import { readBody, readQueryId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
@@ -61,13 +61,14 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
  * Toggle a label on a card. `cardId` and `labelId` are ids (card 2117): one
  * that was not was read with `Number()`, and looked for as a card or a label.
  * The work is `toggleCardLabel` in `$lib/server/card-labels`, beside v1's add
- * and remove (card 2012).
+ * and remove (card 2012), with that module's `TOGGLE_LABEL_PAGE_OPTIONS`
+ * (`{ source: 'ui' }`), which a new card's labels are put on with too (card 2296).
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
 	const body = await readBody(request);
 
-	const toggled = writeAs(locals, (caller) => toggleCardLabel(caller, {}, body, { source: 'ui' }));
+	const toggled = writeAs(locals, (caller) => toggleCardLabel(caller, {}, body, TOGGLE_LABEL_PAGE_OPTIONS));
 	return json({ toggled });
 };
 

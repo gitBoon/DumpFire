@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.84
+version: 1.85
 status: As-Built
 date: 2026-10-21
 tags:
@@ -4206,6 +4206,34 @@ Card 2386 is not checked by hand: closing the window within a quarter of a secon
 #### Going back to the previous image
 
 Nothing is done to the database. The older image's Share window makes a board private at once with no word of webhooks and does not read its list again afterwards, and `GET /api/boards/{id}/share` answers no `privateStopsWebhooks`. Its card window sends a search typed just before it closed. Its `/api/audit` and `/api/v1/audit-log` ignore `before` and answer the first page (an integration that came to rely on `before` would loop on the first page: check none has before going back), and its Audit page's **Load more** asks by `offset` again.
+
+### A New Card Is Made With Its Subtasks, Labels, Assignees and Sub-Boards in One Request, and the Dependency Picker's Close
+
+**Cards 2296 and 2388.** No migration, no setting, no route added, and no `/api/v1` change (the OpenAPI document is unchanged). One internal route takes more: `POST /api/cards` takes `subtasks`, `labelIds`, `assigneeIds` and `subBoards`, written with the card or not at all. The plan is `docs/planning/cards-2296-2388.md`.
+
+- **2296.** The board's New Task window made the card, then sent each subtask, each label of its template, each person chosen and each sub-board in a request of its own, so a refusal or a lost answer part way left half a card. It now sends one request, and the server makes the card with all of it or makes nothing; the entries, live updates, webhooks and mail are the same as before. A template label deleted while the window is open is left out rather than refusing the card. With no answer the board is read again, so a card that was made after all shows behind the window, and the toast ends "Check the board before creating it again."
+- **2388.** A dependency search typed in the card window's picker within a quarter of a second of closing the picker (Escape, ✕, or opening the other list's picker) was still sent. It no longer is.
+
+**Owner to know.** A New Task whose subtask, label, person or sub-board is refused (a sub-board too deep, say, or someone taken off the board meanwhile) is no longer made without that part: nothing is made, the window stays open with everything typed, and the toast names the part as the window shows it, as `Sub-board "Phase two" could not be made: Sub-boards can be nested at most 20 levels deep, …` or `"bob" could not be assigned: User does not have access to this board`.
+
+#### After the deploy
+
+On production, as **O**, your administrator account, signed in, with O's API key (My Account) and the browser's developer tools open (Network and Console). Nothing here completes a card or touches a real board. **Scratch things:** on the dashboard a board "TEST 2296 - delete me"; note its id (the number in its address, `/board/<id>`), `<S>`. With O's key: `GET /api/v1/boards/<S>/columns`, note the To Do column's id `<todo>`, and `POST /api/v1/boards/<S>/cards` with `{"columnId": <todo>, "title": "TEST 2296 other - delete me"}`; note the answer's `id`, `<other>`. In any text box outside the browser (Notepad will do) type `#<other>` and copy it, so Ctrl+V pastes it.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 422 | 2296 | On the board TEST 2296 - delete me, press **Add Task** on To Do; in "What needs to be done?" type `TEST 2296 card - delete me`; under Subtasks press **Add**, type `TEST 2296 step` in the subtask's "What needs to be done?" and press **Add Subtask**; press **More options**, type `TEST 2296 sub - delete me` in "Link to a sub-board..." and press **+ Add**; clear the network panel; press **Create task** | In the network panel, one `POST` to `/api/cards`, answered `201`, whose request payload holds `subtasks` with the title `TEST 2296 step` and `subBoards` with the name `TEST 2296 sub - delete me`; no `POST` to `/api/subtasks` or `/api/boards` (the board's own reads and its events stream are `GET`s, and are not one); the toasts `Created "TEST 2296 card - delete me"` and `Sub-board "TEST 2296 sub - delete me" created` | A `POST` to `/api/subtasks` or `/api/boards`, or the payload without `subtasks` or `subBoards` |
+| 423 | 2296 | Open the card TEST 2296 card - delete me; press **More options** | Under Subtasks, `TEST 2296 step`; under More options, the sub-board `TEST 2296 sub - delete me` | Either is missing |
+| 424 | 2296 | Close the card window. In the Console, on the board's page, run `fetch('/api/cards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ columnId: <todo>, title: 'TEST 2296 refused - delete me', subtasks: [{ title: 'TEST 2296 step' }], labelIds: [999999999] }) }).then(async (r) => console.log(r.status, await r.text()))`; then reload the board | The Console prints `404` and a body whose `message` is `labelIds[0]: Label not found`; after the reload no card "TEST 2296 refused - delete me" is on the board | `201`, or the card is on the board |
+| 425 | 2388 | Open the card TEST 2296 card - delete me; **More options**; **+ Add a blocker**; clear the network panel; in "Search the card this one waits on…" press **Ctrl+V** to paste `#<other>` and press **Escape** at once, together as near as you can; wait two seconds | The picker closes and the card window stays open; in the network panel no `GET /api/cards/search` at all, during the wait or after it | A `GET /api/cards/search?q=%23<other>…` in the panel, or the card window closes. A search sent when Escape came more than a quarter of a second after the paste is not a fault (the picker had waited its quarter second and searched, as it should): clear the panel and repeat faster. The older image sends the search however fast Escape is pressed |
+
+The window keeping everything typed when a part is refused is not arranged by hand on production; the suite covers it, and the picker's ✕ and its other list's button as well as Escape (`tests/card-window-keys.svelte.test.ts`).
+
+**Afterwards.** On the dashboard delete the board "TEST 2296 - delete me"; its cards go with it, and so does the sub-board TEST 2296 sub - delete me, which hangs under one of them.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image's `POST /api/cards` ignores the four lists, and its New Task window sends each part in a request of its own after the card again, so a refusal part way leaves the card without that part, as before. Its card window sends a dependency search typed just before the picker was closed.
 
 ## Changing the Schema
 

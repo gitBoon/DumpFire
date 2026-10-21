@@ -13,48 +13,30 @@ import { categoryToCopy, colourToCopy, dueDateToCopy, priorityToCopy } from '$li
 // ─── Card CRUD ───────────────────────────────────────────────────────────────
 
 /**
- * A label from a new card's template that was not put on it: see `saveCard`.
- * The page names the label, which it holds and this does not.
- */
-export type LabelFailure = {
-	labelId: number;
-	/** The server's words for the refusal, or what is said when there was no answer. */
-	message: string;
-};
-
-/** A pending subtask of a new card that was not made: see `saveCard` (card 2280, slice B2b). */
-export type SubtaskFailure = { title: string; message: string };
-
-/** Someone chosen for a new card who was not assigned to it: see `assignPending` (card 2280, slice B2b). */
-export type AssigneeFailure = { userId: number; message: string };
-
-/**
  * Saves a card — either creates a new one or updates an existing one.
- * Also handles creating pending subtasks for newly created cards, and putting
- * on a new card the labels of the template it was made from (card 2163).
  *
  * No colour tag is sent: the card window has no control for one, and it sent
  * an empty one with every save, which cleared a tag set through the API
  * (card 2147).
  *
- * Each of `pendingLabelIds` is put on the new card with `PUT /api/labels`,
- * which adds a label a card does not have, as a new card has none. Each answer
- * is read, and a label that was not put on comes back in `labelFailures`, for
- * the page to say. The card is kept whatever becomes of a label, as it is
- * whatever becomes of a pending subtask.
+ * A new card is made in one request with what its window gathered (card
+ * 2296): its pending subtasks (`subtasks`), the labels of the template it was
+ * made from (`labelIds`, card 2163), the people chosen (`assigneeIds`) and its
+ * sub-boards (`subBoards`). The server writes them with the card, in its
+ * transaction, or refuses the whole request; each was sent on its own after
+ * the card, so a refusal or a lost answer left half of it.
  *
  * A create the server refuses, or that gets no answer, makes no card: it is
- * given back as `failure`, the server's words where it gave them, with
- * `isNew` false, and nothing else is sent. It used to come back as created.
- * An update refused or unanswered is given back the same way, and the page
- * keeps the window open with what was typed; its answer was thrown away, and
- * the window closed as if saved (card 2280, slice B2b). Each pending subtask
- * is read the same way as a label: one not made comes back in
- * `subtaskFailures`, and the card is kept.
+ * given back as `failure`, the server's words where it gave them (naming the
+ * part refused, `subtasks[1]: title is required`), with `isNew` false. It used
+ * to come back as created. An update refused or unanswered is given back the
+ * same way, and the page keeps the window open with what was typed; its
+ * answer was thrown away, and the window closed as if saved (card 2280,
+ * slice B2b).
  *
  * @returns `{ isNew, title }` for activity logging by the caller, with the new
- * card's id, `labelFailures` and `subtaskFailures` when a card was created,
- * and `failure` when none was made or the update was not saved.
+ * card's id when a card was created, and `failure` when none was made or the
+ * update was not saved.
  */
 export async function saveCard(
 	editingCard: CardType | null,
@@ -77,11 +59,18 @@ export async function saveCard(
 		closeReason?: string | null;
 		releaseState?: string | null;
 		pendingSubtasks?: string[];
-		/** A new card's labels, from the template it was made from: put on once it is made. */
+		/** A new card's labels, from the template it was made from. */
 		pendingLabelIds?: number[];
+		/** The people chosen in a New Task window. */
+		pendingAssigneeIds?: number[];
+		/** The names of a new card's sub-boards. */
+		pendingSubBoards?: string[];
 	}
-): Promise<{ isNew: boolean; title: string; cardId?: number; labelFailures?: LabelFailure[]; subtaskFailures?: SubtaskFailure[]; failure?: string }> {
-	const { pendingSubtasks, pendingLabelIds, ...rest } = cardData;
+): Promise<{ isNew: boolean; title: string; cardId?: number; failure?: string; noAnswer?: true }> {
+	// The pending lists are never sent as the window names them: a new card's
+	// go in its one request under the server's names. (The people and the
+	// sub-boards used to be sent under these names too, and were not read.)
+	const { pendingSubtasks, pendingLabelIds, pendingAssigneeIds, pendingSubBoards, ...rest } = cardData;
 	if (editingCard) {
 		// Update existing card
 		let res: Response;
@@ -98,89 +87,44 @@ export async function saveCard(
 		// Create new card
 		const col = columns.find((c) => c.id === cardModalColumnId);
 		const maxPos = col && col.cards.length > 0 ? Math.max(...col.cards.map((c) => c.position)) + 1 : 0;
+		// Each pending subtask as the window kept it, with only a colour the
+		// server takes (card 2162, decision 4), so a pending subtask is made even
+		// if its colour tag is no colour.
+		const subtasks = (pendingSubtasks ?? []).map((pending) => {
+			const stData = JSON.parse(pending);
+			return {
+				title: stData.title,
+				description: stData.description || '',
+				priority: stData.priority || 'medium',
+				colorTag: colourToCopy(stData.colorTag),
+				dueDate: stData.dueDate || null
+			};
+		});
 		let res: Response;
 		try {
 			res = await api.createCard({
 				columnId: cardModalColumnId,
 				position: maxPos,
 				boardId,
-				...rest
+				...rest,
+				// Each list only when it holds something, so a plain card's request is as it was.
+				...(subtasks.length > 0 ? { subtasks } : {}),
+				// The template's labels, each once: the server toggles each, and a second toggle would take it off.
+				...(pendingLabelIds?.length ? { labelIds: [...new Set(pendingLabelIds)] } : {}),
+				...(pendingAssigneeIds?.length ? { assigneeIds: pendingAssigneeIds } : {}),
+				...(pendingSubBoards?.length ? { subBoards: pendingSubBoards.map((name) => ({ name })) } : {})
 			});
 		} catch {
-			return { isNew: false, title: cardData.title, failure: 'No answer from the server. The card may not have been created.' };
+			// `noAnswer`: the card may have been made, which a refusal says it was not.
+			return { isNew: false, title: cardData.title, failure: 'No answer from the server. The card may not have been created.', noAnswer: true };
 		}
 		if (!res.ok) {
 			return { isNew: false, title: cardData.title, failure: await api.failureMessage(res, 'The card was not created.') };
 		}
-		const labelFailures: LabelFailure[] = [];
-		const subtaskFailures: SubtaskFailure[] = [];
 		const newCard = await res.json();
-		// Create pending subtasks for the new card, each answer read: one refused
-		// is named, and the rest are still sent.
-		if (pendingSubtasks && pendingSubtasks.length > 0) {
-			for (let i = 0; i < pendingSubtasks.length; i++) {
-				const stData = JSON.parse(pendingSubtasks[i]);
-				let made: Response;
-				try {
-					made = await api.createSubtask({
-						cardId: newCard.id,
-						title: stData.title,
-						description: stData.description || '',
-						priority: stData.priority || 'medium',
-						// Only a colour the server takes (card 2162, decision 4), so a
-						// pending subtask is made even if its colour tag is no colour.
-						colorTag: colourToCopy(stData.colorTag),
-						dueDate: stData.dueDate || null,
-						completed: false,
-						boardId
-					});
-				} catch {
-					subtaskFailures.push({ title: stData.title, message: 'No answer from the server, so it may be on the card after all.' });
-					continue;
-				}
-				if (!made.ok) subtaskFailures.push({ title: stData.title, message: await api.failureMessage(made, 'It was refused.') });
-			}
-		}
-		// The template's labels, each once: a second toggle of one would take it off.
-		for (const labelId of new Set(pendingLabelIds ?? [])) {
-			let put: Response;
-			try {
-				put = await api.toggleLabel(newCard.id, labelId, boardId);
-			} catch {
-				labelFailures.push({ labelId, message: 'No answer from the server, so it may be on the card after all.' });
-				continue;
-			}
-			if (!put.ok) labelFailures.push({ labelId, message: await api.failureMessage(put, 'It was refused.') });
-		}
-		return { isNew: true, title: cardData.title, cardId: newCard.id, labelFailures, subtaskFailures };
+		return { isNew: true, title: cardData.title, cardId: newCard.id };
 	}
 	return { isNew: false, title: '' };
-}
-
-/**
- * Assigns to a new card the people chosen in its window before it was made,
- * each in turn (card 2280, slice B2b). Each answer is read, and someone not
- * assigned comes back with what to tell the reader; the page names them, from
- * the board's members it holds. They were sent together and every answer was
- * thrown away.
- */
-export async function assignPending(cardId: number, userIds: number[]): Promise<AssigneeFailure[]> {
-	const failures: AssigneeFailure[] = [];
-	for (const userId of userIds) {
-		let res: Response;
-		try {
-			res = await fetch(`/api/cards/${cardId}/assignees`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ userId })
-			});
-		} catch {
-			failures.push({ userId, message: 'No answer from the server, so they may be assigned after all.' });
-			continue;
-		}
-		if (!res.ok) failures.push({ userId, message: await api.failureMessage(res, 'It was refused.') });
-	}
-	return failures;
 }
 
 /** Where a navigation came from or went to, as SvelteKit's `afterNavigate` gives it: the parts read here. */

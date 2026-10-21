@@ -1,5 +1,5 @@
 import { json, error } from '@sveltejs/kit';
-import { createBoard, listBoardsFor } from '$lib/server/boards';
+import { CREATE_BOARD_PAGE_OPTIONS, createBoard, listBoardsFor } from '$lib/server/boards';
 import { readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -24,7 +24,9 @@ export const GET: RequestHandler = async ({ locals }) => {
  * The work, with the `board_created` entry `POST /api/v1/boards` writes too
  * and for a sub-board the live update that shows it on its card (card 2143),
  * is `createBoard` in `$lib/server/boards`, which the v1 route shares (card
- * 2012); this route passes `allowCategory`.
+ * 2012); this route passes `allowCategory`, in that module's
+ * `CREATE_BOARD_PAGE_OPTIONS`, which a new card's sub-boards are made with
+ * too (card 2296).
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
 	requireUser(locals.user);
@@ -33,7 +35,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// One transaction: the board, its columns and its owner are made together,
 	// and the fields are read in it. It asks first whether the session is
 	// still open, and who its account is now (card 2253).
-	const board = writeAs(locals, (caller) => createBoard(caller, {}, body, { source: 'ui', allowCategory: true }));
+	const board = writeAs(locals, (caller) => createBoard(caller, {}, body, CREATE_BOARD_PAGE_OPTIONS));
 
 	return json(board, { status: 201 });
 };
