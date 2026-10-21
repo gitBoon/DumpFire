@@ -31,6 +31,7 @@ import { canViewBoard, getAccessibleBoardIds, type Actor } from '$lib/server/boa
 import { requireBoard, requireColumn } from '$lib/server/route-guards';
 import { readQueryId } from '$lib/server/request-body';
 import { getCardBoardId } from '$lib/server/work-access';
+import { COLUMN_ORDER } from '$lib/server/card-order';
 import type { GraphNode, GraphEdge } from '$lib/types/graph-types';
 import type { RequestHandler } from './$types';
 
@@ -156,8 +157,10 @@ function buildBoardExpansion(boardId: number): { nodes: GraphNode[]; edges: Grap
 	const nodes: GraphNode[] = [];
 	const edges: GraphEdge[] = [];
 
+	// In the board's order (the card 2372 review: read with no order, they came in id order).
 	const boardColumns = db.select().from(columns)
 		.where(eq(columns.boardId, boardId))
+		.orderBy(...COLUMN_ORDER)
 		.all();
 
 	for (const col of boardColumns) {

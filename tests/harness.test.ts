@@ -126,6 +126,7 @@ const TEST_FILES = [
 	'sftp-host-key.test.ts',
 	'sub-board-depth.test.ts',
 	'subtask-order.test.ts',
+	'team-owners.test.ts',
 	'test-helpers.test.ts',
 	'timestamps.test.ts',
 	'todo-page.test.ts',

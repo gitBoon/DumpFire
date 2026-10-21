@@ -4,7 +4,7 @@ import { eq, and, isNull, inArray, asc, getTableColumns } from 'drizzle-orm';
 import { readQueryId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
-import { CARD_ORDER } from '$lib/server/card-order';
+import { CARD_ORDER, COLUMN_ORDER } from '$lib/server/card-order';
 import type { RequestHandler } from './$types';
 
 /** Escape a value for CSV: wrap in quotes if it contains commas, quotes, or newlines. */
@@ -95,7 +95,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	// Get all columns
 	const allCols = db.select().from(columns)
 		.where(inArray(columns.boardId, accessibleBoardIds))
-		.orderBy(asc(columns.position))
+		.orderBy(...COLUMN_ORDER)
 		.all();
 	const colIds = allCols.map(c => c.id);
 	const colMap = new Map(allCols.map(c => [c.id, c.title]));
@@ -117,7 +117,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const allCards = db.select(getTableColumns(cards)).from(cards)
 		.innerJoin(columns, eq(cards.columnId, columns.id))
 		.where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt)))
-		.orderBy(asc(columns.boardId), asc(columns.position), asc(columns.id), ...CARD_ORDER)
+		.orderBy(asc(columns.boardId), ...COLUMN_ORDER, ...CARD_ORDER)
 		.all();
 
 	const cardIds = allCards.map(c => c.id);

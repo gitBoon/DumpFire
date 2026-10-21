@@ -274,6 +274,8 @@ const spec = {
 			'as GET /api/v1/cards/{cardId}/comments and the reports read it, where every copy had the time of the accept. ' +
 			'(100) POST /api/v1/cards/{cardId}/assignees mails nobody who assigns themselves (the key\'s user given as userId), who was mailed "Assigned: <card>" about what they had just done. ' +
 			'They are assigned, and the api:assignee_added entry and the live update written, as before, and anyone else assigned is mailed as before. The web application\'s routes that assign do the same. ' +
+			'(101) GET /api/v1/boards/{boardId}, GET /api/v1/boards/{boardId}/columns and POST /api/v1/boards list a board\'s columns in order of position, ties by column id (the older first), ' +
+			'as GET /api/v1/boards/{boardId}/cards already went through them; two columns at one position came in no set order, and POST /api/v1/boards answered its columns in no stated order. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2526,7 +2528,7 @@ const spec = {
 			get: {
 				tags: ['Boards'],
 				summary: 'Get board details',
-				description: 'Returns a single board with its columns.',
+				description: 'Returns a single board with its columns, in order of position, ties by column id.',
 				operationId: 'getBoard',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
 				responses: {
@@ -2671,7 +2673,7 @@ const spec = {
 			get: {
 				tags: ['Columns'],
 				summary: 'List columns on a board',
-				description: 'Returns the board\'s columns in order of position.',
+				description: 'Returns the board\'s columns in order of position, ties by column id (the older first).',
 				operationId: 'listColumns',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
 				responses: {

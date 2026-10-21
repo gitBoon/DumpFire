@@ -19,8 +19,8 @@
 	$effect(() => takeFocus(createInput));
 
 	/**
-	 * Escape closes the window, as × does, but not while a change is out (what
-	 * the server says of it would be said to nobody). With a category's edit
+	 * Escape closes the window, as × does, but neither while a change is out
+	 * (what the server says of it would be said to nobody; × since card 2375). With a category's edit
 	 * open, Escape cancels the edit alone, and the focus goes back to that
 	 * row's ✎ (card 2365's review: it closed the window and lost the edit);
 	 * the next Escape closes the window. Tab and Shift+Tab stay in it. While
@@ -168,7 +168,8 @@
 	<div class="modal-content cat-mgr" onclick={(e) => e.stopPropagation()} role="document" bind:this={windowBox}>
 		<header class="mgr-header">
 			<h2>Manage Categories</h2>
-			<button class="close-btn" onclick={onClose} aria-label="Close">×</button>
+			<!-- Held while a change is out, as Escape is (card 2375: what the server says of it was said to nobody). aria-disabled, not disabled: off, it would drop the focus. -->
+			<button class="close-btn" onclick={() => !loading && onClose()} aria-disabled={loading ? 'true' : undefined} aria-label="Close">×</button>
 		</header>
 
 		{#if error}
@@ -254,6 +255,7 @@
 	.mgr-header h2 { font-size: 1.1rem; margin: 0; }
 	.close-btn { background: none; border: none; font-size: 1.5rem; color: var(--text-tertiary); cursor: pointer; padding: 0 4px; line-height: 1; }
 	.close-btn:hover { color: var(--text-primary); }
+	.close-btn[aria-disabled='true'] { opacity: 0.4; cursor: default; }
 
 	/* A change refused or not answered, in the app's error style. */
 	.mgr-error {

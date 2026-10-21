@@ -1,10 +1,10 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { columns, cards } from '$lib/server/db/schema';
-import { eq, inArray, isNull, and, asc } from 'drizzle-orm';
+import { eq, inArray, isNull, and } from 'drizzle-orm';
 import { pathId } from '$lib/server/request-body';
 import { requireBoard } from '$lib/server/route-guards';
-import { CARD_ORDER } from '$lib/server/card-order';
+import { CARD_ORDER, COLUMN_ORDER } from '$lib/server/card-order';
 import type { RequestHandler } from './$types';
 
 /**
@@ -24,7 +24,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const boardCols = db.select({ id: columns.id, title: columns.title, position: columns.position })
 		.from(columns)
 		.where(eq(columns.boardId, boardId))
-		.orderBy(asc(columns.position))
+		.orderBy(...COLUMN_ORDER)
 		.all();
 
 	const colIds = boardCols.map(c => c.id);

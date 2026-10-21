@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { teamMembers, users } from '$lib/server/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, ne } from 'drizzle-orm';
 import { pathId, readBody, readChoice, readId } from '$lib/server/request-body';
 import { requireTeamManager, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -10,8 +10,29 @@ import type { RequestHandler } from './$types';
 /** The roles a member of a team may have. */
 const TEAM_ROLES = ['member', 'owner'] as const;
 
+/** Said when a change would take away a team's last owner (card 2373). */
+const LAST_OWNER = 'A team needs at least one owner. Make someone else an owner first, or delete the team.';
+
+/**
+ * Refuses, 409, a change that takes the team's last owner away: `member`, an
+ * owner made something else or removed, when no other member is an owner.
+ * Administrators too: a team nobody owns could be run by them alone (card
+ * 2373). Read in the transaction of the change, so two owners demoting each
+ * other at once cannot both pass. A team that already has no owner is not
+ * made worse by a change to a member, so that is allowed.
+ */
+function keepAnOwner(teamId: number, member: { userId: number; role: string } | undefined, nextRole: string | null): void {
+	if (member?.role !== 'owner' || nextRole === 'owner') return;
+	const another = db.select({ userId: teamMembers.userId })
+		.from(teamMembers)
+		.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.role, 'owner'), ne(teamMembers.userId, member.userId)))
+		.get();
+	if (!another) throw error(409, LAST_OWNER);
+}
+
 /**
  * POST — Add a member to a team, or change a member's role (admin or team owner).
+ * A change that would leave the team with no owner is refused, 409 (card 2373).
  *
  * The member is the user in the path. The body's `userId` used to be the one
  * added, whatever the path said; the pages send both, the same. Sent and
@@ -43,6 +64,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 		const member = db.select({ id: users.id }).from(users).where(eq(users.id, userId)).get();
 		if (!member) throw error(404, 'User not found');
+		keepAnOwner(teamId, existing, role);
 
 		if (existing) {
 			db.update(teamMembers)
@@ -60,7 +82,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		: json({ success: true, action: 'added' }, { status: 201 });
 };
 
-/** DELETE — Remove a member from a team (admin or team owner). */
+/** DELETE — Remove a member from a team (admin or team owner), never its last owner. */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	requireUser(locals.user);
 	const teamId = pathId(params.id, 'team');
@@ -72,6 +94,12 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// with no transaction around them.
 	writeAs(locals, (caller) => {
 		requireTeamManager(caller, teamId);
+
+		const existing = db.select()
+			.from(teamMembers)
+			.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
+			.get();
+		keepAnOwner(teamId, existing, null);
 
 		db.delete(teamMembers)
 			.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))

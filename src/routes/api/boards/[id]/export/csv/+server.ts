@@ -1,12 +1,12 @@
 import { error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { boards, columns, cards, categories, labels, cardLabels, cardAssignees, users, subtasks } from '$lib/server/db/schema';
-import { eq, and, isNull, inArray, asc, getTableColumns } from 'drizzle-orm';
+import { eq, and, isNull, inArray, getTableColumns } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
 import { pathId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
-import { CARD_ORDER } from '$lib/server/card-order';
+import { CARD_ORDER, COLUMN_ORDER } from '$lib/server/card-order';
 import type { RequestHandler } from './$types';
 
 /** Escape a value for CSV: wrap in quotes if it contains commas, quotes, or newlines. */
@@ -32,10 +32,16 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const role = getBoardRole(user, boardId);
 	if (!role) throw error(403, 'No access to this board');
 
-	// Get columns
+	// The file's name, the same for a board with no columns (card 2371): that
+	// one put the raw name in the header, so a name with an emoji or another
+	// character past Latin-1 was a 500, and a double quote ended it early.
+	const safeName = board.name.replace(/[^a-zA-Z0-9-_]/g, '_');
+	const disposition = `attachment; filename="${safeName}-${new Date().toISOString().slice(0, 10)}.csv"`;
+
+	// Get columns, in the board's order, ties by id (card 2372)
 	const boardCols = db.select().from(columns)
 		.where(eq(columns.boardId, boardId))
-		.orderBy(asc(columns.position))
+		.orderBy(...COLUMN_ORDER)
 		.all();
 	const colIds = boardCols.map(c => c.id);
 	const colMap = new Map(boardCols.map(c => [c.id, c.title]));
@@ -44,7 +50,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		return new Response('Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks\n', {
 			headers: {
 				'Content-Type': 'text/csv; charset=utf-8',
-				'Content-Disposition': `attachment; filename="${board.name}-export.csv"`
+				'Content-Disposition': disposition
 			}
 		});
 	}
@@ -55,7 +61,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const allCards = db.select(getTableColumns(cards)).from(cards)
 		.innerJoin(columns, eq(cards.columnId, columns.id))
 		.where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt)))
-		.orderBy(asc(columns.position), asc(columns.id), ...CARD_ORDER)
+		.orderBy(...COLUMN_ORDER, ...CARD_ORDER)
 		.all();
 
 	const cardIds = allCards.map(c => c.id);
@@ -121,12 +127,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	});
 
 	const csv = header + '\n' + rows.join('\n') + '\n';
-	const safeName = board.name.replace(/[^a-zA-Z0-9-_]/g, '_');
 
 	return new Response(csv, {
 		headers: {
 			'Content-Type': 'text/csv; charset=utf-8',
-			'Content-Disposition': `attachment; filename="${safeName}-${new Date().toISOString().slice(0, 10)}.csv"`
+			'Content-Disposition': disposition
 		}
 	});
 };

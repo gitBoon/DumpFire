@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.78
+version: 1.79
 status: As-Built
 date: 2026-10-21
 tags:
@@ -4016,6 +4016,39 @@ On production, as **O**, your administrator account, with the browser's develope
 #### Going back to the previous image
 
 Nothing is done to the database: a role changed under the new image stays as it was set. The older image adds every member as Member on the Teams page and has no role picker on members' rows, can send a goal's rename twice, can show an older Activity Log read over a newer one, draws Manage Categories, the invite link's dialog and the reset's notice without their hold on the keyboard, and counts filtered-out cards in Show More again.
+
+### Small Fixes: an Empty Board's Export, Column Order, a Team's Last Owner, Add Sent Once, Manage Categories' × and Role Pickers That Wait for Change
+
+**Cards 2371, 2372, 2373, 2374, 2375 and 2376.** No migration, no setting, no route added. Two web-application routes answer differently (cards 2371 and 2373), and three `/api/v1` answers give tied columns in a set order (card 2372, OpenAPI change item 101, still version 1.2.0). The plan is `docs/planning/cards-2371-2376-small-fixes.md`.
+
+- **2371.** The board CSV export (`/api/boards/<id>/export/csv`, which no page links to) of a board with no columns put the board's name in the file-name header as it was: a name with an emoji or another character outside Latin-1 was a `500`, and a double quote cut the name short. Now its file is named as any board's is, `<name>-<date>.csv` with every character but letters, digits, `-` and `_` made `_`.
+- **2372.** A board's columns were read by position alone, so two at one position (a column made through v1 with a chosen `position`, or a reorder that sent one twice) came in no set order. Every reader now orders them by position, then the older first: the board page, All Tasks, All To Do, the inbox, the internal picker, the CFD, both CSV exports, the daily snapshots, the reports' To Do fallback, a board's columns in the graph view (`/api/graph?boardId=`, which gave them in the order they were made), and `GET /api/v1/boards/{boardId}`, `GET /api/v1/boards/{boardId}/columns` and `POST /api/v1/boards`.
+- **2373.** A team's owner, or an administrator, could make the team's last owner a member or remove them, leaving a team only an administrator could run. Both are now refused for everyone: "A team needs at least one owner. Make someone else an owner first, or delete the team." (`409`, nothing changed).
+- **2374.** **Add** under a team (the Teams page and **Admin → Team Management**) sent the add again on a second click while the first was out: two requests and two "Member added". Now a second press while it is out sends nothing, and Add keeps the keyboard's focus. An Add for someone already in the team (added meanwhile elsewhere) sets their role, and now says "*name* was already in the team; role set to *Role*" rather than "Member added".
+- **2375.** Manage Categories' **×** closed the window while a change was on its way, so the server's answer was said to nobody (Escape already waited). Now × waits as Escape does.
+- **2376.** The member role pickers (Teams page, admin Team Management) and the admin **User Management** role picker saved as soon as a value was chosen. On Windows, Up and Down on a closed picker choose at once, so a keyboard user arrowing through it saved each role passed (on User Management, Admin included). Now choosing saves nothing: each row has a **Change** button beside the picker, dimmed and doing nothing until a role other than the stored one is chosen, and pressing it saves. While it is on its way a second press sends nothing and a screen reader is told "Saving *name*'s role…". A role chosen and not saved is forgotten once the member or account is removed, or the page reads them back gone or already holding it. On User Management the picker and Change are drawn for the superadmin alone, as only the superadmin has a second role to give.
+
+**Owner to know.** **Changing a role now takes a second step**: choose the role, then press **Change** on the row (on all three pickers). **A team can no longer be left with no owner**: to step down as a team's only owner, make another member an owner first, or delete the team. A team left with no owner from before (or by deleting its only owner's account, which this does not stop) is still run by administrators. See [Admin Operations Guide](admin-guide.md#team-owners-and-members).
+
+#### After the deploy
+
+On production, as **O**, your administrator account, on Windows in Chrome or Firefox (check 383's arrows choose at once there; on a Mac they open the list), with the browser's developer tools' network panel and an API key of O's. Nothing here completes a card or changes a real account, team, grouping or board. **Scratch things:** two boards on the dashboard, "TEST 2371 🚀 - delete me" and "TEST 2372 - delete me", each with its standard columns, no cards and no other members; on the **Teams** page, **New Team** "TEST 2373 - delete me" (O is its only owner); a second account to add to it (one made for these checks, or any account: the scratch team has no boards and no requests, so being in it gives nothing). **Check 383 runs only on an account made for these checks**, never a real one: on a faulty build its arrows send `PUT /api/users/<id>`, which makes the account an administrator for a moment and ends any invite sent to it and not yet used. With no such account, skip 383.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 378 | 2371 | On TEST 2371 🚀, delete every column: each column's **Column options** (on its header), **Delete column**, **Delete Column** in the dialog. Then in the address bar open `/api/boards/<its id>/export/csv` (the id is in the board's address) | A file downloads named `TEST_2371____-_delete_me-<today's date, YYYY-MM-DD>.csv`, holding the one line `Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks` | An error page, or an "Internal Error" answer, in place of the file |
+| 379 | 2372 | With O's key, `POST /api/v1/boards/<TEST 2372 id>/columns` with `{"title": "TEST 2372 B", "position": 0}`; then `GET /api/v1/boards/<TEST 2372 id>/columns`; then open the board | `201`; the list gives To Do and then "TEST 2372 B", both at `position` 0, then the rest in their order; the board page shows To Do left of TEST 2372 B (this confirms the order; the database already gave the older column first in practice, so the older image passes too) | TEST 2372 B before To Do |
+| 380 | 2373 | **Admin → Team Management**, the scratch team: on O's own row choose **Member** and press **Change**; then press ✕ on O's row | Both times the toast "A team needs at least one owner. Make someone else an owner first, or delete the team."; the picker reads **Owner** again and O's row stays | "Role changed", or O's row gone |
+| 381 | 2374 | **Teams** page, the scratch team: **Add member...**, choose the second account; network panel **Slow 3G**; double-click **Add**; wait for the answer; **No throttling** | One `POST` to `/api/teams/<id>/members/<their id>` in the network panel; one "Member added"; their row shows a picker reading **Member** | Two `POST` requests or two "Member added" |
+| 382 | 2376 | On their row, click the picker and press Escape to close its list (the picker keeps the focus); press the Down arrow once; look at the network panel; then press **Change** beside it; reload the page | The picker reads **Owner** and no request appears as the arrow is pressed; **Change** turns from dimmed to bright; after Change, "Role changed", and after the reload the picker reads **Owner** | A request to `/api/teams/…/members/…` as the arrow is pressed |
+| 383 | 2376 | Only if O is the superadmin (the role picker and its **Change** are drawn for the superadmin alone; another administrator sees the role as its badge, with neither) and the second account was made for these checks; otherwise skip it. **Admin → User Management**, the second account's row (a user, not an administrator): click the role picker and press Escape; press the Down arrow, then the Up arrow; do not press Change | No request to `/api/users/…` in the network panel; the picker reads **User** again and its **Change** is dimmed | A `PUT` to `/api/users/<id>` as the arrows are pressed |
+| 384 | 2375 | Dashboard, **🏷️ Manage Categories**; network panel **Slow 3G**; type "TEST 2375 - delete me", press **Add** and at once click **×**; wait for the answer; **No throttling**; click **×** | The window stays open after the first ×; once answered, "TEST 2375 - delete me" is listed; the second × closes the window | The window closing on the first × |
+
+**Afterwards.** Delete the boards "TEST 2371 🚀 - delete me" and "TEST 2372 - delete me" on the dashboard. On the Teams page delete the team "TEST 2373 - delete me" (its 🗑️, then **Delete** in the dialog). In Manage Categories delete "TEST 2375 - delete me" (its 🗑️ on the row's hover, then **Delete**). Delete the second account if it was made for these checks.
+
+#### Going back to the previous image
+
+Nothing is done to the database: a role saved under the new image stays as it was set. The older image answers `500` for the export of an empty board whose name has an emoji, lists columns tied at one position in no set order, lets a team's last owner be made a member or removed, sends a second add on a double click, closes Manage Categories on × while a change is out, and saves a role as soon as it is chosen in a picker.
 
 ## Changing the Schema
 

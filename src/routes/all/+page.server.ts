@@ -46,7 +46,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	}
 
 	for (const boardCols of colsByBoard.values()) {
-		boardCols.sort((a, b) => a.position - b.position);
+		// In the board's order, ties by id (card 2372's column order).
+		boardCols.sort((a, b) => a.position - b.position || a.id - b.id);
 		
 		boardCols.forEach((col, index) => {
 			const bucketName = getBucket(col.title);

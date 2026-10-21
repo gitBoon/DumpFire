@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { boards, columns, users } from '$lib/server/db/schema';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { eq, asc, inArray } from 'drizzle-orm';
+import { COLUMN_ORDER } from '$lib/server/card-order';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -24,7 +25,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const cols = db.select({ id: columns.id, title: columns.title })
 			.from(columns)
 			.where(eq(columns.boardId, b.id))
-			.orderBy(asc(columns.position))
+			.orderBy(...COLUMN_ORDER)
 			.all();
 		return { ...b, columns: cols };
 	});

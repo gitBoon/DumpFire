@@ -5,6 +5,7 @@ import { eq, and, gte, inArray, asc } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
 import { pathId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { COLUMN_ORDER } from '$lib/server/card-order';
 import type { RequestHandler } from './$types';
 
 /**
@@ -32,7 +33,7 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 	const boardCols = db.select()
 		.from(columns)
 		.where(eq(columns.boardId, boardId))
-		.orderBy(asc(columns.position))
+		.orderBy(...COLUMN_ORDER)
 		.all();
 
 	if (boardCols.length === 0) return json({ days, columns: [], data: [] });

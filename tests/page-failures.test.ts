@@ -2489,9 +2489,11 @@ const WRITES: Record<string, Write[]> = {
 	'src/routes/teams/+page.svelte': [
 		{ name: 'createTeam', reads: 'failureMessage', done: ['showCreateTeam = false', "showToast('Team created')"] },
 		{ name: 'deleteTeam', reads: 'deleteFailure', done: ["showToast('Team deleted')"] },
-		{ name: 'addTeamMember', reads: 'failureMessage', done: ['addMemberUserId = null', "showToast('Member added')"] },
+		// Its toast is worded from the answer's action since the card 2374 review.
+		{ name: 'addTeamMember', reads: 'failureMessage', done: ['addMemberUserId = null', 'await invalidateAll()'] },
 		// Card 2355: a member's role changed in place, the picker put back for a refusal from the data as it is then (the card 2355 review).
-		{ name: 'changeRole', reads: 'failureMessage', putsBack: ['picker.value = storedRole(teamId, member.userId) ?? picker.value'], done: ['await invalidateAll()'] },
+		// Card 2376: Change saves the role chosen; a failure forgets it, so the picker shows the stored role.
+		{ name: 'changeRole', reads: 'failureMessage', putsBack: ['putBack()'], done: ['await invalidateAll()'] },
 		{ name: 'removeTeamMember', reads: 'deleteFailure', done: ["showToast('Member removed')"] }
 	],
 	// The admin page's backup half, in components of its own (card 2281, slice C1a).
@@ -2553,8 +2555,9 @@ const WRITES: Record<string, Write[]> = {
 	'src/lib/components/admin/TeamsPanel.svelte': [
 		{ name: 'createTeam', reads: 'sent', done: ['showCreateTeam = false', "showToast('Team created')"] },
 		{ name: 'deleteTeam', reads: 'sent', done: ["showToast('Team deleted')"] },
-		{ name: 'addTeamMember', reads: 'sent', done: ['addMemberUserId = null', "showToast('Member added')"] },
-		{ name: 'changeRole', reads: 'sent', putsBack: ['picker.value = storedRole(teamId, member.userId) ?? picker.value'], done: ['await invalidateAll()'] },
+		// Its toast is worded from the answer's action since the card 2374 review.
+		{ name: 'addTeamMember', reads: 'sent', done: ['addMemberUserId = null', 'await invalidateAll()'] },
+		{ name: 'changeRole', reads: 'sent', putsBack: ['putBack()'], done: ['await invalidateAll()'] },
 		{ name: 'removeTeamMember', reads: 'sent', done: ["showToast('Member removed')"] }
 	],
 	'src/lib/components/admin/SmtpPanel.svelte': [
@@ -4643,7 +4646,8 @@ describe('the admin page’s user rows, src/lib/components/admin/UsersPanel.svel
 
 	it('shows the role select, the invite and the delete only where the rule lets the caller use them, and never on their own row', () => {
 		for (const control of [
-			'onchange={(e) => changeUserRole(u.id, e.currentTarget)}',
+			'onchange={(e) => chooseUserRole(u.id, e.currentTarget)}',
+			'onclick={() => changeUserRole(u.id, u.username)}',
 			'onclick={(e) => resendInvite(u.id, e.currentTarget)}',
 			'() => deleteUser(u.id))}'
 		]) {

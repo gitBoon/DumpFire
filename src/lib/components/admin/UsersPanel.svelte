@@ -12,6 +12,7 @@
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
+	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { answerBody, failureMessage, userDeleteWarning } from '$lib/api';
 	import { mayManageAccount } from '$lib/account-rule';
@@ -129,47 +130,127 @@
 	}
 
 	/**
-	 * The role chosen in a row's select. The select shows it before the
-	 * answer comes, so it is put back to the role the account has when the
-	 * change is not made.
+	 * The role chosen in each account's picker and not yet saved, by account
+	 * (card 2376). Choosing sends nothing: on Windows, Up and Down on a closed
+	 * picker change it at once, and the picker saved every role arrowed past,
+	 * Admin included. Change sends the one chosen. The picker shows it until
+	 * it is saved or put back, the account is deleted, or a re-read drops it.
 	 */
-	async function changeUserRole(userId: number, select: HTMLSelectElement) {
-		const newRole = select.value;
-		const putBack = () => {
-			select.value = data.users.find((u) => u.id === userId)?.role ?? select.value;
-		};
-		const started = toasts.navigation();
-		let res: Response;
-		try {
-			res = await fetch(`/api/users/${userId}`, {
-				method: 'PUT',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ role: newRole })
+	let chosenRole = $state(new Map<number, string>());
+
+	function setChosen(userId: number, role: string | null) {
+		const next = new Map(chosenRole);
+		if (role === null) next.delete(userId);
+		else next.set(userId, role);
+		chosenRole = next;
+	}
+
+	/**
+	 * The accounts whose role change is out, each with its name for the status
+	 * line. A second Change meanwhile sends nothing (card 2376: a second
+	 * choice was sent while the first was out). The picker and Change are
+	 * marked busy rather than turned off, which would drop the keyboard's
+	 * focus to the page.
+	 */
+	let changingRole = $state(new Map<number, string>());
+
+	function markChanging(userId: number, username: string | null) {
+		const next = new Map(changingRole);
+		if (username === null) next.delete(userId);
+		else next.set(userId, username);
+		changingRole = next;
+	}
+
+	/** What a screen reader is told while a change is out (card 2376), politely; the toast says how it ended. */
+	let savingSaid = $derived([...changingRole.values()].map((name) => `Saving ${name}'s role…`).join(' '));
+
+	/** The role the page's data gives the account now. */
+	function storedUserRole(userId: number): string | undefined {
+		return data.users.find((u) => u.id === userId)?.role;
+	}
+
+	/**
+	 * A role chosen and not saved is dropped when the page's data is read
+	 * again and the account is gone or already has it (the card 2376 review,
+	 * as on the team pages: the choice outlived the row). A choice whose change
+	 * is out is left to that change, which clears it as it ends.
+	 */
+	$effect.pre(() => {
+		const accounts = data.users;
+		untrack(() => {
+			const stale = [...chosenRole].filter(([userId, role]) => {
+				if (changingRole.has(userId)) return false;
+				const stored = accounts.find((u) => u.id === userId)?.role;
+				return stored === undefined || stored === role;
 			});
-		} catch {
-			putBack();
-			showToast(NO_ANSWER, 'error', started);
+			if (stale.length === 0) return;
+			const next = new Map(chosenRole);
+			for (const [userId] of stale) next.delete(userId);
+			chosenRole = next;
+		});
+	});
+
+	/** A role chosen in a row's picker, kept for Change. While its change is out, another choice goes back to the role being saved. */
+	function chooseUserRole(userId: number, select: HTMLSelectElement) {
+		if (changingRole.has(userId)) {
+			select.value = chosenRole.get(userId) ?? select.value;
 			return;
 		}
-		if (res.ok) {
-			// A change of role ends any invite to the account not yet used: it
-			// was sent to the account as it was. The answer says how many.
-			const result = await answerBody(res);
-			const invitesEnded = result?.invitesEnded;
-			await invalidateAll();
-			showToast(
-				typeof invitesEnded === 'number' && invitesEnded > 0
-					? 'Role updated. The invite sent to this account earlier no longer works: send a new one with 📧.'
-					: 'Role updated'
-			);
-		} else {
-			putBack();
-			showToast(await failureMessage(res, 'Failed to update role'), 'error', started);
+		setChosen(userId, select.value === storedUserRole(userId) ? null : select.value);
+	}
+
+	/**
+	 * Change: saves the role chosen in the row's picker. Refused or not
+	 * answered, the picker shows the role the account has again.
+	 */
+	async function changeUserRole(userId: number, username: string) {
+		const newRole = chosenRole.get(userId);
+		if (changingRole.has(userId) || newRole === undefined) return;
+		if (newRole === storedUserRole(userId)) {
+			setChosen(userId, null);
+			return;
+		}
+		const putBack = () => setChosen(userId, null);
+		const started = toasts.navigation();
+		markChanging(userId, username);
+		try {
+			let res: Response;
+			try {
+				res = await fetch(`/api/users/${userId}`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ role: newRole })
+				});
+			} catch {
+				putBack();
+				showToast(NO_ANSWER, 'error', started);
+				return;
+			}
+			if (res.ok) {
+				// A change of role ends any invite to the account not yet used: it
+				// was sent to the account as it was. The answer says how many.
+				const result = await answerBody(res);
+				const invitesEnded = result?.invitesEnded;
+				await invalidateAll();
+				setChosen(userId, null);
+				showToast(
+					typeof invitesEnded === 'number' && invitesEnded > 0
+						? 'Role updated. The invite sent to this account earlier no longer works: send a new one with 📧.'
+						: 'Role updated'
+				);
+			} else {
+				putBack();
+				showToast(await failureMessage(res, 'Failed to update role'), 'error', started);
+			}
+		} finally {
+			markChanging(userId, null);
 		}
 	}
 
 	async function deleteUser(userId: number) {
 		if (!(await sent(() => fetch(`/api/users/${userId}`, { method: 'DELETE' }), 'Failed to delete user'))) return;
+		// A role chosen for the account and not saved goes with it (the card 2376 review).
+		setChosen(userId, null);
 		await invalidateAll();
 		showToast('User deleted');
 	}
@@ -220,6 +301,8 @@
 		<h2>👥 User Management</h2>
 		<button class="btn-primary btn-sm" onclick={() => (showCreateUser = true)} bind:this={addUserButton}>+ Add User</button>
 	</div>
+	<!-- A role being saved, said politely to a screen reader (card 2376). -->
+	<p class="saving-status" role="status">{savingSaid}</p>
 	<p class="section-desc">Each row shows only what you may do to that account. Only the superadmin changes an administrator's account, and nobody else changes the superadmin's: those rows show 🔒. On your own row there is only 🔑, to change your password.</p>
 
 	{#if showCreateUser}
@@ -258,14 +341,26 @@
 					<!-- Only what the server would let you do to this account (the rule in $lib/account-rule.ts). On your own row, only the password. -->
 					{#if mayManageAccount(data.currentUser, u)}
 						{#if u.id !== data.currentUser.id}
-							<select
-								value={u.role}
-								onchange={(e) => changeUserRole(u.id, e.currentTarget)}
-								class="role-select"
-							>
-								<option value="user">User</option>
-								{#if isSuperadmin}<option value="admin">Admin</option>{/if}
-							</select>
+							<!-- The picker and Change for the superadmin alone: anyone else may give only User, so the picker had one choice and Change could never do anything (the card 2376 review); the badge says the role. -->
+							{#if isSuperadmin}
+								<!-- Choosing sends nothing; Change saves it (card 2376). Busy, not off, while its change is out: off, it would drop the focus. -->
+								<select
+									value={chosenRole.get(u.id) ?? u.role}
+									aria-busy={changingRole.has(u.id) ? 'true' : undefined}
+									onchange={(e) => chooseUserRole(u.id, e.currentTarget)}
+									class="role-select"
+									aria-label="{u.username}'s role"
+								>
+									<option value="user">User</option>
+									<option value="admin">Admin</option>
+								</select>
+								<button
+									class="btn-ghost btn-sm role-change"
+									aria-disabled={chosenRole.has(u.id) && !changingRole.has(u.id) ? undefined : 'true'}
+									onclick={() => changeUserRole(u.id, u.username)}
+									aria-label="Change {u.username}'s role"
+								>Change</button>
+							{/if}
 						{/if}
 						<button class="btn-ghost btn-sm" onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>
 						{#if u.id !== data.currentUser.id}
@@ -312,6 +407,14 @@
 		border-radius: var(--radius-sm); background: var(--bg-base);
 		color: var(--text-secondary); font-size: 0.72rem; font-weight: 600;
 		cursor: pointer; font-family: var(--font-family);
+	}
+
+	/* Change beside the picker (card 2376): dimmed, and sending nothing, until a role other than the account's is chosen. */
+	.role-change[aria-disabled='true'] { opacity: 0.35; cursor: default; }
+	/* The status line is for screen readers alone. */
+	.saving-status {
+		position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+		overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 	}
 
 	.superadmin-lock { font-size: 0.9rem; opacity: 0.5; }

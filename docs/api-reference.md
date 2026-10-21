@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.86
+version: 1.87
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1227,6 +1227,13 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   window, and each person picked on a new card) and accepting a task request onto yourself,
   which still mails the requester (item 100). See
   [`POST /api/v1/cards/:cardId/assignees`](#post-apiv1cardscardidassignees).
+- **A board's columns at one position come the older first** (card 2372). `GET
+  /boards/:boardId`, `GET /boards/:boardId/columns` and `POST /boards` list a board's
+  columns in order of position, ties by column id, as `GET /boards/:boardId/cards` already
+  went through them (item 101). Two columns at one position (a column made with a chosen
+  `position`, or a reorder that sent one twice) came in no set order, and `POST /boards`
+  answered its columns in no stated order. The board page, All Tasks, the inbox, the CSV
+  exports and the reports order them the same way.
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2095,6 +2102,20 @@ API:
   `cache-control: private, no-store`. It is the pages' route, not under `/api/v1/` and not
   in the OpenAPI document; a script reads a board with `GET /api/v1/boards/:boardId` and
   `GET /api/v1/boards/:boardId/cards`.
+- **A team keeps at least one owner** (card 2373). `POST /api/teams/{id}/members/{userId}`
+  that would make the team's last owner anything but an owner (a body with no `role` sets
+  `member`), and `DELETE /api/teams/{id}/members/{userId}` of the last owner, are `409`
+  `A team needs at least one owner. Make someone else an owner first, or delete the team.`,
+  with nothing changed, for an administrator too. Either could leave a team that only an
+  administrator could run. With another owner, or for a member of a team that already has
+  no owner, they answer as before. A caller who may not manage the team is `403` first, as
+  before, and is not told whether it has another owner. No `/api/v1` operation changes: v1
+  has no team routes.
+- **The board's CSV export names the file of a board with no columns as it names any
+  other** (card 2371), `GET /api/boards/{id}/export/csv`: `<name>-<YYYY-MM-DD>.csv` with
+  every character but letters, digits, `-` and `_` made `_`. It put the board's name in the
+  header as it was, `<name>-export.csv`, so a name with an emoji or another character
+  outside Latin-1 was a `500` and a double quote cut the file name short.
 
 ### Changes on 2026-10-13
 

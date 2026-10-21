@@ -13,8 +13,9 @@
 
 import { db } from './db';
 import { boards, columns, cards, dailySnapshots } from './db/schema';
-import { eq, and, isNull, inArray, asc } from 'drizzle-orm';
+import { eq, and, isNull, inArray } from 'drizzle-orm';
 import { createLogger } from './logger';
+import { COLUMN_ORDER } from './card-order';
 
 const log = createLogger('Snapshots');
 
@@ -31,7 +32,7 @@ export async function captureSnapshots(): Promise<void> {
 		const boardCols = db.select()
 			.from(columns)
 			.where(eq(columns.boardId, board.id))
-			.orderBy(asc(columns.position))
+			.orderBy(...COLUMN_ORDER)
 			.all();
 
 		for (const col of boardCols) {
