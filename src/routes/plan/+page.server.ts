@@ -4,6 +4,7 @@ import { db } from '$lib/server/db';
 import { boards } from '$lib/server/db/schema';
 import { and, asc, inArray, isNull } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { readQueryIdOrNone } from '$lib/server/request-body';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, url }) => {
@@ -29,10 +30,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// 'scoped' so a cross-board goal that this board is half of still shows —
 	// that goal is exactly what was being asked about, and hiding it because it
 	// also covers another project would make the filter lie.
-	const boardParam = url.searchParams.get('board');
-	const boardId = boardParam === null || boardParam === '' ? undefined : Number(boardParam);
+	// A value that is no board id (`2.5`, `abc`, `0`) is no filter, as a board
+	// the caller cannot open is: the page shows every goal rather than a 400 for
+	// a hand-edited link. `Number` let `2.5` and `0` through, and an
+	// administrator was shown no goal and no word why (card 2403).
+	const boardId = readQueryIdOrNone(url.searchParams.get('board'));
 	const filterBoard =
-		boardId !== undefined && !isNaN(boardId) && (accessible === null || accessible.includes(boardId))
+		boardId !== undefined && (accessible === null || accessible.includes(boardId))
 			? boardId
 			: undefined;
 

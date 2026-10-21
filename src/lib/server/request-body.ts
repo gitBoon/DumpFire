@@ -841,6 +841,18 @@ export function readQueryId(value: string | null, thing: string, says?: string):
 }
 
 /**
+ * An id in a query string held to `readQueryId`'s rule, but never refused:
+ * anything that is not one (`2.5`, `abc`, `0`, `-1`) is `undefined`, as not
+ * sent is. For a page load, whose query comes from a link a person can edit:
+ * the page shows what it shows unfiltered, where an endpoint says 400 (card
+ * 2403).
+ */
+export function readQueryIdOrNone(value: string | null): number | undefined {
+	const id = value !== null && ID_AS_TEXT.test(value) ? Number(value) : NaN;
+	return Number.isSafeInteger(id) && id >= 1 ? id : undefined;
+}
+
+/**
  * A date (`2026-10-14`) or a timestamp (`2026-10-14T09:00:00Z`,
  * `2026-10-14 09:00:00`) in a query string, as one end of a range, and
  * `undefined` when it was not sent or is empty. Anything else is a 400:
